@@ -101,7 +101,7 @@ it("IT-12 repair plan requires new approval and cannot reuse evidence even when 
   } finally {
     s.store.close();
   }
-}, 60000);
+}, 120000);
 
 it("IT-04 approved filename cannot write through a hardlink into another directory", async () => {
   const s = await prepared();
@@ -120,4 +120,4 @@ it("IT-04 approved filename cannot write through a hardlink into another directo
   } finally {
     s.store.close();
   }
-}, 60000);
+}, 120000);

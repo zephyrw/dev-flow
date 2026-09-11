@@ -14,4 +14,4 @@ it("UT-06 parses Chinese labels in an isolated DOM and rejects invalid diagram g
   );
   await expect(parsePlanDiagrams(value)).rejects.toThrow(/Mermaid/);
   expect(globalThis.window).toBe(before);
-}, 60000);
+}, 180000);

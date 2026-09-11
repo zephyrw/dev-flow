@@ -1,0 +1,128 @@
+{
+  "passed": true,
+  "environments": [
+    {
+      "id": "env-b7aad3f8-237d-4500-8973-2abe60dc9425",
+      "workflow_id": "wf-da59b76e-c016-4150-a312-1209051c7039",
+      "revision": 1,
+      "status": "ready",
+      "identity": "identity-9739d0b1-9adc-4fde-850c-63522e7cf684",
+      "data_dir": "C:\\Users\\yckj4798\\AppData\\Local\\Temp\\devflow-test-NLViht\\state\\data\\wf-da59b76e-c016-4150-a312-1209051c7039",
+      "services": [
+        {
+          "id": "backend",
+          "process_id": "service-0f8283f5-1dc4-4ca3-b833-9e531091aa53",
+          "port": 18081,
+          "origin": "http://127.0.0.1:18081",
+          "health_url": "http://127.0.0.1:18081/health",
+          "identity_header": "x-devflow-identity",
+          "expected_identity": "identity-9739d0b1-9adc-4fde-850c-63522e7cf684:backend"
+        },
+        {
+          "id": "frontend",
+          "process_id": "service-3830bc0c-73e8-4750-a9f4-e25cea87cf9c",
+          "port": 15174,
+          "origin": "http://127.0.0.1:15174",
+          "health_url": "http://127.0.0.1:15174/health",
+          "identity_header": "x-devflow-identity",
+          "expected_identity": "identity-9739d0b1-9adc-4fde-850c-63522e7cf684:frontend",
+          "upstream_probe_url": "http://127.0.0.1:15174/api/health",
+          "upstream_identity": "identity-9739d0b1-9adc-4fde-850c-63522e7cf684:backend"
+        }
+      ]
+    },
+    {
+      "id": "env-27638801-e820-4f21-91ad-58583e95df38",
+      "workflow_id": "wf-b1d63159-a36f-4a75-b6f7-a60aa5380f82",
+      "revision": 1,
+      "status": "ready",
+      "identity": "identity-3614c534-ddd2-405b-b473-e25fab01dedf",
+      "data_dir": "C:\\Users\\yckj4798\\AppData\\Local\\Temp\\devflow-test-NLViht\\state\\data\\wf-b1d63159-a36f-4a75-b6f7-a60aa5380f82",
+      "services": [
+        {
+          "id": "backend",
+          "process_id": "service-7eed10e8-f1bd-493c-96c5-542251bd6868",
+          "port": 18082,
+          "origin": "http://127.0.0.1:18082",
+          "health_url": "http://127.0.0.1:18082/health",
+          "identity_header": "x-devflow-identity",
+          "expected_identity": "identity-3614c534-ddd2-405b-b473-e25fab01dedf:backend"
+        },
+        {
+          "id": "frontend",
+          "process_id": "service-849ebf55-3b0e-450e-b57b-c294828c2262",
+          "port": 15173,
+          "origin": "http://127.0.0.1:15173",
+          "health_url": "http://127.0.0.1:15173/health",
+          "identity_header": "x-devflow-identity",
+          "expected_identity": "identity-3614c534-ddd2-405b-b473-e25fab01dedf:frontend",
+          "upstream_probe_url": "http://127.0.0.1:15173/api/health",
+          "upstream_identity": "identity-3614c534-ddd2-405b-b473-e25fab01dedf:backend"
+        }
+      ]
+    },
+    {
+      "id": "env-9c22b91b-66a7-422d-b281-94aa04f437e8",
+      "workflow_id": "wf-969b0430-4f92-488e-8d30-e5481026851d",
+      "revision": 1,
+      "status": "ready",
+      "identity": "identity-5496fd01-833d-462e-89b1-e620540c9e7b",
+      "data_dir": "C:\\Users\\yckj4798\\AppData\\Local\\Temp\\devflow-test-NLViht\\state\\data\\wf-969b0430-4f92-488e-8d30-e5481026851d",
+      "services": [
+        {
+          "id": "backend",
+          "process_id": "service-8fc807a9-b1c0-43a3-a952-2f2796bea027",
+          "port": 18083,
+          "origin": "http://127.0.0.1:18083",
+          "health_url": "http://127.0.0.1:18083/health",
+          "identity_header": "x-devflow-identity",
+          "expected_identity": "identity-5496fd01-833d-462e-89b1-e620540c9e7b:backend"
+        },
+        {
+          "id": "frontend",
+          "process_id": "service-94ee3dda-c0bd-4efd-894e-b5661e7c4de7",
+          "port": 15175,
+          "origin": "http://127.0.0.1:15175",
+          "health_url": "http://127.0.0.1:15175/health",
+          "identity_header": "x-devflow-identity",
+          "expected_identity": "identity-5496fd01-833d-462e-89b1-e620540c9e7b:frontend",
+          "upstream_probe_url": "http://127.0.0.1:15175/api/health",
+          "upstream_identity": "identity-5496fd01-833d-462e-89b1-e620540c9e7b:backend"
+        }
+      ]
+    }
+  ],
+  "results": [
+    {
+      "workflow_id": "wf-da59b76e-c016-4150-a312-1209051c7039",
+      "path": "C:\\Users\\yckj4798\\AppData\\Local\\Temp\\devflow-test-NLViht\\state\\evidence\\wf-da59b76e-c016-4150-a312-1209051c7039\\browser-06aecf24-0dc6-4d77-90d7-f590fd9348c2.json",
+      "hash": "3ed4a909522aecc61837cddd644e60f3e66a7aa56f1739025d9d86943f12e7e4",
+      "steps": 17,
+      "case_ids": [
+        "notes-persisted",
+        "notes-reloaded"
+      ]
+    },
+    {
+      "workflow_id": "wf-b1d63159-a36f-4a75-b6f7-a60aa5380f82",
+      "path": "C:\\Users\\yckj4798\\AppData\\Local\\Temp\\devflow-test-NLViht\\state\\evidence\\wf-b1d63159-a36f-4a75-b6f7-a60aa5380f82\\browser-f2c29237-16a2-40ed-bbbc-0ba49d378f1c.json",
+      "hash": "6a45e742f1c72c907ae646393d9f7ccfa7e4c33fd0d2fe7d9a3cf65d621273c7",
+      "steps": 17,
+      "case_ids": [
+        "notes-persisted",
+        "notes-reloaded"
+      ]
+    },
+    {
+      "workflow_id": "wf-969b0430-4f92-488e-8d30-e5481026851d",
+      "path": "C:\\Users\\yckj4798\\AppData\\Local\\Temp\\devflow-test-NLViht\\state\\evidence\\wf-969b0430-4f92-488e-8d30-e5481026851d\\browser-9d516585-37aa-4e41-91d7-7682c24bd268.json",
+      "hash": "d0698ff77de4d2b4fefcf33d29e2f566fa2e00a2a92c165af9d6bdb77bc329e5",
+      "steps": 17,
+      "case_ids": [
+        "notes-persisted",
+        "notes-reloaded"
+      ]
+    }
+  ],
+  "shared_lease_released": true
+}

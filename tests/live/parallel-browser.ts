@@ -36,12 +36,7 @@ const processes = new ProcessManager(
     ),
     true,
   ),
-  environments = new Environments(
-    s.engine,
-    processes,
-    () => undefined,
-    () => {},
-  ),
+  environments = new Environments(s.engine, processes),
   browser = new BrowserGateway(s.engine),
   flows: any[] = [],
   results: any[] = [];

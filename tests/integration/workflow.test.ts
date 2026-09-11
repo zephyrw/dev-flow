@@ -150,7 +150,7 @@ it("IT-13 pass review commits only the accepted exact tree and leaves a clean in
   );
   s.store.close();
 });
-it("IT-03 API rejects untrusted Host, foreign Origin, missing cookies and planner-as-human", async () => {
+it("IT-03 API rejects untrusted Host, foreign Origin, allow local access and reject planner-as-human", async () => {
   const s = setup();
   const app = await buildServer(s.engine);
   expect(
@@ -160,7 +160,7 @@ it("IT-03 API rejects untrusted Host, foreign Origin, missing cookies and planne
         headers: { host: "localhost:14810" },
       })
     ).statusCode,
-  ).toBe(401);
+  ).toBe(200);
   expect(
     (
       await app.inject({
@@ -173,13 +173,13 @@ it("IT-03 API rejects untrusted Host, foreign Origin, missing cookies and planne
     (
       await app.inject({
         method: "POST",
-        url: "/api/auth/challenge",
+        url: "/api/workflows/fixture/approve",
         headers: {
           host: "localhost:14810",
           origin: "http://evil.example",
           "content-type": "application/json",
         },
-        payload: { action: "login" },
+        payload: { binding: {} },
       })
     ).statusCode,
   ).toBe(403);
@@ -190,7 +190,7 @@ it("IT-03 API rejects untrusted Host, foreign Origin, missing cookies and planne
         url: "/api/projects",
         headers: {
           host: "localhost:14810",
-          cookie: `devflow_session=${token}`,
+          authorization: `Bearer ${token}`,
         },
       })
     ).statusCode,

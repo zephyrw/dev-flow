@@ -1,0 +1,14 @@
+{
+  "resume_conversation": "aba6cb1e-beb0-431f-827b-cc46995764c2",
+  "resume_marker": "DEVFLOW-LIVE-ROUNDTRIP-731946\n",
+  "resume_passed": true,
+  "stop_after_visible_text": true,
+  "model_verified": true,
+  "stop_latency_ms": 162,
+  "exit_code": 130,
+  "job": {
+    "id": "stop-0d71035f-4cdf-46d1-b872-8613436e50d1",
+    "alive": false,
+    "active_processes": 0
+  }
+}

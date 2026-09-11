@@ -9,7 +9,6 @@ import {
 } from "node:fs";
 import { resolve, join, relative, isAbsolute } from "node:path";
 import { gzipSync, gunzipSync } from "node:zlib";
-import { backup } from "node:sqlite";
 import type { Engine } from "../../core/src/engine.js";
 import { atomicWrite, hash, now } from "../../core/src/util.js";
 import { requireCondition, RelativePath } from "../../contracts/src/index.js";
@@ -49,7 +48,7 @@ export async function createBackup(engine: Engine, target: string) {
   const dest = resolve(target);
   requireCondition(!existsSync(dest), "EXISTS", "备份目录必须不存在");
   mkdirSync(dest, { recursive: true });
-  await backup(engine.store.db, join(dest, "devflow.sqlite"));
+  await engine.store.db.backup(join(dest, "devflow.sqlite"));
   for (const name of ["documents", "evidence", "reviews", "containers"]) {
     const source = join(engine.config.storage_root, name);
     if (existsSync(source)) {

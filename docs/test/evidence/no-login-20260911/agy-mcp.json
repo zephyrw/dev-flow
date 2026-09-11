@@ -1,0 +1,81 @@
+{
+  "workflow_id": "wf-a04abaf0-a245-4f85-b3ba-4027b95e8bd0",
+  "state": "HUMAN_PENDING",
+  "model": {
+    "conversation_id": "84753e5c-4dec-4687-b512-2d3f3dfd0480",
+    "status": "SUCCESS",
+    "response": "### 执行结果报告\n\n#### 1. 联调标记\n- **随机标记**：`LIVE-PLAN-8f3ae940-72ac-4ca6-8a1c-130aa0b58d34`\n\n---\n\n#### 2. 执行与变更摘要\n- **上下文读取**：已通过 `devflow_execute_context` 完整读取 `overview`、`plan`、`skill`、`tasks`、`tests`、`scope` 及 `feedback` 分区。\n- **目标修改**：读取 `app.txt` 并将内容从 `before\\n` 修改为 `after\\n`，哈希校验通过（新哈希：`7b9a72466d3960eb2aacccfc848939453490db0678bd4725def3f789b891c919`）。\n- **任务声明**：已使用包含上述标记的中文摘要声明任务 `T01`。\n- **快照冻结**：已调用 `devflow_freeze` 成功冻结代码快照（快照 ID：`acc68b779c64551677fd6ed6385ee5e4b102f1d41f7d88d986d90c2ec70ed11a`）。\n\n---\n\n#### 3. 实际测试结果\n- **测试用例编号**：`UT01`\n- **测试层级**：`unit`\n- **执行状态**：`passed`\n- **退出码**：`0`\n- **用例详情**：发现 `1` 个测试用例，通过 `1` 个（`test updates content`），失败 `0` 个，跳过 `0` 个。\n- **证据 ID**：`evidence-b4860e2e-472d-4d1d-a3b3-1f4dfa472266`\n\n---\n\n#### 4. 完成状态\n已调用 `devflow_finish`，所有任务与测试证据核验完毕，状态为 `ready`，等待人工验收。\n",
+    "duration_seconds": 109.0212553,
+    "num_turns": 1,
+    "usage": {
+      "input_tokens": 117748,
+      "output_tokens": 4158,
+      "thinking_tokens": 2180,
+      "cache_read_tokens": 275487,
+      "total_tokens": 121906
+    }
+  },
+  "session": {
+    "conversation": "84753e5c-4dec-4687-b512-2d3f3dfd0480",
+    "result": {
+      "conversation_id": "84753e5c-4dec-4687-b512-2d3f3dfd0480",
+      "status": "SUCCESS",
+      "response": "### 执行结果报告\n\n#### 1. 联调标记\n- **随机标记**：`LIVE-PLAN-8f3ae940-72ac-4ca6-8a1c-130aa0b58d34`\n\n---\n\n#### 2. 执行与变更摘要\n- **上下文读取**：已通过 `devflow_execute_context` 完整读取 `overview`、`plan`、`skill`、`tasks`、`tests`、`scope` 及 `feedback` 分区。\n- **目标修改**：读取 `app.txt` 并将内容从 `before\\n` 修改为 `after\\n`，哈希校验通过（新哈希：`7b9a72466d3960eb2aacccfc848939453490db0678bd4725def3f789b891c919`）。\n- **任务声明**：已使用包含上述标记的中文摘要声明任务 `T01`。\n- **快照冻结**：已调用 `devflow_freeze` 成功冻结代码快照（快照 ID：`acc68b779c64551677fd6ed6385ee5e4b102f1d41f7d88d986d90c2ec70ed11a`）。\n\n---\n\n#### 3. 实际测试结果\n- **测试用例编号**：`UT01`\n- **测试层级**：`unit`\n- **执行状态**：`passed`\n- **退出码**：`0`\n- **用例详情**：发现 `1` 个测试用例，通过 `1` 个（`test updates content`），失败 `0` 个，跳过 `0` 个。\n- **证据 ID**：`evidence-b4860e2e-472d-4d1d-a3b3-1f4dfa472266`\n\n---\n\n#### 4. 完成状态\n已调用 `devflow_finish`，所有任务与测试证据核验完毕，状态为 `ready`，等待人工验收。\n",
+      "duration_seconds": 109.0212553,
+      "num_turns": 1,
+      "usage": {
+        "input_tokens": 117748,
+        "output_tokens": 4158,
+        "thinking_tokens": 2180,
+        "cache_read_tokens": 275487,
+        "total_tokens": 121906
+      }
+    },
+    "exit": 0
+  },
+  "task_status": [
+    {
+      "id": "T01",
+      "title": "修改文本",
+      "status": "verified",
+      "summary": "已成功将 app.txt 中的内容从 before 修改为 after 并保留末尾换行符。本次联调标记为 LIVE-PLAN-8f3ae940-72ac-4ca6-8a1c-130aa0b58d34。其余文件均未做改动，准备进行代码冻结与单元测试验证。"
+    }
+  ],
+  "evidence": [
+    {
+      "case_ids": [
+        "test updates content"
+      ],
+      "created_at": "2026-09-11T10:54:58.790Z",
+      "discovered": 1,
+      "environment_revision": 0,
+      "exit_code": 0,
+      "failed": 0,
+      "files": [
+        {
+          "hash": "6eccfc64000f8def965f327fa7dd10a9b7a5311b525a38ef502c070f8b5c6d88",
+          "path": "C:\\Users\\yckj4798\\AppData\\Local\\Temp\\devflow-test-LTeQwE\\state\\evidence\\wf-a04abaf0-a245-4f85-b3ba-4027b95e8bd0\\check-8a76a1da-090e-4f81-8e58-73c668db7524\\report.xml"
+        }
+      ],
+      "id": "evidence-b4860e2e-472d-4d1d-a3b3-1f4dfa472266",
+      "layer": "unit",
+      "missing": [],
+      "passed": 1,
+      "run_id": "run-8934befc-6c3e-4f9c-8400-145d60c464e5",
+      "skipped": 0,
+      "snapshot_id": "acc68b779c64551677fd6ed6385ee5e4b102f1d41f7d88d986d90c2ec70ed11a",
+      "status": "passed",
+      "test_id": "UT01",
+      "workflow_id": "wf-a04abaf0-a245-4f85-b3ba-4027b95e8bd0"
+    }
+  ],
+  "content": "after\n",
+  "ui_logs_contain_tool": true,
+  "ui_logs_contain_marker": true,
+  "ui_logs_visible_before_completion": true,
+  "plan_only_marker": "LIVE-PLAN-8f3ae940-72ac-4ca6-8a1c-130aa0b58d34",
+  "event_count": 117,
+  "root": "C:\\Users\\yckj4798\\AppData\\Local\\Temp\\devflow-test-LTeQwE",
+  "output": "D:\\Code\\system-handle\\.cache\\live-agy\\workflow-1789123970597",
+  "duration_ms": 137949
+}

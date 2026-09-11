@@ -16,26 +16,36 @@ export async function parsePlanDiagrams(input: unknown) {
       try {
         const { default: mermaid } = await import('mermaid');
         mermaid.initialize({ startOnLoad: false, securityLevel: 'strict' });
+        parentPort.postMessage({ ready: true });
         for (const source of workerData) await mermaid.parse(source);
         parentPort.postMessage({ ok: true });
       } finally { dom.window.close(); }
     })().catch(error => parentPort.postMessage({ ok: false, error: String(error) }));
   `,
-    { eval: true, workerData: validated.diagrams },
+    // Plain JavaScript dependency loading needs no parent test/dev hooks.
+    { eval: true, workerData: validated.diagrams, execArgv: [] },
   );
   try {
     await new Promise<void>((done, fail) => {
-      const timer = setTimeout(
-        () => fail(new Error("图表解析超过 30 秒")),
-        30000,
+      // Cold Windows dependency loading can consume the entire parsing budget.
+      // Bound initialization separately; actual grammar parsing still gets 30s.
+      let timer = setTimeout(
+        () => fail(new Error("图表组件初始化超过 60 秒")),
+        60000,
       );
       const finish = (error?: Error) => {
         clearTimeout(timer);
         error ? fail(error) : done();
       };
-      worker.once("message", (result) =>
-        finish(result.ok ? undefined : new Error(result.error)),
-      );
+      worker.on("message", (result) => {
+        if (result.ready) {
+          clearTimeout(timer);
+          timer = setTimeout(
+            () => fail(new Error("图表解析超过 30 秒")),
+            30000,
+          );
+        } else finish(result.ok ? undefined : new Error(result.error));
+      });
       worker.once("error", finish);
       worker.once("exit", (code) => {
         if (code !== 0) finish(new Error("图表解析进程退出：" + code));

@@ -1,0 +1,13 @@
+{
+  "requested_model": "gemini-3.7-flash-high",
+  "reported_model": "gemini-3.7-flash-high",
+  "conversation_id": "aba6cb1e-beb0-431f-827b-cc46995764c2",
+  "exit_code": 0,
+  "result_status": "SUCCESS",
+  "response": "DEVFLOW-LIVE-ROUNDTRIP-731946\n",
+  "roundtrip_ok": true,
+  "first_event_ms": 14962,
+  "events": 4,
+  "duration_ms": 21175,
+  "stderr_bytes": 0
+}

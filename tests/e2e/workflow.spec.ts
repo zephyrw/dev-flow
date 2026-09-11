@@ -2,45 +2,40 @@ import { test, expect } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 test.describe.configure({ mode: "serial" });
+test("empty console explains the natural-language entry without manual registration", async ({ page }) => {
+  await page.route("**/api/projects", route => route.fulfill({json: []}));
+  await page.route("**/api/workflows", route => route.fulfill({json: []}));
+  await page.goto("/");
+  await page.getByRole("button", {name: "查看开始方式"}).click();
+  await expect(page.getByRole("dialog")).toContainText("用 DevFlow 帮我修复客户列表筛选的问题。");
+  await expect(page.getByRole("dialog").locator("textarea")).toHaveCount(0);
+});
 test.afterAll(async ({ request }) => {
   const state = JSON.parse(
     readFileSync(resolve(".cache/e2e-state.json"), "utf8"),
   );
   await request.post("/__fixture/shutdown", {
     headers: { Origin: "http://localhost:14811" },
-    data: { token: state.pairing },
+    data: { token: state.shutdownToken },
   });
 });
-test("E2E-01/05/06/08 real passkey approval, diagrams, evidence and accepted commit", async ({
+test("E2E-01/05/06/08 local button approval, diagrams, evidence and accepted commit", async ({
   page,
   context,
 }) => {
-  // This scenario performs two actual test runs, passkey ceremonies and a Git
+  // This scenario performs two actual test runs, local confirmations and a Git
   // commit. Keep per-assertion waits bounded without capping the whole flow at 45s.
   test.setTimeout(120000);
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(e.message));
-  const cdp = await context.newCDPSession(page);
-  await cdp.send("WebAuthn.enable");
-  await cdp.send("WebAuthn.addVirtualAuthenticator", {
-    options: {
-      protocol: "ctap2",
-      transport: "internal",
-      hasResidentKey: true,
-      hasUserVerification: true,
-      isUserVerified: true,
-      automaticPresenceSimulation: true,
-    },
-  });
   const state = JSON.parse(
     readFileSync(resolve(".cache/e2e-state.json"), "utf8"),
   );
   await page.goto("/");
-  await expect(
-    page.getByRole("heading", { name: "连接你的工作台" }),
-  ).toBeVisible();
-  await page.getByLabel("配对码").fill(state.pairing);
-  await page.getByRole("button", { name: "配对并创建通行密钥" }).click();
+  await expect(page.getByLabel("配对码")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /登录|通行密钥/ })).toHaveCount(
+    0,
+  );
   await expect(page.getByRole("heading", { name: "工作流总览" })).toBeVisible();
   await page
     .getByRole("button")
@@ -83,10 +78,6 @@ test("E2E-01/05/06/08 real passkey approval, diagrams, evidence and accepted com
   expect(after.evidence.some((e: any) => e.status === "stale")).toBe(true);
   expect(after.evidence.some((e: any) => e.status === "passed")).toBe(true);
   await page.reload();
-  await page
-    .getByRole("button")
-    .filter({ has: page.getByRole("heading", { name: "验证审批与交付闭环" }) })
-    .click();
   await page.getByRole("button", { name: "实时输出", exact: true }).click();
   await expect(page.locator(".logs")).toContainText("用户反馈");
   await page.getByRole("button", { name: "验收通过，启动复核" }).click();
@@ -106,13 +97,18 @@ test("E2E-01/05/06/08 real passkey approval, diagrams, evidence and accepted com
   await page.screenshot({ path: ".cache/e2e-complete.png", fullPage: true });
   expect(errors).toEqual([]);
 });
-test("E2E-05 unauthenticated browser cannot access workflow data", async ({
+test("E2E-05 a fresh browser opens the console and restores a deep link without login", async ({
   page,
 }) => {
-  await page.goto("/");
-  await expect(
-    page.getByRole("button", { name: "使用通行密钥登录" }),
-  ).toBeVisible();
-  const response = await page.request.get("/api/workflows");
-  expect(response.status()).toBe(401);
+  const state = JSON.parse(
+    readFileSync(resolve(".cache/e2e-state.json"), "utf8"),
+  );
+  await page.goto("/?workflow=" + state.workflow_id);
+  await expect(page.locator(".workflow-bar")).toContainText("已提交");
+  await page.reload();
+  await expect(page.locator(".workflow-bar")).toContainText("已提交");
+  expect((await page.request.get("/api/workflows")).status()).toBe(200);
+  await expect(page.getByRole("button", { name: /登录|通行密钥/ })).toHaveCount(
+    0,
+  );
 });

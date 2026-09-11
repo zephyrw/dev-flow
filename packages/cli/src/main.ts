@@ -9,7 +9,6 @@ import {
 } from "node:fs";
 import { resolve, join } from "node:path";
 import { execFileSync } from "node:child_process";
-import { backup } from "node:sqlite";
 import { stringify } from "yaml";
 import { z } from "zod";
 import { PlanSchema, ReviewSchema } from "../../contracts/src/index.js";
@@ -39,7 +38,7 @@ const config = loadConfig(process.env.DEVFLOW_CONFIG);
 async function main() {
   if (command === "help") {
     console.log(
-      `DevFlow 本地工作流\n\n  init                         写入示例配置（不覆盖）\n  doctor                       检查运行环境，不调用模型\n  pair                         生成 10 分钟一次性配对文件\n  planner-token                生成 Codex MCP 专用令牌和配置片段\n  project <config.json>        导入受信任项目配置\n  browser-recipe <json>        导入固定 OpenTabs 场景和断言\n  skills <destination>         安装 DevFlow Skill（不覆盖已有目录）\n  backup <directory>           一致性数据库与证据备份\n  verify-backup <directory>    校验备份文件内容哈希\n  recover <workflow-id>        核实退出后恢复已批准工作流排队\n  retry-commit <workflow-id>   重试同一快照的部分提交\n\n服务：npm run build && npm start\n配置：DEVFLOW_CONFIG 环境变量指向 YAML。开发时不启动任何模型。`,
+      `DevFlow 本地工作流\n\n  init                         写入示例配置（不覆盖）\n  doctor                       检查运行环境，不调用模型\n  pair                         旧命令：提示直接打开工作台\n  planner-token                生成 Codex MCP 专用令牌和配置片段\n  project <config.json>        导入受信任项目配置\n  browser-recipe <json>        导入固定 OpenTabs 场景和断言\n  skills <destination>         安装 DevFlow Skill（不覆盖已有目录）\n  backup <directory>           一致性数据库与证据备份\n  verify-backup <directory>    校验备份文件内容哈希\n  recover <workflow-id>        核实退出后恢复已批准工作流排队\n  retry-commit <workflow-id>   重试同一快照的部分提交\n\n服务：npm run build && npm start\n配置：DEVFLOW_CONFIG 环境变量指向 YAML。开发时不启动任何模型。`,
     );
     console.log(
       "\n  schema <kind>                输出 config/project/plan/review/browser-recipe Schema\n  validate-plan <json>         校验计划结构、任务关系及 Mermaid\n  restore <backup> <storage>   恢复到原始且不存在的状态目录\n  archive-logs                压缩过期日志并验证完整性",
@@ -179,12 +178,7 @@ async function main() {
   const engine = new Engine(store, config);
   try {
     if (command === "pair") {
-      const code = engine.auth.setupCode();
-      const path = join(config.storage_root, "pairing-code.txt");
-      atomicWrite(path, code);
-      console.log(
-        `一次性配对码已写入 ${path}，有效期 10 分钟。请在 ${config.server.human_origin} 输入。`,
-      );
+      console.log(`DevFlow 已取消登录和配对，直接打开 ${config.server.human_origin} 即可。`);
     } else if (command === "planner-token") {
       const token = engine.auth.issue({ role: "planner" }, 365 * 86400000);
       const file = join(config.storage_root, "codex-planner-token.txt");

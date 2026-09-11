@@ -1,0 +1,152 @@
+{
+  "workflow": "wf-423dfa2f-ecc5-4828-9d90-8c0d87638728",
+  "run": "gateway-live",
+  "scene_id": "roundtrip",
+  "status": "passed",
+  "cases": [
+    "browser-roundtrip"
+  ],
+  "transcript": [
+    {
+      "tool": "browser_open_tab",
+      "arguments": {
+        "url": "http://127.0.0.1:14816"
+      },
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"id\":948915354,\"title\":\"\",\"url\":\"\",\"windowId\":948914733}"
+          }
+        ]
+      },
+      "time": "2026-09-11T10:54:29.836Z"
+    },
+    {
+      "tool": "browser_get_tab_info",
+      "arguments": {
+        "tabId": 948915354
+      },
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"id\":948915354,\"title\":\"127.0.0.1:14816\",\"url\":\"http://127.0.0.1:14816/\",\"status\":\"loading\",\"active\":true,\"windowId\":948914733,\"favIconUrl\":\"\",\"incognito\":false}"
+          }
+        ]
+      },
+      "time": "2026-09-11T10:54:29.915Z"
+    },
+    {
+      "tool": "browser_wait_for_element",
+      "arguments": {
+        "selector": "#submit",
+        "tabId": 948915354,
+        "visible": true
+      },
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"found\":true,\"tagName\":\"button\",\"text\":\"确认\"}"
+          }
+        ]
+      },
+      "time": "2026-09-11T10:54:30.176Z"
+    },
+    {
+      "tool": "browser_get_tab_info",
+      "arguments": {
+        "tabId": 948915354
+      },
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"id\":948915354,\"title\":\"DevFlow Gateway 验收\",\"url\":\"http://127.0.0.1:14816/\",\"status\":\"complete\",\"active\":true,\"windowId\":948914733,\"favIconUrl\":\"\",\"incognito\":false}"
+          }
+        ]
+      },
+      "time": "2026-09-11T10:54:30.191Z"
+    },
+    {
+      "tool": "browser_type_text",
+      "arguments": {
+        "selector": "#name",
+        "tabId": 948915354,
+        "text": "GATEWAY-LIVE-947620"
+      },
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"typed\":true,\"tagName\":\"input\",\"value\":\"GATEWAY-LIVE-947620\"}"
+          }
+        ]
+      },
+      "time": "2026-09-11T10:54:30.212Z"
+    },
+    {
+      "tool": "browser_get_tab_info",
+      "arguments": {
+        "tabId": 948915354
+      },
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"id\":948915354,\"title\":\"DevFlow Gateway 验收\",\"url\":\"http://127.0.0.1:14816/\",\"status\":\"complete\",\"active\":true,\"windowId\":948914733,\"favIconUrl\":\"\",\"incognito\":false}"
+          }
+        ]
+      },
+      "time": "2026-09-11T10:54:30.234Z"
+    },
+    {
+      "tool": "browser_click_element",
+      "arguments": {
+        "selector": "#submit",
+        "tabId": 948915354
+      },
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"clicked\":true,\"tagName\":\"button\",\"text\":\"确认\"}"
+          }
+        ]
+      },
+      "time": "2026-09-11T10:54:30.302Z"
+    },
+    {
+      "tool": "browser_get_tab_info",
+      "arguments": {
+        "tabId": 948915354
+      },
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"id\":948915354,\"title\":\"DevFlow Gateway 验收\",\"url\":\"http://127.0.0.1:14816/\",\"status\":\"complete\",\"active\":true,\"windowId\":948914733,\"favIconUrl\":\"\",\"incognito\":false}"
+          }
+        ]
+      },
+      "time": "2026-09-11T10:54:30.331Z"
+    },
+    {
+      "tool": "browser_get_tab_content",
+      "arguments": {
+        "selector": "#result",
+        "tabId": 948915354
+      },
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"title\":\"DevFlow Gateway 验收\",\"url\":\"http://127.0.0.1:14816/\",\"content\":\"GATEWAY-LIVE-947620\"}"
+          }
+        ]
+      },
+      "time": "2026-09-11T10:54:30.352Z"
+    }
+  ]
+}

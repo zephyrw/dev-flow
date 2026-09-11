@@ -224,11 +224,18 @@ it("R1 waiting for a browser lease is a retryable precondition and creates no fa
     record.plan.tests[0]!.layer = "opentabs";
     record.plan.tests[0]!.scene_id = "scene-fixture";
     s.store.put("plan", record.id, s.key, record);
-    vi.spyOn(s.runtime.browser, "run").mockRejectedValue(new FlowError("BROWSER_BUSY", "fixture browser lease is occupied"));
-    await expect(s.runtime.check(s.engine.get(s.key), "UT01", s.principal)).rejects.toMatchObject({ code: "BROWSER_BUSY" });
+    vi.spyOn(s.runtime.browser, "run").mockRejectedValue(
+      new FlowError("BROWSER_BUSY", "fixture browser lease is occupied"),
+    );
+    await expect(
+      s.runtime.check(s.engine.get(s.key), "UT01", s.principal),
+    ).rejects.toMatchObject({ code: "BROWSER_BUSY" });
     expect(s.engine.get(s.key).state).toBe("VERIFYING");
     expect(s.store.list("evidence", s.key)).toHaveLength(0);
-  } finally { await s.runtime.close(); s.store.close(); }
+  } finally {
+    await s.runtime.close();
+    s.store.close();
+  }
 });
 
 it.each(["verification", "review"] as const)(
@@ -248,7 +255,10 @@ it.each(["verification", "review"] as const)(
             return gate.promise;
           },
         );
-        pending = s.runtime.prepareVerification(s.engine.get(s.key), s.principal);
+        pending = s.runtime.prepareVerification(
+          s.engine.get(s.key),
+          s.principal,
+        );
       } else {
         s.engine.transition(s.key, ["VERIFYING"], "REVIEWING", "review", {
           review_request_id: "review-fixture",
@@ -268,8 +278,10 @@ it.each(["verification", "review"] as const)(
         code: "RUN_REVOKED",
       });
       await entered.promise;
-      await s.engine.stop(s.key);
+      const stopping = s.engine.stop(s.key);
+      expect(s.engine.get(s.key).state).toBe("STOPPING");
       gate.resolve([]);
+      await stopping;
       await rejected;
       expect(start).not.toHaveBeenCalled();
       expect(s.engine.get(s.key).state).toBe("STOPPED");
@@ -310,6 +322,14 @@ it.each(["success", "failure"] as const)(
     const gate = deferred<any>();
     const entered = deferred<void>();
     const settled = deferred<void>();
+    // This fixture deliberately does not create a Git repository. Provide the
+    // same validated identity that production now checks before preparation.
+    vi.spyOn(gitModule, "repositoryInfo").mockResolvedValue({
+      path: s.repo,
+      common_dir: s.repo,
+      head: "a".repeat(40),
+      branch: "task/fixture",
+    });
     const nativeDispatch = s.engine.dispatch.bind(s.engine);
     const nativeRelease = s.engine.scheduler.release.bind(s.engine.scheduler);
     vi.spyOn(s.engine, "dispatch").mockResolvedValue();
