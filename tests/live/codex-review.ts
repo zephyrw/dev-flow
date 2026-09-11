@@ -35,8 +35,9 @@ const config = ConfigSchema.parse({
 const store = new Store(join(config.storage_root, "devflow.sqlite")),
   engine = new Engine(store, config),
   runtime = new LocalRuntime(engine);
+const original = engine.get(summary.workflow_id);
 const flow = {
-  ...engine.get(summary.workflow_id),
+  ...original,
   review_request_id: "review-live-" + crypto.randomUUID(),
 };
 const run = {
@@ -56,6 +57,13 @@ store.on("event", (event) => {
     console.log(redact(JSON.stringify(event.payload)));
 });
 try {
+  // Run identity is now checked against persisted state. This isolated adapter
+  // fixture sets REVIEWING explicitly without recording human acceptance.
+  store.put("workflow", flow.id, flow.project_id, {
+    ...flow,
+    state: "REVIEWING",
+    run_id: run.id,
+  });
   const report = ReviewSchema.parse(await runtime.review(flow, run));
   requireCondition(
     report.workflow_id === flow.id &&
@@ -64,6 +72,7 @@ try {
     "REVIEW_IDENTITY",
     "复核身份不匹配",
   );
+  store.put("workflow", original.id, original.project_id, original);
   writeFileSync(join(output, "review.json"), JSON.stringify(report, null, 2));
   writeFileSync(
     join(output, "events.json"),
@@ -81,7 +90,7 @@ try {
         no_human_acceptance_created:
           engine.get(flow.id).state === "HUMAN_PENDING",
         fixture_only: true,
-        simulated_webauthn_acceptance: acceptedE2E,
+        local_ui_acceptance: acceptedE2E,
         output,
       },
       null,
@@ -104,6 +113,7 @@ try {
     join(output, "processes.json"),
     JSON.stringify(store.list("process_record", flow.id), null, 2),
   );
+  store.put("workflow", original.id, original.project_id, original);
   await runtime.close();
   store.close();
 }

@@ -23,7 +23,16 @@ if (![string]::Equals([IO.Path]::GetFullPath($record.entry), $expectedEntry, [St
 }
 $ownedProcess = Get-Process -Id $record.pid -ErrorAction SilentlyContinue
 if (!$ownedProcess) { return }
-if ($ownedProcess.StartTime.ToUniversalTime().Ticks -ne ([DateTimeOffset]::Parse($record.started)).UtcTicks -or
+# PowerShell 7 converts ISO JSON dates to DateTime; Windows PowerShell keeps
+# strings. Parsing the former through ToString loses fractional seconds/zone.
+$recordedStartTicks = if ($record.started -is [DateTimeOffset]) {
+  $record.started.UtcTicks
+} elseif ($record.started -is [DateTime]) {
+  $record.started.ToUniversalTime().Ticks
+} else {
+  ([DateTimeOffset]::Parse([string]$record.started)).UtcTicks
+}
+if ($ownedProcess.StartTime.ToUniversalTime().Ticks -ne $recordedStartTicks -or
     ![string]::Equals($ownedProcess.Path, $record.executable, [StringComparison]::OrdinalIgnoreCase)) {
   throw '进程编号已被复用或记录不匹配，未停止任何程序。'
 }

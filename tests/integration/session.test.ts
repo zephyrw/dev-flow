@@ -1,69 +1,170 @@
 import { it, expect } from "vitest";
 import { once } from "node:events";
-import { setup } from "../helpers.js";
+import { setup, project, plan } from "../helpers.js";
 import { buildServer } from "../../apps/api/src/server.js";
+import { objectHash } from "../../packages/core/src/util.js";
+const headers = { host: "localhost:14810", origin: "http://localhost:14810" };
 
-it("logout revokes the copied cookie and closes both authenticated event channels", async () => {
+it("local console opens without pairing, cookies or login, including old credentials", async () => {
   const s = setup();
+  s.store.put("credential", "old", "human", { publicKey: "unused" });
   const app = await buildServer(s.engine);
-  const token = s.engine.auth.issue({ role: "human" });
-  const headers = {
-    host: "localhost:14810",
-    origin: "http://localhost:14810",
-    cookie: `devflow_session=${token}`,
-  };
-  await app.ready();
-  const events = await app.injectWS("/api/events?workflow_id=wf-session", {
-    headers,
-  });
-  const notifications = await app.injectWS("/api/notifications", { headers });
   try {
-    expect(
-      (await app.inject({ url: "/api/projects", headers })).statusCode,
-    ).toBe(200);
-    const closed = [once(events, "close"), once(notifications, "close")];
-    const response = await app.inject({
-      method: "POST",
-      url: "/api/auth/logout",
-      headers,
-      payload: {},
-    });
-    expect(response.statusCode).toBe(200);
-    for (const [code] of await Promise.all(closed)) expect(code).toBe(1008);
-    expect(
-      (await app.inject({ url: "/api/projects", headers })).statusCode,
-    ).toBe(401);
-    expect(() => s.engine.auth.verify(token)).toThrow(/失效/);
+    for (const cookie of [undefined, "devflow_session=expired"]) {
+      const response = await app.inject({
+        url: "/api/projects",
+        headers: { host: headers.host, ...(cookie ? { cookie } : {}) },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.headers["set-cookie"]).toBeUndefined();
+    }
+    for (const path of [
+      "status",
+      "register/options",
+      "register/verify",
+      "challenge",
+      "verify",
+      "logout",
+    ]) {
+      const response = await app.inject({
+        method: path === "status" ? "GET" : "POST",
+        url: "/api/auth/" + path,
+        headers,
+        ...(path === "status" ? {} : { payload: {} }),
+      });
+      expect(response.statusCode).toBe(404);
+    }
     expect(
       (
         await app.inject({
           method: "POST",
-          url: "/api/auth/logout",
-          headers,
+          url: "/mcp",
+          headers: { host: headers.host },
           payload: {},
         })
       ).statusCode,
-    ).toBe(200);
+    ).toBe(401);
   } finally {
-    events.terminate();
-    notifications.terminate();
     await app.close();
     s.store.close();
   }
 });
 
-it("an idle event connection closes when the human session expires", async () => {
+it("button approval binds the viewed version, rejects foreign pages and repeated submissions", async () => {
+  const s = setup(),
+    p = project(".");
+  s.store.put("project", p.id, p.id, p);
+  const w = s.engine.create(
+    {
+      project_id: p.id,
+      title: "local approval",
+      request: "fixture",
+      complexity: "simple",
+      workspace_mode: "new_worktree",
+    },
+    "local",
+  );
+  s.engine.submitPlan(
+    w.id,
+    plan(objectHash(p), "a".repeat(40)),
+    w.version,
+    "p1",
+  );
+  const app = await buildServer(s.engine);
+  const url = `/api/workflows/${w.id}/approve`;
+  const original = s.engine.binding(w.id, "approve");
+  try {
+    for (const extra of [
+      { origin: "http://evil.example" },
+      { origin: "null" },
+      { origin: "http://localhost:9999" },
+      { "sec-fetch-site": "cross-site" },
+      { authorization: "Bearer model-token" },
+    ]) {
+      expect(
+        (
+          await app.inject({
+            method: "POST",
+            url,
+            headers: { ...headers, ...extra },
+            payload: { binding: original },
+          })
+        ).statusCode,
+      ).toBe(403);
+    }
+    expect(
+      (
+        await app.inject({
+          method: "POST",
+          url,
+          headers: { host: headers.host },
+          payload: { binding: original },
+        })
+      ).statusCode,
+    ).toBe(403);
+    expect(s.engine.get(w.id).state).toBe("PLAN_PENDING");
+    s.engine.submitPlan(
+      w.id,
+      plan(objectHash(p), "a".repeat(40)),
+      s.engine.get(w.id).version,
+      "p2",
+    );
+    const stale = await app.inject({
+      method: "POST",
+      url,
+      headers,
+      payload: { binding: original },
+    });
+    expect(stale.json().error.code).toBe("BINDING_CHANGED");
+    expect(s.store.list("human_proof")).toEqual([]);
+    const binding = s.engine.binding(w.id, "approve");
+    expect(
+      (await app.inject({ method: "POST", url, headers, payload: { binding } }))
+        .statusCode,
+    ).toBe(200);
+    expect(s.engine.get(w.id).state).toBe("QUEUED");
+    expect(
+      (await app.inject({ method: "POST", url, headers, payload: { binding } }))
+        .statusCode,
+    ).not.toBe(200);
+    expect(s.store.list("approval", w.id)).toHaveLength(1);
+    expect(s.store.list("human_proof")).toEqual([]);
+  } finally {
+    await app.close();
+    s.store.close();
+  }
+});
+
+it("event streams work without login and reject missing or foreign Origin at upgrade", async () => {
   const s = setup();
   const app = await buildServer(s.engine);
   await app.ready();
-  const token = s.engine.auth.issue({ role: "human" }, 500);
-  const socket = await app.injectWS("/api/notifications", {
-    headers: { host: "localhost:14810", cookie: `devflow_session=${token}` },
-  });
+  const socket = await app.injectWS("/api/notifications", { headers });
   try {
-    const [code] = await once(socket, "close");
-    expect(code).toBe(1008);
-    expect(() => s.engine.auth.verify(token)).toThrow(/过期/);
+    const incoming = once(socket, "message");
+    s.store.event("wf-local", "p", "StateChanged", { to: "HUMAN_PENDING" });
+    expect(JSON.parse(String((await incoming)[0])).workflow_id).toBe(
+      "wf-local",
+    );
+    for (const origin of [undefined, "http://evil.example"]) {
+      const response = await app.inject({
+        url: "/api/notifications",
+        headers: {
+          host: headers.host,
+          upgrade: "websocket",
+          ...(origin ? { origin } : {}),
+        },
+      });
+      expect(response.statusCode).toBe(403);
+    }
+    expect(
+      (
+        await app.inject({
+          url: "/api/workflows",
+          headers: { host: headers.host, "sec-fetch-site": "same-site" },
+        })
+      ).statusCode,
+    ).toBe(403);
   } finally {
     socket.terminate();
     await app.close();

@@ -1,9 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import {
-  startAuthentication,
-  startRegistration,
-} from "@simplewebauthn/browser";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import mermaid from "mermaid";
@@ -96,28 +92,24 @@ function Document({ text }: { text: string }) {
   );
 }
 function App() {
-  const [auth, setAuth] = useState<any>(null),
-    [error, setError] = useState(""),
+  const [error, setError] = useState(""),
     [notice, setNotice] = useState(""),
     [projects, setProjects] = useState<any[]>([]),
     [flows, setFlows] = useState<any[]>([]),
-    [selected, setSelected] = useState(() => new URLSearchParams(location.search).get("workflow") ?? ""),
+    [selected, setSelected] = useState(
+      () => new URLSearchParams(location.search).get("workflow") ?? "",
+    ),
     [detail, setDetail] = useState<any>(null),
     [tab, setTab] = useState("overview"),
     [modal, setModal] = useState(""),
     [text, setText] = useState(""),
-    [code, setCode] = useState(""),
     [pending, setPending] = useState(false),
     [scope, setScope] = useState("within_plan"),
     [diff, setDiff] = useState<any[]>([]);
   useEffect(() => {
-    const query = new URLSearchParams(location.hash.slice(1));
-    const pairing = query.get("pair");
-    if (pairing) { setCode(pairing); history.replaceState(null, "", location.pathname + location.search); }
-  }, []);
-  useEffect(() => {
     const url = new URL(location.href);
-    if (selected) url.searchParams.set("workflow", selected); else url.searchParams.delete("workflow");
+    if (selected) url.searchParams.set("workflow", selected);
+    else url.searchParams.delete("workflow");
     history.replaceState(null, "", url);
   }, [selected]);
   const eventCursor = useRef(0);
@@ -167,15 +159,9 @@ function App() {
     }
   };
   useEffect(() => {
-    void api("/auth/status")
-      .then(setAuth)
-      .catch((e) => setError(String(e)));
-  }, []);
+    void refresh().catch((e) => setError(String(e)));
+  }, [selected]);
   useEffect(() => {
-    if (auth?.authenticated) void refresh().catch((e) => setError(String(e)));
-  }, [auth?.authenticated, selected]);
-  useEffect(() => {
-    if (!auth?.authenticated) return;
     let disposed = false,
       socket: WebSocket,
       retry: ReturnType<typeof setTimeout>,
@@ -213,9 +199,9 @@ function App() {
       clearTimeout(debounce);
       socket?.close();
     };
-  }, [auth?.authenticated]);
+  }, []);
   useEffect(() => {
-    if (!selected || !auth?.authenticated) return;
+    if (!selected) return;
     eventCursor.current = 0;
     eventBuffer.current = [];
     let ws: WebSocket,
@@ -273,49 +259,22 @@ function App() {
       clearTimeout(refreshTimer);
       ws?.close();
     };
-  }, [selected, auth?.authenticated]);
-  const login = async () => {
-    const c = await api("/auth/challenge", { action: "login" });
-    const response = await startAuthentication({ optionsJSON: c.options });
-    await api("/auth/verify", {
-      id: c.id,
-      action: "login",
-      binding: c.binding,
-      response,
-    });
-    setAuth(await api("/auth/status"));
-  };
-  const register = async () => {
-    const c = await api("/auth/register/options", { code });
-    const response = await startRegistration({ optionsJSON: c.options });
-    await api("/auth/register/verify", { id: c.id, code, response });
-    setCode("");
-    setAuth(await api("/auth/status"));
-  };
+  }, [selected]);
   const approve = async (action: "approve" | "accept") => {
-    const c = await api("/auth/challenge", { action, workflow_id: selected });
     const viewed = detail?.workflow;
-    if (
-      !viewed ||
-      viewed.id !== selected ||
-      c.binding.version !== viewed.version ||
-      c.binding.plan_hash !== (viewed.plan_hash ?? null) ||
-      c.binding.snapshot_id !== (viewed.snapshot_id ?? null) ||
-      c.binding.environment_revision !== viewed.environment_revision
-    ) {
-      await refresh();
-      throw Error("计划或验收对象已更新，请查看最新内容后重新确认。");
-    }
-    const response = await startAuthentication({ optionsJSON: c.options });
-    const { proof } = await api("/auth/verify", {
-      id: c.id,
-      action,
-      binding: c.binding,
-      response,
-    });
+    if (!viewed || viewed.id !== selected)
+      throw Error("请先打开计划或验收内容。");
     await api(`/workflows/${selected}/${action}`, {
-      proof,
-      binding: c.binding,
+      binding: {
+        workflow_id: selected,
+        action,
+        version: viewed.version,
+        plan_revision: viewed.plan_revision,
+        plan_hash: viewed.plan_hash ?? null,
+        snapshot_id: viewed.snapshot_id ?? null,
+        environment_revision: viewed.environment_revision,
+        extra: {},
+      },
     });
     await refresh();
     setNotice(
@@ -324,70 +283,6 @@ function App() {
         : "验收已记录，将启动独立复核。",
     );
   };
-  if (!auth) return <main className="loading">正在打开 DevFlow…</main>;
-  if (!auth.authenticated)
-    return (
-      <div className="login-layout">
-        <section className="intro">
-          <div className="brand">
-            <span className="mark">D</span> DevFlow
-          </div>
-          <p className="eyebrow">你的本地开发工作台</p>
-          <h1>
-            把计划变成
-            <br />
-            有证据的交付。
-          </h1>
-          <p>
-            GPT-6 规划与复核 · Gemini 实施与测试
-            <br />
-            你掌握每一次批准、验收与停止。
-          </p>
-          <div className="intro-line">
-            计划批准 <span>→</span> 实施测试 <span>→</span> 你的验收{" "}
-            <span>→</span> 复核提交
-          </div>
-        </section>
-        <section className="login-card">
-          <p className="eyebrow">本机安全连接</p>
-          <h2>{auth.paired ? "欢迎回来" : "连接你的工作台"}</h2>
-          <p>
-            {auth.paired
-              ? "使用通行密钥确认身份。批准计划和验收时会再次确认。"
-              : "双击“打开 DevFlow”会自动填入首次配对码。点击下方按钮创建通行密钥，用于你亲自批准和验收。"}
-          </p>
-          {!auth.paired && (
-            <label>
-              配对码
-              <input
-                aria-label="配对码"
-                type="password"
-                value={code}
-                onChange={(e) => setCode(e.target.value)}
-                autoComplete="off"
-              />
-            </label>
-          )}
-          <button
-            className="primary"
-            disabled={pending || (!auth.paired && !code)}
-            onClick={() => void attempt(auth.paired ? login : register)}
-          >
-            {pending
-              ? "等待身份验证…"
-              : auth.paired
-                ? "使用通行密钥登录"
-                : "配对并创建通行密钥"}
-          </button>
-          {error && (
-            <div role="alert" className="error">
-              {error}
-            </div>
-          )}
-          <small>工作台仅在本机提供服务。配对码不会写入项目。</small>
-        </section>
-      </div>
-    );
   const w = detail?.workflow.id === selected ? detail.workflow : undefined;
   const counts = {
     active: flows.filter((f) =>
@@ -443,16 +338,6 @@ function App() {
               ? "实时连接已建立"
               : "正在连接事件流"
             : "本机工作台"}
-          <button
-            onClick={() =>
-              void attempt(async () => {
-                await api("/auth/logout", {});
-                setAuth(await api("/auth/status"));
-              })
-            }
-          >
-            退出
-          </button>
         </div>
       </aside>
       <main>
@@ -520,14 +405,14 @@ function App() {
                 <div className="empty">
                   <span>◇</span>
                   <h3>从一个明确的需求开始</h3>
-                  <p>先登记项目，再创建工作流。批准计划后才会开始修改代码。</p>
+                  <p>在 Codex 的业务项目中说“用 DevFlow 帮我……”即可开始。计划批准后，这里会显示执行进度。</p>
                   <button
                     onClick={() => {
-                      setModal("project");
+                      setModal("usage");
                       setText("{}");
                     }}
                   >
-                    登记第一个项目
+                    查看开始方式
                   </button>
                 </div>
               ) : (
@@ -773,12 +658,31 @@ function App() {
                   </div>
                   {detail.plan ? (
                     <>
-                    <Document text={detail.plan.plan.markdown} />
-                    <details><summary>本计划使用的运行配置</summary>
-                      <p>工作目录：{w.workspace_mode === "new_worktree" ? "独立 worktree" : "当前目录"}；测试数据：{detail.project?.data.mode === "directory" ? "按任务独立目录" : "共享数据按资源排队"}</p>
-                      {detail.project?.repositories.map((r: any) => <p key={r.id}>{r.id}：{detail.context?.roots?.[r.id] ?? r.path}</p>)}
-                      {detail.project?.commands.map((c: any) => <p key={c.id}>{c.id}：<code>{[c.executable, ...c.args].join(" ")}</code></p>)}
-                    </details>
+                      <Document text={detail.plan.plan.markdown} />
+                      <details>
+                        <summary>本计划使用的运行配置</summary>
+                        <p>
+                          工作目录：
+                          {w.workspace_mode === "new_worktree"
+                            ? "独立 worktree"
+                            : "当前目录"}
+                          ；测试数据：
+                          {detail.project?.data.mode === "directory"
+                            ? "按任务独立目录"
+                            : "共享数据按资源排队"}
+                        </p>
+                        {detail.project?.repositories.map((r: any) => (
+                          <p key={r.id}>
+                            {r.id}：{detail.context?.roots?.[r.id] ?? r.path}
+                          </p>
+                        ))}
+                        {detail.project?.commands.map((c: any) => (
+                          <p key={c.id}>
+                            {c.id}：
+                            <code>{[c.executable, ...c.args].join(" ")}</code>
+                          </p>
+                        ))}
+                      </details>
                     </>
                   ) : (
                     <div className="empty">
@@ -1085,30 +989,68 @@ function App() {
       </main>
       {modal && (
         <div className="modal-backdrop">
-          <section className="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+          <section
+            className="modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="modal-title"
+          >
             <div className="section-title">
-              <h2 id="modal-title">{modal === "usage" ? "开始一个新任务" : "反馈问题"}</h2>
+              <h2 id="modal-title">
+                {modal === "usage" ? "开始一个新任务" : "反馈问题"}
+              </h2>
               <button onClick={() => setModal("")}>关闭</button>
             </div>
-            {modal === "usage" ? <>
-              <p>在 Codex 打开你的业务项目，新建任务，说出需求即可：</p>
-              <blockquote>用 DevFlow 帮我修复客户列表筛选的问题。</blockquote>
-              <p>首次接入由 Codex 自动调查。它会给你计划审批链接；批准以后，在这里看实时日志、停止任务和实操验收。</p>
-              <p>继续已有任务：在左侧打开原任务。电脑重启后双击“打开 DevFlow”，无需重新接入项目。</p>
-            </> : <>
-              <p>说明实际操作、观察到的问题和期望结果。</p>
-              <label>这次反馈属于
-                <select value={scope} onChange={e => setScope(e.target.value)}>
-                  <option value="within_plan">原需求尚未做好</option>
-                  <option value="new_scope">我想增加或改变需求</option>
-                </select>
-              </label>
-              <textarea aria-label="问题反馈" rows={8} value={text} onChange={e => setText(e.target.value)} />
-              <button className="primary" disabled={pending || !text.trim()} onClick={() => void attempt(async () => {
-                await api(`/workflows/${selected}/feedback`, { text, scope });
-                setModal(""); await refresh();
-              })}>保存并继续</button>
-            </>}
+            {modal === "usage" ? (
+              <>
+                <p>在 Codex 打开你的业务项目，新建任务，说出需求即可：</p>
+                <blockquote>用 DevFlow 帮我修复客户列表筛选的问题。</blockquote>
+                <p>
+                  首次接入由 Codex
+                  自动调查。它会给你计划审批链接；批准以后，在这里看实时日志、停止任务和实操验收。
+                </p>
+                <p>
+                  继续已有任务：在左侧打开原任务。电脑重启后双击“打开
+                  DevFlow”，无需重新接入项目。
+                </p>
+              </>
+            ) : (
+              <>
+                <p>说明实际操作、观察到的问题和期望结果。</p>
+                <label>
+                  这次反馈属于
+                  <select
+                    value={scope}
+                    onChange={(e) => setScope(e.target.value)}
+                  >
+                    <option value="within_plan">原需求尚未做好</option>
+                    <option value="new_scope">我想增加或改变需求</option>
+                  </select>
+                </label>
+                <textarea
+                  aria-label="问题反馈"
+                  rows={8}
+                  value={text}
+                  onChange={(e) => setText(e.target.value)}
+                />
+                <button
+                  className="primary"
+                  disabled={pending || !text.trim()}
+                  onClick={() =>
+                    void attempt(async () => {
+                      await api(`/workflows/${selected}/feedback`, {
+                        text,
+                        scope,
+                      });
+                      setModal("");
+                      await refresh();
+                    })
+                  }
+                >
+                  保存并继续
+                </button>
+              </>
+            )}
             {error && <div className="error">{error}</div>}
           </section>
         </div>

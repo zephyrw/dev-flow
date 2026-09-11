@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "review_request_id": "review-live-ec38927a-b3e9-45e3-b02a-f80b66c9df98",
+  "workflow_id": "wf-b93b7de8-0821-4267-bcb4-3e82c35421af",
+  "plan_revision": 1,
+  "snapshot_id": "396abb46d9db5647c6cecf96e8446dbbbcefd706669d9755bc46ca8afc4c7949",
+  "verdict": "pass",
+  "coverage": {
+    "all_changed_files_reviewed": true,
+    "all_requirements_checked": true,
+    "upstream_downstream_checked": true,
+    "security_checked": true,
+    "tests_validity_checked": true,
+    "files": [
+      "main:app.txt",
+      "main:verify.cjs",
+      "main:.gitignore"
+    ]
+  },
+  "findings": [],
+  "unresolved_questions": [],
+  "repair_plan": null,
+  "commit_message": "fix: 将 app.txt 内容更新为 after 并保留换行"
+}

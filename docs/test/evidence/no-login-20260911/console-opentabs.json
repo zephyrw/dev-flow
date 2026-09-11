@@ -1,0 +1,137 @@
+[
+  {
+    "name": "browser_open_tab",
+    "args": {
+      "url": "http://localhost:4810"
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"id\":948915374,\"title\":\"\",\"url\":\"\",\"windowId\":948914733}"
+        }
+      ]
+    }
+  },
+  {
+    "name": "browser_wait_for_element",
+    "args": {
+      "tabId": 948915374,
+      "selector": "h1",
+      "visible": true
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"found\":true,\"tagName\":\"h1\",\"text\":\"工作流总览\"}"
+        }
+      ]
+    }
+  },
+  {
+    "name": "browser_get_tab_content",
+    "args": {
+      "tabId": 948915374,
+      "selector": "body"
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"title\":\"DevFlow · 开发工作台\",\"url\":\"http://localhost:4810/\",\"content\":\"D\\nDevFlow\\n◫ 工作流总览\\n项目\\n本机工作台\\n\\n开发工作台\\n\\n工作流总览\\n\\n多项目并行推进，重要决定由你掌握。\\n\\n如何开始新任务\\n正在运行\\n0\\n实施、测试与复核\\n等待你处理\\n0\\n计划批准与实际验收\\n已完成提交\\n0\\n完整通过交付检查\\n全部工作流\\n0 个工作流\\n◇\\n从一个明确的需求开始\\n\\n在 Codex 的业务项目中说“用 DevFlow 帮我……”即可开始。计划批准后，这里会显示执行进度。\\n\\n查看开始方式\"}"
+        }
+      ]
+    }
+  },
+  {
+    "name": "browser_screenshot_tab",
+    "args": {
+      "tabId": 948915374,
+      "filePath": "D:\\Code\\system-handle\\.cache\\console-no-login.png"
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"savedTo\":\"D:\\\\Code\\\\system-handle\\\\.cache\\\\console-no-login.png\",\"bytes\":65229}"
+        }
+      ]
+    }
+  },
+  {
+    "name": "browser_click_element",
+    "args": {
+      "tabId": 948915374,
+      "selector": ".empty button"
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"clicked\":true,\"tagName\":\"button\",\"text\":\"查看开始方式\"}"
+        }
+      ]
+    }
+  },
+  {
+    "name": "browser_wait_for_element",
+    "args": {
+      "tabId": 948915374,
+      "selector": ".modal",
+      "visible": true
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"found\":true,\"tagName\":\"section\",\"text\":\"开始一个新任务关闭在 Codex 打开你的业务项目，新建任务，说出需求即可：用 DevFlow 帮我修复客户列表筛选的问题。首次接入由 Codex 自动调查。它会给你计划审批链接；批准以后，在这里看实时日志、停止任务和实操验收。继续已有任务：在左侧打开原任务。电脑重启后双击“打开 DevFlow”，无需重新接入项目。\"}"
+        }
+      ]
+    }
+  },
+  {
+    "name": "browser_get_tab_content",
+    "args": {
+      "tabId": 948915374,
+      "selector": ".modal"
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"title\":\"DevFlow · 开发工作台\",\"url\":\"http://localhost:4810/\",\"content\":\"开始一个新任务\\n关闭\\n\\n在 Codex 打开你的业务项目，新建任务，说出需求即可：\\n\\n用 DevFlow 帮我修复客户列表筛选的问题。\\n\\n首次接入由 Codex 自动调查。它会给你计划审批链接；批准以后，在这里看实时日志、停止任务和实操验收。\\n\\n继续已有任务：在左侧打开原任务。电脑重启后双击“打开 DevFlow”，无需重新接入项目。\"}"
+        }
+      ]
+    }
+  },
+  {
+    "name": "browser_screenshot_tab",
+    "args": {
+      "tabId": 948915374,
+      "filePath": "D:\\Code\\system-handle\\.cache\\console-start-help.png"
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"savedTo\":\"D:\\\\Code\\\\system-handle\\\\.cache\\\\console-start-help.png\",\"bytes\":89613}"
+        }
+      ]
+    }
+  },
+  {
+    "name": "browser_close_tab",
+    "args": {
+      "tabId": 948915374
+    },
+    "result": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"ok\":true}"
+        }
+      ]
+    }
+  }
+]

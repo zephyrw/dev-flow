@@ -26,13 +26,11 @@ test("continuous WebSocket output becomes visible before the stream ends and sur
   await page.route("**/api/**", async (route) => {
     const path = new URL(route.request().url()).pathname;
     const data =
-      path === "/api/auth/status"
-        ? { authenticated: true, paired: true }
-        : path === "/api/projects"
-          ? [{ id: "p1", name: "日志测试" }]
-          : path === "/api/workflows"
-            ? [workflow]
-            : detail;
+      path === "/api/projects"
+        ? [{ id: "p1", name: "日志测试" }]
+        : path === "/api/workflows"
+          ? [workflow]
+          : detail;
     await route.fulfill({ json: data });
   });
   let timer: ReturnType<typeof setInterval> | undefined;

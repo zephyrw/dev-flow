@@ -1,0 +1,11 @@
+{
+  "passed": true,
+  "local_url": "http://localhost:4810",
+  "initial_pid": 34524,
+  "restarted_pid": 42116,
+  "concurrent_start_single_instance": true,
+  "no_login_required": true,
+  "workflow_data_retained": true,
+  "workflow_count_at_probe": 0,
+  "scope": "startup, concurrent-start deduplication and process restart on the empty installed controller"
+}

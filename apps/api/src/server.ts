@@ -1,5 +1,4 @@
 import Fastify from "fastify";
-import cookie from "@fastify/cookie";
 import websocket from "@fastify/websocket";
 import staticPlugin from "@fastify/static";
 import { existsSync, readFileSync } from "node:fs";
@@ -22,36 +21,17 @@ import {
 } from "../../../packages/runtime/src/recovery.js";
 export async function buildServer(engine: Engine) {
   const app = Fastify({ logger: false, bodyLimit: 8 * 1024 * 1024 });
-  await app.register(cookie);
   await app.register(websocket, { options: { maxPayload: 65536 } });
   const origin = new URL(engine.config.server.human_origin);
+  // The console trusts the current local user. Model bearer tokens only belong
+  // to MCP/worker routes; they must never authorize a console action.
   const human = (request: any) =>
-    engine.auth.verify(request.cookies.devflow_session, "human");
-  const sessionSockets = new Map<string, Set<any>>();
-  const attachHumanSocket = (socket: any, request: any) => {
-    let principal;
-    try {
-      principal = human(request);
-    } catch {
-      socket.close(1008, "Unauthorized");
-      return false;
-    }
-    const key = hash(request.cookies.devflow_session);
-    const sockets = sessionSockets.get(key) ?? new Set<any>();
-    sockets.add(socket);
-    sessionSockets.set(key, sockets);
-    const timer = setTimeout(
-      () => socket.close(1008, "Session expired"),
-      principal.expires - Date.now(),
+    requireCondition(
+      !request.headers.authorization,
+      "FORBIDDEN",
+      "模型令牌不能调用控制台操作",
+      403,
     );
-    timer.unref();
-    socket.once("close", () => {
-      clearTimeout(timer);
-      sockets.delete(socket);
-      if (!sockets.size) sessionSockets.delete(key);
-    });
-    return true;
-  };
   app.addHook("onRequest", async (req, reply) => {
     const host = req.headers.host;
     requireCondition(
@@ -65,6 +45,22 @@ export async function buildServer(engine: Engine) {
         req.headers.origin === origin.origin,
         "ORIGIN_DENIED",
         "Origin 不匹配",
+        403,
+      );
+    if (req.url.startsWith("/api/")) {
+      const site = req.headers["sec-fetch-site"];
+      requireCondition(
+        !site || site === "same-origin" || site === "none",
+        "FETCH_SITE_DENIED",
+        "控制台接口只接受本机同源访问",
+        403,
+      );
+    }
+    if (req.headers.upgrade?.toLowerCase() === "websocket")
+      requireCondition(
+        req.headers.origin === origin.origin,
+        "ORIGIN_DENIED",
+        "事件流需要同源连接",
         403,
       );
     if (
@@ -82,6 +78,8 @@ export async function buildServer(engine: Engine) {
     reply
       .header("X-Content-Type-Options", "nosniff")
       .header("Referrer-Policy", "no-referrer")
+      .header("Cross-Origin-Resource-Policy", "same-origin")
+      .header("Cache-Control", "no-store")
       .header(
         "Content-Security-Policy",
         "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'",
@@ -109,103 +107,12 @@ export async function buildServer(engine: Engine) {
     });
     if (status === 500) console.error(error);
   });
-  app.get("/api/health", async () => ({ ok: true, version: "0.2.0", service: "devflow",
-    instance: hash(resolve(engine.config.storage_root).toLowerCase()) }));
-  app.get("/api/auth/status", async (req) => {
-    let authenticated = false;
-    try {
-      human(req);
-      authenticated = true;
-    } catch {}
-    return {
-      paired: engine.store.list("credential").length > 0,
-      authenticated,
-      origin: origin.origin,
-    };
-  });
-  app.post("/api/auth/register/options", async (req) => {
-    const body = z.object({ code: z.string() }).parse(req.body);
-    return engine.auth.registrationOptions(body.code);
-  });
-  app.post("/api/auth/register/verify", async (req, reply) => {
-    const body = z
-      .object({ id: Id, code: z.string(), response: z.any() })
-      .parse(req.body);
-    const token = await engine.auth.register(body.id, body.code, body.response);
-    reply.setCookie("devflow_session", token, {
-      httpOnly: true,
-      sameSite: "strict",
-      path: "/",
-      maxAge: 43200,
-      secure: origin.protocol === "https:",
-    });
-    return { ok: true };
-  });
-  app.post("/api/auth/challenge", async (req) => {
-    const b = z
-      .object({
-        action: z.enum(["login", "approve", "accept"]),
-        workflow_id: Id.optional(),
-      })
-      .parse(req.body);
-    if (b.action !== "login") human(req);
-    const binding =
-      b.action === "login"
-        ? { action: "login" }
-        : engine.binding(b.workflow_id!, b.action);
-    return {
-      ...(await engine.auth.authenticationOptions(b.action, binding)),
-      binding,
-    };
-  });
-  app.post("/api/auth/verify", async (req, reply) => {
-    const b = z
-      .object({
-        id: Id,
-        action: z.enum(["login", "approve", "accept"]),
-        binding: z.unknown(),
-        response: z.any(),
-      })
-      .parse(req.body);
-    if (b.action !== "login") human(req);
-    const proof = await engine.auth.assertion(
-      b.id,
-      b.action,
-      b.binding,
-      b.response,
-    );
-    if (b.action === "login") {
-      engine.auth.consumeProof(proof, "login", { action: "login" });
-      reply.setCookie(
-        "devflow_session",
-        engine.auth.issue({ role: "human" }, 43200000),
-        {
-          httpOnly: true,
-          sameSite: "strict",
-          path: "/",
-          maxAge: 43200,
-          secure: origin.protocol === "https:",
-        },
-      );
-    }
-    return { proof };
-  });
-  app.post("/api/auth/logout", async (req, reply) => {
-    const token = req.cookies.devflow_session;
-    if (token) {
-      // Logout remains idempotent for missing or expired browser credentials.
-      let valid = false;
-      try {
-        human(req);
-        valid = true;
-      } catch {}
-      if (valid) engine.auth.revoke(token);
-      for (const socket of sessionSockets.get(hash(token)) ?? [])
-        socket.close(1008, "Logged out");
-    }
-    reply.clearCookie("devflow_session", { path: "/" });
-    return { ok: true };
-  });
+  app.get("/api/health", async () => ({
+    ok: true,
+    version: "0.2.0",
+    service: "devflow",
+    instance: hash(resolve(engine.config.storage_root).toLowerCase()),
+  }));
   app.get("/api/projects", async (req) => {
     human(req);
     return engine.store.list("project");
@@ -325,25 +232,35 @@ export async function buildServer(engine: Engine) {
   });
   app.post("/api/workflows/:id/approve", async (req) => {
     human(req);
-    const b = z.object({ proof: Id, binding: z.unknown() }).parse(req.body);
-    const result = engine.approve(
-      Id.parse((req.params as any).id),
-      b.proof,
-      b.binding,
-    );
-    void engine.dispatch();
-    return result;
+    const b = z
+      .object({ binding: z.record(z.string(), z.unknown()) })
+      .strict()
+      .parse(req.body);
+    const key = Id.parse((req.params as any).id);
+    const receipt = engine.auth.recordConfirmation("approve", b.binding);
+    try {
+      const result = engine.approve(key, receipt, b.binding);
+      void engine.dispatch();
+      return result;
+    } finally {
+      engine.store.remove("human_proof", receipt);
+    }
   });
   app.post("/api/workflows/:id/accept", async (req) => {
     human(req);
-    const b = z.object({ proof: Id, binding: z.unknown() }).parse(req.body);
-    const result = await engine.accept(
-      Id.parse((req.params as any).id),
-      b.proof,
-      b.binding,
-    );
-    void engine.dispatch();
-    return result;
+    const b = z
+      .object({ binding: z.record(z.string(), z.unknown()) })
+      .strict()
+      .parse(req.body);
+    const key = Id.parse((req.params as any).id);
+    const receipt = engine.auth.recordConfirmation("accept", b.binding);
+    try {
+      const result = await engine.accept(key, receipt, b.binding);
+      void engine.dispatch();
+      return result;
+    } finally {
+      engine.store.remove("human_proof", receipt);
+    }
   });
   app.post("/api/workflows/:id/feedback", async (req) => {
     human(req);
@@ -456,7 +373,7 @@ export async function buildServer(engine: Engine) {
     await transport.handleRequest(req.raw, reply.raw, req.body);
   });
   app.get("/api/notifications", { websocket: true }, (socket, req) => {
-    if (!attachHumanSocket(socket, req)) return;
+    human(req);
     const listener = (event: any) => {
       if (
         [
@@ -483,7 +400,7 @@ export async function buildServer(engine: Engine) {
     socket.on("close", () => engine.store.off("event", listener));
   });
   app.get("/api/events", { websocket: true }, (socket, req) => {
-    if (!attachHumanSocket(socket, req)) return;
+    human(req);
     const query = z
       .object({
         workflow_id: Id,

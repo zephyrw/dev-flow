@@ -1,17 +1,17 @@
-import { DatabaseSync } from "node:sqlite";
+import Database from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { EventEmitter } from "node:events";
 import { FlowError, type DomainEvent } from "../../contracts/src/index.js";
 import { canonical, hash, id, now } from "../../core/src/util.js";
 export class Store extends EventEmitter {
-  db: DatabaseSync;
+  db: Database.Database;
   private depth = 0;
   private pending: DomainEvent[] = [];
   constructor(public file: string) {
     super();
     mkdirSync(dirname(file), { recursive: true });
-    this.db = new DatabaseSync(file);
+    this.db = new Database(file, { timeout: 5000 });
     this.db
       .exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;
     CREATE TABLE IF NOT EXISTS entities(kind TEXT NOT NULL,id TEXT NOT NULL,owner TEXT NOT NULL,data TEXT NOT NULL,version INTEGER NOT NULL DEFAULT 1,PRIMARY KEY(kind,id));
@@ -73,7 +73,7 @@ export class Store extends EventEmitter {
               "SELECT data FROM entities WHERE kind=? AND owner=? ORDER BY rowid",
             )
             .all(kind, owner);
-    return rows.map((r) => JSON.parse(r.data as string) as T);
+    return (rows as { data: string }[]).map((r) => JSON.parse(r.data) as T);
   }
   put(kind: string, key: string, owner: string, data: unknown) {
     this.db
@@ -118,7 +118,7 @@ export class Store extends EventEmitter {
   }
   events(workflow: string, after = 0, limit = 100): DomainEvent[] {
     return this.db
-      .prepare(
+      .prepare<unknown[], { data: string }>(
         "SELECT data FROM events WHERE workflow_id=? AND seq>? ORDER BY seq LIMIT ?",
       )
       .all(workflow, after, Math.min(1000, limit))
@@ -126,7 +126,7 @@ export class Store extends EventEmitter {
   }
   recentEvents(workflow: string, limit = 500): DomainEvent[] {
     return this.db
-      .prepare(
+      .prepare<unknown[], { data: string }>(
         "SELECT data FROM events WHERE workflow_id=? ORDER BY seq DESC LIMIT ?",
       )
       .all(workflow, Math.min(1000, limit))

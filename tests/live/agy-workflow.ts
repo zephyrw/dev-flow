@@ -1,4 +1,5 @@
 import { homedir } from "node:os";
+import { pathToFileURL } from "node:url";
 import { writeAgyProject } from "../../packages/adapters/agy/src/project.js";
 import { mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { resolve, join } from "node:path";
@@ -35,6 +36,8 @@ s.config.host.executable = resolve(
   "host/DevFlow.WinHost/bin/Release/net10.0-windows/DevFlow.WinHost.exe",
 );
 s.config.host.required = true;
+s.config.models.agy_executable = "C:/Users/yckj4798/AppData/Local/agy/bin/agy.exe";
+s.config.timeouts.agent_minutes = 8;
 const engine = new Engine(s.store, s.config),
   r = await repository(s.root);
 writeFileSync(
@@ -175,7 +178,10 @@ engine.runtime = {
     await checker.close();
   },
 } satisfies Runtime;
-const pair = engine.auth.setupCode();
+if (process.argv.includes("--production-runtime")) {
+  const { LocalRuntime: ProductionRuntime } = await import(pathToFileURL(resolve("dist/packages/runtime/src/runtime.js")).href);
+  engine.runtime = new ProductionRuntime(engine);
+}
 const app = await buildServer(engine);
 await app.listen({ host: "127.0.0.1", port: 14812 });
 const browser = await chromium.launch({
@@ -184,24 +190,10 @@ const browser = await chromium.launch({
   headless: true,
 });
 const page = await browser.newPage({ viewport: { width: 1440, height: 1050 } });
-const cdp = await page.context().newCDPSession(page);
-await cdp.send("WebAuthn.enable");
-await cdp.send("WebAuthn.addVirtualAuthenticator", {
-  options: {
-    protocol: "ctap2",
-    transport: "internal",
-    hasResidentKey: true,
-    hasUserVerification: true,
-    isUserVerified: true,
-    automaticPresenceSimulation: true,
-  },
-});
 let result: any;
 let cleanupCompletion = () => {};
 try {
   await page.goto("http://localhost:14812");
-  await page.getByLabel("配对码").fill(pair);
-  await page.getByRole("button", { name: "配对并创建通行密钥" }).click();
   await page.getByRole("heading", { name: "工作流总览" }).waitFor();
   await page
     .getByRole("button")
@@ -212,7 +204,7 @@ try {
   await page.getByRole("button", { name: "批准当前计划" }).click();
   await page.getByRole("button", { name: "实时输出", exact: true }).click();
   console.log(
-    "Live agy workflow approved through real WebAuthn and UI; watching event-driven state.",
+    "Live agy workflow approved through the local UI without login; watching event-driven state.",
   );
   const completion = new Promise<void>((yes, no) => {
     const timeout = setTimeout(() => {
@@ -262,7 +254,8 @@ try {
     workflow_id: w.id,
     state: detail.workflow.state,
     blocker: detail.workflow.blocker,
-    model: (liveResult as any)?.result,
+    model: (liveResult as any)?.result ?? (events as any[]).find(e => e.payload?.event === "init")?.payload?.init,
+    production_runtime: process.argv.includes("--production-runtime"),
     session: liveResult,
     task_status: detail.tasks,
     evidence: detail.evidence,
@@ -310,6 +303,8 @@ try {
 } finally {
   cleanupCompletion();
   await engine.runtime!.close();
+  await processes.close();
+  await checker.close();
   await browser.close();
   for (const socket of app.websocketServer.clients) socket.terminate();
   await app.close();

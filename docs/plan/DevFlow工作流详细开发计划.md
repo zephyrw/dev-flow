@@ -1,6 +1,6 @@
 # DevFlow 工作流详细开发计划
 
-> 2026-09-11 修正：用户明确取消 Windows 账户级隔离。当前采用本人 Windows 用户、统一自然语言入口和自动接入；以下相关章节已修订。安装/运行以 [使用指南](../guide/使用与恢复指南.md) 和 [入口修正](../design/DevFlow入口与运行方式修正.md) 为准。本轮测试暂停，原验收数字属于历史版本。
+> 2026-09-11 修正：用户明确取消 Windows 账户级隔离。当前采用本人 Windows 用户、统一自然语言入口和自动接入；以下相关章节已修订。安装/运行以 [使用指南](../guide/使用与恢复指南.md) 和 [入口修正](../design/DevFlow入口与运行方式修正.md) 为准。控制台登录、配对及通行密钥要求也已取消；当前测试结果见本轮验证报告，原验收数字属于历史版本。
 
 版本：1.0 需求基线 · 编写日期：2026-09-11 · 状态：已获用户实施授权，源码与真实联调已开展
 
@@ -67,7 +67,7 @@ flowchart TD
 | 执行权限 | MCP 受控文件工具 + 命令注册表 + 隔离测试身份 | 不向模型开放任意 shell；详见第 6 节 |
 | 自动测试 | Vitest、真实临时 Git 仓库与进程集成测试、Playwright | 仓库接入后沿用该仓库已有测试体系 |
 | 真实浏览器验收 | 复用现有 OpenTabs，经 DevFlow 浏览器网关协调 | 不重新安装，不覆盖现有全局配置 |
-| 人工审批 | 独立控制台会话 + WebAuthn 用户验证 | 防止浏览器工具代替用户点击就算批准 |
+| 人工审批 | 本机控制台直接确认 + 版本/快照校验 | 记录用户选择的准确对象，拒绝陈旧页面和重复提交 |
 | 最终提交 | 自动提交任务分支；多仓库逐库记录结果 | 不自动 push、merge、rebase 或发布 |
 | Cursor / Grok 4.6 | 保留执行器接口；第一版禁用 | 用户主动启用时才开展独立接入与模型核实任务 |
 
@@ -352,9 +352,9 @@ stateDiagram-v2
 
 ### 5.4 人工批准的可信边界
 
-控制台只监听 `127.0.0.1:4810`，人工页面使用 `http://localhost:4810`，校验 Host 与 Origin。安装时通过本机配对码创建用户会话并登记 Windows Hello/WebAuthn 凭证。每次批准计划、批准修复计划、验收通过，要求 `userVerification=required`，由服务端核对 challenge、RP ID、origin、签名及用户验证标志。
+控制台只监听 `127.0.0.1:4810`，人工页面使用 `http://localhost:4810`。打开即用，不注册、不配对、不登录、不使用 Windows Hello 或 WebAuthn。批准、验收按钮提交页面上实际展示的 action、workflow_id、version、plan_revision、plan_hash、snapshot_id 和 environment_revision；服务端与当前状态逐项绑定校验后记录确认并迁移状态。
 
-挑战绑定 `action + workflow_id + revision/hash 或 snapshot/environment + expected_version + nonce`；一次消费，过期或同一断言重放均拒绝。用户验证只是批准入口的技术实现，需要展示的合同与该挑战一致；浏览器能点击按钮不等于可以产生有效批准。[Microsoft WebAuthn](https://learn.microsoft.com/en-us/windows/security/identity-protection/hello-for-business/webauthn-apis)
+Host、Origin、Fetch Metadata 和同源 JSON 请求校验继续保留，WebSocket 握手必须带同源 Origin。MCP 的内部令牌不能用于控制台操作，MCP 不暴露批准和验收工具。信任当前 Windows 用户及其本机进程：同源限制用于阻止外部网页跨站调用，不构成独立的人类身份认证或恶意本机程序隔离。
 
 模型令牌只能访问自己的 MCP 路由，不能访问人工 API。控制台凭证不注入 agy、Runner 或浏览器任务包；CSRF 防护、HttpOnly/SameSite cookie、严格 CSP、Markdown 去 HTML、Mermaid strict 模式共同保护页面。即使模型绕到批准页面，也缺少用户验证。CLI/系统管理员本身被攻破不在“提示词失误”防护承诺内。
 
@@ -1045,9 +1045,8 @@ ports:
   bind_retries: 5
   strict_binding: true
 approvals:
-  method: webauthn
-  user_verification: required
-  challenge_ttl_seconds: 60
+  method: local_confirmation
+  login_required: false
   bind_plan_hash: true
   bind_snapshot_and_environment: true
 policy:
@@ -1430,7 +1429,7 @@ flowchart TD
 - 里程碑/依赖：M1；T-03,T-04。
 - 输入依据：本文相关模块合同，以及前置任务的实际产物与证据。
 - 修改位置：`apps/api/src/human/；packages/core/src/approvals.ts`。
-- 核心实现：本机配对、用户会话、WebAuthn 挑战与验证；挑战绑定 action、workflow、内容和版本；防 CSRF/重放。
+- 核心实现：本机直接打开、按钮确认；绑定 action、workflow、内容和版本；保留同源检查、陈旧页面和重复提交拒绝。
 - 范围与停止条件：模型不能持有人工接口权限；测试虚拟 authenticator 仅测试环境可用。
 - 完成定义：错版本/错内容/重放均拒绝；真实用户验证可批准。
 - 必需验证：UT-04,IT-03,E2E-05。
@@ -1739,7 +1738,7 @@ flowchart TD
 - 里程碑/依赖：M8；T-01,T-07,T-16,T-29。
 - 输入依据：本文相关模块合同，以及前置任务的实际产物与证据。
 - 修改位置：`packages/cli/src/{install,config,doctor}.ts；docs/guide/`。
-- 核心实现：打包当前兼容构建；配置服务身份、Host、MCP、Skill、用户验证；备份合并个人配置；明确 OpenTabs 复用与登录验证。
+- 核心实现：打包当前兼容构建；配置服务身份、Host、MCP、Skill、本机访问限制；备份合并个人配置；明确 OpenTabs 复用与登录验证。
 - 范围与停止条件：不在本计划阶段安装；实际安装依用户实施授权，不读取/打印秘密。
 - 完成定义：幂等安装可启动真实控制台，保留原 MCP/Skill；卸载只移本组件。
 - 必需验证：IT-17。
@@ -1813,7 +1812,7 @@ T-40 采用真实订阅模型完成一次可控缺陷修复，证明不是只有
 1. 当前 Windows 用户双击“安装或更新 DevFlow.cmd”；依赖、前后端编译、Host 编译、个人 Skill 和 MCP 配置由安装器处理，原配置备份。已有本安装服务经 PID、程序路径和创建时间核对后停止。
 2. 安装器不创建/切换 Windows 用户、不修改账户 ACL、不启动测试或模型。复用既有 agy/Codex 登录和 OpenTabs 配置。
 3. 首次安装后重启 Codex 加载统一入口。以后在业务项目说“用 DevFlow 帮我……”，无需记内部 Skill 和工具名。
-4. MCP stdio 桥接按需启动后台服务；控制台也可由“打开 DevFlow.vbs”双击启动和打开，首次配对码自动填入。
+4. MCP stdio 桥接按需启动后台服务；控制台也可由“打开 DevFlow.vbs”双击启动和打开，直接进入工作台，无配对或登录。
 5. 服务根据实际仓库、worktree 和会话识别项目。未接入时同一回合自动调查并登记配置，然后为原需求生成计划，端口适配等并入这次计划。
 6. 用户批准后才实施。代码适配完成后再启动环境并冻结测试快照；正式交付仍需要后续真实测试与用户验收。本轮测试已暂停。
 
@@ -1879,7 +1878,6 @@ T-40 采用真实订阅模型完成一次可控缺陷修复，证明不是只有
 | [OpenTabs MCP Server](https://opentabs.dev/docs/reference/mcp-server) | 现有 gateway、工具发现与调用、鉴权引用 |
 | [Node child_process](https://nodejs.org/api/child_process.html) | 参数数组、管道、异步事件与 Windows 包装器边界 |
 | [Windows Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects) | 进程树管理、停止与归属 |
-| [Windows WebAuthn](https://learn.microsoft.com/en-us/windows/security/identity-protection/hello-for-business/webauthn-apis) | 人工验证入口的基础能力 |
 | [Git worktree](https://git-scm.com/docs/git-worktree) | 多工作区、共享仓库部分和 lock 边界 |
 | [Git commit-tree](https://git-scm.com/docs/git-commit-tree) / [update-ref](https://git-scm.com/docs/git-update-ref) | 精确 tree 创建提交与预期旧 ref 比较更新 |
 | [Vite 服务配置](https://vite.dev/config/server-options.html) | strictPort、proxy 和启动参数适配 |

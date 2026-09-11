@@ -114,23 +114,7 @@ export function plannerToken() {
 }
 
 export function browserUrl() {
-  const store = new Store(join(configuration.storage_root, "devflow.sqlite"));
-  try {
-    return store.transaction(() => {
-      if (store.list("credential").length) return configuration.server.human_origin;
-      const auth = new Auth(store, configuration.server.human_origin);
-      const codeFile = join(configuration.storage_root, "pairing-code.txt");
-      let code = existsSync(codeFile) ? readFileSync(codeFile, "utf8").trim() : "";
-      try { auth.checkPairing(code); }
-      catch {
-        store.remove("settings", "pairing");
-        code = auth.setupCode();
-        atomicWrite(codeFile, code);
-      }
-      // A fragment is not sent to HTTP logs. The page consumes and clears it.
-      return configuration.server.human_origin + "/#pair=" + encodeURIComponent(code);
-    });
-  } finally { store.close(); }
+  return configuration.server.human_origin;
 }
 
 export async function openBrowser() {

@@ -1,0 +1,11 @@
+{
+  "model": "gpt-6-astra",
+  "verdict": "incomplete",
+  "workflow_id": "wf-a04abaf0-a245-4f85-b3ba-4027b95e8bd0",
+  "snapshot_id": "acc68b779c64551677fd6ed6385ee5e4b102f1d41f7d88d986d90c2ec70ed11a",
+  "identity_roundtrip": true,
+  "no_human_acceptance_created": true,
+  "fixture_only": true,
+  "local_ui_acceptance": false,
+  "output": "D:\\Code\\system-handle\\.cache\\live-codex\\review-1789124396499"
+}

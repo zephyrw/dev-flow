@@ -108,14 +108,14 @@ engine.runtime = {
   check: (flow, test, principal) => runtime.check(flow, test, principal),
   close: () => runtime.close(),
 } satisfies Runtime;
-const pairing = engine.auth.setupCode();
+const shutdownToken = crypto.randomUUID();
 atomicWrite(
   resolve(".cache/e2e-state.json"),
-  JSON.stringify({ pairing, workflow_id: w.id, root: s.root, repo: repo.repo }),
+  JSON.stringify({ shutdownToken, workflow_id: w.id, root: s.root, repo: repo.repo }),
 );
 const app = await buildServer(engine);
 app.post("/__fixture/shutdown", async (request, reply) => {
-  if ((request.body as { token?: string })?.token !== pairing)
+  if ((request.body as { token?: string })?.token !== shutdownToken)
     return reply.code(403).send({ ok: false });
   setTimeout(
     () =>

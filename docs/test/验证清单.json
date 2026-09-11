@@ -1,24 +1,158 @@
 {
-  "status": "testing_paused_by_user",
+  "status": "verified",
   "date": "2026-09-11",
-  "current_changes_verified": false,
+  "current_changes_verified": true,
   "historical_manifest": "历史验证清单-20260911.json",
-  "reason": "Windows 用户隔离移除及统一入口等改动只完成源码调整和安装编译，用户要求暂停测试。旧测试记录不得作为当前版本通过依据。",
+  "report": "免登录改版验证报告.md",
+  "source_review": "免登录改版验证报告.md#提交前代码复核",
   "cancelled_requirements": [
     "dedicated_windows_accounts",
     "account_acl",
-    "identity_switch_probes"
+    "identity_switch_probes",
+    "passkey_login",
+    "pairing"
   ],
-  "source_review": "源码独立复核记录.md",
+  "automated_tests": {
+    "full_regression_passed": 62,
+    "additional_intake_passed": 1,
+    "total_unit_integration_passed": 63,
+    "e2e_passed": 4,
+    "failed": 0,
+    "skipped": 0
+  },
+  "real_integrations": {
+    "agy_requested_and_reported_model": "gemini-3.7-flash-high",
+    "agy_production_runtime": "passed",
+    "agy_mcp_plan_marker_roundtrip": "passed",
+    "agy_logs_before_completion": "passed",
+    "agy_explicit_conversation_resume": "passed",
+    "agy_stop_latency_ms": 162,
+    "codex_model": "gpt-6-astra",
+    "codex_accepted_fixture_verdict": "pass",
+    "codex_missing_acceptance_verdict": "incomplete",
+    "opentabs_actual_console": "passed",
+    "parallel_environments": 3,
+    "unique_ports": 6
+  },
+  "storage_driver_change": {
+    "driver": "better-sqlite3@13.0.3",
+    "native_binary_load": "passed",
+    "database_read_write_and_transactions": "passed",
+    "backup_and_restore": "passed"
+  },
   "installation": {
-    "date": "2026-09-11",
-    "frontend_build": "completed",
-    "backend_build": "completed",
-    "windows_host_build": "completed",
-    "codex_mcp": "local_stdio_planner_bridge",
-    "skills_installed": 6,
+    "frontend_build": "passed",
+    "backend_build": "passed",
+    "typecheck": "passed",
+    "windows_host_build": "passed",
     "execution_identity": "current_windows_user",
-    "functional_tests": "not_run_user_paused",
-    "real_model_calls": "not_run_user_paused"
-  }
+    "login_required": false,
+    "service_running": true,
+    "local_url": "http://localhost:4810",
+    "restart_powershell_5_1": "passed",
+    "restart_powershell_7": "passed"
+  },
+  "scope": "Existing full automated suite plus entry regression, real model adapters, real OpenTabs and installed controller checks. Does not substitute for the user accepting a business project or for a physical computer reboot.",
+  "evidence": [
+    {
+      "path": "evidence/no-login-20260911/agy-live.png",
+      "sha256": "87e545c033a6004e6ae6af5d2426960b492dd18fa2e4fe79a5823ac3910c41ad",
+      "bytes": 81585
+    },
+    {
+      "path": "evidence/no-login-20260911/agy-mcp.json",
+      "sha256": "bca8db2711759fa8e57f40bc734b802d686edfdd3e86cf41fc23fc2474c9103b",
+      "bytes": 5202
+    },
+    {
+      "path": "evidence/no-login-20260911/agy-model.json",
+      "sha256": "f8cd0b0d1c7a4ec6220a3b7c0ff7aeb545068db09be002cd5c02c984c0fb9db6",
+      "bytes": 362
+    },
+    {
+      "path": "evidence/no-login-20260911/agy-production.json",
+      "sha256": "6e365c281743852965d96b7e1956c638992ec389f0088d32a57930b4195cc577",
+      "bytes": 3446
+    },
+    {
+      "path": "evidence/no-login-20260911/agy-resume-stop.json",
+      "sha256": "563f79f4493add02ae9b71296aad0aef8bffaf743a6abf031c625c91fdb3eb43",
+      "bytes": 370
+    },
+    {
+      "path": "evidence/no-login-20260911/codex-accepted.json",
+      "sha256": "f3f6c8c69978474164a54d193a71ba3ec7c4c36ecff68b9cbaa5ef480717b7c2",
+      "bytes": 400
+    },
+    {
+      "path": "evidence/no-login-20260911/codex-review.json",
+      "sha256": "562eefab847dda16dfae45937c166681c5b8a691a8e6216374dcb9a7feb82788",
+      "bytes": 735
+    },
+    {
+      "path": "evidence/no-login-20260911/codex-without-acceptance.json",
+      "sha256": "b23e43642e0e62cdb27daee65fa576d1a1dd3b8a11f0fe3cb7a4321523c5939e",
+      "bytes": 406
+    },
+    {
+      "path": "evidence/no-login-20260911/console-opentabs.json",
+      "sha256": "6f0547d9c8dc4dff9c0fac8e44d355f89bd69254eadeea8a9a31db138a781f57",
+      "bytes": 4299
+    },
+    {
+      "path": "evidence/no-login-20260911/console.png",
+      "sha256": "ae32bc5f9f39970cf44724c4edd0df22c047bd34f54110dd299897d6e4b35ff9",
+      "bytes": 65229
+    },
+    {
+      "path": "evidence/no-login-20260911/e2e-complete.png",
+      "sha256": "5536cb2001a36df668de0939d01421a677db44e9983f319d1ebe826d8792c250",
+      "bytes": 48576
+    },
+    {
+      "path": "evidence/no-login-20260911/e2e-plan.png",
+      "sha256": "7f2c88e4c2de653e9397ffeb5b4ed4cc2b5f40441f6184ee2f2458b89b4bf719",
+      "bytes": 54728
+    },
+    {
+      "path": "evidence/no-login-20260911/e2e.json",
+      "sha256": "aa15686924c1e7ed79907dc13ca66b22ff6494c9e36850e31fc32ea9e7d73eed",
+      "bytes": 8336
+    },
+    {
+      "path": "evidence/no-login-20260911/opentabs-gateway.json",
+      "sha256": "293caf5e7b5aca9c5003b6c775477eeee65a24aaa32b0de0d90ed9da721b04df",
+      "bytes": 4074
+    },
+    {
+      "path": "evidence/no-login-20260911/parallel-environments.json",
+      "sha256": "405122ec0218bc1b937e60f79b7225557fd533d7b7b7528152eb318ab1e4f70e",
+      "bytes": 5463
+    },
+    {
+      "path": "evidence/no-login-20260911/service-lifecycle.json",
+      "sha256": "cf952ec4c4160be7c2195ac475cd0d5fac272cc3d06aa4b55edd7e82a34a05f6",
+      "bytes": 369
+    },
+    {
+      "path": "evidence/no-login-20260911/source-hashes.json",
+      "sha256": "968154c3544f693bfe291a9b6d7b3b2bb85730bb7afa281e45c0c363aa1cc46c",
+      "bytes": 11608
+    },
+    {
+      "path": "evidence/no-login-20260911/start-help.png",
+      "sha256": "5f73e46a2f62bf4d928c6eed2221e28394e20d531886eb6c6bf9990a563424a3",
+      "bytes": 89613
+    },
+    {
+      "path": "evidence/no-login-20260911/vitest-full.json",
+      "sha256": "4b7d9fd86a14fba75b79d49c6ac44cd0df34f43b73f71b067b969438a941d8b8",
+      "bytes": 22130
+    },
+    {
+      "path": "evidence/no-login-20260911/vitest-intake.json",
+      "sha256": "4e6d41573dc7e074a00c6aab4168234732eb4c3a1ef0e4d057512c857af90388",
+      "bytes": 982
+    }
+  ]
 }
