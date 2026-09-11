@@ -1,0 +1,32 @@
+{
+  "node": "v22.23.2",
+  "platform": "win32",
+  "storage": "D:\\Code\\system-handle\\.devflow",
+  "host": {
+    "path": "D:\\Code\\system-handle\\host\\DevFlow.WinHost\\bin\\Release\\net10.0-windows\\DevFlow.WinHost.exe",
+    "exists": true,
+    "report": {
+      "version": 1,
+      "os": "windows",
+      "suspended_spawn": true,
+      "kill_on_close": true
+    }
+  },
+  "checks": [
+    {
+      "name": "git",
+      "ok": true,
+      "output": "git version 2.49.0.windows.1"
+    },
+    {
+      "name": "agy",
+      "ok": true,
+      "output": "1.2.1"
+    },
+    {
+      "name": "codex",
+      "ok": true,
+      "output": "codex-cli 0.153.4"
+    }
+  ]
+}

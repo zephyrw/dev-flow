@@ -1,0 +1,54 @@
+{
+  "project_id": "demo",
+  "scene_id": "notes",
+  "origins": ["${DEVFLOW_FRONTEND_ORIGIN}"],
+  "actions": [
+    {
+      "tool": "browser_open_tab",
+      "arguments": { "url": "${DEVFLOW_FRONTEND_ORIGIN}" },
+      "capture": { "TAB": "/id" },
+      "assertions": [{ "pointer": "/id", "minimum": 1 }]
+    },
+    {
+      "tool": "browser_wait_for_element",
+      "arguments": { "tabId": "${TAB}", "selector": "#save", "visible": true },
+      "assertions": [{ "pointer": "/found", "equals": true }]
+    },
+    {
+      "tool": "browser_type_text",
+      "arguments": {
+        "tabId": "${TAB}",
+        "selector": "#note",
+        "text": "DEVFLOW-NOTES-ACCEPTED"
+      },
+      "assertions": [
+        { "pointer": "/value", "equals": "DEVFLOW-NOTES-ACCEPTED" }
+      ]
+    },
+    {
+      "tool": "browser_click_element",
+      "arguments": { "tabId": "${TAB}", "selector": "#save" },
+      "assertions": [{ "pointer": "/clicked", "equals": true }]
+    },
+    {
+      "tool": "browser_wait_for_element",
+      "arguments": {
+        "tabId": "${TAB}",
+        "selector": "#result[data-ready='true']",
+        "visible": true
+      },
+      "assertions": [{ "pointer": "/found", "equals": true }]
+    },
+    {
+      "tool": "browser_get_tab_content",
+      "arguments": { "tabId": "${TAB}", "selector": "#result" },
+      "assertions": [
+        {
+          "pointer": "/content",
+          "equals": "DEVFLOW-NOTES-ACCEPTED",
+          "case_id": "notes-persisted"
+        }
+      ]
+    }
+  ]
+}

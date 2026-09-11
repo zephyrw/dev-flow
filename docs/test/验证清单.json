@@ -1,0 +1,24 @@
+{
+  "status": "testing_paused_by_user",
+  "date": "2026-09-11",
+  "current_changes_verified": false,
+  "historical_manifest": "历史验证清单-20260911.json",
+  "reason": "Windows 用户隔离移除及统一入口等改动只完成源码调整和安装编译，用户要求暂停测试。旧测试记录不得作为当前版本通过依据。",
+  "cancelled_requirements": [
+    "dedicated_windows_accounts",
+    "account_acl",
+    "identity_switch_probes"
+  ],
+  "source_review": "源码独立复核记录.md",
+  "installation": {
+    "date": "2026-09-11",
+    "frontend_build": "completed",
+    "backend_build": "completed",
+    "windows_host_build": "completed",
+    "codex_mcp": "local_stdio_planner_bridge",
+    "skills_installed": 6,
+    "execution_identity": "current_windows_user",
+    "functional_tests": "not_run_user_paused",
+    "real_model_calls": "not_run_user_paused"
+  }
+}

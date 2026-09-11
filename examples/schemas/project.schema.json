@@ -1,0 +1,293 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,95}$"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "repositories": {
+      "minItems": 1,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,95}$"
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "id",
+          "path"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "commands": {
+      "default": [],
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "repo_id": {
+            "type": "string",
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,95}$"
+          },
+          "id": {
+            "type": "string",
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,95}$"
+          },
+          "executable": {
+            "type": "string",
+            "minLength": 1
+          },
+          "args": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "cwd": {
+            "default": "",
+            "type": "string"
+          },
+          "env": {
+            "default": {},
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "timeout_seconds": {
+            "default": 300,
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "maximum": 7200
+          },
+          "lifecycle": {
+            "default": "check",
+            "type": "string",
+            "enum": [
+              "check",
+              "service",
+              "fixture"
+            ]
+          },
+          "parser": {
+            "default": "none",
+            "type": "string",
+            "enum": [
+              "vitest_json",
+              "junit",
+              "playwright_json",
+              "none"
+            ]
+          },
+          "report_path": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          },
+          "required_before_commit": {
+            "default": false,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "executable",
+          "args",
+          "cwd",
+          "env",
+          "timeout_seconds",
+          "lifecycle",
+          "parser",
+          "required_before_commit"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "services": {
+      "default": [],
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,95}$"
+          },
+          "repo_id": {
+            "type": "string",
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,95}$"
+          },
+          "command_id": {
+            "type": "string",
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,95}$"
+          },
+          "port_pool": {
+            "type": "string",
+            "enum": [
+              "frontend",
+              "backend"
+            ]
+          },
+          "health_path": {
+            "type": "string",
+            "format": "starts_with",
+            "pattern": "^\\/.*"
+          },
+          "backend_probe_path": {
+            "type": "string",
+            "format": "starts_with",
+            "pattern": "^\\/.*"
+          },
+          "identity_header": {
+            "default": "x-devflow-identity",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "repo_id",
+          "command_id",
+          "port_pool",
+          "health_path",
+          "identity_header"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "data": {
+      "default": {
+        "mode": "directory"
+      },
+      "type": "object",
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "directory",
+            "external_lock"
+          ]
+        },
+        "resource_id": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,95}$"
+        },
+        "fixture_command_id": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,95}$"
+        }
+      },
+      "required": [
+        "mode"
+      ],
+      "additionalProperties": false
+    },
+    "browser_scenes": {
+      "default": [],
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,95}$"
+          },
+          "steps": {
+            "minItems": 1,
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "assertions": {
+            "minItems": 1,
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "allowed_tools": {
+            "minItems": 1,
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "id",
+          "steps",
+          "assertions",
+          "allowed_tools"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "git": {
+      "type": "object",
+      "properties": {
+        "author_name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "author_email": {
+          "type": "string",
+          "format": "email",
+          "pattern": "^(?:[A-Za-z0-9_'+\\-]+\\.)*[A-Za-z0-9_'+\\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\\-]*\\.)+[A-Za-z]{2,}$"
+        },
+        "signing_key": {
+          "type": "string"
+        },
+        "required_hooks": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,95}$"
+          }
+        }
+      },
+      "required": [
+        "author_name",
+        "author_email",
+        "required_hooks"
+      ],
+      "additionalProperties": false
+    },
+    "browser_recipe_hashes": {
+      "type": "object",
+      "propertyNames": {
+        "type": "string",
+        "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,95}$"
+      },
+      "additionalProperties": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "id",
+    "name",
+    "repositories",
+    "commands",
+    "services",
+    "data",
+    "browser_scenes"
+  ],
+  "additionalProperties": false
+}

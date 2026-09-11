@@ -1,0 +1,10 @@
+{
+  "connected": true,
+  "tools": [
+    "devflow_list_projects",
+    "devflow_create_workflow",
+    "devflow_get_workflow",
+    "devflow_submit_plan"
+  ],
+  "list_projects_ok": true
+}

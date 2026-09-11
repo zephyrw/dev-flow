@@ -1,0 +1,88 @@
+{
+  "id": "demo",
+  "name": "前后端工作流示例",
+  "repositories": [{ "id": "main", "path": "D:/Code/devflow-demo" }],
+  "commands": [
+    {
+      "id": "api",
+      "executable": "C:/Program Files/nodejs/node.exe",
+      "args": ["D:/Code/system-handle/examples/demo/api.mjs"],
+      "lifecycle": "service"
+    },
+    {
+      "id": "web",
+      "executable": "C:/Program Files/nodejs/node.exe",
+      "args": ["D:/Code/system-handle/examples/demo/frontend.mjs"],
+      "lifecycle": "service"
+    },
+    {
+      "id": "unit",
+      "executable": "C:/Program Files/nodejs/node.exe",
+      "args": [
+        "--test",
+        "--test-reporter=junit",
+        "--test-reporter-destination=${DEVFLOW_REPORT_PATH}",
+        "tests/unit.cjs"
+      ],
+      "parser": "junit",
+      "report_path": ".reports/unit.xml"
+    },
+    {
+      "id": "integration",
+      "executable": "C:/Program Files/nodejs/node.exe",
+      "args": [
+        "--test",
+        "--test-reporter=junit",
+        "--test-reporter-destination=${DEVFLOW_REPORT_PATH}",
+        "tests/integration.cjs"
+      ],
+      "parser": "junit",
+      "report_path": ".reports/integration.xml"
+    },
+    {
+      "id": "e2e",
+      "executable": "C:/Program Files/nodejs/node.exe",
+      "args": [
+        "node_modules/@playwright/test/cli.js",
+        "test",
+        "--reporter=json"
+      ],
+      "env": { "PLAYWRIGHT_JSON_OUTPUT_NAME": ".reports/e2e.json" },
+      "parser": "playwright_json",
+      "report_path": ".reports/e2e.json"
+    }
+  ],
+  "services": [
+    {
+      "id": "backend",
+      "repo_id": "main",
+      "command_id": "api",
+      "port_pool": "backend",
+      "health_path": "/health"
+    },
+    {
+      "id": "frontend",
+      "repo_id": "main",
+      "command_id": "web",
+      "port_pool": "frontend",
+      "health_path": "/health",
+      "backend_probe_path": "/api/health"
+    }
+  ],
+  "data": { "mode": "directory" },
+  "browser_scenes": [
+    {
+      "id": "notes",
+      "steps": ["输入并保存备注", "确认保存后的备注"],
+      "assertions": ["页面显示保存内容"],
+      "allowed_tools": [
+        "browser_open_tab",
+        "browser_wait_for_element",
+        "browser_type_text",
+        "browser_click_element",
+        "browser_get_tab_content"
+      ]
+    }
+  ],
+  "git": { "author_name": "DevFlow", "author_email": "devflow@example.invalid" }
+}

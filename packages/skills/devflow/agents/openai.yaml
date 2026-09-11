@@ -1,0 +1,6 @@
+interface:
+  display_name: "DevFlow"
+  short_description: "一句话启动项目调研、图解计划与审批开发流程"
+  default_prompt: "用 DevFlow 处理当前项目的需求。"
+policy:
+  allow_implicit_invocation: true

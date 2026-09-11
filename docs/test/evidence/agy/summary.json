@@ -1,0 +1,80 @@
+{
+  "workflow_id": "wf-2a3cf7a6-e308-4da4-b9f7-bfa022dda0b8",
+  "state": "HUMAN_PENDING",
+  "model": {
+    "conversation_id": "aa835c3a-110e-4c21-8297-783c18e4a35c",
+    "status": "SUCCESS",
+    "response": "### 集成测试执行报告\n\n已严格使用 `devflow_worker` MCP 工具完成所有执行与验证步骤，具体执行情况如下：\n\n---\n\n#### 1. 计划标记（Random Marker）\n* **计划标记**：`LIVE-PLAN-b5bbcf4b-7461-4184-bf05-56d88e16ecb6`\n\n---\n\n#### 2. 任务执行与变更\n* **任务 ID**：`T01`（修改文本）\n* **修改文件**：`app.txt`\n* **变更内容**：将内容由 `before\\n` 修改为 `after\\n`（保留末尾换行符）\n* **任务声明（Claim）**：已记录中文声明并关联标记 `LIVE-PLAN-b5bbcf4b-7461-4184-bf05-56d88e16ecb6`\n* **快照冻结（Freeze）**：快照 ID `bbe4329c5a0fe364654ecbe9dc8abdc0e91bf0d975c61779198e99d5a51ecd63`\n\n---\n\n#### 3. 实际测试验证结果\n* **测试编号**：`UT01`\n* **测试层级**：`unit`\n* **测试用例**：`test updates content`\n* **测试状态**：`passed`\n* **详细指标**：\n  - 发现用例数（Discovered）：`1`\n  - 通过用例数（Passed）：`1`\n  - 失败用例数（Failed）：`0`\n  - 跳过用例数（Skipped）：`0`\n  - 退出码（Exit Code）：`0`\n  - 证据 ID：`evidence-3b543d63-ebed-4761-96f9-7fcef6c1aa00`\n\n---\n\n#### 4. 完成状态\n* **完成接口（Finish）调用结果**：`status: ready`，所有必要证据已齐备，已提交人工验收。\n",
+    "duration_seconds": 101.0970555,
+    "num_turns": 1,
+    "usage": {
+      "input_tokens": 108569,
+      "output_tokens": 3799,
+      "thinking_tokens": 1845,
+      "cache_read_tokens": 283601,
+      "total_tokens": 112368
+    }
+  },
+  "session": {
+    "conversation": "aa835c3a-110e-4c21-8297-783c18e4a35c",
+    "result": {
+      "conversation_id": "aa835c3a-110e-4c21-8297-783c18e4a35c",
+      "status": "SUCCESS",
+      "response": "### 集成测试执行报告\n\n已严格使用 `devflow_worker` MCP 工具完成所有执行与验证步骤，具体执行情况如下：\n\n---\n\n#### 1. 计划标记（Random Marker）\n* **计划标记**：`LIVE-PLAN-b5bbcf4b-7461-4184-bf05-56d88e16ecb6`\n\n---\n\n#### 2. 任务执行与变更\n* **任务 ID**：`T01`（修改文本）\n* **修改文件**：`app.txt`\n* **变更内容**：将内容由 `before\\n` 修改为 `after\\n`（保留末尾换行符）\n* **任务声明（Claim）**：已记录中文声明并关联标记 `LIVE-PLAN-b5bbcf4b-7461-4184-bf05-56d88e16ecb6`\n* **快照冻结（Freeze）**：快照 ID `bbe4329c5a0fe364654ecbe9dc8abdc0e91bf0d975c61779198e99d5a51ecd63`\n\n---\n\n#### 3. 实际测试验证结果\n* **测试编号**：`UT01`\n* **测试层级**：`unit`\n* **测试用例**：`test updates content`\n* **测试状态**：`passed`\n* **详细指标**：\n  - 发现用例数（Discovered）：`1`\n  - 通过用例数（Passed）：`1`\n  - 失败用例数（Failed）：`0`\n  - 跳过用例数（Skipped）：`0`\n  - 退出码（Exit Code）：`0`\n  - 证据 ID：`evidence-3b543d63-ebed-4761-96f9-7fcef6c1aa00`\n\n---\n\n#### 4. 完成状态\n* **完成接口（Finish）调用结果**：`status: ready`，所有必要证据已齐备，已提交人工验收。\n",
+      "duration_seconds": 101.0970555,
+      "num_turns": 1,
+      "usage": {
+        "input_tokens": 108569,
+        "output_tokens": 3799,
+        "thinking_tokens": 1845,
+        "cache_read_tokens": 283601,
+        "total_tokens": 112368
+      }
+    },
+    "exit": 0
+  },
+  "task_status": [
+    {
+      "id": "T01",
+      "title": "修改文本",
+      "status": "verified",
+      "summary": "已按照变更计划成功将 app.txt 的内容从 before 更改为 after 并保留末尾换行符，本次联调标记为 LIVE-PLAN-b5bbcf4b-7461-4184-bf05-56d88e16ecb6。"
+    }
+  ],
+  "evidence": [
+    {
+      "case_ids": [
+        "test updates content"
+      ],
+      "created_at": "2026-09-11T09:07:03.931Z",
+      "discovered": 1,
+      "environment_revision": 0,
+      "exit_code": 0,
+      "failed": 0,
+      "files": [
+        {
+          "hash": "fe7e610c28f524ed17480826e8648ecaca582e6cc9db5196c1a83519b822bf3d",
+          "path": "C:\\Users\\yckj4798\\AppData\\Local\\Temp\\devflow-test-vymKHn\\state\\evidence\\wf-2a3cf7a6-e308-4da4-b9f7-bfa022dda0b8\\check-b937ed19-a782-492d-9c0d-5beb169b8155\\report.xml"
+        }
+      ],
+      "id": "evidence-3b543d63-ebed-4761-96f9-7fcef6c1aa00",
+      "layer": "unit",
+      "missing": [],
+      "passed": 1,
+      "run_id": "run-a71f4508-f262-4798-99d7-67063a3b6c51",
+      "skipped": 0,
+      "snapshot_id": "bbe4329c5a0fe364654ecbe9dc8abdc0e91bf0d975c61779198e99d5a51ecd63",
+      "status": "passed",
+      "test_id": "UT01",
+      "workflow_id": "wf-2a3cf7a6-e308-4da4-b9f7-bfa022dda0b8"
+    }
+  ],
+  "content": "after\n",
+  "ui_logs_contain_tool": true,
+  "ui_logs_contain_marker": true,
+  "plan_only_marker": "LIVE-PLAN-b5bbcf4b-7461-4184-bf05-56d88e16ecb6",
+  "event_count": 119,
+  "root": "C:\\Users\\yckj4798\\AppData\\Local\\Temp\\devflow-test-vymKHn",
+  "output": "D:\\Code\\system-handle\\.cache\\live-agy\\workflow-1789117518020",
+  "duration_ms": 123314
+}
