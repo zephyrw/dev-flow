@@ -1,0 +1,334 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "markdown": {
+      "type": "string",
+      "minLength": 80
+    },
+    "complexity": {
+      "type": "string",
+      "enum": [
+        "simple",
+        "complex"
+      ]
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 1
+    },
+    "decisions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "question": {
+            "type": "string"
+          },
+          "answer": {
+            "type": "string",
+            "minLength": 1
+          },
+          "source": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "question",
+          "answer",
+          "source"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "unresolved_decisions": {
+      "minItems": 0,
+      "maxItems": 0,
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "scope": {
+      "type": "object",
+      "properties": {
+        "repository_paths": {
+          "default": {},
+          "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,95}$"
+          },
+          "additionalProperties": {
+            "minItems": 1,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024
+            }
+          }
+        },
+        "allowed_paths": {
+          "minItems": 1,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          }
+        },
+        "protected_paths": {
+          "default": [
+            ".git",
+            ".agents",
+            ".codex"
+          ],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "allow_dependency_changes": {
+          "default": false,
+          "type": "boolean"
+        },
+        "allow_public_api_changes": {
+          "default": false,
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "repository_paths",
+        "allowed_paths",
+        "protected_paths",
+        "allow_dependency_changes",
+        "allow_public_api_changes"
+      ],
+      "additionalProperties": false
+    },
+    "tasks": {
+      "minItems": 1,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "repo_id": {
+            "type": "string",
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,95}$"
+          },
+          "id": {
+            "type": "string",
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,95}$"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1
+          },
+          "requirements": {
+            "minItems": 1,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,95}$"
+            }
+          },
+          "depends_on": {
+            "default": [],
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,95}$"
+            }
+          },
+          "paths": {
+            "minItems": 1,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024
+            }
+          },
+          "inputs": {
+            "type": "string",
+            "minLength": 1
+          },
+          "implementation": {
+            "type": "string",
+            "minLength": 10
+          },
+          "preserve": {
+            "type": "string",
+            "minLength": 1
+          },
+          "completion": {
+            "type": "string",
+            "minLength": 5
+          },
+          "test_ids": {
+            "minItems": 1,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,95}$"
+            }
+          },
+          "stop_conditions": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "requirements",
+          "depends_on",
+          "paths",
+          "inputs",
+          "implementation",
+          "preserve",
+          "completion",
+          "test_ids",
+          "stop_conditions"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "tests": {
+      "minItems": 1,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,95}$"
+          },
+          "task_ids": {
+            "minItems": 1,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,95}$"
+            }
+          },
+          "layer": {
+            "type": "string",
+            "enum": [
+              "unit",
+              "integration",
+              "e2e",
+              "opentabs"
+            ]
+          },
+          "command_id": {
+            "type": "string",
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,95}$"
+          },
+          "scene_id": {
+            "type": "string",
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,95}$"
+          },
+          "steps": {
+            "minItems": 1,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "assertions": {
+            "minItems": 1,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "expected_case_ids": {
+            "minItems": 1,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "timeout_seconds": {
+            "default": 300,
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 7200
+          }
+        },
+        "required": [
+          "id",
+          "task_ids",
+          "layer",
+          "steps",
+          "assertions",
+          "expected_case_ids",
+          "timeout_seconds"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "exemptions": {
+      "default": [],
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "layer": {
+            "type": "string",
+            "enum": [
+              "unit",
+              "integration",
+              "e2e",
+              "opentabs"
+            ]
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 10
+          }
+        },
+        "required": [
+          "layer",
+          "reason"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "baselines": {
+      "type": "object",
+      "propertyNames": {
+        "type": "string",
+        "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,95}$"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^[a-f0-9]{40,64}$"
+      }
+    },
+    "project_config_hash": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "required": [
+    "markdown",
+    "complexity",
+    "reason",
+    "decisions",
+    "unresolved_decisions",
+    "scope",
+    "tasks",
+    "tests",
+    "exemptions",
+    "baselines",
+    "project_config_hash"
+  ],
+  "additionalProperties": false
+}

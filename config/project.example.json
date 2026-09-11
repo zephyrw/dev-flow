@@ -1,0 +1,7 @@
+{
+  "id":"demo", "name":"示例项目",
+  "repositories":[{"id":"main","path":"D:/Code/demo"}],
+  "commands":[{"id":"unit","executable":"C:/Program Files/nodejs/node.exe","args":["node_modules/vitest/vitest.mjs","run","--reporter=json","--outputFile=${DEVFLOW_REPORT_PATH}"],"cwd":"","env":{},"timeout_seconds":300,"lifecycle":"check","parser":"vitest_json","report_path":".test-output/unit.json","required_before_commit":true}],
+  "services":[], "data":{"mode":"directory"}, "browser_scenes":[],
+  "git":{"author_name":"Your Name","author_email":"you@example.com","required_hooks":["unit"]}
+}

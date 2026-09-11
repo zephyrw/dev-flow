@@ -1,0 +1,294 @@
+{
+  "workflow": "wf-44609b73-1004-4b56-913b-90b1a3028995",
+  "run": "browser-run-1",
+  "scene_id": "notes",
+  "status": "passed",
+  "cases": [
+    "notes-persisted",
+    "notes-reloaded"
+  ],
+  "transcript": [
+    {
+      "tool": "browser_open_tab",
+      "arguments": {
+        "url": "http://127.0.0.1:15175"
+      },
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"id\":948915318,\"title\":\"\",\"url\":\"\",\"windowId\":948915311}"
+          }
+        ]
+      },
+      "time": "2026-09-11T07:57:06.043Z"
+    },
+    {
+      "tool": "browser_get_tab_info",
+      "arguments": {
+        "tabId": 948915318
+      },
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"id\":948915318,\"title\":\"\",\"url\":\"\",\"status\":\"loading\",\"active\":true,\"windowId\":948915311,\"favIconUrl\":\"\",\"incognito\":false}"
+          }
+        ]
+      },
+      "time": "2026-09-11T07:57:06.190Z"
+    },
+    {
+      "tool": "browser_get_tab_info",
+      "arguments": {
+        "tabId": 948915318
+      },
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"id\":948915318,\"title\":\"DevFlow 并行环境演示\",\"url\":\"http://127.0.0.1:15175/\",\"status\":\"loading\",\"active\":true,\"windowId\":948915311,\"favIconUrl\":\"\",\"incognito\":false}"
+          }
+        ]
+      },
+      "time": "2026-09-11T07:57:06.330Z"
+    },
+    {
+      "tool": "browser_wait_for_element",
+      "arguments": {
+        "selector": "#save",
+        "tabId": 948915318,
+        "visible": true
+      },
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"found\":true,\"tagName\":\"button\",\"text\":\"保存\"}"
+          }
+        ]
+      },
+      "time": "2026-09-11T07:57:06.611Z"
+    },
+    {
+      "tool": "browser_get_tab_info",
+      "arguments": {
+        "tabId": 948915318
+      },
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"id\":948915318,\"title\":\"DevFlow 并行环境演示\",\"url\":\"http://127.0.0.1:15175/\",\"status\":\"complete\",\"active\":true,\"windowId\":948915311,\"favIconUrl\":\"\",\"incognito\":false}"
+          }
+        ]
+      },
+      "time": "2026-09-11T07:57:06.666Z"
+    },
+    {
+      "tool": "browser_type_text",
+      "arguments": {
+        "selector": "#note",
+        "tabId": 948915318,
+        "text": "ONLY-wf-44609b73-1004-4b56-913b-90b1a3028995"
+      },
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"typed\":true,\"tagName\":\"input\",\"value\":\"ONLY-wf-44609b73-1004-4b56-913b-90b1a3028995\"}"
+          }
+        ]
+      },
+      "time": "2026-09-11T07:57:06.717Z"
+    },
+    {
+      "tool": "browser_get_tab_info",
+      "arguments": {
+        "tabId": 948915318
+      },
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"id\":948915318,\"title\":\"DevFlow 并行环境演示\",\"url\":\"http://127.0.0.1:15175/\",\"status\":\"complete\",\"active\":true,\"windowId\":948915311,\"favIconUrl\":\"\",\"incognito\":false}"
+          }
+        ]
+      },
+      "time": "2026-09-11T07:57:06.773Z"
+    },
+    {
+      "tool": "browser_click_element",
+      "arguments": {
+        "selector": "#save",
+        "tabId": 948915318
+      },
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"clicked\":true,\"tagName\":\"button\",\"text\":\"保存\"}"
+          }
+        ]
+      },
+      "time": "2026-09-11T07:57:06.836Z"
+    },
+    {
+      "tool": "browser_get_tab_info",
+      "arguments": {
+        "tabId": 948915318
+      },
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"id\":948915318,\"title\":\"DevFlow 并行环境演示\",\"url\":\"http://127.0.0.1:15175/\",\"status\":\"complete\",\"active\":true,\"windowId\":948915311,\"favIconUrl\":\"\",\"incognito\":false}"
+          }
+        ]
+      },
+      "time": "2026-09-11T07:57:06.903Z"
+    },
+    {
+      "tool": "browser_wait_for_element",
+      "arguments": {
+        "selector": "#result[data-ready='true']",
+        "tabId": 948915318,
+        "visible": true
+      },
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"found\":true,\"tagName\":\"output\",\"text\":\"ONLY-wf-44609b73-1004-4b56-913b-90b1a3028995\"}"
+          }
+        ]
+      },
+      "time": "2026-09-11T07:57:07.082Z"
+    },
+    {
+      "tool": "browser_get_tab_info",
+      "arguments": {
+        "tabId": 948915318
+      },
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"id\":948915318,\"title\":\"DevFlow 并行环境演示\",\"url\":\"http://127.0.0.1:15175/\",\"status\":\"complete\",\"active\":true,\"windowId\":948915311,\"favIconUrl\":\"\",\"incognito\":false}"
+          }
+        ]
+      },
+      "time": "2026-09-11T07:57:07.113Z"
+    },
+    {
+      "tool": "browser_get_tab_content",
+      "arguments": {
+        "selector": "#result",
+        "tabId": 948915318
+      },
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"title\":\"DevFlow 并行环境演示\",\"url\":\"http://127.0.0.1:15175/\",\"content\":\"ONLY-wf-44609b73-1004-4b56-913b-90b1a3028995\"}"
+          }
+        ]
+      },
+      "time": "2026-09-11T07:57:07.141Z"
+    },
+    {
+      "tool": "browser_get_tab_info",
+      "arguments": {
+        "tabId": 948915318
+      },
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"id\":948915318,\"title\":\"DevFlow 并行环境演示\",\"url\":\"http://127.0.0.1:15175/\",\"status\":\"complete\",\"active\":true,\"windowId\":948915311,\"favIconUrl\":\"\",\"incognito\":false}"
+          }
+        ]
+      },
+      "time": "2026-09-11T07:57:07.167Z"
+    },
+    {
+      "tool": "browser_navigate_tab",
+      "arguments": {
+        "tabId": 948915318,
+        "url": "http://127.0.0.1:15175"
+      },
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"id\":948915318,\"title\":\"DevFlow 并行环境演示\",\"url\":\"http://127.0.0.1:15175\"}"
+          }
+        ]
+      },
+      "time": "2026-09-11T07:57:07.210Z"
+    },
+    {
+      "tool": "browser_get_tab_info",
+      "arguments": {
+        "tabId": 948915318
+      },
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"id\":948915318,\"title\":\"DevFlow 并行环境演示\",\"url\":\"http://127.0.0.1:15175/\",\"status\":\"loading\",\"active\":true,\"windowId\":948915311,\"favIconUrl\":\"\",\"incognito\":false}"
+          }
+        ]
+      },
+      "time": "2026-09-11T07:57:07.246Z"
+    },
+    {
+      "tool": "browser_wait_for_element",
+      "arguments": {
+        "selector": "#result[data-ready='true']",
+        "tabId": 948915318,
+        "visible": true
+      },
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"found\":true,\"tagName\":\"output\",\"text\":\"ONLY-wf-44609b73-1004-4b56-913b-90b1a3028995\"}"
+          }
+        ]
+      },
+      "time": "2026-09-11T07:57:07.714Z"
+    },
+    {
+      "tool": "browser_get_tab_info",
+      "arguments": {
+        "tabId": 948915318
+      },
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"id\":948915318,\"title\":\"DevFlow 并行环境演示\",\"url\":\"http://127.0.0.1:15175/\",\"status\":\"complete\",\"active\":true,\"windowId\":948915311,\"favIconUrl\":\"\",\"incognito\":false}"
+          }
+        ]
+      },
+      "time": "2026-09-11T07:57:07.784Z"
+    },
+    {
+      "tool": "browser_get_tab_content",
+      "arguments": {
+        "selector": "#result",
+        "tabId": 948915318
+      },
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"title\":\"DevFlow 并行环境演示\",\"url\":\"http://127.0.0.1:15175/\",\"content\":\"ONLY-wf-44609b73-1004-4b56-913b-90b1a3028995\"}"
+          }
+        ]
+      },
+      "time": "2026-09-11T07:57:07.801Z"
+    }
+  ]
+}

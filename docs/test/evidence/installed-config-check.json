@@ -1,0 +1,9 @@
+{
+  "existing_settings_semantics_preserved": true,
+  "cli_normalized_empty_args": true,
+  "installed_skills": 5,
+  "skill_files_verified": 7,
+  "mcp_url": "http://127.0.0.1:4810/mcp",
+  "bearer_token_env_var": "DEVFLOW_PLANNER_TOKEN",
+  "config_backup": "C:\\Users\\yckj4798\\.codex\\config.devflow-backup-20260911-170835.toml"
+}

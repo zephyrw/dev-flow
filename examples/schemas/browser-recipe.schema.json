@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "project_id": {
+      "type": "string"
+    },
+    "scene_id": {
+      "type": "string"
+    },
+    "origins": {
+      "minItems": 1,
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "actions": {
+      "minItems": 1,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "tool": {
+            "type": "string",
+            "minLength": 1
+          },
+          "arguments": {
+            "type": "object",
+            "propertyNames": {
+              "type": "string"
+            },
+            "additionalProperties": {}
+          },
+          "capture": {
+            "default": {},
+            "type": "object",
+            "propertyNames": {
+              "type": "string",
+              "pattern": "^[A-Z][A-Z0-9_]*$"
+            },
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "assertions": {
+            "minItems": 1,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "pointer": {
+                  "type": "string"
+                },
+                "equals": {},
+                "contains": {
+                  "type": "string"
+                },
+                "minimum": {
+                  "type": "number"
+                },
+                "case_id": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "pointer"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "tool",
+          "arguments",
+          "capture",
+          "assertions"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "project_id",
+    "scene_id",
+    "origins",
+    "actions"
+  ],
+  "additionalProperties": false
+}

@@ -1,0 +1,319 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "default": 1,
+      "type": "number",
+      "const": 1
+    },
+    "server": {
+      "type": "object",
+      "properties": {
+        "host": {
+          "default": "127.0.0.1",
+          "type": "string",
+          "const": "127.0.0.1"
+        },
+        "port": {
+          "default": 4810,
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 65535
+        },
+        "human_origin": {
+          "default": "http://localhost:4810",
+          "type": "string",
+          "format": "uri"
+        }
+      },
+      "required": [
+        "host",
+        "port",
+        "human_origin"
+      ],
+      "additionalProperties": false
+    },
+    "storage_root": {
+      "default": ".devflow",
+      "type": "string"
+    },
+    "workspace_root": {
+      "default": ".devflow/worktrees",
+      "type": "string"
+    },
+    "models": {
+      "type": "object",
+      "properties": {
+        "executor": {
+          "default": "gemini-3.7-flash-high",
+          "type": "string",
+          "const": "gemini-3.7-flash-high"
+        },
+        "reviewer": {
+          "default": "gpt-6-astra",
+          "type": "string",
+          "const": "gpt-6-astra"
+        },
+        "effort": {
+          "default": "high",
+          "type": "string",
+          "const": "high"
+        },
+        "agy_executable": {
+          "default": "agy",
+          "type": "string"
+        },
+        "codex_executable": {
+          "default": "codex",
+          "type": "string"
+        },
+        "codex_prefix_args": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "executor",
+        "reviewer",
+        "effort",
+        "agy_executable",
+        "codex_executable",
+        "codex_prefix_args"
+      ],
+      "additionalProperties": false
+    },
+    "scheduler": {
+      "type": "object",
+      "properties": {
+        "executors": {
+          "default": 3,
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 16
+        },
+        "reviewers": {
+          "default": 1,
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 4
+        },
+        "heavy_tests": {
+          "default": 2,
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 8
+        },
+        "live_environments": {
+          "default": 6,
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 16
+        },
+        "aging_minutes": {
+          "default": 10,
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "executors",
+        "reviewers",
+        "heavy_tests",
+        "live_environments",
+        "aging_minutes"
+      ],
+      "additionalProperties": false
+    },
+    "ports": {
+      "type": "object",
+      "properties": {
+        "frontend": {
+          "default": [
+            15173,
+            15272
+          ],
+          "type": "array",
+          "prefixItems": [
+            {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 65535
+            },
+            {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 65535
+            }
+          ],
+          "items": false,
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "backend": {
+          "default": [
+            18081,
+            18180
+          ],
+          "type": "array",
+          "prefixItems": [
+            {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 65535
+            },
+            {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 65535
+            }
+          ],
+          "items": false,
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "bind_retries": {
+          "default": 5,
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 10
+        }
+      },
+      "required": [
+        "frontend",
+        "backend",
+        "bind_retries"
+      ],
+      "additionalProperties": false
+    },
+    "host": {
+      "type": "object",
+      "properties": {
+        "executable": {
+          "default": "",
+          "type": "string"
+        },
+        "required": {
+          "default": true,
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "executable",
+        "required"
+      ],
+      "additionalProperties": false
+    },
+    "opentabs": {
+      "type": "object",
+      "properties": {
+        "endpoint": {
+          "default": "http://127.0.0.1:9515/mcp",
+          "type": "string",
+          "format": "uri"
+        },
+        "secret_file": {
+          "default": "",
+          "type": "string"
+        },
+        "allowed_test_origins": {
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "uri"
+          }
+        }
+      },
+      "required": [
+        "endpoint",
+        "secret_file",
+        "allowed_test_origins"
+      ],
+      "additionalProperties": false
+    },
+    "timeouts": {
+      "type": "object",
+      "properties": {
+        "agent_minutes": {
+          "default": 60,
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        },
+        "idle_minutes": {
+          "default": 10,
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        },
+        "stop_seconds": {
+          "default": 5,
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        },
+        "heartbeat_seconds": {
+          "default": 5,
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "agent_minutes",
+        "idle_minutes",
+        "stop_seconds",
+        "heartbeat_seconds"
+      ],
+      "additionalProperties": false
+    },
+    "retention": {
+      "type": "object",
+      "properties": {
+        "logs_days": {
+          "default": 30,
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        },
+        "failed_logs_days": {
+          "default": 90,
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        },
+        "evidence_days": {
+          "default": 180,
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "logs_days",
+        "failed_logs_days",
+        "evidence_days"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "schema_version",
+    "server",
+    "storage_root",
+    "workspace_root",
+    "models",
+    "scheduler",
+    "ports",
+    "host",
+    "opentabs",
+    "timeouts",
+    "retention"
+  ],
+  "additionalProperties": false
+}

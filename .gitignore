@@ -1,0 +1,33 @@
+node_modules/
+dist/
+.cache/
+.devflow/
+test-results/
+playwright-report/
+coverage/
+host/**/bin/
+host/**/obj/
+*.log
+.env
+.env.*
+!.env.example
+!.env.*.example
+devflow.yaml
+*.sqlite*
+
+# Local credentials and signing keys
+*.pem
+*.key
+*.pfx
+*.p12
+
+# Editor, operating-system and Python caches
+.idea/
+.vs/
+*.user
+*.suo
+.DS_Store
+Thumbs.db
+Desktop.ini
+__pycache__/
+*.py[cod]
