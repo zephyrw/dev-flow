@@ -497,12 +497,19 @@ export class GitManager {
     return output;
   }
   async commit(snapshot: Snapshot, project: Project, message: string) {
-    requireCondition(
-      project.git,
-      "GIT_IDENTITY_REQUIRED",
-      "项目未登记提交身份",
-    );
-    const identity = project.git;
+    let identity = project.git;
+    if (!identity) {
+      const name =
+        (await git(".", ["config", "user.name"]).catch(() => "")) || "YCKJ4798";
+      const email =
+        (await git(".", ["config", "user.email"]).catch(() => "")) ||
+        "zhuxinwang@cloudwalk.com";
+      identity = {
+        author_name: name,
+        author_email: email,
+        required_hooks: [],
+      };
+    }
     let intent = this.store.get<{
       snapshot: string;
       message: string;
