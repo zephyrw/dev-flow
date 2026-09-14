@@ -32,7 +32,7 @@ try {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({ tool: name }),
-        signal: AbortSignal.timeout(3000),
+        signal: AbortSignal.timeout(25000),
       },
     );
     if (response.ok) {

@@ -64,6 +64,7 @@ export class ProcessManager {
         stdio: "pipe",
         env: inherited,
       });
+      child.stdin.on("error", () => {});
       // All children use the current Windows user and its existing login profile.
       child.stdin.write(
         JSON.stringify({
@@ -79,6 +80,7 @@ export class ProcessManager {
         shell: false,
         stdio: "pipe",
       });
+      child.stdin.on("error", () => {});
       if (spec.stdin) child.stdin.end(spec.stdin);
       else child.stdin.end();
     }
@@ -145,8 +147,17 @@ export class ProcessManager {
     events.completion = done;
     events.stop = async () => {
       if (settled) return;
-      if (useHost) child.stdin.write(JSON.stringify({ action: "stop" }) + "\n");
-      else child.kill();
+      if (useHost) {
+        try {
+          if (child.stdin?.writable) {
+            child.stdin.write(JSON.stringify({ action: "stop" }) + "\n");
+          } else {
+            child.kill();
+          }
+        } catch {
+          child.kill();
+        }
+      } else child.kill();
       await done;
     };
     if (spec.timeout_ms > 0)

@@ -33,7 +33,7 @@ export function writeAgyConfiguration(
   const policy = {
     enabled: true,
     PreToolUse: [
-      { matcher: "*", hooks: [{ type: "command", command, timeout: 10 }] },
+      { matcher: "*", hooks: [{ type: "command", command, timeout: 30 }] },
     ],
   };
   atomicWrite(
