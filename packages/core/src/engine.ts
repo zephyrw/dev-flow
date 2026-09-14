@@ -1,3 +1,4 @@
+import { workflowAttention } from "./attention.js";
 import {
   latestEvidence,
   currentEvidence,
@@ -90,6 +91,7 @@ export class Engine {
     const w = this.get(key);
     return {
       workflow: w,
+      attention: workflowAttention(this, key),
       plan: w.plan_revision ? this.plan(key) : null,
       workspaces: this.store.list<Workspace>("workspace", key),
       runs: this.store.list<Run>("run", key),
@@ -766,19 +768,37 @@ export class Engine {
       message: "证据已齐备；等待执行器进程正常退出后开放人工验收。",
     };
   }
-  async stop(key: string) {
+  async stop(
+    key: string,
+    source: "local_console" | "controller" = "controller",
+  ) {
     const w = this.get(key);
     requireCondition(
       !["COMMITTED", "COMMITTING", "COMMIT_PARTIAL"].includes(w.state),
       "INVALID_STATE",
       "该阶段不能停止执行",
     );
+    const interruption = {
+      category: "stop",
+      source,
+      at: now(),
+      prior_stage: w.stage,
+      run_id: w.run_id,
+      message:
+        source === "local_console"
+          ? "你在控制台停止了执行"
+          : "执行已由控制程序停止",
+      next_action: "核实后继续这个任务",
+    };
+    this.store.put("interruption", key, key, interruption);
+    if (w.run_id) this.store.put("run_stop", w.run_id, key, interruption);
     if (w.run_id) this.auth.revokeRun(w.run_id);
     this.store.remove("queue", key);
     this.transition(key, [w.state], "STOPPING", "stop");
     if (w.run_id) await this.runtime?.stop(w.run_id);
     const next = this.transition(key, ["STOPPING"], "STOPPED", "stopped");
     this.store.event(key, w.project_id, "Stopped", {
+      ...interruption,
       agent_stopped: true,
       services_retained: true,
     });
@@ -998,7 +1018,7 @@ export class Engine {
         }
         this.store.put("run", runId, key, {
           ...this.store.must<Run>("run", runId),
-          status: this.get(key).state === "STOPPED" ? "stopped" : "completed",
+          status: this.store.get("run_stop", runId) ? "stopped" : "completed",
           ended_at: now(),
         });
       } finally {
@@ -1022,9 +1042,11 @@ export class Engine {
       if (run)
         this.store.put("run", runId, key, {
           ...run,
-          status: "failed",
+          status: this.store.get("run_stop", runId) ? "stopped" : "failed",
           ended_at: now(),
-          result: { error: String(e) },
+          result: this.store.get("run_stop", runId)
+            ? { interruption: this.store.get("run_stop", runId) }
+            : { error: String(e) },
         });
     } finally {
       this.scheduler.release(key, runId, leases, true);
@@ -1207,6 +1229,15 @@ export class Engine {
     )
       return;
     const code = error instanceof FlowError ? error.code : "INTERNAL_FAILURE";
+    this.store.put("interruption", key, key, {
+      category: "error",
+      source: "runtime",
+      at: now(),
+      prior_stage: w.stage,
+      run_id: w.run_id,
+      message: error instanceof Error ? error.message : String(error),
+      next_action: "处理错误后继续这个任务",
+    });
     this.transition(key, [w.state], "BLOCKED", "blocked", {
       blocker: {
         code,

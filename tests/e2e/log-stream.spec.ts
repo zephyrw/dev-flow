@@ -46,7 +46,15 @@ test("continuous WebSocket output becomes visible before the stream ends and sur
           event_seq: sent,
           created_at: new Date().toISOString(),
           type: sent % 10 === 0 ? "StateChanged" : "AgentEvent",
-          payload: { event: "step_update", step_update: {step_index:1, step_type:"agent_response",state:"ACTIVE",text_delta:`流式日志-${sent}\n`} },
+          payload: {
+            event: "step_update",
+            step_update: {
+              step_index: 1,
+              step_type: "agent_response",
+              state: "ACTIVE",
+              text_delta: `流式日志-${sent}\n`,
+            },
+          },
         }),
       );
     }, 30);
@@ -58,7 +66,13 @@ test("continuous WebSocket output becomes visible before the stream ends and sur
       .getByRole("button")
       .filter({ has: page.getByRole("heading", { name: workflow.title }) })
       .click();
-    await page.getByRole("button", { name: "执行过程", exact: true }).click();
+    await page.locator(".execution-toggle").waitFor();
+    if (
+      (await page
+        .locator(".execution-toggle")
+        .getAttribute("aria-expanded")) === "false"
+    )
+      await page.getByRole("button", { name: "执行过程", exact: true }).click();
     await expect(page.locator(".logs")).toContainText("流式日志-1", {
       timeout: 2000,
     });
@@ -152,10 +166,15 @@ test("execution narrative keeps payloads collapsed and shows the interrupted sta
     .getByRole("button")
     .filter({ has: page.getByRole("heading", { name: workflow.title }) })
     .click();
-  await expect(
-    page.getByRole("region", { name: "当前执行进度" }),
-  ).toContainText("已暂停 · 开发实施");
-  await page.getByRole("button", { name: "执行过程", exact: true }).click();
+  await expect(page.getByLabel("当前执行进度")).toContainText(
+    "开发实施 · 暂停",
+  );
+  await page.locator(".execution-toggle").waitFor();
+  if (
+    (await page.locator(".execution-toggle").getAttribute("aria-expanded")) ===
+    "false"
+  )
+    await page.getByRole("button", { name: "执行过程", exact: true }).click();
   await expect(page.locator(".activity").first()).toContainText("读取文件");
   await expect(page.locator(".activity").first()).toContainText("已中断");
   await expect(
@@ -175,7 +194,7 @@ test("execution narrative keeps payloads collapsed and shows the interrupted sta
     .click();
   await expect(page.locator(".activity").first().locator("pre")).toBeVisible();
   await page.getByRole("button", { name: "任务进度", exact: true }).click();
-  await expect(
-    page.getByRole("region", { name: "当前执行进度" }),
-  ).toContainText("1 个工作包");
+  await expect(page.getByLabel("当前执行进度")).toContainText(
+    "尚未生成细项清单",
+  );
 });

@@ -208,8 +208,8 @@ try {
       has: page.getByRole("heading", { name: "真实 agy 信息传递验收" }),
     })
     .click();
-  await page.getByRole("button", { name: "批准当前计划" }).click();
   await page.getByRole("button", { name: "执行过程", exact: true }).click();
+  await page.getByRole("button", { name: "批准当前计划" }).click();
   console.log(
     "Live agy workflow approved through the local UI without login; watching event-driven state.",
   );
@@ -315,6 +315,52 @@ try {
     "LIVE_TEST_FAILED",
     "真实 MCP 联调未达到验收条件",
   );
+  if (process.argv.includes("--stop-probe")) {
+    const firstRun = engine.get(w.id).run_id;
+    await page.getByRole("button", { name: "反馈问题", exact: true }).click();
+    await page
+      .getByLabel("问题反馈")
+      .fill(
+        "在原批准范围内重新核对文本与换行，重新测试。本轮由测试控制台验证中途停止功能。",
+      );
+    await page.getByRole("button", { name: "保存并继续", exact: true }).click();
+    await expect
+      .poll(() => engine.get(w.id).run_id, { timeout: 60000 })
+      .not.toBe(firstRun);
+    const stopRun = engine.get(w.id).run_id;
+    await expect
+      .poll(
+        () =>
+          (events as any[]).some(
+            (e) =>
+              e.run_id === stopRun &&
+              e.payload?.event === "init" &&
+              e.payload?.init?.model === s.config.models.executor,
+          ),
+        { timeout: 120000 },
+      )
+      .toBe(true);
+    await page.getByRole("button", { name: "停止执行", exact: true }).click();
+    await expect
+      .poll(() => engine.get(w.id).state, { timeout: 30000 })
+      .toBe("STOPPED");
+    await expect
+      .poll(() => engine.store.get<any>("run", stopRun!)?.status, {
+        timeout: 30000,
+      })
+      .toBe("stopped");
+    await expect(page.locator(".attention-strip")).toContainText(
+      "你在控制台停止了执行",
+    );
+    result.stop_probe = {
+      state: engine.get(w.id).state,
+      run: engine.store.get("run", stopRun!),
+      attention: engine.detail(w.id).attention,
+    };
+    atomicWrite(join(output, "summary.json"), JSON.stringify(result, null, 2));
+    await page.screenshot({ path: join(output, "live-stopped.png") });
+    console.log("REAL AGY STOP CLASSIFICATION PASSED");
+  }
 } finally {
   cleanupCompletion();
   await engine.runtime!.close();
