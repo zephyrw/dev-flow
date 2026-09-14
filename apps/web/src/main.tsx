@@ -54,11 +54,90 @@ function ensureMermaidInitialized() {
   }
 }
 
+function downloadSvgAsPng(
+  svgElement: SVGSVGElement,
+  filename: string,
+): Promise<boolean> {
+  return new Promise((resolve) => {
+    try {
+      const clone = svgElement.cloneNode(true) as SVGSVGElement;
+      if (!clone.getAttribute("xmlns")) {
+        clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+      }
+      const bBox = svgElement.getBoundingClientRect();
+      const width = Math.ceil(
+        bBox.width || parseFloat(clone.getAttribute("width") || "800"),
+      );
+      const height = Math.ceil(
+        bBox.height || parseFloat(clone.getAttribute("height") || "500"),
+      );
+      clone.setAttribute("width", String(width));
+      clone.setAttribute("height", String(height));
+
+      const svgString = new XMLSerializer().serializeToString(clone);
+      const svgBlob = new Blob([svgString], {
+        type: "image/svg+xml;charset=utf-8",
+      });
+      const url = URL.createObjectURL(svgBlob);
+
+      const img = new Image();
+      img.onload = () => {
+        const scale = 2; // 2x Retina 高清输出
+        const canvas = document.createElement("canvas");
+        canvas.width = width * scale;
+        canvas.height = height * scale;
+        const ctx = canvas.getContext("2d");
+        if (ctx) {
+          ctx.fillStyle = "#ffffff";
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          ctx.scale(scale, scale);
+          ctx.drawImage(img, 0, 0, width, height);
+          canvas.toBlob((blob) => {
+            if (blob) {
+              const a = document.createElement("a");
+              a.download = filename;
+              a.href = URL.createObjectURL(blob);
+              a.click();
+              URL.revokeObjectURL(a.href);
+              resolve(true);
+            } else {
+              resolve(false);
+            }
+          }, "image/png");
+        } else {
+          resolve(false);
+        }
+        URL.revokeObjectURL(url);
+      };
+      img.onerror = () => {
+        URL.revokeObjectURL(url);
+        resolve(false);
+      };
+      img.src = url;
+    } catch {
+      resolve(false);
+    }
+  });
+}
+
 const Diagram = React.memo(function Diagram({ source }: { source: string }) {
   const [svg, setSvg] = useState<string>(
     () => mermaidSvgCache.get(source) ?? "",
   );
   const [error, setError] = useState("");
+  const [copied, setCopied] = useState(false);
+  const [downloading, setDownloading] = useState(false);
+  const [fullscreen, setFullscreen] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!fullscreen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setFullscreen(false);
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [fullscreen]);
 
   useEffect(() => {
     let alive = true;
@@ -87,16 +166,146 @@ const Diagram = React.memo(function Diagram({ source }: { source: string }) {
     };
   }, [source]);
 
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(source);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // 容错处理
+    }
+  };
+
+  const handleDownload = async () => {
+    if (!containerRef.current) return;
+    const svgEl = containerRef.current.querySelector("svg");
+    if (!svgEl) return;
+    setDownloading(true);
+    await downloadSvgAsPng(svgEl, `mermaid-diagram-${Date.now()}.png`);
+    setDownloading(false);
+  };
+
   if (error) return <p className="error">{error}</p>;
+
   if (svg) {
     return (
-      <div className="diagram" dangerouslySetInnerHTML={{ __html: svg }} />
+      <>
+        <div className="diagram-wrapper" ref={containerRef}>
+          <div className="diagram-toolbar" aria-label="图表操作">
+            <button
+              className="diagram-action-btn"
+              onClick={handleCopy}
+              title="复制 Mermaid 原始代码"
+            >
+              <span className="btn-icon">{copied ? "✓" : "📋"}</span>
+              <span className="btn-label">{copied ? "已复制" : "复制"}</span>
+            </button>
+            <button
+              className="diagram-action-btn"
+              onClick={handleDownload}
+              disabled={downloading}
+              title="下载 PNG 图片"
+            >
+              <span className="btn-icon">{downloading ? "⏳" : "📥"}</span>
+              <span className="btn-label">
+                {downloading ? "生成中…" : "下载"}
+              </span>
+            </button>
+            <button
+              className="diagram-action-btn"
+              onClick={() => setFullscreen(true)}
+              title="在浏览器全屏浏览"
+            >
+              <span className="btn-icon">⛶</span>
+              <span className="btn-label">全屏</span>
+            </button>
+          </div>
+          <div className="diagram" dangerouslySetInnerHTML={{ __html: svg }} />
+        </div>
+
+        {fullscreen && (
+          <div
+            className="diagram-lightbox-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Mermaid 图表全屏浏览"
+            onClick={() => setFullscreen(false)}
+          >
+            <div
+              className="diagram-lightbox-content"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="diagram-lightbox-header">
+                <span className="lightbox-title">Mermaid 图表全屏浏览</span>
+                <div className="lightbox-actions">
+                  <button
+                    className="diagram-action-btn"
+                    onClick={handleCopy}
+                    title="复制 Mermaid 原始代码"
+                  >
+                    <span>{copied ? "✓ 已复制" : "📋 复制代码"}</span>
+                  </button>
+                  <button
+                    className="diagram-action-btn"
+                    onClick={handleDownload}
+                    disabled={downloading}
+                    title="下载 PNG 图片"
+                  >
+                    <span>{downloading ? "⏳ 生成中…" : "📥 下载 PNG"}</span>
+                  </button>
+                  <button
+                    className="diagram-action-btn close-btn"
+                    onClick={() => setFullscreen(false)}
+                    title="关闭全屏 (ESC)"
+                  >
+                    ✕ 退出全屏
+                  </button>
+                </div>
+              </div>
+              <div
+                className="diagram-lightbox-body"
+                dangerouslySetInnerHTML={{ __html: svg }}
+              />
+            </div>
+          </div>
+        )}
+      </>
     );
   }
   return <div className="diagram" style={{ minHeight: "40px" }} />;
 });
 
+function extractTextFromChildren(children: any): string {
+  if (!children) return "";
+  if (typeof children === "string") return children;
+  if (Array.isArray(children)) return children.map(extractTextFromChildren).join("");
+  if (children.props?.children) return extractTextFromChildren(children.props.children);
+  return "";
+}
+
+function slugifyHeading(text: string): string {
+  const clean = text.trim().toLowerCase().replace(/\s+/g, "-").replace(/[^\w\u4e00-\u9fa5-]+/g, "");
+  return encodeURIComponent(clean) || "section";
+}
+
+const headingRenderer = (level: number) => {
+  return ({ children, ...props }: any) => {
+    const text = extractTextFromChildren(children).replace(/[*_`[\]]/g, "");
+    const id = slugifyHeading(text);
+    const Tag = `h${level}` as any;
+    return (
+      <Tag id={id} {...props}>
+        {children}
+      </Tag>
+    );
+  };
+};
+
 const markdownComponents = {
+  h1: headingRenderer(1),
+  h2: headingRenderer(2),
+  h3: headingRenderer(3),
+  h4: headingRenderer(4),
   code: ({ className, children, ...props }: any) =>
     className === "language-mermaid" ? (
       <Diagram source={String(children)} />
@@ -121,6 +330,35 @@ const Document = React.memo(function Document({ text }: { text: string }) {
     </div>
   );
 });
+
+interface TocItem {
+  id: string;
+  text: string;
+  level: number;
+}
+
+function extractToc(markdown: string): TocItem[] {
+  if (!markdown) return [];
+  const lines = markdown.split("\n");
+  const items: TocItem[] = [];
+  const seen = new Map<string, number>();
+
+  for (const line of lines) {
+    const match = line.match(/^(#{1,4})\s+(.+)$/);
+    if (match && match[1] && match[2]) {
+      const level = match[1].length;
+      const rawText = match[2].trim().replace(/[*_`[\]]/g, "");
+      let slug = slugifyHeading(rawText);
+      const count = seen.get(slug) ?? 0;
+      seen.set(slug, count + 1);
+      if (count > 0) {
+        slug = `${slug}-${count}`;
+      }
+      items.push({ id: slug, text: rawText, level });
+    }
+  }
+  return items;
+}
 
 interface CentralWorkspaceProps {
   selected: string;
@@ -152,6 +390,28 @@ const CentralWorkspace = React.memo(
     attempt,
     setNotice,
   }: CentralWorkspaceProps) {
+    const [showToc, setShowToc] = useState(true);
+    const [planFullscreen, setPlanFullscreen] = useState(false);
+
+    useEffect(() => {
+      if (!planFullscreen) return;
+      const handleKeyDown = (e: KeyboardEvent) => {
+        if (e.key === "Escape") setPlanFullscreen(false);
+      };
+      window.addEventListener("keydown", handleKeyDown);
+      return () => window.removeEventListener("keydown", handleKeyDown);
+    }, [planFullscreen]);
+
+    const planMarkdown = detail.plan?.plan?.markdown ?? "";
+    const tocItems = React.useMemo(() => extractToc(planMarkdown), [planMarkdown]);
+
+    const scrollToHeading = (id: string) => {
+      const el = document.getElementById(id);
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "start" });
+      }
+    };
+
     return (
       <div className="central-workspace">
         <div className="tabs">
@@ -209,44 +469,117 @@ const CentralWorkspace = React.memo(
             </div>
           )}
           {tab === "plan" && (
-            <section className="panel">
-              <div className="section-title">
-                <h2>开发计划 · 第 {w.plan_revision} 版</h2>
-                {w.plan_revision > 0 && (
-                  <a href={`/api/workflows/${selected}/documents/plan`}>
-                    下载 Markdown
-                  </a>
-                )}
+            <section
+              className={`panel plan-panel ${planFullscreen ? "plan-fullscreen-active" : ""}`}
+            >
+              <div className="section-title plan-section-title">
+                <div className="plan-title-left">
+                  <h2>开发计划 · 第 {w.plan_revision} 版</h2>
+                  {detail.plan && (
+                    <button
+                      className={`btn-secondary btn-toc-toggle ${showToc ? "active" : ""}`}
+                      onClick={() => setShowToc(!showToc)}
+                      title={showToc ? "收起文档大纲" : "展开文档大纲"}
+                    >
+                      <span className="btn-icon">📑</span>
+                      <span>{showToc ? "收起大纲" : "文档大纲"}</span>
+                    </button>
+                  )}
+                </div>
+                <div className="plan-title-actions">
+                  {detail.plan && (
+                    <button
+                      className="btn-secondary btn-fullscreen-toggle"
+                      onClick={() => setPlanFullscreen(!planFullscreen)}
+                      title={
+                        planFullscreen
+                          ? "退出全屏浏览 (ESC)"
+                          : "全屏查看开发计划"
+                      }
+                    >
+                      <span className="btn-icon">
+                        {planFullscreen ? "✕" : "⛶"}
+                      </span>
+                      <span>{planFullscreen ? "退出全屏" : "全屏查看"}</span>
+                    </button>
+                  )}
+                  {w.plan_revision > 0 && (
+                    <a
+                      className="download-link"
+                      href={`/api/workflows/${selected}/documents/plan`}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      下载 Markdown
+                    </a>
+                  )}
+                </div>
               </div>
+
               {detail.plan ? (
-                <>
-                  <Document text={detail.plan.plan.markdown} />
-                  <details>
-                    <summary>本计划使用的运行配置</summary>
-                    <p>
-                      工作目录：
-                      {w.workspace_mode === "new_worktree"
-                        ? "独立 worktree"
-                        : "当前目录"}
-                      ；测试数据：
-                      {detail.project?.data.mode === "directory"
-                        ? "按任务独立目录"
-                        : "共享数据按资源排队"}
-                    </p>
-                    {detail.project?.repositories.map((r: any) => (
-                      <p key={r.id}>
-                        {r.id}：
-                        {detail.context?.roots?.[r.id] ?? r.path}
+                <div className={`plan-viewer-body ${showToc ? "has-toc" : ""}`}>
+                  {showToc && (
+                    <aside className="plan-toc-sidebar" aria-label="文档大纲">
+                      <div className="toc-header">
+                        <span className="toc-title">目录导航</span>
+                        <span className="toc-count">
+                          {tocItems.length} 个章节
+                        </span>
+                      </div>
+                      <div className="toc-items-container">
+                        {tocItems.length > 0 ? (
+                          <ul className="toc-list">
+                            {tocItems.map((item, idx) => (
+                              <li
+                                key={idx}
+                                className={`toc-item level-${item.level}`}
+                              >
+                                <button
+                                  className="toc-link-btn"
+                                  onClick={() => scrollToHeading(item.id)}
+                                  title={item.text}
+                                >
+                                  <span className="toc-bullet" />
+                                  <span className="toc-text">{item.text}</span>
+                                </button>
+                              </li>
+                            ))}
+                          </ul>
+                        ) : (
+                          <div className="toc-empty">未发现标题章节</div>
+                        )}
+                      </div>
+                    </aside>
+                  )}
+                  <div className="plan-content-area">
+                    <Document text={detail.plan.plan.markdown} />
+                    <details className="plan-runtime-details">
+                      <summary>本计划使用的运行配置</summary>
+                      <p>
+                        工作目录：
+                        {w.workspace_mode === "new_worktree"
+                          ? "独立 worktree"
+                          : "当前目录"}
+                        ；测试数据：
+                        {detail.project?.data.mode === "directory"
+                          ? "按任务独立目录"
+                          : "共享数据按资源排队"}
                       </p>
-                    ))}
-                    {detail.project?.commands.map((c: any) => (
-                      <p key={c.id}>
-                        {c.id}：
-                        <code>{[c.executable, ...c.args].join(" ")}</code>
-                      </p>
-                    ))}
-                  </details>
-                </>
+                      {detail.project?.repositories.map((r: any) => (
+                        <p key={r.id}>
+                          {r.id}：
+                          {detail.context?.roots?.[r.id] ?? r.path}
+                        </p>
+                      ))}
+                      {detail.project?.commands.map((c: any) => (
+                        <p key={c.id}>
+                          {c.id}：
+                          <code>{[c.executable, ...c.args].join(" ")}</code>
+                        </p>
+                      ))}
+                    </details>
+                  </div>
+                </div>
               ) : (
                 <div className="empty">
                   计划尚未提交。先由 GPT-6 完成调研和任务拆解。
@@ -1214,17 +1547,6 @@ function App() {
                       >
                         <span className="toggle-icon">⚡</span>
                         执行过程
-                        {!sidebarOpen && unreadEntries.length > 0 && (
-                          <span
-                            className={
-                              unreadEntries.some((e) => e.status === "error")
-                                ? "unread error"
-                                : "unread"
-                            }
-                          >
-                            {unreadEntries.length}
-                          </span>
-                        )}
                       </button>
                     </div>
                   </div>
