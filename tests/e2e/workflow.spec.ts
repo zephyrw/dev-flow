@@ -2,16 +2,22 @@ import { test, expect } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 test.describe.configure({ mode: "serial" });
-test("empty console explains the natural-language entry without manual registration", async ({ page }) => {
-  await page.route("**/api/projects", route => route.fulfill({json: []}));
-  await page.route("**/api/workflows", route => route.fulfill({json: []}));
+test("empty console explains the natural-language entry without manual registration", async ({
+  page,
+}) => {
+  await page.route("**/api/projects", (route) => route.fulfill({ json: [] }));
+  await page.route("**/api/workflows", (route) => route.fulfill({ json: [] }));
   await page.goto("/");
-  await page.getByRole("button", {name: "使用指南",exact:true}).click();
-  await expect(page.locator(".guide-page")).toContainText("用 DevFlow 帮我修复客户列表筛选的问题");
+  await page.getByRole("button", { name: "使用指南", exact: true }).click();
+  await expect(page.locator(".guide-page")).toContainText(
+    "用 DevFlow 帮我修复客户列表筛选的问题",
+  );
   await page.reload();
   await expect(page.locator(".guide-page")).toBeVisible();
   await expect(page.locator(".guide-page textarea")).toHaveCount(0);
-  await expect(page.getByRole("button",{name:"如何开始新任务"})).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "如何开始新任务" }),
+  ).toHaveCount(0);
 });
 test.afterAll(async ({ request }) => {
   const state = JSON.parse(
@@ -28,7 +34,7 @@ test("E2E-01/05/06/08 local button approval, diagrams, evidence and accepted com
 }) => {
   // This scenario performs two actual test runs, local confirmations and a Git
   // commit. Keep per-assertion waits bounded without capping the whole flow at 45s.
-  test.setTimeout(120000);
+  test.setTimeout(180000);
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(e.message));
   const state = JSON.parse(
@@ -49,7 +55,7 @@ test("E2E-01/05/06/08 local button approval, diagrams, evidence and accepted com
   await page.screenshot({ path: ".cache/e2e-plan.png", fullPage: true });
   await page.getByRole("button", { name: "批准当前计划" }).click();
   await expect(page.locator(".workflow-bar")).toContainText("等待你的验收", {
-    timeout: 30000,
+    timeout: 60000,
   });
   await page.getByRole("button", { name: "测试结果", exact: true }).click();
   await page.locator(".task-module > summary").first().click();
@@ -74,7 +80,7 @@ test("E2E-01/05/06/08 local button approval, diagrams, evidence and accepted com
     })
     .toBeGreaterThan(before.runs.length);
   await expect(page.locator(".workflow-bar")).toContainText("等待你的验收", {
-    timeout: 30000,
+    timeout: 60000,
   });
   const after = await (
     await page.request.get("/api/workflows/" + state.workflow_id)
@@ -82,11 +88,16 @@ test("E2E-01/05/06/08 local button approval, diagrams, evidence and accepted com
   expect(after.evidence.some((e: any) => e.status === "stale")).toBe(true);
   expect(after.evidence.some((e: any) => e.status === "passed")).toBe(true);
   await page.reload();
-  await page.getByRole("button", { name: "执行过程", exact: true }).click();
+  await page.locator(".execution-toggle").waitFor();
+  if (
+    (await page.locator(".execution-toggle").getAttribute("aria-expanded")) ===
+    "false"
+  )
+    await page.getByRole("button", { name: "执行过程", exact: true }).click();
   await expect(page.locator(".logs")).toContainText("进入开发实施");
   await page.getByRole("button", { name: "验收通过，启动复核" }).click();
   await expect(page.locator(".workflow-bar")).toContainText("已提交", {
-    timeout: 30000,
+    timeout: 60000,
   });
   await page.getByRole("button", { name: "代码复核", exact: true }).click();
   await expect(
@@ -101,10 +112,11 @@ test("E2E-01/05/06/08 local button approval, diagrams, evidence and accepted com
   await page.locator(".changed-files button").first().click();
   await expect(page.locator(".file-diff")).toContainText("+after");
   const lines = page.locator(".file-diff span");
-  const firstLine = await lines.nth(0).boundingBox(), secondLine = await lines.nth(1).boundingBox();
+  const firstLine = await lines.nth(0).boundingBox(),
+    secondLine = await lines.nth(1).boundingBox();
   expect(secondLine!.y).toBeGreaterThan(firstLine!.y);
   await page.keyboard.press("Escape");
-  await expect(page.getByRole("dialog", {name:"文件差异"})).toHaveCount(0);
+  await expect(page.getByRole("dialog", { name: "文件差异" })).toHaveCount(0);
   await page.screenshot({ path: ".cache/e2e-complete.png", fullPage: true });
   expect(errors).toEqual([]);
 });

@@ -1,0 +1,14 @@
+{
+  "state_before_stop_probe": "HUMAN_PENDING",
+  "model": "gemini-3.7-flash-high",
+  "production_runtime": true,
+  "logs_before_completion": true,
+  "plan_marker_roundtrip": true,
+  "task_completed": true,
+  "tests_passed": 1,
+  "tests_total": 1,
+  "stop_state": "STOPPED",
+  "stop_run_status": "stopped",
+  "stop_reason": "你在控制台停止了执行",
+  "stop_source": "local_console"
+}

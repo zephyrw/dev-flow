@@ -1,0 +1,41 @@
+{
+  "workflow": "wf-9fe59b2c-e9cb-4ddd-aa9e-07dd05d3f2e3",
+  "state": "EXECUTING",
+  "revision": 2,
+  "tasks": 42,
+  "tests": 81,
+  "sizes": [
+    {
+      "width": 1440,
+      "height": 900,
+      "body": {
+        "x": 234,
+        "y": 152,
+        "width": 792,
+        "height": 748
+      }
+    },
+    {
+      "width": 1920,
+      "height": 1080,
+      "body": {
+        "x": 234,
+        "y": 152,
+        "width": 1272,
+        "height": 928
+      }
+    },
+    {
+      "width": 800,
+      "height": 900,
+      "body": {
+        "x": 180,
+        "y": 187.1875,
+        "width": 610,
+        "height": 712.8125
+      }
+    }
+  ],
+  "browser_errors": [],
+  "controller_restarted": false
+}

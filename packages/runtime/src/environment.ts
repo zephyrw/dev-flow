@@ -15,10 +15,12 @@ export interface Environment {
   workflow_id: string;
   revision: number;
   status: "starting" | "ready" | "stopped" | "failed";
+  error?: string;
   identity: string;
   data_dir: string;
   services: {
     id: string;
+    status?: "starting" | "ready";
     process_id: string;
     port: number;
     origin: string;
@@ -43,7 +45,11 @@ export class Environments {
     private engine: Engine,
     private processes: ProcessManager,
   ) {}
-  async ensure(workflow: Workflow, assertActive: () => void = () => {}, trackProcess: (id: string) => void = () => {}) {
+  async ensure(
+    workflow: Workflow,
+    assertActive: () => void = () => {},
+    trackProcess: (id: string) => void = () => {},
+  ) {
     assertActive();
     const current = this.engine.store.get<Environment>(
       "environment",
@@ -63,7 +69,18 @@ export class Environments {
       "ENVIRONMENT_CAPACITY",
       "保留的测试环境已达到上限，请释放不用的环境",
     );
-    const activity = (type: string, payload: Record<string, unknown>) => this.engine.store.event(workflow.id, workflow.project_id, type, { ...payload, task_id: this.engine.store.get<any>("task_activity", workflow.id)?.task_id }, workflow.run_id);
+    const activity = (type: string, payload: Record<string, unknown>) =>
+      this.engine.store.event(
+        workflow.id,
+        workflow.project_id,
+        type,
+        {
+          ...payload,
+          task_id: this.engine.store.get<any>("task_activity", workflow.id)
+            ?.task_id,
+        },
+        workflow.run_id,
+      );
     const env: Environment = {
       id: id("env"),
       workflow_id: workflow.id,
@@ -169,7 +186,11 @@ export class Environments {
               )?.origin ?? "",
           };
           const args = command.args.map((a) => expand(a, variables));
-          activity("ServiceStarting", { service_id: service.id, label: service.port_pool === "backend" ? "后端服务" : "前端服务", process_id: processId });
+          activity("ServiceStarting", {
+            service_id: service.id,
+            label: service.port_pool === "backend" ? "后端服务" : "前端服务",
+            process_id: processId,
+          });
           const proc = this.processes.start({
             workflow_id: workflow.id,
             id: processId,
@@ -211,7 +232,7 @@ export class Environments {
               project.services.find((p) => p.id === s.id)?.port_pool ===
               "backend",
           );
-          const entry = {
+          const entry: Environment["services"][number] = {
             id: service.id,
             process_id: processId,
             port,
@@ -229,7 +250,12 @@ export class Environments {
           try {
             env.services.push(entry);
             this.engine.store.put("environment", workflow.id, workflow.id, env);
-            await this.waitHealth(entry, entry.expected_identity, 30000, assertActive);
+            await this.waitHealth(
+              entry,
+              entry.expected_identity,
+              30000,
+              assertActive,
+            );
             assertActive();
             if (entry.upstream_probe_url)
               await this.waitHealth(
@@ -239,12 +265,21 @@ export class Environments {
                 assertActive,
               );
             assertActive();
-            activity("ServiceReady", { service_id: service.id, label: service.port_pool === "backend" ? "后端服务" : "前端服务", origin, process_id: processId });
+            entry.status = "ready";
+            this.engine.store.put("environment", workflow.id, workflow.id, env);
+            activity("ServiceReady", {
+              service_id: service.id,
+              label: service.port_pool === "backend" ? "后端服务" : "前端服务",
+              origin,
+              process_id: processId,
+            });
             running = true;
             break;
           } catch (error) {
             await proc.stop();
-            env.services = env.services.filter(s => s.process_id !== processId);
+            env.services = env.services.filter(
+              (s) => s.process_id !== processId,
+            );
             assertActive();
             this.engine.scheduler.release(
               workflow.id,
@@ -274,7 +309,10 @@ export class Environments {
       );
       return env;
     } catch (e) {
-      activity("EnvironmentFailed", { message: e instanceof Error ? e.message : String(e) });
+      activity("EnvironmentFailed", {
+        message: e instanceof Error ? e.message : String(e),
+      });
+      env.error = e instanceof Error ? e.message : String(e);
       env.status = "failed";
       this.engine.store.put("environment", workflow.id, workflow.id, env);
       await this.stop(workflow.id);

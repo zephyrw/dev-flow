@@ -279,7 +279,7 @@ export async function buildServer(engine: Engine) {
   });
   app.post("/api/workflows/:id/stop", async (req) => {
     human(req);
-    return engine.stop(Id.parse((req.params as any).id));
+    return engine.stop(Id.parse((req.params as any).id), "local_console");
   });
   app.post("/api/workflows/:id/recover", async (req) => {
     human(req);

@@ -229,7 +229,7 @@ export function readableLogs(events: any[], workflow: string): LogEntry[] {
         ? `${p.label ?? "服务"}${e.type === "ServiceReady" ? "已就绪" : "正在启动"}`
         : e.type.startsWith("Fixture")
           ? e.type === "FixtureReady"
-            ? "测试数据已就绪"
+            ? "数据准备脚本已结束"
             : "正在准备测试数据"
           : e.type === "CheckCompleted"
             ? p.status === "passed"
@@ -262,6 +262,8 @@ export function readableLogs(events: any[], workflow: string): LogEntry[] {
         steps.set(key, row);
       }
       row.raw.push(e);
+      row.sequence = e.event_seq;
+      row.created_at = e.created_at;
       const status = step.state === "DONE" ? "完成" : "进行中";
       row.status = step.state === "DONE" ? "done" : "active";
       if (step.step_type === "tool") {
@@ -342,6 +344,10 @@ export function readableLogs(events: any[], workflow: string): LogEntry[] {
       title = "测试环境准备失败";
       text = p.message;
     }
+    if (e.type === "Stopped") {
+      title = "执行已停止";
+      text = p.message ?? "历史记录未保存停止原因";
+    }
     if (e.type === "ProcessesReconciled") {
       title = "任务已恢复";
       text = "";
@@ -360,6 +366,7 @@ export function readableLogs(events: any[], workflow: string): LogEntry[] {
         "TaskStarted",
         "TaskCompleted",
         "EnvironmentFailed",
+        "Stopped",
         "ProcessesReconciled",
         "StateChanged",
         "TaskClaimed",
@@ -381,6 +388,11 @@ export function readableLogs(events: any[], workflow: string): LogEntry[] {
       text,
       raw: [e],
       kind: "event",
+      status:
+        e.type === "EnvironmentFailed" ||
+        (e.type === "StateChanged" && p.to === "BLOCKED")
+          ? "error"
+          : undefined,
     });
   }
   // Old runs must not continue to look active after a stop/failure or a new run.
