@@ -295,6 +295,22 @@ export async function buildServer(engine: Engine) {
     reconcileProcesses(engine, key);
     return engine.retryCommit(key);
   });
+  app.post("/api/workflows/:id/review/retry", async (req) => {
+    human(req);
+    const key = Id.parse((req.params as any).id);
+    const w = engine.get(key);
+    requireCondition(
+      w.state === "BLOCKED" && engine.store.get("acceptance", key),
+      "INVALID_STATE",
+      "只能对已验收但在复核时阻断的工作流重试复核",
+    );
+    engine.transition(key, ["BLOCKED"], "REVIEW_QUEUED", "review", {
+      blocker: undefined,
+    });
+    engine.scheduler.enqueue(key, w.project_id);
+    void engine.dispatch();
+    return engine.get(key);
+  });
   app.post("/api/workflows/:id/environment/stop", async (req) => {
     human(req);
     const key = Id.parse((req.params as any).id);
