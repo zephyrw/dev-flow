@@ -100,6 +100,9 @@ export class LocalRuntime implements Runtime {
   }
   async execute(workflow: Workflow, run: Run, token: string) {
     this.assertRun(workflow.id, run.id, ["EXECUTING"]);
+    if (run.deadline_at && Date.now() >= run.deadline_at) {
+      throw new FlowError("TIMEOUT", "执行启动前已达到截止时间");
+    }
     const directory = join(
       this.engine.config.storage_root,
       "containers",
@@ -153,6 +156,12 @@ export class LocalRuntime implements Runtime {
         "首先调用 devflow_execute_context，读取完整批准计划与 Skill。逐任务实施，仅使用 devflow_worker 工具。报告任务后 devflow_freeze，逐项 devflow_run_check，全部通过后 devflow_finish。遇到范围外问题报告阻塞并结束。",
     });
     this.assertRun(workflow.id, run.id, ["EXECUTING"]);
+    const remainingMs = run.deadline_at
+      ? Math.max(0, run.deadline_at - Date.now())
+      : this.engine.config.timeouts.agent_minutes * 60000;
+    if (remainingMs <= 0) {
+      throw new FlowError("TIMEOUT", "执行启动前已达到截止时间");
+    }
     const proc = this.processes.start({
       id: run.id,
       workflow_id: workflow.id,
@@ -175,7 +184,8 @@ export class LocalRuntime implements Runtime {
         DEVFLOW_RUN_ID: run.id,
         DEVFLOW_BASE_URL: "http://127.0.0.1:" + this.engine.config.server.port,
       },
-      timeout_ms: this.engine.config.timeouts.agent_minutes * 60000,
+      timeout_ms: remainingMs,
+      deadline_at: run.deadline_at,
     });
     const result = await observeAgy(proc, {
       model: this.engine.config.models.executor,
