@@ -5,6 +5,7 @@ dist/
 test-results/
 playwright-report/
 coverage/
+.reports/
 host/**/bin/
 host/**/obj/
 *.log

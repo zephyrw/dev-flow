@@ -1,8 +1,8 @@
-# DevFlow 通用平台验收合同（1.3）
+# DevFlow 通用平台验收合同（1.4）
 
 所属任务：DevFlow v1.0 跨平台与八工具通用平台完整开发；workflow_id：wf-508be4f4-4c5a-453c-9ac6-c6dafe717a08。
 
-当前实现测试状态：not_run。原143个PF用例保留；新增94个TC用例，共237个稳定ID。这是待执行合同，不是测试已通过报告。
+当前实现测试状态：not_run。原143个PF用例保留；新增94个TC用例，1.3合计237个稳定ID；1.4新增38个WS用例，总计275个。这是待执行合同，不是测试已通过报告。
 
 ## 执行与报告规则
 
@@ -372,3 +372,67 @@ P00-02提供scripts/devflow/verify.mjs。命令为node scripts/devflow/verify.mj
 ## 临时提问入口隔离补充
 
 TC-INTEGRATION-api-role-isolation和aside-no-main-prompt必须验证：planner/worker主MCP的tools/list不含问答工具；CLI devflow btw打开独立界面，问题在独立界面输入；问答结果不返回原模型的工具调用链。已经发入主聊天的内容不能事后伪装为未记入历史。
+
+## 1.4 主工作区同步新增测试
+
+本轮为规划，全部WS用例not_run。单元与集成使用临时真实Git仓库；六平台认证沿原登记certification命令执行。顶层it/spec标题及JUnit name直接使用稳定ID（JUnit无classname）。每格保留命令、退出码、HEAD/index/tree和同步事件原始证据。
+
+### WS-UNIT
+
+| 用例ID | 输入操作与必须断言 | 状态 |
+|---|---|---|
+| WS-UNIT-source-modes | 三种模式各产生精确冻结输入，非法模式拒绝 | not_run |
+| WS-UNIT-source-identity | 同名分支不同repo不能互相替代 | not_run |
+| WS-UNIT-path-exclusions | 保护/ignored文件拒绝且可见排除原因 | not_run |
+| WS-UNIT-staged-versus-working | 同文件暂存和磁盘不同，快照取磁盘且index不变 | not_run |
+| WS-UNIT-stable-manifest | 双读变化拒绝混合版本 | not_run |
+| WS-UNIT-lineage-noop | 完全重复输入不生成新同步 | not_run |
+| WS-UNIT-lineage-revert | 源撤回未提交改动生成可见撤回diff | not_run |
+| WS-UNIT-conflict-status | 有tree OID但非零冲突状态不能判成功 | not_run |
+| WS-UNIT-baseline-revisions | 原始基线与执行基线分别保留 | not_run |
+| WS-UNIT-approval-binding | 任意source/target/result/plan hash改变使批准失效 | not_run |
+| WS-UNIT-evidence-separation | 内部输入和checkpoint不能标记最终交付 | not_run |
+| WS-UNIT-recovery-ownership | 只有匹配目标状态才可恢复或回滚 | not_run |
+
+### WS-INTEGRATION
+
+| 用例ID | 输入操作与必须断言 | 状态 |
+|---|---|---|
+| WS-INTEGRATION-committed-initial | 从选定新commit创建首次工作树 | not_run |
+| WS-INTEGRATION-source-index-untouched | 保存源HEAD/index/tree前后值，确认同步未写源 | not_run |
+| WS-INTEGRATION-binary-delete-rename | 真实Git仓库正确合并二进制、删除、重命名与mode | not_run |
+| WS-INTEGRATION-target-dirty-preserved | 目标未提交及既有提交在结果中均保留 | not_run |
+| WS-INTEGRATION-write-stop-race | 在FileBroker写入边界发起同步，无双写 | not_run |
+| WS-INTEGRATION-stop-unconfirmed | 进程未确认退出不发布、不释放lease | not_run |
+| WS-INTEGRATION-source-drift | 捕获中源变化返回SOURCE_CHANGED | not_run |
+| WS-INTEGRATION-target-drift | 预览后目标被写拒绝发布 | not_run |
+| WS-INTEGRATION-conflict-cancel | 冲突取消原目标不变，候选差异可核对 | not_run |
+| WS-INTEGRATION-repeat-and-revert | 重复快照no-op，后续撤回只撤回正确来源改动 | not_run |
+| WS-INTEGRATION-publish-crash-restart | ref或工作树发布途中崩溃后恢复不丢文件 | not_run |
+| WS-INTEGRATION-multi-repo-partial | 一仓完成一仓失败期间全workflow不能恢复写入 | not_run |
+| WS-INTEGRATION-snapshot-commit-after-sync | 合法同步后freeze/verify/final commit不误报旧基线变化 | not_run |
+| WS-INTEGRATION-document-plan-consistency | 源旧设计与批准新设计冲突必须校准，旧证据失效 | not_run |
+
+### WS-E2E
+
+| 用例ID | 输入操作与必须断言 | 状态 |
+|---|---|---|
+| WS-E2E-approval-source-choice | 审批页可选三模式并显示精确commit | not_run |
+| WS-E2E-source-preview | 合并按钮只读预览且不暂停主任务 | not_run |
+| WS-E2E-pause-merge-approve | 暂停准备后一次批准合并候选与新计划 | not_run |
+| WS-E2E-untracked-selection | 未跟踪选择与排除清单准确 | not_run |
+| WS-E2E-conflict-cancel | UI展示冲突并可安全取消 | not_run |
+| WS-E2E-ordinary-resume-no-sync | 普通批准或恢复不自动同步源更新 | not_run |
+
+### WS-CERT
+
+| 用例ID | 输入操作与必须断言 | 状态 |
+|---|---|---|
+| WS-CERT-windows-x64 | 对应原生OS/CPU运行稳定捕获、三方合并、停止屏障、崩溃恢复及同步后最终快照提交 | not_run |
+| WS-CERT-windows-arm64 | 对应原生OS/CPU运行稳定捕获、三方合并、停止屏障、崩溃恢复及同步后最终快照提交 | not_run |
+| WS-CERT-darwin-x64 | 对应原生OS/CPU运行稳定捕获、三方合并、停止屏障、崩溃恢复及同步后最终快照提交 | not_run |
+| WS-CERT-darwin-arm64 | 对应原生OS/CPU运行稳定捕获、三方合并、停止屏障、崩溃恢复及同步后最终快照提交 | not_run |
+| WS-CERT-linux-x64 | 对应原生OS/CPU运行稳定捕获、三方合并、停止屏障、崩溃恢复及同步后最终快照提交 | not_run |
+| WS-CERT-linux-arm64 | 对应原生OS/CPU运行稳定捕获、三方合并、停止屏障、崩溃恢复及同步后最终快照提交 | not_run |
+
+人工验收：先选源已提交版本启动合成任务；执行中在源和目标分别修改不同文件，再用按钮预览、暂停、合并及批准继续；制造同文件冲突后取消，检查双方文件未丢；重复同步、源撤回、重启恢复后重新测试与复核。确认普通恢复不自动合并主工作区。

@@ -1,6 +1,6 @@
 # DevFlow 跨平台通用工作流平台实施方案
 
-版本：1.3　编制日期：2026-09-14　目标版本：DevFlow 1.0.0
+版本：1.4　编制日期：2026-09-14　目标版本：DevFlow 1.0.0
 
 发布仓库：<https://github.com/zephyrw/dev-flow>。本方案中的新增命令、接口、目录和发布资产均为实施合同，完成对应工作包并发布后生效；当前 0.2.0 源码尚不具备这些完整能力。
 
@@ -788,6 +788,8 @@ compatibility.json
 
 ## 13. 可直接分配的实施工作包
 
+1.4补充：P12（代码输入与主工作区合并）放在P11后、P08前。当前完整顺序为P00→P01→P02→P03→P04→P05→P06→P07→P11→P12→P08→P09→P10。后文1.3中P11直接进入P08的流程由本顺序取代。
+
 1.3 在同一个任务中加入 P11（任务组合与执行交互），执行位置为 P07 之后、P08 之前；P08～P10 的交付必须包含它。新增细项与原细项共用一份合同、开发进度和测试进度，完整依赖以第 16.10 节和结构化合同为准。
 
 工作包按下表依次合并。每个工作包均提交源码、对应测试、文档及验收证据；前置项未完成时不能以 UI 截图代替运行能力。扩展八工具及单工具完整闭环后，整体估算为 90 个工程人日，按一名熟悉现有仓库的开发者全职执行约 18 周；这是工作量预算，不是已验证的交付耗时。
@@ -1064,7 +1066,7 @@ flowchart LR
   Missing[缺少任务组合及临时问答合同] --> Gap[不能可靠表达执行改向]
 ```
 
-结论：已有 stop/recovery、FileBroker、细项进度、快照和证据失效机制可以复用；不能只增加输入框或向 stdin 发送一句“读最新文档”。证据位置：`packages/contracts/src/config.ts`、`packages/contracts/src/index.ts`、`packages/core/src/engine.ts`、`packages/runtime/src/runtime.ts`、`packages/entry/src/intake.ts`。本次核对工作区 HEAD 为 `b933cfb7ca403fbb12e9ff8bbf9ec92c5f9d2ddf`；原任务批准候选基线仍保持 `d5bc298ac5be27a28a9a641be8ef583486da2c1a`，不擅自纳入其他进行中的未提交修改。
+结论：已有 stop/recovery、FileBroker、细项进度、快照和证据失效机制可以复用；不能只增加输入框或向 stdin 发送一句“读最新文档”。证据位置：`packages/contracts/src/config.ts`、`packages/contracts/src/index.ts`、`packages/core/src/engine.ts`、`packages/runtime/src/runtime.ts`、`packages/entry/src/intake.ts`。1.3调研时工作区HEAD为b933cfb；1.4已按用户选择将本任务代码基线更新为`6eb47cca18dc65397aab125e96eb329cecc344d2`（主工作区已提交版本），不带入其他进行中的未提交修改；原始基线仅保留为历史。
 
 ```mermaid
 flowchart TB
@@ -1327,4 +1329,155 @@ P11 是原任务内的模块编号，放在 P07 后、P08 前执行；细项路�
 | AC-73 | 迁移保存旧任务原配置快照；历史未报告模型保持未知，不伪造新模型信息 |
 | AC-74 | 八工具在四必需目标各有真实改向及旁路认证，32格全部当前版本通过 |
 | AC-75 | UI明确区分保存、停止、等待批准、确认上下文、应用完成；不能提前显示已生效 |
-| AC-76 | 原任务78项细项及237项用例统一计数，新功能未完成禁止进入完整交付 |
+| AC-76 | 当前1.4任务88项细项及275项用例统一计数，新功能未完成禁止进入完整交付 |
+
+
+## 17. 审批前代码起点选择与合并主工作区（1.4 新增）
+
+### 17.1 当前实现的准确行为
+
+当前 `GitManager.prepare` 的 new_worktree 分支执行 `git worktree add -b <执行分支> <目录> <plan.baselines[repo]>`；已有工作区记录则直接复用。它不会先拉取远端，也不会合并源工作区当前 HEAD 或未提交修改。`Engine.run` 把批准计划的 baselines 传给 prepare；`snapshot/commit` 还假定执行 HEAD 等于旧 baseline 或服务记录的最终提交。所以目前直接手工往执行分支 merge 会触发 `BASELINE_CHANGED/INDEX_CHANGED`，不能把新增功能实现为只有一个调用 git merge 的按钮。
+
+计划的设计正文通过 MCP 批准上下文交给执行模型；由本计划P00-01带入工作树。这个过程不是主工作区整份代码同步，不能据此声称最近的界面修复、代码提交或未提交文件已经进入执行分支。
+
+本功能继续属于 `wf-508be4f4-4c5a-453c-9ac6-c6dafe717a08` 原任务，新增P12模块；原P00～P11全部保留，不建立第二个任务。按钮及审批选择是待开发功能，当前控制器在升级前仍按已有冻结基线执行。
+
+### 17.2 一个产品设计，两个操作入口
+
+审批页增加“执行代码起点”区；任务详情增加“合并主工作区变更”按钮。两处使用同一个 `WorkspaceSync` 协议。以下为用户可选的输入模式，不是交给开发者自行取舍的技术方案。
+
+| UI选择 | 输入的精确定义 | 首次执行与已有执行分支的行为 |
+|---|---|---|
+| 保留已批准代码基线 | 当前计划冻结的精确commit | 保持原行为；源工作区变新只提醒，不自动拉入 |
+| 主工作区最新已提交版本 | 点击预览时绑定源工作区的HEAD，不是执行时浮动的main | 首次执行从预览冻结的commit创建；已有执行分支保留既有工作后做三方合并 |
+| 主工作区当前快照，包含未提交修改 | 冻结源HEAD加所选工作区文件内容，包含已暂存、未暂存、删除和明确选中的未跟踪文件 | 形成仅供本工作流使用的不可变输入提交，再与执行工作进行三方合并 |
+
+“主工作区”指任务接入时绑定的源checkout，按repo ID和canonical common_git_dir标识，不按最近打开目录、分支名main或当前入口cwd猜测。预览同时显示源目录、源分支、源HEAD和执行分支，分支切换或仓库身份变化使预览过期。多个仓库分别指定输入，并作为一个同步批次共同冻结。
+
+新建任务的默认行为仍是冻结创建时所选版本；已批准任务永远保留已批准基线，直到用户明确选择同步。发现源有新增提交时提示“源工作区较执行基线新增N个提交”，并提供“查看并合并”；普通批准/暂停/恢复不悄悄重新拉最新代码。
+
+审批页显示选中版本和变更统计，按钮为“批准此版本并开始”。用户选择含未提交内容时，默认选中所有受支持的已跟踪变更，未跟踪文件逐项勾选；状态为ignored的缓存、日志、构建产物以及.devflow、凭据、.git等受保护内容不能打包。被排除文件必须列出原因，不能用“当前全部代码”掩盖实际排除范围。
+
+任务详情按钮第一步只生成预览，不终止正在运行的模型；按下“暂停并准备合并”才撤销旧写权限、停止旧Run并生成最终目标检查点。最后显示完整合并结果和修订计划，用户按“批准合并并继续”一次授权这份确定结果；准备过程中的冲突、代码或文档调整反映在同一预览，不额外增加一次内容完全相同的批准。
+
+### 17.3 必须保护源工作区与执行进度
+
+源工作区是输入。同步不能在源checkout执行stash、reset、checkout、git add或普通git commit，不能替用户提交暂存区或改写主分支。快照使用临时index、独立对象目录及受管私有ref生成内部输入commit，保留原HEAD作为父提交；不会创建用户可见的主分支提交，也不自动push。必须在预览中说明生成了私有输入快照，其生命周期随任务证据保留。
+
+“已暂存”和“未暂存”都表示源的变更，快照最终内容以用户磁盘工作树为准；原暂存区内容仅记录用于证明未被修改，不能先apply暂存diff再apply工作区diff造成重复。暂存与磁盘内容不同须在预览中提示。捕获HEAD、索引checksum、路径清单、文件mode/bytes/hash及删除事实；捕获前后再次核验。源被其他进程修改则 `SOURCE_CHANGED`，重建预览而非混合两时刻内容。
+
+链接、submodule、LFS和自定义clean/smudge或merge driver首发按受管Git快照能力认证：支持的类型在能力清单中明确处理，未认证类型在预览前返回 `SOURCE_FILE_UNSUPPORTED` 并列路径；不能运行仓库自定义程序或静默丢内容。文本、二进制、权限位、重命名、删除和普通未跟踪文件纳入测试。独立临时index不会代替源index。
+
+目标执行分支的未提交工作也要保留：停止旧Run后冻结完整target检查点，既有提交保留父链，未提交工作写为私有checkpoint commit；不假装它是测试通过或最终交付commit。拒绝尚未解决的用户原生Git合并/rebase、身份不明的writer及无法归属的工作树状态。已有目标改动不能因“换基线”被覆盖。
+
+### 17.4 合并算法与冲突处理
+
+输入由source snapshot commit和target checkpoint commit精确标识。存在共同祖先时用受管Git的 `merge-tree --write-tree` 进行三方合并，解析退出状态与完整冲突记录；使用Git自动计算共同祖先，不能将最近输入tree强行当merge-base。无共同历史返回 `UNRELATED_HISTORY`，不启用allow-unrelated-histories。没有目标工作时首次执行直接采用已冻结输入commit，不制造无意义的merge。
+
+所有预合并结果、冲突文件和模型修复放在独立的受管integration工作树；正式执行分支在用户批准前不变。自定义merge drivers/hooks禁止自动执行；Git程序、配置与属性能力必须可核验。冲突按三方内容展示，禁止全局采用ours/theirs或静默丢文件。用户可在预览选择逐文件解决，或让该任务planner在明确的冲突文件范围内提出解决结果；解决后的差异和计划再交给用户一次批准。
+
+```mermaid
+sequenceDiagram
+  actor U as 用户
+  participant UI as 审批页或合并按钮
+  participant C as 控制器
+  participant S as 源主工作区
+  participant T as 当前执行分支
+  participant I as 隔离合并区
+  U->>UI: 选择已提交版本或含未提交快照
+  UI->>C: 预览输入版本
+  C->>S: 只读捕获并检查稳定性
+  C-->>UI: 源版本 文件差异 排除清单
+  U->>C: 暂停并准备合并
+  C->>T: 撤销写权限 停止 确认检查点
+  C->>I: 三方合并精确source与target
+  I-->>C: 合并结果或逐文件冲突
+  C->>I: 校准设计 细项和测试合同
+  C-->>U: 展示合并结果及新计划
+  U->>C: 批准合并并继续
+  C->>T: 校验未漂移后发布合并结果
+  C->>C: 更新执行基线和文档包 失效旧证据
+  C->>T: 新会话确认上下文后继续
+```
+
+同一来源的输入快照保存独立lineage：后续输入commit以已接受的上一输入commit为父，源HEAD出现尚未包含的新提交时再保留源HEAD父链，tree严格等于本次批准的源内容。这样源撤销此前未提交改动时，下一次快照会产生明确的撤销diff；不能每次都从源HEAD创建无关联的快照，导致反复同步无法识别撤回。输入模式从“含未提交”切成“仅已提交”引起的撤回也必须显示并随预览批准。
+
+相同source tree、源提交祖先和输入模式重复同步且已被当前执行历史包含时返回no-op，不重复commit、不失效证据；只比较source HEAD不足以判断含未提交快照是否相同。merge必须基于真实输入commit祖先去重，不能机械重复应用patch。源不需要固定在最新HEAD直到执行时：批准的是预览显示的冻结版本。若用户在最后批准前想使用更新的源版本，必须点击刷新预览并重新校验，不能偷偷替换已展示内容。
+
+### 17.5 执行基线、范围与复核不能被合并隐藏
+
+区分三种字段：`original_plan_base`保存最初计划基线；`input_revision`保存每次批准引入的source commit/tree；`execution_base`保存当前允许运行与最终提交的精确父commit。它们不可互相覆盖。新版本的snapshot、matches、diff、commit、resume及反篡改检查全部校验execution_base和sync revision，不再永久要求HEAD等于最初baseline。
+
+合并来源文件可能超出原开发任务允许路径；这不代表执行模型获得这些文件的任意后续修改权。同步有独立的、用户预览并批准的`import_paths`，模型后续写入仍受更新后计划的task paths限制。planner按候选合并快照校准实现路线、已实现细项、测试和设计；若源引入本次任务已经实现的功能，允许删除重复开发但必须写明旧→新细项映射，不能仅因上游文件存在就标记完成。
+
+最终复核材料同时包含：每次输入变更source diff、合并前target工作、冲突解决diff、合并后任务新增diff和当前完整源码。只看execution_base之后的最后一段diff会漏掉合并带入的错误；复核不得因此省略任务原有改动或冲突解决。私有checkpoint/import/merge commit不是DevFlow最终COMMITTED，不获得人工验收或复核通过标记。
+
+本任务的设计正文和导出文档也属于受版本控制的输入。源文件与已批准设计正文不同，必须显示“磁盘文档/已批准文档冲突”，校准为同一新版本后再批准；不能让源的旧设计覆盖刚提交的新设计，也不能用写文档步骤悄悄覆盖用户后来补充的要求。
+
+### 17.6 发布、重启恢复与取消
+
+持久`WorkspaceSync`状态为 `PREVIEW → STOPPING → CAPTURING_TARGET → MERGING → CONFLICTS或PLAN_PENDING → APPLYING → APPLIED`；故障转 `RECOVERY_REQUIRED`，用户放弃为CANCELLED。工作流共用第16节的epoch撤销、Host退出确认、outbox和上下文ack，不建立第二套模型调度器。
+
+发布前CAS校验用户批准的source snapshot、target HEAD/tree/index、plan hash、merge tree和sync version；target在预览后被修改返回 `TARGET_CHANGED`，不能覆盖新工作。写入先保存recoverable intent，再更新执行分支引用及受管工作树；Git ref与文件系统不能被宣称是单个原子事务。只有所有受管repo完成并逐一核对tree、index、ref后，数据库事务才切换当前execution_base并标记APPLIED、开放新执行。文件更新期间一直保持写屏障。
+
+中途崩溃按intent记录的每repo阶段及old/new ref恢复；不确定时保留现场和租约。回滚只允许目标仍匹配本sync已写入状态时用保存的checkpoint恢复；发现用户额外修改则暂停人工处理，不能强制reset。多仓批次任一未完成，整个Workflow不能恢复运行；明确显示哪些仓库已应用、哪些尚未应用，不能冒充跨仓原子成功。
+
+取消预合并不改变源或目标；只有本次停止的原运行需要恢复时，沿原批准上下文经过恢复检查后新Run继续。取消已经发布的合并使用独立“撤销本次同步”预览，须以当前目标快照重新核对，不能无条件回退分支指针。回滚仍使旧证据失效。
+
+任何实际代码合并/冲突修复都使测试、人工验收和独立复核失效；重新冻结、测试、验收和复核后才可最终提交。模板明确的CI输入验证不等于真实业务测试通过。执行器只在新execution_base、plan、bundle、sync ID全部确认后获得写权限。
+
+### 17.7 接口、界面与执行门禁
+
+| 接口或控件 | 行为 |
+|---|---|
+| 审批页“执行代码起点” | 展示冻结commit与源最新commit、未提交统计，三种输入模式和差异预览 |
+| 详情页“合并主工作区变更” | 任意非最终提交临界阶段可生成预览，运行阶段明确提供暂停准备动作 |
+| `GET /api/workflows/:id/source-status` | 只读返回每repo源与目标身份及ahead/dirty摘要，无隐式fetch |
+| `POST /api/workflows/:id/workspace-syncs/preview` | 生成内容冻结的source预览及排除清单 |
+| `POST /api/workflows/:id/workspace-syncs/:syncId/prepare` | 用户明确暂停准备，捕获target并合并候选 |
+| `POST /api/workflows/:id/workspace-syncs/:syncId/apply` | 消费绑定sync/plan/source/target/result hash的人工批准并发布 |
+| `POST /api/workflows/:id/workspace-syncs/:syncId/cancel` | 按当前阶段安全取消；已应用不隐式倒退 |
+| planner MCP | 仅查询、预览及提交候选修订；不能自行批准导入主工作区或用worker token调用人工按钮 |
+
+按钮实时显示待合并提交数、文件数、冲突数和最后同步版本。已有工作区以外的源只读；主工作区有改动不是自动阻塞所有执行，用户仍可明确保留原基线。源是本地checkout，“合并主工作区”不等于git pull，不自动fetch/push、改源分支或远端。需要先更新远端代码属于用户单独的源工作区操作。
+
+### 17.8 同一任务内的开发顺序与验收
+
+P12在P11后、P08前完成，统一纳入安装包、迁移、测试与开源交付。P12先定义源快照/执行基线合同，然后实现捕获与预合并、冲突与恢复、snapshot/commit兼容、API与UI、集成测试。增量估算8工程工作日，基于P11已完成且测试环境就绪；外部等待不计入通过状态。
+
+```mermaid
+flowchart LR
+  P11[P11 任务配置及执行交互] --> S1[P12 源快照和检查点]
+  S1 --> S2[三方合并及冲突预览]
+  S2 --> S3[基线变更及恢复]
+  S3 --> S4[审批选项和合并按钮]
+  S4 --> S5[代码 文档 证据联合验收]
+  S5 --> P08[P08 安装包]
+  P08 --> P09[P09 完整验收]
+```
+
+| 新增验收 | 必须证明的结果 |
+|---|---|
+| AC-77 | 审批前选择旧基线/源已提交版/含未提交快照，均冻结精确输入，执行时不浮动 |
+| AC-78 | 源HEAD、branch、index与工作树未被同步操作修改，未跟踪文件与排除清单明确 |
+| AC-79 | 已有执行分支的提交和未提交工作保留，双方变更通过三方合并进入结果 |
+| AC-80 | 同步与运行写入互斥，未确认停止不发布，目标漂移不覆盖 |
+| AC-81 | 冲突逐文件可核对，取消不改原工作区；禁止全局ours/theirs |
+| AC-82 | snapshot/commit/recovery使用新版execution_base，不能因合法同步误报BASELINE_CHANGED |
+| AC-83 | 引入改动、冲突修复、任务新增均进入最终复核，旧证据失效后重测 |
+| AC-84 | 重复同步no-op、崩溃恢复、部分多仓发布、回滚漂移均有确定安全状态 |
+| AC-85 | 审批页与详情按钮真实可用，普通审批/恢复不自动同步，不替用户拉远端 |
+| AC-86 | 设计文档与源代码共同冻结并校准，新设计不会被旧源文档覆盖 |
+
+### 17.9 Git实现依据
+
+Git官方说明merge-tree可生成三方合并tree而不改index和工作树，并能报告冲突；因此用于隔离预合并，不能把“输出了tree OID”单独当无冲突成功。[git-merge-tree](https://git-scm.com/docs/git-merge-tree)
+
+临时index构造输入树，commit-tree创建带父关系的内部对象；发布引用需带期望旧值，不能把update-ref的原子性扩大解释为整个工作树或跨仓事务原子性。[git-read-tree](https://git-scm.com/docs/git-read-tree)、[git-commit-tree](https://git-scm.com/docs/git-commit-tree)、[git-update-ref](https://git-scm.com/docs/git-update-ref)
+
+
+### 17.10 本任务本次代码输入选择
+
+用户已明确选择“主工作区最新已提交版本”。已核实源checkout为D:/Code/system-handle，HEAD为`6eb47cca18dc65397aab125e96eb329cecc344d2`（6eb47cc，代码变更工作台重构、分支友好化与工作台交互视觉体验优化）。相对原d5bc298基线新增7个提交、涉及52个已跟踪文件；包括工作台布局、事件刷新、设计文档查看、暂停原因推断与自愈修复。
+
+原任务当前尚无执行worktree或Run，因此本次直接把plan.baselines.main冻结为该commit，在批准后从它创建执行分支，不先创建旧分支再merge。未提交代码不带入；本次1.4设计与计划正文作为明确批准的文档材料由P00-01带入。没有操作源分支、暂存区、未提交代码或远端，也没有开始产品开发。以后HEAD推进仍使用本次冻结版本，需要再次选择更新后生成新修订。

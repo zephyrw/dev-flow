@@ -1,26 +1,27 @@
-# DevFlow 通用平台完整开发执行合同（1.3）
+# DevFlow 通用平台完整开发执行合同（1.4）
 
-任务：DevFlow v1.0 跨平台与八工具通用平台完整开发。工作流：wf-508be4f4-4c5a-453c-9ac6-c6dafe717a08。
+任务：DevFlow v1.0 跨平台与八工具通用平台完整开发；唯一workflow_id：wf-508be4f4-4c5a-453c-9ac6-c6dafe717a08。
 
-原58个细项和143个PF测试用例全部保留；新增P11模块20个细项、94个TC测试用例，合计78个细项、237个稳定测试用例。P11放在P07后P08前，模块数12。设计、开发、进度、测试和验收使用同一工作流与同一批准版本，不创建第二个实施任务。
+完整范围：88个叶子细项、13模块、13测试组、275个稳定用例。保留1.3全部78细项与237用例，新增P12的10细项和38用例；P11→P12→P08，最终安装、迁移、复核与发布候选包含全部功能。
 
-本次仅更新设计和计划，所有新增实现与测试均为not_run。批准后按原DevFlow流程在新隔离worktree执行；保留父控制器4810及源工作区全部其他修改。源码基线d5bc298ac5be27a28a9a641be8ef583486da2c1a不变。首先执行P00-02写入受管启动器，再运行bootstrap；不能在脚本存在之前调用它。
+**用户本轮选择：主工作区最新已提交版本。执行代码基线：6eb47cca18dc65397aab125e96eb329cecc344d2。** 原基线d5bc298ac5be27a28a9a641be8ef583486da2c1a仅作历史，不再用于创建执行分支。当前没有执行工作区或Run，批准后直接从新基线创建；未提交业务代码不引入，已批准1.4文档正文由P00-01带入。源工作区和父控制器保持原状。本次只更新设计/计划，不自动批准，不启动执行。
 
-正文完整包含下方1.3设计。结构化tasks中的paths、depends_on、inputs、implementation、preserve、completion、completion_checks、test_ids、stop_conditions为叶子执行合同；细项清单同步保存到docs/plan/DevFlow通用平台DevFlow执行计划.md。禁止全仓格式化、无关升级与静默模型降级。人工验收后才独立复核，通过后本地提交，外部发布单独授权。
+P00-02先创建受管脚本再bootstrap。所有阶段遵守leaf-v1范围、逐项文件证明、真实原始测试、人工验收后独立复核；最终本地提交与外部发布权限分离。
 
 ## 全部细项共同执行约束
 
-以下约束适用于结构化 tasks 中的全部 78 项；每个细项的专属路径、实现、依赖、完成检查与测试引用保留在结构化合同中，正文不重复抄录。
+以下约束适用于结构化 tasks 中的全部 88 项；每个细项的专属路径、实现、依赖、完成检查与测试引用保留在结构化合同中，正文不重复抄录。
 
-必须保持：保持免登录自然语言入口、人工身份与worker权限分离、Run/快照证据绑定；保留d5bc298布局和中断修复；禁止操作父控制器4810和原业务数据；不改变已确认八工具范围。
+必须保持：保持免登录自然语言入口、人工身份与worker权限分离、Run/快照证据绑定；保留6eb47cc布局和中断修复；禁止操作父控制器4810和原业务数据；不改变已确认八工具范围。
 
 停止条件：真实代码基线/批准范围漂移或出现未授权副作用时停止对应动作并报告；真实认证所需账号/runner不可用时保存blocked证据，不填passed；未确认进程退出不释放租约，不擅自变更技术方案或跳过检查。
 
 完成条件：核心行为实现、批准的原始测试与当前源码匹配；下列静态检查仅证明产物已写入，不能代替行为测试。
 
-共同输入：批准的 1.3 全文、细项所属工作包与已完成前置输出；源码基线 d5bc298ac5be27a28a9a641be8ef783486da2c1a。
+共同输入：批准的 1.4 全文、细项所属工作包与已完成前置输出；源码基线 6eb47cca18dc65397aab125e96eb329cecc344d2。
 
 原工作区中并行产生的未提交界面修改保留原处；本任务仅在批准基线的新 worktree 开发，不覆盖、提交或重置源工作区的这些改动。
+
 
 
 
@@ -29,944 +30,1064 @@
 ### P00-01 冻结当前代码与方案输入
 
 - 模块：P00；需求：AC-20, AC-35；前置：P00-02
-- 输入：正文1.3、P00与已完成前置输出；使用共同输入基线。
-- 文件/函数范围：scripts/release/capture-baseline.mjs, docs/plan/DevFlow跨平台通用工作流平台实施方案.md, docs/test/DevFlow八工具适配方案本机核查.md, docs/test/portable/baseline.json, docs/plan/DevFlow通用平台DevFlow执行计划.md, docs/design/DevFlow通用平台开发调研.md, docs/process/DevFlow通用平台开发进度.md, docs/test/DevFlow通用平台验收合同.md
-- 核心算法：记录 d5bc298、工作区 tree hash、所有纳入本计划的设计、执行、进度、测试输入文档的 SHA256；从本批准正文恢复 1.3 全文到执行 worktree。禁止提交或重置源工作区；记录原测试原始结果，后续开发不得借用历史通过状态。 1.3合并要求：冻结1.3完整设计、执行合同、进度与测试文档哈希；同一任务同一批准版本，禁止另建增量工作流；基线仍d5bc298，不拷贝源工作区其他未提交修改。
+- 输入：正文1.4、P00与已完成前置输出；使用共同输入基线。
+- 文件/函数：scripts/release/capture-baseline.mjs, docs/plan/DevFlow跨平台通用工作流平台实施方案.md, docs/test/DevFlow八工具适配方案本机核查.md, docs/test/portable/baseline.json, docs/plan/DevFlow通用平台DevFlow执行计划.md, docs/design/DevFlow通用平台开发调研.md, docs/process/DevFlow通用平台开发进度.md, docs/test/DevFlow通用平台验收合同.md
+- 核心算法：记录 6eb47cc、工作区 tree hash、所有纳入本计划的设计、执行、进度、测试输入文档的 SHA256；从本批准正文恢复 1.4 全文到执行 worktree。禁止提交或重置源工作区；记录原测试原始结果，后续开发不得借用历史通过状态。 1.4合并要求：冻结1.4完整设计、执行合同、进度与测试文档哈希；同一任务同一批准版本，禁止另建增量工作流；基线仍6eb47cc，不拷贝源工作区其他未提交修改。 1.4按用户本轮明确选择，源码起点冻结为6eb47cca18dc65397aab125e96eb329cecc344d2，直接从新已提交基线建立首次worktree；1.4批准正文文档单独带入，未提交业务代码排除。
 - 保持：遵守正文全局保持要求。
-- 输出及完成条件：实现本项行为并按正文全局完成条件核验产物及真实测试。
-- 产物检查（不替代行为测试）：[{"contains":"source_tree_hash","path":"scripts/release/capture-baseline.mjs"}]
+- 输出与完成：实现本项行为并按正文全局完成条件核验产物及真实测试。
+- 产物检查：[{"contains":"source_tree_hash","path":"scripts/release/capture-baseline.mjs"}]
 - 测试：PF-UNIT, PF-INTEGRATION
 - 停止条件：按正文全局停止条件阻塞并留证。
 
 ### P00-02 提供受管命令与隔离预览入口
 
 - 模块：P00；需求：AC-19, AC-25, AC-28, AC-34；前置：无
-- 输入：正文1.3、P00与已完成前置输出；使用共同输入基线。
-- 文件/函数范围：scripts/devflow/verify.mjs, scripts/devflow/preview.mjs, playwright.config.ts, vitest.config.ts
+- 输入：正文1.4、P00与已完成前置输出；使用共同输入基线。
+- 文件/函数：scripts/devflow/verify.mjs, scripts/devflow/preview.mjs, playwright.config.ts, vitest.config.ts
 - 核心算法：首先实现 Node 标准库启动器，动作固定 bootstrap/build/unit/integration/e2e/certification/preview；bootstrap 在本 worktree 执行 npm ci 并记录基线，build 执行 typecheck/test/build 与 Host 构建；测试动作保留真实退出码并把原始报告写 DEVFLOW_REPORT_PATH 和登记的 .reports 文件。preview 运行真实构建 API/Web，使用 DEVFLOW_PORT、DEVFLOW_DATA_DIR、DEVFLOW_IDENTITY，健康响应含 x-devflow-identity。不得占用正在承载本任务的 4810、写其数据库或停止原控制器；新工作树自举不覆盖父服务的 dist。
 - 保持：遵守正文全局保持要求。
-- 输出及完成条件：实现本项行为并按正文全局完成条件核验产物及真实测试。
-- 产物检查（不替代行为测试）：[{"contains":"DEVFLOW_REPORT_PATH","path":"scripts/devflow/verify.mjs"}]
+- 输出与完成：实现本项行为并按正文全局完成条件核验产物及真实测试。
+- 产物检查：[{"contains":"DEVFLOW_REPORT_PATH","path":"scripts/devflow/verify.mjs"}]
 - 测试：PF-UNIT, PF-INTEGRATION
 - 停止条件：按正文全局停止条件阻塞并留证。
 
 ### P00-03 锁定跨平台构建工具链
 
 - 模块：P00；需求：AC-29, AC-35；前置：P00-01, P00-02
-- 输入：正文1.3、P00与已完成前置输出；使用共同输入基线。
-- 文件/函数范围：scripts/release/lock-toolchains.mjs, build/toolchains.lock.json
+- 输入：正文1.4、P00与已完成前置输出；使用共同输入基线。
+- 文件/函数：scripts/release/lock-toolchains.mjs, build/toolchains.lock.json
 - 核心算法：按照 1.3 的唯一算法从官方发行索引解析 Go 1.26 稳定补丁和 Git 稳定版；Node 固定 22.23.2，JS 锁文件作为基线。输出精确版本、URL、hash、六目标；记录真实下载错误，禁止 latest 浮动构建或虚构哈希。
 - 保持：遵守正文全局保持要求。
-- 输出及完成条件：实现本项行为并按正文全局完成条件核验产物及真实测试。
-- 产物检查（不替代行为测试）：[{"contains":"toolchains.lock.json","path":"scripts/release/lock-toolchains.mjs"}]
+- 输出与完成：实现本项行为并按正文全局完成条件核验产物及真实测试。
+- 产物检查：[{"contains":"toolchains.lock.json","path":"scripts/release/lock-toolchains.mjs"}]
 - 测试：PF-UNIT, PF-INTEGRATION
 - 停止条件：按正文全局停止条件阻塞并留证。
 
 ### P00-04 生成可公开源码与排除清单
 
 - 模块：P00；需求：AC-33, AC-35；前置：P00-01, P00-02
-- 输入：正文1.3、P00与已完成前置输出；使用共同输入基线。
-- 文件/函数范围：scripts/release/export-source.mjs, scripts/release/scan-public-source.mjs, build/public-source.json
+- 输入：正文1.4、P00与已完成前置输出；使用共同输入基线。
+- 文件/函数：scripts/release/export-source.mjs, scripts/release/scan-public-source.mjs, build/public-source.json
 - 核心算法：按白名单导出所有自有源码/锁/Skill/合成夹具/构建材料，排除当前 .devflow、凭据、历史个人截图、真实会话及本机路径；只扫描和导出，不删除私有资料。导出后在独立目录验证完整构建，输出带哈希 manifest。
 - 保持：遵守正文全局保持要求。
-- 输出及完成条件：实现本项行为并按正文全局完成条件核验产物及真实测试。
-- 产物检查（不替代行为测试）：[{"contains":"exportSource","path":"scripts/release/export-source.mjs"}]
+- 输出与完成：实现本项行为并按正文全局完成条件核验产物及真实测试。
+- 产物检查：[{"contains":"exportSource","path":"scripts/release/export-source.mjs"}]
 - 测试：PF-UNIT, PF-INTEGRATION
 - 停止条件：按正文全局停止条件阻塞并留证。
 
 ### P01-01 定义 v2 配置与单工具约束
 
 - 模块：P01；需求：AC-09, AC-10, AC-11, AC-45, AC-46；前置：P00-01, P00-02, P00-03, P00-04
-- 输入：正文1.3、P01与已完成前置输出；使用共同输入基线。
-- 文件/函数范围：packages/contracts/src/config-v2.ts, packages/contracts/src/config.ts, packages/contracts/src/index.ts, packages/contracts/src/execution-spec.ts
-- 核心算法：以 Zod 定义 Profile、四角色、Toolset、template revision 和 execution.mode；single-tool 校验所有启用 AI 节点及自定义角色只有一个 adapter ID，native-config/explicit 保留明确语义，未知字段和参数拒绝。 1.3合并要求：先按第16节定义WorkflowExecutionSpec与role/leaf绑定引用，以供后续P11实现，不只定义全局Profile。
+- 输入：正文1.4、P01与已完成前置输出；使用共同输入基线。
+- 文件/函数：packages/contracts/src/config-v2.ts, packages/contracts/src/config.ts, packages/contracts/src/index.ts, packages/contracts/src/execution-spec.ts
+- 核心算法：以 Zod 定义 Profile、四角色、Toolset、template revision 和 execution.mode；single-tool 校验所有启用 AI 节点及自定义角色只有一个 adapter ID，native-config/explicit 保留明确语义，未知字段和参数拒绝。 1.4合并要求：先按第16节定义WorkflowExecutionSpec与role/leaf绑定引用，以供后续P11实现，不只定义全局Profile。
 - 保持：遵守正文全局保持要求。
-- 输出及完成条件：实现本项行为并按正文全局完成条件核验产物及真实测试。
-- 产物检查（不替代行为测试）：[{"contains":"single-tool","path":"packages/contracts/src/config-v2.ts"}]
+- 输出与完成：实现本项行为并按正文全局完成条件核验产物及真实测试。
+- 产物检查：[{"contains":"single-tool","path":"packages/contracts/src/config-v2.ts"}]
 - 测试：PF-UNIT, PF-INTEGRATION
 - 停止条件：按正文全局停止条件阻塞并留证。
 
 ### P01-02 持久化 Profile 修订和模型证据
 
 - 模块：P01；需求：AC-11, AC-13, AC-15, AC-33；前置：P00-01, P00-02, P00-03, P00-04
-- 输入：正文1.3、P01与已完成前置输出；使用共同输入基线。
-- 文件/函数范围：packages/profiles/src/registry.ts, packages/profiles/src/resolve.ts, packages/store/src/store.ts
+- 输入：正文1.4、P01与已完成前置输出；使用共同输入基线。
+- 文件/函数：packages/profiles/src/registry.ts, packages/profiles/src/resolve.ts, packages/store/src/store.ts
 - 核心算法：事务保存 Profile revision；冻结 requestedModel/reportedModel/evidence/provider/endpoint 无密钥元信息及哈希；未报告显示未知，冲突报 MODEL_MISMATCH；新配置不改变旧 Run。
 - 保持：遵守正文全局保持要求。
-- 输出及完成条件：实现本项行为并按正文全局完成条件核验产物及真实测试。
-- 产物检查（不替代行为测试）：[{"contains":"ProfileRegistry","path":"packages/profiles/src/registry.ts"}]
+- 输出与完成：实现本项行为并按正文全局完成条件核验产物及真实测试。
+- 产物检查：[{"contains":"ProfileRegistry","path":"packages/profiles/src/registry.ts"}]
 - 测试：PF-UNIT, PF-INTEGRATION
 - 停止条件：按正文全局停止条件阻塞并留证。
 
 ### P01-03 实现版本化适配器 SDK
 
 - 模块：P01；需求：AC-10, AC-14, AC-51, AC-56；前置：P00-01, P00-02, P00-03, P00-04
-- 输入：正文1.3、P01与已完成前置输出；使用共同输入基线。
-- 文件/函数范围：packages/adapters/sdk/src/index.ts, packages/adapters/sdk/src/registry.ts, packages/adapters/sdk/src/interaction-capabilities.ts
-- 核心算法：按 1.3 实现 probe/describe/resolveProfile/prepare/decode/finalize/resume、capabilities/optionsSchema 与 PreparedInvocation；适配器仅返回结构化程序调用，宿主统一启动，不能 detached 或自行选择其他模型。 1.3合并要求：SDK预留交互能力探针，不强制原生热注入；模型枚举与只读无工具能力必须按版本认证。
+- 输入：正文1.4、P01与已完成前置输出；使用共同输入基线。
+- 文件/函数：packages/adapters/sdk/src/index.ts, packages/adapters/sdk/src/registry.ts, packages/adapters/sdk/src/interaction-capabilities.ts
+- 核心算法：按 1.3 实现 probe/describe/resolveProfile/prepare/decode/finalize/resume、capabilities/optionsSchema 与 PreparedInvocation；适配器仅返回结构化程序调用，宿主统一启动，不能 detached 或自行选择其他模型。 1.4合并要求：SDK预留交互能力探针，不强制原生热注入；模型枚举与只读无工具能力必须按版本认证。
 - 保持：遵守正文全局保持要求。
-- 输出及完成条件：实现本项行为并按正文全局完成条件核验产物及真实测试。
-- 产物检查（不替代行为测试）：[{"contains":"AgentAdapter","path":"packages/adapters/sdk/src/index.ts"}]
+- 输出与完成：实现本项行为并按正文全局完成条件核验产物及真实测试。
+- 产物检查：[{"contains":"AgentAdapter","path":"packages/adapters/sdk/src/index.ts"}]
 - 测试：PF-UNIT, PF-INTEGRATION
 - 停止条件：按正文全局停止条件阻塞并留证。
 
 ### P01-04 定义四角色结果与子测试执行合同
 
 - 模块：P01；需求：AC-19, AC-20, AC-47, AC-48；前置：P00-01, P00-02, P00-03, P00-04
-- 输入：正文1.3、P01与已完成前置输出；使用共同输入基线。
-- 文件/函数范围：packages/contracts/src/node-run.ts, packages/contracts/src/agent-events.ts
+- 输入：正文1.4、P01与已完成前置输出；使用共同输入基线。
+- 文件/函数：packages/contracts/src/node-run.ts, packages/contracts/src/agent-events.ts
 - 核心算法：定义 NodeRun、check_execution_id、上下文绑定和结果 schema；测试提交仅能引用服务生成的报告 ID；明确运行/快照/Profile/权限绑定，禁止模型伪造人工确认或传 passed=true 完成测试。
 - 保持：遵守正文全局保持要求。
-- 输出及完成条件：实现本项行为并按正文全局完成条件核验产物及真实测试。
-- 产物检查（不替代行为测试）：[{"contains":"parent_node_run_id","path":"packages/contracts/src/node-run.ts"}]
+- 输出与完成：实现本项行为并按正文全局完成条件核验产物及真实测试。
+- 产物检查：[{"contains":"parent_node_run_id","path":"packages/contracts/src/node-run.ts"}]
 - 测试：PF-UNIT, PF-INTEGRATION
 - 停止条件：按正文全局停止条件阻塞并留证。
 
 ### P02-01 实现 Go Host JSONL 控制协议
 
 - 模块：P02；需求：AC-26, AC-27；前置：P01-01, P01-02, P01-03, P01-04
-- 输入：正文1.3、P02与已完成前置输出；使用共同输入基线。
-- 文件/函数范围：host/devflow-host/main.go, host/devflow-host/go.mod, host/devflow-host/go.sum, packages/process/src/host-client.ts
+- 输入：正文1.4、P02与已完成前置输出；使用共同输入基线。
+- 文件/函数：host/devflow-host/main.go, host/devflow-host/go.mod, host/devflow-host/go.sum, packages/process/src/host-client.ts
 - 核心算法：Go Host 统一 doctor/lock/run/stop/status/process-identity，保留 stdout/stderr 类型和 UTF8 分块；输出版本化身份；Node 客户端拒绝协议漂移。
 - 保持：遵守正文全局保持要求。
-- 输出及完成条件：实现本项行为并按正文全局完成条件核验产物及真实测试。
-- 产物检查（不替代行为测试）：[{"contains":"process-identity","path":"host/devflow-host/main.go"}]
+- 输出与完成：实现本项行为并按正文全局完成条件核验产物及真实测试。
+- 产物检查：[{"contains":"process-identity","path":"host/devflow-host/main.go"}]
 - 测试：PF-UNIT, PF-INTEGRATION, PF-CERT
 - 停止条件：按正文全局停止条件阻塞并留证。
 
 ### P02-02 实现 Windows Job 和单控制器锁
 
 - 模块：P02；需求：AC-26, AC-27, AC-28；前置：P01-01, P01-02, P01-03, P01-04
-- 输入：正文1.3、P02与已完成前置输出；使用共同输入基线。
-- 文件/函数范围：host/devflow-host/process_windows.go, host/devflow-host/lock_windows.go
+- 输入：正文1.4、P02与已完成前置输出；使用共同输入基线。
+- 文件/函数：host/devflow-host/process_windows.go, host/devflow-host/lock_windows.go
 - 核心算法：使用 suspended 创建、分配 Job 后 resume，禁止 breakaway，kill-on-close；Mutex 绑定规范化数据目录；核对 PID+创建时间+Job 身份后停止整个进程树；不创建用户或修改账户 ACL。
 - 保持：遵守正文全局保持要求。
-- 输出及完成条件：实现本项行为并按正文全局完成条件核验产物及真实测试。
-- 产物检查（不替代行为测试）：[{"contains":"CreateJobObject","path":"host/devflow-host/process_windows.go"}]
+- 输出与完成：实现本项行为并按正文全局完成条件核验产物及真实测试。
+- 产物检查：[{"contains":"CreateJobObject","path":"host/devflow-host/process_windows.go"}]
 - 测试：PF-UNIT, PF-INTEGRATION, PF-CERT
 - 停止条件：按正文全局停止条件阻塞并留证。
 
 ### P02-03 实现 macOS/Linux 进程组与锁
 
 - 模块：P02；需求：AC-26, AC-27, AC-28；前置：P01-01, P01-02, P01-03, P01-04
-- 输入：正文1.3、P02与已完成前置输出；使用共同输入基线。
-- 文件/函数范围：host/devflow-host/process_unix.go, host/devflow-host/lock_unix.go
+- 输入：正文1.4、P02与已完成前置输出；使用共同输入基线。
+- 文件/函数：host/devflow-host/process_unix.go, host/devflow-host/lock_unix.go
 - 核心算法：POSIX 宿主在受管进程组外；SIGTERM 后 5 秒 SIGKILL，flock 持有 fd；绑定 PID/PGID/启动时间/boot identity，不能确认残留时保持租约和 RECOVERY_REQUIRED，不声称等价于 Windows Job。
 - 保持：遵守正文全局保持要求。
-- 输出及完成条件：实现本项行为并按正文全局完成条件核验产物及真实测试。
-- 产物检查（不替代行为测试）：[{"contains":"SIGTERM","path":"host/devflow-host/process_unix.go"}]
+- 输出与完成：实现本项行为并按正文全局完成条件核验产物及真实测试。
+- 产物检查：[{"contains":"SIGTERM","path":"host/devflow-host/process_unix.go"}]
 - 测试：PF-UNIT, PF-INTEGRATION, PF-CERT
 - 停止条件：按正文全局停止条件阻塞并留证。
 
 ### P02-04 解析跨平台路径与真实 CLI 入口
 
 - 模块：P02；需求：AC-25, AC-34, AC-49, AC-56；前置：P01-01, P01-02, P01-03, P01-04
-- 输入：正文1.3、P02与已完成前置输出；使用共同输入基线。
-- 文件/函数范围：packages/platform/src/executable.ts, packages/platform/src/paths.ts, packages/platform/src/environment.ts
+- 输入：正文1.4、P02与已完成前置输出；使用共同输入基线。
+- 文件/函数：packages/platform/src/executable.ts, packages/platform/src/paths.ts, packages/platform/src/environment.ts
 - 核心算法：实现显式路径→受管清单→当前PATH→系统用户PATH→官方目录的发现；解析 npm bin/native dependency 与 Cursor 版本目录，检查PE/ELF/Mach-O和CPU，处理OpenCode文本占位入口；路径按真实文件系统身份处理，不统一小写。
 - 保持：遵守正文全局保持要求。
-- 输出及完成条件：实现本项行为并按正文全局完成条件核验产物及真实测试。
-- 产物检查（不替代行为测试）：[{"contains":"EXECUTABLE_INVALID","path":"packages/platform/src/executable.ts"}]
+- 输出与完成：实现本项行为并按正文全局完成条件核验产物及真实测试。
+- 产物检查：[{"contains":"EXECUTABLE_INVALID","path":"packages/platform/src/executable.ts"}]
 - 测试：PF-UNIT, PF-INTEGRATION, PF-CERT
 - 停止条件：按正文全局停止条件阻塞并留证。
 
 ### P02-05 接入 Host 与稳定服务启动器
 
 - 模块：P02；需求：AC-26, AC-28, AC-34；前置：P01-01, P01-02, P01-03, P01-04
-- 输入：正文1.3、P02与已完成前置输出；使用共同输入基线。
-- 文件/函数范围：packages/service/src/launcher.ts, packages/process/src/controller-lock.ts, packages/process/src/manager.ts, packages/service/src/descriptor.ts, packages/service/src/bootstrap.ts
+- 输入：正文1.4、P02与已完成前置输出；使用共同输入基线。
+- 文件/函数：packages/service/src/launcher.ts, packages/process/src/controller-lock.ts, packages/process/src/manager.ts, packages/service/src/descriptor.ts, packages/service/src/bootstrap.ts
 - 核心算法：替换强制 win32 控制器和 PowerShell 专用服务动作；私有 Node/Host 稳定 bootstrap、回环动态端口、系统打开浏览器；已有父 DevFlow 服务不在本轮原地升级，测试服务绑定新数据根。
 - 保持：遵守正文全局保持要求。
-- 输出及完成条件：实现本项行为并按正文全局完成条件核验产物及真实测试。
-- 产物检查（不替代行为测试）：[{"contains":"current.json","path":"packages/service/src/launcher.ts"}]
+- 输出与完成：实现本项行为并按正文全局完成条件核验产物及真实测试。
+- 产物检查：[{"contains":"current.json","path":"packages/service/src/launcher.ts"}]
 - 测试：PF-UNIT, PF-INTEGRATION, PF-CERT
 - 停止条件：按正文全局停止条件阻塞并留证。
 
 ### P03-01 将运行调度改为 Profile 驱动
 
 - 模块：P03；需求：AC-10, AC-14, AC-15, AC-19；前置：P02-01, P02-02, P02-03, P02-04, P02-05
-- 输入：正文1.3、P03与已完成前置输出；使用共同输入基线。
-- 文件/函数范围：packages/runtime/src/runtime.ts, packages/core/src/engine.ts, packages/scheduler/src/scheduler.ts
-- 核心算法：移出 agy/Codex 参数分支，按冻结节点/Profile/Adapter版本生成执行上下文；保留任务租约、明确会话ID与业务结果判据；工作流调度不依赖发起客户端存活。 1.3合并要求：Run预留execution_spec_hash、bundle_hash、instruction_seq及execution_epoch；不得从全局默认重新计算已冻结任务。
+- 输入：正文1.4、P03与已完成前置输出；使用共同输入基线。
+- 文件/函数：packages/runtime/src/runtime.ts, packages/core/src/engine.ts, packages/scheduler/src/scheduler.ts
+- 核心算法：移出 agy/Codex 参数分支，按冻结节点/Profile/Adapter版本生成执行上下文；保留任务租约、明确会话ID与业务结果判据；工作流调度不依赖发起客户端存活。 1.4合并要求：Run预留execution_spec_hash、bundle_hash、instruction_seq及execution_epoch；不得从全局默认重新计算已冻结任务。
 - 保持：遵守正文全局保持要求。
-- 输出及完成条件：实现本项行为并按正文全局完成条件核验产物及真实测试。
-- 产物检查（不替代行为测试）：[{"contains":"resolveProfile","path":"packages/runtime/src/runtime.ts"}]
+- 输出与完成：实现本项行为并按正文全局完成条件核验产物及真实测试。
+- 产物检查：[{"contains":"resolveProfile","path":"packages/runtime/src/runtime.ts"}]
 - 测试：PF-UNIT, PF-INTEGRATION
 - 停止条件：按正文全局停止条件阻塞并留证。
 
 ### P03-02 统一流式事件与厂商解码边界
 
 - 模块：P03；需求：AC-19, AC-51；前置：P02-01, P02-02, P02-03, P02-04, P02-05
-- 输入：正文1.3、P03与已完成前置输出；使用共同输入基线。
-- 文件/函数范围：packages/adapters/sdk/src/jsonl.ts, packages/contracts/src/agent-events.ts, packages/presentation/src/activity.ts
+- 输入：正文1.4、P03与已完成前置输出；使用共同输入基线。
+- 文件/函数：packages/adapters/sdk/src/jsonl.ts, packages/contracts/src/agent-events.ts, packages/presentation/src/activity.ts
 - 核心算法：公共解码仅处理字节与JSONL，厂商事件语义留各适配器；覆盖半个UTF8、超长行、stderr/ANSI、重复终态、截断及迟到事件，未知终态不判成功。
 - 保持：遵守正文全局保持要求。
-- 输出及完成条件：实现本项行为并按正文全局完成条件核验产物及真实测试。
-- 产物检查（不替代行为测试）：[{"contains":"NormalizedEvent","path":"packages/adapters/sdk/src/jsonl.ts"}]
+- 输出与完成：实现本项行为并按正文全局完成条件核验产物及真实测试。
+- 产物检查：[{"contains":"NormalizedEvent","path":"packages/adapters/sdk/src/jsonl.ts"}]
 - 测试：PF-UNIT, PF-INTEGRATION
 - 停止条件：按正文全局停止条件阻塞并留证。
 
 ### P03-03 实现受管 MCP 完成和测试结果提交
 
 - 模块：P03；需求：AC-19, AC-21, AC-33, AC-47；前置：P02-01, P02-02, P02-03, P02-04, P02-05
-- 输入：正文1.3、P03与已完成前置输出；使用共同输入基线。
-- 文件/函数范围：packages/mcp/src/tools.ts, packages/core/src/test-results.ts, packages/runtime/src/recipe.ts
+- 输入：正文1.4、P03与已完成前置输出；使用共同输入基线。
+- 文件/函数：packages/mcp/src/tools.ts, packages/core/src/test-results.ts, packages/runtime/src/recipe.ts
 - 核心算法：增加通用能力/上下文/完成/测试结果/复核工具；严格验证Run token与角色，报告由服务读取并校验；测试进程不继承模型密钥，不允许 worker 修改Profile、模板或人工确认。
 - 保持：遵守正文全局保持要求。
-- 输出及完成条件：实现本项行为并按正文全局完成条件核验产物及真实测试。
-- 产物检查（不替代行为测试）：[{"contains":"devflow_submit_test_result","path":"packages/mcp/src/tools.ts"}]
+- 输出与完成：实现本项行为并按正文全局完成条件核验产物及真实测试。
+- 产物检查：[{"contains":"devflow_submit_test_result","path":"packages/mcp/src/tools.ts"}]
 - 测试：PF-UNIT, PF-INTEGRATION
 - 停止条件：按正文全局停止条件阻塞并留证。
 
 ### P03-04 统一中止、恢复及任务交接
 
 - 模块：P03；需求：AC-14, AC-20, AC-26, AC-27, AC-50；前置：P02-01, P02-02, P02-03, P02-04, P02-05
-- 输入：正文1.3、P03与已完成前置输出；使用共同输入基线。
-- 文件/函数范围：packages/runtime/src/recovery.ts, packages/runtime/src/errors.ts, packages/core/src/attention.ts
-- 核心算法：恢复按Host真实进程身份和快照对账；停止撤销token后清理所有受管资源，清理未确认不释放租约；保留d5bc298中断原因展示；会话超时保留进度和明确恢复包，不自动更换CLI或伪造完成。
+- 输入：正文1.4、P03与已完成前置输出；使用共同输入基线。
+- 文件/函数：packages/runtime/src/recovery.ts, packages/runtime/src/errors.ts, packages/core/src/attention.ts
+- 核心算法：恢复按Host真实进程身份和快照对账；停止撤销token后清理所有受管资源，清理未确认不释放租约；保留6eb47cc中断原因展示；会话超时保留进度和明确恢复包，不自动更换CLI或伪造完成。
 - 保持：遵守正文全局保持要求。
-- 输出及完成条件：实现本项行为并按正文全局完成条件核验产物及真实测试。
-- 产物检查（不替代行为测试）：[{"contains":"RECOVERY_REQUIRED","path":"packages/runtime/src/recovery.ts"}]
+- 输出与完成：实现本项行为并按正文全局完成条件核验产物及真实测试。
+- 产物检查：[{"contains":"RECOVERY_REQUIRED","path":"packages/runtime/src/recovery.ts"}]
 - 测试：PF-UNIT, PF-INTEGRATION
 - 停止条件：按正文全局停止条件阻塞并留证。
 
 ### P04-01 Codex CLI 四角色执行适配
 
 - 模块：P04；需求：AC-10, AC-11, AC-13, AC-21, AC-51, AC-54, AC-56；前置：P03-01, P03-02, P03-03, P03-04
-- 输入：正文1.3、P04与已完成前置输出；使用共同输入基线。
-- 文件/函数范围：packages/adapters/codex/src/index.ts, packages/adapters/codex/src/invocation.ts, packages/adapters/codex/src/events.ts, packages/adapters/codex/src/profile.ts, packages/adapters/codex/src/permissions.ts, registry/components/codex.json, tests/integration/adapters/codex.test.ts
+- 输入：正文1.4、P04与已完成前置输出；使用共同输入基线。
+- 文件/函数：packages/adapters/codex/src/index.ts, packages/adapters/codex/src/invocation.ts, packages/adapters/codex/src/events.ts, packages/adapters/codex/src/profile.ts, packages/adapters/codex/src/permissions.ts, registry/components/codex.json, tests/integration/adapters/codex.test.ts
 - 核心算法：codex exec --json；--model；明确exec resume thread ID；ignore-user-config/rules+read-only+shell工具关闭；白名单回填原生模型连接。 完整实现probe/profile/invocation/events/permissions/result；planner/implementer/tester/reviewer按同一适配器不同上下文权限执行。复核与测试verify新会话只读；版本/权限/模型失败明确阻塞，不降级。
 - 保持：遵守正文全局保持要求。
-- 输出及完成条件：实现本项行为并按正文全局完成条件核验产物及真实测试。
-- 产物检查（不替代行为测试）：[{"contains":"AgentAdapter","path":"packages/adapters/codex/src/index.ts"}]
+- 输出与完成：实现本项行为并按正文全局完成条件核验产物及真实测试。
+- 产物检查：[{"contains":"AgentAdapter","path":"packages/adapters/codex/src/index.ts"}]
 - 测试：PF-UNIT, PF-INTEGRATION, PF-CERT
 - 停止条件：按正文全局停止条件阻塞并留证。
 
 ### P04-02 Antigravity CLI 四角色执行适配
 
 - 模块：P04；需求：AC-10, AC-11, AC-13, AC-21, AC-51, AC-54, AC-56；前置：P03-01, P03-02, P03-03, P03-04
-- 输入：正文1.3、P04与已完成前置输出；使用共同输入基线。
-- 文件/函数范围：packages/adapters/agy/src/index.ts, packages/adapters/agy/src/invocation.ts, packages/adapters/agy/src/events.ts, packages/adapters/agy/src/profile.ts, packages/adapters/agy/src/permissions.ts, registry/components/agy.json, tests/integration/adapters/agy.test.ts
+- 输入：正文1.4、P04与已完成前置输出；使用共同输入基线。
+- 文件/函数：packages/adapters/agy/src/index.ts, packages/adapters/agy/src/invocation.ts, packages/adapters/agy/src/events.ts, packages/adapters/agy/src/profile.ts, packages/adapters/agy/src/permissions.ts, registry/components/agy.json, tests/integration/adapters/agy.test.ts
 - 核心算法：agy -p --output-format stream-json；--model/--effort来自Profile；--conversation精确ID与项目绑定；init/step_update/result解析，默认拒绝PreToolUse；七Skill使用原生plugin。 完整实现probe/profile/invocation/events/permissions/result；planner/implementer/tester/reviewer按同一适配器不同上下文权限执行。复核与测试verify新会话只读；版本/权限/模型失败明确阻塞，不降级。
 - 保持：遵守正文全局保持要求。
-- 输出及完成条件：实现本项行为并按正文全局完成条件核验产物及真实测试。
-- 产物检查（不替代行为测试）：[{"contains":"AgentAdapter","path":"packages/adapters/agy/src/index.ts"}]
+- 输出与完成：实现本项行为并按正文全局完成条件核验产物及真实测试。
+- 产物检查：[{"contains":"AgentAdapter","path":"packages/adapters/agy/src/index.ts"}]
 - 测试：PF-UNIT, PF-INTEGRATION, PF-CERT
 - 停止条件：按正文全局停止条件阻塞并留证。
 
 ### P04-03 Grok Build 四角色执行适配
 
 - 模块：P04；需求：AC-10, AC-11, AC-13, AC-21, AC-51, AC-54, AC-56；前置：P03-01, P03-02, P03-03, P03-04
-- 输入：正文1.3、P04与已完成前置输出；使用共同输入基线。
-- 文件/函数范围：packages/adapters/grok-build/src/index.ts, packages/adapters/grok-build/src/invocation.ts, packages/adapters/grok-build/src/events.ts, packages/adapters/grok-build/src/profile.ts, packages/adapters/grok-build/src/permissions.ts, registry/components/grok-build.json, tests/integration/adapters/grok-build.test.ts
+- 输入：正文1.4、P04与已完成前置输出；使用共同输入基线。
+- 文件/函数：packages/adapters/grok-build/src/index.ts, packages/adapters/grok-build/src/invocation.ts, packages/adapters/grok-build/src/events.ts, packages/adapters/grok-build/src/profile.ts, packages/adapters/grok-build/src/permissions.ts, registry/components/grok-build.json, tests/integration/adapters/grok-build.test.ts
 - 核心算法：官方grok -p --output-format streaming-json --no-auto-update；模型/会话精确绑定，GROK_HOME隔离，关闭兼容配置导入与原生越权工具；不是调用另一个CLI里的Grok模型。 完整实现probe/profile/invocation/events/permissions/result；planner/implementer/tester/reviewer按同一适配器不同上下文权限执行。复核与测试verify新会话只读；版本/权限/模型失败明确阻塞，不降级。
 - 保持：遵守正文全局保持要求。
-- 输出及完成条件：实现本项行为并按正文全局完成条件核验产物及真实测试。
-- 产物检查（不替代行为测试）：[{"contains":"AgentAdapter","path":"packages/adapters/grok-build/src/index.ts"}]
+- 输出与完成：实现本项行为并按正文全局完成条件核验产物及真实测试。
+- 产物检查：[{"contains":"AgentAdapter","path":"packages/adapters/grok-build/src/index.ts"}]
 - 测试：PF-UNIT, PF-INTEGRATION, PF-CERT
 - 停止条件：按正文全局停止条件阻塞并留证。
 
 ### P04-04 Claude Code 四角色执行适配
 
 - 模块：P04；需求：AC-10, AC-11, AC-13, AC-21, AC-51, AC-54, AC-56；前置：P03-01, P03-02, P03-03, P03-04
-- 输入：正文1.3、P04与已完成前置输出；使用共同输入基线。
-- 文件/函数范围：packages/adapters/claude-code/src/index.ts, packages/adapters/claude-code/src/invocation.ts, packages/adapters/claude-code/src/events.ts, packages/adapters/claude-code/src/profile.ts, packages/adapters/claude-code/src/permissions.ts, registry/components/claude-code.json, tests/integration/adapters/claude-code.test.ts
+- 输入：正文1.4、P04与已完成前置输出；使用共同输入基线。
+- 文件/函数：packages/adapters/claude-code/src/index.ts, packages/adapters/claude-code/src/invocation.ts, packages/adapters/claude-code/src/events.ts, packages/adapters/claude-code/src/profile.ts, packages/adapters/claude-code/src/permissions.ts, registry/components/claude-code.json, tests/integration/adapters/claude-code.test.ts
 - 核心算法：claude -p --output-format stream-json --verbose；--tools空列表+strict-mcp-config；保留原生provider鉴权，解析permission denials，明确--resume。 完整实现probe/profile/invocation/events/permissions/result；planner/implementer/tester/reviewer按同一适配器不同上下文权限执行。复核与测试verify新会话只读；版本/权限/模型失败明确阻塞，不降级。
 - 保持：遵守正文全局保持要求。
-- 输出及完成条件：实现本项行为并按正文全局完成条件核验产物及真实测试。
-- 产物检查（不替代行为测试）：[{"contains":"AgentAdapter","path":"packages/adapters/claude-code/src/index.ts"}]
+- 输出与完成：实现本项行为并按正文全局完成条件核验产物及真实测试。
+- 产物检查：[{"contains":"AgentAdapter","path":"packages/adapters/claude-code/src/index.ts"}]
 - 测试：PF-UNIT, PF-INTEGRATION, PF-CERT
 - 停止条件：按正文全局停止条件阻塞并留证。
 
 ### P04-05 Kimi Code 四角色执行适配
 
 - 模块：P04；需求：AC-10, AC-11, AC-13, AC-21, AC-51, AC-54, AC-56；前置：P03-01, P03-02, P03-03, P03-04
-- 输入：正文1.3、P04与已完成前置输出；使用共同输入基线。
-- 文件/函数范围：packages/adapters/kimi-code/src/index.ts, packages/adapters/kimi-code/src/invocation.ts, packages/adapters/kimi-code/src/events.ts, packages/adapters/kimi-code/src/profile.ts, packages/adapters/kimi-code/src/permissions.ts, registry/components/kimi-code.json, tests/integration/adapters/kimi-code.test.ts
+- 输入：正文1.4、P04与已完成前置输出；使用共同输入基线。
+- 文件/函数：packages/adapters/kimi-code/src/index.ts, packages/adapters/kimi-code/src/invocation.ts, packages/adapters/kimi-code/src/events.ts, packages/adapters/kimi-code/src/profile.ts, packages/adapters/kimi-code/src/permissions.ts, registry/components/kimi-code.json, tests/integration/adapters/kimi-code.test.ts
 - 核心算法：当前TypeScript版kimi -p --output-format stream-json，.kimi-code目录，--agent-file仅列本角色MCP；不把旧Python CLI当同协议，首发新会话交接。 完整实现probe/profile/invocation/events/permissions/result；planner/implementer/tester/reviewer按同一适配器不同上下文权限执行。复核与测试verify新会话只读；版本/权限/模型失败明确阻塞，不降级。
 - 保持：遵守正文全局保持要求。
-- 输出及完成条件：实现本项行为并按正文全局完成条件核验产物及真实测试。
-- 产物检查（不替代行为测试）：[{"contains":"AgentAdapter","path":"packages/adapters/kimi-code/src/index.ts"}]
+- 输出与完成：实现本项行为并按正文全局完成条件核验产物及真实测试。
+- 产物检查：[{"contains":"AgentAdapter","path":"packages/adapters/kimi-code/src/index.ts"}]
 - 测试：PF-UNIT, PF-INTEGRATION, PF-CERT
 - 停止条件：按正文全局停止条件阻塞并留证。
 
 ### P04-06 Qoder CLI 四角色执行适配
 
 - 模块：P04；需求：AC-10, AC-11, AC-13, AC-21, AC-51, AC-54, AC-56；前置：P03-01, P03-02, P03-03, P03-04
-- 输入：正文1.3、P04与已完成前置输出；使用共同输入基线。
-- 文件/函数范围：packages/adapters/qoder/src/index.ts, packages/adapters/qoder/src/invocation.ts, packages/adapters/qoder/src/events.ts, packages/adapters/qoder/src/profile.ts, packages/adapters/qoder/src/permissions.ts, registry/components/qoder.json, tests/integration/adapters/qoder.test.ts
+- 输入：正文1.4、P04与已完成前置输出；使用共同输入基线。
+- 文件/函数：packages/adapters/qoder/src/index.ts, packages/adapters/qoder/src/invocation.ts, packages/adapters/qoder/src/events.ts, packages/adapters/qoder/src/profile.ts, packages/adapters/qoder/src/permissions.ts, registry/components/qoder.json, tests/integration/adapters/qoder.test.ts
 - 核心算法：官方qoder -p --output-format stream-json；QODER_CONFIG_DIR隔离、dont_ask、deny原生工具/allow精确MCP；首发跨节点新会话；Windows arm64明确UNSUPPORTED_UPSTREAM。 完整实现probe/profile/invocation/events/permissions/result；planner/implementer/tester/reviewer按同一适配器不同上下文权限执行。复核与测试verify新会话只读；版本/权限/模型失败明确阻塞，不降级。
 - 保持：遵守正文全局保持要求。
-- 输出及完成条件：实现本项行为并按正文全局完成条件核验产物及真实测试。
-- 产物检查（不替代行为测试）：[{"contains":"AgentAdapter","path":"packages/adapters/qoder/src/index.ts"}]
+- 输出与完成：实现本项行为并按正文全局完成条件核验产物及真实测试。
+- 产物检查：[{"contains":"AgentAdapter","path":"packages/adapters/qoder/src/index.ts"}]
 - 测试：PF-UNIT, PF-INTEGRATION, PF-CERT
 - 停止条件：按正文全局停止条件阻塞并留证。
 
 ### P04-07 OpenCode 四角色执行适配
 
 - 模块：P04；需求：AC-10, AC-11, AC-13, AC-21, AC-51, AC-54, AC-56；前置：P03-01, P03-02, P03-03, P03-04
-- 输入：正文1.3、P04与已完成前置输出；使用共同输入基线。
-- 文件/函数范围：packages/adapters/opencode/src/index.ts, packages/adapters/opencode/src/invocation.ts, packages/adapters/opencode/src/events.ts, packages/adapters/opencode/src/profile.ts, packages/adapters/opencode/src/permissions.ts, registry/components/opencode.json, tests/integration/adapters/opencode.test.ts
+- 输入：正文1.4、P04与已完成前置输出；使用共同输入基线。
+- 文件/函数：packages/adapters/opencode/src/index.ts, packages/adapters/opencode/src/invocation.ts, packages/adapters/opencode/src/events.ts, packages/adapters/opencode/src/profile.ts, packages/adapters/opencode/src/permissions.ts, registry/components/opencode.json, tests/integration/adapters/opencode.test.ts
 - 核心算法：opencode run --format json --pure --agent devflow-managed；provider/model、--session、--dir；不连接用户serve，权限默认deny；解析npm平台native dependency。 完整实现probe/profile/invocation/events/permissions/result；planner/implementer/tester/reviewer按同一适配器不同上下文权限执行。复核与测试verify新会话只读；版本/权限/模型失败明确阻塞，不降级。
 - 保持：遵守正文全局保持要求。
-- 输出及完成条件：实现本项行为并按正文全局完成条件核验产物及真实测试。
-- 产物检查（不替代行为测试）：[{"contains":"AgentAdapter","path":"packages/adapters/opencode/src/index.ts"}]
+- 输出与完成：实现本项行为并按正文全局完成条件核验产物及真实测试。
+- 产物检查：[{"contains":"AgentAdapter","path":"packages/adapters/opencode/src/index.ts"}]
 - 测试：PF-UNIT, PF-INTEGRATION, PF-CERT
 - 停止条件：按正文全局停止条件阻塞并留证。
 
 ### P04-08 Cursor Agent CLI 四角色执行适配
 
 - 模块：P04；需求：AC-10, AC-11, AC-13, AC-21, AC-51, AC-54, AC-56；前置：P03-01, P03-02, P03-03, P03-04
-- 输入：正文1.3、P04与已完成前置输出；使用共同输入基线。
-- 文件/函数范围：packages/adapters/cursor-agent/src/index.ts, packages/adapters/cursor-agent/src/invocation.ts, packages/adapters/cursor-agent/src/events.ts, packages/adapters/cursor-agent/src/profile.ts, packages/adapters/cursor-agent/src/permissions.ts, registry/components/cursor-agent.json, tests/integration/adapters/cursor-agent.test.ts
+- 输入：正文1.4、P04与已完成前置输出；使用共同输入基线。
+- 文件/函数：packages/adapters/cursor-agent/src/index.ts, packages/adapters/cursor-agent/src/invocation.ts, packages/adapters/cursor-agent/src/events.ts, packages/adapters/cursor-agent/src/profile.ts, packages/adapters/cursor-agent/src/permissions.ts, registry/components/cursor-agent.json, tests/integration/adapters/cursor-agent.test.ts
 - 核心算法：agent -p --output-format stream-json；--workspace、--model、精确--resume；不能用cursor编辑器替代；版本目录固化，Mcp精确allow与原生Shell/Read/Write/WebFetch deny。 完整实现probe/profile/invocation/events/permissions/result；planner/implementer/tester/reviewer按同一适配器不同上下文权限执行。复核与测试verify新会话只读；版本/权限/模型失败明确阻塞，不降级。
 - 保持：遵守正文全局保持要求。
-- 输出及完成条件：实现本项行为并按正文全局完成条件核验产物及真实测试。
-- 产物检查（不替代行为测试）：[{"contains":"AgentAdapter","path":"packages/adapters/cursor-agent/src/index.ts"}]
+- 输出与完成：实现本项行为并按正文全局完成条件核验产物及真实测试。
+- 产物检查：[{"contains":"AgentAdapter","path":"packages/adapters/cursor-agent/src/index.ts"}]
 - 测试：PF-UNIT, PF-INTEGRATION, PF-CERT
 - 停止条件：按正文全局停止条件阻塞并留证。
 
 ### P05-01 改写七个中立 Skill 的流程正文
 
 - 模块：P05；需求：AC-05, AC-06, AC-47；前置：P04-01, P04-02, P04-03, P04-04, P04-05, P04-06, P04-07, P04-08
-- 输入：正文1.3、P05与已完成前置输出；使用共同输入基线。
-- 文件/函数范围：packages/skills/devflow-test/SKILL.md, packages/skills/devflow/SKILL.md, packages/skills/devflow-project-onboard/SKILL.md, packages/skills/devflow-plan/SKILL.md, packages/skills/devflow-execute/SKILL.md, packages/skills/devflow-review/SKILL.md, packages/skills/devflow-browser-accept/SKILL.md
+- 输入：正文1.4、P05与已完成前置输出；使用共同输入基线。
+- 文件/函数：packages/skills/devflow-test/SKILL.md, packages/skills/devflow/SKILL.md, packages/skills/devflow-project-onboard/SKILL.md, packages/skills/devflow-plan/SKILL.md, packages/skills/devflow-execute/SKILL.md, packages/skills/devflow-review/SKILL.md, packages/skills/devflow-browser-accept/SKILL.md
 - 核心算法：新增测试Skill，改写入口/接入/规划/实施/复核/浏览器Skill，使用实际能力上下文，不固定系统或模型；以角色权限与服务结果为准；原生工具权限不能只靠提示词。
 - 保持：遵守正文全局保持要求。
-- 输出及完成条件：实现本项行为并按正文全局完成条件核验产物及真实测试。
-- 产物检查（不替代行为测试）：[{"contains":"devflow_submit_test_result","path":"packages/skills/devflow-test/SKILL.md"}]
+- 输出与完成：实现本项行为并按正文全局完成条件核验产物及真实测试。
+- 产物检查：[{"contains":"devflow_submit_test_result","path":"packages/skills/devflow-test/SKILL.md"}]
 - 测试：PF-UNIT, PF-INTEGRATION, PF-E2E, PF-BROWSER
 - 停止条件：按正文全局停止条件阻塞并留证。
 
 ### P05-02 编译并验证各客户端 Skill 产物
 
 - 模块：P05；需求：AC-05, AC-06, AC-52；前置：P04-01, P04-02, P04-03, P04-04, P04-05, P04-06, P04-07, P04-08
-- 输入：正文1.3、P05与已完成前置输出；使用共同输入基线。
-- 文件/函数范围：packages/skill-compiler/src/index.ts, packages/skill-compiler/src/manifest.ts
+- 输入：正文1.4、P05与已完成前置输出；使用共同输入基线。
+- 文件/函数：packages/skill-compiler/src/index.ts, packages/skill-compiler/src/manifest.ts
 - 核心算法：一份源码生成七种标准目录与Antigravity平面plugin产物，资源引用重写、frontmatter检查、完整manifest与内容hash；共享路径去重/引用计数，未知用户同名文件作为冲突，不覆盖。
 - 保持：遵守正文全局保持要求。
-- 输出及完成条件：实现本项行为并按正文全局完成条件核验产物及真实测试。
-- 产物检查（不替代行为测试）：[{"contains":"compileSkills","path":"packages/skill-compiler/src/index.ts"}]
+- 输出与完成：实现本项行为并按正文全局完成条件核验产物及真实测试。
+- 产物检查：[{"contains":"compileSkills","path":"packages/skill-compiler/src/index.ts"}]
 - 测试：PF-UNIT, PF-INTEGRATION, PF-E2E, PF-BROWSER
 - 停止条件：按正文全局停止条件阻塞并留证。
 
 ### P05-03 实现客户端配置安装事务
 
 - 模块：P05；需求：AC-03, AC-04, AC-29, AC-32, AC-54, AC-56；前置：P04-01, P04-02, P04-03, P04-04, P04-05, P04-06, P04-07, P04-08
-- 输入：正文1.3、P05与已完成前置输出；使用共同输入基线。
-- 文件/函数范围：packages/clients/src/transaction.ts, packages/clients/src/runtime-sandbox.ts
+- 输入：正文1.4、P05与已完成前置输出；使用共同输入基线。
+- 文件/函数：packages/clients/src/transaction.ts, packages/clients/src/runtime-sandbox.ts
 - 核心算法：统一detect/locateConfig/render/diff/apply/verify/uninstall；保留JSONC/TOML注释与无关字段；哈希比较后原子替换，失败回滚，卸载只删仍受管文件；分别报告安装、加载、触发和授权。
 - 保持：遵守正文全局保持要求。
-- 输出及完成条件：实现本项行为并按正文全局完成条件核验产物及真实测试。
-- 产物检查（不替代行为测试）：[{"contains":"ClientInstaller","path":"packages/clients/src/transaction.ts"}]
+- 输出与完成：实现本项行为并按正文全局完成条件核验产物及真实测试。
+- 产物检查：[{"contains":"ClientInstaller","path":"packages/clients/src/transaction.ts"}]
 - 测试：PF-UNIT, PF-INTEGRATION, PF-E2E, PF-BROWSER
 - 停止条件：按正文全局停止条件阻塞并留证。
 
 ### P05-04 Codex CLI 入口集成安装
 
 - 模块：P05；需求：AC-03, AC-04, AC-05, AC-06, AC-52, AC-54；前置：P04-01, P04-02, P04-03, P04-04, P04-05, P04-06, P04-07, P04-08
-- 输入：正文1.3、P05与已完成前置输出；使用共同输入基线。
-- 文件/函数范围：packages/clients/codex/src/index.ts, tests/integration/clients/codex.test.ts
+- 输入：正文1.4、P05与已完成前置输出；使用共同输入基线。
+- 文件/函数：packages/clients/codex/src/index.ts, tests/integration/clients/codex.test.ts
 - 核心算法：CODEX_HOME/config.toml 的 mcp_servers.devflow，用户Skill为~/.agents/skills。接入共用安装事务，安装全部七Skill与引用资源，真正MCP initialize/tools/list/doctor往返；新会话Skill触发另存结果，不用文件存在冒充就绪。
 - 保持：遵守正文全局保持要求。
-- 输出及完成条件：实现本项行为并按正文全局完成条件核验产物及真实测试。
-- 产物检查（不替代行为测试）：[{"contains":"ClientInstaller","path":"packages/clients/codex/src/index.ts"}]
+- 输出与完成：实现本项行为并按正文全局完成条件核验产物及真实测试。
+- 产物检查：[{"contains":"ClientInstaller","path":"packages/clients/codex/src/index.ts"}]
 - 测试：PF-UNIT, PF-INTEGRATION, PF-E2E, PF-BROWSER
 - 停止条件：按正文全局停止条件阻塞并留证。
 
 ### P05-05 Antigravity CLI 入口集成安装
 
 - 模块：P05；需求：AC-03, AC-04, AC-05, AC-06, AC-52, AC-54；前置：P04-01, P04-02, P04-03, P04-04, P04-05, P04-06, P04-07, P04-08
-- 输入：正文1.3、P05与已完成前置输出；使用共同输入基线。
-- 文件/函数范围：packages/clients/agy/src/index.ts, tests/integration/clients/agy.test.ts
+- 输入：正文1.4、P05与已完成前置输出；使用共同输入基线。
+- 文件/函数：packages/clients/agy/src/index.ts, tests/integration/clients/agy.test.ts
 - 核心算法：agy原生devflow plugin含MCP和平面Skill，使用agy plugin安装/发现，不套用其他工具配置目录。接入共用安装事务，安装全部七Skill与引用资源，真正MCP initialize/tools/list/doctor往返；新会话Skill触发另存结果，不用文件存在冒充就绪。
 - 保持：遵守正文全局保持要求。
-- 输出及完成条件：实现本项行为并按正文全局完成条件核验产物及真实测试。
-- 产物检查（不替代行为测试）：[{"contains":"ClientInstaller","path":"packages/clients/agy/src/index.ts"}]
+- 输出与完成：实现本项行为并按正文全局完成条件核验产物及真实测试。
+- 产物检查：[{"contains":"ClientInstaller","path":"packages/clients/agy/src/index.ts"}]
 - 测试：PF-UNIT, PF-INTEGRATION, PF-E2E, PF-BROWSER
 - 停止条件：按正文全局停止条件阻塞并留证。
 
 ### P05-06 Grok Build 入口集成安装
 
 - 模块：P05；需求：AC-03, AC-04, AC-05, AC-06, AC-52, AC-54；前置：P04-01, P04-02, P04-03, P04-04, P04-05, P04-06, P04-07, P04-08
-- 输入：正文1.3、P05与已完成前置输出；使用共同输入基线。
-- 文件/函数范围：packages/clients/grok-build/src/index.ts, tests/integration/clients/grok-build.test.ts
+- 输入：正文1.4、P05与已完成前置输出；使用共同输入基线。
+- 文件/函数：packages/clients/grok-build/src/index.ts, tests/integration/clients/grok-build.test.ts
 - 核心算法：GROK_HOME/config.toml的mcp_servers.devflow与同根skills。接入共用安装事务，安装全部七Skill与引用资源，真正MCP initialize/tools/list/doctor往返；新会话Skill触发另存结果，不用文件存在冒充就绪。
 - 保持：遵守正文全局保持要求。
-- 输出及完成条件：实现本项行为并按正文全局完成条件核验产物及真实测试。
-- 产物检查（不替代行为测试）：[{"contains":"ClientInstaller","path":"packages/clients/grok-build/src/index.ts"}]
+- 输出与完成：实现本项行为并按正文全局完成条件核验产物及真实测试。
+- 产物检查：[{"contains":"ClientInstaller","path":"packages/clients/grok-build/src/index.ts"}]
 - 测试：PF-UNIT, PF-INTEGRATION, PF-E2E, PF-BROWSER
 - 停止条件：按正文全局停止条件阻塞并留证。
 
 ### P05-07 Claude Code 入口集成安装
 
 - 模块：P05；需求：AC-03, AC-04, AC-05, AC-06, AC-52, AC-54；前置：P04-01, P04-02, P04-03, P04-04, P04-05, P04-06, P04-07, P04-08
-- 输入：正文1.3、P05与已完成前置输出；使用共同输入基线。
-- 文件/函数范围：packages/clients/claude-code/src/index.ts, tests/integration/clients/claude-code.test.ts
+- 输入：正文1.4、P05与已完成前置输出；使用共同输入基线。
+- 文件/函数：packages/clients/claude-code/src/index.ts, tests/integration/clients/claude-code.test.ts
 - 核心算法：claude mcp add --scope user，~/.claude/skills。接入共用安装事务，安装全部七Skill与引用资源，真正MCP initialize/tools/list/doctor往返；新会话Skill触发另存结果，不用文件存在冒充就绪。
 - 保持：遵守正文全局保持要求。
-- 输出及完成条件：实现本项行为并按正文全局完成条件核验产物及真实测试。
-- 产物检查（不替代行为测试）：[{"contains":"ClientInstaller","path":"packages/clients/claude-code/src/index.ts"}]
+- 输出与完成：实现本项行为并按正文全局完成条件核验产物及真实测试。
+- 产物检查：[{"contains":"ClientInstaller","path":"packages/clients/claude-code/src/index.ts"}]
 - 测试：PF-UNIT, PF-INTEGRATION, PF-E2E, PF-BROWSER
 - 停止条件：按正文全局停止条件阻塞并留证。
 
 ### P05-08 Kimi Code 入口集成安装
 
 - 模块：P05；需求：AC-03, AC-04, AC-05, AC-06, AC-52, AC-54；前置：P04-01, P04-02, P04-03, P04-04, P04-05, P04-06, P04-07, P04-08
-- 输入：正文1.3、P05与已完成前置输出；使用共同输入基线。
-- 文件/函数范围：packages/clients/kimi-code/src/index.ts, tests/integration/clients/kimi-code.test.ts
+- 输入：正文1.4、P05与已完成前置输出；使用共同输入基线。
+- 文件/函数：packages/clients/kimi-code/src/index.ts, tests/integration/clients/kimi-code.test.ts
 - 核心算法：KIMI_CODE_HOME/mcp.json的mcpServers.devflow与同根skills。接入共用安装事务，安装全部七Skill与引用资源，真正MCP initialize/tools/list/doctor往返；新会话Skill触发另存结果，不用文件存在冒充就绪。
 - 保持：遵守正文全局保持要求。
-- 输出及完成条件：实现本项行为并按正文全局完成条件核验产物及真实测试。
-- 产物检查（不替代行为测试）：[{"contains":"ClientInstaller","path":"packages/clients/kimi-code/src/index.ts"}]
+- 输出与完成：实现本项行为并按正文全局完成条件核验产物及真实测试。
+- 产物检查：[{"contains":"ClientInstaller","path":"packages/clients/kimi-code/src/index.ts"}]
 - 测试：PF-UNIT, PF-INTEGRATION, PF-E2E, PF-BROWSER
 - 停止条件：按正文全局停止条件阻塞并留证。
 
 ### P05-09 Qoder CLI 入口集成安装
 
 - 模块：P05；需求：AC-03, AC-04, AC-05, AC-06, AC-52, AC-54；前置：P04-01, P04-02, P04-03, P04-04, P04-05, P04-06, P04-07, P04-08
-- 输入：正文1.3、P05与已完成前置输出；使用共同输入基线。
-- 文件/函数范围：packages/clients/qoder/src/index.ts, tests/integration/clients/qoder.test.ts
+- 输入：正文1.4、P05与已完成前置输出；使用共同输入基线。
+- 文件/函数：packages/clients/qoder/src/index.ts, tests/integration/clients/qoder.test.ts
 - 核心算法：QODER_CONFIG_DIR/settings.json，由qoder mcp add -s user管理，同根skills。接入共用安装事务，安装全部七Skill与引用资源，真正MCP initialize/tools/list/doctor往返；新会话Skill触发另存结果，不用文件存在冒充就绪。
 - 保持：遵守正文全局保持要求。
-- 输出及完成条件：实现本项行为并按正文全局完成条件核验产物及真实测试。
-- 产物检查（不替代行为测试）：[{"contains":"ClientInstaller","path":"packages/clients/qoder/src/index.ts"}]
+- 输出与完成：实现本项行为并按正文全局完成条件核验产物及真实测试。
+- 产物检查：[{"contains":"ClientInstaller","path":"packages/clients/qoder/src/index.ts"}]
 - 测试：PF-UNIT, PF-INTEGRATION, PF-E2E, PF-BROWSER
 - 停止条件：按正文全局停止条件阻塞并留证。
 
 ### P05-10 OpenCode 入口集成安装
 
 - 模块：P05；需求：AC-03, AC-04, AC-05, AC-06, AC-52, AC-54；前置：P04-01, P04-02, P04-03, P04-04, P04-05, P04-06, P04-07, P04-08
-- 输入：正文1.3、P05与已完成前置输出；使用共同输入基线。
-- 文件/函数范围：packages/clients/opencode/src/index.ts, tests/integration/clients/opencode.test.ts
+- 输入：正文1.4、P05与已完成前置输出；使用共同输入基线。
+- 文件/函数：packages/clients/opencode/src/index.ts, tests/integration/clients/opencode.test.ts
 - 核心算法：opencode.json/jsonc的mcp.devflow，local command是数组，XDG配置根skills。接入共用安装事务，安装全部七Skill与引用资源，真正MCP initialize/tools/list/doctor往返；新会话Skill触发另存结果，不用文件存在冒充就绪。
 - 保持：遵守正文全局保持要求。
-- 输出及完成条件：实现本项行为并按正文全局完成条件核验产物及真实测试。
-- 产物检查（不替代行为测试）：[{"contains":"ClientInstaller","path":"packages/clients/opencode/src/index.ts"}]
+- 输出与完成：实现本项行为并按正文全局完成条件核验产物及真实测试。
+- 产物检查：[{"contains":"ClientInstaller","path":"packages/clients/opencode/src/index.ts"}]
 - 测试：PF-UNIT, PF-INTEGRATION, PF-E2E, PF-BROWSER
 - 停止条件：按正文全局停止条件阻塞并留证。
 
 ### P05-11 Cursor Agent CLI 入口集成安装
 
 - 模块：P05；需求：AC-03, AC-04, AC-05, AC-06, AC-52, AC-54；前置：P04-01, P04-02, P04-03, P04-04, P04-05, P04-06, P04-07, P04-08
-- 输入：正文1.3、P05与已完成前置输出；使用共同输入基线。
-- 文件/函数范围：packages/clients/cursor-agent/src/index.ts, tests/integration/clients/cursor-agent.test.ts
+- 输入：正文1.4、P05与已完成前置输出；使用共同输入基线。
+- 文件/函数：packages/clients/cursor-agent/src/index.ts, tests/integration/clients/cursor-agent.test.ts
 - 核心算法：~/.cursor/mcp.json的mcpServers.devflow和~/.cursor/skills，处理共享别名。接入共用安装事务，安装全部七Skill与引用资源，真正MCP initialize/tools/list/doctor往返；新会话Skill触发另存结果，不用文件存在冒充就绪。
 - 保持：遵守正文全局保持要求。
-- 输出及完成条件：实现本项行为并按正文全局完成条件核验产物及真实测试。
-- 产物检查（不替代行为测试）：[{"contains":"ClientInstaller","path":"packages/clients/cursor-agent/src/index.ts"}]
+- 输出与完成：实现本项行为并按正文全局完成条件核验产物及真实测试。
+- 产物检查：[{"contains":"ClientInstaller","path":"packages/clients/cursor-agent/src/index.ts"}]
 - 测试：PF-UNIT, PF-INTEGRATION, PF-E2E, PF-BROWSER
 - 停止条件：按正文全局停止条件阻塞并留证。
 
 ### P06-01 实现模板 schema 和 DAG 编译
 
 - 模块：P06；需求：AC-16, AC-17；前置：P05-01, P05-02, P05-03, P05-04, P05-05, P05-06, P05-07, P05-08, P05-09, P05-10, P05-11
-- 输入：正文1.3、P06与已完成前置输出；使用共同输入基线。
-- 文件/函数范围：packages/workflow/src/compiler.ts, packages/workflow/src/schema.ts, templates/checked-development.yaml
+- 输入：正文1.4、P06与已完成前置输出；使用共同输入基线。
+- 文件/函数：packages/workflow/src/compiler.ts, packages/workflow/src/schema.ts, templates/checked-development.yaml
 - 核心算法：支持1.3全部节点类型、类型化条件、唯一入口、无环/可达/输出类型/角色能力/并行写检查；禁止eval。旧@1保留，新默认checked-development@2含测试角色。
 - 保持：遵守正文全局保持要求。
-- 输出及完成条件：实现本项行为并按正文全局完成条件核验产物及真实测试。
-- 产物检查（不替代行为测试）：[{"contains":"compileTemplate","path":"packages/workflow/src/compiler.ts"}]
+- 输出与完成：实现本项行为并按正文全局完成条件核验产物及真实测试。
+- 产物检查：[{"contains":"compileTemplate","path":"packages/workflow/src/compiler.ts"}]
 - 测试：PF-UNIT, PF-INTEGRATION, PF-E2E, PF-BROWSER
 - 停止条件：按正文全局停止条件阻塞并留证。
 
 ### P06-02 实现节点调度及测试 Agent 子执行
 
 - 模块：P06；需求：AC-18, AC-19, AC-47, AC-48；前置：P05-01, P05-02, P05-03, P05-04, P05-05, P05-06, P05-07, P05-08, P05-09, P05-10, P05-11
-- 输入：正文1.3、P06与已完成前置输出；使用共同输入基线。
-- 文件/函数范围：packages/workflow/src/scheduler.ts, packages/workflow/src/checks.ts, packages/core/src/test-results.ts
+- 输入：正文1.4、P06与已完成前置输出；使用共同输入基线。
+- 文件/函数：packages/workflow/src/scheduler.ts, packages/workflow/src/checks.ts, packages/core/src/test-results.ts
 - 核心算法：test-prepare补测后冻结，test-verify调用devflow_run_checks创建子checks，普通程序等待并回传报告；子执行不等待父成功、不占第二AI槽位；测试失败最多3轮修复并更新快照。
 - 保持：遵守正文全局保持要求。
-- 输出及完成条件：实现本项行为并按正文全局完成条件核验产物及真实测试。
-- 产物检查（不替代行为测试）：[{"contains":"parent_node_run_id","path":"packages/workflow/src/scheduler.ts"}]
+- 输出与完成：实现本项行为并按正文全局完成条件核验产物及真实测试。
+- 产物检查：[{"contains":"parent_node_run_id","path":"packages/workflow/src/scheduler.ts"}]
 - 测试：PF-UNIT, PF-INTEGRATION, PF-E2E, PF-BROWSER
 - 停止条件：按正文全局停止条件阻塞并留证。
 
 ### P06-03 实现配置冻结与停止后切换
 
 - 模块：P06；需求：AC-09, AC-14, AC-15, AC-20, AC-45, AC-46, AC-50；前置：P05-01, P05-02, P05-03, P05-04, P05-05, P05-06, P05-07, P05-08, P05-09, P05-10, P05-11
-- 输入：正文1.3、P06与已完成前置输出；使用共同输入基线。
-- 文件/函数范围：packages/workflow/src/reconfigure.ts, packages/profiles/src/bindings.ts
-- 核心算法：新配置仅影响新任务；已有任务显式应用修订；运行中切工具先停进程/浏览器撤token并对账，跨工具仅传批准计划/快照/证据；single-tool全节点保持同adapter。 1.3合并要求：区分无变化恢复与正式改向；前者可明确ID恢复，后者按P11停止后新会话交接。
+- 输入：正文1.4、P06与已完成前置输出；使用共同输入基线。
+- 文件/函数：packages/workflow/src/reconfigure.ts, packages/profiles/src/bindings.ts
+- 核心算法：新配置仅影响新任务；已有任务显式应用修订；运行中切工具先停进程/浏览器撤token并对账，跨工具仅传批准计划/快照/证据；single-tool全节点保持同adapter。 1.4合并要求：区分无变化恢复与正式改向；前者可明确ID恢复，后者按P11停止后新会话交接。
 - 保持：遵守正文全局保持要求。
-- 输出及完成条件：实现本项行为并按正文全局完成条件核验产物及真实测试。
-- 产物检查（不替代行为测试）：[{"contains":"profile_revision","path":"packages/workflow/src/reconfigure.ts"}]
+- 输出与完成：实现本项行为并按正文全局完成条件核验产物及真实测试。
+- 产物检查：[{"contains":"profile_revision","path":"packages/workflow/src/reconfigure.ts"}]
 - 测试：PF-UNIT, PF-INTEGRATION, PF-E2E, PF-BROWSER
 - 停止条件：按正文全局停止条件阻塞并留证。
 
 ### P06-04 把总状态改为节点状态投影
 
 - 模块：P06；需求：AC-16, AC-20；前置：P05-01, P05-02, P05-03, P05-04, P05-05, P05-06, P05-07, P05-08, P05-09, P05-10, P05-11
-- 输入：正文1.3、P06与已完成前置输出；使用共同输入基线。
-- 文件/函数范围：packages/workflow/src/projection.ts, packages/core/src/progress.ts, packages/presentation/src/activity.ts
+- 输入：正文1.4、P06与已完成前置输出；使用共同输入基线。
+- 文件/函数：packages/workflow/src/projection.ts, packages/core/src/progress.ts, packages/presentation/src/activity.ts
 - 核心算法：保留当前UI细项任务进度、执行侧栏、中断原因和旧API状态；由NodeRun投影RESEARCHING等总状态，join等待所有必需输入，代码变更逐级失效审批和报告。
 - 保持：遵守正文全局保持要求。
-- 输出及完成条件：实现本项行为并按正文全局完成条件核验产物及真实测试。
-- 产物检查（不替代行为测试）：[{"contains":"waiting_human","path":"packages/workflow/src/projection.ts"}]
+- 输出与完成：实现本项行为并按正文全局完成条件核验产物及真实测试。
+- 产物检查：[{"contains":"waiting_human","path":"packages/workflow/src/projection.ts"}]
 - 测试：PF-UNIT, PF-INTEGRATION, PF-E2E, PF-BROWSER
 - 停止条件：按正文全局停止条件阻塞并留证。
 
 ### P07-01 实现 MCP ToolGateway 注册与权限
 
 - 模块：P07；需求：AC-21, AC-24, AC-33；前置：P06-01, P06-02, P06-03, P06-04
-- 输入：正文1.3、P07与已完成前置输出；使用共同输入基线。
-- 文件/函数范围：packages/tools/src/gateway.ts, packages/tools/src/registry.ts
+- 输入：正文1.4、P07与已完成前置输出；使用共同输入基线。
+- 文件/函数：packages/tools/src/gateway.ts, packages/tools/src/registry.ts
 - 核心算法：支持stdio和Streamable HTTP，保存tools/list schema hash与版本，权限取角色/Toolset/批准范围交集；schema漂移重验，凭据只按引用注入目标进程。
 - 保持：遵守正文全局保持要求。
-- 输出及完成条件：实现本项行为并按正文全局完成条件核验产物及真实测试。
-- 产物检查（不替代行为测试）：[{"contains":"ToolGateway","path":"packages/tools/src/gateway.ts"}]
+- 输出与完成：实现本项行为并按正文全局完成条件核验产物及真实测试。
+- 产物检查：[{"contains":"ToolGateway","path":"packages/tools/src/gateway.ts"}]
 - 测试：PF-UNIT, PF-INTEGRATION, PF-E2E, PF-BROWSER
 - 停止条件：按正文全局停止条件阻塞并留证。
 
 ### P07-02 统一受管命令和 FileBroker 作用域
 
 - 模块：P07；需求：AC-19, AC-21, AC-25, AC-33；前置：P06-01, P06-02, P06-03, P06-04
-- 输入：正文1.3、P07与已完成前置输出；使用共同输入基线。
-- 文件/函数范围：packages/tools/src/commands.ts, packages/workspace/src/broker.ts
+- 输入：正文1.4、P07与已完成前置输出；使用共同输入基线。
+- 文件/函数：packages/tools/src/commands.ts, packages/workspace/src/broker.ts
 - 核心算法：命令只由批准配方和结构化argv构造；业务worktree读写用现有broker与租约；测试环境与模型环境分离，报告真实采集，不允许原生shell绕过。
 - 保持：遵守正文全局保持要求。
-- 输出及完成条件：实现本项行为并按正文全局完成条件核验产物及真实测试。
-- 产物检查（不替代行为测试）：[{"contains":"approved-plan-only","path":"packages/tools/src/commands.ts"}]
+- 输出与完成：实现本项行为并按正文全局完成条件核验产物及真实测试。
+- 产物检查：[{"contains":"approved-plan-only","path":"packages/tools/src/commands.ts"}]
 - 测试：PF-UNIT, PF-INTEGRATION, PF-E2E, PF-BROWSER
 - 停止条件：按正文全局停止条件阻塞并留证。
 
 ### P07-03 实现 Playwright 浏览器 Provider
 
 - 模块：P07；需求：AC-22, AC-25；前置：P06-01, P06-02, P06-03, P06-04
-- 输入：正文1.3、P07与已完成前置输出；使用共同输入基线。
-- 文件/函数范围：packages/browsers/src/playwright.ts, packages/browsers/src/index.ts
+- 输入：正文1.4、P07与已完成前置输出；使用共同输入基线。
+- 文件/函数：packages/browsers/src/playwright.ts, packages/browsers/src/index.ts
 - 核心算法：按1.3统一语义动作/locator合同实现Provider，独立Context、origin与输出目录，有头人工接管和截图证据；浏览器版本固定，不依赖本机Edge绝对路径。
 - 保持：遵守正文全局保持要求。
-- 输出及完成条件：实现本项行为并按正文全局完成条件核验产物及真实测试。
-- 产物检查（不替代行为测试）：[{"contains":"BrowserProvider","path":"packages/browsers/src/playwright.ts"}]
+- 输出与完成：实现本项行为并按正文全局完成条件核验产物及真实测试。
+- 产物检查：[{"contains":"BrowserProvider","path":"packages/browsers/src/playwright.ts"}]
 - 测试：PF-UNIT, PF-INTEGRATION, PF-E2E, PF-BROWSER
 - 停止条件：按正文全局停止条件阻塞并留证。
 
 ### P07-04 迁移 OpenTabs Provider 和旧场景
 
 - 模块：P07；需求：AC-23, AC-24；前置：P06-01, P06-02, P06-03, P06-04
-- 输入：正文1.3、P07与已完成前置输出；使用共同输入基线。
-- 文件/函数范围：packages/browsers/src/opentabs.ts, packages/runtime/src/browser.ts, packages/runtime/src/recipe.ts
+- 输入：正文1.4、P07与已完成前置输出；使用共同输入基线。
+- 文件/函数：packages/browsers/src/opentabs.ts, packages/runtime/src/browser.ts, packages/runtime/src/recipe.ts
 - 核心算法：保留现有真实OpenTabs功能、整场景租约和只关闭本轮tab；把opentabs测试层映射browser，不能无损转换的旧场景显式保留provider绑定并重新验证后切换。
 - 保持：遵守正文全局保持要求。
-- 输出及完成条件：实现本项行为并按正文全局完成条件核验产物及真实测试。
-- 产物检查（不替代行为测试）：[{"contains":"BrowserProvider","path":"packages/browsers/src/opentabs.ts"}]
+- 输出与完成：实现本项行为并按正文全局完成条件核验产物及真实测试。
+- 产物检查：[{"contains":"BrowserProvider","path":"packages/browsers/src/opentabs.ts"}]
 - 测试：PF-UNIT, PF-INTEGRATION, PF-E2E, PF-BROWSER
 - 停止条件：按正文全局停止条件阻塞并留证。
 
 ### P11-01 定义任务组合和叶子绑定合同
 
 - 模块：P11；需求：AC-57, AC-58, AC-59, AC-60；前置：P07-01, P07-02, P07-03, P07-04
-- 输入：同一任务 1.3 完整设计第16节、当前叶子前置输出与已批准合同；共享 P01/P03/P06/P07 能力。
-- 文件/函数范围：packages/contracts/src/execution-spec.ts, packages/contracts/src/config-v2.ts, packages/contracts/src/index.ts
+- 输入：同一任务 1.4 完整设计第16节、当前叶子前置输出与已批准合同；共享 P01/P03/P06/P07 能力。
+- 文件/函数：packages/contracts/src/execution-spec.ts, packages/contracts/src/config-v2.ts, packages/contracts/src/index.ts
 - 核心算法：定义WorkflowExecutionSpec、role/leaf绑定、Profile revision快照；single-tool校验四角色、自定义节点、叶子与aside；未知模型参数拒绝。
 - 保持：保持免登录、八工具及原58细项范围；不硬编码示例模型；保留人工审批和证据真实性；仅操作本任务隔离worktree。
-- 输出及完成条件：实现所列业务行为，文件检查只作产物定位；对应原始行为测试必须通过，进度证据匹配当前快照与版本。
-- 产物检查（不替代行为测试）：[{"path":"packages/contracts/src/execution-spec.ts","contains":"SINGLE_TOOL_BINDING_CONFLICT"}]
+- 输出与完成：实现所列业务行为，文件检查只作产物定位；对应原始行为测试必须通过，进度证据匹配当前快照与版本。
+- 产物检查：[{"contains":"SINGLE_TOOL_BINDING_CONFLICT","path":"packages/contracts/src/execution-spec.ts"}]
 - 测试：TC-UNIT, TC-INTEGRATION
 - 停止条件：基线或范围漂移、进程停止未确认、文档/模型/上下文校验失败时停止相应动作并记录真实阻塞；不得降级工具、跳过权限或伪造测试。
 
 ### P11-02 实现组合解析与任务级配置隔离
 
 - 模块：P11；需求：AC-57, AC-58, AC-59, AC-73；前置：P11-01
-- 输入：同一任务 1.3 完整设计第16节、当前叶子前置输出与已批准合同；共享 P01/P03/P06/P07 能力。
-- 文件/函数范围：packages/profiles/src/workflow-spec.ts, packages/profiles/src/resolve.ts, packages/profiles/src/registry.ts
+- 输入：同一任务 1.4 完整设计第16节、当前叶子前置输出与已批准合同；共享 P01/P03/P06/P07 能力。
+- 文件/函数：packages/profiles/src/workflow-spec.ts, packages/profiles/src/resolve.ts, packages/profiles/src/registry.ts
 - 核心算法：实现显式任务→组合模板→项目→安装默认的创建时解析；补齐tester/reviewer并展示；缓存按安装和账号配置指纹分区；全局更改不回写旧任务；精确模型不可用不回退。
 - 保持：保持免登录、八工具及原58细项范围；不硬编码示例模型；保留人工审批和证据真实性；仅操作本任务隔离worktree。
-- 输出及完成条件：实现所列业务行为，文件检查只作产物定位；对应原始行为测试必须通过，进度证据匹配当前快照与版本。
-- 产物检查（不替代行为测试）：[{"path":"packages/profiles/src/workflow-spec.ts","contains":"MODEL_UNAVAILABLE"}]
+- 输出与完成：实现所列业务行为，文件检查只作产物定位；对应原始行为测试必须通过，进度证据匹配当前快照与版本。
+- 产物检查：[{"contains":"MODEL_UNAVAILABLE","path":"packages/profiles/src/workflow-spec.ts"}]
 - 测试：TC-UNIT, TC-INTEGRATION
 - 停止条件：基线或范围漂移、进程停止未确认、文档/模型/上下文校验失败时停止相应动作并记录真实阻塞；不得降级工具、跳过权限或伪造测试。
 
 ### P11-03 绑定节点与细项的执行身份
 
 - 模块：P11；需求：AC-60, AC-62, AC-76；前置：P11-02
-- 输入：同一任务 1.3 完整设计第16节、当前叶子前置输出与已批准合同；共享 P01/P03/P06/P07 能力。
-- 文件/函数范围：packages/runtime/src/node-binding.ts, packages/core/src/engine.ts, packages/contracts/src/node-run.ts, packages/runtime/src/runtime.ts
+- 输入：同一任务 1.4 完整设计第16节、当前叶子前置输出与已批准合同；共享 P01/P03/P06/P07 能力。
+- 文件/函数：packages/runtime/src/node-binding.ts, packages/core/src/engine.ts, packages/contracts/src/node-run.ts, packages/runtime/src/runtime.ts
 - 核心算法：NodeRun冻结spec、plan、bundle、seq、epoch、profile和leaf；调度读取冻结快照；叶子tester按明确测试归属分组；不存在绑定时拒绝派发，不从最近任务补齐。
 - 保持：保持免登录、八工具及原58细项范围；不硬编码示例模型；保留人工审批和证据真实性；仅操作本任务隔离worktree。
-- 输出及完成条件：实现所列业务行为，文件检查只作产物定位；对应原始行为测试必须通过，进度证据匹配当前快照与版本。
-- 产物检查（不替代行为测试）：[{"path":"packages/runtime/src/node-binding.ts","contains":"execution_spec_hash"}]
+- 输出与完成：实现所列业务行为，文件检查只作产物定位；对应原始行为测试必须通过，进度证据匹配当前快照与版本。
+- 产物检查：[{"contains":"execution_spec_hash","path":"packages/runtime/src/node-binding.ts"}]
 - 测试：TC-UNIT, TC-INTEGRATION
 - 停止条件：基线或范围漂移、进程停止未确认、文档/模型/上下文校验失败时停止相应动作并记录真实阻塞；不得降级工具、跳过权限或伪造测试。
 
 ### P11-04 扩展八工具的交互能力声明
 
 - 模块：P11；需求：AC-59, AC-62, AC-69, AC-74；前置：P11-03
-- 输入：同一任务 1.3 完整设计第16节、当前叶子前置输出与已批准合同；共享 P01/P03/P06/P07 能力。
-- 文件/函数范围：packages/adapters/sdk/src/interaction-capabilities.ts, packages/adapters/codex/src/index.ts, packages/adapters/agy/src/index.ts, packages/adapters/grok-build/src/index.ts, packages/adapters/claude-code/src/index.ts, packages/adapters/kimi-code/src/index.ts, packages/adapters/qoder/src/index.ts, packages/adapters/opencode/src/index.ts, packages/adapters/cursor-agent/src/index.ts
+- 输入：同一任务 1.4 完整设计第16节、当前叶子前置输出与已批准合同；共享 P01/P03/P06/P07 能力。
+- 文件/函数：packages/adapters/sdk/src/interaction-capabilities.ts, packages/adapters/codex/src/index.ts, packages/adapters/agy/src/index.ts, packages/adapters/grok-build/src/index.ts, packages/adapters/claude-code/src/index.ts, packages/adapters/kimi-code/src/index.ts, packages/adapters/qoder/src/index.ts, packages/adapters/opencode/src/index.ts, packages/adapters/cursor-agent/src/index.ts
 - 核心算法：为八工具声明模型枚举/精确模型/恢复/并发/只读无工具/临时目录/取消能力，以锁定版本探针证实；正式改向统一Host停止后新会话，禁止宣称未知热注入或原生btw能力。
 - 保持：保持免登录、八工具及原58细项范围；不硬编码示例模型；保留人工审批和证据真实性；仅操作本任务隔离worktree。
-- 输出及完成条件：实现所列业务行为，文件检查只作产物定位；对应原始行为测试必须通过，进度证据匹配当前快照与版本。
-- 产物检查（不替代行为测试）：[{"path":"packages/adapters/sdk/src/interaction-capabilities.ts","contains":"readonlyNoTools"}]
+- 输出与完成：实现所列业务行为，文件检查只作产物定位；对应原始行为测试必须通过，进度证据匹配当前快照与版本。
+- 产物检查：[{"contains":"readonlyNoTools","path":"packages/adapters/sdk/src/interaction-capabilities.ts"}]
 - 测试：TC-UNIT, TC-INTEGRATION, TC-CERT
 - 停止条件：基线或范围漂移、进程停止未确认、文档/模型/上下文校验失败时停止相应动作并记录真实阻塞；不得降级工具、跳过权限或伪造测试。
 
 ### P11-05 生成不可变三文档版本包
 
 - 模块：P11；需求：AC-61, AC-63, AC-69；前置：P11-03
-- 输入：同一任务 1.3 完整设计第16节、当前叶子前置输出与已批准合同；共享 P01/P03/P06/P07 能力。
-- 文件/函数范围：packages/documents/src/bundle.ts, packages/contracts/src/document-bundle.ts
+- 输入：同一任务 1.4 完整设计第16节、当前叶子前置输出与已批准合同；共享 P01/P03/P06/P07 能力。
+- 文件/函数：packages/documents/src/bundle.ts, packages/contracts/src/document-bundle.ts
 - 核心算法：按绑定仓库安全路径读取设计、进度、测试定义，双读哈希稳定性校验；内容寻址持久化、整包hash和来源；单文档2MiB整包8MiB明确拒绝，分页提供完整内容。
 - 保持：保持免登录、八工具及原58细项范围；不硬编码示例模型；保留人工审批和证据真实性；仅操作本任务隔离worktree。
-- 输出及完成条件：实现所列业务行为，文件检查只作产物定位；对应原始行为测试必须通过，进度证据匹配当前快照与版本。
-- 产物检查（不替代行为测试）：[{"path":"packages/documents/src/bundle.ts","contains":"DOCUMENT_BUSY"}]
+- 输出与完成：实现所列业务行为，文件检查只作产物定位；对应原始行为测试必须通过，进度证据匹配当前快照与版本。
+- 产物检查：[{"contains":"DOCUMENT_BUSY","path":"packages/documents/src/bundle.ts"}]
 - 测试：TC-UNIT, TC-INTEGRATION
 - 停止条件：基线或范围漂移、进程停止未确认、文档/模型/上下文校验失败时停止相应动作并记录真实阻塞；不得降级工具、跳过权限或伪造测试。
 
 ### P11-06 生成设计变更及受影响细项差异
 
 - 模块：P11；需求：AC-61, AC-64, AC-71；前置：P11-05
-- 输入：同一任务 1.3 完整设计第16节、当前叶子前置输出与已批准合同；共享 P01/P03/P06/P07 能力。
-- 文件/函数范围：packages/documents/src/change-set.ts, packages/documents/src/watch.ts
+- 输入：同一任务 1.4 完整设计第16节、当前叶子前置输出与已批准合同；共享 P01/P03/P06/P07 能力。
+- 文件/函数：packages/documents/src/change-set.ts, packages/documents/src/watch.ts
 - 核心算法：基于上次批准包而非mtime生成新增/修改/删除/重命名diff；映射requirement/task/test IDs；监听仅提示，排除平台自身投影写回；版本冲突保留草稿并拒绝旧base。
 - 保持：保持免登录、八工具及原58细项范围；不硬编码示例模型；保留人工审批和证据真实性；仅操作本任务隔离worktree。
-- 输出及完成条件：实现所列业务行为，文件检查只作产物定位；对应原始行为测试必须通过，进度证据匹配当前快照与版本。
-- 产物检查（不替代行为测试）：[{"path":"packages/documents/src/change-set.ts","contains":"CHANGE_BASE_STALE"}]
+- 输出与完成：实现所列业务行为，文件检查只作产物定位；对应原始行为测试必须通过，进度证据匹配当前快照与版本。
+- 产物检查：[{"contains":"CHANGE_BASE_STALE","path":"packages/documents/src/change-set.ts"}]
 - 测试：TC-UNIT, TC-INTEGRATION
 - 停止条件：基线或范围漂移、进程停止未确认、文档/模型/上下文校验失败时停止相应动作并记录真实阻塞；不得降级工具、跳过权限或伪造测试。
 
 ### P11-07 约束进度与测试文档的权威来源
 
 - 模块：P11；需求：AC-61, AC-66, AC-75, AC-76；前置：P11-06
-- 输入：同一任务 1.3 完整设计第16节、当前叶子前置输出与已批准合同；共享 P01/P03/P06/P07 能力。
-- 文件/函数范围：packages/documents/src/projections.ts, packages/core/src/progress.ts, packages/plans/src/export.ts
+- 输入：同一任务 1.4 完整设计第16节、当前叶子前置输出与已批准合同；共享 P01/P03/P06/P07 能力。
+- 文件/函数：packages/documents/src/projections.ts, packages/core/src/progress.ts, packages/plans/src/export.ts
 - 核心算法：开发与测试进度从事件和原始证据投影；手改完成或passed不能生成平台证明；设计和测试定义变更进入提案；显示文档版本、变更历史和增加后的任务分母。
 - 保持：保持免登录、八工具及原58细项范围；不硬编码示例模型；保留人工审批和证据真实性；仅操作本任务隔离worktree。
-- 输出及完成条件：实现所列业务行为，文件检查只作产物定位；对应原始行为测试必须通过，进度证据匹配当前快照与版本。
-- 产物检查（不替代行为测试）：[{"path":"packages/documents/src/projections.ts","contains":"PROJECTION_STATE_CONFLICT"}]
+- 输出与完成：实现所列业务行为，文件检查只作产物定位；对应原始行为测试必须通过，进度证据匹配当前快照与版本。
+- 产物检查：[{"contains":"PROJECTION_STATE_CONFLICT","path":"packages/documents/src/projections.ts"}]
 - 测试：TC-UNIT, TC-INTEGRATION
 - 停止条件：基线或范围漂移、进程停止未确认、文档/模型/上下文校验失败时停止相应动作并记录真实阻塞；不得降级工具、跳过权限或伪造测试。
 
 ### P11-08 持久化正式调整及原子派发
 
 - 模块：P11；需求：AC-62, AC-65, AC-71；前置：P11-06
-- 输入：同一任务 1.3 完整设计第16节、当前叶子前置输出与已批准合同；共享 P01/P03/P06/P07 能力。
-- 文件/函数范围：packages/core/src/execution-changes.ts, packages/contracts/src/execution-change.ts, packages/store/src/store.ts
+- 输入：同一任务 1.4 完整设计第16节、当前叶子前置输出与已批准合同；共享 P01/P03/P06/P07 能力。
+- 文件/函数：packages/core/src/execution-changes.ts, packages/contracts/src/execution-change.ts, packages/store/src/store.ts
 - 核心算法：持久化ExecutionChange与单调instruction_seq，CAS校验workflow version；同事务写变更、epoch封锁和outbox；每变更唯一successor；同key同内容返回同结果，异内容冲突。
 - 保持：保持免登录、八工具及原58细项范围；不硬编码示例模型；保留人工审批和证据真实性；仅操作本任务隔离worktree。
-- 输出及完成条件：实现所列业务行为，文件检查只作产物定位；对应原始行为测试必须通过，进度证据匹配当前快照与版本。
-- 产物检查（不替代行为测试）：[{"path":"packages/core/src/execution-changes.ts","contains":"CHANGE_IDEMPOTENCY_CONFLICT"}]
+- 输出与完成：实现所列业务行为，文件检查只作产物定位；对应原始行为测试必须通过，进度证据匹配当前快照与版本。
+- 产物检查：[{"contains":"CHANGE_IDEMPOTENCY_CONFLICT","path":"packages/core/src/execution-changes.ts"}]
 - 测试：TC-UNIT, TC-INTEGRATION
 - 停止条件：基线或范围漂移、进程停止未确认、文档/模型/上下文校验失败时停止相应动作并记录真实阻塞；不得降级工具、跳过权限或伪造测试。
 
 ### P11-09 停止旧执行并保存一致检查点
 
 - 模块：P11；需求：AC-62, AC-65；前置：P11-08
-- 输入：同一任务 1.3 完整设计第16节、当前叶子前置输出与已批准合同；共享 P01/P03/P06/P07 能力。
-- 文件/函数范围：packages/runtime/src/change-stop.ts, packages/runtime/src/recovery.ts, packages/process/src/manager.ts, packages/workspace/src/files.ts
+- 输入：同一任务 1.4 完整设计第16节、当前叶子前置输出与已批准合同；共享 P01/P03/P06/P07 能力。
+- 文件/函数：packages/runtime/src/change-stop.ts, packages/runtime/src/recovery.ts, packages/process/src/manager.ts, packages/workspace/src/files.ts
 - 核心算法：FileBroker提交与epoch撤销同工作流临界区；先封锁新写，再停止已识别进程树；5秒后强制停止，失败保持租约；记录已完成写入与测试副作用，COMMITTING拒绝插入调整。
 - 保持：保持免登录、八工具及原58细项范围；不硬编码示例模型；保留人工审批和证据真实性；仅操作本任务隔离worktree。
-- 输出及完成条件：实现所列业务行为，文件检查只作产物定位；对应原始行为测试必须通过，进度证据匹配当前快照与版本。
-- 产物检查（不替代行为测试）：[{"path":"packages/runtime/src/change-stop.ts","contains":"STOP_NOT_CONFIRMED"}]
+- 输出与完成：实现所列业务行为，文件检查只作产物定位；对应原始行为测试必须通过，进度证据匹配当前快照与版本。
+- 产物检查：[{"contains":"STOP_NOT_CONFIRMED","path":"packages/runtime/src/change-stop.ts"}]
 - 测试：TC-UNIT, TC-INTEGRATION
 - 停止条件：基线或范围漂移、进程停止未确认、文档/模型/上下文校验失败时停止相应动作并记录真实阻塞；不得降级工具、跳过权限或伪造测试。
 
 ### P11-10 接入重新规划与变更审批
 
 - 模块：P11；需求：AC-64, AC-70, AC-76；前置：P11-09
-- 输入：同一任务 1.3 完整设计第16节、当前叶子前置输出与已批准合同；共享 P01/P03/P06/P07 能力。
-- 文件/函数范围：packages/core/src/change-approval.ts, packages/core/src/engine.ts, packages/entry/src/intake.ts
+- 输入：同一任务 1.4 完整设计第16节、当前叶子前置输出与已批准合同；共享 P01/P03/P06/P07 能力。
+- 文件/函数：packages/core/src/change-approval.ts, packages/core/src/engine.ts, packages/entry/src/intake.ts
 - 核心算法：原范围内且结构合同不变的正式指令以展示后应用为授权；requirement/设计行为/测试标准/范围/绑定/权限变化启动绑定planner生成完整新版本后等待用户批准；保留同workflow与全部旧ID映射。
 - 保持：保持免登录、八工具及原58细项范围；不硬编码示例模型；保留人工审批和证据真实性；仅操作本任务隔离worktree。
-- 输出及完成条件：实现所列业务行为，文件检查只作产物定位；对应原始行为测试必须通过，进度证据匹配当前快照与版本。
-- 产物检查（不替代行为测试）：[{"path":"packages/core/src/change-approval.ts","contains":"CHANGE_REQUIRES_PLAN"}]
+- 输出与完成：实现所列业务行为，文件检查只作产物定位；对应原始行为测试必须通过，进度证据匹配当前快照与版本。
+- 产物检查：[{"contains":"CHANGE_REQUIRES_PLAN","path":"packages/core/src/change-approval.ts"}]
 - 测试：TC-UNIT, TC-INTEGRATION
 - 停止条件：基线或范围漂移、进程停止未确认、文档/模型/上下文校验失败时停止相应动作并记录真实阻塞；不得降级工具、跳过权限或伪造测试。
 
 ### P11-11 校验新执行读取收据与上下文确认
 
 - 模块：P11；需求：AC-63, AC-65；前置：P11-10
-- 输入：同一任务 1.3 完整设计第16节、当前叶子前置输出与已批准合同；共享 P01/P03/P06/P07 能力。
-- 文件/函数范围：packages/core/src/context-ack.ts, packages/mcp/src/tools.ts, packages/runtime/src/runtime.ts
+- 输入：同一任务 1.4 完整设计第16节、当前叶子前置输出与已批准合同；共享 P01/P03/P06/P07 能力。
+- 文件/函数：packages/core/src/context-ack.ts, packages/mcp/src/tools.ts, packages/runtime/src/runtime.ts
 - 核心算法：新Run先只有上下文读取权限，记录完整分页收据；ack逐项校验epoch、plan/spec/bundle哈希和seq后才允许写入；120秒未确认暂停；迟到ack拒绝且不污染本轮状态。
 - 保持：保持免登录、八工具及原58细项范围；不硬编码示例模型；保留人工审批和证据真实性；仅操作本任务隔离worktree。
-- 输出及完成条件：实现所列业务行为，文件检查只作产物定位；对应原始行为测试必须通过，进度证据匹配当前快照与版本。
-- 产物检查（不替代行为测试）：[{"path":"packages/core/src/context-ack.ts","contains":"CONTEXT_STALE"}]
+- 输出与完成：实现所列业务行为，文件检查只作产物定位；对应原始行为测试必须通过，进度证据匹配当前快照与版本。
+- 产物检查：[{"contains":"CONTEXT_STALE","path":"packages/core/src/context-ack.ts"}]
 - 测试：TC-UNIT, TC-INTEGRATION
 - 停止条件：基线或范围漂移、进程停止未确认、文档/模型/上下文校验失败时停止相应动作并记录真实阻塞；不得降级工具、跳过权限或伪造测试。
 
 ### P11-12 使变更后的测试验收证据正确失效
 
 - 模块：P11；需求：AC-66, AC-76；前置：P11-11, P11-07
-- 输入：同一任务 1.3 完整设计第16节、当前叶子前置输出与已批准合同；共享 P01/P03/P06/P07 能力。
-- 文件/函数范围：packages/core/src/change-evidence.ts, packages/core/src/progress.ts, packages/evidence/src/parse.ts
+- 输入：同一任务 1.4 完整设计第16节、当前叶子前置输出与已批准合同；共享 P01/P03/P06/P07 能力。
+- 文件/函数：packages/core/src/change-evidence.ts, packages/core/src/progress.ts, packages/evidence/src/parse.ts
 - 核心算法：保留历史报告但撤销当前测试/验收/复核有效性；仅全依赖和文件哈希相同的未影响实现证明可带来源保留；修改细项及后继needs_revalidation，新snapshot重新验证。
 - 保持：保持免登录、八工具及原58细项范围；不硬编码示例模型；保留人工审批和证据真实性；仅操作本任务隔离worktree。
-- 输出及完成条件：实现所列业务行为，文件检查只作产物定位；对应原始行为测试必须通过，进度证据匹配当前快照与版本。
-- 产物检查（不替代行为测试）：[{"path":"packages/core/src/change-evidence.ts","contains":"CHANGE_INVALIDATES_EVIDENCE"}]
+- 输出与完成：实现所列业务行为，文件检查只作产物定位；对应原始行为测试必须通过，进度证据匹配当前快照与版本。
+- 产物检查：[{"contains":"CHANGE_INVALIDATES_EVIDENCE","path":"packages/core/src/change-evidence.ts"}]
 - 测试：TC-UNIT, TC-INTEGRATION
 - 停止条件：基线或范围漂移、进程停止未确认、文档/模型/上下文校验失败时停止相应动作并记录真实阻塞；不得降级工具、跳过权限或伪造测试。
 
 ### P11-13 恢复中断的改向事务并拒绝迟到事件
 
 - 模块：P11；需求：AC-65, AC-71, AC-75；前置：P11-12
-- 输入：同一任务 1.3 完整设计第16节、当前叶子前置输出与已批准合同；共享 P01/P03/P06/P07 能力。
-- 文件/函数范围：packages/runtime/src/change-recovery.ts, packages/runtime/src/recovery.ts, packages/presentation/src/activity.ts
+- 输入：同一任务 1.4 完整设计第16节、当前叶子前置输出与已批准合同；共享 P01/P03/P06/P07 能力。
+- 文件/函数：packages/runtime/src/change-recovery.ts, packages/runtime/src/recovery.ts, packages/presentation/src/activity.ts
 - 核心算法：重启从outbox、lease、Host身份和change-successor唯一映射恢复；重复投递不创建第二写者；旧Run late result不得claim、finish或写当前证据；无法确认存活继续RECOVERY_REQUIRED。
 - 保持：保持免登录、八工具及原58细项范围；不硬编码示例模型；保留人工审批和证据真实性；仅操作本任务隔离worktree。
-- 输出及完成条件：实现所列业务行为，文件检查只作产物定位；对应原始行为测试必须通过，进度证据匹配当前快照与版本。
-- 产物检查（不替代行为测试）：[{"path":"packages/runtime/src/change-recovery.ts","contains":"SUCCESSOR_ALREADY_BOUND"}]
+- 输出与完成：实现所列业务行为，文件检查只作产物定位；对应原始行为测试必须通过，进度证据匹配当前快照与版本。
+- 产物检查：[{"contains":"SUCCESSOR_ALREADY_BOUND","path":"packages/runtime/src/change-recovery.ts"}]
 - 测试：TC-UNIT, TC-INTEGRATION
 - 停止条件：基线或范围漂移、进程停止未确认、文档/模型/上下文校验失败时停止相应动作并记录真实阻塞；不得降级工具、跳过权限或伪造测试。
 
 ### P11-14 构造临时问答的一致只读上下文
 
 - 模块：P11；需求：AC-67, AC-68；前置：P11-04, P11-07
-- 输入：同一任务 1.3 完整设计第16节、当前叶子前置输出与已批准合同；共享 P01/P03/P06/P07 能力。
-- 文件/函数范围：packages/asides/src/context.ts, packages/contracts/src/aside.ts
+- 输入：同一任务 1.4 完整设计第16节、当前叶子前置输出与已批准合同；共享 P01/P03/P06/P07 能力。
+- 文件/函数：packages/asides/src/context.ts, packages/contracts/src/aside.ts
 - 核心算法：从已发布bundle、进度和已完成可见消息取截止快照，排除半条流及隐藏思维；同活动implementer Profile，不存在时用冻结配置；无稳定代码快照时明示材料不足。
 - 保持：保持免登录、八工具及原58细项范围；不硬编码示例模型；保留人工审批和证据真实性；仅操作本任务隔离worktree。
-- 输出及完成条件：实现所列业务行为，文件检查只作产物定位；对应原始行为测试必须通过，进度证据匹配当前快照与版本。
-- 产物检查（不替代行为测试）：[{"path":"packages/asides/src/context.ts","contains":"published_event_seq"}]
+- 输出与完成：实现所列业务行为，文件检查只作产物定位；对应原始行为测试必须通过，进度证据匹配当前快照与版本。
+- 产物检查：[{"contains":"published_event_seq","path":"packages/asides/src/context.ts"}]
 - 测试：TC-UNIT, TC-INTEGRATION
 - 停止条件：基线或范围漂移、进程停止未确认、文档/模型/上下文校验失败时停止相应动作并记录真实阻塞；不得降级工具、跳过权限或伪造测试。
 
 ### P11-15 实现临时会话权限与内容隔离
 
 - 模块：P11；需求：AC-68, AC-69；前置：P11-14
-- 输入：同一任务 1.3 完整设计第16节、当前叶子前置输出与已批准合同；共享 P01/P03/P06/P07 能力。
-- 文件/函数范围：packages/asides/src/isolation.ts, packages/clients/src/runtime-sandbox.ts
+- 输入：同一任务 1.4 完整设计第16节、当前叶子前置输出与已批准合同；共享 P01/P03/P06/P07 能力。
+- 文件/函数：packages/asides/src/isolation.ts, packages/clients/src/runtime-sandbox.ts
 - 核心算法：aside禁文件/shell/browser/MCP和主会话写入工具；独立受管临时目录，不持久化内容或请求体/内容hash；主events、prompt、摘要、文档与备份排除；清理仅验证所有权路径，上游日志边界如实说明。
 - 保持：保持免登录、八工具及原58细项范围；不硬编码示例模型；保留人工审批和证据真实性；仅操作本任务隔离worktree。
-- 输出及完成条件：实现所列业务行为，文件检查只作产物定位；对应原始行为测试必须通过，进度证据匹配当前快照与版本。
-- 产物检查（不替代行为测试）：[{"path":"packages/asides/src/isolation.ts","contains":"ASIDE_TOOL_DENIED"}]
+- 输出与完成：实现所列业务行为，文件检查只作产物定位；对应原始行为测试必须通过，进度证据匹配当前快照与版本。
+- 产物检查：[{"contains":"ASIDE_TOOL_DENIED","path":"packages/asides/src/isolation.ts"}]
 - 测试：TC-UNIT, TC-INTEGRATION, TC-CERT
 - 停止条件：基线或范围漂移、进程停止未确认、文档/模型/上下文校验失败时停止相应动作并记录真实阻塞；不得降级工具、跳过权限或伪造测试。
 
 ### P11-16 调度临时提问与资源释放
 
 - 模块：P11；需求：AC-67, AC-68, AC-72；前置：P11-15
-- 输入：同一任务 1.3 完整设计第16节、当前叶子前置输出与已批准合同；共享 P01/P03/P06/P07 能力。
-- 文件/函数范围：packages/asides/src/service.ts, packages/scheduler/src/scheduler.ts
+- 输入：同一任务 1.4 完整设计第16节、当前叶子前置输出与已批准合同；共享 P01/P03/P06/P07 能力。
+- 文件/函数：packages/asides/src/service.ts, packages/scheduler/src/scheduler.ts
 - 核心算法：同工具同模型独立会话，主执行不中断；无并发能力时仅旁路等待；每workflow1活动3排队全局2槽，120秒超时；内存30分钟TTL/断线60秒，取消只停止旁路，主流程失败计数不变。
 - 保持：保持免登录、八工具及原58细项范围；不硬编码示例模型；保留人工审批和证据真实性；仅操作本任务隔离worktree。
-- 输出及完成条件：实现所列业务行为，文件检查只作产物定位；对应原始行为测试必须通过，进度证据匹配当前快照与版本。
-- 产物检查（不替代行为测试）：[{"path":"packages/asides/src/service.ts","contains":"ASIDE_QUEUE_FULL"}]
+- 输出与完成：实现所列业务行为，文件检查只作产物定位；对应原始行为测试必须通过，进度证据匹配当前快照与版本。
+- 产物检查：[{"contains":"ASIDE_QUEUE_FULL","path":"packages/asides/src/service.ts"}]
 - 测试：TC-UNIT, TC-INTEGRATION, TC-CERT
 - 停止条件：基线或范围漂移、进程停止未确认、文档/模型/上下文校验失败时停止相应动作并记录真实阻塞；不得降级工具、跳过权限或伪造测试。
 
 ### P11-17 提供正式指令和临时问答接口
 
 - 模块：P11；需求：AC-64, AC-69, AC-70, AC-71；前置：P11-13, P11-16
-- 输入：同一任务 1.3 完整设计第16节、当前叶子前置输出与已批准合同；共享 P01/P03/P06/P07 能力。
-- 文件/函数范围：apps/api/src/interaction-routes.ts, apps/api/src/server.ts, packages/mcp/src/tools.ts, packages/bridge/src/planner.ts
-- 核心算法：按16.8节实现spec/change预览与应用、状态读取、aside创建取消及独立内存流；校验同源、角色、workflow、expected version；worker不能提临时问题或伪造用户批准；保留旧API兼容。
+- 输入：同一任务 1.4 完整设计第16节、当前叶子前置输出与已批准合同；共享 P01/P03/P06/P07 能力。
+- 文件/函数：apps/api/src/interaction-routes.ts, apps/api/src/server.ts, packages/mcp/src/tools.ts, packages/bridge/src/planner.ts, packages/cli/src/aside.ts, packages/cli/src/main.ts
+- 核心算法：按16.8节实现spec/change预览与应用、状态读取、aside创建取消及独立内存流；校验同源、角色、workflow、expected version；worker不能提临时问题或伪造用户批准；保留旧API兼容。 旁路MCP仅注册到专用aside-client连接，不暴露给planner/worker主会话；CLI devflow btw只打开独立输入界面，不在argv或原聊天中接收问答正文。
 - 保持：保持免登录、八工具及原58细项范围；不硬编码示例模型；保留人工审批和证据真实性；仅操作本任务隔离worktree。
-- 输出及完成条件：实现所列业务行为，文件检查只作产物定位；对应原始行为测试必须通过，进度证据匹配当前快照与版本。
-- 产物检查（不替代行为测试）：[{"path":"apps/api/src/interaction-routes.ts","contains":"devflow_ask_aside"}]
+- 输出与完成：实现所列业务行为，文件检查只作产物定位；对应原始行为测试必须通过，进度证据匹配当前快照与版本。
+- 产物检查：[{"contains":"devflow_ask_aside","path":"apps/api/src/interaction-routes.ts"}]
 - 测试：TC-UNIT, TC-INTEGRATION
 - 停止条件：基线或范围漂移、进程停止未确认、文档/模型/上下文校验失败时停止相应动作并记录真实阻塞；不得降级工具、跳过权限或伪造测试。
 
 ### P11-18 交付任务搭配选择与细项覆盖界面
 
 - 模块：P11；需求：AC-57, AC-58, AC-59, AC-60, AC-73；前置：P11-17
-- 输入：同一任务 1.3 完整设计第16节、当前叶子前置输出与已批准合同；共享 P01/P03/P06/P07 能力。
-- 文件/函数范围：apps/web/src/task-composer.tsx, apps/web/src/main.tsx, apps/web/src/style.css
+- 输入：同一任务 1.4 完整设计第16节、当前叶子前置输出与已批准合同；共享 P01/P03/P06/P07 能力。
+- 文件/函数：apps/web/src/task-composer.tsx, apps/web/src/main.tsx, apps/web/src/style.css
 - 核心算法：新建任务单工具/分阶段搭配、联动平台模型、tester/reviewer明确展开；计划批准页展示冻结配置与叶子覆盖差异；全局默认修改不影响已创建任务，任务卡显示真实绑定。
 - 保持：保持免登录、八工具及原58细项范围；不硬编码示例模型；保留人工审批和证据真实性；仅操作本任务隔离worktree。
-- 输出及完成条件：实现所列业务行为，文件检查只作产物定位；对应原始行为测试必须通过，进度证据匹配当前快照与版本。
-- 产物检查（不替代行为测试）：[{"path":"apps/web/src/task-composer.tsx","contains":"本任务使用的组合"}]
+- 输出与完成：实现所列业务行为，文件检查只作产物定位；对应原始行为测试必须通过，进度证据匹配当前快照与版本。
+- 产物检查：[{"contains":"本任务使用的组合","path":"apps/web/src/task-composer.tsx"}]
 - 测试：TC-UNIT, TC-INTEGRATION, TC-E2E
 - 停止条件：基线或范围漂移、进程停止未确认、文档/模型/上下文校验失败时停止相应动作并记录真实阻塞；不得降级工具、跳过权限或伪造测试。
 
 ### P11-19 交付执行调整与临时提问面板
 
 - 模块：P11；需求：AC-61, AC-67, AC-70, AC-71, AC-75；前置：P11-18
-- 输入：同一任务 1.3 完整设计第16节、当前叶子前置输出与已批准合同；共享 P01/P03/P06/P07 能力。
-- 文件/函数范围：apps/web/src/execution-interactions.tsx, apps/web/src/execution-panel.tsx, apps/web/src/main.tsx, apps/web/src/style.css
-- 核心算法：独立入口与发送动作；文档diff/受影响细项/生效时机/审批展示，saved-stopped-ack-applied阶段如实显示；临时内容内存显示与取消/清空，转正式需编辑预览；双tab冲突保留输入。
+- 输入：同一任务 1.4 完整设计第16节、当前叶子前置输出与已批准合同；共享 P01/P03/P06/P07 能力。
+- 文件/函数：apps/web/src/execution-interactions.tsx, apps/web/src/execution-panel.tsx, apps/web/src/main.tsx, apps/web/src/style.css
+- 核心算法：独立入口与发送动作；文档diff/受影响细项/生效时机/审批展示，saved-stopped-ack-applied阶段如实显示；临时内容内存显示与取消/清空，转正式需编辑预览；双tab冲突保留输入。 临时面板设置data-testid=devflow-aside-panel，确保与正式指令区独立。
 - 保持：保持免登录、八工具及原58细项范围；不硬编码示例模型；保留人工审批和证据真实性；仅操作本任务隔离worktree。
-- 输出及完成条件：实现所列业务行为，文件检查只作产物定位；对应原始行为测试必须通过，进度证据匹配当前快照与版本。
-- 产物检查（不替代行为测试）：[{"path":"apps/web/src/execution-interactions.tsx","contains":"devflow-aside-panel"}]
+- 输出与完成：实现所列业务行为，文件检查只作产物定位；对应原始行为测试必须通过，进度证据匹配当前快照与版本。
+- 产物检查：[{"contains":"devflow-aside-panel","path":"apps/web/src/execution-interactions.tsx"}]
 - 测试：TC-UNIT, TC-INTEGRATION, TC-E2E
 - 停止条件：基线或范围漂移、进程停止未确认、文档/模型/上下文校验失败时停止相应动作并记录真实阻塞；不得降级工具、跳过权限或伪造测试。
 
 ### P11-20 统一七Skill文档迁移与完整交互测试
 
 - 模块：P11；需求：AC-57, AC-58, AC-59, AC-60, AC-61, AC-62, AC-63, AC-64, AC-65, AC-66, AC-67, AC-68, AC-69, AC-70, AC-71, AC-72, AC-73, AC-74, AC-75, AC-76；前置：P11-19
-- 输入：同一任务 1.3 完整设计第16节、当前叶子前置输出与已批准合同；共享 P01/P03/P06/P07 能力。
-- 文件/函数范围：packages/skills/devflow/SKILL.md, packages/skills/devflow-plan/SKILL.md, packages/skills/devflow-execute/SKILL.md, packages/skills/devflow-test/SKILL.md, packages/skills/devflow-review/SKILL.md, packages/migrations/src/interaction.ts, tests/unit/task-composition.test.ts, tests/integration/execution-changes.test.ts, tests/integration/asides.test.ts, tests/e2e/task-interactions.spec.ts, tests/live/interaction-certification.ts, scripts/devflow/verify.mjs, docs/guide/使用指南.md, docs/process/DevFlow通用平台开发进度.md, docs/test/DevFlow通用平台验收合同.md
+- 输入：同一任务 1.4 完整设计第16节、当前叶子前置输出与已批准合同；共享 P01/P03/P06/P07 能力。
+- 文件/函数：packages/skills/devflow/SKILL.md, packages/skills/devflow-plan/SKILL.md, packages/skills/devflow-execute/SKILL.md, packages/skills/devflow-test/SKILL.md, packages/skills/devflow-review/SKILL.md, packages/migrations/src/interaction.ts, tests/unit/task-composition.test.ts, tests/integration/execution-changes.test.ts, tests/integration/asides.test.ts, tests/e2e/task-interactions.spec.ts, tests/live/interaction-certification.ts, scripts/devflow/verify.mjs, docs/guide/使用指南.md, docs/process/DevFlow通用平台开发进度.md, docs/test/DevFlow通用平台验收合同.md
 - 核心算法：在现有七Skill中路由配置、变更草案、上下文ack和临时问答，不增加第八Skill；迁移旧冻结任务为显式快照不猜历史模型；实现TC全部稳定用例及四必需目标八工具真实认证；汇总原始报告与当前hash，故障明确阻塞。
 - 保持：保持免登录、八工具及原58细项范围；不硬编码示例模型；保留人工审批和证据真实性；仅操作本任务隔离worktree。
-- 输出及完成条件：实现所列业务行为，文件检查只作产物定位；对应原始行为测试必须通过，进度证据匹配当前快照与版本。
-- 产物检查（不替代行为测试）：[{"path":"packages/skills/devflow/SKILL.md","contains":"devflow_preview_change"}]
+- 输出与完成：实现所列业务行为，文件检查只作产物定位；对应原始行为测试必须通过，进度证据匹配当前快照与版本。
+- 产物检查：[{"contains":"devflow_preview_change","path":"packages/skills/devflow/SKILL.md"}]
 - 测试：TC-UNIT, TC-INTEGRATION, TC-E2E, TC-CERT
 - 停止条件：基线或范围漂移、进程停止未确认、文档/模型/上下文校验失败时停止相应动作并记录真实阻塞；不得降级工具、跳过权限或伪造测试。
 
+### P12-01 定义代码输入与执行基线修订合同
+
+- 模块：P12；需求：AC-77, AC-82；前置：P11-20
+- 输入：同任务1.4第17节、P11停止/版本/上下文能力、已完成前置输出；源与目标必须使用精确身份及内容快照。
+- 文件/函数：packages/contracts/src/workspace-sync.ts, packages/contracts/src/index.ts
+- 核心算法：定义三输入模式、SourceSnapshot、WorkspaceSync、source lineage、original_plan_base/input_revision/execution_base；与plan、run、bundle、repo身份绑定，原始基线不丢。
+- 保持：不修改源checkout的HEAD/分支/index/工作树；保留目标已提交和未提交工作；保留全部原78细项与237用例；不自动fetch/push或发布。
+- 输出与完成：实现本项行为及对应真实Git/数据/浏览器断言；产物片段仅定位实现，不替代测试、人工验收与独立复核。
+- 产物检查：[{"path":"packages/contracts/src/workspace-sync.ts","contains":"original_plan_base"}]
+- 测试：WS-UNIT, WS-INTEGRATION
+- 停止条件：源或目标漂移、进程退出未确认、文件类型或Git能力不支持、冲突未解决、合并结果/审批哈希不匹配时阻塞；不得静默覆盖或伪造完成。
+
+### P12-02 读取源状态并生成稳定输入快照
+
+- 模块：P12；需求：AC-77, AC-78, AC-86；前置：P12-01
+- 输入：同任务1.4第17节、P11停止/版本/上下文能力、已完成前置输出；源与目标必须使用精确身份及内容快照。
+- 文件/函数：packages/git/src/source-snapshot.ts, packages/git/src/git.ts
+- 核心算法：只读捕获源HEAD、branch、index校验和及工作树，临时index与对象目录生成精确tree，未跟踪逐项勾选，排除保护/ignored路径；前后哈希不稳拒绝。
+- 保持：不修改源checkout的HEAD/分支/index/工作树；保留目标已提交和未提交工作；保留全部原78细项与237用例；不自动fetch/push或发布。
+- 输出与完成：实现本项行为及对应真实Git/数据/浏览器断言；产物片段仅定位实现，不替代测试、人工验收与独立复核。
+- 产物检查：[{"path":"packages/git/src/source-snapshot.ts","contains":"SOURCE_CHANGED"}]
+- 测试：WS-UNIT, WS-INTEGRATION
+- 停止条件：源或目标漂移、进程退出未确认、文件类型或Git能力不支持、冲突未解决、合并结果/审批哈希不匹配时阻塞；不得静默覆盖或伪造完成。
+
+### P12-03 暂停执行并保存目标工作检查点
+
+- 模块：P12；需求：AC-79, AC-80；前置：P12-02
+- 输入：同任务1.4第17节、P11停止/版本/上下文能力、已完成前置输出；源与目标必须使用精确身份及内容快照。
+- 文件/函数：packages/git/src/target-checkpoint.ts, packages/runtime/src/change-stop.ts
+- 核心算法：复用P11撤销epoch、Host停止和租约；目标提交/未提交文件保存可恢复检查点；拒绝未解决Git操作与漂移，不在用户工作树stash/reset。
+- 保持：不修改源checkout的HEAD/分支/index/工作树；保留目标已提交和未提交工作；保留全部原78细项与237用例；不自动fetch/push或发布。
+- 输出与完成：实现本项行为及对应真实Git/数据/浏览器断言；产物片段仅定位实现，不替代测试、人工验收与独立复核。
+- 产物检查：[{"path":"packages/git/src/target-checkpoint.ts","contains":"TARGET_CHANGED"}]
+- 测试：WS-UNIT, WS-INTEGRATION
+- 停止条件：源或目标漂移、进程退出未确认、文件类型或Git能力不支持、冲突未解决、合并结果/审批哈希不匹配时阻塞；不得静默覆盖或伪造完成。
+
+### P12-04 在隔离区域预合并与保留输入祖先
+
+- 模块：P12；需求：AC-79, AC-81, AC-84；前置：P12-03
+- 输入：同任务1.4第17节、P11停止/版本/上下文能力、已完成前置输出；源与目标必须使用精确身份及内容快照。
+- 文件/函数：packages/git/src/workspace-merge.ts, packages/git/src/source-snapshot.ts
+- 核心算法：用merge-tree生成候选tree和冲突记录；source私有输入按上一已接受输入形成lineage，重复输入no-op、撤回产生diff；保留source HEAD祖先，不强指定merge-base或allow-unrelated-histories。
+- 保持：不修改源checkout的HEAD/分支/index/工作树；保留目标已提交和未提交工作；保留全部原78细项与237用例；不自动fetch/push或发布。
+- 输出与完成：实现本项行为及对应真实Git/数据/浏览器断言；产物片段仅定位实现，不替代测试、人工验收与独立复核。
+- 产物检查：[{"path":"packages/git/src/workspace-merge.ts","contains":"UNRELATED_HISTORY"}]
+- 测试：WS-UNIT, WS-INTEGRATION
+- 停止条件：源或目标漂移、进程退出未确认、文件类型或Git能力不支持、冲突未解决、合并结果/审批哈希不匹配时阻塞；不得静默覆盖或伪造完成。
+
+### P12-05 展示冲突并校准同一任务计划
+
+- 模块：P12；需求：AC-81, AC-83, AC-86；前置：P12-04
+- 输入：同任务1.4第17节、P11停止/版本/上下文能力、已完成前置输出；源与目标必须使用精确身份及内容快照。
+- 文件/函数：packages/core/src/sync-plan.ts, packages/core/src/change-approval.ts, packages/documents/src/change-set.ts
+- 核心算法：逐文件冲突在integration树解决，禁全局ours/theirs；校准source代码及已批准设计文档、细项与测试；独立import_paths不扩大执行写权限；最终预览一次批准完整结果。
+- 保持：不修改源checkout的HEAD/分支/index/工作树；保留目标已提交和未提交工作；保留全部原78细项与237用例；不自动fetch/push或发布。
+- 输出与完成：实现本项行为及对应真实Git/数据/浏览器断言；产物片段仅定位实现，不替代测试、人工验收与独立复核。
+- 产物检查：[{"path":"packages/core/src/sync-plan.ts","contains":"DOCUMENT_INPUT_CONFLICT"}]
+- 测试：WS-UNIT, WS-INTEGRATION
+- 停止条件：源或目标漂移、进程退出未确认、文件类型或Git能力不支持、冲突未解决、合并结果/审批哈希不匹配时阻塞；不得静默覆盖或伪造完成。
+
+### P12-06 发布同步结果并恢复中断事务
+
+- 模块：P12；需求：AC-80, AC-84；前置：P12-05
+- 输入：同任务1.4第17节、P11停止/版本/上下文能力、已完成前置输出；源与目标必须使用精确身份及内容快照。
+- 文件/函数：packages/runtime/src/workspace-sync.ts, packages/runtime/src/workspace-sync-recovery.ts, packages/store/src/store.ts
+- 核心算法：保存逐repo持久intent，CAS校验source/target/result/plan；发布ref与文件时保持写屏障，全部对账后切execution_base；中途重启/取消/回滚仅按已知状态处理，未知额外修改不覆盖。
+- 保持：不修改源checkout的HEAD/分支/index/工作树；保留目标已提交和未提交工作；保留全部原78细项与237用例；不自动fetch/push或发布。
+- 输出与完成：实现本项行为及对应真实Git/数据/浏览器断言；产物片段仅定位实现，不替代测试、人工验收与独立复核。
+- 产物检查：[{"path":"packages/runtime/src/workspace-sync.ts","contains":"SYNC_APPLY_INCOMPLETE"}]
+- 测试：WS-UNIT, WS-INTEGRATION
+- 停止条件：源或目标漂移、进程退出未确认、文件类型或Git能力不支持、冲突未解决、合并结果/审批哈希不匹配时阻塞；不得静默覆盖或伪造完成。
+
+### P12-07 适配快照提交证据与完整复核范围
+
+- 模块：P12；需求：AC-82, AC-83；前置：P12-06
+- 输入：同任务1.4第17节、P11停止/版本/上下文能力、已完成前置输出；源与目标必须使用精确身份及内容快照。
+- 文件/函数：packages/git/src/git.ts, packages/core/src/change-evidence.ts, packages/runtime/src/recovery.ts, packages/contracts/src/review-output.ts
+- 核心算法：prepare/snapshot/matches/diff/commit/resume改用获批execution_base；保留source导入diff、target既有工作、冲突修复和新增diff供复核；内部检查点不算最终完成，真实合并使旧证据失效。
+- 保持：不修改源checkout的HEAD/分支/index/工作树；保留目标已提交和未提交工作；保留全部原78细项与237用例；不自动fetch/push或发布。
+- 输出与完成：实现本项行为及对应真实Git/数据/浏览器断言；产物片段仅定位实现，不替代测试、人工验收与独立复核。
+- 产物检查：[{"path":"packages/git/src/git.ts","contains":"execution_base"}]
+- 测试：WS-UNIT, WS-INTEGRATION
+- 停止条件：源或目标漂移、进程退出未确认、文件类型或Git能力不支持、冲突未解决、合并结果/审批哈希不匹配时阻塞；不得静默覆盖或伪造完成。
+
+### P12-08 提供源预览和主工作区同步接口
+
+- 模块：P12；需求：AC-77, AC-80, AC-85；前置：P12-07
+- 输入：同任务1.4第17节、P11停止/版本/上下文能力、已完成前置输出；源与目标必须使用精确身份及内容快照。
+- 文件/函数：apps/api/src/workspace-sync-routes.ts, apps/api/src/server.ts, packages/mcp/src/tools.ts
+- 核心算法：实现source-status、preview、prepare、apply、cancel；planner仅草案与查询，人工apply绑定sync/plan/source/target/result哈希；每请求幂等CAS，普通批准/恢复不隐式同步。
+- 保持：不修改源checkout的HEAD/分支/index/工作树；保留目标已提交和未提交工作；保留全部原78细项与237用例；不自动fetch/push或发布。
+- 输出与完成：实现本项行为及对应真实Git/数据/浏览器断言；产物片段仅定位实现，不替代测试、人工验收与独立复核。
+- 产物检查：[{"path":"apps/api/src/workspace-sync-routes.ts","contains":"workspace-syncs"}]
+- 测试：WS-UNIT, WS-INTEGRATION
+- 停止条件：源或目标漂移、进程退出未确认、文件类型或Git能力不支持、冲突未解决、合并结果/审批哈希不匹配时阻塞；不得静默覆盖或伪造完成。
+
+### P12-09 交付审批代码起点与合并按钮
+
+- 模块：P12；需求：AC-77, AC-81, AC-85；前置：P12-08
+- 输入：同任务1.4第17节、P11停止/版本/上下文能力、已完成前置输出；源与目标必须使用精确身份及内容快照。
+- 文件/函数：apps/web/src/workspace-sync.tsx, apps/web/src/main.tsx, apps/web/src/execution-panel.tsx, apps/web/src/style.css
+- 核心算法：审批页三模式显示版本与未提交排除，任务详情按钮预览→暂停准备→合并候选与修订计划→一次批准并继续；显示冲突和分repo状态、按钮失败保留草稿。
+- 保持：不修改源checkout的HEAD/分支/index/工作树；保留目标已提交和未提交工作；保留全部原78细项与237用例；不自动fetch/push或发布。
+- 输出与完成：实现本项行为及对应真实Git/数据/浏览器断言；产物片段仅定位实现，不替代测试、人工验收与独立复核。
+- 产物检查：[{"path":"apps/web/src/workspace-sync.tsx","contains":"合并主工作区变更"}]
+- 测试：WS-UNIT, WS-INTEGRATION, WS-E2E
+- 停止条件：源或目标漂移、进程退出未确认、文件类型或Git能力不支持、冲突未解决、合并结果/审批哈希不匹配时阻塞；不得静默覆盖或伪造完成。
+
+### P12-10 实现同步回归及六平台Git认证
+
+- 模块：P12；需求：AC-77, AC-78, AC-79, AC-80, AC-81, AC-82, AC-83, AC-84, AC-85, AC-86；前置：P12-09
+- 输入：同任务1.4第17节、P11停止/版本/上下文能力、已完成前置输出；源与目标必须使用精确身份及内容快照。
+- 文件/函数：tests/unit/workspace-sync.test.ts, tests/integration/workspace-sync.test.ts, tests/e2e/workspace-sync.spec.ts, tests/certification/workspace-sync.ts, scripts/devflow/verify.mjs, packages/skills/devflow/SKILL.md, packages/skills/devflow-plan/SKILL.md, packages/skills/devflow-execute/SKILL.md, docs/guide/DevFlow通用平台安装与配置.md, docs/process/DevFlow通用平台开发进度.md, docs/test/DevFlow通用平台验收合同.md
+- 核心算法：实现38个稳定WS用例，普通测试使用真实临时Git仓库与受控进程，六目标使用平台原生Git/Host；验证源index字节不变、二进制/删除/重命名、重复和撤回输入、多仓崩溃恢复，更新同任务文档及Skill。
+- 保持：不修改源checkout的HEAD/分支/index/工作树；保留目标已提交和未提交工作；保留全部原78细项与237用例；不自动fetch/push或发布。
+- 输出与完成：实现本项行为及对应真实Git/数据/浏览器断言；产物片段仅定位实现，不替代测试、人工验收与独立复核。
+- 产物检查：[{"path":"tests/unit/workspace-sync.test.ts","contains":"WS-UNIT-source-modes"}]
+- 测试：WS-UNIT, WS-INTEGRATION, WS-E2E, WS-CERT
+- 停止条件：源或目标漂移、进程退出未确认、文件类型或Git能力不支持、冲突未解决、合并结果/审批哈希不匹配时阻塞；不得静默覆盖或伪造完成。
+
 ### P08-01 计算组件闭包并管理安装状态
 
-- 模块：P08；需求：AC-01, AC-02, AC-03, AC-29, AC-55, AC-56；前置：P07-01, P07-02, P07-03, P07-04, P11-20
-- 输入：正文1.3、P08与已完成前置输出；使用共同输入基线。
-- 文件/函数范围：packages/installer/src/plan.ts, packages/installer/src/runner.ts, packages/installer/src/manifest.ts
+- 模块：P08；需求：AC-01, AC-02, AC-03, AC-29, AC-55, AC-56；前置：P07-01, P07-02, P07-03, P07-04, P11-20, P12-10
+- 输入：正文1.4、P08与已完成前置输出；使用共同输入基线。
+- 文件/函数：packages/installer/src/plan.ts, packages/installer/src/runner.ts, packages/installer/src/manifest.ts
 - 核心算法：按启用入口和实际角色求依赖闭包，single-tool只含所选一个AI CLI；锁URL/hash/CPU，处理发现/可启动/授权/MCP/Skill/工作流分层就绪，下载重试和幂等日志；不安装未选工具。
 - 保持：遵守正文全局保持要求。
-- 输出及完成条件：实现本项行为并按正文全局完成条件核验产物及真实测试。
-- 产物检查（不替代行为测试）：[{"contains":"NEEDS_USER_ACTION","path":"packages/installer/src/plan.ts"}]
+- 输出与完成：实现本项行为并按正文全局完成条件核验产物及真实测试。
+- 产物检查：[{"contains":"NEEDS_USER_ACTION","path":"packages/installer/src/plan.ts"}]
 - 测试：PF-UNIT, PF-INTEGRATION, PF-CERT
 - 停止条件：按正文全局停止条件阻塞并留证。
 
 ### P08-02 交付 Windows 一行安装入口
 
-- 模块：P08；需求：AC-01, AC-03, AC-25, AC-29, AC-36；前置：P07-01, P07-02, P07-03, P07-04, P11-20
-- 输入：正文1.3、P08与已完成前置输出；使用共同输入基线。
-- 文件/函数范围：scripts/bootstrap/install.ps1, packages/installer/src/bootstrap-windows.ts
+- 模块：P08；需求：AC-01, AC-03, AC-25, AC-29, AC-36；前置：P07-01, P07-02, P07-03, P07-04, P11-20, P12-10
+- 输入：正文1.4、P08与已完成前置输出；使用共同输入基线。
+- 文件/函数：scripts/bootstrap/install.ps1, packages/installer/src/bootstrap-windows.ts
 - 核心算法：支持PowerShell5.1，下载锁定release后固定tag/清单/hash，解压越界拒绝，使用私有Node启动向导；-Source源码构建使用同工具链；失败可恢复，不覆盖系统Node/CLI。
 - 保持：遵守正文全局保持要求。
-- 输出及完成条件：实现本项行为并按正文全局完成条件核验产物及真实测试。
-- 产物检查（不替代行为测试）：[{"contains":"DEVFLOW_HOME","path":"scripts/bootstrap/install.ps1"}]
+- 输出与完成：实现本项行为并按正文全局完成条件核验产物及真实测试。
+- 产物检查：[{"contains":"DEVFLOW_HOME","path":"scripts/bootstrap/install.ps1"}]
 - 测试：PF-UNIT, PF-INTEGRATION, PF-CERT
 - 停止条件：按正文全局停止条件阻塞并留证。
 
 ### P08-03 交付 macOS/Linux 一行安装入口
 
-- 模块：P08；需求：AC-01, AC-03, AC-25, AC-29, AC-36；前置：P07-01, P07-02, P07-03, P07-04, P11-20
-- 输入：正文1.3、P08与已完成前置输出；使用共同输入基线。
-- 文件/函数范围：scripts/bootstrap/install.sh, packages/installer/src/bootstrap-posix.ts
+- 模块：P08；需求：AC-01, AC-03, AC-25, AC-29, AC-36；前置：P07-01, P07-02, P07-03, P07-04, P11-20, P12-10
+- 输入：正文1.4、P08与已完成前置输出；使用共同输入基线。
+- 文件/函数：scripts/bootstrap/install.sh, packages/installer/src/bootstrap-posix.ts
 - 核心算法：POSIX sh实现与Windows相同安装事务，计算macOS/XDG安装根，支持--source和non-interactive配置；无需用户预装Node/Go；Linux系统库/账号授权显式外部动作。
 - 保持：遵守正文全局保持要求。
-- 输出及完成条件：实现本项行为并按正文全局完成条件核验产物及真实测试。
-- 产物检查（不替代行为测试）：[{"contains":"DEVFLOW_HOME","path":"scripts/bootstrap/install.sh"}]
+- 输出与完成：实现本项行为并按正文全局完成条件核验产物及真实测试。
+- 产物检查：[{"contains":"DEVFLOW_HOME","path":"scripts/bootstrap/install.sh"}]
 - 测试：PF-UNIT, PF-INTEGRATION, PF-CERT
 - 停止条件：按正文全局停止条件阻塞并留证。
 
 ### P08-04 构建六平台运行包和便携依赖
 
-- 模块：P08；需求：AC-01, AC-22, AC-35, AC-55；前置：P07-01, P07-02, P07-03, P07-04, P11-20
-- 输入：正文1.3、P08与已完成前置输出；使用共同输入基线。
-- 文件/函数范围：scripts/release/build-platforms.mjs, scripts/release/build-git.mjs, registry/components/git.json, registry/components/playwright.json
+- 模块：P08；需求：AC-01, AC-22, AC-35, AC-55；前置：P07-01, P07-02, P07-03, P07-04, P11-20, P12-10
+- 输入：正文1.4、P08与已完成前置输出；使用共同输入基线。
+- 文件/函数：scripts/release/build-platforms.mjs, scripts/release/build-git.mjs, registry/components/git.json, registry/components/playwright.json
 - 核心算法：为六目标产出Node/API/Web/Host/SQLite ABI预构建包，配套Git runtime、browser cache、必要动态库与源码材料；不可用的上游CPU明确unsupported，不能交叉编译即标原生通过。
 - 保持：遵守正文全局保持要求。
-- 输出及完成条件：实现本项行为并按正文全局完成条件核验产物及真实测试。
-- 产物检查（不替代行为测试）：[{"contains":"compatibility.json","path":"scripts/release/build-platforms.mjs"}]
+- 输出与完成：实现本项行为并按正文全局完成条件核验产物及真实测试。
+- 产物检查：[{"contains":"compatibility.json","path":"scripts/release/build-platforms.mjs"}]
 - 测试：PF-UNIT, PF-INTEGRATION, PF-CERT
 - 停止条件：按正文全局停止条件阻塞并留证。
 
 ### P08-05 实现稳定 CLI 与安装维护命令
 
-- 模块：P08；需求：AC-04, AC-10, AC-29, AC-32, AC-56；前置：P07-01, P07-02, P07-03, P07-04, P11-20
-- 输入：正文1.3、P08与已完成前置输出；使用共同输入基线。
-- 文件/函数范围：packages/cli/src/main.ts, packages/installer/src/repair.ts
+- 模块：P08；需求：AC-04, AC-10, AC-29, AC-32, AC-56；前置：P07-01, P07-02, P07-03, P07-04, P11-20, P12-10
+- 输入：正文1.4、P08与已完成前置输出；使用共同输入基线。
+- 文件/函数：packages/cli/src/main.ts, packages/installer/src/repair.ts
 - 核心算法：实现setup/open/status/doctor/integrate八工具/profile/workflow/adapter/update/rollback/uninstall，所有路径指向受管当前版本；schema失败提供明确退出码；社区JSONRPC适配器按固定revision安装。
 - 保持：遵守正文全局保持要求。
-- 输出及完成条件：实现本项行为并按正文全局完成条件核验产物及真实测试。
-- 产物检查（不替代行为测试）：[{"contains":"integrate","path":"packages/cli/src/main.ts"}]
+- 输出与完成：实现本项行为并按正文全局完成条件核验产物及真实测试。
+- 产物检查：[{"contains":"integrate","path":"packages/cli/src/main.ts"}]
 - 测试：PF-UNIT, PF-INTEGRATION, PF-CERT
 - 停止条件：按正文全局停止条件阻塞并留证。
 
 ### P09-01 迁移旧配置及历史证据
 
 - 模块：P09；需求：AC-08, AC-15, AC-31；前置：P08-01, P08-02, P08-03, P08-04, P08-05
-- 输入：正文1.3、P09与已完成前置输出；使用共同输入基线。
-- 文件/函数范围：packages/store/src/migrations/v2.ts, packages/profiles/src/migrate.ts
+- 输入：正文1.4、P09与已完成前置输出；使用共同输入基线。
+- 文件/函数：packages/store/src/migrations/v2.ts, packages/profiles/src/migrate.ts
 - 核心算法：维护模式排空并核实进程、SQLite在线备份，映射旧executor/reviewer为Profile且保持agy原模型；历史ID/seq/hash算法不重写；老worktree保持原址，新任务用新数据根。
 - 保持：遵守正文全局保持要求。
-- 输出及完成条件：实现本项行为并按正文全局完成条件核验产物及真实测试。
-- 产物检查（不替代行为测试）：[{"contains":"canonical_schema_version","path":"packages/store/src/migrations/v2.ts"}]
+- 输出与完成：实现本项行为并按正文全局完成条件核验产物及真实测试。
+- 产物检查：[{"contains":"canonical_schema_version","path":"packages/store/src/migrations/v2.ts"}]
 - 测试：PF-UNIT, PF-INTEGRATION, PF-E2E, PF-BROWSER, PF-CERT
 - 停止条件：按正文全局停止条件阻塞并留证。
 
 ### P09-02 实现更新回滚和清理所有权
 
 - 模块：P09；需求：AC-29, AC-30, AC-32；前置：P08-01, P08-02, P08-03, P08-04, P08-05
-- 输入：正文1.3、P09与已完成前置输出；使用共同输入基线。
-- 文件/函数范围：packages/installer/src/maintenance.ts, packages/service/src/maintenance.ts
+- 输入：正文1.4、P09与已完成前置输出；使用共同输入基线。
+- 文件/函数：packages/installer/src/maintenance.ts, packages/service/src/maintenance.ts
 - 核心算法：版本目录并存；运行对象不原地覆盖；接受业务写入前失败回滚，已写新数据则校验schema并拒绝有损降级；默认卸载保留项目/工作树/数据和用户CLI。
 - 保持：遵守正文全局保持要求。
-- 输出及完成条件：实现本项行为并按正文全局完成条件核验产物及真实测试。
-- 产物检查（不替代行为测试）：[{"contains":"current.json","path":"packages/installer/src/maintenance.ts"}]
+- 输出与完成：实现本项行为并按正文全局完成条件核验产物及真实测试。
+- 产物检查：[{"contains":"current.json","path":"packages/installer/src/maintenance.ts"}]
 - 测试：PF-UNIT, PF-INTEGRATION, PF-E2E, PF-BROWSER, PF-CERT
 - 停止条件：按正文全局停止条件阻塞并留证。
 
 ### P09-03 交付安装向导和工具模型设置页
 
 - 模块：P09；需求：AC-01, AC-02, AC-06, AC-07, AC-09, AC-10, AC-11, AC-45, AC-46；前置：P08-01, P08-02, P08-03, P08-04, P08-05
-- 输入：正文1.3、P09与已完成前置输出；使用共同输入基线。
-- 文件/函数范围：apps/web/src/settings/profiles.tsx, apps/web/src/settings/setup.tsx, apps/web/src/main.tsx, apps/api/src/server.ts
+- 输入：正文1.4、P09与已完成前置输出；使用共同输入基线。
+- 文件/函数：apps/web/src/settings/profiles.tsx, apps/web/src/settings/setup.tsx, apps/web/src/main.tsx, apps/api/src/server.ts
 - 核心算法：真实API驱动八工具目录/原生模型/显式ID/四角色绑定、单工具与组合模式；为批准浏览器场景提供profile-settings-link、adapter-catalog、adapter-count、single-tool-mode、select-adapter-agy、save-role-bindings、bindings-saved、bindings-summary选择器。目录计数文本8；保存摘要用中文展示单工具及规划/实施/测试/复核：Antigravity；不要求用户JSON/token。
 - 保持：遵守正文全局保持要求。
-- 输出及完成条件：实现本项行为并按正文全局完成条件核验产物及真实测试。
-- 产物检查（不替代行为测试）：[{"contains":"adapter-catalog","path":"apps/web/src/settings/profiles.tsx"}]
+- 输出与完成：实现本项行为并按正文全局完成条件核验产物及真实测试。
+- 产物检查：[{"contains":"adapter-catalog","path":"apps/web/src/settings/profiles.tsx"}]
 - 测试：PF-UNIT, PF-INTEGRATION, PF-E2E, PF-BROWSER, PF-CERT
 - 停止条件：按正文全局停止条件阻塞并留证。
 
 ### P09-04 交付模板与辅助工具设置页
 
 - 模块：P09；需求：AC-16, AC-17, AC-21, AC-24；前置：P08-01, P08-02, P08-03, P08-04, P08-05
-- 输入：正文1.3、P09与已完成前置输出；使用共同输入基线。
-- 文件/函数范围：apps/web/src/settings/templates.tsx, apps/web/src/settings/tools.tsx, apps/api/src/server.ts
+- 输入：正文1.4、P09与已完成前置输出；使用共同输入基线。
+- 文件/函数：apps/web/src/settings/templates.tsx, apps/web/src/settings/tools.tsx, apps/api/src/server.ts
 - 核心算法：支持节点增删/顺序/条件/角色/审批点与版本发布，错误现场定位；辅助工具页配置MCP与BrowserProvider；权限/API使用现有human通道CSRF/Origin验证，worker不可修改自己权限。
 - 保持：遵守正文全局保持要求。
-- 输出及完成条件：实现本项行为并按正文全局完成条件核验产物及真实测试。
-- 产物检查（不替代行为测试）：[{"contains":"template","path":"apps/web/src/settings/templates.tsx"}]
+- 输出与完成：实现本项行为并按正文全局完成条件核验产物及真实测试。
+- 产物检查：[{"contains":"template","path":"apps/web/src/settings/templates.tsx"}]
 - 测试：PF-UNIT, PF-INTEGRATION, PF-E2E, PF-BROWSER, PF-CERT
 - 停止条件：按正文全局停止条件阻塞并留证。
 
 ### P09-05 交付任务切换和维护界面
 
 - 模块：P09；需求：AC-13, AC-14, AC-15, AC-19, AC-20, AC-30, AC-50, AC-56；前置：P08-01, P08-02, P08-03, P08-04, P08-05
-- 输入：正文1.3、P09与已完成前置输出；使用共同输入基线。
-- 文件/函数范围：apps/web/src/settings/workflow.tsx, apps/web/src/settings/maintenance.tsx, apps/web/src/execution-panel.tsx, apps/web/src/workbench.tsx, apps/web/src/style.css
-- 核心算法：展示冻结配置、实际模型证据、测试原始报告、切换边界和安装状态；维护页显示更新差异/回滚/卸载范围；保留d5bc298紧凑布局与独立执行侧栏，不降低日志可读性。
+- 输入：正文1.4、P09与已完成前置输出；使用共同输入基线。
+- 文件/函数：apps/web/src/settings/workflow.tsx, apps/web/src/settings/maintenance.tsx, apps/web/src/execution-panel.tsx, apps/web/src/workbench.tsx, apps/web/src/style.css
+- 核心算法：展示冻结配置、实际模型证据、测试原始报告、切换边界和安装状态；维护页显示更新差异/回滚/卸载范围；保留6eb47cc紧凑布局与独立执行侧栏，不降低日志可读性。
 - 保持：遵守正文全局保持要求。
-- 输出及完成条件：实现本项行为并按正文全局完成条件核验产物及真实测试。
-- 产物检查（不替代行为测试）：[{"contains":"profile_revision","path":"apps/web/src/settings/workflow.tsx"}]
+- 输出与完成：实现本项行为并按正文全局完成条件核验产物及真实测试。
+- 产物检查：[{"contains":"profile_revision","path":"apps/web/src/settings/workflow.tsx"}]
 - 测试：PF-UNIT, PF-INTEGRATION, PF-E2E, PF-BROWSER, PF-CERT
 - 停止条件：按正文全局停止条件阻塞并留证。
 
 ### P09-06 实现完整用例与真实认证证据汇总
 
 - 模块：P09；需求：AC-01, AC-02, AC-03, AC-04, AC-05, AC-06, AC-07, AC-08, AC-09, AC-10, AC-11, AC-12, AC-13, AC-14, AC-15, AC-16, AC-17, AC-18, AC-19, AC-20, AC-21, AC-22, AC-23, AC-24, AC-25, AC-26, AC-27, AC-28, AC-29, AC-30, AC-31, AC-32, AC-33, AC-34, AC-35, AC-36, AC-37, AC-38, AC-39, AC-40, AC-41, AC-42, AC-43, AC-44, AC-45, AC-46, AC-47, AC-48, AC-49, AC-50, AC-51, AC-52, AC-53, AC-54, AC-55, AC-56；前置：P08-01, P08-02, P08-03, P08-04, P08-05
-- 输入：正文1.3、P09与已完成前置输出；使用共同输入基线。
-- 文件/函数范围：scripts/certification/run.mjs, scripts/certification/import-evidence.mjs, tests/unit/portable.test.ts, tests/integration/portable-acceptance.test.ts, tests/e2e/portable.spec.ts, docs/test/portable/compatibility.json, tests/live/interaction-certification.ts
-- 核心算法：实现56条AC、八工具x四必需目标32个单工具真实闭环、8循环组合xWindows x64/macOS arm64、六平台原生Host/安装；用合成Web工程、真实CLI及模型验证红→修复→绿和人工后复核。汇总真实原始报告/hash/CLI身份，skip/not_run/blocked不得计passed；缺账号或runner报明确资源阻塞，不削减开发功能或伪造认证。 1.3合并要求：将TC新增用例纳入完整验收，原PF用例全部保留；八工具四必需目标的临时问答及改向必须有真实证据。
+- 输入：正文1.4、P09与已完成前置输出；使用共同输入基线。
+- 文件/函数：scripts/certification/run.mjs, scripts/certification/import-evidence.mjs, tests/unit/portable.test.ts, tests/integration/portable-acceptance.test.ts, tests/e2e/portable.spec.ts, docs/test/portable/compatibility.json, tests/live/interaction-certification.ts
+- 核心算法：实现56条AC、八工具x四必需目标32个单工具真实闭环、8循环组合xWindows x64/macOS arm64、六平台原生Host/安装；用合成Web工程、真实CLI及模型验证红→修复→绿和人工后复核。汇总真实原始报告/hash/CLI身份，skip/not_run/blocked不得计passed；缺账号或runner报明确资源阻塞，不削减开发功能或伪造认证。 1.4合并要求：将TC新增用例纳入完整验收，原PF用例全部保留；八工具四必需目标的临时问答及改向必须有真实证据。
 - 保持：遵守正文全局保持要求。
-- 输出及完成条件：实现本项行为并按正文全局完成条件核验产物及真实测试。
-- 产物检查（不替代行为测试）：[{"contains":"unsupported_upstream","path":"scripts/certification/run.mjs"}]
+- 输出与完成：实现本项行为并按正文全局完成条件核验产物及真实测试。
+- 产物检查：[{"contains":"unsupported_upstream","path":"scripts/certification/run.mjs"}]
 - 测试：PF-UNIT, PF-INTEGRATION, PF-E2E, PF-BROWSER, PF-CERT
 - 停止条件：按正文全局停止条件阻塞并留证。
 
 ### P10-01 完成 Apache 开源材料和用户指南
 
 - 模块：P10；需求：AC-33, AC-35, AC-36；前置：P09-01, P09-02, P09-03, P09-04, P09-05, P09-06
-- 输入：正文1.3、P10与已完成前置输出；使用共同输入基线。
-- 文件/函数范围：LICENSE, NOTICE, README.md, CONTRIBUTING.md, SECURITY.md, THIRD_PARTY_NOTICES.txt, docs/guide/DevFlow通用平台安装与配置.md, docs/process/DevFlow通用平台开发进度.md, docs/test/DevFlow通用平台验收合同.md
-- 核心算法：写入Apache-2.0、NOTICE、贡献/安全指南/README、一行安装和八工具支持矩阵；第三方许可分别保留。只发布脱敏合成资料，用户不依赖开发者账号和私有包。 1.3合并要求：使用指南说明任务级组合、文档改向与临时问答；无全链路零留痕承诺。
+- 输入：正文1.4、P10与已完成前置输出；使用共同输入基线。
+- 文件/函数：LICENSE, NOTICE, README.md, CONTRIBUTING.md, SECURITY.md, THIRD_PARTY_NOTICES.txt, docs/guide/DevFlow通用平台安装与配置.md, docs/process/DevFlow通用平台开发进度.md, docs/test/DevFlow通用平台验收合同.md
+- 核心算法：写入Apache-2.0、NOTICE、贡献/安全指南/README、一行安装和八工具支持矩阵；第三方许可分别保留。只发布脱敏合成资料，用户不依赖开发者账号和私有包。 1.4合并要求：使用指南说明任务级组合、文档改向与临时问答；无全链路零留痕承诺。
 - 保持：遵守正文全局保持要求。
-- 输出及完成条件：实现本项行为并按正文全局完成条件核验产物及真实测试。
-- 产物检查（不替代行为测试）：[{"contains":"Apache License","path":"LICENSE"}]
+- 输出与完成：实现本项行为并按正文全局完成条件核验产物及真实测试。
+- 产物检查：[{"contains":"Apache License","path":"LICENSE"}]
 - 测试：PF-UNIT, PF-INTEGRATION, PF-CERT
 - 停止条件：按正文全局停止条件阻塞并留证。
 
 ### P10-02 交付公开构建与受保护认证流水线
 
 - 模块：P10；需求：AC-33, AC-35, AC-36；前置：P09-01, P09-02, P09-03, P09-04, P09-05, P09-06
-- 输入：正文1.3、P10与已完成前置输出；使用共同输入基线。
-- 文件/函数范围：.github/workflows/release.yml, .github/workflows/ci.yml, .github/workflows/compatibility.yml, scripts/release/publish.mjs
+- 输入：正文1.4、P10与已完成前置输出；使用共同输入基线。
+- 文件/函数：.github/workflows/release.yml, .github/workflows/ci.yml, .github/workflows/compatibility.yml, scripts/release/publish.mjs
 - 核心算法：实现六目标构建、组件锁、SBOM、source/dependency-source、SHA256SUMS与attestation同一源码树绑定；公开PR无模型凭据，真实兼容性认证独立受保护任务；只允许已认证精确版本，fork安装源可覆盖。
 - 保持：遵守正文全局保持要求。
-- 输出及完成条件：实现本项行为并按正文全局完成条件核验产物及真实测试。
-- 产物检查（不替代行为测试）：[{"contains":"attestations","path":".github/workflows/release.yml"}]
+- 输出与完成：实现本项行为并按正文全局完成条件核验产物及真实测试。
+- 产物检查：[{"contains":"attestations","path":".github/workflows/release.yml"}]
 - 测试：PF-UNIT, PF-INTEGRATION, PF-CERT
 - 停止条件：按正文全局停止条件阻塞并留证。
 
 ### P10-03 验证完整发布候选与交付清单
 
-- 模块：P10；需求：AC-01, AC-35, AC-36；前置：P09-01, P09-02, P09-03, P09-04, P09-05, P09-06
-- 输入：正文1.3、P10与已完成前置输出；使用共同输入基线。
-- 文件/函数范围：scripts/release/verify-candidate.mjs, docs/test/portable/final-delivery.json, docs/guide/DevFlow通用平台发布与回滚.md
-- 核心算法：从公开导出候选在干净环境构建，验证六平台包/七Skill/八适配器和一行安装脚本的同一release闭包；生成可审核的zephyrw/dev-flow发布候选。外部上传、仓库公开与正式release由单独人工发布动作触发；缺少真实多平台认证保持阻塞，不能把代码生成完当全部交付成功。
+- 模块：P10；需求：AC-01, AC-35, AC-36；前置：P09-01, P09-02, P09-03, P09-04, P09-05, P09-06, P12-10
+- 输入：正文1.4、P10与已完成前置输出；使用共同输入基线。
+- 文件/函数：scripts/release/verify-candidate.mjs, docs/test/portable/final-delivery.json, docs/guide/DevFlow通用平台发布与回滚.md
+- 核心算法：从公开导出候选在干净环境构建，验证六平台包/七Skill/八适配器和一行安装脚本的同一release闭包；生成可审核的zephyrw/dev-flow发布候选。外部上传、仓库公开与正式release由单独人工发布动作触发；缺少真实多平台认证保持阻塞，不能把代码生成完当全部交付成功。 1.4发布候选必须包括审批代码选择和主工作区合并按钮全部WS证据。
 - 保持：遵守正文全局保持要求。
-- 输出及完成条件：实现本项行为并按正文全局完成条件核验产物及真实测试。
-- 产物检查（不替代行为测试）：[{"contains":"source_tree_hash","path":"scripts/release/verify-candidate.mjs"}]
+- 输出与完成：实现本项行为并按正文全局完成条件核验产物及真实测试。
+- 产物检查：[{"contains":"source_tree_hash","path":"scripts/release/verify-candidate.mjs"}]
 - 测试：PF-UNIT, PF-INTEGRATION, PF-CERT
 - 停止条件：按正文全局停止条件阻塞并留证。
 
-## 完整设计正文
+## 完整设计
 
 # DevFlow 跨平台通用工作流平台实施方案
 
-版本：1.3　编制日期：2026-09-14　目标版本：DevFlow 1.0.0
+版本：1.4　编制日期：2026-09-14　目标版本：DevFlow 1.0.0
 
 发布仓库：<https://github.com/zephyrw/dev-flow>。本方案中的新增命令、接口、目录和发布资产均为实施合同，完成对应工作包并发布后生效；当前 0.2.0 源码尚不具备这些完整能力。
 
@@ -1754,6 +1875,8 @@ compatibility.json
 
 ## 13. 可直接分配的实施工作包
 
+1.4补充：P12（代码输入与主工作区合并）放在P11后、P08前。当前完整顺序为P00→P01→P02→P03→P04→P05→P06→P07→P11→P12→P08→P09→P10。后文1.3中P11直接进入P08的流程由本顺序取代。
+
 1.3 在同一个任务中加入 P11（任务组合与执行交互），执行位置为 P07 之后、P08 之前；P08～P10 的交付必须包含它。新增细项与原细项共用一份合同、开发进度和测试进度，完整依赖以第 16.10 节和结构化合同为准。
 
 工作包按下表依次合并。每个工作包均提交源码、对应测试、文档及验收证据；前置项未完成时不能以 UI 截图代替运行能力。扩展八工具及单工具完整闭环后，整体估算为 90 个工程人日，按一名熟悉现有仓库的开发者全职执行约 18 周；这是工作量预算，不是已验证的交付耗时。
@@ -2030,7 +2153,7 @@ flowchart LR
   Missing[缺少任务组合及临时问答合同] --> Gap[不能可靠表达执行改向]
 ```
 
-结论：已有 stop/recovery、FileBroker、细项进度、快照和证据失效机制可以复用；不能只增加输入框或向 stdin 发送一句“读最新文档”。证据位置：`packages/contracts/src/config.ts`、`packages/contracts/src/index.ts`、`packages/core/src/engine.ts`、`packages/runtime/src/runtime.ts`、`packages/entry/src/intake.ts`。本次核对工作区 HEAD 为 `b933cfb7ca403fbb12e9ff8bbf9ec92c5f9d2ddf`；原任务批准候选基线仍保持 `d5bc298ac5be27a28a9a641be8ef583486da2c1a`，不擅自纳入其他进行中的未提交修改。
+结论：已有 stop/recovery、FileBroker、细项进度、快照和证据失效机制可以复用；不能只增加输入框或向 stdin 发送一句“读最新文档”。证据位置：`packages/contracts/src/config.ts`、`packages/contracts/src/index.ts`、`packages/core/src/engine.ts`、`packages/runtime/src/runtime.ts`、`packages/entry/src/intake.ts`。1.3调研时工作区HEAD为b933cfb；1.4已按用户选择将本任务代码基线更新为`6eb47cca18dc65397aab125e96eb329cecc344d2`（主工作区已提交版本），不带入其他进行中的未提交修改；原始基线仅保留为历史。
 
 ```mermaid
 flowchart TB
@@ -2293,7 +2416,158 @@ P11 是原任务内的模块编号，放在 P07 后、P08 前执行；细项路�
 | AC-73 | 迁移保存旧任务原配置快照；历史未报告模型保持未知，不伪造新模型信息 |
 | AC-74 | 八工具在四必需目标各有真实改向及旁路认证，32格全部当前版本通过 |
 | AC-75 | UI明确区分保存、停止、等待批准、确认上下文、应用完成；不能提前显示已生效 |
-| AC-76 | 原任务78项细项及237项用例统一计数，新功能未完成禁止进入完整交付 |
+| AC-76 | 当前1.4任务88项细项及275项用例统一计数，新功能未完成禁止进入完整交付 |
+
+
+## 17. 审批前代码起点选择与合并主工作区（1.4 新增）
+
+### 17.1 当前实现的准确行为
+
+当前 `GitManager.prepare` 的 new_worktree 分支执行 `git worktree add -b <执行分支> <目录> <plan.baselines[repo]>`；已有工作区记录则直接复用。它不会先拉取远端，也不会合并源工作区当前 HEAD 或未提交修改。`Engine.run` 把批准计划的 baselines 传给 prepare；`snapshot/commit` 还假定执行 HEAD 等于旧 baseline 或服务记录的最终提交。所以目前直接手工往执行分支 merge 会触发 `BASELINE_CHANGED/INDEX_CHANGED`，不能把新增功能实现为只有一个调用 git merge 的按钮。
+
+计划的设计正文通过 MCP 批准上下文交给执行模型；由本计划P00-01带入工作树。这个过程不是主工作区整份代码同步，不能据此声称最近的界面修复、代码提交或未提交文件已经进入执行分支。
+
+本功能继续属于 `wf-508be4f4-4c5a-453c-9ac6-c6dafe717a08` 原任务，新增P12模块；原P00～P11全部保留，不建立第二个任务。按钮及审批选择是待开发功能，当前控制器在升级前仍按已有冻结基线执行。
+
+### 17.2 一个产品设计，两个操作入口
+
+审批页增加“执行代码起点”区；任务详情增加“合并主工作区变更”按钮。两处使用同一个 `WorkspaceSync` 协议。以下为用户可选的输入模式，不是交给开发者自行取舍的技术方案。
+
+| UI选择 | 输入的精确定义 | 首次执行与已有执行分支的行为 |
+|---|---|---|
+| 保留已批准代码基线 | 当前计划冻结的精确commit | 保持原行为；源工作区变新只提醒，不自动拉入 |
+| 主工作区最新已提交版本 | 点击预览时绑定源工作区的HEAD，不是执行时浮动的main | 首次执行从预览冻结的commit创建；已有执行分支保留既有工作后做三方合并 |
+| 主工作区当前快照，包含未提交修改 | 冻结源HEAD加所选工作区文件内容，包含已暂存、未暂存、删除和明确选中的未跟踪文件 | 形成仅供本工作流使用的不可变输入提交，再与执行工作进行三方合并 |
+
+“主工作区”指任务接入时绑定的源checkout，按repo ID和canonical common_git_dir标识，不按最近打开目录、分支名main或当前入口cwd猜测。预览同时显示源目录、源分支、源HEAD和执行分支，分支切换或仓库身份变化使预览过期。多个仓库分别指定输入，并作为一个同步批次共同冻结。
+
+新建任务的默认行为仍是冻结创建时所选版本；已批准任务永远保留已批准基线，直到用户明确选择同步。发现源有新增提交时提示“源工作区较执行基线新增N个提交”，并提供“查看并合并”；普通批准/暂停/恢复不悄悄重新拉最新代码。
+
+审批页显示选中版本和变更统计，按钮为“批准此版本并开始”。用户选择含未提交内容时，默认选中所有受支持的已跟踪变更，未跟踪文件逐项勾选；状态为ignored的缓存、日志、构建产物以及.devflow、凭据、.git等受保护内容不能打包。被排除文件必须列出原因，不能用“当前全部代码”掩盖实际排除范围。
+
+任务详情按钮第一步只生成预览，不终止正在运行的模型；按下“暂停并准备合并”才撤销旧写权限、停止旧Run并生成最终目标检查点。最后显示完整合并结果和修订计划，用户按“批准合并并继续”一次授权这份确定结果；准备过程中的冲突、代码或文档调整反映在同一预览，不额外增加一次内容完全相同的批准。
+
+### 17.3 必须保护源工作区与执行进度
+
+源工作区是输入。同步不能在源checkout执行stash、reset、checkout、git add或普通git commit，不能替用户提交暂存区或改写主分支。快照使用临时index、独立对象目录及受管私有ref生成内部输入commit，保留原HEAD作为父提交；不会创建用户可见的主分支提交，也不自动push。必须在预览中说明生成了私有输入快照，其生命周期随任务证据保留。
+
+“已暂存”和“未暂存”都表示源的变更，快照最终内容以用户磁盘工作树为准；原暂存区内容仅记录用于证明未被修改，不能先apply暂存diff再apply工作区diff造成重复。暂存与磁盘内容不同须在预览中提示。捕获HEAD、索引checksum、路径清单、文件mode/bytes/hash及删除事实；捕获前后再次核验。源被其他进程修改则 `SOURCE_CHANGED`，重建预览而非混合两时刻内容。
+
+链接、submodule、LFS和自定义clean/smudge或merge driver首发按受管Git快照能力认证：支持的类型在能力清单中明确处理，未认证类型在预览前返回 `SOURCE_FILE_UNSUPPORTED` 并列路径；不能运行仓库自定义程序或静默丢内容。文本、二进制、权限位、重命名、删除和普通未跟踪文件纳入测试。独立临时index不会代替源index。
+
+目标执行分支的未提交工作也要保留：停止旧Run后冻结完整target检查点，既有提交保留父链，未提交工作写为私有checkpoint commit；不假装它是测试通过或最终交付commit。拒绝尚未解决的用户原生Git合并/rebase、身份不明的writer及无法归属的工作树状态。已有目标改动不能因“换基线”被覆盖。
+
+### 17.4 合并算法与冲突处理
+
+输入由source snapshot commit和target checkpoint commit精确标识。存在共同祖先时用受管Git的 `merge-tree --write-tree` 进行三方合并，解析退出状态与完整冲突记录；使用Git自动计算共同祖先，不能将最近输入tree强行当merge-base。无共同历史返回 `UNRELATED_HISTORY`，不启用allow-unrelated-histories。没有目标工作时首次执行直接采用已冻结输入commit，不制造无意义的merge。
+
+所有预合并结果、冲突文件和模型修复放在独立的受管integration工作树；正式执行分支在用户批准前不变。自定义merge drivers/hooks禁止自动执行；Git程序、配置与属性能力必须可核验。冲突按三方内容展示，禁止全局采用ours/theirs或静默丢文件。用户可在预览选择逐文件解决，或让该任务planner在明确的冲突文件范围内提出解决结果；解决后的差异和计划再交给用户一次批准。
+
+```mermaid
+sequenceDiagram
+  actor U as 用户
+  participant UI as 审批页或合并按钮
+  participant C as 控制器
+  participant S as 源主工作区
+  participant T as 当前执行分支
+  participant I as 隔离合并区
+  U->>UI: 选择已提交版本或含未提交快照
+  UI->>C: 预览输入版本
+  C->>S: 只读捕获并检查稳定性
+  C-->>UI: 源版本 文件差异 排除清单
+  U->>C: 暂停并准备合并
+  C->>T: 撤销写权限 停止 确认检查点
+  C->>I: 三方合并精确source与target
+  I-->>C: 合并结果或逐文件冲突
+  C->>I: 校准设计 细项和测试合同
+  C-->>U: 展示合并结果及新计划
+  U->>C: 批准合并并继续
+  C->>T: 校验未漂移后发布合并结果
+  C->>C: 更新执行基线和文档包 失效旧证据
+  C->>T: 新会话确认上下文后继续
+```
+
+同一来源的输入快照保存独立lineage：后续输入commit以已接受的上一输入commit为父，源HEAD出现尚未包含的新提交时再保留源HEAD父链，tree严格等于本次批准的源内容。这样源撤销此前未提交改动时，下一次快照会产生明确的撤销diff；不能每次都从源HEAD创建无关联的快照，导致反复同步无法识别撤回。输入模式从“含未提交”切成“仅已提交”引起的撤回也必须显示并随预览批准。
+
+相同source tree、源提交祖先和输入模式重复同步且已被当前执行历史包含时返回no-op，不重复commit、不失效证据；只比较source HEAD不足以判断含未提交快照是否相同。merge必须基于真实输入commit祖先去重，不能机械重复应用patch。源不需要固定在最新HEAD直到执行时：批准的是预览显示的冻结版本。若用户在最后批准前想使用更新的源版本，必须点击刷新预览并重新校验，不能偷偷替换已展示内容。
+
+### 17.5 执行基线、范围与复核不能被合并隐藏
+
+区分三种字段：`original_plan_base`保存最初计划基线；`input_revision`保存每次批准引入的source commit/tree；`execution_base`保存当前允许运行与最终提交的精确父commit。它们不可互相覆盖。新版本的snapshot、matches、diff、commit、resume及反篡改检查全部校验execution_base和sync revision，不再永久要求HEAD等于最初baseline。
+
+合并来源文件可能超出原开发任务允许路径；这不代表执行模型获得这些文件的任意后续修改权。同步有独立的、用户预览并批准的`import_paths`，模型后续写入仍受更新后计划的task paths限制。planner按候选合并快照校准实现路线、已实现细项、测试和设计；若源引入本次任务已经实现的功能，允许删除重复开发但必须写明旧→新细项映射，不能仅因上游文件存在就标记完成。
+
+最终复核材料同时包含：每次输入变更source diff、合并前target工作、冲突解决diff、合并后任务新增diff和当前完整源码。只看execution_base之后的最后一段diff会漏掉合并带入的错误；复核不得因此省略任务原有改动或冲突解决。私有checkpoint/import/merge commit不是DevFlow最终COMMITTED，不获得人工验收或复核通过标记。
+
+本任务的设计正文和导出文档也属于受版本控制的输入。源文件与已批准设计正文不同，必须显示“磁盘文档/已批准文档冲突”，校准为同一新版本后再批准；不能让源的旧设计覆盖刚提交的新设计，也不能用写文档步骤悄悄覆盖用户后来补充的要求。
+
+### 17.6 发布、重启恢复与取消
+
+持久`WorkspaceSync`状态为 `PREVIEW → STOPPING → CAPTURING_TARGET → MERGING → CONFLICTS或PLAN_PENDING → APPLYING → APPLIED`；故障转 `RECOVERY_REQUIRED`，用户放弃为CANCELLED。工作流共用第16节的epoch撤销、Host退出确认、outbox和上下文ack，不建立第二套模型调度器。
+
+发布前CAS校验用户批准的source snapshot、target HEAD/tree/index、plan hash、merge tree和sync version；target在预览后被修改返回 `TARGET_CHANGED`，不能覆盖新工作。写入先保存recoverable intent，再更新执行分支引用及受管工作树；Git ref与文件系统不能被宣称是单个原子事务。只有所有受管repo完成并逐一核对tree、index、ref后，数据库事务才切换当前execution_base并标记APPLIED、开放新执行。文件更新期间一直保持写屏障。
+
+中途崩溃按intent记录的每repo阶段及old/new ref恢复；不确定时保留现场和租约。回滚只允许目标仍匹配本sync已写入状态时用保存的checkpoint恢复；发现用户额外修改则暂停人工处理，不能强制reset。多仓批次任一未完成，整个Workflow不能恢复运行；明确显示哪些仓库已应用、哪些尚未应用，不能冒充跨仓原子成功。
+
+取消预合并不改变源或目标；只有本次停止的原运行需要恢复时，沿原批准上下文经过恢复检查后新Run继续。取消已经发布的合并使用独立“撤销本次同步”预览，须以当前目标快照重新核对，不能无条件回退分支指针。回滚仍使旧证据失效。
+
+任何实际代码合并/冲突修复都使测试、人工验收和独立复核失效；重新冻结、测试、验收和复核后才可最终提交。模板明确的CI输入验证不等于真实业务测试通过。执行器只在新execution_base、plan、bundle、sync ID全部确认后获得写权限。
+
+### 17.7 接口、界面与执行门禁
+
+| 接口或控件 | 行为 |
+|---|---|
+| 审批页“执行代码起点” | 展示冻结commit与源最新commit、未提交统计，三种输入模式和差异预览 |
+| 详情页“合并主工作区变更” | 任意非最终提交临界阶段可生成预览，运行阶段明确提供暂停准备动作 |
+| `GET /api/workflows/:id/source-status` | 只读返回每repo源与目标身份及ahead/dirty摘要，无隐式fetch |
+| `POST /api/workflows/:id/workspace-syncs/preview` | 生成内容冻结的source预览及排除清单 |
+| `POST /api/workflows/:id/workspace-syncs/:syncId/prepare` | 用户明确暂停准备，捕获target并合并候选 |
+| `POST /api/workflows/:id/workspace-syncs/:syncId/apply` | 消费绑定sync/plan/source/target/result hash的人工批准并发布 |
+| `POST /api/workflows/:id/workspace-syncs/:syncId/cancel` | 按当前阶段安全取消；已应用不隐式倒退 |
+| planner MCP | 仅查询、预览及提交候选修订；不能自行批准导入主工作区或用worker token调用人工按钮 |
+
+按钮实时显示待合并提交数、文件数、冲突数和最后同步版本。已有工作区以外的源只读；主工作区有改动不是自动阻塞所有执行，用户仍可明确保留原基线。源是本地checkout，“合并主工作区”不等于git pull，不自动fetch/push、改源分支或远端。需要先更新远端代码属于用户单独的源工作区操作。
+
+### 17.8 同一任务内的开发顺序与验收
+
+P12在P11后、P08前完成，统一纳入安装包、迁移、测试与开源交付。P12先定义源快照/执行基线合同，然后实现捕获与预合并、冲突与恢复、snapshot/commit兼容、API与UI、集成测试。增量估算8工程工作日，基于P11已完成且测试环境就绪；外部等待不计入通过状态。
+
+```mermaid
+flowchart LR
+  P11[P11 任务配置及执行交互] --> S1[P12 源快照和检查点]
+  S1 --> S2[三方合并及冲突预览]
+  S2 --> S3[基线变更及恢复]
+  S3 --> S4[审批选项和合并按钮]
+  S4 --> S5[代码 文档 证据联合验收]
+  S5 --> P08[P08 安装包]
+  P08 --> P09[P09 完整验收]
+```
+
+| 新增验收 | 必须证明的结果 |
+|---|---|
+| AC-77 | 审批前选择旧基线/源已提交版/含未提交快照，均冻结精确输入，执行时不浮动 |
+| AC-78 | 源HEAD、branch、index与工作树未被同步操作修改，未跟踪文件与排除清单明确 |
+| AC-79 | 已有执行分支的提交和未提交工作保留，双方变更通过三方合并进入结果 |
+| AC-80 | 同步与运行写入互斥，未确认停止不发布，目标漂移不覆盖 |
+| AC-81 | 冲突逐文件可核对，取消不改原工作区；禁止全局ours/theirs |
+| AC-82 | snapshot/commit/recovery使用新版execution_base，不能因合法同步误报BASELINE_CHANGED |
+| AC-83 | 引入改动、冲突修复、任务新增均进入最终复核，旧证据失效后重测 |
+| AC-84 | 重复同步no-op、崩溃恢复、部分多仓发布、回滚漂移均有确定安全状态 |
+| AC-85 | 审批页与详情按钮真实可用，普通审批/恢复不自动同步，不替用户拉远端 |
+| AC-86 | 设计文档与源代码共同冻结并校准，新设计不会被旧源文档覆盖 |
+
+### 17.9 Git实现依据
+
+Git官方说明merge-tree可生成三方合并tree而不改index和工作树，并能报告冲突；因此用于隔离预合并，不能把“输出了tree OID”单独当无冲突成功。[git-merge-tree](https://git-scm.com/docs/git-merge-tree)
+
+临时index构造输入树，commit-tree创建带父关系的内部对象；发布引用需带期望旧值，不能把update-ref的原子性扩大解释为整个工作树或跨仓事务原子性。[git-read-tree](https://git-scm.com/docs/git-read-tree)、[git-commit-tree](https://git-scm.com/docs/git-commit-tree)、[git-update-ref](https://git-scm.com/docs/git-update-ref)
+
+
+### 17.10 本任务本次代码输入选择
+
+用户已明确选择“主工作区最新已提交版本”。已核实源checkout为D:/Code/system-handle，HEAD为`6eb47cca18dc65397aab125e96eb329cecc344d2`（6eb47cc，代码变更工作台重构、分支友好化与工作台交互视觉体验优化）。相对原d5bc298基线新增7个提交、涉及52个已跟踪文件；包括工作台布局、事件刷新、设计文档查看、暂停原因推断与自愈修复。
+
+原任务当前尚无执行worktree或Run，因此本次直接把plan.baselines.main冻结为该commit，在批准后从它创建执行分支，不先创建旧分支再merge。未提交代码不带入；本次1.4设计与计划正文作为明确批准的文档材料由P00-01带入。没有操作源分支、暂存区、未提交代码或远端，也没有开始产品开发。以后HEAD推进仍使用本次冻结版本，需要再次选择更新后生成新修订。
 
 
 ## 本机核查输入原文
@@ -2358,7 +2632,3 @@ OpenCode 的 npm 声明入口 `opencode-ai/bin/opencode.exe` 实际为 479 字�
 | Cursor | [参数](https://prod.cursor.com/docs/cli/reference/parameters)、[安装](https://prod.cursor.com/docs/cli/installation)、[MCP](https://prod.cursor.com/docs/cli/mcp)、[Skills](https://cursor.com/docs/skills) |
 
 最终支持状态以实施方案第 14 节对应发布 commit 的完整认证为准。当前本机结果不代表其他操作系统、其他 CLI 版本或账号配置已经通过。
-
-## P11-17 接口范围补充
-
-同时修改packages/cli/src/aside.ts和packages/cli/src/main.ts，提供devflow btw独立问答入口。旁路问答协议仅注册专用aside-client连接，不向planner/worker主会话发布。问答正文不在命令行参数中传递，也不通过原模型工具调用返回。
