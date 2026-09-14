@@ -1,0 +1,141 @@
+{
+  "version": "0.2.0",
+  "name": "devflow",
+  "dependencies": {
+    "@fastify/static": {
+      "version": "10.1.3",
+      "resolved": "https://registry.npmjs.org/@fastify/static/-/static-10.1.3.tgz",
+      "overridden": false
+    },
+    "@fastify/websocket": {
+      "version": "11.3.0",
+      "resolved": "https://registry.npmjs.org/@fastify/websocket/-/websocket-11.3.0.tgz",
+      "overridden": false
+    },
+    "@modelcontextprotocol/client": {
+      "version": "2.0.0",
+      "resolved": "https://registry.npmjs.org/@modelcontextprotocol/client/-/client-2.0.0.tgz",
+      "overridden": false
+    },
+    "@modelcontextprotocol/node": {
+      "version": "2.0.0",
+      "resolved": "https://registry.npmjs.org/@modelcontextprotocol/node/-/node-2.0.0.tgz",
+      "overridden": false
+    },
+    "@modelcontextprotocol/server": {
+      "version": "2.0.0",
+      "resolved": "https://registry.npmjs.org/@modelcontextprotocol/server/-/server-2.0.0.tgz",
+      "overridden": false
+    },
+    "@playwright/test": {
+      "version": "1.63.0",
+      "resolved": "https://registry.npmjs.org/@playwright/test/-/test-1.63.0.tgz",
+      "overridden": false
+    },
+    "@types/better-sqlite3": {
+      "version": "9.6.0",
+      "resolved": "https://registry.npmjs.org/@types/better-sqlite3/-/better-sqlite3-9.6.0.tgz",
+      "overridden": false
+    },
+    "@types/node": {
+      "version": "22.20.2",
+      "resolved": "https://registry.npmjs.org/@types/node/-/node-22.20.2.tgz",
+      "overridden": false
+    },
+    "@types/react-dom": {
+      "version": "19.3.0",
+      "resolved": "https://registry.npmjs.org/@types/react-dom/-/react-dom-19.3.0.tgz",
+      "overridden": false
+    },
+    "@types/react": {
+      "version": "19.3.0",
+      "resolved": "https://registry.npmjs.org/@types/react/-/react-19.3.0.tgz",
+      "overridden": false
+    },
+    "@vitejs/plugin-react": {
+      "version": "5.2.0",
+      "resolved": "https://registry.npmjs.org/@vitejs/plugin-react/-/plugin-react-5.2.0.tgz",
+      "overridden": false
+    },
+    "better-sqlite3": {
+      "version": "13.0.3",
+      "resolved": "https://registry.npmjs.org/better-sqlite3/-/better-sqlite3-13.0.3.tgz",
+      "overridden": false
+    },
+    "fast-xml-parser": {
+      "version": "5.11.1",
+      "resolved": "https://registry.npmjs.org/fast-xml-parser/-/fast-xml-parser-5.11.1.tgz",
+      "overridden": false
+    },
+    "fastify": {
+      "version": "5.12.3",
+      "resolved": "https://registry.npmjs.org/fastify/-/fastify-5.12.3.tgz",
+      "overridden": false
+    },
+    "jsdom": {
+      "version": "29.0.1",
+      "resolved": "https://registry.npmjs.org/jsdom/-/jsdom-29.0.1.tgz",
+      "overridden": false
+    },
+    "mermaid": {
+      "version": "11.17.2",
+      "resolved": "https://registry.npmjs.org/mermaid/-/mermaid-11.17.2.tgz",
+      "overridden": false
+    },
+    "prettier": {
+      "version": "3.6.2",
+      "resolved": "https://registry.npmjs.org/prettier/-/prettier-3.6.2.tgz",
+      "overridden": false
+    },
+    "react-dom": {
+      "version": "19.3.0",
+      "resolved": "https://registry.npmjs.org/react-dom/-/react-dom-19.3.0.tgz",
+      "overridden": false
+    },
+    "react-markdown": {
+      "version": "10.1.0",
+      "resolved": "https://registry.npmjs.org/react-markdown/-/react-markdown-10.1.0.tgz",
+      "overridden": false
+    },
+    "react": {
+      "version": "19.3.0",
+      "resolved": "https://registry.npmjs.org/react/-/react-19.3.0.tgz",
+      "overridden": false
+    },
+    "remark-gfm": {
+      "version": "4.0.1",
+      "resolved": "https://registry.npmjs.org/remark-gfm/-/remark-gfm-4.0.1.tgz",
+      "overridden": false
+    },
+    "tsx": {
+      "version": "4.23.13",
+      "resolved": "https://registry.npmjs.org/tsx/-/tsx-4.23.13.tgz",
+      "overridden": false
+    },
+    "typescript": {
+      "version": "5.9.3",
+      "resolved": "https://registry.npmjs.org/typescript/-/typescript-5.9.3.tgz",
+      "overridden": false
+    },
+    "vite": {
+      "version": "7.3.6",
+      "resolved": "https://registry.npmjs.org/vite/-/vite-7.3.6.tgz",
+      "overridden": false
+    },
+    "vitest": {
+      "version": "4.1.11",
+      "resolved": "https://registry.npmjs.org/vitest/-/vitest-4.1.11.tgz",
+      "overridden": false
+    },
+    "yaml": {
+      "version": "2.9.0",
+      "resolved": "https://registry.npmjs.org/yaml/-/yaml-2.9.0.tgz",
+      "overridden": false
+    },
+    "zod": {
+      "version": "4.6.2",
+      "resolved": "https://registry.npmjs.org/zod/-/zod-4.6.2.tgz",
+      "overridden": false
+    }
+  }
+}

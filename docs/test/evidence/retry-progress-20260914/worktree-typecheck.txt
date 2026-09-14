@@ -1,0 +1,60 @@
+packages/core/src/engine.ts(759,29): error TS1127: Invalid character.
+packages/core/src/engine.ts(759,72): error TS1002: Unterminated string literal.
+packages/core/src/engine.ts(760,9): error TS1005: ',' expected.
+packages/core/src/engine.ts(760,20): error TS1005: ',' expected.
+packages/core/src/engine.ts(761,7): error TS1137: Expression or comma expected.
+packages/core/src/engine.ts(764,6): error TS1068: Unexpected token. A constructor, method, accessor, or property was expected.
+packages/core/src/engine.ts(766,3): error TS1434: Unexpected keyword or identifier.
+packages/core/src/engine.ts(766,19): error TS1005: ',' expected.
+packages/core/src/engine.ts(766,38): error TS1005: ',' expected.
+packages/core/src/engine.ts(766,51): error TS1005: ';' expected.
+packages/core/src/engine.ts(785,3): error TS1434: Unexpected keyword or identifier.
+packages/core/src/engine.ts(786,8): error TS1005: ',' expected.
+packages/core/src/engine.ts(787,11): error TS1005: ',' expected.
+packages/core/src/engine.ts(787,44): error TS1005: ',' expected.
+packages/core/src/engine.ts(788,5): error TS1005: ';' expected.
+packages/core/src/engine.ts(821,3): error TS1434: Unexpected keyword or identifier.
+packages/core/src/engine.ts(821,25): error TS1005: ',' expected.
+packages/core/src/engine.ts(821,37): error TS1005: ',' expected.
+packages/core/src/engine.ts(821,56): error TS1005: ';' expected.
+packages/core/src/engine.ts(823,7): error TS1003: Identifier expected.
+packages/core/src/engine.ts(823,12): error TS1005: ',' expected.
+packages/core/src/engine.ts(824,22): error TS1005: ':' expected.
+packages/core/src/engine.ts(825,20): error TS1005: ':' expected.
+packages/core/src/engine.ts(826,5): error TS1136: Property assignment expected.
+packages/core/src/engine.ts(826,6): error TS1136: Property assignment expected.
+packages/core/src/engine.ts(827,9): error TS1005: ':' expected.
+packages/core/src/engine.ts(827,23): error TS1005: ',' expected.
+packages/core/src/engine.ts(828,9): error TS1005: ':' expected.
+packages/core/src/engine.ts(829,14): error TS1005: ':' expected.
+packages/core/src/engine.ts(829,24): error TS1005: ',' expected.
+packages/core/src/engine.ts(830,7): error TS1005: ',' expected.
+packages/core/src/engine.ts(830,15): error TS1005: ':' expected.
+packages/core/src/engine.ts(831,11): error TS1005: ':' expected.
+packages/core/src/engine.ts(831,28): error TS1005: ',' expected.
+packages/core/src/engine.ts(834,33): error TS1005: ',' expected.
+packages/core/src/engine.ts(834,43): error TS1005: ';' expected.
+packages/core/src/engine.ts(843,3): error TS1434: Unexpected keyword or identifier.
+packages/core/src/engine.ts(843,20): error TS1005: ';' expected.
+packages/core/src/engine.ts(890,3): error TS1128: Declaration or statement expected.
+packages/core/src/engine.ts(890,11): error TS1434: Unexpected keyword or identifier.
+packages/core/src/engine.ts(891,8): error TS1005: ',' expected.
+packages/core/src/engine.ts(892,10): error TS1005: ',' expected.
+packages/core/src/engine.ts(893,11): error TS1005: ',' expected.
+packages/core/src/engine.ts(894,11): error TS1005: ',' expected.
+packages/core/src/engine.ts(894,20): error TS1011: An element access expression should take an argument.
+packages/core/src/engine.ts(895,5): error TS1005: ';' expected.
+packages/core/src/engine.ts(1077,3): error TS1434: Unexpected keyword or identifier.
+packages/core/src/engine.ts(1077,26): error TS1005: ',' expected.
+packages/core/src/engine.ts(1077,41): error TS1005: ',' expected.
+packages/core/src/engine.ts(1077,52): error TS1005: ';' expected.
+packages/core/src/engine.ts(1205,3): error TS1434: Unexpected keyword or identifier.
+packages/core/src/engine.ts(1205,24): error TS1005: ',' expected.
+packages/core/src/engine.ts(1205,34): error TS1005: ';' expected.
+packages/core/src/engine.ts(1244,12): error TS1005: ',' expected.
+packages/core/src/engine.ts(1244,27): error TS1005: ',' expected.
+packages/core/src/engine.ts(1244,38): error TS1005: ';' expected.
+packages/core/src/engine.ts(1268,13): error TS1005: ';' expected.
+packages/core/src/engine.ts(1300,22): error TS1005: ',' expected.
+packages/core/src/engine.ts(1300,32): error TS1005: ';' expected.
+packages/core/src/engine.ts(1353,1): error TS1128: Declaration or statement expected.

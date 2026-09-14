@@ -1,0 +1,60 @@
+{
+  "at": "2026-09-14T11:08:22.142Z",
+  "isolated_fixture": true,
+  "progress": {
+    "before": [
+      {
+        "id": "T01",
+        "completed": true,
+        "status": "completed"
+      },
+      {
+        "id": "T02",
+        "completed": true,
+        "status": "completed"
+      },
+      {
+        "id": "T03",
+        "completed": true,
+        "status": "completed"
+      },
+      {
+        "id": "T04",
+        "completed": true,
+        "status": "completed"
+      }
+    ],
+    "after": [
+      {
+        "id": "T01",
+        "completed": false,
+        "status": "active"
+      },
+      {
+        "id": "T02",
+        "completed": false,
+        "status": "needs_changes"
+      },
+      {
+        "id": "T03",
+        "completed": false,
+        "status": "needs_changes"
+      },
+      {
+        "id": "T04",
+        "completed": false,
+        "status": "needs_changes"
+      }
+    ],
+    "retained_claims": 4,
+    "changed_files": [
+      "app.txt"
+    ]
+  },
+  "failure": {
+    "child_exit_code": 2,
+    "service_starts": 5,
+    "configured_retries": 5,
+    "health_error_masks_exit": true
+  }
+}
