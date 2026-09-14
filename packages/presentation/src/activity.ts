@@ -345,8 +345,12 @@ export function readableLogs(events: any[], workflow: string): LogEntry[] {
       text = p.message;
     }
     if (e.type === "Stopped") {
-      title = "执行已停止";
-      text = p.message ?? "历史记录未保存停止原因";
+      title = "执行已暂停";
+      text =
+        p.message ??
+        (p.agent_stopped || p.source === "local_console"
+          ? "你在控制台暂停了执行"
+          : "执行已暂停，等待处理");
     }
     if (e.type === "ProcessesReconciled") {
       title = "任务已恢复";

@@ -23,8 +23,8 @@ const labels: Record<string, string> = {
   COMMITTING: "提交中",
   COMMITTED: "已提交",
   COMMIT_PARTIAL: "提交需要恢复",
-  STOPPING: "正在停止",
-  STOPPED: "已停止",
+  STOPPING: "正在暂停",
+  STOPPED: "已暂停",
   BLOCKED: "需要处理",
   RECOVERY_REQUIRED: "需要恢复检查",
 };
@@ -459,7 +459,7 @@ const CentralWorkspace = React.memo(
                           running: "执行中",
                           failed: "失败",
                           completed: "已结束",
-                          stopped: "已停止",
+                          stopped: "已暂停",
                         } as Record<string, string>
                       )[r.status] ?? "已结束"}
                     </p>
@@ -1101,13 +1101,13 @@ function App() {
             }
           : ["STOPPED", "STOPPING", "RECOVERY_REQUIRED"].includes(w.state)
             ? {
-                category: "stopped",
+                category: w.state === "RECOVERY_REQUIRED" ? "error" : "paused",
                 message:
                   w.state === "STOPPING"
-                    ? "正在停止执行"
+                    ? "正在暂停执行"
                     : w.state === "RECOVERY_REQUIRED"
                       ? "服务重启后，需要核实中断的执行再继续"
-                      : "历史记录未保存停止原因",
+                      : "执行已暂停，等待处理",
                 at: w.updated_at,
                 action: "查看执行过程",
               }

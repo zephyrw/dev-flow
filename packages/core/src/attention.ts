@@ -3,7 +3,64 @@ import type { Engine, PlanRecord } from "./engine.js";
 // Read-only presentation of authoritative state; never infer an actor from logs.
 export function workflowAttention(engine: Engine, key: string) {
   const w = engine.get(key);
-  const interruption = engine.store.get<any>("interruption", key);
+  let interruption = engine.store.get<any>("interruption", key);
+  if (!interruption && w.run_id) {
+    interruption = engine.store.get<any>("run_stop", w.run_id);
+  }
+  if (!interruption && ["STOPPED", "STOPPING"].includes(w.state)) {
+    const recent = engine.store.recentEvents(key, 200);
+    let stoppedEvent = recent.find((e) => e.type === "Stopped");
+    if (!stoppedEvent) {
+      try {
+        const row = (engine.store as any).db
+          ?.prepare(
+            "SELECT data FROM events WHERE workflow_id=? AND json_extract(data, '$.type')='Stopped' ORDER BY seq DESC LIMIT 1",
+          )
+          ?.get(key);
+        if (row) stoppedEvent = JSON.parse(row.data);
+      } catch {}
+    }
+    if (stoppedEvent) {
+      const p = (stoppedEvent.payload ?? {}) as any;
+      interruption = {
+        category: p.category ?? "pause",
+        source: p.source ?? (p.agent_stopped ? "local_console" : "controller"),
+        at: stoppedEvent.created_at,
+        prior_stage: w.stage,
+        run_id: w.run_id,
+        message:
+          p.message ??
+          (p.agent_stopped || p.source === "local_console"
+            ? "你在控制台暂停了执行"
+            : "执行已暂停，等待处理"),
+        next_action: "核实后继续这个任务",
+      };
+      try {
+        engine.store.put("interruption", key, key, interruption);
+      } catch {}
+    } else {
+      const stateEvent = recent.find(
+        (e) =>
+          e.type === "StateChanged" &&
+          (e.payload as any)?.to === "STOPPED",
+      );
+      if (stateEvent) {
+        interruption = {
+          category: "pause",
+          source: "local_console",
+          at: stateEvent.created_at,
+          prior_stage: w.stage,
+          run_id: w.run_id,
+          message: "执行已暂停，等待处理",
+          next_action: "核实后继续这个任务",
+        };
+        try {
+          engine.store.put("interruption", key, key, interruption);
+        } catch {}
+      }
+    }
+  }
+
   if (["PLAN_PENDING", "REPAIR_PLAN_PENDING"].includes(w.state)) {
     const plan = engine.plan(key).plan;
     const previous = engine.store
@@ -27,14 +84,14 @@ export function workflowAttention(engine: Engine, key: string) {
   ) {
     const message =
       w.state === "STOPPING"
-        ? "正在停止执行"
+        ? "正在暂停执行"
         : w.state === "BLOCKED"
           ? (w.blocker?.message ?? "执行遇到问题")
           : w.state === "RECOVERY_REQUIRED"
             ? "服务重启后，需要核实中断的执行再继续"
-            : (interruption?.message ?? "历史记录未保存停止原因");
+            : (interruption?.message ?? "执行已暂停，等待处理");
     return {
-      category: w.state === "BLOCKED" ? "error" : "stopped",
+      category: w.state === "BLOCKED" ? "error" : "paused",
       message,
       at: interruption?.at ?? w.updated_at,
       action: "查看执行过程",

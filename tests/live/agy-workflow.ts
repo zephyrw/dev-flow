@@ -340,7 +340,7 @@ try {
         { timeout: 120000 },
       )
       .toBe(true);
-    await page.getByRole("button", { name: "停止执行", exact: true }).click();
+    await page.getByRole("button", { name: "暂停", exact: true }).click();
     await expect
       .poll(() => engine.get(w.id).state, { timeout: 30000 })
       .toBe("STOPPED");
@@ -350,7 +350,7 @@ try {
       })
       .toBe("stopped");
     await expect(page.locator(".attention-strip")).toContainText(
-      "你在控制台停止了执行",
+      "你在控制台暂停了执行",
     );
     result.stop_probe = {
       state: engine.get(w.id).state,
