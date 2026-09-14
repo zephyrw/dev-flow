@@ -4,6 +4,7 @@ export const taskLabels: Record<string, string> = {
   active: "进行中",
   pending_check: "待核验",
   needs_changes: "需修改",
+  needs_recheck: "等待前置核验",
   pending: "未开始",
 };
 export const caseLabels: Record<string, string> = {
@@ -33,8 +34,18 @@ export function TaskTree({ detail, title }: { detail: any; title?: string }) {
         <h2>{title ?? "任务进度"}</h2>
         <div className="filters">
           <div className="search-input-wrapper">
-            <svg className="search-icon" viewBox="0 0 20 20" fill="currentColor" width="16" height="16">
-              <path fillRule="evenodd" d="M9 3.5a5.5 5.5 0 100 11 5.5 5.5 0 000-11zM2 9a7 7 0 1112.452 4.391l3.328 3.329a.75.75 0 11-1.06 1.06l-3.329-3.328A7 7 0 012 9z" clipRule="evenodd" />
+            <svg
+              className="search-icon"
+              viewBox="0 0 20 20"
+              fill="currentColor"
+              width="16"
+              height="16"
+            >
+              <path
+                fillRule="evenodd"
+                d="M9 3.5a5.5 5.5 0 100 11 5.5 5.5 0 000-11zM2 9a7 7 0 1112.452 4.391l3.328 3.329a.75.75 0 11-1.06 1.06l-3.329-3.328A7 7 0 012 9z"
+                clipRule="evenodd"
+              />
             </svg>
             <input
               aria-label="搜索任务"
@@ -59,7 +70,11 @@ export function TaskTree({ detail, title }: { detail: any; title?: string }) {
           </div>
         </div>
       </div>
-      {!leaf && <p className="notice-subtle">尚未建立细项清单 · {detail.tasks.length} 个工作包</p>}
+      {!leaf && (
+        <p className="notice-subtle">
+          尚未建立细项清单 · {detail.tasks.length} 个工作包
+        </p>
+      )}
       <div className="task-modules-list">
         {groups.map((m: any) => {
           const all = detail.tasks.filter(
@@ -67,7 +82,9 @@ export function TaskTree({ detail, title }: { detail: any; title?: string }) {
             ),
             visible = tasks.filter((t: any) => !leaf || t.module_id === m.id);
           if (!visible.length) return null;
-          const completedCount = all.filter((t: any) => t.completed).length;
+          const completedCount = all.filter(
+            (t: any) => t.has_implementation ?? t.completed,
+          ).length;
           const isAllDone = all.length > 0 && completedCount === all.length;
           return (
             <details
@@ -85,40 +102,62 @@ export function TaskTree({ detail, title }: { detail: any; title?: string }) {
                 </span>
                 <span className={`module-badge ${isAllDone ? "all-done" : ""}`}>
                   {leaf
-                    ? `${completedCount} / ${all.length}`
+                    ? `已提交 ${completedCount} / ${all.length}`
                     : `${all.length} 个工作包`}
                 </span>
               </summary>
               <div className="module-tasks-body">
                 {visible.map((t: any) => (
                   <div className={`task ${t.implementation_status}`} key={t.id}>
-                    <span className={"checkbox " + (t.completed ? "checked" : "")}>
+                    <span
+                      className={"checkbox " + (t.completed ? "checked" : "")}
+                    >
                       {t.completed ? "✓" : ""}
                     </span>
                     <div className="task-main">
                       <div className="task-header-row">
                         <b className="task-title">{t.title}</b>
                         <span className={`badge ${t.implementation_status}`}>
-                          {taskLabels[t.implementation_status] ?? "未开始"}
+                          {t.implementation_status === "completed"
+                            ? "已完成"
+                            : t.status === "verified"
+                              ? "测试已通过"
+                              : (taskLabels[t.implementation_status] ??
+                                "未开始")}
                         </span>
                       </div>
                       {t.summary && <p className="task-summary">{t.summary}</p>}
+                      {t.recheck_reason && (
+                        <p className="notice-subtle">{t.recheck_reason}</p>
+                      )}
                       <details className="task-inner-details">
                         <summary>查看实现细节与完成条件</summary>
                         <div className="task-spec-box">
-                          {detail.plan?.plan?.tasks?.find((x: any) => x.id === t.id)?.implementation && (
+                          {detail.plan?.plan?.tasks?.find(
+                            (x: any) => x.id === t.id,
+                          )?.implementation && (
                             <div className="spec-field">
                               <span className="field-label">实现指引：</span>
                               <p className="field-value">
-                                {detail.plan?.plan?.tasks?.find((x: any) => x.id === t.id)?.implementation}
+                                {
+                                  detail.plan?.plan?.tasks?.find(
+                                    (x: any) => x.id === t.id,
+                                  )?.implementation
+                                }
                               </p>
                             </div>
                           )}
-                          {detail.plan?.plan?.tasks?.find((x: any) => x.id === t.id)?.completion && (
+                          {detail.plan?.plan?.tasks?.find(
+                            (x: any) => x.id === t.id,
+                          )?.completion && (
                             <div className="spec-field">
                               <span className="field-label">完成条件：</span>
                               <p className="field-value">
-                                {detail.plan?.plan?.tasks?.find((x: any) => x.id === t.id)?.completion}
+                                {
+                                  detail.plan?.plan?.tasks?.find(
+                                    (x: any) => x.id === t.id,
+                                  )?.completion
+                                }
                               </p>
                             </div>
                           )}
@@ -136,7 +175,13 @@ export function TaskTree({ detail, title }: { detail: any; title?: string }) {
     </div>
   );
 }
-export function TestResults({ detail, title }: { detail: any; title?: string }) {
+export function TestResults({
+  detail,
+  title,
+}: {
+  detail: any;
+  title?: string;
+}) {
   const [state, setState] = useState("all");
   const progress = detail.test_progress ?? { cases: [] };
   const layers: Record<string, string> = {
@@ -169,9 +214,13 @@ export function TestResults({ detail, title }: { detail: any; title?: string }) 
       <div className="test-layers-list">
         {Object.entries(layers).map(([layer, label]) => {
           const all = progress.cases.filter((c: any) => c.layer === layer),
-            cases = all.filter((c: any) => state === "all" || c.status === state);
+            cases = all.filter(
+              (c: any) => state === "all" || c.status === state,
+            );
           if (!all.length) return null;
-          const passedCount = all.filter((c: any) => c.status === "passed").length;
+          const passedCount = all.filter(
+            (c: any) => c.status === "passed",
+          ).length;
           const hasFailed = all.some((c: any) => c.status === "failed");
           return (
             <details
@@ -184,13 +233,18 @@ export function TestResults({ detail, title }: { detail: any; title?: string }) 
                   <span className="chevron-icon">▸</span>
                   <span className="module-title">{label}</span>
                 </span>
-                <span className={`module-badge ${hasFailed ? "has-failed" : passedCount === all.length ? "all-done" : ""}`}>
+                <span
+                  className={`module-badge ${hasFailed ? "has-failed" : passedCount === all.length ? "all-done" : ""}`}
+                >
                   {passedCount} / {all.length} 通过
                 </span>
               </summary>
               <div className="module-tasks-body">
                 {cases.map((c: any) => (
-                  <div className={`test-case ${c.status}`} key={c.test_id + ":" + c.id}>
+                  <div
+                    className={`test-case ${c.status}`}
+                    key={c.test_id + ":" + c.id}
+                  >
                     <div className="test-case-row">
                       <b className="test-case-id">{c.id}</b>
                       <span className={"badge " + c.status}>
@@ -205,8 +259,8 @@ export function TestResults({ detail, title }: { detail: any; title?: string }) 
                           {c.task_ids
                             .map(
                               (id: string) =>
-                                detail.tasks.find((t: any) => t.id === id)?.title ??
-                                id,
+                                detail.tasks.find((t: any) => t.id === id)
+                                  ?.title ?? id,
                             )
                             .join("、")}
                         </p>
