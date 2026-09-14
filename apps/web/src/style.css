@@ -277,7 +277,10 @@ h3 {
 .badge.HUMAN_PENDING,
 .badge.REPAIR_PLAN_PENDING,
 .badge.pending_check,
-.badge.stale {
+.badge.stale,
+.badge.STOPPED,
+.badge.STOPPING,
+.badge.paused {
   background: var(--color-warning-bg);
   color: var(--color-warning-text);
   border-color: var(--color-warning-border);
@@ -286,7 +289,6 @@ h3 {
 .badge.BLOCKED,
 .badge.RECOVERY_REQUIRED,
 .badge.COMMIT_PARTIAL,
-.badge.STOPPED,
 .badge.failed,
 .badge.error,
 .badge.needs_changes {
@@ -441,7 +443,11 @@ aside .mark {
   animation: pulse-dot 1.8s infinite;
 }
 
-.dot.BLOCKED, .dot.STOPPED, .dot.RECOVERY_REQUIRED {
+.dot.STOPPED, .dot.STOPPING, .dot.paused {
+  background: var(--color-warning-text);
+}
+
+.dot.BLOCKED, .dot.RECOVERY_REQUIRED {
   background: var(--color-danger);
 }
 

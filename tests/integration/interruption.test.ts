@@ -56,7 +56,7 @@ for (const cancel of [true, false])
       const detail = s.engine.detail(w.id);
       expect(detail.workflow.state).toBe(cancel ? "STOPPED" : "BLOCKED");
       expect(detail.attention?.message).toContain(
-        cancel ? "你在控制台停止了执行" : "upstream connection failed",
+        cancel ? "你在控制台暂停了执行" : "upstream connection failed",
       );
       expect(detail.attention?.interruption?.source).toBe(
         cancel ? "local_console" : "runtime",
@@ -91,7 +91,41 @@ it("legacy stops never invent a human actor", async () => {
   s.engine.transition(w.id, ["RESEARCHING"], "STOPPING", "stop");
   s.engine.transition(w.id, ["STOPPING"], "STOPPED", "stopped");
   expect(s.engine.detail(w.id).attention?.message).toBe(
-    "历史记录未保存停止原因",
+    "执行已暂停，等待处理",
+  );
+  expect(s.engine.detail(w.id).attention?.interruption?.source).not.toBe(
+    "local_console",
+  );
+  s.store.close();
+});
+
+it("infers pause from legacy agent_stopped event and heals interruption entity", async () => {
+  const s = setup(),
+    r = await repository(s.root),
+    p = project(r.repo);
+  s.store.put("project", p.id, p.id, p);
+  const w = s.engine.create(
+    {
+      project_id: p.id,
+      title: "旧版历史暂停",
+      request: "仅含agent_stopped事件",
+      complexity: "simple",
+      workspace_mode: "existing_workspace",
+    },
+    "legacy-agent-stop",
+  );
+  s.engine.transition(w.id, ["RESEARCHING"], "STOPPING", "stop");
+  s.engine.transition(w.id, ["STOPPING"], "STOPPED", "stopped");
+  s.store.event(w.id, p.id, "Stopped", {
+    agent_stopped: true,
+    services_retained: true,
+  });
+  const detail = s.engine.detail(w.id);
+  expect(detail.attention?.message).toBe("你在控制台暂停了执行");
+  expect(detail.attention?.interruption?.source).toBe("local_console");
+  // Verify self-healing persisted into store
+  expect(s.store.get<any>("interruption", w.id)?.message).toBe(
+    "你在控制台暂停了执行",
   );
   s.store.close();
 });

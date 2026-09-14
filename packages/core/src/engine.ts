@@ -776,18 +776,18 @@ export class Engine {
     requireCondition(
       !["COMMITTED", "COMMITTING", "COMMIT_PARTIAL"].includes(w.state),
       "INVALID_STATE",
-      "该阶段不能停止执行",
+      "该阶段不能暂停执行",
     );
     const interruption = {
-      category: "stop",
+      category: "pause",
       source,
       at: now(),
       prior_stage: w.stage,
       run_id: w.run_id,
       message:
         source === "local_console"
-          ? "你在控制台停止了执行"
-          : "执行已由控制程序停止",
+          ? "你在控制台暂停了执行"
+          : "执行已由控制程序暂停",
       next_action: "核实后继续这个任务",
     };
     this.store.put("interruption", key, key, interruption);
