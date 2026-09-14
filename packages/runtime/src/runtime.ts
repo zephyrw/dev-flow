@@ -219,6 +219,75 @@ export class LocalRuntime implements Runtime {
       // Restart retained servers after edits so acceptance sees the current code.
       await this.environments.stop(workflow.id);
       this.assertRun(workflow.id, principal.run_id!, ["EXECUTING"]);
+      // Build the current worktree once before allocating ports or starting
+      // preview servers. Service retries must never retry a failed compiler.
+      const project = this.engine.project(workflow.project_id);
+      const build = project.commands.find(
+        (c) => c.id === "build" && c.lifecycle === "check",
+      );
+      if (build) {
+        const workspaces = this.engine.store.list<Workspace>(
+          "workspace",
+          workflow.id,
+        );
+        const workspace = build.repo_id
+          ? workspaces.find((w) => w.repo_id === build.repo_id)
+          : workspaces[0];
+        requireCondition(workspace, "WORKSPACE_MISSING", "构建仓库未绑定");
+        const variables = {
+          DEVFLOW_WORKFLOW_ID: workflow.id,
+          DEVFLOW_DATA_DIR: join(
+            this.engine.config.storage_root,
+            "data",
+            workflow.id,
+          ),
+        };
+        const processId = id("build");
+        const event = (type: string, payload: Record<string, unknown>) =>
+          this.engine.store.event(
+            workflow.id,
+            workflow.project_id,
+            type,
+            { process_id: processId, ...payload },
+            run,
+          );
+        event("BuildStarted", { message: "构建当前任务代码" });
+        let output = "";
+        try {
+          const proc = this.processes.start({
+            workflow_id: workflow.id,
+            id: processId,
+            executable: build.executable,
+            args: build.args.map((a) => expand(a, variables)),
+            cwd: build.cwd
+              ? safePath(workspace.root, build.cwd)
+              : workspace.root,
+            env: { ...build.env, ...variables },
+            timeout_ms: build.timeout_seconds * 1000,
+          });
+          processes.add(proc.id);
+          for (const stream of ["stdout", "stderr", "diagnostic"])
+            proc.on(stream, (data: Buffer | string) => {
+              const text = redact(data.toString());
+              output = (output + text).slice(0, 16000);
+              event("BuildOutput", { stream, text });
+            });
+          const result = await proc.completion;
+          this.assertRun(workflow.id, run, ["EXECUTING"]);
+          requireCondition(
+            result.code === 0,
+            "BUILD_FAILED",
+            `当前任务构建失败（退出码 ${result.code ?? result.signal ?? "未知"}）：${output.trim() || "没有诊断输出"}`,
+          );
+          event("BuildReady", { message: "构建通过，准备本机验证副本" });
+        } catch (error) {
+          this.assertRun(workflow.id, run, ["EXECUTING"]);
+          event("BuildFailed", {
+            message: error instanceof Error ? error.message : String(error),
+          });
+          throw error;
+        }
+      }
       await this.environments.ensure(
         this.engine.get(workflow.id),
         () => {

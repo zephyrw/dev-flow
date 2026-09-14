@@ -110,7 +110,7 @@ export class Engine {
           : null,
       events: this.store.db
         .prepare(
-          "SELECT data FROM events WHERE workflow_id=? AND json_extract(data, '$.type') NOT IN ('ServiceOutput','FixtureOutput','CheckOutput','AgentEvent') ORDER BY seq DESC LIMIT 500",
+          "SELECT data FROM events WHERE workflow_id=? AND json_extract(data, '$.type') NOT IN ('ServiceOutput','FixtureOutput','CheckOutput','BuildOutput','AgentEvent') ORDER BY seq DESC LIMIT 500",
         )
         .all(key)
         .map((row: any) => JSON.parse(row.data))
@@ -646,11 +646,19 @@ export class Engine {
           : null;
       const completed =
         plan.task_model === "leaf-v1" && taskProofValid(this, key, t.id);
+      const ownValid = !!proof && taskProofValid(this, key, t.id, true);
       return {
         id: t.id,
         title: t.title,
         module_id: t.module_id,
         completed,
+        has_implementation: !!claim || !!proof,
+        recheck_reason:
+          !completed && proof
+            ? ownValid
+              ? "前置任务变更，等待前置实现核验；本任务实现记录保留"
+              : (proof.stale_reason ?? "本任务文件已变化，需要重新核验实现")
+            : undefined,
         implementation_status: completed
           ? "completed"
           : activity?.task_id === t.id &&
@@ -658,14 +666,16 @@ export class Engine {
               activity?.plan_revision === w.plan_revision &&
               w.state === "EXECUTING"
             ? "active"
-            : proof
-              ? "needs_changes"
-              : claim
-                ? "pending_check"
-                : "pending",
+            : ownValid
+              ? "needs_recheck"
+              : proof
+                ? "needs_changes"
+                : claim
+                  ? "pending_check"
+                  : "pending",
         started_at:
           activity?.task_id === t.id ? activity.started_at : undefined,
-        completed_at: completed ? proof?.completed_at : undefined,
+        completed_at: proof?.completed_at,
         status: verified ? "verified" : claim ? "claimed" : "pending",
         summary: claim?.summary ?? "",
       };
@@ -717,7 +727,22 @@ export class Engine {
         "TASK_NOT_CLAIMED",
         "所有任务都应完成实际实现声明后才能冻结",
       );
-      await this.runtime?.prepareVerification?.(w, principal);
+      try {
+        await this.runtime?.prepareVerification?.(w, principal);
+      } catch (error) {
+        const current = this.get(key);
+        if (
+          current.run_id === principal.run_id &&
+          current.state === "EXECUTING"
+        ) {
+          this.auth.revokeRun(principal.run_id!);
+          this.block(key, error);
+          // Preparation has settled before stopping the executor, so stop()
+          // cannot wait on its own preparation promise.
+          await this.runtime?.stop(principal.run_id!).catch(() => {});
+        }
+        throw error;
+      }
       w = this.worker(principal, key);
       requireCondition(
         w.state === "EXECUTING",
@@ -1018,7 +1043,11 @@ export class Engine {
         }
         this.store.put("run", runId, key, {
           ...this.store.must<Run>("run", runId),
-          status: this.store.get("run_stop", runId) ? "stopped" : "completed",
+          status: this.store.get("run_stop", runId)
+            ? "stopped"
+            : this.get(key).state === "BLOCKED"
+              ? "failed"
+              : "completed",
           ended_at: now(),
         });
       } finally {

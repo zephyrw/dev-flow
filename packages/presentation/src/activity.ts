@@ -23,6 +23,7 @@ export function mergeEvents(workflow: string, ...batches: any[][]): any[] {
           "ServiceOutput",
           "FixtureOutput",
           "CheckOutput",
+          "BuildOutput",
         ].includes(e.type),
     )
     .slice(-500);
@@ -149,7 +150,11 @@ export function readableLogs(events: any[], workflow: string): LogEntry[] {
   )) {
     const p = e.payload ?? {},
       step = p.step_update;
-    if (["ServiceOutput", "FixtureOutput", "CheckOutput"].includes(e.type)) {
+    if (
+      ["ServiceOutput", "FixtureOutput", "CheckOutput", "BuildOutput"].includes(
+        e.type,
+      )
+    ) {
       if (typeof p.text !== "string" || !p.text.trim()) continue;
       const key = [
         workflow,
@@ -166,9 +171,11 @@ export function readableLogs(events: any[], workflow: string): LogEntry[] {
           title:
             e.type === "ServiceOutput"
               ? `服务日志 · ${p.service_id ?? "服务"}`
-              : e.type === "FixtureOutput"
-                ? "测试数据日志"
-                : `测试日志 · ${p.test_id ?? "检查"}`,
+              : e.type === "BuildOutput"
+                ? "构建日志"
+                : e.type === "FixtureOutput"
+                  ? "测试数据日志"
+                  : `测试日志 · ${p.test_id ?? "检查"}`,
           text: "",
           raw: [],
           kind: "diagnostic",
@@ -337,11 +344,20 @@ export function readableLogs(events: any[], workflow: string): LogEntry[] {
       text = p.test_id ?? "";
     }
     if (e.type === "TaskStarted" || e.type === "TaskCompleted") {
-      title = e.type === "TaskStarted" ? "正在实施" : "细项已完成";
+      title = e.type === "TaskStarted" ? "正在实施" : "实现检查已通过 · 待测试";
       text = p.summary ?? p.title ?? p.task_id;
     }
     if (e.type === "EnvironmentFailed") {
-      title = "测试环境准备失败";
+      title = "本机验证副本准备失败";
+      text = p.message;
+    }
+    if (["BuildStarted", "BuildReady", "BuildFailed"].includes(e.type)) {
+      title =
+        e.type === "BuildStarted"
+          ? "正在构建"
+          : e.type === "BuildReady"
+            ? "构建通过"
+            : "构建失败，执行已阻断";
       text = p.message;
     }
     if (e.type === "Stopped") {
@@ -370,6 +386,9 @@ export function readableLogs(events: any[], workflow: string): LogEntry[] {
         "TaskStarted",
         "TaskCompleted",
         "EnvironmentFailed",
+        "BuildStarted",
+        "BuildReady",
+        "BuildFailed",
         "Stopped",
         "ProcessesReconciled",
         "StateChanged",
@@ -394,6 +413,7 @@ export function readableLogs(events: any[], workflow: string): LogEntry[] {
       kind: "event",
       status:
         e.type === "EnvironmentFailed" ||
+        e.type === "BuildFailed" ||
         (e.type === "StateChanged" && p.to === "BLOCKED")
           ? "error"
           : undefined,
