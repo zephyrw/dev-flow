@@ -457,7 +457,8 @@ function App() {
     >
       <aside>
         <div className="brand">
-          <span className="mark">D</span> DevFlow
+          <span className="mark">D</span>
+          <span className="brand-text">DevFlow</span>
         </div>
         <button
           className={!selected && !showGuide ? "nav active" : "nav"}
@@ -467,53 +468,57 @@ function App() {
             setDetail(null);
           }}
         >
-          ◫ 工作流总览
+          <span className="nav-icon">◫</span> 工作流总览
         </button>
         <div className="nav-heading">项目</div>
-        {projects.map((p) => (
-          <div key={p.id} className="project-nav">
-            <span>▱ {p.name}</span>
-            {flows
-              .filter((f) => f.project_id === p.id)
-              .map((f) => (
-                <button
-                  key={f.id}
-                  className={
-                    "flow-nav " +
-                    (!showGuide && selected === f.id ? "active" : "")
-                  }
-                  onClick={() => {
-                    setShowGuide(false);
-                    setSelected(f.id);
-                    setTab(
-                      sessionStorage.getItem("devflow.tab." + f.id) ||
-                        "overview",
-                    );
-                    setDiff([]);
-                    setFileDiff(null);
-                    setLocate(undefined);
-                  }}
-                >
-                  <i className={"dot " + f.state} />
-                  {f.title}
-                </button>
-              ))}
-          </div>
-        ))}
+        <div className="project-list-nav">
+          {projects.map((p) => (
+            <div key={p.id} className="project-nav">
+              <span className="project-name">▱ {p.name}</span>
+              {flows
+                .filter((f) => f.project_id === p.id)
+                .map((f) => (
+                  <button
+                    key={f.id}
+                    className={
+                      "flow-nav " +
+                      (!showGuide && selected === f.id ? "active" : "")
+                    }
+                    onClick={() => {
+                      setShowGuide(false);
+                      setSelected(f.id);
+                      setTab(
+                        sessionStorage.getItem("devflow.tab." + f.id) ||
+                          "overview",
+                      );
+                      setDiff([]);
+                      setFileDiff(null);
+                      setLocate(undefined);
+                    }}
+                  >
+                    <i className={"dot " + f.state} />
+                    <span className="flow-title-text">{f.title}</span>
+                  </button>
+                ))}
+            </div>
+          ))}
+        </div>
         <div className="sidebar-bottom">
           <button
             className={"nav " + (showGuide ? "active" : "")}
             onClick={() => setShowGuide(true)}
           >
-            使用指南
+            <span className="nav-icon">📖</span> 使用指南
           </button>
           <div className="connection-status">
             <span className={"dot " + (connected ? "COMMITTED" : "")} />{" "}
-            {selected
-              ? connected
-                ? "实时连接已建立"
-                : "正在连接事件流"
-              : "本机工作台"}
+            <span className="connection-status-text">
+              {selected
+                ? connected
+                  ? "实时连接已建立"
+                  : "正在连接事件流"
+                : "本机工作台"}
+            </span>
           </div>
         </div>
       </aside>
@@ -575,7 +580,7 @@ function App() {
                 disabled={stopping}
                 onClick={stopSelected}
               >
-                停止执行
+                {stopping ? "正在暂停…" : "暂停"}
               </button>
             )}
           </div>
@@ -667,176 +672,191 @@ function App() {
         ) : (
           w && (
             <>
-              <div className="workflow-bar">
-                <span className={"badge " + w.state}>{labels[w.state]}</span>
+              <div className="workflow-top-deck">
+                <div className="workflow-bar">
+                  <div className="workflow-bar-left">
+                    <span className={"badge " + w.state}>
+                      <span className="badge-dot" />
+                      {labels[w.state]}
+                    </span>
+                  </div>
 
-                <div className="actions">
-                  {[
-                    "BLOCKED",
-                    "STOPPED",
-                    "RECOVERY_REQUIRED",
-                    "COMMIT_PARTIAL",
-                  ].includes(w.state) && (
-                    <>
-                      <button
-                        disabled={pending}
-                        onClick={() =>
-                          void attempt(async () => {
-                            await api(
-                              `/workflows/${selected}/browser/reconcile`,
-                              {},
-                            );
-                            await api(
-                              `/workflows/${selected}/${w.state === "COMMIT_PARTIAL" ? "commit/retry" : "recover"}`,
-                              {},
-                            );
-                            await refresh();
-                          })
-                        }
-                      >
-                        {w.state === "COMMIT_PARTIAL"
-                          ? "核实现场并重试原提交"
-                          : "继续这个任务"}
-                      </button>
-                    </>
-                  )}
-                  {["PLAN_PENDING", "REPAIR_PLAN_PENDING"].includes(
-                    w.state,
-                  ) && (
-                    <button
-                      className="primary"
-                      disabled={pending}
-                      onClick={() => void attempt(() => approve("approve"))}
-                    >
-                      批准当前计划
-                    </button>
-                  )}
-                  {w.state === "HUMAN_PENDING" && (
-                    <button
-                      className="primary"
-                      disabled={pending}
-                      onClick={() => void attempt(() => approve("accept"))}
-                    >
-                      验收通过，启动复核
-                    </button>
-                  )}
-                  {["HUMAN_PENDING", "BLOCKED", "STOPPED"].includes(
-                    w.state,
-                  ) && (
-                    <button
-                      onClick={() => {
-                        setModal("feedback");
-                        setText("");
-                      }}
-                    >
-                      反馈问题
-                    </button>
-                  )}
-                  {![
-                    "COMMITTED",
-                    "COMMITTING",
-                    "COMMIT_PARTIAL",
-                    "STOPPED",
-                  ].includes(w.state) && (
-                    <button
-                      className="danger"
-                      disabled={stopping || w.state === "STOPPING"}
-                      onClick={stopSelected}
-                    >
-                      停止执行
-                    </button>
-                  )}
-                </div>
-              </div>
-              {progress && (
-                <div className="compact-progress" aria-label="当前执行进度">
-                  <ol className="stage-track" aria-label={progress.title}>
-                    {stages.map((name, index) => (
-                      <li
-                        key={name}
-                        aria-current={
-                          index === progress.index ? "step" : undefined
-                        }
-                        className={
-                          index === progress.index
-                            ? "current"
-                            : index < (progress.index ?? -1)
-                              ? "past"
-                              : ""
-                        }
-                      >
-                        <span>
-                          {index < (progress.index ?? -1) ? "✓" : index + 1}
-                        </span>
-                        {name}
-                        {index === progress.index && progress.paused
-                          ? " · 暂停"
-                          : ""}
-                      </li>
-                    ))}
-                  </ol>
-                  <div className="compact-summary">
-                    <DeliveryStrip detail={detail} />
-                    {latest && (
-                      <button
-                        className="latest-activity"
-                        title={latest.text || latest.title}
-                        onClick={() => {
-                          toggleSidebar(true);
-                          setLocate({
-                            sequence: latest.sequence,
-                            request: Date.now(),
-                          });
-                        }}
-                      >
-                        {latest.title}
-                        {latest.text
-                          ? ` · ${latest.text.slice(0, 120).replace(/\s+/g, " ")}`
-                          : ""}{" "}
-                        · {new Date(latest.created_at).toLocaleTimeString()}
-                      </button>
-                    )}
-                    <button
-                      className="execution-toggle"
-                      aria-label="执行过程"
-                      aria-expanded={sidebarOpen}
-                      onClick={() => toggleSidebar(!sidebarOpen)}
-                    >
-                      执行过程
-                      {!sidebarOpen && unreadEntries.length > 0 && (
-                        <span
-                          className={
-                            unreadEntries.some((e) => e.status === "error")
-                              ? "unread error"
-                              : "unread"
+                  <div className="actions">
+                    {[
+                      "BLOCKED",
+                      "STOPPED",
+                      "RECOVERY_REQUIRED",
+                      "COMMIT_PARTIAL",
+                    ].includes(w.state) && (
+                      <>
+                        <button
+                          className="btn-secondary"
+                          disabled={pending}
+                          onClick={() =>
+                            void attempt(async () => {
+                              await api(
+                                `/workflows/${selected}/browser/reconcile`,
+                                {},
+                              );
+                              await api(
+                                `/workflows/${selected}/${w.state === "COMMIT_PARTIAL" ? "commit/retry" : "recover"}`,
+                                {},
+                              );
+                              await refresh();
+                            })
                           }
                         >
-                          {unreadEntries.length}
-                        </span>
-                      )}
-                    </button>
+                          {w.state === "COMMIT_PARTIAL"
+                            ? "核实现场并重试原提交"
+                            : "继续这个任务"}
+                        </button>
+                      </>
+                    )}
+                    {["PLAN_PENDING", "REPAIR_PLAN_PENDING"].includes(
+                      w.state,
+                    ) && (
+                      <button
+                        className="primary"
+                        disabled={pending}
+                        onClick={() => void attempt(() => approve("approve"))}
+                      >
+                        批准当前计划
+                      </button>
+                    )}
+                    {w.state === "HUMAN_PENDING" && (
+                      <button
+                        className="primary"
+                        disabled={pending}
+                        onClick={() => void attempt(() => approve("accept"))}
+                      >
+                        验收通过，启动复核
+                      </button>
+                    )}
+                    {["HUMAN_PENDING", "BLOCKED", "STOPPED"].includes(
+                      w.state,
+                    ) && (
+                      <button
+                        className="btn-secondary"
+                        onClick={() => {
+                          setModal("feedback");
+                          setText("");
+                        }}
+                      >
+                        反馈问题
+                      </button>
+                    )}
+                    {![
+                      "COMMITTED",
+                      "COMMITTING",
+                      "COMMIT_PARTIAL",
+                      "STOPPED",
+                    ].includes(w.state) && (
+                      <button
+                        className="danger"
+                        disabled={stopping || w.state === "STOPPING"}
+                        onClick={stopSelected}
+                      >
+                        {stopping || w.state === "STOPPING" ? "正在暂停…" : "暂停"}
+                      </button>
+                    )}
                   </div>
                 </div>
-              )}
-              {attention && (
-                <div
-                  className={"attention-strip " + attention.category}
-                  role="status"
-                >
-                  <span title={attention.message}>{attention.message}</span>
-                  <time>{new Date(attention.at).toLocaleTimeString()}</time>
-                  <button
-                    onClick={() => {
-                      if (attention.category === "approval") setTab("plan");
-                      else if (attention.category === "acceptance")
-                        setTab("environment");
-                      else toggleSidebar(true);
-                    }}
+                {progress && (
+                  <div className="compact-progress" aria-label="当前执行进度">
+                    <ol className="stage-track" aria-label={progress.title}>
+                      {stages.map((name, index) => (
+                        <li
+                          key={name}
+                          aria-current={
+                            index === progress.index ? "step" : undefined
+                          }
+                          className={
+                            index === progress.index
+                              ? "current"
+                              : index < (progress.index ?? -1)
+                                ? "past"
+                                : ""
+                          }
+                        >
+                          <span className="step-circle">
+                            {index < (progress.index ?? -1) ? "✓" : index + 1}
+                          </span>
+                          <span className="step-name">{name}</span>
+                          {index === progress.index && progress.paused
+                            ? " · 暂停"
+                            : ""}
+                        </li>
+                      ))}
+                    </ol>
+                    <div className="compact-summary">
+                      <DeliveryStrip detail={detail} />
+                      {latest && (
+                        <button
+                          className="latest-activity"
+                          title={latest.text || latest.title}
+                          onClick={() => {
+                            toggleSidebar(true);
+                            setLocate({
+                              sequence: latest.sequence,
+                              request: Date.now(),
+                            });
+                          }}
+                        >
+                          <span className="activity-pulse-dot" />
+                          <span className="activity-text">
+                            <b>{latest.title}</b>
+                            {latest.text
+                              ? ` · ${latest.text.slice(0, 120).replace(/\s+/g, " ")}`
+                              : ""}
+                          </span>
+                          <time>{new Date(latest.created_at).toLocaleTimeString()}</time>
+                        </button>
+                      )}
+                      <button
+                        className={`execution-toggle ${sidebarOpen ? "active" : ""}`}
+                        aria-label="执行过程"
+                        aria-expanded={sidebarOpen}
+                        onClick={() => toggleSidebar(!sidebarOpen)}
+                      >
+                        <span className="toggle-icon">⚡</span>
+                        执行过程
+                        {!sidebarOpen && unreadEntries.length > 0 && (
+                          <span
+                            className={
+                              unreadEntries.some((e) => e.status === "error")
+                                ? "unread error"
+                                : "unread"
+                            }
+                          >
+                            {unreadEntries.length}
+                          </span>
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                )}
+                {attention && (
+                  <div
+                    className={"attention-strip " + attention.category}
+                    role="status"
                   >
-                    {attention.action}
-                  </button>
-                </div>
-              )}
+                    <span className="attention-icon">⚠️</span>
+                    <span className="attention-message" title={attention.message}>{attention.message}</span>
+                    <time>{new Date(attention.at).toLocaleTimeString()}</time>
+                    <button
+                      className="btn-attention-action"
+                      onClick={() => {
+                        if (attention.category === "approval") setTab("plan");
+                        else if (attention.category === "acceptance")
+                          setTab("environment");
+                        else toggleSidebar(true);
+                      }}
+                    >
+                      {attention.action}
+                    </button>
+                  </div>
+                )}
+              </div>
               <div
                 className={
                   "workspace-columns " + (sidebarOpen ? "with-execution" : "")
@@ -949,14 +969,12 @@ function App() {
                     )}
                     {tab === "tasks" && (
                       <section className="panel">
-                        <h2>任务进度</h2>
-                        <TaskTree detail={detail} />
+                        <TaskTree detail={detail} title="任务进度" />
                       </section>
                     )}
                     {tab === "tests" && (
                       <section className="panel">
-                        <h2>测试结果</h2>
-                        <TestResults detail={detail} />
+                        <TestResults detail={detail} title="测试结果" />
                       </section>
                     )}
                     {tab === "diff" && (
