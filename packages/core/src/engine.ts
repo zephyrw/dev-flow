@@ -856,13 +856,15 @@ export class Engine {
     this.dispatching = true;
     try {
       let last: string | undefined;
+      const attempted = new Set(this.running);
       for (let n = 0; n < this.list().length; n++) {
         const item = this.scheduler.next(
           last,
           this.config.scheduler.aging_minutes,
-          this.running,
+          attempted,
         );
         if (!item) break;
+        attempted.add(item.id);
         last = item.project;
         const w = this.get(item.id);
         if (!["QUEUED", "REVIEW_QUEUED"].includes(w.state)) {
