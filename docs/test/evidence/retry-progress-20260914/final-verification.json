@@ -1,0 +1,249 @@
+{
+  "at": "2026-09-14T11:44:16.883Z",
+  "workflow_id": "wf-203cb2b8-aff1-4da5-9a22-495dcacafe4a",
+  "state": "STOPPED",
+  "version": 52,
+  "run_id": "run-38ce261c-5e65-4ced-9207-cf0feab2b50b",
+  "implementation_submissions": 4,
+  "tasks": [
+    {
+      "id": "T01",
+      "status": "needs_changes",
+      "has_implementation": true,
+      "completed_at": "2026-09-14T11:00:52.259Z"
+    },
+    {
+      "id": "T02",
+      "status": "needs_changes",
+      "has_implementation": true,
+      "completed_at": "2026-09-14T11:01:00.414Z"
+    },
+    {
+      "id": "T03",
+      "status": "needs_recheck",
+      "has_implementation": true,
+      "completed_at": "2026-09-14T11:01:08.428Z"
+    },
+    {
+      "id": "T04",
+      "status": "needs_changes",
+      "has_implementation": true,
+      "completed_at": "2026-09-14T11:01:17.259Z"
+    }
+  ],
+  "platform_tests": {
+    "total": 17,
+    "passed": 0,
+    "failed": 0,
+    "stale": 0,
+    "cases": [
+      {
+        "id": "DF-STAGE-U01 rejects missing isolated preview environment",
+        "test_id": "U-ALL",
+        "layer": "unit",
+        "task_ids": [
+          "T01",
+          "T02",
+          "T03",
+          "T04"
+        ],
+        "status": "not_run"
+      },
+      {
+        "id": "DF-STAGE-U02 one deadline includes preparation time",
+        "test_id": "U-ALL",
+        "layer": "unit",
+        "task_ids": [
+          "T01",
+          "T02",
+          "T03",
+          "T04"
+        ],
+        "status": "not_run"
+      },
+      {
+        "id": "DF-STAGE-U03 credential grace never authorizes expired run",
+        "test_id": "U-ALL",
+        "layer": "unit",
+        "task_ids": [
+          "T01",
+          "T02",
+          "T03",
+          "T04"
+        ],
+        "status": "not_run"
+      },
+      {
+        "id": "DF-STAGE-U04 first termination reason wins",
+        "test_id": "U-ALL",
+        "layer": "unit",
+        "task_ids": [
+          "T01",
+          "T02",
+          "T03",
+          "T04"
+        ],
+        "status": "not_run"
+      },
+      {
+        "id": "DF-STAGE-U05 policy reasons stay distinct from model auth",
+        "test_id": "U-ALL",
+        "layer": "unit",
+        "task_ids": [
+          "T01",
+          "T02",
+          "T03",
+          "T04"
+        ],
+        "status": "not_run"
+      },
+      {
+        "id": "DF-STAGE-U06 timeout without result retains TIMEOUT",
+        "test_id": "U-ALL",
+        "layer": "unit",
+        "task_ids": [
+          "T01",
+          "T02",
+          "T03",
+          "T04"
+        ],
+        "status": "not_run"
+      },
+      {
+        "id": "DF-STAGE-U07 exit 130 alone does not prove timeout",
+        "test_id": "U-ALL",
+        "layer": "unit",
+        "task_ids": [
+          "T01",
+          "T02",
+          "T03",
+          "T04"
+        ],
+        "status": "not_run"
+      },
+      {
+        "id": "DF-STAGE-U08 blocked event explains timeout without inventing history",
+        "test_id": "U-ALL",
+        "layer": "unit",
+        "task_ids": [
+          "T01",
+          "T02",
+          "T03",
+          "T04"
+        ],
+        "status": "not_run"
+      },
+      {
+        "id": "DF-STAGE-I01 policy rejects at shared deadline before token expiry",
+        "test_id": "I-ALL",
+        "layer": "integration",
+        "task_ids": [
+          "T02",
+          "T03"
+        ],
+        "status": "not_run"
+      },
+      {
+        "id": "DF-STAGE-I02 process timeout and manual stop remain distinct",
+        "test_id": "I-ALL",
+        "layer": "integration",
+        "task_ids": [
+          "T02",
+          "T03"
+        ],
+        "status": "not_run"
+      },
+      {
+        "id": "DF-STAGE-I03 resumed run rejects old worker",
+        "test_id": "I-ALL",
+        "layer": "integration",
+        "task_ids": [
+          "T02",
+          "T03"
+        ],
+        "status": "not_run"
+      },
+      {
+        "id": "DF-STAGE-I04 hook preserves policy failure categories",
+        "test_id": "I-ALL",
+        "layer": "integration",
+        "task_ids": [
+          "T02",
+          "T03"
+        ],
+        "status": "not_run"
+      },
+      {
+        "id": "DF-STAGE-I05 hook rejects malformed or mismatched allow response",
+        "test_id": "I-ALL",
+        "layer": "integration",
+        "task_ids": [
+          "T02",
+          "T03"
+        ],
+        "status": "not_run"
+      },
+      {
+        "id": "IT-09 Windows Hook preserves Chinese JSON and enforces live run revocation",
+        "test_id": "I-ALL",
+        "layer": "integration",
+        "task_ids": [
+          "T02",
+          "T03"
+        ],
+        "status": "not_run"
+      },
+      {
+        "id": "test DF-STAGE-C01 typecheck and whitespace pass",
+        "test_id": "I-CERT",
+        "layer": "integration",
+        "task_ids": [
+          "T01"
+        ],
+        "status": "not_run"
+      },
+      {
+        "id": "DF-STAGE-E01 timeout preserves progress and manual continuation",
+        "test_id": "E-PAUSE",
+        "layer": "e2e",
+        "task_ids": [
+          "T04"
+        ],
+        "status": "not_run"
+      },
+      {
+        "id": "DF-STAGE-E02 manual and historical pauses are not mislabeled",
+        "test_id": "E-PAUSE",
+        "layer": "e2e",
+        "task_ids": [
+          "T04"
+        ],
+        "status": "not_run"
+      }
+    ]
+  },
+  "manual_regression_plan_cases": 17,
+  "reports": [
+    {
+      "id": "U-ALL",
+      "status": "passed",
+      "passed": 38
+    },
+    {
+      "id": "I-ALL",
+      "status": "passed",
+      "passed": 6
+    },
+    {
+      "id": "I-CERT",
+      "status": "passed",
+      "passed": 1
+    },
+    {
+      "id": "E-PAUSE",
+      "status": "passed",
+      "passed": 2
+    }
+  ],
+  "note": "Direct repair tests; no platform snapshot/evidence or human acceptance was fabricated"
+}

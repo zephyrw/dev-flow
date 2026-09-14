@@ -1,0 +1,12 @@
+{
+  "at": "2026-09-14T11:40:45.545Z",
+  "origin": "http://127.0.0.1:15173",
+  "identity_matched": true,
+  "web_status": 200,
+  "health": {
+    "ok": true,
+    "version": "0.2.0",
+    "service": "devflow",
+    "instance": "7e3b7dd687fe49bea055398d29b635868abbbb9ba5d47c5b9ade109830060d6e"
+  }
+}

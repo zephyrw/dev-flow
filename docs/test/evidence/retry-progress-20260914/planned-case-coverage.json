@@ -1,0 +1,318 @@
+[
+  {
+    "id": "U-ALL",
+    "path": ".cache/resume-loop-incident/worktree-unit.json",
+    "expected": [
+      "DF-STAGE-U01 rejects missing isolated preview environment",
+      "DF-STAGE-U02 one deadline includes preparation time",
+      "DF-STAGE-U03 credential grace never authorizes expired run",
+      "DF-STAGE-U04 first termination reason wins",
+      "DF-STAGE-U05 policy reasons stay distinct from model auth",
+      "DF-STAGE-U06 timeout without result retains TIMEOUT",
+      "DF-STAGE-U07 exit 130 alone does not prove timeout",
+      "DF-STAGE-U08 blocked event explains timeout without inventing history"
+    ],
+    "cases": [
+      {
+        "id": "配置与计划合同 UT-01 rejects unknown keys and invalid model substitutions",
+        "status": "passed"
+      },
+      {
+        "id": "配置与计划合同 UT-02 canonical hash is independent of object key order",
+        "status": "passed"
+      },
+      {
+        "id": "配置与计划合同 UT-06 validates DAG, test links, layers and diagrams",
+        "status": "passed"
+      },
+      {
+        "id": "配置与计划合同 UT-06 rejects absent diagrams and unresolved decisions",
+        "status": "passed"
+      },
+      {
+        "id": "配置与计划合同 UT-07 blocks traversal and Windows alternate stream paths",
+        "status": "passed"
+      },
+      {
+        "id": "配置与计划合同 UT-10 parses fragmented multibyte JSONL and final non-newline result",
+        "status": "passed"
+      },
+      {
+        "id": "配置与计划合同 UT-10 rejects invalid and oversized events",
+        "status": "passed"
+      },
+      {
+        "id": "配置与计划合同 UT-11 binds model and conversation and requires exit success",
+        "status": "passed"
+      },
+      {
+        "id": "配置与计划合同 UT-13 rejects zero tests, skipped tests and missing expected assertions",
+        "status": "passed"
+      },
+      {
+        "id": "配置与计划合同 UT-13 parses real report shapes",
+        "status": "passed"
+      },
+      {
+        "id": "配置与计划合同 UT-19 redacts secrets from public logs",
+        "status": "passed"
+      },
+      {
+        "id": "UT-06 parses Chinese labels in an isolated DOM and rejects invalid diagram grammar",
+        "status": "passed"
+      },
+      {
+        "id": "redacts nested tool JSON values without corrupting quotes or the event structure",
+        "status": "passed"
+      },
+      {
+        "id": "search ignores compiled output and binary bytes and rejects direct binary reads",
+        "status": "passed"
+      },
+      {
+        "id": "UT-19 log projection orders and deduplicates events, joins text chunks and never mixes workflows or runs",
+        "status": "passed"
+      },
+      {
+        "id": "summarizes tool calls, hides prompts and marks interrupted operations",
+        "status": "passed"
+      },
+      {
+        "id": "groups blank and high-volume service output without crowding meaningful progress",
+        "status": "passed"
+      },
+      {
+        "id": "DF-STAGE-U08 blocked event explains timeout without inventing history",
+        "status": "passed"
+      },
+      {
+        "id": "UT-20 backup manifest detects tampering and rejects traversal",
+        "status": "passed"
+      },
+      {
+        "id": "IT-16 backup restores database and evidence at their original paths",
+        "status": "passed"
+      },
+      {
+        "id": "UT-20 retention compresses only expired terminal logs and preserves exact bytes",
+        "status": "passed"
+      },
+      {
+        "id": "UT-15 browser evidence records only observed assertions and fails missing values",
+        "status": "passed"
+      },
+      {
+        "id": "UT-05 agy grants are scoped to a unique project and never permit native commands",
+        "status": "passed"
+      },
+      {
+        "id": "UT-15 browser scenes cannot enter controller approval even if an origin is misconfigured",
+        "status": "passed"
+      },
+      {
+        "id": "UT-16 Codex wire schema uses explicit repository keys and closed required properties",
+        "status": "passed"
+      },
+      {
+        "id": "DF-STAGE-U02 one deadline includes preparation time",
+        "status": "passed"
+      },
+      {
+        "id": "DF-STAGE-U03 credential grace never authorizes expired run",
+        "status": "passed"
+      },
+      {
+        "id": "DF-STAGE-U04 first termination reason wins",
+        "status": "passed"
+      },
+      {
+        "id": "DF-STAGE-U05 policy reasons stay distinct from model auth",
+        "status": "passed"
+      },
+      {
+        "id": "DF-STAGE-U06 timeout without result retains TIMEOUT",
+        "status": "passed"
+      },
+      {
+        "id": "DF-STAGE-U07 exit 130 alone does not prove timeout",
+        "status": "passed"
+      },
+      {
+        "id": "DF-STAGE-U01 rejects missing isolated preview environment",
+        "status": "passed"
+      },
+      {
+        "id": "UT-03 transaction rollback removes events and idempotency prevents duplicate transitions",
+        "status": "passed"
+      },
+      {
+        "id": "UT-04 human proofs cannot approve a different plan revision",
+        "status": "passed"
+      },
+      {
+        "id": "UT-05 revoked and foreign worker credentials are rejected",
+        "status": "passed"
+      },
+      {
+        "id": "UT-08 resource acquisition is atomic, fenced and cannot steal expired leases",
+        "status": "passed"
+      },
+      {
+        "id": "UT-08 scheduler rotates projects and retains per-project order",
+        "status": "passed"
+      },
+      {
+        "id": "UT-18 restart revokes live runs without marking stale leases free",
+        "status": "passed"
+      }
+    ],
+    "status": "passed",
+    "case_ids": [
+      "配置与计划合同 UT-01 rejects unknown keys and invalid model substitutions",
+      "配置与计划合同 UT-02 canonical hash is independent of object key order",
+      "配置与计划合同 UT-06 validates DAG, test links, layers and diagrams",
+      "配置与计划合同 UT-06 rejects absent diagrams and unresolved decisions",
+      "配置与计划合同 UT-07 blocks traversal and Windows alternate stream paths",
+      "配置与计划合同 UT-10 parses fragmented multibyte JSONL and final non-newline result",
+      "配置与计划合同 UT-10 rejects invalid and oversized events",
+      "配置与计划合同 UT-11 binds model and conversation and requires exit success",
+      "配置与计划合同 UT-13 rejects zero tests, skipped tests and missing expected assertions",
+      "配置与计划合同 UT-13 parses real report shapes",
+      "配置与计划合同 UT-19 redacts secrets from public logs",
+      "UT-06 parses Chinese labels in an isolated DOM and rejects invalid diagram grammar",
+      "redacts nested tool JSON values without corrupting quotes or the event structure",
+      "search ignores compiled output and binary bytes and rejects direct binary reads",
+      "UT-19 log projection orders and deduplicates events, joins text chunks and never mixes workflows or runs",
+      "summarizes tool calls, hides prompts and marks interrupted operations",
+      "groups blank and high-volume service output without crowding meaningful progress",
+      "DF-STAGE-U08 blocked event explains timeout without inventing history",
+      "UT-20 backup manifest detects tampering and rejects traversal",
+      "IT-16 backup restores database and evidence at their original paths",
+      "UT-20 retention compresses only expired terminal logs and preserves exact bytes",
+      "UT-15 browser evidence records only observed assertions and fails missing values",
+      "UT-05 agy grants are scoped to a unique project and never permit native commands",
+      "UT-15 browser scenes cannot enter controller approval even if an origin is misconfigured",
+      "UT-16 Codex wire schema uses explicit repository keys and closed required properties",
+      "DF-STAGE-U02 one deadline includes preparation time",
+      "DF-STAGE-U03 credential grace never authorizes expired run",
+      "DF-STAGE-U04 first termination reason wins",
+      "DF-STAGE-U05 policy reasons stay distinct from model auth",
+      "DF-STAGE-U06 timeout without result retains TIMEOUT",
+      "DF-STAGE-U07 exit 130 alone does not prove timeout",
+      "DF-STAGE-U01 rejects missing isolated preview environment",
+      "UT-03 transaction rollback removes events and idempotency prevents duplicate transitions",
+      "UT-04 human proofs cannot approve a different plan revision",
+      "UT-05 revoked and foreign worker credentials are rejected",
+      "UT-08 resource acquisition is atomic, fenced and cannot steal expired leases",
+      "UT-08 scheduler rotates projects and retains per-project order",
+      "UT-18 restart revokes live runs without marking stale leases free"
+    ],
+    "discovered": 38,
+    "passed": 38,
+    "failed": 0,
+    "skipped": 0,
+    "missing": []
+  },
+  {
+    "id": "I-ALL",
+    "path": ".cache/resume-loop-incident/worktree-integration.json",
+    "expected": [
+      "DF-STAGE-I01 policy rejects at shared deadline before token expiry",
+      "DF-STAGE-I02 process timeout and manual stop remain distinct",
+      "DF-STAGE-I03 resumed run rejects old worker",
+      "DF-STAGE-I04 hook preserves policy failure categories",
+      "DF-STAGE-I05 hook rejects malformed or mismatched allow response",
+      "IT-09 Windows Hook preserves Chinese JSON and enforces live run revocation"
+    ],
+    "cases": [
+      {
+        "id": "IT-09 Windows Hook preserves Chinese JSON and enforces live run revocation",
+        "status": "passed"
+      },
+      {
+        "id": "DF-STAGE-I01 policy rejects at shared deadline before token expiry",
+        "status": "passed"
+      },
+      {
+        "id": "DF-STAGE-I02 process timeout and manual stop remain distinct",
+        "status": "passed"
+      },
+      {
+        "id": "DF-STAGE-I03 resumed run rejects old worker",
+        "status": "passed"
+      },
+      {
+        "id": "DF-STAGE-I04 hook preserves policy failure categories",
+        "status": "passed"
+      },
+      {
+        "id": "DF-STAGE-I05 hook rejects malformed or mismatched allow response",
+        "status": "passed"
+      }
+    ],
+    "status": "passed",
+    "case_ids": [
+      "IT-09 Windows Hook preserves Chinese JSON and enforces live run revocation",
+      "DF-STAGE-I01 policy rejects at shared deadline before token expiry",
+      "DF-STAGE-I02 process timeout and manual stop remain distinct",
+      "DF-STAGE-I03 resumed run rejects old worker",
+      "DF-STAGE-I04 hook preserves policy failure categories",
+      "DF-STAGE-I05 hook rejects malformed or mismatched allow response"
+    ],
+    "discovered": 6,
+    "passed": 6,
+    "failed": 0,
+    "skipped": 0,
+    "missing": []
+  },
+  {
+    "id": "I-CERT",
+    "path": ".cache/resume-loop-incident/worktree-certification.xml",
+    "expected": [
+      "test DF-STAGE-C01 typecheck and whitespace pass"
+    ],
+    "cases": [
+      {
+        "id": "test DF-STAGE-C01 typecheck and whitespace pass",
+        "status": "passed"
+      }
+    ],
+    "status": "passed",
+    "case_ids": [
+      "test DF-STAGE-C01 typecheck and whitespace pass"
+    ],
+    "discovered": 1,
+    "passed": 1,
+    "failed": 0,
+    "skipped": 0,
+    "missing": []
+  },
+  {
+    "id": "E-PAUSE",
+    "path": ".cache/resume-loop-incident/worktree-e2e.json",
+    "expected": [
+      "DF-STAGE-E01 timeout preserves progress and manual continuation",
+      "DF-STAGE-E02 manual and historical pauses are not mislabeled"
+    ],
+    "cases": [
+      {
+        "id": "DF-STAGE-E01 timeout preserves progress and manual continuation",
+        "status": "passed"
+      },
+      {
+        "id": "DF-STAGE-E02 manual and historical pauses are not mislabeled",
+        "status": "passed"
+      }
+    ],
+    "status": "passed",
+    "case_ids": [
+      "DF-STAGE-E01 timeout preserves progress and manual continuation",
+      "DF-STAGE-E02 manual and historical pauses are not mislabeled"
+    ],
+    "discovered": 2,
+    "passed": 2,
+    "failed": 0,
+    "skipped": 0,
+    "missing": []
+  }
+]

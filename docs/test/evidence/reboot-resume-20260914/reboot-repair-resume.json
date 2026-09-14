@@ -1,0 +1,33 @@
+{
+  "workflow": "wf-203cb2b8-aff1-4da5-9a22-495dcacafe4a",
+  "previous_run": "run-70cffacf-de52-4043-a2ca-f393ba2ebd71",
+  "started_at": "2026-09-14T10:54:58.196Z",
+  "events": [
+    {
+      "type": "StateChanged",
+      "state": "QUEUED",
+      "at": "2026-09-14T10:55:13.348Z"
+    },
+    {
+      "type": "StateChanged",
+      "state": "EXECUTING",
+      "at": "2026-09-14T10:55:13.860Z"
+    }
+  ],
+  "recover_response": {
+    "state": "QUEUED",
+    "version": 43
+  },
+  "agent_initialized": true,
+  "context_tool": {
+    "successful": true,
+    "event_seq": 1523,
+    "at": "2026-09-14T10:55:36.804Z"
+  },
+  "observation": "resumed_context_read_succeeded",
+  "current": {
+    "state": "EXECUTING",
+    "run_id": "run-38ce261c-5e65-4ced-9207-cf0feab2b50b",
+    "plan_revision": 1
+  }
+}
