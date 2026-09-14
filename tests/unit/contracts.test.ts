@@ -12,6 +12,7 @@ import {
   evaluateReport,
   parseReport,
 } from "../../packages/evidence/src/parse.js";
+import { executablePath } from "../../packages/process/src/executable.js";
 describe("配置与计划合同", () => {
   it("UT-01 rejects unknown keys and invalid model substitutions", () => {
     expect(() => ConfigSchema.parse({ unknown: true })).toThrow();
@@ -131,4 +132,13 @@ describe("配置与计划合同", () => {
     expect(
       redact("Authorization: Bearer abc123 token=verysecret"),
     ).not.toContain("verysecret"));
+  it("UT-20 safely resolves executables and rejects missing binaries with structured errors", () => {
+    if (process.platform === "win32") {
+      expect(() => executablePath("nonexistent_test_bin_xyz")).toThrow(
+        /找不到 nonexistent_test_bin_xyz 的原生 exe/,
+      );
+      const codex = executablePath("codex");
+      expect(codex.toLowerCase().endsWith(".exe")).toBe(true);
+    }
+  });
 });
