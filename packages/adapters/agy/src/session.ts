@@ -92,7 +92,7 @@ export async function observeAgy(
     if (idleTimer) clearTimeout(idleTimer);
     if (options.idle_ms)
       idleTimer = setTimeout(() => {
-        failure = new Error("AGY_IDLE_TIMEOUT: 长时间没有过程输出");
+        failure = new FlowError("TIMEOUT", "AGY_IDLE_TIMEOUT: 长时间没有过程输出", 422);
         void proc.stop();
       }, options.idle_ms);
   };
@@ -132,6 +132,14 @@ export async function observeAgy(
   });
   lines.finish();
   if (failure) throw failure;
+  const reason = exit.termination_reason ?? proc.termination_reason;
+  if (reason === "timeout") {
+    throw new FlowError("TIMEOUT", "本轮执行达到配置时限，现场已保留，可继续执行", 422, {
+      exit_code: exit.code,
+      result: protocol.result,
+      termination_reason: "timeout",
+    });
+  }
   if (!protocol.success(exit.code)) {
     const raw = redact(
       JSON.stringify(protocol.result ?? {}) + " " + diagnosticTail,
@@ -140,6 +148,7 @@ export async function observeAgy(
     throw new FlowError(classification.code, classification.message, 422, {
       exit_code: exit.code,
       result: protocol.result,
+      ...(reason ? { termination_reason: reason } : {}),
     });
   }
   return {

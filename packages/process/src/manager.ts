@@ -12,12 +12,18 @@ export interface ProcessSpec {
   cwd: string;
   env: Record<string, string>;
   timeout_ms: number;
+  deadline_at?: number;
   stdin?: string;
 }
 export interface ManagedProcess extends EventEmitter {
   id: string;
-  completion: Promise<{ code: number | null; signal?: string }>;
+  completion: Promise<{
+    code: number | null;
+    signal?: string;
+    termination_reason?: "timeout" | "manual";
+  }>;
   stop: () => Promise<void>;
+  termination_reason?: "timeout" | "manual";
 }
 export class ProcessManager {
   private active = new Map<string, ManagedProcess>();
@@ -85,68 +91,86 @@ export class ProcessManager {
       else child.stdin.end();
     }
     let settled = false;
+    let termination_reason: "timeout" | "manual" | undefined;
     let timer: NodeJS.Timeout | undefined;
-    const done = new Promise<{ code: number | null; signal?: string }>(
-      (resolve, reject) => {
-        const settle = (code: number | null, signal?: string) => {
-          if (settled) return;
-          settled = true;
-          if (timer) clearTimeout(timer);
-          this.active.delete(spec.id);
-          this.lifecycle?.(spec, {
-            status: "exited",
-            code,
-            confirmed: useHost,
-          });
-          resolve({ code, ...(signal ? { signal } : {}) });
-        };
-        child.on("error", (e) => {
-          if (timer) clearTimeout(timer);
-          this.active.delete(spec.id);
-          settled = true;
-          this.lifecycle?.(spec, { status: "failed", confirmed: false });
-          reject(e);
-        });
-        if (useHost) {
-          const lines = new JsonLines((e) => {
-            if (e.type === "stdout" || e.type === "stderr")
-              events.emit(e.type, Buffer.from(String(e.data), "base64"));
-            else if (e.type === "exit") settle(Number(e.code));
-            else if (e.type === "error") {
-              events.emit("diagnostic", String(e.message));
-              settle(-1);
-            } else {
-              this.lifecycle?.(spec, { ...e, status: "running" });
-              events.emit("host", e);
-            }
-          });
-          child.stdout.on("data", (b: Buffer) => {
-            try {
-              lines.push(b);
-            } catch (err) {
-              events.emit("diagnostic", String(err));
-              child.kill();
-            }
-          });
-          child.stderr.on("data", (b) => events.emit("stderr", b));
-          child.on("close", (code, signal) => {
-            try {
-              lines.finish();
-            } catch {}
-            settle(code === 0 ? -1 : code, signal ?? undefined);
-          });
-        } else {
-          child.stdout.on("data", (b) => events.emit("stdout", b));
-          child.stderr.on("data", (b) => events.emit("stderr", b));
-          child.on("close", (code, signal) =>
-            settle(code, signal ?? undefined),
-          );
+    const done = new Promise<{
+      code: number | null;
+      signal?: string;
+      termination_reason?: "timeout" | "manual";
+    }>((resolve, reject) => {
+      const settle = (code: number | null, signal?: string) => {
+        if (settled) return;
+        settled = true;
+        if (timer) {
+          clearTimeout(timer);
+          timer = undefined;
         }
-      },
-    );
+        this.active.delete(spec.id);
+        this.lifecycle?.(spec, {
+          status: "exited",
+          code,
+          confirmed: useHost,
+          ...(termination_reason ? { termination_reason } : {}),
+        });
+        resolve({
+          code,
+          ...(signal ? { signal } : {}),
+          ...(termination_reason ? { termination_reason } : {}),
+        });
+      };
+      child.on("error", (e) => {
+        if (timer) {
+          clearTimeout(timer);
+          timer = undefined;
+        }
+        this.active.delete(spec.id);
+        settled = true;
+        this.lifecycle?.(spec, { status: "failed", confirmed: false });
+        reject(e);
+      });
+      if (useHost) {
+        const lines = new JsonLines((e) => {
+          if (e.type === "stdout" || e.type === "stderr")
+            events.emit(e.type, Buffer.from(String(e.data), "base64"));
+          else if (e.type === "exit") settle(Number(e.code));
+          else if (e.type === "error") {
+            events.emit("diagnostic", String(e.message));
+            settle(-1);
+          } else {
+            this.lifecycle?.(spec, { ...e, status: "running" });
+            events.emit("host", e);
+          }
+        });
+        child.stdout.on("data", (b: Buffer) => {
+          try {
+            lines.push(b);
+          } catch (err) {
+            events.emit("diagnostic", String(err));
+            child.kill();
+          }
+        });
+        child.stderr.on("data", (b) => events.emit("stderr", b));
+        child.on("close", (code, signal) => {
+          try {
+            lines.finish();
+          } catch {}
+          settle(code === 0 ? -1 : code, signal ?? undefined);
+        });
+      } else {
+        child.stdout.on("data", (b) => events.emit("stdout", b));
+        child.stderr.on("data", (b) => events.emit("stderr", b));
+        child.on("close", (code, signal) =>
+          settle(code, signal ?? undefined),
+        );
+      }
+    });
     events.completion = done;
     events.stop = async () => {
       if (settled) return;
+      if (!termination_reason) {
+        termination_reason = "manual";
+        events.termination_reason = "manual";
+      }
       if (useHost) {
         try {
           if (child.stdin?.writable) {
@@ -160,8 +184,22 @@ export class ProcessManager {
       } else child.kill();
       await done;
     };
-    if (spec.timeout_ms > 0)
-      timer = setTimeout(() => void events.stop(), spec.timeout_ms);
+    let timeoutDuration = spec.timeout_ms;
+    if (spec.deadline_at !== undefined) {
+      timeoutDuration = Math.max(0, spec.deadline_at - Date.now());
+    }
+    if (
+      timeoutDuration >= 0 &&
+      (spec.timeout_ms > 0 || spec.deadline_at !== undefined)
+    ) {
+      timer = setTimeout(() => {
+        if (!settled && !termination_reason) {
+          termination_reason = "timeout";
+          events.termination_reason = "timeout";
+        }
+        void events.stop();
+      }, timeoutDuration);
+    }
     this.active.set(spec.id, events);
     return events;
   }
