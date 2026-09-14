@@ -1,0 +1,112 @@
+{
+  "total": 69,
+  "passed": 69,
+  "failed": 0,
+  "files": [
+    {
+      "name": "tests/integration/check-repair.test.ts",
+      "status": "passed",
+      "tests": 1
+    },
+    {
+      "name": "tests/integration/environments.test.ts",
+      "status": "passed",
+      "tests": 2
+    },
+    {
+      "name": "tests/integration/hook.test.ts",
+      "status": "passed",
+      "tests": 1
+    },
+    {
+      "name": "tests/integration/intake.test.ts",
+      "status": "passed",
+      "tests": 1
+    },
+    {
+      "name": "tests/integration/precommit-runtime.test.ts",
+      "status": "passed",
+      "tests": 13
+    },
+    {
+      "name": "tests/integration/process.test.ts",
+      "status": "passed",
+      "tests": 3
+    },
+    {
+      "name": "tests/integration/progress.test.ts",
+      "status": "passed",
+      "tests": 2
+    },
+    {
+      "name": "tests/integration/recovery.test.ts",
+      "status": "passed",
+      "tests": 2
+    },
+    {
+      "name": "tests/integration/repair-review.test.ts",
+      "status": "passed",
+      "tests": 2
+    },
+    {
+      "name": "tests/integration/review-gates.test.ts",
+      "status": "passed",
+      "tests": 1
+    },
+    {
+      "name": "tests/integration/review-reader.test.ts",
+      "status": "passed",
+      "tests": 1
+    },
+    {
+      "name": "tests/integration/session.test.ts",
+      "status": "passed",
+      "tests": 3
+    },
+    {
+      "name": "tests/integration/workflow.test.ts",
+      "status": "passed",
+      "tests": 7
+    },
+    {
+      "name": "tests/unit/contracts.test.ts",
+      "status": "passed",
+      "tests": 11
+    },
+    {
+      "name": "tests/unit/diagrams.test.ts",
+      "status": "passed",
+      "tests": 1
+    },
+    {
+      "name": "tests/unit/log-safety.test.ts",
+      "status": "passed",
+      "tests": 2
+    },
+    {
+      "name": "tests/unit/logs.test.ts",
+      "status": "passed",
+      "tests": 3
+    },
+    {
+      "name": "tests/unit/maintenance.test.ts",
+      "status": "passed",
+      "tests": 3
+    },
+    {
+      "name": "tests/unit/recipe.test.ts",
+      "status": "passed",
+      "tests": 3
+    },
+    {
+      "name": "tests/unit/review-output.test.ts",
+      "status": "passed",
+      "tests": 1
+    },
+    {
+      "name": "tests/unit/state.test.ts",
+      "status": "passed",
+      "tests": 6
+    }
+  ]
+}

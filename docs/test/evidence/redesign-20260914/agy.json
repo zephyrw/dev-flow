@@ -1,0 +1,41 @@
+{
+  "model": "gemini-3.7-flash-high",
+  "state": "HUMAN_PENDING",
+  "production_runtime": true,
+  "duration_ms": 157320,
+  "task_started": true,
+  "task_completed": true,
+  "tasks": [
+    {
+      "id": "T01",
+      "title": "修改文本",
+      "module_id": "M1",
+      "completed": true,
+      "implementation_status": "completed",
+      "started_at": "2026-09-14T06:56:00.579Z",
+      "completed_at": "2026-09-14T06:56:20.336Z",
+      "status": "verified",
+      "summary": "已将 app.txt 文件内容由 before 修改为 after 并保留换行"
+    }
+  ],
+  "test_progress": {
+    "total": 1,
+    "passed": 1,
+    "failed": 0,
+    "stale": 0,
+    "cases": [
+      {
+        "id": "test updates content",
+        "test_id": "UT01",
+        "layer": "unit",
+        "task_ids": [
+          "T01"
+        ],
+        "status": "passed",
+        "evidence_id": "evidence-9669095d-cf6c-43b0-837d-3ebf65dc47fc"
+      }
+    ]
+  },
+  "logs_visible_before_completion": true,
+  "plan_marker_returned": true
+}

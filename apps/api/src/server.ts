@@ -13,7 +13,7 @@ import {
 } from "../../../packages/contracts/src/index.js";
 import { makeMcp, workerNames } from "../../../packages/mcp/src/tools.js";
 import type { Engine } from "../../../packages/core/src/engine.js";
-import { objectHash, hash } from "../../../packages/core/src/util.js";
+import { objectHash, hash, publicEvent } from "../../../packages/core/src/util.js";
 import type { LocalRuntime } from "../../../packages/runtime/src/runtime.js";
 import {
   resumeApproved,
@@ -141,14 +141,16 @@ export async function buildServer(engine: Engine) {
   });
   app.get("/api/workflows/:id", async (req) => {
     human(req);
-    return engine.detail(Id.parse((req.params as any).id));
+    const detail = engine.detail(Id.parse((req.params as any).id));
+    return { ...detail, events: detail.events.map(publicEvent) };
   });
   app.get("/api/workflows/:id/diff", async (req) => {
     human(req);
     const w = engine.get(Id.parse((req.params as any).id));
-    return w.snapshot_id
-      ? engine.git.diff(engine.store.must("snapshot", w.snapshot_id))
-      : engine.git.liveDiff(w.id);
+    const query = z.object({repo_id: Id.optional(), path: z.string().optional()}).parse(req.query);
+    const snapshot = w.snapshot_id ? engine.store.must<any>("snapshot", w.snapshot_id) : undefined;
+    if (query.repo_id && query.path) return engine.git.fileDiff(w.id,query.repo_id,query.path,snapshot);
+    return engine.git.changes(w.id,snapshot);
   });
   app.get("/api/workflows/:id/documents/:name", async (req, reply) => {
     human(req);
@@ -419,7 +421,7 @@ export async function buildServer(engine: Engine) {
           socket.close(1013, "Reconnect with cursor");
           return;
         }
-        socket.send(JSON.stringify(event));
+        socket.send(JSON.stringify(publicEvent(event)));
         cursor = event.event_seq;
       }
     };

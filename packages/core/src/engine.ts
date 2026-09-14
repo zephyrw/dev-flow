@@ -1,3 +1,11 @@
+import {
+  latestEvidence,
+  currentEvidence,
+  testProgress,
+  taskProofValid,
+  recordTaskProof,
+  invalidateTaskProofs,
+} from "./progress.js";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -87,7 +95,29 @@ export class Engine {
       runs: this.store.list<Run>("run", key),
       evidence: this.store.list<Evidence>("evidence", key),
       tasks: this.taskStatus(key),
-      events: this.store.recentEvents(key, 500),
+      test_progress: testProgress(
+        w.plan_revision ? this.plan(key).plan : null,
+        this.store.list<Evidence>("evidence", key),
+        w,
+      ),
+      active_task:
+        this.store.get<any>("task_activity", key)?.run_id === w.run_id &&
+        this.store.get<any>("task_activity", key)?.plan_revision ===
+          w.plan_revision
+          ? this.store.get("task_activity", key)
+          : null,
+      events: this.store.db
+        .prepare(
+          "SELECT data FROM events WHERE workflow_id=? AND json_extract(data, '$.type') NOT IN ('ServiceOutput','FixtureOutput','CheckOutput','AgentEvent') ORDER BY seq DESC LIMIT 500",
+        )
+        .all(key)
+        .map((row: any) => JSON.parse(row.data))
+        .concat(this.store.recentEvents(key, 500))
+        .filter(
+          (e: any, i: number, es: any[]) =>
+            es.findIndex((x) => x.event_seq === e.event_seq) === i,
+        )
+        .sort((a: any, b: any) => a.event_seq - b.event_seq),
       environment: this.store.get("environment", key),
       review: this.store.get("review", w.review_request_id ?? ""),
       commits: this.store.list("commit_result", key),
@@ -258,6 +288,7 @@ export class Engine {
             "PLAN_PENDING",
             "REPAIR_PLAN_PENDING",
             "REPAIR_RESEARCH_REQUIRED",
+            "STOPPED",
             "BLOCKED",
           ].includes(w.state),
           "INVALID_STATE",
@@ -517,12 +548,17 @@ export class Engine {
     return {
       root: ws.root,
       broker: new FileBroker((paths) => {
+        invalidateTaskProofs(this, key, paths, repo);
         this.invalidate(key, "代码修改");
         this.store.event(
           key,
           this.get(key).project_id,
           "FilesChanged",
-          { repo_id: repo, paths },
+          {
+            repo_id: repo,
+            paths,
+            task_id: this.store.get<any>("task_activity", key)?.task_id,
+          },
           principal.run_id,
         );
       }),
@@ -552,6 +588,9 @@ export class Engine {
       "TASK_SUMMARY_REQUIRED",
       "需要说明实际实现和证据",
     );
+    if (plan.task_model === "leaf-v1") this.worker(principal, key, true);
+    if (plan.task_model === "leaf-v1")
+      recordTaskProof(this, principal, key, taskId);
     this.store.put(
       "task_claim",
       `${key}-${this.get(key).plan_revision}-${taskId}`,
@@ -573,7 +612,10 @@ export class Engine {
     );
     return {
       status: "claimed",
-      message: "声明已记录；勾选仍需要当前快照测试证据。",
+      message:
+        plan.task_model === "leaf-v1"
+          ? "细项完成条件已检查；测试结果单独统计，仍需完成测试与人工验收。"
+          : "声明已记录；勾选仍需要当前快照测试证据。",
     };
   }
   taskStatus(key: string) {
@@ -588,18 +630,40 @@ export class Engine {
       const evidence = this.store.list<Evidence>("evidence", key);
       const verified =
         !!claim &&
-        t.test_ids.every((test) =>
-          evidence.some(
-            (e) =>
-              e.test_id === test &&
-              e.status === "passed" &&
-              e.snapshot_id === w.snapshot_id &&
-              e.environment_revision === w.environment_revision,
-          ),
-        );
+        t.test_ids.every((test) => {
+          const e = latestEvidence(evidence, test, w);
+          return currentEvidence(e, w) && e!.status === "passed";
+        });
+      const activity = this.store.get<any>("task_activity", key);
+      const proof =
+        plan.task_model === "leaf-v1"
+          ? this.store.get<any>(
+              "task_proof",
+              `${key}-${w.plan_revision}-${t.id}`,
+            )
+          : null;
+      const completed =
+        plan.task_model === "leaf-v1" && taskProofValid(this, key, t.id);
       return {
         id: t.id,
         title: t.title,
+        module_id: t.module_id,
+        completed,
+        implementation_status: completed
+          ? "completed"
+          : activity?.task_id === t.id &&
+              activity?.run_id === w.run_id &&
+              activity?.plan_revision === w.plan_revision &&
+              w.state === "EXECUTING"
+            ? "active"
+            : proof
+              ? "needs_changes"
+              : claim
+                ? "pending_check"
+                : "pending",
+        started_at:
+          activity?.task_id === t.id ? activity.started_at : undefined,
+        completed_at: completed ? proof?.completed_at : undefined,
         status: verified ? "verified" : claim ? "claimed" : "pending",
         summary: claim?.summary ?? "",
       };
@@ -610,13 +674,11 @@ export class Engine {
       plan = this.plan(key).plan;
     const evidence = this.store.list<Evidence>("evidence", key);
     for (const t of plan.tests) {
-      const e = evidence.find(
-        (e) =>
-          e.test_id === t.id &&
-          e.status === "passed" &&
-          e.snapshot_id === w.snapshot_id &&
-          e.environment_revision === w.environment_revision,
-      );
+      const selected = latestEvidence(evidence, t.id, w);
+      const e =
+        currentEvidence(selected, w) && selected!.status === "passed"
+          ? selected
+          : undefined;
       requireCondition(
         e,
         "TEST_EVIDENCE_MISSING",
@@ -637,37 +699,52 @@ export class Engine {
   }
   async freeze(key: string, principal: Principal) {
     return this.exclusive(key, async () => {
-    this.worker(principal, key);
-    let w = this.get(key);
-    requireCondition(w.state === "EXECUTING", "INVALID_STATE", "不能重复冻结");
-    requireCondition(
-      this.taskStatus(key).every((t) => t.status !== "pending"),
-      "TASK_NOT_CLAIMED",
-      "所有任务都应完成实际实现声明后才能冻结",
-    );
-    await this.runtime?.prepareVerification?.(w, principal);
-    w = this.worker(principal, key);
-    requireCondition(w.state === "EXECUTING", "RUN_REVOKED", "执行阶段已变化");
-    const version = w.version;
-    const snapshot = await this.git.snapshot(key, w.environment_revision);
-    const current = this.worker(principal, key);
-    requireCondition(current.state === "EXECUTING" && current.version === version,
-      "RUN_REVOKED", "冻结期间任务已经变化，请重新读取当前状态");
-    const plan = this.plan(key).plan;
-    for (const r of snapshot.repositories)
-      for (const p of r.changed_paths)
-        requireCondition(
-          (
-            plan.scope.repository_paths[r.repo_id] ?? plan.scope.allowed_paths
-          ).includes(p),
-          "SCOPE_VIOLATION",
-          `发现范围外修改 ${p}`,
-        );
-    this.transition(key, ["EXECUTING"], "VERIFYING", "tests", {
-      snapshot_id: snapshot.id,
-    });
-    this.exportDocuments(key);
-    return snapshot;
+      this.worker(principal, key);
+      let w = this.get(key);
+      requireCondition(
+        w.state === "EXECUTING",
+        "INVALID_STATE",
+        "不能重复冻结",
+      );
+      requireCondition(
+        this.taskStatus(key).every((t) =>
+          this.plan(key).plan.task_model === "leaf-v1"
+            ? t.completed
+            : t.status !== "pending",
+        ),
+        "TASK_NOT_CLAIMED",
+        "所有任务都应完成实际实现声明后才能冻结",
+      );
+      await this.runtime?.prepareVerification?.(w, principal);
+      w = this.worker(principal, key);
+      requireCondition(
+        w.state === "EXECUTING",
+        "RUN_REVOKED",
+        "执行阶段已变化",
+      );
+      const version = w.version;
+      const snapshot = await this.git.snapshot(key, w.environment_revision);
+      const current = this.worker(principal, key);
+      requireCondition(
+        current.state === "EXECUTING" && current.version === version,
+        "RUN_REVOKED",
+        "冻结期间任务已经变化，请重新读取当前状态",
+      );
+      const plan = this.plan(key).plan;
+      for (const r of snapshot.repositories)
+        for (const p of r.changed_paths)
+          requireCondition(
+            (
+              plan.scope.repository_paths[r.repo_id] ?? plan.scope.allowed_paths
+            ).includes(p),
+            "SCOPE_VIOLATION",
+            `发现范围外修改 ${p}`,
+          );
+      this.transition(key, ["EXECUTING"], "VERIFYING", "tests", {
+        snapshot_id: snapshot.id,
+      });
+      this.exportDocuments(key);
+      return snapshot;
     });
   }
   async finish(key: string, principal: Principal) {
@@ -809,15 +886,31 @@ export class Engine {
         );
         this.assertProjectConfiguration(key);
         const project = this.project(w.project_id);
-        const context = this.store.get<{ roots: Record<string, string> }>("entry_context", key);
-        const sources = { ...project, repositories: project.repositories.map(repo => ({
-          ...repo, path: context?.roots[repo.id] ?? repo.path,
-        })) };
+        const context = this.store.get<{ roots: Record<string, string> }>(
+          "entry_context",
+          key,
+        );
+        const sources = {
+          ...project,
+          repositories: project.repositories.map((repo) => ({
+            ...repo,
+            path: context?.roots[repo.id] ?? repo.path,
+          })),
+        };
         for (const repo of sources.repositories) {
-          const registered = project.repositories.find(r => r.id === repo.id)!;
-          const [source, original] = await Promise.all([repositoryInfo(repo.path), repositoryInfo(registered.path)]);
-          requireCondition(source.common_dir.toLowerCase() === original.common_dir.toLowerCase(),
-            "PROJECT_MISMATCH", "任务工作区已不属于登记仓库");
+          const registered = project.repositories.find(
+            (r) => r.id === repo.id,
+          )!;
+          const [source, original] = await Promise.all([
+            repositoryInfo(repo.path),
+            repositoryInfo(registered.path),
+          ]);
+          requireCondition(
+            source.common_dir.toLowerCase() ===
+              original.common_dir.toLowerCase(),
+            "PROJECT_MISMATCH",
+            "任务工作区已不属于登记仓库",
+          );
         }
         await this.git.prepare(
           sources,
@@ -1123,8 +1216,7 @@ export class Engine {
   }
   recover() {
     for (const w of this.list())
-      if (w.state === "QUEUED")
-        this.scheduler.enqueue(w.id, w.project_id);
+      if (w.state === "QUEUED") this.scheduler.enqueue(w.id, w.project_id);
     for (const w of this.list())
       if (
         [
@@ -1166,19 +1258,33 @@ export class Engine {
     );
     mkdirSync(root, { recursive: true });
     atomicWrite(join(root, "计划.md"), p.plan.markdown);
+    const progress = testProgress(
+      p.plan,
+      this.store.list<Evidence>("evidence", key),
+      w,
+    );
     const tasks = this.taskStatus(key)
       .map((t) => {
         const definition = p.plan.tasks.find((task) => task.id === t.id)!;
-        return `### ${t.id} ${t.title}\n\n- [${t.status === "verified" ? "x" : " "}] 完成状态：${t.status}\n\n修改位置：${definition.repo_id ?? "默认仓库"} / ${definition.paths.join("、")}\n\n输入：${definition.inputs}\n\n核心实现：${definition.implementation}\n\n保持行为：${definition.preserve}\n\n完成标准：${definition.completion}\n\n前置任务：${definition.depends_on.join("、") || "无"}；关联测试：${definition.test_ids.join("、")}\n\n停止条件：${definition.stop_conditions}\n\n实际声明：${t.summary || "尚未提交"}\n`;
+        return `### ${t.id} ${t.title}\n\n- [${(p.plan.task_model === "leaf-v1" ? t.completed : t.status === "verified") ? "x" : " "}] 完成状态：${({ completed: "已完成", active: "进行中", needs_changes: "需修改", pending_check: "待检查", pending: "未开始" } as Record<string, string>)[t.implementation_status] ?? t.status}\n\n修改位置：${definition.repo_id ?? "默认仓库"} / ${definition.paths.join("、")}\n\n输入：${definition.inputs}\n\n核心实现：${definition.implementation}\n\n保持行为：${definition.preserve}\n\n完成标准：${definition.completion}\n\n前置任务：${definition.depends_on.join("、") || "无"}；关联测试：${definition.test_ids.join("、")}\n\n停止条件：${definition.stop_conditions}\n\n实际声明：${t.summary || "尚未提交"}\n`;
       })
       .join("\n");
     const tests = p.plan.tests
       .map((t) => {
-        const e = this.store
-          .list<Evidence>("evidence", key)
-          .filter((e) => e.test_id === t.id)
-          .at(-1);
-        return `### ${t.id} / ${t.layer}\n\n- [${e?.status === "passed" && e.snapshot_id === w.snapshot_id && e.environment_revision === w.environment_revision ? "x" : " "}] ${e?.status ?? "not_run"}\n\n关联任务：${t.task_ids.join("、")}；用例标识：${t.expected_case_ids.join("、")}\n\n操作步骤：\n${t.steps.map((step, i) => `${i + 1}. ${step}`).join("\n")}\n\n断言：\n${t.assertions.map((a) => "- " + a).join("\n")}\n\n${e ? `证据：${e.id}\n\n快照：${e.snapshot_id}；环境：${e.environment_revision}\n\n结果：发现 ${e.discovered}，通过 ${e.passed}，失败 ${e.failed}，跳过 ${e.skipped}，退出码 ${e.exit_code}\n\n原始文件：\n${e.files.map((f) => "- " + f.path + " / SHA-256 " + f.hash).join("\n")}` : "尚无运行证据。"}\n`;
+        const e = latestEvidence(
+          this.store.list<Evidence>("evidence", key),
+          t.id,
+          w,
+        );
+        return `### ${t.id} / ${t.layer}\n\n- [${e?.status === "passed" && e.snapshot_id === w.snapshot_id && e.environment_revision === w.environment_revision ? "x" : " "}] ${e?.status ?? "not_run"}\n\n关联任务：${t.task_ids.join("、")}；用例清单：\n${progress.cases
+          .filter((c) => c.test_id === t.id)
+          .map(
+            (c) =>
+              `- [${c.status === "passed" ? "x" : " "}] ${c.id} · ${({ passed: "已通过", failed: "未通过", skipped: "已跳过", stale: "需重测", not_run: "未运行", missing: "缺少结果" } as Record<string, string>)[c.status]}`,
+          )
+          .join(
+            "\n",
+          )}\n\n操作步骤：\n${t.steps.map((step, i) => `${i + 1}. ${step}`).join("\n")}\n\n断言：\n${t.assertions.map((a) => "- " + a).join("\n")}\n\n${e ? `证据：${e.id}\n\n快照：${e.snapshot_id}；环境：${e.environment_revision}\n\n结果：发现 ${e.discovered}，通过 ${e.passed}，失败 ${e.failed}，跳过 ${e.skipped}，退出码 ${e.exit_code}\n\n原始文件：\n${e.files.map((f) => "- " + f.path + " / SHA-256 " + f.hash).join("\n")}` : "尚无运行证据。"}\n`;
       })
       .join("\n");
     if (p.plan.complexity === "complex") {

@@ -50,7 +50,7 @@ it("UT-05 agy grants are scoped to a unique project and never permit native comm
     const id = crypto.randomUUID();
     const result = writeAgyProject(s.root, id, join(s.root, "container"));
     const p = JSON.parse(readFileSync(result.path, "utf8"));
-    expect(p.permissionGrants.permissionGrants.allow).toHaveLength(9);
+    expect(p.permissionGrants.permissionGrants.allow).toHaveLength(10);
     expect(
       p.permissionGrants.permissionGrants.allow.every((x: string) =>
         x.startsWith("mcp(devflow_worker/devflow_"),

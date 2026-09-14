@@ -89,6 +89,7 @@ export function evaluateReport(
     skipped = parsed.cases.filter((c) => c.status === "skipped").length,
     passed = parsed.cases.filter((c) => c.status === "passed").length;
   return {
+    cases: parsed.cases,
     status:
       exit === 0 &&
       expected.length > 0 &&

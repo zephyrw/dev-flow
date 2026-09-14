@@ -1,10 +1,16 @@
+import { startTask } from "../../core/src/progress.js";
 import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { Engine } from "../../core/src/engine.js";
 import type { Principal } from "../../core/src/auth.js";
-import { IntakeSchema, intake, RegisterProjectSchema, registerIntakeProject } from "../../entry/src/intake.js";
+import {
+  IntakeSchema,
+  intake,
+  RegisterProjectSchema,
+  registerIntakeProject,
+} from "../../entry/src/intake.js";
 import {
   Id,
   PlanSchema,
@@ -19,6 +25,7 @@ export const workerNames = [
   "devflow_search_files",
   "devflow_apply_files",
   "devflow_claim_task",
+  "devflow_start_task",
   "devflow_freeze",
   "devflow_run_check",
   "devflow_finish",
@@ -106,10 +113,18 @@ export function makeMcp(engine: Engine, principal: Principal) {
     );
   };
   if (principal.role === "planner") {
-    register("devflow_start", "用户说用 DevFlow 时的统一入口。识别当前仓库、会话和任务阶段；自动引导首次接入，返回规划上下文或控制台链接。", IntakeSchema,
-      a => intake(engine, a));
-    register("devflow_register_project", "调研后登记当前项目的运行配置及固定浏览器场景；只保存配置，命令须等完整计划批准后执行。", RegisterProjectSchema,
-      a => registerIntakeProject(engine, a));
+    register(
+      "devflow_start",
+      "用户说用 DevFlow 时的统一入口。识别当前仓库、会话和任务阶段；自动引导首次接入，返回规划上下文或控制台链接。",
+      IntakeSchema,
+      (a) => intake(engine, a),
+    );
+    register(
+      "devflow_register_project",
+      "调研后登记当前项目的运行配置及固定浏览器场景；只保存配置，命令须等完整计划批准后执行。",
+      RegisterProjectSchema,
+      (a) => registerIntakeProject(engine, a),
+    );
     register(
       "devflow_list_projects",
       "列出已由用户登记的项目、配置哈希和基线。",
@@ -193,6 +208,10 @@ export function makeMcp(engine: Engine, principal: Principal) {
             repositories: engine.store
               .list<any>("workspace", workflow)
               .map((ws) => ({ repo_id: ws.repo_id, root: ws.root })),
+            task_model: plan.task_model ?? "legacy",
+            modules: plan.modules,
+            task_progress: engine.taskStatus(workflow),
+            active_task: engine.store.get("task_activity", workflow),
             task_count: plan.tasks.length,
             test_count: plan.tests.length,
             instructions:
@@ -306,7 +325,24 @@ export function makeMcp(engine: Engine, principal: Principal) {
       }),
       (a) => {
         const f = engine.files(principal, workflow, a.repo_id, true);
-        const scope = engine.plan(workflow).plan.scope;
+        const plan = engine.plan(workflow).plan,
+          scope = plan.scope;
+        if (plan.task_model === "leaf-v1") {
+          const active = engine.store.get<any>("task_activity", workflow);
+          const task = plan.tasks.find((t) => t.id === active?.task_id);
+          requireCondition(
+            active?.run_id === principal.run_id &&
+              task &&
+              (!task.repo_id || task.repo_id === a.repo_id),
+            "TASK_NOT_STARTED",
+            "修改前先开始当前仓库的细项任务",
+          );
+          requireCondition(
+            a.changes.every((c: any) => task.paths.includes(c.path)),
+            "TASK_SCOPE",
+            "文件不属于当前细项，不能扩大修改范围",
+          );
+        }
         return f.broker.apply(
           f.root,
           {
@@ -319,8 +355,14 @@ export function makeMcp(engine: Engine, principal: Principal) {
       },
     );
     register(
+      "devflow_start_task",
+      "开始细项或更新当前细项进展；必须先完成依赖。",
+      z.object({ task_id: Id, summary: z.string().min(1).max(500).optional() }),
+      (a) => startTask(engine, principal, workflow, a.task_id, a.summary),
+    );
+    register(
       "devflow_claim_task",
-      "声明任务实现并给出实际说明；尚未取得测试证据时不会勾选完成。",
+      "提交当前细项的实际实现说明并检查完成条件；测试通过情况单独统计，尚未通过全部验收门禁不能交付。",
       z.object({ task_id: Id, summary: z.string().min(10) }),
       (a) => engine.claimTask(principal, workflow, a.task_id, a.summary),
     );

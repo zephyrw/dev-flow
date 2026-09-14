@@ -1,0 +1,9 @@
+{
+  "state": "EXECUTING",
+  "run_id": "run-4bb02b71-8bf0-4d28-85c5-2ff34e0bfe57",
+  "plan_revision": 1,
+  "model": "gemini-3.7-flash-high",
+  "agent_events": 38,
+  "tool_updates": 23,
+  "blocker": null
+}

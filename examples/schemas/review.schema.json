@@ -158,6 +158,32 @@
         {
           "type": "object",
           "properties": {
+            "task_model": {
+              "type": "string",
+              "const": "leaf-v1"
+            },
+            "modules": {
+              "minItems": 1,
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,95}$"
+                  },
+                  "title": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "id",
+                  "title"
+                ],
+                "additionalProperties": false
+              }
+            },
             "markdown": {
               "type": "string",
               "minLength": 80
@@ -270,6 +296,33 @@
               "items": {
                 "type": "object",
                 "properties": {
+                  "module_id": {
+                    "type": "string",
+                    "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,95}$"
+                  },
+                  "completion_checks": {
+                    "minItems": 1,
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "path": {
+                          "type": "string",
+                          "minLength": 1,
+                          "maxLength": 1024
+                        },
+                        "contains": {
+                          "type": "string",
+                          "minLength": 5
+                        }
+                      },
+                      "required": [
+                        "path",
+                        "contains"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
                   "repo_id": {
                     "type": "string",
                     "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,95}$"

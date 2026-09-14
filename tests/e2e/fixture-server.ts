@@ -1,3 +1,4 @@
+import { startTask } from "../../packages/core/src/progress.js";
 import { writeFileSync, mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { setup, repository, project, plan } from "../helpers.js";
@@ -43,6 +44,7 @@ const w = engine.create(
   "fixture",
 );
 const fixturePlan = plan(objectHash(p), repo.baseline);
+fixturePlan.task_model="leaf-v1"; fixturePlan.modules=[{id:"M1",title:"文本修复"}]; fixturePlan.tasks[0]!.module_id="M1"; fixturePlan.tasks[0]!.completion_checks=[{path:"app.txt",contains:"after"}];
 fixturePlan.tests[0]!.expected_case_ids = ["test updates content"];
 engine.submitPlan(w.id, fixturePlan, w.version, "p1");
 const runtime = new LocalRuntime(engine);
@@ -62,6 +64,7 @@ engine.runtime = {
       );
       await new Promise((r) => setTimeout(r, 100));
     }
+    startTask(engine, principal, flow.id, "T01");
     const files = engine.files(principal, flow.id, "main", true);
     files.broker.apply(files.root, engine.plan(flow.id).plan.scope, [
       {

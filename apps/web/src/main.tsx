@@ -1,10 +1,12 @@
+import guideText from "../../../docs/guide/使用指南.md?raw";
+import { TaskTree, TestResults } from "./panels.js";
 import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import mermaid from "mermaid";
 import "./style.css";
-import { readableLogs, mergeEvents } from "./logs.js";
+import { readableLogs, mergeEvents, workflowProgress, stages } from "./logs.js";
 const labels: Record<string, string> = {
   RESEARCHING: "调研中",
   PLAN_PENDING: "等待计划批准",
@@ -92,6 +94,18 @@ function Document({ text }: { text: string }) {
   );
 }
 function App() {
+  const [showGuide, setShowGuide] = useState(
+    () => new URLSearchParams(location.search).get("view") === "guide",
+  );
+  const [fileDiff, setFileDiff] = useState<any>(null);
+  useEffect(() => {
+    if (!fileDiff) return;
+    const close = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setFileDiff(null);
+    };
+    window.addEventListener("keydown", close);
+    return () => window.removeEventListener("keydown", close);
+  }, [fileDiff]);
   const [error, setError] = useState(""),
     [notice, setNotice] = useState(""),
     [projects, setProjects] = useState<any[]>([]),
@@ -110,8 +124,10 @@ function App() {
     const url = new URL(location.href);
     if (selected) url.searchParams.set("workflow", selected);
     else url.searchParams.delete("workflow");
+    if (showGuide) url.searchParams.set("view", "guide");
+    else url.searchParams.delete("view");
     history.replaceState(null, "", url);
-  }, [selected]);
+  }, [selected, showGuide]);
   const eventCursor = useRef(0);
   const eventBuffer = useRef<any[]>([]);
   const selection = useRef(selected);
@@ -237,6 +253,7 @@ function App() {
             "AgentEvent",
             "AgentDiagnostic",
             "CheckOutput",
+            "ServiceOutput",
             "FixtureOutput",
           ].includes(event.type)
         )
@@ -284,6 +301,20 @@ function App() {
     );
   };
   const w = detail?.workflow.id === selected ? detail.workflow : undefined;
+  const progress = w ? workflowProgress(w, detail.events) : undefined;
+  const timeline = w ? readableLogs(detail.events, selected) : [];
+  const latest = timeline
+    .filter(
+      (e) =>
+        ![
+          "RESEARCHING",
+          "REPAIR_RESEARCH_REQUIRED",
+          "PLAN_PENDING",
+          "REPAIR_PLAN_PENDING",
+        ].includes(w?.state) &&
+        (e.kind === "tool" || e.kind === "message"),
+    )
+    .at(-1);
   const counts = {
     active: flows.filter((f) =>
       ["EXECUTING", "VERIFYING", "REVIEWING"].includes(f.state),
@@ -302,8 +333,9 @@ function App() {
           <span className="mark">D</span> DevFlow
         </div>
         <button
-          className={!selected ? "nav active" : "nav"}
+          className={!selected && !showGuide ? "nav active" : "nav"}
           onClick={() => {
+            setShowGuide(false);
             setSelected("");
             setDetail(null);
           }}
@@ -319,8 +351,12 @@ function App() {
               .map((f) => (
                 <button
                   key={f.id}
-                  className={"flow-nav " + (selected === f.id ? "active" : "")}
+                  className={
+                    "flow-nav " +
+                    (!showGuide && selected === f.id ? "active" : "")
+                  }
                   onClick={() => {
+                    setShowGuide(false);
                     setSelected(f.id);
                     setTab("overview");
                   }}
@@ -332,39 +368,42 @@ function App() {
           </div>
         ))}
         <div className="sidebar-bottom">
-          <span className={"dot " + (connected ? "COMMITTED" : "")} />{" "}
-          {selected
-            ? connected
-              ? "实时连接已建立"
-              : "正在连接事件流"
-            : "本机工作台"}
+          <button
+            className={"nav " + (showGuide ? "active" : "")}
+            onClick={() => setShowGuide(true)}
+          >
+            使用指南
+          </button>
+          <div className="connection-status">
+            <span className={"dot " + (connected ? "COMMITTED" : "")} />{" "}
+            {selected
+              ? connected
+                ? "实时连接已建立"
+                : "正在连接事件流"
+              : "本机工作台"}
+          </div>
         </div>
       </aside>
       <main>
         <header>
           <div>
             <p className="eyebrow">
-              {selected
-                ? "工作流 / " +
-                  projects.find((p) => p.id === w?.project_id)?.name
-                : "开发工作台"}
+              {showGuide
+                ? "DevFlow / 使用指南"
+                : selected
+                  ? "工作流 / " +
+                    (projects.find((p) => p.id === w?.project_id)?.name ??
+                      "加载中…")
+                  : "开发工作台"}
             </p>
-            <h1>{selected ? (w?.title ?? "加载中…") : "工作流总览"}</h1>
-            <p className="subtitle">
-              {selected
-                ? "每一步进展，都对应明确的版本与证据。"
-                : "多项目并行推进，重要决定由你掌握。"}
-            </p>
+            <h1>
+              {showGuide
+                ? "使用指南"
+                : selected
+                  ? (w?.title ?? "加载中…")
+                  : "工作流总览"}
+            </h1>
           </div>
-          <button
-            className="primary"
-            onClick={() => {
-              setModal("usage");
-              setText("");
-            }}
-          >
-            如何开始新任务
-          </button>
         </header>
         {error && (
           <div role="alert" className="error banner">
@@ -377,7 +416,11 @@ function App() {
             {notice}
           </div>
         )}
-        {!selected ? (
+        {showGuide ? (
+          <section className="panel guide-page">
+            <Document text={guideText} />
+          </section>
+        ) : !selected ? (
           <>
             <section className="stats">
               <div>
@@ -405,14 +448,17 @@ function App() {
                 <div className="empty">
                   <span>◇</span>
                   <h3>从一个明确的需求开始</h3>
-                  <p>在 Codex 的业务项目中说“用 DevFlow 帮我……”即可开始。计划批准后，这里会显示执行进度。</p>
+                  <p>
+                    在 Codex 的业务项目中说“用 DevFlow
+                    帮我……”即可开始。计划批准后，这里会显示执行进度。
+                  </p>
                   <button
                     onClick={() => {
-                      setModal("usage");
+                      setShowGuide(true);
                       setText("{}");
                     }}
                   >
-                    查看开始方式
+                    阅读使用指南
                   </button>
                 </div>
               ) : (
@@ -422,6 +468,7 @@ function App() {
                       className="flow-card"
                       key={f.id}
                       onClick={() => {
+                        setShowGuide(false);
                         setSelected(f.id);
                         setTab("overview");
                       }}
@@ -437,7 +484,6 @@ function App() {
                       <h3>{f.title}</h3>
                       <p>{f.request}</p>
                       <footer>
-                        <span>计划 r{f.plan_revision}</span>
                         <span>
                           {new Date(f.updated_at).toLocaleString("zh-CN")}
                         </span>
@@ -453,9 +499,7 @@ function App() {
             <>
               <div className="workflow-bar">
                 <span className={"badge " + w.state}>{labels[w.state]}</span>
-                <span>计划 r{w.plan_revision}</span>
-                <span>环境 v{w.environment_revision}</span>
-                <span className="mono">{w.id.slice(0, 18)}</span>
+
                 <div className="actions">
                   {["PLAN_PENDING", "REPAIR_PLAN_PENDING"].includes(
                     w.state,
@@ -539,21 +583,80 @@ function App() {
                   </button>
                 </div>
               )}
+              {progress && (
+                <section
+                  className="execution-progress"
+                  aria-label="当前执行进度"
+                >
+                  <div className="section-title">
+                    <h2>
+                      {progress.paused ? "已暂停 · " : "当前阶段 · "}
+                      {progress.title}
+                    </h2>
+                    <span>
+                      {detail.plan?.plan.task_model === "leaf-v1"
+                        ? `已完成任务 ${detail.tasks.filter((t: any) => t.completed).length} / ${detail.tasks.length}`
+                        : `${detail.tasks.length} 个工作包`}
+                    </span>
+                  </div>
+                  <ol className="stage-track">
+                    {stages.map((name, index) => (
+                      <li
+                        key={name}
+                        aria-current={
+                          index === progress.index ? "step" : undefined
+                        }
+                        className={index === progress.index ? "current" : ""}
+                      >
+                        <span>{index + 1}</span>
+                        {name}
+                      </li>
+                    ))}
+                  </ol>
+                  {detail.active_task &&
+                    ["EXECUTING", "VERIFYING"].includes(w.state) && (
+                      <p className="current-action">
+                        当前工作：{detail.active_task.title} ·{" "}
+                        {detail.active_task.summary}
+                      </p>
+                    )}
+                  {latest && (
+                    <p className="current-action">
+                      {progress.paused ? "中断前最后活动" : "最近活动"}：
+                      {latest.title}
+                      {latest.kind === "tool" && latest.text
+                        ? ` · ${latest.text}`
+                        : ""}
+                    </p>
+                  )}
+                </section>
+              )}
               {w.blocker && (
                 <div className="error banner">
-                  <b>{w.blocker.code}</b>
-                  <p>{w.blocker.message}</p>
+                  <b>任务已暂停，需要处理</b>
+                  <p>
+                    {w.blocker.code === "INTERNAL_FAILURE" &&
+                    /JSON/.test(w.blocker.message)
+                      ? "执行过程记录处理失败，任务已安全暂停。更新后的服务可通过“继续这个任务”恢复。"
+                      : w.blocker.message}
+                  </p>
+                  <details>
+                    <summary>错误详情</summary>
+                    <pre>
+                      {w.blocker.code}：{w.blocker.message}
+                    </pre>
+                  </details>
                 </div>
               )}
               <div className="tabs">
                 {[
                   ["overview", "概览"],
-                  ["plan", "计划与图解"],
-                  ["tasks", "开发进度"],
-                  ["tests", "测试证据"],
-                  ["logs", "实时输出"],
-                  ["diff", "代码差异"],
-                  ["review", "复核结果"],
+                  ["plan", "开发计划"],
+                  ["tasks", "任务进度"],
+                  ["tests", "测试结果"],
+                  ["logs", "执行过程"],
+                  ["diff", "代码变更"],
+                  ["review", "代码复核"],
                   ["environment", "测试环境"],
                 ].map(([key, title]) => (
                   <button
@@ -575,81 +678,71 @@ function App() {
                 <div className="two-column">
                   <section className="panel">
                     <h2>这次要解决什么</h2>
-                    <p className="request">{w.request}</p>
-                    <div className="journey">
-                      {[
-                        "调研计划",
-                        "人工批准",
-                        "实施测试",
-                        "人工验收",
-                        "独立复核",
-                        "本地提交",
-                      ].map((v, i) => (
-                        <div key={v}>
-                          <span>{i + 1}</span>
-                          {v}
-                        </div>
-                      ))}
-                    </div>
-                    <h3>你的下一步</h3>
-                    <p>
-                      {w.state === "PLAN_PENDING"
-                        ? "查看计划与图解，确认修改范围和验收标准后批准。"
-                        : w.state === "HUMAN_PENDING"
-                          ? "打开测试环境，实际操作确认功能。发现问题可以直接反馈。"
-                          : w.state === "COMMITTED"
-                            ? "代码已经提交到任务分支。发布需要你另行发出指令。"
-                            : w.state === "RESEARCHING"
-                              ? "在 Codex 中调研并提交完整计划，也可导入符合结构的计划文件。"
-                              : "查看当前状态、事件和证据。你可以随时停止正在执行的模型。"}
-                    </p>
+                    <p className="request">{w.title}</p>
+                    <details>
+                      <summary>完整需求</summary>
+                      <p className="request">{w.request}</p>
+                    </details>
                   </section>
                   <section className="panel">
-                    <h2>交付概况</h2>
+                    <h2>进度概况</h2>
                     <div className="metric-row">
-                      <span>已验证任务</span>
+                      <span>已完成任务</span>
                       <b>
-                        {
-                          detail.tasks.filter(
-                            (t: any) => t.status === "verified",
-                          ).length
-                        }{" "}
-                        / {detail.tasks.length}
+                        {detail.plan?.plan.task_model === "leaf-v1"
+                          ? `${detail.tasks.filter((t: any) => t.completed).length} / ${detail.tasks.length}`
+                          : "尚未建立细项清单"}
                       </b>
                     </div>
                     <div className="metric-row">
-                      <span>通过测试项</span>
+                      <span>已通过测试</span>
                       <b>
-                        {
-                          detail.evidence.filter(
-                            (t: any) => t.status === "passed",
-                          ).length
-                        }
+                        {detail.test_progress?.passed ?? 0} /{" "}
+                        {detail.test_progress?.total ?? 0}
                       </b>
                     </div>
-                    <div className="metric-row">
-                      <span>执行轮次</span>
-                      <b>{detail.runs.length}</b>
-                    </div>
-                    <h3>最新进展</h3>
-                    {detail.events
+                    <h3>最近进展</h3>
+                    {timeline
+                      .filter(
+                        (e) => e.kind !== "diagnostic" && e.kind !== "tool",
+                      )
                       .slice(-5)
                       .reverse()
-                      .map((e: any) => (
-                        <div className="timeline" key={e.event_seq}>
+                      .map((e) => (
+                        <div className="timeline" key={e.key}>
                           <small>
                             {new Date(e.created_at).toLocaleTimeString()}
                           </small>
-                          <span>{e.type}</span>
+                          <span>
+                            {e.title}
+                            {e.text ? ` · ${e.text.slice(0, 100)}` : ""}
+                          </span>
                         </div>
                       ))}
+                    <details>
+                      <summary>执行历史与技术详情</summary>
+                      <p>任务编号：{w.id}</p>
+                      {detail.runs.map((r: any) => (
+                        <p key={r.id}>
+                          {new Date(r.started_at).toLocaleString()} ·{" "}
+                          {(
+                            {
+                              running: "执行中",
+                              failed: "失败",
+                              completed: "已结束",
+                              stopped: "已停止",
+                            } as Record<string, string>
+                          )[r.status] ?? "已结束"}
+                        </p>
+                      ))}
+                    </details>
                   </section>
                 </div>
               )}
               {tab === "plan" && (
                 <section className="panel">
                   <div className="section-title">
-                    <h2>计划 r{w.plan_revision}</h2>
+                    <h2>开发计划 · 第 {w.plan_revision} 版</h2>
                     {w.plan_revision > 0 && (
                       <a href={`/api/workflows/${selected}/documents/plan`}>
                         下载 Markdown
@@ -693,153 +786,154 @@ function App() {
               )}
               {tab === "tasks" && (
                 <section className="panel">
-                  <h2>开发进度</h2>
-                  {detail.plan?.plan.complexity === "complex" && (
-                    <a href={`/api/workflows/${selected}/documents/progress`}>
-                      下载进度文档
-                    </a>
-                  )}
-                  <p className="subtitle">
-                    模型声明完成后，还需要当前快照的测试证据才能勾选。
-                  </p>
-                  {detail.tasks.map((t: any) => (
-                    <div className="task" key={t.id}>
-                      <span
-                        className={
-                          "checkbox " +
-                          (t.status === "verified" ? "checked" : "")
-                        }
-                      >
-                        {t.status === "verified" ? "✓" : ""}
-                      </span>
-                      <div>
-                        <b>
-                          {t.id} · {t.title}
-                        </b>
-                        <p>{t.summary || "尚未开始"}</p>
-                      </div>
-                      <span className="badge">
-                        {t.status === "verified"
-                          ? "已验证"
-                          : t.status === "claimed"
-                            ? "等待证据"
-                            : "待实施"}
-                      </span>
-                    </div>
-                  ))}
+                  <h2>任务进度</h2>
+                  <TaskTree detail={detail} />
                 </section>
               )}
               {tab === "tests" && (
                 <section className="panel">
-                  <h2>测试证据</h2>
-                  {detail.plan?.plan.complexity === "complex" && (
-                    <a href={`/api/workflows/${selected}/documents/tests`}>
-                      下载测试文档
-                    </a>
-                  )}
-                  <div className="table-wrap">
-                    <table>
-                      <thead>
-                        <tr>
-                          <th>测试项</th>
-                          <th>层级</th>
-                          <th>状态</th>
-                          <th>通过 / 失败 / 跳过</th>
-                          <th>快照</th>
-                          <th>原始证据</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {detail.evidence.map((e: any) => (
-                          <tr key={e.id}>
-                            <td>{e.test_id}</td>
-                            <td>{e.layer}</td>
-                            <td>
-                              <span
-                                className={
-                                  "badge " +
-                                  (e.status === "passed"
-                                    ? "COMMITTED"
-                                    : "BLOCKED")
-                                }
-                              >
-                                {e.status}
-                              </span>
-                            </td>
-                            <td>
-                              {e.passed} / {e.failed} / {e.skipped}
-                            </td>
-                            <td className="mono">
-                              {e.snapshot_id.slice(0, 12)}
-                            </td>
-                            <td>
-                              {e.files.map((f: any, index: number) => (
-                                <a
-                                  key={index}
-                                  href={`/api/workflows/${selected}/evidence/${e.id}/files/${index}`}
-                                >
-                                  文件 {index + 1}{" "}
-                                </a>
-                              ))}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                  {!detail.evidence.length && (
-                    <div className="empty">
-                      还没有测试证据。未运行的测试不会显示为通过。
-                    </div>
-                  )}
+                  <h2>测试结果</h2>
+                  <TestResults detail={detail} />
                 </section>
               )}
               {tab === "logs" && (
                 <section className="panel">
                   <div className="section-title">
-                    <h2>实时输出</h2>
+                    <h2>执行过程</h2>
                     <span>{connected ? "● 已连接" : "○ 重连中"}</span>
                     <button onClick={() => setFollowLogs(!followLogs)}>
                       {followLogs ? "暂停滚动" : "跟随最新日志"}
                     </button>
                   </div>
-                  <p className="subtitle">
-                    显示最近 5,000
-                    条事件，完整原始日志另行保存在工作流运行记录中。
-                  </p>
+
                   <div className="logs" ref={logsRef}>
-                    {readableLogs(detail.events, selected).map((e) => (
-                      <div key={e.key}>
-                        <span>
-                          {new Date(e.created_at).toLocaleTimeString()} #
-                          {e.sequence} {e.title}
-                        </span>
-                        <pre>{e.text}</pre>
+                    {timeline.map((e) => (
+                      <article
+                        className={`activity ${e.kind ?? "event"}`}
+                        key={e.key}
+                      >
+                        <div className="activity-heading">
+                          <b>{e.title}</b>
+                          <span className={`activity-status ${e.status ?? ""}`}>
+                            {
+                              (
+                                {
+                                  active: "进行中",
+                                  done: "已完成",
+                                  error: "失败",
+                                  interrupted: "已中断",
+                                } as Record<string, string>
+                              )[e.status ?? ""]
+                            }
+                          </span>
+                          <time>
+                            {new Date(e.created_at).toLocaleTimeString()}
+                          </time>
+                        </div>
+                        {e.kind === "message" ? (
+                          <Markdown remarkPlugins={[remarkGfm]}>
+                            {e.text}
+                          </Markdown>
+                        ) : (
+                          e.kind !== "diagnostic" &&
+                          e.text && (
+                            <p className="activity-summary">
+                              {e.text.slice(0, 600)}
+                              {e.text.length > 600 ? "…" : ""}
+                            </p>
+                          )
+                        )}
                         <details>
-                          <summary>原始记录（{e.raw.length}）</summary>
-                          <pre>{JSON.stringify(e.raw, null, 2)}</pre>
+                          <summary>查看操作详情</summary>
+                          <pre>
+                            {e.kind === "diagnostic"
+                              ? e.text
+                              : JSON.stringify(e.raw, null, 2)}
+                          </pre>
                         </details>
-                      </div>
+                      </article>
                     ))}
+                    {!timeline.length && (
+                      <p className="empty">
+                        等待执行过程。计划批准后会在这里显示实时活动。
+                      </p>
+                    )}
                   </div>
                 </section>
               )}
               {tab === "diff" && (
                 <section className="panel">
-                  <h2>
-                    {w.snapshot_id
-                      ? "冻结快照的代码差异"
-                      : "当前工作区的代码差异"}
-                  </h2>
-                  {diff.length ? (
-                    diff.map((d) => (
-                      <div key={d.repo_id}>
-                        <h3>{d.repo_id}</h3>
-                        <pre className="diff">{d.diff}</pre>
+                  <div className="section-title">
+                    <h2>代码变更</h2>
+                    <button
+                      onClick={() =>
+                        void attempt(async () =>
+                          setDiff(await api(`/workflows/${selected}/diff`)),
+                        )
+                      }
+                    >
+                      刷新文件列表
+                    </button>
+                  </div>
+                  {diff.map((d) => (
+                    <div key={d.repo_id}>
+                      <h3>{d.branch}</h3>
+                      <p>
+                        对比任务开始前提交{" "}
+                        <code>{d.baseline?.slice(0, 8)}</code>
+                        {d.frozen ? " · 测试版本" : " · 当前工作区"}
+                      </p>
+                      <div className="changed-files">
+                        {d.files?.map((f: any) => (
+                          <button
+                            key={f.path}
+                            onClick={() =>
+                              void attempt(async () => {
+                                const loading = {
+                                  path: f.path,
+                                  branch: d.branch,
+                                  baseline: d.baseline,
+                                  loading: true,
+                                };
+                                setFileDiff(loading);
+                                try {
+                                  const result = await api(
+                                    `/workflows/${selected}/diff?repo_id=${encodeURIComponent(d.repo_id)}&path=${encodeURIComponent(f.path)}`,
+                                  );
+                                  setFileDiff((current: any) =>
+                                    current === loading ? result : current,
+                                  );
+                                } catch (error) {
+                                  setFileDiff((current: any) =>
+                                    current === loading ? null : current,
+                                  );
+                                  throw error;
+                                }
+                              })
+                            }
+                          >
+                            <span className="badge">
+                              {(
+                                {
+                                  A: "新增",
+                                  D: "删除",
+                                  M: "修改",
+                                  T: "类型变化",
+                                } as Record<string, string>
+                              )[f.status] ?? "修改"}
+                            </span>
+                            <span>{f.path}</span>
+                            <span>查看差异 →</span>
+                          </button>
+                        ))}
                       </div>
-                    ))
-                  ) : (
-                    <div className="empty">代码快照尚未冻结。</div>
+                      {!d.files?.length && <p>没有文件变更</p>}
+                    </div>
+                  ))}
+                  {!diff.length && (
+                    <p className="empty">
+                      {pending ? "正在读取变更文件…" : "尚无变更文件"}
+                    </p>
                   )}
                 </section>
               )}
@@ -852,7 +946,7 @@ function App() {
                         {detail.review.stale
                           ? "历史复核已失效，请以新一轮结果为准。"
                           : "本轮复核"}{" "}
-                        · 计划 r{detail.review.plan_revision} ·{" "}
+                        · 第 {detail.review.plan_revision} 版计划 ·{" "}
                         {
                           (
                             {
@@ -863,7 +957,12 @@ function App() {
                           )[detail.review.verdict]
                         }
                       </p>
-                      <p className="mono">快照：{detail.review.snapshot_id}</p>
+                      <details>
+                        <summary>技术详情</summary>
+                        <p className="mono">
+                          快照：{detail.review.snapshot_id}
+                        </p>
+                      </details>
                       {detail.review.findings.map((f: any, index: number) => (
                         <article key={index} className="panel">
                           <h3>
@@ -987,6 +1086,50 @@ function App() {
           )
         )}
       </main>
+      {fileDiff && (
+        <div className="modal-backdrop" onClick={() => setFileDiff(null)}>
+          <section
+            className="modal file-diff-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label="文件差异"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="section-title">
+              <h2>{fileDiff.path}</h2>
+              <button autoFocus onClick={() => setFileDiff(null)}>
+                关闭差异
+              </button>
+            </div>
+            <p>
+              {fileDiff.branch} · 对比 {fileDiff.baseline?.slice(0, 8)}
+            </p>
+            {fileDiff.loading ? (
+              <p role="status">正在读取文件差异…</p>
+            ) : (
+              <pre className="file-diff">
+                {fileDiff.diff.split("\n").map((line: string, i: number) => (
+                  <span
+                    className={
+                      line.startsWith("+")
+                        ? "added"
+                        : line.startsWith("-")
+                          ? "removed"
+                          : ""
+                    }
+                    key={i}
+                  >
+                    {line || " "}
+                  </span>
+                ))}
+              </pre>
+            )}
+            {fileDiff.truncated && (
+              <p>文件过大，显示部分差异；完整内容请在本地编辑器查看。</p>
+            )}
+          </section>
+        </div>
+      )}
       {modal && (
         <div className="modal-backdrop">
           <section
@@ -996,61 +1139,45 @@ function App() {
             aria-labelledby="modal-title"
           >
             <div className="section-title">
-              <h2 id="modal-title">
-                {modal === "usage" ? "开始一个新任务" : "反馈问题"}
-              </h2>
+              <h2 id="modal-title">反馈问题</h2>
               <button onClick={() => setModal("")}>关闭</button>
             </div>
-            {modal === "usage" ? (
-              <>
-                <p>在 Codex 打开你的业务项目，新建任务，说出需求即可：</p>
-                <blockquote>用 DevFlow 帮我修复客户列表筛选的问题。</blockquote>
-                <p>
-                  首次接入由 Codex
-                  自动调查。它会给你计划审批链接；批准以后，在这里看实时日志、停止任务和实操验收。
-                </p>
-                <p>
-                  继续已有任务：在左侧打开原任务。电脑重启后双击“打开
-                  DevFlow”，无需重新接入项目。
-                </p>
-              </>
-            ) : (
-              <>
-                <p>说明实际操作、观察到的问题和期望结果。</p>
-                <label>
-                  这次反馈属于
-                  <select
-                    value={scope}
-                    onChange={(e) => setScope(e.target.value)}
-                  >
-                    <option value="within_plan">原需求尚未做好</option>
-                    <option value="new_scope">我想增加或改变需求</option>
-                  </select>
-                </label>
-                <textarea
-                  aria-label="问题反馈"
-                  rows={8}
-                  value={text}
-                  onChange={(e) => setText(e.target.value)}
-                />
-                <button
-                  className="primary"
-                  disabled={pending || !text.trim()}
-                  onClick={() =>
-                    void attempt(async () => {
-                      await api(`/workflows/${selected}/feedback`, {
-                        text,
-                        scope,
-                      });
-                      setModal("");
-                      await refresh();
-                    })
-                  }
+            <>
+              <p>说明实际操作、观察到的问题和期望结果。</p>
+              <label>
+                这次反馈属于
+                <select
+                  value={scope}
+                  onChange={(e) => setScope(e.target.value)}
                 >
-                  保存并继续
-                </button>
-              </>
-            )}
+                  <option value="within_plan">原需求尚未做好</option>
+                  <option value="new_scope">我想增加或改变需求</option>
+                </select>
+              </label>
+              <textarea
+                aria-label="问题反馈"
+                rows={8}
+                value={text}
+                onChange={(e) => setText(e.target.value)}
+              />
+              <button
+                className="primary"
+                disabled={pending || !text.trim()}
+                onClick={() =>
+                  void attempt(async () => {
+                    await api(`/workflows/${selected}/feedback`, {
+                      text,
+                      scope,
+                    });
+                    setModal("");
+                    await refresh();
+                  })
+                }
+              >
+                保存并继续
+              </button>
+            </>
+
             {error && <div className="error">{error}</div>}
           </section>
         </div>

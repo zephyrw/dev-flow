@@ -36,7 +36,8 @@ s.config.host.executable = resolve(
   "host/DevFlow.WinHost/bin/Release/net10.0-windows/DevFlow.WinHost.exe",
 );
 s.config.host.required = true;
-s.config.models.agy_executable = "C:/Users/yckj4798/AppData/Local/agy/bin/agy.exe";
+s.config.models.agy_executable =
+  "C:/Users/yckj4798/AppData/Local/agy/bin/agy.exe";
 s.config.timeouts.agent_minutes = 8;
 const engine = new Engine(s.store, s.config),
   r = await repository(s.root);
@@ -68,8 +69,12 @@ const w = engine.create(
   "live-" + Date.now(),
 );
 const contract = plan(objectHash(p), r.baseline);
+contract.task_model = "leaf-v1";
+contract.modules = [{ id: "M1", title: "文本修复" }];
+contract.tasks[0]!.module_id = "M1";
+contract.tasks[0]!.completion_checks = [{ path: "app.txt", contains: "after" }];
 contract.tests[0]!.expected_case_ids = ["test updates content"];
-contract.markdown += `\n\n本次联调标记：${marker}。必须通过 devflow_worker MCP 完成修改、任务声明、冻结、检查和完成报告，并在中文完成摘要中原样报告此标记。`;
+contract.markdown += `\n\n本次联调标记：${marker}。先调用 devflow_start_task task_id=T01，再通过 devflow_worker MCP 完成修改、任务声明、冻结、检查和完成报告，并在中文完成摘要中原样报告此标记。`;
 engine.submitPlan(w.id, contract, w.version, "live-plan");
 const processes = new ProcessManager(s.config.host.executable, true);
 const checker = new LocalRuntime(engine);
@@ -179,7 +184,9 @@ engine.runtime = {
   },
 } satisfies Runtime;
 if (process.argv.includes("--production-runtime")) {
-  const { LocalRuntime: ProductionRuntime } = await import(pathToFileURL(resolve("dist/packages/runtime/src/runtime.js")).href);
+  const { LocalRuntime: ProductionRuntime } = await import(
+    pathToFileURL(resolve("dist/packages/runtime/src/runtime.js")).href
+  );
   engine.runtime = new ProductionRuntime(engine);
 }
 const app = await buildServer(engine);
@@ -202,7 +209,7 @@ try {
     })
     .click();
   await page.getByRole("button", { name: "批准当前计划" }).click();
-  await page.getByRole("button", { name: "实时输出", exact: true }).click();
+  await page.getByRole("button", { name: "执行过程", exact: true }).click();
   console.log(
     "Live agy workflow approved through the local UI without login; watching event-driven state.",
   );
@@ -230,10 +237,9 @@ try {
   await Promise.all([
     completion,
     (async () => {
-      await expect(page.locator(".logs")).toContainText(
-        "devflow_execute_context",
-        { timeout: 120000 },
-      );
+      await expect(page.locator(".logs")).toContainText("读取已批准计划", {
+        timeout: 120000,
+      });
       liveUiBeforeCompletion = ["EXECUTING", "VERIFYING"].includes(
         engine.get(w.id).state,
       );
@@ -254,13 +260,18 @@ try {
     workflow_id: w.id,
     state: detail.workflow.state,
     blocker: detail.workflow.blocker,
-    model: (liveResult as any)?.result ?? (events as any[]).find(e => e.payload?.event === "init")?.payload?.init,
+    model:
+      (liveResult as any)?.result ??
+      (events as any[]).find((e) => e.payload?.event === "init")?.payload?.init,
     production_runtime: process.argv.includes("--production-runtime"),
     session: liveResult,
     task_status: detail.tasks,
+    test_progress: detail.test_progress,
+    task_started: (events as any[]).some((e) => e.type === "TaskStarted"),
+    task_completed: (events as any[]).some((e) => e.type === "TaskCompleted"),
     evidence: detail.evidence,
     content: readFileSync(join(r.repo, "app.txt"), "utf8"),
-    ui_logs_contain_tool: ui.includes("devflow_"),
+    ui_logs_contain_tool: ui.includes("读取已批准计划"),
     ui_logs_contain_marker: ui.includes(marker),
     ui_logs_visible_before_completion: liveUiBeforeCompletion,
     plan_only_marker: marker,
@@ -296,7 +307,11 @@ try {
       result.ui_logs_contain_tool &&
       result.ui_logs_contain_marker &&
       result.ui_logs_visible_before_completion &&
-      detail.tasks.every((t) => t.status === "verified"),
+      result.task_started &&
+      result.task_completed &&
+      detail.test_progress.total === 1 &&
+      detail.test_progress.passed === 1 &&
+      detail.tasks.every((t) => t.status === "verified" && t.completed),
     "LIVE_TEST_FAILED",
     "真实 MCP 联调未达到验收条件",
   );
