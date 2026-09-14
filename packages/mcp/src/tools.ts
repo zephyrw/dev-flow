@@ -224,9 +224,14 @@ export function makeMcp(engine: Engine, principal: Principal) {
             resolve("packages/skills/devflow-execute/SKILL.md"),
             "utf8",
           );
-        else if (a.section === "tasks")
-          value = a.id ? plan.tasks.find((t) => t.id === a.id) : plan.tasks;
-        else if (a.section === "tests")
+        else if (a.section === "tasks") {
+          const progress = engine.taskStatus(workflow);
+          const tasks = plan.tasks.map((t) => ({
+            ...t,
+            progress: progress.find((p) => p.id === t.id),
+          }));
+          value = a.id ? tasks.find((t) => t.id === a.id) : tasks;
+        } else if (a.section === "tests")
           value = a.id ? plan.tests.find((t) => t.id === a.id) : plan.tests;
         else if (a.section === "scope") value = plan.scope;
         else if (a.section === "feedback") value = w.feedback;

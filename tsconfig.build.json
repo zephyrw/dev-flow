@@ -1,1 +1,1 @@
-{"extends":"./tsconfig.json","compilerOptions":{"outDir":"dist","rootDir":".","declaration":true},"include":["apps/api/src","packages"],"exclude":["tests","apps/web"]}
+{"extends":"./tsconfig.json","compilerOptions":{"outDir":"dist","rootDir":".","declaration":true,"noEmitOnError":true},"include":["apps/api/src","packages"],"exclude":["tests","apps/web"]}

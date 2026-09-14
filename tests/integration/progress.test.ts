@@ -10,6 +10,86 @@ import { hash } from "../../packages/core/src/util.js";
 import { git } from "../../packages/git/src/git.js";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
+it("keeps downstream submissions and timestamps across prerequisite repair without repeating claims or restoring test evidence", async () => {
+  const s = await prepared();
+  try {
+    const rec = s.engine.plan(s.workflow.id),
+      original = rec.plan.tasks[0]!;
+    rec.plan.task_model = "leaf-v1";
+    rec.plan.modules = [{ id: "M1", title: "依赖链" }];
+    rec.plan.scope.allowed_paths = [
+      "app.txt",
+      "two.txt",
+      "three.txt",
+      "four.txt",
+    ];
+    rec.plan.tasks = rec.plan.scope.allowed_paths.map((path, i) => ({
+      ...original,
+      id: `T0${i + 1}`,
+      module_id: "M1",
+      paths: [path],
+      depends_on: i ? [`T0${i}`] : [],
+      completion_checks: [{ path, contains: "after" }],
+    }));
+    s.store.put("plan", rec.id, s.workflow.id, rec);
+    for (const task of rec.plan.tasks) {
+      writeFileSync(join(s.repo, task.paths[0]!), "after\n");
+      startTask(s.engine, s.principal, s.workflow.id, task.id);
+      s.engine.claimTask(
+        s.principal,
+        s.workflow.id,
+        task.id,
+        "已核对细项文件内容并提交本次实现记录",
+      );
+    }
+    const before = s.engine.taskStatus(s.workflow.id);
+    const f = s.engine.files(s.principal, s.workflow.id, "main", true);
+    f.broker.apply(f.root, rec.plan.scope, [
+      {
+        path: "app.txt",
+        expected_hash: hash("after\n"),
+        content: "after changed\n",
+      },
+    ]);
+    // A paused view must show prior submissions rather than "not started".
+    s.store.remove("task_activity", s.workflow.id);
+    const changed = s.engine.taskStatus(s.workflow.id);
+    expect(changed.map((t) => t.implementation_status)).toEqual([
+      "needs_changes",
+      "needs_recheck",
+      "needs_recheck",
+      "needs_recheck",
+    ]);
+    expect(changed.every((t) => t.has_implementation)).toBe(true);
+    expect(changed.map((t) => t.completed_at)).toEqual(
+      before.map((t) => t.completed_at),
+    );
+    startTask(s.engine, s.principal, s.workflow.id, "T01");
+    s.engine.claimTask(
+      s.principal,
+      s.workflow.id,
+      "T01",
+      "修复前置实现后重新核验，其他实现无需重复提交",
+    );
+    const after = s.engine.taskStatus(s.workflow.id);
+    expect(after.every((t) => t.completed)).toBe(true);
+    expect(after.slice(1).map((t) => t.completed_at)).toEqual(
+      before.slice(1).map((t) => t.completed_at),
+    );
+    expect(after.every((t) => t.status === "claimed")).toBe(true);
+    expect(s.store.list("evidence", s.workflow.id)).toHaveLength(0);
+    // Direct edits to a downstream file still invalidate that implementation.
+    writeFileSync(join(s.repo, "three.txt"), "changed elsewhere\n");
+    expect(s.engine.taskStatus(s.workflow.id).map((t) => t.completed)).toEqual([
+      true,
+      true,
+      false,
+      false,
+    ]);
+  } finally {
+    s.store.close();
+  }
+});
 it("tracks a leaf task, refuses premature completion, invalidates changed implementation and lists per-file diffs from task branch baseline", async () => {
   const s = await prepared();
   try {
@@ -57,8 +137,11 @@ it("tracks a leaf task, refuses premature completion, invalidates changed implem
     expect(changes[0]?.baseline).toBe(s.baseline);
     expect(changes[0]?.files).toEqual([{ path: "app.txt", status: "M" }]);
     expect(changes[0]).not.toHaveProperty("diff");
-    writeFileSync(join(f.root,"[special].txt"), "literal name\n");
-    expect((await s.engine.git.fileDiff(s.workflow.id,"main","[special].txt")).diff).toContain("+literal name");
+    writeFileSync(join(f.root, "[special].txt"), "literal name\n");
+    expect(
+      (await s.engine.git.fileDiff(s.workflow.id, "main", "[special].txt"))
+        .diff,
+    ).toContain("+literal name");
     expect(
       (await s.engine.git.fileDiff(s.workflow.id, "main", "app.txt")).diff,
     ).toContain("+after");

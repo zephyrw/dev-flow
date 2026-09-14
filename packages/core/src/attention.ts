@@ -1,6 +1,6 @@
 import type { Engine, PlanRecord } from "./engine.js";
 
-// Read-only presentation of authoritative state; never infer an actor from logs.
+// Present authoritative state; legacy recovery must not invent a human actor.
 export function workflowAttention(engine: Engine, key: string) {
   const w = engine.get(key);
   let interruption = engine.store.get<any>("interruption", key);
@@ -41,13 +41,12 @@ export function workflowAttention(engine: Engine, key: string) {
     } else {
       const stateEvent = recent.find(
         (e) =>
-          e.type === "StateChanged" &&
-          (e.payload as any)?.to === "STOPPED",
+          e.type === "StateChanged" && (e.payload as any)?.to === "STOPPED",
       );
       if (stateEvent) {
         interruption = {
           category: "pause",
-          source: "local_console",
+          source: "controller",
           at: stateEvent.created_at,
           prior_stage: w.stage,
           run_id: w.run_id,
@@ -102,7 +101,7 @@ export function workflowAttention(engine: Engine, key: string) {
     return {
       category: "acceptance",
       message: "等待你实际操作验收",
-      action: "查看测试环境",
+      action: "查看本机验证副本",
       at: w.updated_at,
     };
   if (["QUEUED", "REVIEW_QUEUED"].includes(w.state))

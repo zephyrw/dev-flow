@@ -86,7 +86,13 @@ function taskInfo(engine: Engine, key: string, taskId: string) {
   requireCondition(workspace, "WORKSPACE_MISSING", "任务仓库未绑定");
   return { w, plan, task, workspace };
 }
-export function taskProofValid(engine: Engine, key: string, taskId: string) {
+export function taskProofValid(
+  engine: Engine,
+  key: string,
+  taskId: string,
+  ownOnly = false,
+  visiting = new Set<string>(),
+): boolean {
   if (!engine.store.list<Workspace>("workspace", key).length) return false;
   const { w, task, workspace } = taskInfo(engine, key, taskId);
   const proof = engine.store.get<any>(
@@ -94,6 +100,15 @@ export function taskProofValid(engine: Engine, key: string, taskId: string) {
     `${key}-${w.plan_revision}-${taskId}`,
   );
   if (!proof || proof.stale) return false;
+  if (visiting.has(taskId)) return false;
+  const ancestors = new Set(visiting).add(taskId);
+  if (
+    !ownOnly &&
+    !task.depends_on.every((id) =>
+      taskProofValid(engine, key, id, false, ancestors),
+    )
+  )
+    return false;
   try {
     return task.paths.every((p) => {
       const path = safePath(workspace.root, p);
@@ -215,16 +230,19 @@ export function invalidateTaskProofs(
       )
       .map((t) => t.id),
   );
-  let size = -1;
-  while (size !== impacted.size) {
-    size = impacted.size;
-    for (const t of plan.tasks)
-      if (t.depends_on.some((id) => impacted.has(id))) impacted.add(t.id);
-  }
+  // Preserve unchanged downstream implementation. Its readiness depends on
+  // prerequisites dynamically; repairing a prerequisite must not require
+  // re-submitting every unchanged task. Test evidence is invalidated separately.
   for (const id of impacted) {
     const k = `${key}-${w.plan_revision}-${id}`,
       proof = engine.store.get<any>("task_proof", k);
     if (proof)
-      engine.store.put("task_proof", k, key, { ...proof, stale: true });
+      engine.store.put("task_proof", k, key, {
+        ...proof,
+        stale: true,
+        stale_reason: paths
+          ? "本任务文件已修改，需要重新核验实现"
+          : "检查未通过，需要重新核验实现",
+      });
   }
 }

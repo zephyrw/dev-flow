@@ -377,6 +377,7 @@ export class GitManager {
         branch: await git(ws.root, ["symbolic-ref", "--short", "HEAD"]),
         baseline: base,
         frozen: !!frozen,
+        owned: ws.owned,
         files,
       });
     }
