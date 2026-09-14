@@ -1184,7 +1184,18 @@ export class Engine {
     for (const c of project.commands.filter(
       (c) =>
         c.required_before_commit || project.git?.required_hooks.includes(c.id),
-    ))
+    )) {
+      if (c.parser === "none" || c.id === "build") {
+        const hasBuild = this.store
+          .recentEvents(key, 500)
+          .some((e) => e.type === "BuildReady");
+        requireCondition(
+          hasBuild,
+          "HOOK_EVIDENCE_MISSING",
+          `缺少提交前构建 ${c.id}`,
+        );
+        continue;
+      }
       requireCondition(
         this.store
           .list<Evidence>("evidence", key)
@@ -1199,6 +1210,7 @@ export class Engine {
         "HOOK_EVIDENCE_MISSING",
         `缺少提交前检查 ${c.id}`,
       );
+    }
     this.transition(key, ["REVIEWING"], "COMMITTING", "commit");
     try {
       await this.git.commit(snapshot, project, review.commit_message);
