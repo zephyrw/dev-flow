@@ -1,0 +1,12 @@
+{
+  "previous_revision": 1,
+  "revision": 2,
+  "state": "REPAIR_PLAN_PENDING",
+  "modules": 12,
+  "tasks": 42,
+  "completed": 0,
+  "case_total": 81,
+  "case_passed": 0,
+  "baseline": "4f683629c646731a1ddbf99960561acc7de6b772",
+  "branch": "feature-zxw"
+}

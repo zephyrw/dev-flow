@@ -1,3 +1,4 @@
+import { safePath } from "../../workspace/src/files.js";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import {
@@ -332,6 +333,116 @@ export class GitManager {
       snapshot.environment_revision,
     );
     return current.id === snapshot.id;
+  }
+  async changes(workflow: string, snapshot?: Snapshot) {
+    const result = [];
+    for (const ws of this.store.list<Workspace>("workspace", workflow)) {
+      const frozen = snapshot?.repositories.find(
+        (r) => r.workspace_id === ws.id,
+      );
+      const base = frozen?.baseline ?? ws.baseline;
+      const target = frozen ? [frozen.tree] : [];
+      const pairs = (
+        await git(ws.root, [
+          "diff",
+          "--no-ext-diff",
+          "--no-textconv",
+          "--no-renames",
+          "--name-status",
+          "-z",
+          base,
+          ...target,
+          "--",
+        ])
+      )
+        .split("\0")
+        .filter(Boolean);
+      const files: { path: string; status: string }[] = [];
+      for (let i = 0; i < pairs.length; i += 2)
+        files.push({ status: pairs[i]!, path: pairs[i + 1]! });
+      if (!frozen)
+        for (const path of (
+          await git(ws.root, [
+            "ls-files",
+            "--others",
+            "--exclude-standard",
+            "-z",
+          ])
+        )
+          .split("\0")
+          .filter(Boolean))
+          files.push({ path, status: "A" });
+      result.push({
+        repo_id: ws.repo_id,
+        branch: await git(ws.root, ["symbolic-ref", "--short", "HEAD"]),
+        baseline: base,
+        frozen: !!frozen,
+        files,
+      });
+    }
+    return result;
+  }
+  async fileDiff(
+    workflow: string,
+    repo: string,
+    path: string,
+    snapshot?: Snapshot,
+  ) {
+    const summary = (await this.changes(workflow, snapshot)).find(
+      (r) => r.repo_id === repo,
+    );
+    requireCondition(
+      summary && summary.files.some((f) => f.path === path),
+      "DIFF_FILE_MISSING",
+      "此文件不在当前变更清单中",
+      404,
+    );
+    const ws = this.store
+      .list<Workspace>("workspace", workflow)
+      .find((w) => w.repo_id === repo)!;
+    const frozen = snapshot?.repositories.find((r) => r.workspace_id === ws.id);
+    let raw = await git(ws.root, [
+      "--literal-pathspecs",
+      "diff",
+      "--no-ext-diff",
+      "--no-textconv",
+      "--no-renames",
+      summary.baseline,
+      ...(frozen ? [frozen.tree] : []),
+      "--",
+      path,
+    ]);
+    if (!raw && !frozen) {
+      const file = safePath(ws.root, path);
+      if (lstatSync(file).size > 512000)
+        return {
+          path,
+          branch: summary.branch,
+          baseline: summary.baseline,
+          diff: "文件过大，请在本地编辑器中查看。",
+          truncated: true,
+        };
+      const content = readFileSync(file);
+      raw = content.includes(0)
+        ? "二进制文件，无法显示文本差异。"
+        : content.length > 512000
+          ? "文件过大，请在本地编辑器中查看。"
+          : "新增文件：" +
+            path +
+            "\n" +
+            content
+              .toString("utf8")
+              .split("\n")
+              .map((l) => "+" + l)
+              .join("\n");
+    }
+    return {
+      path,
+      branch: summary.branch,
+      baseline: summary.baseline,
+      diff: raw.slice(0, 512000),
+      truncated: raw.length > 512000,
+    };
   }
   async liveDiff(workflow: string) {
     const result = [];

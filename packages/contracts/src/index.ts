@@ -44,6 +44,8 @@ export const ScopeSchema = z
   .strict();
 export const TaskSchema = z
   .object({
+    module_id: Id.optional(),
+    completion_checks: z.array(z.object({ path: RelativePath, contains: z.string().min(5) }).strict()).min(1).optional(),
     repo_id: Id.optional(),
     id: Id,
     title: z.string().min(1),
@@ -73,6 +75,8 @@ export const TestSchema = z
   .strict();
 export const PlanSchema = z
   .object({
+    task_model: z.literal("leaf-v1").optional(),
+    modules: z.array(z.object({ id: Id, title: z.string().min(1) }).strict()).min(1).optional(),
     markdown: z.string().min(80),
     complexity: z.enum(["simple", "complex"]),
     reason: z.string().min(1),
@@ -262,6 +266,8 @@ export interface Run {
   package_hash: string;
 }
 export interface Evidence {
+  plan_revision?: number;
+  cases?: { id: string; status: "passed" | "failed" | "skipped" }[];
   id: string;
   workflow_id: string;
   run_id: string;

@@ -11,6 +11,38 @@ export function validatePlan(input: unknown): {
   diagrams: string[];
 } {
   const plan = PlanSchema.parse(input);
+  if (plan.task_model === "leaf-v1") {
+    const modules = new Set(plan.modules?.map((m) => m.id));
+    requireCondition(
+      modules.size > 0 && modules.size === plan.modules?.length,
+      "MODULES_REQUIRED",
+      "细项计划需要唯一的模块分组",
+      422,
+    );
+    for (const task of plan.tasks) {
+      requireCondition(
+        task.module_id &&
+          modules.has(task.module_id) &&
+          task.completion_checks?.length,
+        "LEAF_CONTRACT_REQUIRED",
+        `细项 ${task.id} 缺少模块或可检查的完成条件`,
+        422,
+      );
+      for (const check of task.completion_checks!)
+        requireCondition(
+          task.paths.includes(check.path),
+          "COMPLETION_SCOPE",
+          "完成检查必须属于该细项的修改范围",
+          422,
+        );
+    }
+    requireCondition(
+      plan.modules!.every((m) => plan.tasks.some((t) => t.module_id === m.id)),
+      "EMPTY_MODULE",
+      "模块不能没有细项",
+      422,
+    );
+  }
   const taskIds = new Set(plan.tasks.map((t) => t.id)),
     testIds = new Set(plan.tests.map((t) => t.id));
   requireCondition(
@@ -21,6 +53,13 @@ export function validatePlan(input: unknown): {
   );
   const active = new Set<string>(),
     done = new Set<string>();
+  for (const test of plan.tests)
+    requireCondition(
+      new Set(test.expected_case_ids).size === test.expected_case_ids.length,
+      "DUPLICATE_CASE",
+      `测试 ${test.id} 的用例清单不能重复`,
+      422,
+    );
   function visit(key: string) {
     if (active.has(key)) throw new FlowError("TASK_CYCLE", "任务依赖存在环");
     if (done.has(key)) return;

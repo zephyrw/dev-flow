@@ -48,3 +48,31 @@ export function redact(text: string) {
       "$1[REDACTED]",
     );
 }
+
+/** Redact values, never serialized JSON syntax. Also handles nested tool JSON. */
+export function publicEvent(value: unknown): any {
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value);
+      if (parsed && typeof parsed === "object")
+        return JSON.stringify(publicEvent(parsed));
+    } catch {
+      /* Ordinary text, including incomplete streamed JSON. */
+    }
+    if (/[\u0000-\u0008\u000e-\u001f]/.test(value)) return "[已省略二进制内容]";
+    return redact(value);
+  }
+  if (Array.isArray(value)) return value.map(publicEvent);
+  if (value && typeof value === "object")
+    return Object.fromEntries(
+      Object.entries(value)
+        .filter(([key]) => !/thought|reasoning/i.test(key))
+        .map(([key, item]) => [
+          key,
+          /secret|token|password|api[_-]?key/i.test(key)
+            ? "[REDACTED]"
+            : publicEvent(item),
+        ]),
+    );
+  return value;
+}

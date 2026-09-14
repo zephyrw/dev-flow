@@ -20,6 +20,9 @@ import {
   type Plan,
 } from "../../contracts/src/index.js";
 import { hash, id } from "../../core/src/util.js";
+const isBinary = (content: Buffer) =>
+  content.includes(0) ||
+  content.subarray(0, 8192).some((b) => b < 9 || (b > 13 && b < 32));
 const protectedParts = new Set([".git", ".agents", ".codex", ".devflow"]);
 export function safePath(root: string, input: string, write = false): string {
   RelativePath.parse(input);
@@ -74,7 +77,13 @@ export class FileBroker {
       "FILE_TOO_LARGE",
       "文件过大或类型不支持",
     );
-    const content = readFileSync(target, "utf8");
+    const bytes = readFileSync(target);
+    requireCondition(
+      !isBinary(bytes),
+      "BINARY_FILE",
+      "这是二进制文件，请读取对应源码",
+    );
+    const content = bytes.toString("utf8");
     return {
       path: p,
       hash: hash(content),
@@ -110,8 +119,17 @@ export class FileBroker {
       for (const e of readdirSync(join(root, dir), { withFileTypes: true })) {
         if (hits.length >= max) return;
         if (
-          protectedParts.has(e.name) ||
-          ["node_modules", "dist", ".cache"].includes(e.name) ||
+          protectedParts.has(e.name.toLowerCase()) ||
+          [
+            "node_modules",
+            "dist",
+            ".cache",
+            "target",
+            "build",
+            "bin",
+            "obj",
+            "coverage",
+          ].includes(e.name.toLowerCase()) ||
           e.isSymbolicLink()
         )
           continue;
@@ -121,7 +139,10 @@ export class FileBroker {
           try {
             const t = safePath(root, p);
             if (lstatSync(t).size > 1024 * 1024) continue;
-            readFileSync(t, "utf8")
+            const bytes = readFileSync(t);
+            if (isBinary(bytes)) continue;
+            bytes
+              .toString("utf8")
               .split("\n")
               .forEach((line, i) => {
                 if (line.includes(query) && hits.length < max)

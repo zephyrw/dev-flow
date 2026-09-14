@@ -63,6 +63,7 @@ export class Environments {
       "ENVIRONMENT_CAPACITY",
       "保留的测试环境已达到上限，请释放不用的环境",
     );
+    const activity = (type: string, payload: Record<string, unknown>) => this.engine.store.event(workflow.id, workflow.project_id, type, { ...payload, task_id: this.engine.store.get<any>("task_activity", workflow.id)?.task_id }, workflow.run_id);
     const env: Environment = {
       id: id("env"),
       workflow_id: workflow.id,
@@ -86,6 +87,7 @@ export class Environments {
       this.engine.store.put("environment", workflow.id, workflow.id, env);
       mkdirSync(env.data_dir, { recursive: true });
       if (project.data.fixture_command_id) {
+        activity("FixtureStarted", {});
         assertActive();
         const fixture = project.commands.find(
           (c) => c.id === project.data.fixture_command_id,
@@ -126,6 +128,7 @@ export class Environments {
           "测试数据初始化失败",
         );
         assertActive();
+        activity("FixtureReady", {});
       }
       for (const service of [...project.services].sort((a, b) =>
         a.port_pool === "backend" ? -1 : b.port_pool === "backend" ? 1 : 0,
@@ -166,6 +169,7 @@ export class Environments {
               )?.origin ?? "",
           };
           const args = command.args.map((a) => expand(a, variables));
+          activity("ServiceStarting", { service_id: service.id, label: service.port_pool === "backend" ? "后端服务" : "前端服务", process_id: processId });
           const proc = this.processes.start({
             workflow_id: workflow.id,
             id: processId,
@@ -183,6 +187,7 @@ export class Environments {
               "ServiceOutput",
               {
                 service_id: service.id,
+                process_id: processId,
                 stream: "stdout",
                 text: b.toString("utf8").slice(0, 16000),
               },
@@ -195,6 +200,7 @@ export class Environments {
               "ServiceOutput",
               {
                 service_id: service.id,
+                process_id: processId,
                 stream: "stderr",
                 text: b.toString("utf8").slice(0, 16000),
               },
@@ -233,6 +239,7 @@ export class Environments {
                 assertActive,
               );
             assertActive();
+            activity("ServiceReady", { service_id: service.id, label: service.port_pool === "backend" ? "后端服务" : "前端服务", origin, process_id: processId });
             running = true;
             break;
           } catch (error) {
@@ -267,6 +274,7 @@ export class Environments {
       );
       return env;
     } catch (e) {
+      activity("EnvironmentFailed", { message: e instanceof Error ? e.message : String(e) });
       env.status = "failed";
       this.engine.store.put("environment", workflow.id, workflow.id, env);
       await this.stop(workflow.id);

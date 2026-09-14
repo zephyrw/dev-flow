@@ -1,3 +1,4 @@
+import { invalidateTaskProofs } from "../../core/src/progress.js";
 import {
   mkdirSync,
   readFileSync,
@@ -35,6 +36,7 @@ import {
   now,
   objectHash,
   redact,
+  publicEvent,
 } from "../../core/src/util.js";
 import { evaluateReport, parseReport } from "../../evidence/src/parse.js";
 import { Environments, expand } from "./environment.js";
@@ -212,20 +214,30 @@ export class LocalRuntime implements Runtime {
     const processes = new Set<string>();
     this.preparationProcesses.set(run, processes);
     const prepare = async () => {
-    this.assertRun(workflow.id, principal.run_id!, ["EXECUTING"]);
-    // Initial onboarding adapters must be implemented before their servers start.
-    // Restart retained servers after edits so acceptance sees the current code.
-    await this.environments.stop(workflow.id);
-    this.assertRun(workflow.id, principal.run_id!, ["EXECUTING"]);
-    await this.environments.ensure(this.engine.get(workflow.id),
-      () => { this.assertRun(workflow.id, principal.run_id!, ["EXECUTING"]); },
-      processId => { processes.add(processId); });
-    this.assertRun(workflow.id, principal.run_id!, ["EXECUTING"]);
+      this.assertRun(workflow.id, principal.run_id!, ["EXECUTING"]);
+      // Initial onboarding adapters must be implemented before their servers start.
+      // Restart retained servers after edits so acceptance sees the current code.
+      await this.environments.stop(workflow.id);
+      this.assertRun(workflow.id, principal.run_id!, ["EXECUTING"]);
+      await this.environments.ensure(
+        this.engine.get(workflow.id),
+        () => {
+          this.assertRun(workflow.id, principal.run_id!, ["EXECUTING"]);
+        },
+        (processId) => {
+          processes.add(processId);
+        },
+      );
+      this.assertRun(workflow.id, principal.run_id!, ["EXECUTING"]);
     };
     const pending = prepare();
     this.preparing.set(run, pending);
-    try { await pending; }
-    finally { this.preparing.delete(run); this.preparationProcesses.delete(run); }
+    try {
+      await pending;
+    } finally {
+      this.preparing.delete(run);
+      this.preparationProcesses.delete(run);
+    }
   }
   async check(
     workflow: Workflow,
@@ -297,8 +309,16 @@ export class LocalRuntime implements Runtime {
         "代码快照变化",
       );
       assertCurrent();
+      this.engine.store.event(
+        workflow.id,
+        workflow.project_id,
+        "CheckStarted",
+        { test_id: testId, task_ids: test.task_ids },
+        principal.run_id,
+      );
       mkdirSync(dir, { recursive: true });
       let stats: {
+        cases?: Evidence["cases"];
         status: "passed" | "failed";
         case_ids: string[];
         passed: number;
@@ -324,6 +344,10 @@ export class LocalRuntime implements Runtime {
         stats = {
           status: "passed",
           case_ids: output.case_ids,
+          cases: output.case_ids.map((id) => ({
+            id,
+            status: "passed" as const,
+          })),
           passed: output.case_ids.length,
           failed: 0,
           skipped: 0,
@@ -424,6 +448,7 @@ export class LocalRuntime implements Runtime {
         snapshot_id: snapshot.id,
         environment_revision: workflow.environment_revision,
         test_id: testId,
+        plan_revision: workflow.plan_revision,
         layer: test.layer,
         ...stats,
         exit_code: exit,
@@ -439,6 +464,14 @@ export class LocalRuntime implements Runtime {
         principal.run_id,
       );
       if (evidence.status === "failed") {
+        if (evidence.cases?.some((c) => c.status === "failed")) {
+          const plan = this.engine.plan(workflow.id).plan;
+          const affected = plan.tasks.filter((t) =>
+            test.task_ids.includes(t.id),
+          );
+          for (const t of affected)
+            invalidateTaskProofs(this.engine, workflow.id, t.paths, t.repo_id);
+        }
         this.engine.invalidate(
           workflow.id,
           "检查失败，返回批准范围内修复；所有测试需重新运行",
@@ -456,8 +489,11 @@ export class LocalRuntime implements Runtime {
       if (!attempted) throw error;
       if (
         error instanceof FlowError &&
-        ["BROWSER_BUSY", "SCENE_MISSING", "SCENE_NOT_CALIBRATED"].includes(error.code)
-      ) throw error;
+        ["BROWSER_BUSY", "SCENE_MISSING", "SCENE_NOT_CALIBRATED"].includes(
+          error.code,
+        )
+      )
+        throw error;
       // Cancellation or another phase owns the workflow now. Never reopen it
       // or attach this attempt's result to that newer verification phase.
       assertCurrent();
@@ -495,6 +531,7 @@ export class LocalRuntime implements Runtime {
         snapshot_id: workflow.snapshot_id!,
         environment_revision: workflow.environment_revision,
         test_id: testId,
+        plan_revision: workflow.plan_revision,
         layer: test.layer,
         status: "failed",
         case_ids: [],
@@ -675,12 +712,4 @@ export class LocalRuntime implements Runtime {
   async close() {
     await this.processes.close();
   }
-}
-function publicEvent(event: Record<string, unknown>): unknown {
-  const clone = JSON.parse(
-    JSON.stringify(event, (key, value) =>
-      /thought|reasoning|secret|token|password/i.test(key) ? undefined : value,
-    ),
-  );
-  return JSON.parse(redact(JSON.stringify(clone)));
 }
