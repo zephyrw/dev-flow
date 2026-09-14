@@ -402,7 +402,7 @@ export async function buildServer(engine: Engine) {
     engine.store.on("event", listener);
     socket.on("close", () => engine.store.off("event", listener));
   });
-  app.get("/api/events", { websocket: true }, (socket, req) => {
+  app.get("/api/events", { websocket: true }, async (socket, req) => {
     human(req);
     const query = z
       .object({
@@ -418,7 +418,7 @@ export async function buildServer(engine: Engine) {
     const workflow = query.data.workflow_id;
     const send = (event: any) => {
       if (event.workflow_id === workflow && event.event_seq > cursor) {
-        if (socket.bufferedAmount > 4 * 1024 * 1024) {
+        if (socket.bufferedAmount > 8 * 1024 * 1024) {
           socket.close(1013, "Reconnect with cursor");
           return;
         }
@@ -427,13 +427,18 @@ export async function buildServer(engine: Engine) {
       }
     };
     engine.store.on("event", send);
+    socket.on("close", () => engine.store.off("event", send));
     while (socket.readyState === 1) {
-      const batch = engine.store.events(workflow, cursor, 500);
+      while (socket.readyState === 1 && socket.bufferedAmount > 1024 * 1024) {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      if (socket.readyState !== 1) break;
+      const batch = engine.store.events(workflow, cursor, 200);
       if (!batch.length) break;
       for (const event of batch) send(event);
-      if (batch.length < 500 || socket.bufferedAmount > 4 * 1024 * 1024) break;
+      await new Promise((resolve) => setImmediate(resolve));
+      if (batch.length < 200) break;
     }
-    socket.on("close", () => engine.store.off("event", send));
   });
   const webRoot = resolve("dist/web");
   if (existsSync(webRoot)) {

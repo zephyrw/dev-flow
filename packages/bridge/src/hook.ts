@@ -23,19 +23,28 @@ try {
       tool === `devflow_worker/${n}`,
   );
   if (name) {
-    const response = await fetch(
-      new URL("/api/worker/policy", process.env.DEVFLOW_BASE_URL),
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${process.env.DEVFLOW_RUN_TOKEN}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ tool: name }),
-        signal: AbortSignal.timeout(25000),
-      },
-    );
-    if (response.ok) {
+    let response: Response | undefined;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        response = await fetch(
+          new URL("/api/worker/policy", process.env.DEVFLOW_BASE_URL),
+          {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${process.env.DEVFLOW_RUN_TOKEN}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ tool: name }),
+            signal: AbortSignal.timeout(15000),
+          },
+        );
+        if (response) break;
+      } catch (err) {
+        if (attempt === 2) throw err;
+        await new Promise((r) => setTimeout(r, 200));
+      }
+    }
+    if (response?.ok) {
       decision = "allow";
       reason = "APPROVED_SCOPED_TOOL";
       permissionOverrides = [`mcp(devflow_worker/${name})`];
