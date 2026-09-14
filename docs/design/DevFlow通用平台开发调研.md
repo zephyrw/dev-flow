@@ -149,3 +149,10 @@ OpenCode 的 npm 声明入口 `opencode-ai/bin/opencode.exe` 实际为 479 字�
 关键决定：每工作流冻结角色绑定并允许实施/测试细项覆盖；所有正式改向走停止旧Run、新会话和完整文档ack；三文档状态以平台事件和真实证据为准；临时问答用同工具同模型独立无工具会话，DevFlow不持久化问答内容且不进入主流程；上游保留与原生会话能力明确区分。
 
 本轮浏览核对Cursor参数、OpenCode CLI、Kimi命令和Claude Code /btw官方文档，链接及证据边界见实施方案16.11。未运行真实模型认证。原1.2调研结论继续保留，其任务级交互不足由1.3补齐。
+
+
+## 2026-09-14 主工作区代码同步调研（1.4）
+
+已核对GitManager.prepare只使用计划基线创建worktree，已有工作区直接复用；Engine.run传plan.baselines，snapshot及commit仍绑定旧baseline。当前没有自动merge/pull入口，不能以手工git merge替代受管基线迁移。
+
+本轮用户选最新已提交版本，冻结6eb47cca18dc65397aab125e96eb329cecc344d2。原任务无执行工作树，故直接修订plan.baselines；保留其他未提交修改。第17节新增审批输入选择、详情合并按钮、稳定输入快照、三方合并、冲突及恢复、execution_base和复核证据范围；同任务新增P12。Git官方依据见主设计17.9。

@@ -2087,6 +2087,10 @@ function App() {
                                 {},
                               );
                               await api(
+                                `/workflows/${selected}/environment/stop`,
+                                {},
+                              ).catch(() => {});
+                              await api(
                                 `/workflows/${selected}/${w.state === "COMMIT_PARTIAL" ? "commit/retry" : "recover"}`,
                                 {},
                               );
@@ -2133,11 +2137,13 @@ function App() {
                         反馈问题
                       </button>
                     )}
-                    {![
-                      "COMMITTED",
-                      "COMMITTING",
-                      "COMMIT_PARTIAL",
-                      "STOPPED",
+                    {[
+                      "QUEUED",
+                      "EXECUTING",
+                      "VERIFYING",
+                      "REVIEW_QUEUED",
+                      "REVIEWING",
+                      "STOPPING",
                     ].includes(w.state) && (
                       <button
                         className="danger"

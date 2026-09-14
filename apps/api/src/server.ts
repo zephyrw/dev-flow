@@ -284,6 +284,7 @@ export async function buildServer(engine: Engine) {
   app.post("/api/workflows/:id/recover", async (req) => {
     human(req);
     const key = Id.parse((req.params as any).id);
+    await (engine.runtime as LocalRuntime)?.environments?.stop(key).catch(() => {});
     const result = resumeApproved(engine, key);
     void engine.dispatch();
     return result;
