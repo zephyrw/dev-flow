@@ -39,22 +39,45 @@ async function api(path: string, body?: unknown) {
   if (!r.ok) throw Error(result.error?.message ?? "请求失败");
   return result;
 }
-function Diagram({ source }: { source: string }) {
-  const ref = useRef<HTMLDivElement>(null);
-  const [error, setError] = useState("");
-  useEffect(() => {
-    let alive = true;
-    setError("");
+const mermaidSvgCache = new Map<string, string>();
+
+let mermaidInitialized = false;
+function ensureMermaidInitialized() {
+  if (!mermaidInitialized) {
     mermaid.initialize({
       startOnLoad: false,
       securityLevel: "strict",
       theme: "neutral",
       fontFamily: "Microsoft YaHei, sans-serif",
     });
-    void mermaid
-      .render("diagram" + crypto.randomUUID().replaceAll("-", ""), source)
-      .then(({ svg }) => {
-        if (alive && ref.current) ref.current.innerHTML = svg;
+    mermaidInitialized = true;
+  }
+}
+
+const Diagram = React.memo(function Diagram({ source }: { source: string }) {
+  const [svg, setSvg] = useState<string>(
+    () => mermaidSvgCache.get(source) ?? "",
+  );
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let alive = true;
+    if (mermaidSvgCache.has(source)) {
+      setSvg(mermaidSvgCache.get(source)!);
+      setError("");
+      return;
+    }
+    ensureMermaidInitialized();
+    setError("");
+    const id = "diagram" + crypto.randomUUID().replaceAll("-", "");
+    mermaid
+      .render(id, source)
+      .then(({ svg: renderedSvg }) => {
+        mermaidSvgCache.set(source, renderedSvg);
+        if (alive) {
+          setSvg(renderedSvg);
+          setError("");
+        }
       })
       .catch(() => {
         if (alive) setError("图表语法有误，请在批准前修正。");
@@ -63,38 +86,409 @@ function Diagram({ source }: { source: string }) {
       alive = false;
     };
   }, [source]);
-  return error ? (
-    <p className="error">{error}</p>
-  ) : (
-    <div className="diagram" ref={ref} />
-  );
-}
-function Document({ text }: { text: string }) {
+
+  if (error) return <p className="error">{error}</p>;
+  if (svg) {
+    return (
+      <div className="diagram" dangerouslySetInnerHTML={{ __html: svg }} />
+    );
+  }
+  return <div className="diagram" style={{ minHeight: "40px" }} />;
+});
+
+const markdownComponents = {
+  code: ({ className, children, ...props }: any) =>
+    className === "language-mermaid" ? (
+      <Diagram source={String(children)} />
+    ) : (
+      <code className={className} {...props}>
+        {children}
+      </code>
+    ),
+  a: ({ children, ...props }: any) => (
+    <a {...props} target="_blank" rel="noreferrer">
+      {children}
+    </a>
+  ),
+};
+
+const Document = React.memo(function Document({ text }: { text: string }) {
   return (
     <div className="document">
-      <Markdown
-        remarkPlugins={[remarkGfm]}
-        components={{
-          code: ({ className, children, ...props }) =>
-            className === "language-mermaid" ? (
-              <Diagram source={String(children)} />
-            ) : (
-              <code className={className} {...props}>
-                {children}
-              </code>
-            ),
-          a: ({ children, ...props }) => (
-            <a {...props} target="_blank" rel="noreferrer">
-              {children}
-            </a>
-          ),
-        }}
-      >
+      <Markdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
         {text}
       </Markdown>
     </div>
   );
+});
+
+interface CentralWorkspaceProps {
+  selected: string;
+  tab: string;
+  setTab: (tab: string) => void;
+  w: any;
+  detail: any;
+  diff: any[];
+  pending: boolean;
+  refreshDiff: () => Promise<void>;
+  refresh: () => Promise<void>;
+  setFileDiff: (f: any) => void;
+  attempt: (fn: () => Promise<unknown>) => Promise<void>;
+  setNotice: (notice: string) => void;
 }
+
+const CentralWorkspace = React.memo(
+  function CentralWorkspace({
+    selected,
+    tab,
+    setTab,
+    w,
+    detail,
+    diff,
+    pending,
+    refreshDiff,
+    refresh,
+    setFileDiff,
+    attempt,
+    setNotice,
+  }: CentralWorkspaceProps) {
+    return (
+      <div className="central-workspace">
+        <div className="tabs">
+          {[
+            ["overview", "概览"],
+            ["plan", "开发计划"],
+            ["tasks", "任务进度"],
+            ["tests", "测试结果"],
+            ["diff", "代码变更"],
+            ["review", "代码复核"],
+            ["environment", "测试环境"],
+          ].map(([key, title]) => (
+            <button
+              key={key}
+              className={tab === key ? "active" : ""}
+              onClick={() => {
+                setTab(key!);
+              }}
+            >
+              {title}
+            </button>
+          ))}
+        </div>
+        <div className="module-body" key={selected + tab}>
+          {tab === "overview" && (
+            <div className="two-column">
+              <section className="panel">
+                <h2>这次要解决什么</h2>
+                <p className="request">{w.title}</p>
+                <details>
+                  <summary>完整需求</summary>
+                  <p className="request">{w.request}</p>
+                </details>
+              </section>
+              <section className="panel">
+                <h2>任务记录</h2>
+                <details>
+                  <summary>执行历史与技术详情</summary>
+                  <p>任务编号：{w.id}</p>
+                  {detail.runs.map((r: any) => (
+                    <p key={r.id}>
+                      {new Date(r.started_at).toLocaleString()} ·{" "}
+                      {(
+                        {
+                          running: "执行中",
+                          failed: "失败",
+                          completed: "已结束",
+                          stopped: "已停止",
+                        } as Record<string, string>
+                      )[r.status] ?? "已结束"}
+                    </p>
+                  ))}
+                </details>
+              </section>
+            </div>
+          )}
+          {tab === "plan" && (
+            <section className="panel">
+              <div className="section-title">
+                <h2>开发计划 · 第 {w.plan_revision} 版</h2>
+                {w.plan_revision > 0 && (
+                  <a href={`/api/workflows/${selected}/documents/plan`}>
+                    下载 Markdown
+                  </a>
+                )}
+              </div>
+              {detail.plan ? (
+                <>
+                  <Document text={detail.plan.plan.markdown} />
+                  <details>
+                    <summary>本计划使用的运行配置</summary>
+                    <p>
+                      工作目录：
+                      {w.workspace_mode === "new_worktree"
+                        ? "独立 worktree"
+                        : "当前目录"}
+                      ；测试数据：
+                      {detail.project?.data.mode === "directory"
+                        ? "按任务独立目录"
+                        : "共享数据按资源排队"}
+                    </p>
+                    {detail.project?.repositories.map((r: any) => (
+                      <p key={r.id}>
+                        {r.id}：
+                        {detail.context?.roots?.[r.id] ?? r.path}
+                      </p>
+                    ))}
+                    {detail.project?.commands.map((c: any) => (
+                      <p key={c.id}>
+                        {c.id}：
+                        <code>{[c.executable, ...c.args].join(" ")}</code>
+                      </p>
+                    ))}
+                  </details>
+                </>
+              ) : (
+                <div className="empty">
+                  计划尚未提交。先由 GPT-6 完成调研和任务拆解。
+                </div>
+              )}
+            </section>
+          )}
+          {tab === "tasks" && (
+            <section className="panel">
+              <TaskTree detail={detail} title="任务进度" />
+            </section>
+          )}
+          {tab === "tests" && (
+            <section className="panel">
+              <TestResults detail={detail} title="测试结果" />
+            </section>
+          )}
+          {tab === "diff" && (
+            <section className="panel">
+              <div className="section-title">
+                <h2>代码变更</h2>
+                <button onClick={() => void attempt(refreshDiff)}>
+                  刷新文件列表
+                </button>
+              </div>
+              {diff.map((d) => (
+                <div key={d.repo_id}>
+                  <h3>{d.branch}</h3>
+                  <p>
+                    对比任务开始前提交{" "}
+                    <code>{d.baseline?.slice(0, 8)}</code>
+                    {d.frozen ? " · 测试版本" : " · 当前工作区"}
+                  </p>
+                  <div className="changed-files">
+                    {d.files?.map((f: any) => (
+                      <button
+                        key={f.path}
+                        onClick={() =>
+                          void attempt(async () => {
+                            const loading = {
+                              path: f.path,
+                              branch: d.branch,
+                              baseline: d.baseline,
+                              loading: true,
+                            };
+                            setFileDiff(loading);
+                            try {
+                              const result = await api(
+                                `/workflows/${selected}/diff?repo_id=${encodeURIComponent(d.repo_id)}&path=${encodeURIComponent(f.path)}`,
+                              );
+                              setFileDiff((current: any) =>
+                                current === loading ? result : current,
+                              );
+                            } catch (error) {
+                              setFileDiff((current: any) =>
+                                current === loading ? null : current,
+                              );
+                              throw error;
+                            }
+                          })
+                        }
+                      >
+                        <span className="badge">
+                          {(
+                            {
+                              A: "新增",
+                              D: "删除",
+                              M: "修改",
+                              T: "类型变化",
+                            } as Record<string, string>
+                          )[f.status] ?? "修改"}
+                        </span>
+                        <span>{f.path}</span>
+                        <span>查看差异 →</span>
+                      </button>
+                    ))}
+                  </div>
+                  {!d.files?.length && <p>没有文件变更</p>}
+                </div>
+              ))}
+              {!diff.length && (
+                <p className="empty">
+                  {pending ? "正在读取变更文件…" : "尚无变更文件"}
+                </p>
+              )}
+            </section>
+          )}
+          {tab === "review" && (
+            <section className="panel">
+              <h2>独立复核结果</h2>
+              {detail.review ? (
+                <>
+                  <p>
+                    {detail.review.stale
+                      ? "历史复核已失效，请以新一轮结果为准。"
+                      : "本轮复核"}{" "}
+                    · 第 {detail.review.plan_revision} 版计划 ·{" "}
+                    {
+                      (
+                        {
+                          pass: "通过",
+                          findings: "发现问题",
+                          incomplete: "验证不完整",
+                        } as Record<string, string>
+                      )[detail.review.verdict]
+                    }
+                  </p>
+                  <details>
+                    <summary>技术详情</summary>
+                    <p className="mono">
+                      快照：{detail.review.snapshot_id}
+                    </p>
+                  </details>
+                  {detail.review.findings.map((f: any, index: number) => (
+                    <article key={index} className="panel">
+                      <h3>
+                        {f.id} · {f.severity}
+                      </h3>
+                      <p>
+                        {f.repo_id} / {f.path}:{f.line}
+                      </p>
+                      <p>触发条件：{f.trigger}</p>
+                      <p>证据：{f.evidence}</p>
+                      <p>影响：{f.consequence}</p>
+                      <p>处置理由：{f.reason}</p>
+                    </article>
+                  ))}
+                  {detail.review.unresolved_questions.length > 0 && (
+                    <>
+                      <h3>复核缺口</h3>
+                      <ul>
+                        {detail.review.unresolved_questions.map(
+                          (q: string, i: number) => (
+                            <li key={i}>{q}</li>
+                          ),
+                        )}
+                      </ul>
+                    </>
+                  )}
+                  <h3>覆盖文件</h3>
+                  <ul>
+                    {detail.review.coverage.files.map((p: string) => (
+                      <li key={p}>{p}</li>
+                    ))}
+                  </ul>
+                  {detail.review.repair_plan && (
+                    <p>
+                      修复计划已列入「计划与图解」，需要重新批准后才能执行。
+                    </p>
+                  )}
+                </>
+              ) : (
+                <div className="empty">
+                  尚无独立复核结果。人工验收通过后会自动启动 GPT-6。
+                </div>
+              )}
+            </section>
+          )}
+          {tab === "environment" && (
+            <section className="panel">
+              <div className="section-title">
+                <h2>测试环境</h2>
+                {detail.environment && (
+                  <button
+                    onClick={() =>
+                      void attempt(async () => {
+                        await api(
+                          `/workflows/${selected}/environment/stop`,
+                          {},
+                        );
+                        await refresh();
+                      })
+                    }
+                  >
+                    释放环境
+                  </button>
+                )}
+              </div>
+              <EnvironmentSummary detail={detail} />
+              {detail.environment && (
+                <>
+                  {w.state === "HUMAN_PENDING" && (
+                    <div className="actions">
+                      <button
+                        onClick={() =>
+                          void attempt(async () => {
+                            await api(
+                              `/workflows/${selected}/browser/lock`,
+                              {},
+                            );
+                            setNotice(
+                              "已保留共享浏览器，完成场景后请释放。",
+                            );
+                          })
+                        }
+                      >
+                        开始浏览器验收
+                      </button>
+                      <button
+                        onClick={() =>
+                          void attempt(async () => {
+                            await api(
+                              `/workflows/${selected}/browser/release`,
+                              {},
+                            );
+                            setNotice("浏览器已释放。");
+                          })
+                        }
+                      >
+                        结束浏览器验收
+                      </button>
+                    </div>
+                  )}
+                </>
+              )}
+            </section>
+          )}
+        </div>
+      </div>
+    );
+  },
+  (prev, next) => {
+    return (
+      prev.selected === next.selected &&
+      prev.tab === next.tab &&
+      prev.w?.state === next.w?.state &&
+      prev.w?.plan_revision === next.w?.plan_revision &&
+      prev.w?.version === next.w?.version &&
+      prev.w?.title === next.w?.title &&
+      prev.w?.request === next.w?.request &&
+      prev.detail?.runs === next.detail?.runs &&
+      prev.detail?.plan === next.detail?.plan &&
+      prev.detail?.tasks === next.detail?.tasks &&
+      prev.detail?.test_progress === next.detail?.test_progress &&
+      prev.detail?.review === next.detail?.review &&
+      prev.detail?.environment === next.detail?.environment &&
+      prev.diff === next.diff &&
+      prev.pending === next.pending
+    );
+  },
+);
+
 function App() {
   const [showGuide, setShowGuide] = useState(
     () => new URLSearchParams(location.search).get("view") === "guide",
@@ -862,327 +1256,20 @@ function App() {
                   "workspace-columns " + (sidebarOpen ? "with-execution" : "")
                 }
               >
-                <div className="central-workspace">
-                  <div className="tabs">
-                    {[
-                      ["overview", "概览"],
-                      ["plan", "开发计划"],
-                      ["tasks", "任务进度"],
-                      ["tests", "测试结果"],
-                      ["diff", "代码变更"],
-                      ["review", "代码复核"],
-                      ["environment", "测试环境"],
-                    ].map(([key, title]) => (
-                      <button
-                        key={key}
-                        className={tab === key ? "active" : ""}
-                        onClick={() => {
-                          setTab(key!);
-                        }}
-                      >
-                        {title}
-                      </button>
-                    ))}
-                  </div>
-                  <div className="module-body" key={selected + tab}>
-                    {tab === "overview" && (
-                      <div className="two-column">
-                        <section className="panel">
-                          <h2>这次要解决什么</h2>
-                          <p className="request">{w.title}</p>
-                          <details>
-                            <summary>完整需求</summary>
-                            <p className="request">{w.request}</p>
-                          </details>
-                        </section>
-                        <section className="panel">
-                          <h2>任务记录</h2>
-                          <details>
-                            <summary>执行历史与技术详情</summary>
-                            <p>任务编号：{w.id}</p>
-                            {detail.runs.map((r: any) => (
-                              <p key={r.id}>
-                                {new Date(r.started_at).toLocaleString()} ·{" "}
-                                {(
-                                  {
-                                    running: "执行中",
-                                    failed: "失败",
-                                    completed: "已结束",
-                                    stopped: "已停止",
-                                  } as Record<string, string>
-                                )[r.status] ?? "已结束"}
-                              </p>
-                            ))}
-                          </details>
-                        </section>
-                      </div>
-                    )}
-                    {tab === "plan" && (
-                      <section className="panel">
-                        <div className="section-title">
-                          <h2>开发计划 · 第 {w.plan_revision} 版</h2>
-                          {w.plan_revision > 0 && (
-                            <a
-                              href={`/api/workflows/${selected}/documents/plan`}
-                            >
-                              下载 Markdown
-                            </a>
-                          )}
-                        </div>
-                        {detail.plan ? (
-                          <>
-                            <Document text={detail.plan.plan.markdown} />
-                            <details>
-                              <summary>本计划使用的运行配置</summary>
-                              <p>
-                                工作目录：
-                                {w.workspace_mode === "new_worktree"
-                                  ? "独立 worktree"
-                                  : "当前目录"}
-                                ；测试数据：
-                                {detail.project?.data.mode === "directory"
-                                  ? "按任务独立目录"
-                                  : "共享数据按资源排队"}
-                              </p>
-                              {detail.project?.repositories.map((r: any) => (
-                                <p key={r.id}>
-                                  {r.id}：
-                                  {detail.context?.roots?.[r.id] ?? r.path}
-                                </p>
-                              ))}
-                              {detail.project?.commands.map((c: any) => (
-                                <p key={c.id}>
-                                  {c.id}：
-                                  <code>
-                                    {[c.executable, ...c.args].join(" ")}
-                                  </code>
-                                </p>
-                              ))}
-                            </details>
-                          </>
-                        ) : (
-                          <div className="empty">
-                            计划尚未提交。先由 GPT-6 完成调研和任务拆解。
-                          </div>
-                        )}
-                      </section>
-                    )}
-                    {tab === "tasks" && (
-                      <section className="panel">
-                        <TaskTree detail={detail} title="任务进度" />
-                      </section>
-                    )}
-                    {tab === "tests" && (
-                      <section className="panel">
-                        <TestResults detail={detail} title="测试结果" />
-                      </section>
-                    )}
-                    {tab === "diff" && (
-                      <section className="panel">
-                        <div className="section-title">
-                          <h2>代码变更</h2>
-                          <button onClick={() => void attempt(refreshDiff)}>
-                            刷新文件列表
-                          </button>
-                        </div>
-                        {diff.map((d) => (
-                          <div key={d.repo_id}>
-                            <h3>{d.branch}</h3>
-                            <p>
-                              对比任务开始前提交{" "}
-                              <code>{d.baseline?.slice(0, 8)}</code>
-                              {d.frozen ? " · 测试版本" : " · 当前工作区"}
-                            </p>
-                            <div className="changed-files">
-                              {d.files?.map((f: any) => (
-                                <button
-                                  key={f.path}
-                                  onClick={() =>
-                                    void attempt(async () => {
-                                      const loading = {
-                                        path: f.path,
-                                        branch: d.branch,
-                                        baseline: d.baseline,
-                                        loading: true,
-                                      };
-                                      setFileDiff(loading);
-                                      try {
-                                        const result = await api(
-                                          `/workflows/${selected}/diff?repo_id=${encodeURIComponent(d.repo_id)}&path=${encodeURIComponent(f.path)}`,
-                                        );
-                                        setFileDiff((current: any) =>
-                                          current === loading
-                                            ? result
-                                            : current,
-                                        );
-                                      } catch (error) {
-                                        setFileDiff((current: any) =>
-                                          current === loading ? null : current,
-                                        );
-                                        throw error;
-                                      }
-                                    })
-                                  }
-                                >
-                                  <span className="badge">
-                                    {(
-                                      {
-                                        A: "新增",
-                                        D: "删除",
-                                        M: "修改",
-                                        T: "类型变化",
-                                      } as Record<string, string>
-                                    )[f.status] ?? "修改"}
-                                  </span>
-                                  <span>{f.path}</span>
-                                  <span>查看差异 →</span>
-                                </button>
-                              ))}
-                            </div>
-                            {!d.files?.length && <p>没有文件变更</p>}
-                          </div>
-                        ))}
-                        {!diff.length && (
-                          <p className="empty">
-                            {pending ? "正在读取变更文件…" : "尚无变更文件"}
-                          </p>
-                        )}
-                      </section>
-                    )}
-                    {tab === "review" && (
-                      <section className="panel">
-                        <h2>独立复核结果</h2>
-                        {detail.review ? (
-                          <>
-                            <p>
-                              {detail.review.stale
-                                ? "历史复核已失效，请以新一轮结果为准。"
-                                : "本轮复核"}{" "}
-                              · 第 {detail.review.plan_revision} 版计划 ·{" "}
-                              {
-                                (
-                                  {
-                                    pass: "通过",
-                                    findings: "发现问题",
-                                    incomplete: "验证不完整",
-                                  } as Record<string, string>
-                                )[detail.review.verdict]
-                              }
-                            </p>
-                            <details>
-                              <summary>技术详情</summary>
-                              <p className="mono">
-                                快照：{detail.review.snapshot_id}
-                              </p>
-                            </details>
-                            {detail.review.findings.map(
-                              (f: any, index: number) => (
-                                <article key={index} className="panel">
-                                  <h3>
-                                    {f.id} · {f.severity}
-                                  </h3>
-                                  <p>
-                                    {f.repo_id} / {f.path}:{f.line}
-                                  </p>
-                                  <p>触发条件：{f.trigger}</p>
-                                  <p>证据：{f.evidence}</p>
-                                  <p>影响：{f.consequence}</p>
-                                  <p>处置理由：{f.reason}</p>
-                                </article>
-                              ),
-                            )}
-                            {detail.review.unresolved_questions.length > 0 && (
-                              <>
-                                <h3>复核缺口</h3>
-                                <ul>
-                                  {detail.review.unresolved_questions.map(
-                                    (q: string, i: number) => (
-                                      <li key={i}>{q}</li>
-                                    ),
-                                  )}
-                                </ul>
-                              </>
-                            )}
-                            <h3>覆盖文件</h3>
-                            <ul>
-                              {detail.review.coverage.files.map((p: string) => (
-                                <li key={p}>{p}</li>
-                              ))}
-                            </ul>
-                            {detail.review.repair_plan && (
-                              <p>
-                                修复计划已列入「计划与图解」，需要重新批准后才能执行。
-                              </p>
-                            )}
-                          </>
-                        ) : (
-                          <div className="empty">
-                            尚无独立复核结果。人工验收通过后会自动启动 GPT-6。
-                          </div>
-                        )}
-                      </section>
-                    )}
-                    {tab === "environment" && (
-                      <section className="panel">
-                        <div className="section-title">
-                          <h2>测试环境</h2>
-                          {detail.environment && (
-                            <button
-                              onClick={() =>
-                                void attempt(async () => {
-                                  await api(
-                                    `/workflows/${selected}/environment/stop`,
-                                    {},
-                                  );
-                                  await refresh();
-                                })
-                              }
-                            >
-                              释放环境
-                            </button>
-                          )}
-                        </div>
-                        <EnvironmentSummary detail={detail} />
-                        {detail.environment && (
-                          <>
-                            {w.state === "HUMAN_PENDING" && (
-                              <div className="actions">
-                                <button
-                                  onClick={() =>
-                                    void attempt(async () => {
-                                      await api(
-                                        `/workflows/${selected}/browser/lock`,
-                                        {},
-                                      );
-                                      setNotice(
-                                        "已保留共享浏览器，完成场景后请释放。",
-                                      );
-                                    })
-                                  }
-                                >
-                                  开始浏览器验收
-                                </button>
-                                <button
-                                  onClick={() =>
-                                    void attempt(async () => {
-                                      await api(
-                                        `/workflows/${selected}/browser/release`,
-                                        {},
-                                      );
-                                      setNotice("浏览器已释放。");
-                                    })
-                                  }
-                                >
-                                  结束浏览器验收
-                                </button>
-                              </div>
-                            )}
-                          </>
-                        )}
-                      </section>
-                    )}
-                  </div>
-                </div>
+                <CentralWorkspace
+                  selected={selected}
+                  tab={tab}
+                  setTab={setTab}
+                  w={w}
+                  detail={detail}
+                  diff={diff}
+                  pending={pending}
+                  refreshDiff={refreshDiff}
+                  refresh={refresh}
+                  setFileDiff={setFileDiff}
+                  attempt={attempt}
+                  setNotice={setNotice}
+                />
                 {sidebarOpen && (
                   <ExecutionPanel
                     key={selected}
