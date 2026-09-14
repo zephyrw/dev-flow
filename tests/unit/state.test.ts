@@ -75,6 +75,7 @@ it("UT-08 scheduler rotates projects and retains per-project order", () => {
   engine.scheduler.enqueue("b", "p1");
   engine.scheduler.enqueue("c", "p2");
   expect(engine.scheduler.next("p1")?.id).toBe("c");
+  expect(engine.scheduler.next("p2", 10, new Set(["a"]))?.id).toBe("b");
   store.close();
 });
 it("UT-18 restart revokes live runs without marking stale leases free", () => {

@@ -860,15 +860,16 @@ export class Engine {
         const item = this.scheduler.next(
           last,
           this.config.scheduler.aging_minutes,
+          this.running,
         );
         if (!item) break;
         last = item.project;
         const w = this.get(item.id);
-        if (this.running.has(w.id)) continue;
         if (!["QUEUED", "REVIEW_QUEUED"].includes(w.state)) {
           this.store.remove("queue", w.id);
           continue;
         }
+        if (this.running.has(w.id)) continue;
         const review = w.state === "REVIEW_QUEUED";
         const slot = this.scheduler.capacity(
           review ? "reviewer" : "executor",
