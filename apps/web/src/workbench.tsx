@@ -3,30 +3,45 @@ import React from "react";
 export function DeliveryStrip({ detail }: { detail: any }) {
   const leaf = detail.plan?.plan.task_model === "leaf-v1";
   const total = detail.tasks.length,
-    completed = detail.tasks.filter((t: any) => t.completed).length;
+    completed = detail.tasks.filter(
+      (t: any) => t.has_implementation ?? t.completed,
+    ).length;
+  const pending = detail.tasks.filter(
+    (t: any) => t.has_implementation && !t.completed,
+  ).length;
   const test = detail.test_progress;
   const taskPercent = total > 0 ? Math.round((completed / total) * 100) : 0;
-  const testPercent = test?.total > 0 ? Math.round((test.passed / test.total) * 100) : 0;
+  const testPercent =
+    test?.total > 0 ? Math.round((test.passed / test.total) * 100) : 0;
 
   return (
     <div className="delivery-strip" aria-label="交付进度">
       {["PLAN_PENDING", "REPAIR_PLAN_PENDING"].includes(
         detail.workflow.state,
-      ) && <span className="metric-chip pending-chip"><small>待批准清单</small></span>}
+      ) && (
+        <span className="metric-chip pending-chip">
+          <small>待批准清单</small>
+        </span>
+      )}
       {!leaf ? (
         <span className="metric-chip empty-chip">尚未生成细项清单</span>
       ) : (
         <span className="metric-chip">
-          <span className="chip-label">已完成任务</span>
+          <span className="chip-label">已提交实现</span>
           <b className="chip-value">
             {completed}/{total}
           </b>
           <span className="chip-percent">{taskPercent}%</span>
           <progress
-            aria-label="任务完成进度"
+            aria-label="实现提交进度"
             value={completed}
             max={total || 1}
           />
+        </span>
+      )}
+      {pending > 0 && (
+        <span className="metric-chip stale-chip">
+          待核验实现 <b>{pending}</b>
         </span>
       )}
       {test?.total > 0 && (
@@ -81,13 +96,19 @@ export function EnvironmentSummary({ detail }: { detail: any }) {
   const ready = servicesReady && (!needsData || tested);
   return (
     <div className="environment-summary">
-      <div className={`environment-state-banner ${ready ? "ready" : env?.error ? "error" : "pending"}`}>
+      <p className="notice-subtle">
+        本机验证副本用于运行当前任务的代码和浏览器测试，使用独立数据目录。地址为
+        127.0.0.1，端口由本机空闲端口池分配，与工作流控制台分开。
+      </p>
+      <div
+        className={`environment-state-banner ${ready ? "ready" : env?.error ? "error" : "pending"}`}
+      >
         <span className="status-indicator-dot" />
         <p className="environment-state">
           {ready
             ? "可进行验收"
             : env?.error
-              ? "环境启动失败"
+              ? "本机验证副本启动失败"
               : servicesReady
                 ? "服务已启动，数据验证尚未完成"
                 : env?.status === "starting"
@@ -101,8 +122,12 @@ export function EnvironmentSummary({ detail }: { detail: any }) {
           const actual = env?.services.find((a: any) => a.id === s.id);
           return (
             <div className="metric-row" key={s.id}>
-              <span className="metric-title">{s.port_pool === "backend" ? "后端服务" : "前端服务"}</span>
-              <b className={`metric-status ${actual?.status === "ready" ? "ready" : ""}`}>
+              <span className="metric-title">
+                {s.port_pool === "backend" ? "后端服务" : "前端服务"}
+              </span>
+              <b
+                className={`metric-status ${actual?.status === "ready" ? "ready" : ""}`}
+              >
                 {env?.status === "ready" && actual?.status === "ready"
                   ? "健康检查通过"
                   : env?.status === "starting" && actual?.status === "ready"
@@ -110,7 +135,12 @@ export function EnvironmentSummary({ detail }: { detail: any }) {
                     : "未就绪"}
               </b>
               {ready && s.port_pool === "frontend" && (
-                <a className="btn-link" href={actual.origin} target="_blank" rel="noreferrer">
+                <a
+                  className="btn-link"
+                  href={actual.origin}
+                  target="_blank"
+                  rel="noreferrer"
+                >
                   打开验收页面 ↗
                 </a>
               )}

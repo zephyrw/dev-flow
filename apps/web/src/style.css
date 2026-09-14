@@ -946,11 +946,13 @@ header h1 {
 
 /* Latest Activity Ticker */
 .latest-activity {
-  flex: 1 1 0;
+  flex: 0 1 auto;
+  max-width: fit-content;
   min-width: 0;
   height: 28px;
   display: inline-flex;
   align-items: center;
+  justify-content: flex-start;
   gap: 8px;
   border: 1px solid transparent;
   background: transparent;
@@ -960,9 +962,10 @@ header h1 {
   color: var(--text-muted);
   box-shadow: none;
   cursor: pointer;
-  transition: background var(--transition), color var(--transition);
+  transition: background var(--transition), color var(--transition), border-color var(--transition);
   overflow: hidden;
   white-space: nowrap;
+  text-align: left;
 }
 
 .latest-activity:hover {
@@ -982,17 +985,18 @@ header h1 {
 }
 
 .activity-text {
-  flex: 1 1 0;
+  flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  text-align: left;
 }
 
 .latest-activity time {
   font-size: 11px;
   color: var(--text-light);
-  margin-left: auto;
+  margin-left: 0;
   font-family: var(--font-mono);
   flex-shrink: 0;
 }
@@ -1152,6 +1156,13 @@ header h1 {
   overflow-y: auto;
   overscroll-behavior: contain;
   padding-right: 4px;
+}
+
+.module-body.module-body-diff {
+  overflow: hidden !important;
+  display: flex !important;
+  flex-direction: column !important;
+  padding-right: 0 !important;
 }
 
 .module-body .panel {
@@ -1848,6 +1859,10 @@ input:focus, textarea:focus, select:focus {
   overflow: auto;
 }
 
+.file-diff span {
+  display: block;
+}
+
 .file-diff .added {
   background: rgba(16, 185, 129, 0.2);
   color: #34d399;
@@ -1856,6 +1871,768 @@ input:focus, textarea:focus, select:focus {
 .file-diff .removed {
   background: rgba(239, 68, 68, 0.2);
   color: #f87171;
+}
+
+/* ==========================================================================
+   Code Diff Workbench (SourceTree + GitHub Style)
+   ========================================================================== */
+
+.diff-panel-wrapper {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  padding: 12px;
+  margin-bottom: 0;
+  box-sizing: border-box;
+  overflow: hidden;
+  min-width: 0;
+}
+
+.diff-workbench-container {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* 顶部概览条 */
+.diff-header-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  background: var(--bg-surface-subtle);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  min-width: 0;
+  overflow: hidden;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+}
+
+.diff-meta-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12.5px;
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+}
+
+.diff-branch-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: #ffffff;
+  padding: 3px 8px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-medium);
+  font-weight: 600;
+  color: var(--text-main);
+  min-width: 0;
+  max-width: 320px;
+  flex-shrink: 1;
+}
+
+.diff-branch-icon {
+  color: var(--primary);
+  font-size: 13px;
+  flex-shrink: 0;
+}
+
+.diff-branch-name {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diff-baseline-info {
+  color: var(--text-muted);
+  font-size: 12px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.diff-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.diff-stats-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  background: #ffffff;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-full);
+  font-size: 12px;
+  box-shadow: var(--shadow-xs);
+  white-space: nowrap;
+}
+
+.diff-stats-pill .stat-count {
+  color: var(--text-main);
+  font-weight: 500;
+}
+
+.diff-stats-pill .stat-add {
+  color: var(--color-success-text);
+  font-weight: 600;
+  font-family: var(--font-mono);
+}
+
+.diff-stats-pill .stat-mod {
+  color: var(--color-warning-text);
+  font-weight: 600;
+  font-family: var(--font-mono);
+}
+
+.diff-stats-pill .stat-del {
+  color: var(--color-danger-text);
+  font-weight: 600;
+  font-family: var(--font-mono);
+}
+
+.diff-refresh-btn {
+  font-size: 12px;
+  padding: 5px 10px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* 分栏布局：自适应撑满剩余高度，内部独立滚动，消除外层滚动条 */
+.diff-layout-split {
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+  display: grid;
+  grid-template-columns: 280px minmax(0, 1fr);
+  gap: 12px;
+  align-items: stretch;
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* 左侧文件导航：明确重置为相对定位与自适应满高 */
+.diff-sidebar {
+  position: relative !important;
+  width: auto !important;
+  height: 100% !important;
+  min-height: 0 !important;
+  top: auto !important;
+  left: auto !important;
+  z-index: 1 !important;
+  background: #ffffff;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: var(--shadow-xs);
+  min-width: 0;
+}
+
+.diff-sidebar-toolbar {
+  padding: 10px;
+  background: var(--bg-surface-subtle);
+  border-bottom: 1px solid var(--border-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.diff-search-box {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 100%;
+}
+
+.diff-search-input {
+  width: 100%;
+  padding: 5px 24px 5px 8px;
+  font-size: 12px;
+  border: 1px solid var(--border-medium);
+  border-radius: var(--radius-md);
+  background: #ffffff;
+  outline: none;
+  transition: all var(--transition);
+}
+
+.diff-search-input:focus {
+  border-color: var(--border-focus);
+  box-shadow: 0 0 0 2px var(--primary-light);
+}
+
+.diff-search-clear {
+  position: absolute;
+  right: 6px;
+  border: none;
+  background: transparent;
+  color: var(--text-light);
+  cursor: pointer;
+  padding: 0 4px;
+  font-size: 13px;
+}
+
+.diff-view-switcher {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.diff-switcher-buttons {
+  display: inline-flex;
+  background: #e2e8f0;
+  padding: 2px;
+  border-radius: var(--radius-md);
+}
+
+.switcher-btn {
+  border: none;
+  background: transparent;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-muted);
+  border-radius: 4px;
+  cursor: pointer;
+  box-shadow: none;
+  transition: all var(--transition);
+}
+
+.switcher-btn.active {
+  background: #ffffff;
+  color: var(--primary-text);
+  box-shadow: var(--shadow-xs);
+  font-weight: 600;
+}
+
+.diff-match-count {
+  font-size: 11px;
+  color: var(--text-light);
+  font-family: var(--font-mono);
+}
+
+/* 文件列表：自适应填满侧栏，内部独立滚动 */
+.diff-files-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.diff-no-matches {
+  padding: 28px 12px;
+  text-align: center;
+  color: var(--text-light);
+  font-size: 12px;
+}
+
+/* 文件卡片基础样式：整行作为Button，单行绝不折行 */
+.diff-file-card {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  border-radius: var(--radius-md);
+  border: 1px solid transparent;
+  background: transparent;
+  cursor: pointer;
+  transition: all var(--transition);
+  user-select: none;
+  min-width: 0;
+  flex-wrap: nowrap;
+  overflow: hidden;
+  text-align: left;
+  box-shadow: none;
+  font-family: inherit;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+/* 树状单行文件项：紧凑精致，严格单行 */
+.diff-file-card.tree-child {
+  height: 26px;
+  min-height: 26px;
+  padding: 0 6px;
+  gap: 6px;
+  border-radius: var(--radius-sm);
+  flex-shrink: 0;
+}
+
+/* 列表模式两行卡片样式 */
+.diff-file-card.diff-file-card-flat {
+  min-height: 38px;
+  padding: 5px 8px;
+  gap: 8px;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.diff-file-card:hover {
+  background: var(--bg-surface-subtle);
+}
+
+.diff-file-card.active {
+  background: var(--primary-light);
+  border-color: var(--primary-border);
+}
+
+.diff-file-card.active .diff-file-name {
+  color: var(--primary-text);
+  font-weight: 600;
+}
+
+/* 状态徽标基础样式 (树状单行缩小一倍: 14x14px) */
+.diff-status-badge {
+  width: 14px;
+  height: 14px;
+  min-width: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 3px;
+  font-size: 9.5px;
+  font-weight: 700;
+  font-family: var(--font-mono);
+  flex-shrink: 0;
+  line-height: 1;
+}
+
+/* 列表模式徽标 (与原树状一致: 20x20px，紧凑精致) */
+.diff-status-badge.diff-status-badge-lg {
+  width: 20px;
+  height: 20px;
+  min-width: 20px;
+  font-size: 11px;
+  font-weight: 700;
+  border-radius: 4px;
+}
+
+.status-pill-add {
+  background: #2ea043;
+  color: #ffffff;
+  border: 1px solid #238636;
+}
+
+.status-pill-mod {
+  background: #d29922;
+  color: #ffffff;
+  border: 1px solid #bb8009;
+}
+
+.status-pill-del {
+  background: #cf222e;
+  color: #ffffff;
+  border: 1px solid #a40e26;
+}
+
+.status-pill-type {
+  background: #8250df;
+  color: #ffffff;
+  border: 1px solid #6639ba;
+}
+
+.diff-file-meta {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  justify-content: center;
+}
+
+.diff-file-name {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-main);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.3;
+}
+
+/* 列表模式下的路径样式：防垂直裁切，高对比度完整显示 */
+.diff-file-dir {
+  font-size: 11px;
+  color: #64748b;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.4;
+  margin-top: 2px;
+}
+
+/* 树状分组紧凑化 */
+.diff-tree-group {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex-shrink: 0;
+}
+
+.diff-folder-header {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 6px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  user-select: none;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.diff-folder-header:hover {
+  background: var(--bg-surface-subtle);
+  color: var(--text-main);
+}
+
+.folder-arrow {
+  font-size: 9px;
+  transition: transform var(--transition);
+  display: inline-block;
+  width: 10px;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.folder-arrow.collapsed {
+  transform: rotate(-90deg);
+}
+
+.folder-icon {
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.folder-name {
+  flex: 1 1 0;
+  font-family: var(--font-mono);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.folder-badge {
+  font-size: 10px;
+  color: var(--text-light);
+  background: var(--bg-surface-subtle);
+  padding: 0 5px;
+  border-radius: 99px;
+  font-family: var(--font-mono);
+  flex-shrink: 0;
+}
+
+.diff-folder-children {
+  padding-left: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  border-left: 1px solid var(--border-subtle);
+  margin-left: 8px;
+  margin-top: 2px;
+  margin-bottom: 3px;
+  min-width: 0;
+}
+
+.diff-sidebar-footer {
+  padding: 6px 10px;
+  background: var(--bg-surface-subtle);
+  border-top: 1px solid var(--border-subtle);
+  font-size: 10.5px;
+  color: var(--text-light);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  white-space: nowrap;
+}
+
+/* 右侧主 Diff 检视器：自适应满高，内部独立滚动 */
+.diff-inspector {
+  background: #ffffff;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: var(--shadow-xs);
+  min-width: 0;
+  flex: 1 1 0;
+  height: 100%;
+  min-height: 0;
+}
+
+.diff-inspector-head {
+  padding: 8px 12px;
+  background: var(--bg-surface-subtle);
+  border-bottom: 1px solid var(--border-subtle);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+  overflow: hidden;
+  flex-wrap: nowrap;
+  flex-shrink: 0;
+}
+
+.diff-file-headline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1 1 0;
+  overflow: hidden;
+}
+
+.diff-status-tag {
+  font-size: 10.5px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 4px;
+  text-transform: uppercase;
+  flex-shrink: 0;
+}
+
+.diff-full-path {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-main);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.diff-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.diff-line-counts {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  font-weight: 600;
+  margin-right: 2px;
+}
+
+.diff-line-counts .stat-add {
+  color: #16a34a;
+}
+
+.diff-line-counts .stat-del {
+  color: #dc2626;
+}
+
+.diff-head-btn {
+  font-size: 11px;
+  padding: 3px 8px;
+  white-space: nowrap;
+}
+
+.diff-code-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  background: #0f172a;
+  min-width: 0;
+}
+
+.diff-loading-state,
+.diff-empty-state,
+.diff-no-selection {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 60px 20px;
+  color: #94a3b8;
+  font-size: 13px;
+}
+
+.diff-spinner {
+  width: 22px;
+  height: 22px;
+  border: 2px solid rgba(255, 255, 255, 0.2);
+  border-top-color: #38bdf8;
+  border-radius: 50%;
+  animation: diff-spin 0.8s linear infinite;
+}
+
+@keyframes diff-spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Diff 代码流容器 */
+.diff-table-container {
+  width: 100%;
+  min-width: 0;
+  overflow-x: auto;
+}
+
+.diff-lines-flow {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  min-width: max-content;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 20px;
+}
+
+.diff-line-row {
+  display: flex;
+  align-items: stretch;
+  width: 100%;
+  min-width: 0;
+  white-space: pre;
+}
+
+.diff-line-row:hover {
+  filter: brightness(1.06);
+}
+
+.diff-line-row i {
+  font-style: normal;
+}
+
+.diff-line-row .diff-num-col {
+  width: 42px;
+  min-width: 42px;
+  padding: 0 6px;
+  text-align: right;
+  font-size: 11px;
+  color: #64748b;
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
+  user-select: none;
+}
+
+.diff-line-row .diff-sign-col {
+  width: 22px;
+  min-width: 22px;
+  text-align: center;
+  font-weight: 700;
+  user-select: none;
+}
+
+.diff-line-row .diff-content-col {
+  flex: 1 1 0;
+  padding: 0 10px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  white-space: pre;
+  tab-size: 2;
+  min-width: 0;
+}
+
+.diff-line-row.diff-row-add {
+  background: rgba(16, 185, 129, 0.16);
+  color: #d1fae5;
+}
+.diff-line-row.diff-row-add .new-col,
+.diff-line-row.diff-row-add .diff-sign-col {
+  color: #34d399;
+  font-weight: 600;
+}
+
+.diff-line-row.diff-row-del {
+  background: rgba(239, 68, 68, 0.16);
+  color: #fee2e2;
+}
+.diff-line-row.diff-row-del .old-col,
+.diff-line-row.diff-row-del .diff-sign-col {
+  color: #f87171;
+  font-weight: 600;
+}
+
+.diff-line-row.diff-row-hunk {
+  background: rgba(30, 58, 138, 0.45);
+  border-top: 1px solid rgba(59, 130, 246, 0.25);
+  border-bottom: 1px solid rgba(59, 130, 246, 0.25);
+}
+.diff-line-row.diff-row-hunk .hunk-header-cell {
+  padding: 2px 10px;
+  color: #93c5fd;
+  font-size: 11px;
+  font-weight: 600;
+  width: 100%;
+}
+
+.diff-line-row.diff-row-meta {
+  background: rgba(15, 23, 42, 0.6);
+  color: #94a3b8;
+  font-size: 11px;
+}
+.diff-line-row.diff-row-meta .meta-header-cell {
+  padding: 2px 10px;
+  width: 100%;
+}
+
+.diff-line-row.diff-row-context {
+  background: transparent;
+  color: #cbd5e1;
+}
+
+.diff-truncated-banner {
+  padding: 8px 14px;
+  background: rgba(245, 158, 11, 0.15);
+  border-top: 1px solid rgba(245, 158, 11, 0.3);
+  color: #fde68a;
+  font-size: 11.5px;
+  text-align: center;
+}
+
+.diff-inspector-foot {
+  padding: 6px 14px;
+  background: #090d16;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 11px;
+  color: #64748b;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-family: var(--font-mono);
+}
+
+/* 响应式断点 */
+@media (max-width: 960px) {
+  .diff-layout-split {
+    grid-template-columns: 1fr;
+  }
+  .diff-files-list {
+    max-height: 240px;
+  }
 }
 
 /* Document & Markdown Viewer */

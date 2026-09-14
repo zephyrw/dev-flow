@@ -360,6 +360,709 @@ function extractToc(markdown: string): TocItem[] {
   return items;
 }
 
+interface ParsedDiffLine {
+  type: "hunk" | "add" | "del" | "context" | "meta";
+  oldNum?: number | string;
+  newNum?: number | string;
+  prefix: string;
+  content: string;
+}
+
+function parseDiff(diffText: string): {
+  lines: ParsedDiffLine[];
+  additions: number;
+  deletions: number;
+} {
+  if (!diffText) return { lines: [], additions: 0, deletions: 0 };
+  const rawLines = diffText.split("\n");
+  const lines: ParsedDiffLine[] = [];
+  let oldLine = 0;
+  let newLine = 0;
+  let additions = 0;
+  let deletions = 0;
+
+  for (let i = 0; i < rawLines.length; i++) {
+    const line = rawLines[i]!;
+    const hunkMatch = line.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)/);
+    if (hunkMatch) {
+      oldLine = parseInt(hunkMatch[1]!, 10);
+      newLine = parseInt(hunkMatch[2]!, 10);
+      lines.push({
+        type: "hunk",
+        prefix: "",
+        content: line,
+      });
+      continue;
+    }
+
+    if (
+      line.startsWith("---") ||
+      line.startsWith("+++") ||
+      line.startsWith("diff --git") ||
+      line.startsWith("index ")
+    ) {
+      lines.push({
+        type: "meta",
+        prefix: "",
+        content: line,
+      });
+      continue;
+    }
+
+    if (line.startsWith("+")) {
+      additions++;
+      lines.push({
+        type: "add",
+        oldNum: "",
+        newNum: newLine++,
+        prefix: "+",
+        content: line.slice(1),
+      });
+    } else if (line.startsWith("-")) {
+      deletions++;
+      lines.push({
+        type: "del",
+        oldNum: oldLine++,
+        newNum: "",
+        prefix: "-",
+        content: line.slice(1),
+      });
+    } else {
+      lines.push({
+        type: "context",
+        oldNum: oldLine > 0 ? oldLine++ : "",
+        newNum: newLine > 0 ? newLine++ : "",
+        prefix: " ",
+        content: line.startsWith(" ") ? line.slice(1) : line,
+      });
+    }
+  }
+
+  return { lines, additions, deletions };
+}
+
+interface CodeDiffFileItem {
+  repo_id: string;
+  path: string;
+  status: string;
+  branch: string;
+  baseline: string;
+  frozen: boolean;
+}
+
+interface CodeDiffPanelProps {
+  diff: any[];
+  selected: string;
+  pending: boolean;
+  refreshDiff: () => Promise<void>;
+  attempt: (fn: () => Promise<unknown>) => Promise<void>;
+  setFileDiff: (fileDiff: any) => void;
+  setNotice?: (notice: string) => void;
+}
+
+function CodeDiffPanel({
+  diff,
+  selected,
+  pending,
+  refreshDiff,
+  attempt,
+  setFileDiff,
+  setNotice,
+}: CodeDiffPanelProps) {
+  const allFiles = React.useMemo(() => {
+    const list: CodeDiffFileItem[] = [];
+    for (const d of diff ?? []) {
+      for (const f of d.files ?? []) {
+        list.push({
+          repo_id: d.repo_id,
+          path: f.path,
+          status: f.status,
+          branch: d.branch,
+          baseline: d.baseline,
+          frozen: !!d.frozen,
+        });
+      }
+    }
+    return list;
+  }, [diff]);
+
+  const [selectedFile, setSelectedFile] = useState<CodeDiffFileItem | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [viewMode, setViewMode] = useState<"tree" | "flat">("tree");
+  const [collapsedFolders, setCollapsedFolders] = useState<Record<string, boolean>>({});
+  const [inlineDiff, setInlineDiff] = useState<{
+    path: string;
+    branch?: string;
+    baseline?: string;
+    diff: string;
+    loading: boolean;
+    truncated?: boolean;
+  } | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  const diffCache = useRef<Record<string, any>>({});
+
+  useEffect(() => {
+    if (!allFiles.length) {
+      setSelectedFile(null);
+      setInlineDiff(null);
+      return;
+    }
+    setSelectedFile((current) => {
+      if (
+        current &&
+        allFiles.some((f) => f.repo_id === current.repo_id && f.path === current.path)
+      ) {
+        return current;
+      }
+      return allFiles[0] ?? null;
+    });
+  }, [allFiles]);
+
+  useEffect(() => {
+    if (!selectedFile) {
+      setInlineDiff(null);
+      return;
+    }
+    const cacheKey = `${selectedFile.repo_id}:${selectedFile.path}`;
+    if (diffCache.current[cacheKey]) {
+      setInlineDiff(diffCache.current[cacheKey]);
+      return;
+    }
+
+    let active = true;
+    setInlineDiff({
+      path: selectedFile.path,
+      branch: selectedFile.branch,
+      baseline: selectedFile.baseline,
+      diff: "",
+      loading: true,
+    });
+
+    api(
+      `/workflows/${selected}/diff?repo_id=${encodeURIComponent(selectedFile.repo_id)}&path=${encodeURIComponent(selectedFile.path)}`,
+    )
+      .then((result) => {
+        if (!active) return;
+        diffCache.current[cacheKey] = result;
+        setInlineDiff(result);
+      })
+      .catch((err) => {
+        if (!active) return;
+        setInlineDiff({
+          path: selectedFile.path,
+          branch: selectedFile.branch,
+          baseline: selectedFile.baseline,
+          diff: `读取差异失败: ${err.message ?? String(err)}`,
+          loading: false,
+        });
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [selectedFile, selected]);
+
+  const openModalDiff = (file: CodeDiffFileItem) => {
+    void attempt(async () => {
+      const loading = {
+        path: file.path,
+        branch: file.branch,
+        baseline: file.baseline,
+        loading: true,
+      };
+      setFileDiff(loading);
+      try {
+        const cacheKey = `${file.repo_id}:${file.path}`;
+        const result =
+          diffCache.current[cacheKey] ??
+          (await api(
+            `/workflows/${selected}/diff?repo_id=${encodeURIComponent(file.repo_id)}&path=${encodeURIComponent(file.path)}`,
+          ));
+        diffCache.current[cacheKey] = result;
+        setFileDiff((current: any) => (current === loading ? result : current));
+      } catch (error) {
+        setFileDiff((current: any) => (current === loading ? null : current));
+        throw error;
+      }
+    });
+  };
+
+  const filteredFiles = React.useMemo(() => {
+    if (!searchQuery.trim()) return allFiles;
+    const q = searchQuery.toLowerCase().trim();
+    return allFiles.filter((f) => f.path.toLowerCase().includes(q));
+  }, [allFiles, searchQuery]);
+
+  useEffect(() => {
+    const handleKey = (e: KeyboardEvent) => {
+      if (
+        e.target instanceof HTMLInputElement ||
+        e.target instanceof HTMLTextAreaElement
+      ) {
+        return;
+      }
+      if (!filteredFiles.length) return;
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        const currentIndex = selectedFile
+          ? filteredFiles.findIndex(
+              (f) => f.repo_id === selectedFile.repo_id && f.path === selectedFile.path,
+            )
+          : -1;
+        let nextIndex = 0;
+        if (e.key === "ArrowDown") {
+          nextIndex = currentIndex < filteredFiles.length - 1 ? currentIndex + 1 : 0;
+        } else {
+          nextIndex = currentIndex > 0 ? currentIndex - 1 : filteredFiles.length - 1;
+        }
+        setSelectedFile(filteredFiles[nextIndex] ?? null);
+      }
+    };
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, [filteredFiles, selectedFile]);
+
+  const stats = React.useMemo(() => {
+    let added = 0;
+    let modified = 0;
+    let deleted = 0;
+    for (const f of allFiles) {
+      if (f.status === "A") added++;
+      else if (f.status === "D") deleted++;
+      else modified++;
+    }
+    return { total: allFiles.length, added, modified, deleted };
+  }, [allFiles]);
+
+  const treeGroups = React.useMemo(() => {
+    const map: Record<string, CodeDiffFileItem[]> = {};
+    for (const file of filteredFiles) {
+      const parts = file.path.split("/");
+      const folder =
+        parts.length > 1
+          ? parts.slice(0, Math.min(2, parts.length - 1)).join("/")
+          : "root";
+      if (!map[folder]) map[folder] = [];
+      map[folder].push(file);
+    }
+    return map;
+  }, [filteredFiles]);
+
+  const parsedDiff = React.useMemo(() => {
+    return parseDiff(inlineDiff?.diff ?? "");
+  }, [inlineDiff?.diff]);
+
+  const copyPath = () => {
+    if (!selectedFile) return;
+    navigator.clipboard?.writeText(selectedFile.path);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+    if (setNotice) setNotice(`已复制路径: ${selectedFile.path}`);
+  };
+
+  const statusMap: Record<
+    string,
+    { label: string; textClass: string; bgClass: string; title: string }
+  > = {
+    A: { label: "A", textClass: "status-tag-add", bgClass: "status-pill-add", title: "新增文件" },
+    M: { label: "M", textClass: "status-tag-mod", bgClass: "status-pill-mod", title: "修改文件" },
+    D: { label: "D", textClass: "status-tag-del", bgClass: "status-pill-del", title: "删除文件" },
+    T: { label: "T", textClass: "status-tag-type", bgClass: "status-pill-type", title: "类型变化" },
+  };
+
+  const parseBranch = (branch?: string) => {
+    if (!branch) return { display: "工作区", full: "", isWorktree: false };
+    const match = branch.match(/^devflow\/[^/]+\/(.+)$/);
+    if (match) {
+      return {
+        display: match[1],
+        full: branch,
+        isWorktree: true,
+      };
+    }
+    return {
+      display: branch,
+      full: branch,
+      isWorktree: false,
+    };
+  };
+
+  const firstRepo = diff[0];
+  const branchInfo = parseBranch(firstRepo?.branch);
+  const isWorktree = firstRepo?.owned ?? branchInfo.isWorktree;
+
+  return (
+    <div className="diff-workbench-container">
+      {/* 顶部元信息与统计概览条 */}
+      <div className="diff-header-bar">
+        <div className="diff-meta-info">
+          <div
+            className="diff-branch-badge"
+            title={
+              branchInfo.isWorktree
+                ? `当前分支: ${branchInfo.display} (隔离分支: ${branchInfo.full})`
+                : `当前分支: ${branchInfo.display}`
+            }
+          >
+            <span className="diff-branch-icon">⎇</span>
+            <span className="diff-branch-name">
+              {branchInfo.display}
+            </span>
+            {firstRepo?.frozen ? (
+              <span className="badge VERIFYING">测试版本</span>
+            ) : isWorktree ? (
+              <span className="badge VERIFYING" title="运行在独立 Worktree 隔离工作区">
+                Worktree 副本
+              </span>
+            ) : (
+              <span className="badge COMMITTED" title="运行在本地主仓库工作区">
+                主工作区
+              </span>
+            )}
+          </div>
+          <div className="diff-baseline-info">
+            对比任务开始前提交 <code>{firstRepo?.baseline?.slice(0, 8)}</code>
+          </div>
+        </div>
+
+        <div className="diff-header-actions">
+          <div className="diff-stats-pill">
+            <span className="stat-count">
+              共 <strong>{stats.total}</strong> 个文件变更
+            </span>
+            {stats.added > 0 && (
+              <span className="stat-add">+{stats.added} 新增</span>
+            )}
+            {stats.modified > 0 && (
+              <span className="stat-mod">{stats.modified} 修改</span>
+            )}
+            {stats.deleted > 0 && (
+              <span className="stat-del">-{stats.deleted} 删除</span>
+            )}
+          </div>
+          <button
+            className="diff-refresh-btn"
+            onClick={() => void attempt(refreshDiff)}
+            disabled={pending}
+          >
+            {pending ? "正在读取…" : "刷新文件列表"}
+          </button>
+        </div>
+      </div>
+
+      {allFiles.length === 0 ? (
+        <div className="empty" style={{ padding: "48px 0" }}>
+          {pending ? "正在读取变更文件…" : "当前无代码变更文件"}
+        </div>
+      ) : (
+        /* SourceTree + GitHub 左右分栏工作区 */
+        <div className="diff-layout-split">
+          {/* 左侧：文件变更导航面板 */}
+          <div className="diff-sidebar">
+            <div className="diff-sidebar-toolbar">
+              <div className="diff-search-box">
+                <input
+                  type="text"
+                  placeholder="搜索文件名或路径..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="diff-search-input"
+                />
+                {searchQuery && (
+                  <button
+                    className="diff-search-clear"
+                    onClick={() => setSearchQuery("")}
+                    title="清空"
+                  >
+                    ×
+                  </button>
+                )}
+              </div>
+
+              <div className="diff-view-switcher">
+                <div className="diff-switcher-buttons">
+                  <button
+                    className={`switcher-btn ${viewMode === "tree" ? "active" : ""}`}
+                    onClick={() => setViewMode("tree")}
+                    title="按目录树展示"
+                  >
+                    树状
+                  </button>
+                  <button
+                    className={`switcher-btn ${viewMode === "flat" ? "active" : ""}`}
+                    onClick={() => setViewMode("flat")}
+                    title="平铺全部文件"
+                  >
+                    列表
+                  </button>
+                </div>
+                <span className="diff-match-count">
+                  {filteredFiles.length} / {allFiles.length}
+                </span>
+              </div>
+            </div>
+
+            {/* 文件列表容器：保留 .changed-files 类名供自动化测试选择 */}
+            <div className="changed-files diff-files-list">
+              {filteredFiles.length === 0 ? (
+                <div className="diff-no-matches">未匹配到符合条件的文件</div>
+              ) : viewMode === "flat" ? (
+                /* 扁平列表 */
+                filteredFiles.map((f) => {
+                  const isSelected =
+                    selectedFile?.repo_id === f.repo_id &&
+                    selectedFile?.path === f.path;
+                  const parts = f.path.split("/");
+                  const fileName = parts.pop();
+                  const dirPath = parts.length ? parts.join("/") + "/" : "";
+                  const statusInfo = statusMap[f.status] ?? {
+                    label: f.status || "M",
+                    textClass: "status-tag-mod",
+                    bgClass: "status-pill-mod",
+                    title: "文件变更",
+                  };
+
+                  return (
+                    <button
+                      type="button"
+                      key={f.repo_id + ":" + f.path}
+                      className={`diff-file-card diff-file-card-flat ${isSelected ? "active" : ""}`}
+                      onClick={() => setSelectedFile(f)}
+                      title={`${statusInfo.title} · ${f.path}`}
+                    >
+                      <span
+                        className={`diff-status-badge diff-status-badge-lg ${statusInfo.bgClass}`}
+                        aria-label={statusInfo.title}
+                      >
+                        {statusInfo.label}
+                      </span>
+                      <div className="diff-file-meta">
+                        <span className="diff-file-name" title={f.path}>
+                          {fileName}
+                        </span>
+                        {dirPath && (
+                          <span className="diff-file-dir" title={dirPath}>
+                            {dirPath}
+                          </span>
+                        )}
+                      </div>
+                    </button>
+                  );
+                })
+              ) : (
+                /* 树状分组 */
+                Object.keys(treeGroups).map((folder) => {
+                  const isCollapsed = !!collapsedFolders[folder];
+                  const items = treeGroups[folder]!;
+
+                  return (
+                    <div key={folder} className="diff-tree-group">
+                      <div
+                        className="diff-folder-header"
+                        onClick={() =>
+                          setCollapsedFolders((prev) => ({
+                            ...prev,
+                            [folder]: !prev[folder],
+                          }))
+                        }
+                      >
+                        <span
+                          className={`folder-arrow ${isCollapsed ? "collapsed" : ""}`}
+                        >
+                          ▾
+                        </span>
+                        <span className="folder-icon">📁</span>
+                        <span className="folder-name">{folder}/</span>
+                        <span className="folder-badge">{items.length}</span>
+                      </div>
+
+                      {!isCollapsed && (
+                        <div className="diff-folder-children">
+                          {items.map((f) => {
+                            const isSelected =
+                              selectedFile?.repo_id === f.repo_id &&
+                              selectedFile?.path === f.path;
+                            const fileName = f.path.split("/").pop();
+                            const statusInfo = statusMap[f.status] ?? {
+                              label: f.status || "M",
+                              textClass: "status-tag-mod",
+                              bgClass: "status-pill-mod",
+                              title: "文件变更",
+                            };
+
+                            return (
+                              <button
+                                type="button"
+                                key={f.repo_id + ":" + f.path}
+                                className={`diff-file-card tree-child ${isSelected ? "active" : ""}`}
+                                onClick={() => setSelectedFile(f)}
+                                title={`${statusInfo.title} · ${f.path}`}
+                              >
+                                <span
+                                  className={`diff-status-badge ${statusInfo.bgClass}`}
+                                  aria-label={statusInfo.title}
+                                >
+                                  {statusInfo.label}
+                                </span>
+                                <div className="diff-file-meta">
+                                  <span className="diff-file-name" title={f.path}>
+                                    {fileName}
+                                  </span>
+                                </div>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+
+            <div className="diff-sidebar-footer">
+              <span>单击选定 · 支持 ↑ / ↓ 键切换</span>
+            </div>
+          </div>
+
+          {/* 右侧：主 Diff 代码检视器 (GitHub 风格) */}
+          <div className="diff-inspector">
+            {selectedFile ? (
+              <>
+                {/* 检视器头部 */}
+                <div className="diff-inspector-head">
+                  <div className="diff-file-headline">
+                    <span
+                      className={`diff-status-tag ${
+                        statusMap[selectedFile.status]?.textClass ??
+                        "status-tag-mod"
+                      }`}
+                      title={statusMap[selectedFile.status]?.title}
+                    >
+                      {statusMap[selectedFile.status]?.label ?? "M"}
+                    </span>
+                    <span className="diff-full-path">{selectedFile.path}</span>
+                  </div>
+
+                  <div className="diff-head-actions">
+                    <div className="diff-line-counts">
+                      <span className="stat-add">+{parsedDiff.additions}</span>
+                      <span className="stat-del">-{parsedDiff.deletions}</span>
+                    </div>
+
+                    <button
+                      className="diff-head-btn"
+                      onClick={copyPath}
+                      title="复制完整路径"
+                    >
+                      {copied ? "已复制" : "复制路径"}
+                    </button>
+
+                    <button
+                      className="diff-head-btn primary"
+                      onClick={() => openModalDiff(selectedFile)}
+                      title="全屏大屏查看"
+                    >
+                      全屏审查 ↗
+                    </button>
+                  </div>
+                </div>
+
+                {/* 代码差异渲染区域：带有 file-diff 类名供测试与样式匹配 */}
+                <div className="diff-code-scroll file-diff">
+                  {inlineDiff?.loading ? (
+                    <div className="diff-loading-state">
+                      <div className="diff-spinner" />
+                      <span>正在读取文件差异…</span>
+                    </div>
+                  ) : !inlineDiff?.diff ? (
+                    <div className="diff-empty-state">该文件无差异内容</div>
+                  ) : (
+                    <div className="diff-table-container">
+                      <div className="diff-lines-flow">
+                        {parsedDiff.lines.map((line, idx) => {
+                          if (line.type === "hunk") {
+                            return (
+                              <span key={idx} className="diff-line-row diff-row-hunk">
+                                <i className="hunk-header-cell">{line.content}</i>
+                              </span>
+                            );
+                          }
+                          if (line.type === "meta") {
+                            return (
+                              <span key={idx} className="diff-line-row diff-row-meta">
+                                <i className="meta-header-cell">{line.content}</i>
+                              </span>
+                            );
+                          }
+
+                          const isAdd = line.type === "add";
+                          const isDel = line.type === "del";
+
+                          return (
+                            <span
+                              key={idx}
+                              className={`diff-line-row ${
+                                isAdd
+                                  ? "diff-row-add added"
+                                  : isDel
+                                    ? "diff-row-del removed"
+                                    : "diff-row-context"
+                              }`}
+                            >
+                              <i className="diff-num-col old-col select-none">
+                                {line.oldNum || ""}
+                              </i>
+                              <i className="diff-num-col new-col select-none">
+                                {line.newNum || ""}
+                              </i>
+                              <i className="diff-sign-col select-none">
+                                {line.prefix}
+                              </i>
+                              <code className="diff-content-col">
+                                {line.content || " "}
+                              </code>
+                            </span>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  {inlineDiff?.truncated && (
+                    <div className="diff-truncated-banner">
+                      文件过大，显示部分差异；完整内容请在本地编辑器查看。
+                    </div>
+                  )}
+                </div>
+
+                <div className="diff-inspector-foot">
+                  <span>UTF-8 · LF</span>
+                  <span
+                    title={
+                      selectedFile.branch
+                        ? `分支引用: ${selectedFile.branch} · 基线: ${selectedFile.baseline}`
+                        : undefined
+                    }
+                  >
+                    {parseBranch(selectedFile.branch).display} ·{" "}
+                    {selectedFile.baseline?.slice(0, 8)}
+                  </span>
+                </div>
+              </>
+            ) : (
+              <div className="diff-no-selection">
+                请在左侧选择要查看差异的文件
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 interface CentralWorkspaceProps {
   selected: string;
   tab: string;
@@ -422,7 +1125,7 @@ const CentralWorkspace = React.memo(
             ["tests", "测试结果"],
             ["diff", "代码变更"],
             ["review", "代码复核"],
-            ["environment", "测试环境"],
+            ["environment", "本机验证副本"],
           ].map(([key, title]) => (
             <button
               key={key}
@@ -435,7 +1138,10 @@ const CentralWorkspace = React.memo(
             </button>
           ))}
         </div>
-        <div className="module-body" key={selected + tab}>
+        <div
+          className={`module-body ${tab === "diff" ? "module-body-diff" : ""}`}
+          key={selected + tab}
+        >
           {tab === "overview" && (
             <div className="two-column">
               <section className="panel">
@@ -598,73 +1304,16 @@ const CentralWorkspace = React.memo(
             </section>
           )}
           {tab === "diff" && (
-            <section className="panel">
-              <div className="section-title">
-                <h2>代码变更</h2>
-                <button onClick={() => void attempt(refreshDiff)}>
-                  刷新文件列表
-                </button>
-              </div>
-              {diff.map((d) => (
-                <div key={d.repo_id}>
-                  <h3>{d.branch}</h3>
-                  <p>
-                    对比任务开始前提交{" "}
-                    <code>{d.baseline?.slice(0, 8)}</code>
-                    {d.frozen ? " · 测试版本" : " · 当前工作区"}
-                  </p>
-                  <div className="changed-files">
-                    {d.files?.map((f: any) => (
-                      <button
-                        key={f.path}
-                        onClick={() =>
-                          void attempt(async () => {
-                            const loading = {
-                              path: f.path,
-                              branch: d.branch,
-                              baseline: d.baseline,
-                              loading: true,
-                            };
-                            setFileDiff(loading);
-                            try {
-                              const result = await api(
-                                `/workflows/${selected}/diff?repo_id=${encodeURIComponent(d.repo_id)}&path=${encodeURIComponent(f.path)}`,
-                              );
-                              setFileDiff((current: any) =>
-                                current === loading ? result : current,
-                              );
-                            } catch (error) {
-                              setFileDiff((current: any) =>
-                                current === loading ? null : current,
-                              );
-                              throw error;
-                            }
-                          })
-                        }
-                      >
-                        <span className="badge">
-                          {(
-                            {
-                              A: "新增",
-                              D: "删除",
-                              M: "修改",
-                              T: "类型变化",
-                            } as Record<string, string>
-                          )[f.status] ?? "修改"}
-                        </span>
-                        <span>{f.path}</span>
-                        <span>查看差异 →</span>
-                      </button>
-                    ))}
-                  </div>
-                  {!d.files?.length && <p>没有文件变更</p>}
-                </div>
-              ))}
-              {!diff.length && (
-                <p className="empty">
-                  {pending ? "正在读取变更文件…" : "尚无变更文件"}
-                </p>
-              )}
+            <section className="panel diff-panel-wrapper">
+              <CodeDiffPanel
+                diff={diff}
+                selected={selected}
+                pending={pending}
+                refreshDiff={refreshDiff}
+                attempt={attempt}
+                setFileDiff={setFileDiff}
+                setNotice={setNotice}
+              />
             </section>
           )}
           {tab === "review" && (
@@ -741,7 +1390,7 @@ const CentralWorkspace = React.memo(
           {tab === "environment" && (
             <section className="panel">
               <div className="section-title">
-                <h2>测试环境</h2>
+                <h2>本机验证副本</h2>
                 {detail.environment && (
                   <button
                     onClick={() =>
@@ -1030,6 +1679,7 @@ function App() {
             "AgentEvent",
             "AgentDiagnostic",
             "CheckOutput",
+            "BuildOutput",
             "ServiceOutput",
             "FixtureOutput",
           ].includes(event.type)
@@ -1085,6 +1735,16 @@ function App() {
       .catch((e) => setError(String(e)))
       .finally(() => setStopping(false));
   };
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setFileDiff(null);
+        setModal("");
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
   const w = detail?.workflow.id === selected ? detail.workflow : undefined;
   // Old controllers may still be finishing an active run while the new UI is served.
   const attention =
@@ -1123,7 +1783,7 @@ function App() {
                     category: "acceptance",
                     message: "等待你实际操作验收",
                     at: w.updated_at,
-                    action: "查看测试环境",
+                    action: "查看本机验证副本",
                   }
                 : null;
   const progress = w ? workflowProgress(w, detail.events) : undefined;
@@ -1233,9 +1893,10 @@ function App() {
         <div className="sidebar-bottom">
           <button
             className={"nav " + (showGuide ? "active" : "")}
+            aria-label="使用指南"
             onClick={() => setShowGuide(true)}
           >
-            <span className="nav-icon">📖</span> 使用指南
+            <span className="nav-icon" aria-hidden="true">📖</span> 使用指南
           </button>
           <div className="connection-status">
             <span className={"dot " + (connected ? "COMMITTED" : "")} />{" "}
@@ -1551,7 +2212,9 @@ function App() {
                     </div>
                   </div>
                 )}
-                {attention && (
+                {attention &&
+                  attention.source !== "local_console" &&
+                  !attention.message?.includes("你在控制台暂停") && (
                   <div
                     className={"attention-strip " + attention.category}
                     role="status"
