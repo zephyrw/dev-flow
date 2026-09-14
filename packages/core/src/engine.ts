@@ -108,18 +108,24 @@ export class Engine {
           w.plan_revision
           ? this.store.get("task_activity", key)
           : null,
-      events: this.store.db
-        .prepare(
-          "SELECT data FROM events WHERE workflow_id=? AND json_extract(data, '$.type') NOT IN ('ServiceOutput','FixtureOutput','CheckOutput','BuildOutput','AgentEvent') ORDER BY seq DESC LIMIT 500",
-        )
-        .all(key)
-        .map((row: any) => JSON.parse(row.data))
-        .concat(this.store.recentEvents(key, 500))
-        .filter(
-          (e: any, i: number, es: any[]) =>
-            es.findIndex((x) => x.event_seq === e.event_seq) === i,
-        )
-        .sort((a: any, b: any) => a.event_seq - b.event_seq),
+      events: (() => {
+        const rows = this.store.db
+          .prepare(
+            "SELECT data FROM events WHERE workflow_id=? AND json_extract(data, '$.type') NOT IN ('ServiceOutput','FixtureOutput','CheckOutput','BuildOutput','AgentEvent') ORDER BY seq DESC LIMIT 500",
+          )
+          .all(key)
+          .map((row: any) => JSON.parse(row.data))
+          .concat(this.store.recentEvents(key, 500));
+        const seen = new Set<number>();
+        const deduped: any[] = [];
+        for (const e of rows) {
+          if (!seen.has(e.event_seq)) {
+            seen.add(e.event_seq);
+            deduped.push(e);
+          }
+        }
+        return deduped.sort((a: any, b: any) => a.event_seq - b.event_seq);
+      })(),
       environment: this.store.get("environment", key),
       review: this.store.get("review", w.review_request_id ?? ""),
       commits: this.store.list("commit_result", key),
@@ -638,29 +644,45 @@ export class Engine {
     const w = this.get(key);
     if (!w.plan_revision) return [];
     const plan = this.plan(key).plan;
+    const workspaces = this.store.list<Workspace>("workspace", key);
+    const proofs = new Map<string, any>();
+    if (plan.task_model === "leaf-v1") {
+      for (const t of plan.tasks) {
+        const p = this.store.get<any>(
+          "task_proof",
+          `${key}-${w.plan_revision}-${t.id}`,
+        );
+        if (p) proofs.set(t.id, p);
+      }
+    }
+    const memo = {
+      ownValid: new Map<string, boolean>(),
+      completed: new Map<string, boolean>(),
+      fileHashes: new Map<string, string | null>(),
+      proofs,
+      workspaces,
+      plan,
+      w,
+    };
+    const evidence = this.store.list<Evidence>("evidence", key);
+    const activity = this.store.get<any>("task_activity", key);
     return plan.tasks.map((t) => {
       const claim = this.store.get<{ summary: string }>(
         "task_claim",
         `${key}-${w.plan_revision}-${t.id}`,
       );
-      const evidence = this.store.list<Evidence>("evidence", key);
       const verified =
         !!claim &&
         t.test_ids.every((test) => {
           const e = latestEvidence(evidence, test, w);
           return currentEvidence(e, w) && e!.status === "passed";
         });
-      const activity = this.store.get<any>("task_activity", key);
-      const proof =
-        plan.task_model === "leaf-v1"
-          ? this.store.get<any>(
-              "task_proof",
-              `${key}-${w.plan_revision}-${t.id}`,
-            )
-          : null;
+      const proof = proofs.get(t.id) ?? null;
       const completed =
-        plan.task_model === "leaf-v1" && taskProofValid(this, key, t.id);
-      const ownValid = !!proof && taskProofValid(this, key, t.id, true);
+        plan.task_model === "leaf-v1" &&
+        taskProofValid(this, key, t.id, false, new Set(), memo);
+      const ownValid =
+        !!proof && taskProofValid(this, key, t.id, true, new Set(), memo);
       return {
         id: t.id,
         title: t.title,

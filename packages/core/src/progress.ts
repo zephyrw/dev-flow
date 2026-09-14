@@ -86,39 +86,103 @@ function taskInfo(engine: Engine, key: string, taskId: string) {
   requireCondition(workspace, "WORKSPACE_MISSING", "任务仓库未绑定");
   return { w, plan, task, workspace };
 }
+export interface TaskProofMemo {
+  ownValid?: Map<string, boolean>;
+  completed?: Map<string, boolean>;
+  fileHashes?: Map<string, string | null>;
+  proofs?: Map<string, any>;
+  workspaces?: Workspace[];
+  plan?: Plan;
+  w?: Workflow;
+}
+
 export function taskProofValid(
   engine: Engine,
   key: string,
   taskId: string,
   ownOnly = false,
   visiting = new Set<string>(),
+  memo?: TaskProofMemo,
 ): boolean {
-  if (!engine.store.list<Workspace>("workspace", key).length) return false;
-  const { w, task, workspace } = taskInfo(engine, key, taskId);
-  const proof = engine.store.get<any>(
-    "task_proof",
-    `${key}-${w.plan_revision}-${taskId}`,
+  memo ??= {};
+  memo.ownValid ??= new Map<string, boolean>();
+  memo.completed ??= new Map<string, boolean>();
+  memo.fileHashes ??= new Map<string, string | null>();
+
+  if (ownOnly && memo.ownValid.has(taskId)) {
+    return memo.ownValid.get(taskId)!;
+  }
+  if (!ownOnly && memo.completed.has(taskId)) {
+    return memo.completed.get(taskId)!;
+  }
+
+  memo.workspaces ??= engine.store.list<Workspace>("workspace", key);
+  if (!memo.workspaces.length) return false;
+
+  memo.w ??= engine.get(key);
+  const w = memo.w;
+  memo.plan ??= engine.plan(key).plan;
+  const plan = memo.plan;
+  const task = plan.tasks.find((t) => t.id === taskId);
+  if (!task || plan.task_model !== "leaf-v1") return false;
+
+  const workspace = memo.workspaces.find(
+    (ws) => !task.repo_id || ws.repo_id === task.repo_id,
   );
-  if (!proof || proof.stale) return false;
-  if (visiting.has(taskId)) return false;
-  const ancestors = new Set(visiting).add(taskId);
-  if (
-    !ownOnly &&
-    !task.depends_on.every((id) =>
-      taskProofValid(engine, key, id, false, ancestors),
-    )
-  )
-    return false;
-  try {
-    return task.paths.every((p) => {
-      const path = safePath(workspace.root, p);
-      return (
-        proof.hashes[p] === (existsSync(path) ? hash(readFileSync(path)) : null)
-      );
-    });
-  } catch {
+  if (!workspace) return false;
+
+  let proof: any;
+  if (memo.proofs?.has(taskId)) {
+    proof = memo.proofs.get(taskId);
+  } else {
+    proof = engine.store.get<any>(
+      "task_proof",
+      `${key}-${w.plan_revision}-${taskId}`,
+    );
+  }
+  if (!proof || proof.stale) {
+    memo.ownValid.set(taskId, false);
+    memo.completed.set(taskId, false);
     return false;
   }
+
+  if (!memo.ownValid.has(taskId)) {
+    let selfValid = true;
+    try {
+      for (const p of task.paths) {
+        let fileHash: string | null | undefined;
+        const path = safePath(workspace.root, p);
+        if (memo.fileHashes.has(path)) {
+          fileHash = memo.fileHashes.get(path);
+        } else {
+          fileHash = existsSync(path) ? hash(readFileSync(path)) : null;
+          memo.fileHashes.set(path, fileHash);
+        }
+        if (proof.hashes[p] !== fileHash) {
+          selfValid = false;
+          break;
+        }
+      }
+    } catch {
+      selfValid = false;
+    }
+    memo.ownValid.set(taskId, selfValid);
+  }
+
+  const isOwnValid = memo.ownValid.get(taskId)!;
+  if (ownOnly) return isOwnValid;
+  if (!isOwnValid) {
+    memo.completed.set(taskId, false);
+    return false;
+  }
+
+  if (visiting.has(taskId)) return false;
+  const ancestors = new Set(visiting).add(taskId);
+  const allDepsValid = task.depends_on.every((id) =>
+    taskProofValid(engine, key, id, false, ancestors, memo),
+  );
+  memo.completed.set(taskId, allDepsValid);
+  return allDepsValid;
 }
 export function startTask(
   engine: Engine,
