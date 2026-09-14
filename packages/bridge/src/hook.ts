@@ -45,9 +45,43 @@ try {
       }
     }
     if (response?.ok) {
-      decision = "allow";
-      reason = "APPROVED_SCOPED_TOOL";
-      permissionOverrides = [`mcp(devflow_worker/${name})`];
+      try {
+        const text = await response.text();
+        const data = JSON.parse(text);
+        if (data && data.allowed === true && (!data.tool || data.tool === name)) {
+          decision = "allow";
+          reason = "APPROVED_SCOPED_TOOL";
+          permissionOverrides = [`mcp(devflow_worker/${name})`];
+        } else {
+          decision = "deny";
+          reason = "POLICY_CHECK_FAILED";
+        }
+      } catch {
+        decision = "deny";
+        reason = "POLICY_CHECK_FAILED";
+      }
+    } else if (response) {
+      decision = "deny";
+      try {
+        const text = await response.text();
+        if (text.length <= 65536) {
+          const body = JSON.parse(text);
+          const code = body?.error?.code || body?.code;
+          if (code === "TIMEOUT") {
+            reason = "POLICY_RUN_TIMEOUT";
+          } else if (code === "UNAUTHORIZED") {
+            reason = "POLICY_UNAUTHORIZED";
+          } else if (code === "RUN_REVOKED") {
+            reason = "POLICY_RUN_REVOKED";
+          } else {
+            reason = "POLICY_HTTP_ERROR";
+          }
+        } else {
+          reason = "POLICY_HTTP_ERROR";
+        }
+      } catch {
+        reason = "POLICY_HTTP_ERROR";
+      }
     }
   }
 } catch (error) {

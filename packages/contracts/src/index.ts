@@ -260,6 +260,7 @@ export interface Run {
   status: string;
   conversation_id?: string;
   started_at: string;
+  deadline_at?: number;
   ended_at?: string;
   result?: unknown;
   exit_code?: number | null;

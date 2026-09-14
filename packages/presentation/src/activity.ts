@@ -323,11 +323,16 @@ export function readableLogs(events: any[], workflow: string): LogEntry[] {
       text = `执行模型：${p.init?.model}`;
     }
     if (e.type === "StateChanged") {
-      title = "阶段更新";
-      text =
-        stageIndex[p.to] === undefined
-          ? "执行已暂停，等待处理"
-          : `进入${stages[stageIndex[p.to]!]}`;
+      if (p.to === "BLOCKED") {
+        title = "执行暂停";
+        text = p.blocker?.message ?? "执行已暂停，等待处理";
+      } else {
+        title = "阶段更新";
+        text =
+          stageIndex[p.to] === undefined
+            ? "执行已暂停，等待处理"
+            : `进入${stages[stageIndex[p.to]!]}`;
+      }
     }
     if (e.type === "TaskClaimed") {
       title = "实现结果已提交";
@@ -382,7 +387,7 @@ export function readableLogs(events: any[], workflow: string): LogEntry[] {
     }
     if (
       e.type !== "AgentEvent" &&
-      ![
+      !([
         "TaskStarted",
         "TaskCompleted",
         "EnvironmentFailed",
@@ -399,7 +404,7 @@ export function readableLogs(events: any[], workflow: string): LogEntry[] {
         "FilesChanged",
         "AgentDiagnostic",
         "WorkflowCreated",
-      ].includes(e.type)
+      ].includes(e.type))
     ) {
       continue;
     }
