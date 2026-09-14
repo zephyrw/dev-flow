@@ -255,6 +255,14 @@ export class Engine {
         from: w.state,
         to: state,
         stage,
+        ...(patch.blocker
+          ? {
+              blocker: {
+                code: patch.blocker.code,
+                message: patch.blocker.message,
+              },
+            }
+          : {}),
       });
       return next;
     });
@@ -532,6 +540,12 @@ export class Engine {
       "执行轮次已结束或已被停止",
       403,
     );
+    if (principal.run_id) {
+      const currentRun = this.store.get<Run>("run", principal.run_id);
+      if (currentRun?.deadline_at && Date.now() >= currentRun.deadline_at) {
+        throw new FlowError("TIMEOUT", "执行轮次已达到配置时限", 403);
+      }
+    }
     if (write)
       requireCondition(
         w.state === "EXECUTING" && !this.busy.has(key),
@@ -964,8 +978,6 @@ export class Engine {
           w.workspace_mode,
           plan.plan.baselines,
         );
-        // A stop followed by recovery can be QUEUED again, but it is a new
-        // queue entry. This preparation may not activate or block that entry.
         if (!ownsPreparation()) return;
         const keys = this.store
           .list<Workspace>("workspace", key)
@@ -989,6 +1001,7 @@ export class Engine {
         },
       );
       activated = true;
+      const deadline = Date.now() + this.config.timeouts.agent_minutes * 60000;
       const run: Run = {
         id: runId,
         workflow_id: key,
@@ -997,6 +1010,7 @@ export class Engine {
         stage: w.stage,
         status: "running",
         started_at: now(),
+        deadline_at: deadline,
         package_hash: objectHash({
           plan: this.plan(key),
           feedback: w.feedback,
@@ -1017,9 +1031,14 @@ export class Engine {
           )
             await this.receiveReview(key, result);
         } else {
+          const stopGraceMs = Math.max(
+            (this.config.timeouts.stop_seconds ?? 0) * 1000,
+            3000,
+          );
+          const ttl = Math.max(0, deadline - Date.now()) + stopGraceMs;
           const token = this.auth.issue(
             { role: "worker", workflow_id: key, run_id: runId },
-            this.config.timeouts.agent_minutes * 60000,
+            ttl,
           );
           await runtime.execute(w, run, token);
           const current = this.get(key);
@@ -1259,19 +1278,20 @@ export class Engine {
     )
       return;
     const code = error instanceof FlowError ? error.code : "INTERNAL_FAILURE";
+    const message = error instanceof Error ? error.message : String(error);
     this.store.put("interruption", key, key, {
       category: "error",
       source: "runtime",
       at: now(),
       prior_stage: w.stage,
       run_id: w.run_id,
-      message: error instanceof Error ? error.message : String(error),
+      message,
       next_action: "处理错误后继续这个任务",
     });
     this.transition(key, [w.state], "BLOCKED", "blocked", {
       blocker: {
         code,
-        message: error instanceof Error ? error.message : String(error),
+        message,
       },
     });
   }
@@ -1327,7 +1347,7 @@ export class Engine {
     const tasks = this.taskStatus(key)
       .map((t) => {
         const definition = p.plan.tasks.find((task) => task.id === t.id)!;
-        return `### ${t.id} ${t.title}\n\n- [${(p.plan.task_model === "leaf-v1" ? t.completed : t.status === "verified") ? "x" : " "}] 完成状态：${({ completed: "已完成", active: "进行中", needs_changes: "需修改", pending_check: "待检查", pending: "未开始" } as Record<string, string>)[t.implementation_status] ?? t.status}\n\n修改位置：${definition.repo_id ?? "默认仓库"} / ${definition.paths.join("、")}\n\n输入：${definition.inputs}\n\n核心实现：${definition.implementation}\n\n保持行为：${definition.preserve}\n\n完成标准：${definition.completion}\n\n前置任务：${definition.depends_on.join("、") || "无"}；关联测试：${definition.test_ids.join("、")}\n\n停止条件：${definition.stop_conditions}\n\n实际声明：${t.summary || "尚未提交"}\n`;
+        return `### ${t.id} ${t.title}\n\n-[${(p.plan.task_model === "leaf-v1" ? t.completed : t.status === "verified") ? "x" : " "}] 完成状态：${({ completed: "已完成", active: "进行中", needs_changes: "需修改", pending_check: "待检查", pending: "未开始" } as Record<string, string>)[t.implementation_status] ?? t.status}\n\n修改位置：${definition.repo_id ?? "默认仓库"} / ${definition.paths.join("、")}\n\n输入：${definition.inputs}\n\n核心实现：${definition.implementation}\n\n保持行为：${definition.preserve}\n\n完成标准：${definition.completion}\n\n前置任务：${definition.depends_on.join("、") || "无"}；关联测试：${definition.test_ids.join("、")}\n\n停止条件：${definition.stop_conditions}\n\n实际声明：${t.summary || "尚未提交"}\n`;
       })
       .join("\n");
     const tests = p.plan.tests
@@ -1337,7 +1357,7 @@ export class Engine {
           t.id,
           w,
         );
-        return `### ${t.id} / ${t.layer}\n\n- [${e?.status === "passed" && e.snapshot_id === w.snapshot_id && e.environment_revision === w.environment_revision ? "x" : " "}] ${e?.status ?? "not_run"}\n\n关联任务：${t.task_ids.join("、")}；用例清单：\n${progress.cases
+        return `### ${t.id} / ${t.layer}\n\n-[${e?.status === "passed" && e.snapshot_id === w.snapshot_id && e.environment_revision === w.environment_revision ? "x" : " "}] ${e?.status ?? "not_run"}\n\n关联任务：${t.task_ids.join("、")}；用例清单：\n${progress.cases
           .filter((c) => c.test_id === t.id)
           .map(
             (c) =>

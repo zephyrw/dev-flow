@@ -110,10 +110,91 @@ it("summarizes tool calls, hides prompts and marks interrupted operations", asyn
   ).toMatchObject({ index: 4, paused: false });
 });
 
-it('groups blank and high-volume service output without crowding meaningful progress',()=>{
- const events:any[]=[{workflow_id:'w',event_seq:1,type:'ServiceStarting',run_id:'r',payload:{service_id:'backend',label:'后端服务',process_id:'p'}}];
- for(let i=2;i<102;i++)events.push({workflow_id:'w',event_seq:i,type:'ServiceOutput',run_id:'r',payload:{service_id:'backend',process_id:'p',text:i%2?'\n':'startup line\n'}});
- events.push({workflow_id:'w',event_seq:102,type:'ServiceReady',run_id:'r',payload:{service_id:'backend',label:'后端服务',process_id:'p'}});
- events.push({workflow_id:'w',event_seq:103,type:'UnknownInternal',payload:{}});
- const rows=readableLogs(events,'w');expect(rows).toHaveLength(2);expect(rows.filter(r=>r.kind!=='diagnostic')).toMatchObject([{title:'后端服务已就绪',status:'done'}]);expect(rows.some(r=>r.title==='工作流记录')).toBe(false);
+it("groups blank and high-volume service output without crowding meaningful progress", () => {
+  const events: any[] = [
+    {
+      workflow_id: "w",
+      event_seq: 1,
+      type: "ServiceStarting",
+      run_id: "r",
+      payload: { service_id: "backend", label: "后端服务", process_id: "p" },
+    },
+  ];
+  for (let i = 2; i < 102; i++)
+    events.push({
+      workflow_id: "w",
+      event_seq: i,
+      type: "ServiceOutput",
+      run_id: "r",
+      payload: {
+        service_id: "backend",
+        process_id: "p",
+        text: i % 2 ? "\n" : "startup line\n",
+      },
+    });
+  events.push({
+    workflow_id: "w",
+    event_seq: 102,
+    type: "ServiceReady",
+    run_id: "r",
+    payload: { service_id: "backend", label: "后端服务", process_id: "p" },
+  });
+  events.push({
+    workflow_id: "w",
+    event_seq: 103,
+    type: "UnknownInternal",
+    payload: {},
+  });
+  const rows = readableLogs(events, "w");
+  expect(rows).toHaveLength(2);
+  expect(rows.filter((r) => r.kind !== "diagnostic")).toMatchObject([
+    { title: "后端服务已就绪", status: "done" },
+  ]);
+  expect(rows.some((r) => r.title === "工作流记录")).toBe(false);
+});
+
+it("DF-STAGE-U08 blocked event explains timeout without inventing history", () => {
+  const events = [
+    {
+      event_seq: 1,
+      workflow_id: "wf-test",
+      run_id: "run-old",
+      type: "StateChanged",
+      payload: {
+        from: "EXECUTING",
+        to: "BLOCKED",
+        stage: "blocked",
+      },
+    },
+    {
+      event_seq: 2,
+      workflow_id: "wf-test",
+      run_id: "run-curr",
+      type: "StateChanged",
+      payload: {
+        from: "EXECUTING",
+        to: "BLOCKED",
+        stage: "blocked",
+        blocker: {
+          code: "TIMEOUT",
+          message: "本轮执行达到配置时限，现场已保留，可继续执行",
+        },
+      },
+    },
+  ];
+
+  const rows = readableLogs(events, "wf-test");
+  expect(rows).toHaveLength(2);
+
+  expect(rows[0]).toMatchObject({
+    title: "执行暂停",
+    text: "执行已暂停，等待处理",
+    status: "error",
+  });
+
+  expect(rows[1]).toMatchObject({
+    title: "执行暂停",
+    text: "本轮执行达到配置时限，现场已保留，可继续执行",
+    status: "error",
+  });
 });
