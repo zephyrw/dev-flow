@@ -72,7 +72,7 @@ export const stages = [
   "开发实施",
   "自动测试",
   "人工验收",
-  "独立复核",
+  "代码复核",
   "本地提交",
 ];
 const stageIndex: Record<string, number> = {

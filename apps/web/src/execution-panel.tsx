@@ -72,14 +72,19 @@ export function ExecutionPanel({
         }}
       />
       <div className="execution-heading">
-        <h2>执行过程</h2>
-        <small>{connected ? "● 已连接" : "○ 重连中"}</small>
-        <button onClick={close} aria-label="收起执行过程">
-          收起
+        <div className="execution-heading-left">
+          <h2>执行过程</h2>
+          <span className={`conn-pill ${connected ? "connected" : "reconnecting"}`}>
+            <span className="conn-dot" />
+            <small>{connected ? "已连接" : "重连中"}</small>
+          </span>
+        </div>
+        <button className="btn-icon-close" onClick={close} aria-label="收起执行过程">
+          收起 ✕
         </button>
       </div>
       <div
-        className="logs"
+        className="logs timeline-stream"
         ref={scroll}
         onScroll={(e) => {
           const el = e.currentTarget;
@@ -92,45 +97,54 @@ export function ExecutionPanel({
             key={e.key}
             data-sequence={e.sequence}
           >
-            <div className="activity-heading">
-              <b>{e.title}</b>
-              <span className={`activity-status ${e.status}`}>
-                {e.status
-                  ? {
+            <div className="activity-indicator">
+              <span className={`indicator-dot ${e.status || e.kind}`} />
+              <div className="timeline-line" />
+            </div>
+            <div className="activity-body">
+              <div className="activity-heading">
+                <b className="activity-title">{e.title}</b>
+                {e.status && (
+                  <span className={`activity-status ${e.status}`}>
+                    {{
                       active: "进行中",
                       done: "已完成",
                       error: "失败",
                       interrupted: "已中断",
-                    }[e.status]
-                  : ""}
-              </span>
-              <time>{new Date(e.created_at).toLocaleTimeString()}</time>
+                    }[e.status] ?? e.status}
+                  </span>
+                )}
+                <time>{new Date(e.created_at).toLocaleTimeString()}</time>
+              </div>
+              {e.kind === "message" ? (
+                <div className="activity-markdown">
+                  <Markdown remarkPlugins={[remarkGfm]}>{e.text}</Markdown>
+                </div>
+              ) : e.kind !== "diagnostic" && e.text ? (
+                <p className="activity-summary">
+                  {e.text.slice(0, 600)}
+                  {e.text.length > 600 ? "…" : ""}
+                </p>
+              ) : null}
+              <details className="activity-details">
+                <summary>查看操作详情</summary>
+                <pre className="terminal-pre">
+                  {e.kind === "diagnostic"
+                    ? e.text
+                    : JSON.stringify(e.raw, null, 2)}
+                </pre>
+              </details>
             </div>
-            {e.kind === "message" ? (
-              <Markdown remarkPlugins={[remarkGfm]}>{e.text}</Markdown>
-            ) : e.kind !== "diagnostic" && e.text ? (
-              <p className="activity-summary">
-                {e.text.slice(0, 600)}
-                {e.text.length > 600 ? "…" : ""}
-              </p>
-            ) : null}
-            <details>
-              <summary>查看操作详情</summary>
-              <pre>
-                {e.kind === "diagnostic"
-                  ? e.text
-                  : JSON.stringify(e.raw, null, 2)}
-              </pre>
-            </details>
           </article>
         ))}
         {!entries.length && <p className="empty">还没有执行记录</p>}
       </div>
       {!follow && (
         <button className="back-to-latest" onClick={() => setFollow(true)}>
-          回到最新
+          ↓ 回到最新
         </button>
       )}
     </section>
   );
 }
+
