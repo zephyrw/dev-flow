@@ -1088,7 +1088,12 @@ export class Engine {
     }
   }
   async receiveReview(key: string, input: unknown) {
-    const review = ReviewSchema.parse(input),
+    const sanitized =
+      input && typeof input === "object" ? { ...(input as any) } : input;
+    if (sanitized && typeof sanitized === "object" && "id" in sanitized) {
+      delete (sanitized as any).id;
+    }
+    const review = ReviewSchema.parse(sanitized),
       w = this.get(key);
     requireCondition(
       w.state === "REVIEWING" &&
