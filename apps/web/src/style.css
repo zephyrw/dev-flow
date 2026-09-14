@@ -1907,13 +1907,142 @@ input:focus, textarea:focus, select:focus {
   color: var(--primary-text);
 }
 
-/* Diagram / Mermaid */
+/* Diagram / Mermaid Container & Floating Actions */
+.diagram-wrapper {
+  position: relative;
+  margin: 16px 0;
+}
+
+.diagram-toolbar {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(255, 255, 255, 0.95);
+  backdrop-filter: blur(6px);
+  padding: 3px 6px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-medium);
+  box-shadow: var(--shadow-sm);
+  z-index: 10;
+  opacity: 0;
+  transform: translateY(-4px);
+  pointer-events: none;
+  transition: opacity 0.2s var(--ease), transform 0.2s var(--ease);
+}
+
+.diagram-wrapper:hover .diagram-toolbar {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+.diagram-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  font-size: 11.5px;
+  font-weight: 550;
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  box-shadow: none;
+  transition: all var(--transition);
+}
+
+.diagram-action-btn:hover {
+  background: var(--bg-surface-subtle);
+  border-color: var(--border-subtle);
+  color: var(--text-main);
+}
+
+.diagram-action-btn:active {
+  transform: scale(0.96);
+}
+
+.diagram-action-btn.close-btn {
+  background: var(--color-danger-bg);
+  color: var(--color-danger-text);
+  border-color: var(--color-danger-border);
+}
+
+.diagram-action-btn.close-btn:hover {
+  background: #fee2e2;
+}
+
+/* Diagram Lightbox Fullscreen Modal */
+.diagram-lightbox-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: rgba(15, 23, 42, 0.75);
+  backdrop-filter: blur(8px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.diagram-lightbox-content {
+  background: #ffffff;
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-xl);
+  width: min(1200px, 94vw);
+  max-height: 92vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--border-medium);
+}
+
+.diagram-lightbox-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-surface-subtle);
+}
+
+.lightbox-title {
+  font-size: 13.5px;
+  font-weight: 650;
+  color: var(--text-main);
+}
+
+.lightbox-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.diagram-lightbox-body {
+  flex: 1;
+  overflow: auto;
+  padding: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #ffffff;
+}
+
+.diagram-lightbox-body svg {
+  max-width: 100%;
+  height: auto;
+  max-height: 75vh;
+}
+
 .diagram {
   background: #ffffff;
   padding: 16px 20px;
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-lg);
-  margin: 16px 0;
+  margin: 0;
   overflow: auto;
   box-shadow: var(--shadow-xs);
 }
@@ -1923,6 +2052,213 @@ input:focus, textarea:focus, select:focus {
   margin: auto;
   max-width: 100%;
   height: auto;
+}
+
+/* ==========================================================================
+   Plan TOC & Fullscreen Mode
+   ========================================================================== */
+
+.plan-section-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.plan-title-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.plan-title-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-left: auto;
+}
+
+.btn-toc-toggle.active {
+  background: var(--primary-light);
+  border-color: var(--primary-border);
+  color: var(--primary);
+}
+
+.btn-fullscreen-toggle {
+  font-weight: 600;
+}
+
+/* Plan Viewer Dual-Pane Layout */
+.plan-viewer-body {
+  display: flex;
+  gap: 20px;
+  min-height: 0;
+  position: relative;
+}
+
+.plan-toc-sidebar {
+  width: 220px;
+  flex-shrink: 0;
+  background: var(--bg-surface-subtle);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: 12px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: calc(100vh - 270px);
+  position: sticky;
+  top: 0;
+  overflow-y: auto;
+}
+
+.toc-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.toc-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-main);
+}
+
+.toc-count {
+  font-size: 11px;
+  color: var(--text-light);
+  font-family: var(--font-mono);
+}
+
+.toc-items-container {
+  flex: 1;
+  overflow-y: auto;
+}
+
+.toc-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.toc-item.level-1 {
+  font-weight: 650;
+}
+
+.toc-item.level-2 {
+  padding-left: 10px;
+}
+
+.toc-item.level-3 {
+  padding-left: 18px;
+  font-size: 11.5px;
+}
+
+.toc-item.level-4 {
+  padding-left: 24px;
+  font-size: 11px;
+}
+
+.toc-link-btn {
+  width: 100%;
+  text-align: left;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  box-shadow: none;
+  cursor: pointer;
+  transition: all var(--transition);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.toc-link-btn:hover {
+  background: rgba(37, 99, 235, 0.08);
+  color: var(--primary);
+}
+
+.toc-bullet {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: currentColor;
+  flex-shrink: 0;
+  opacity: 0.6;
+}
+
+.toc-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.toc-empty {
+  font-size: 12px;
+  color: var(--text-light);
+  padding: 12px 6px;
+  text-align: center;
+}
+
+.plan-content-area {
+  flex: 1;
+  min-width: 0;
+}
+
+.plan-runtime-details {
+  margin-top: 24px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border-subtle);
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+
+/* Plan Fullscreen Immersive Mode */
+.plan-panel.plan-fullscreen-active {
+  position: fixed !important;
+  inset: 0 !important;
+  z-index: 100 !important;
+  background: var(--bg-app) !important;
+  margin: 0 !important;
+  padding: 24px 36px !important;
+  border-radius: 0 !important;
+  border: none !important;
+  box-shadow: none !important;
+  display: flex !important;
+  flex-direction: column !important;
+  overflow-y: auto !important;
+}
+
+.plan-panel.plan-fullscreen-active .plan-viewer-body {
+  flex: 1;
+  max-width: 1200px;
+  margin: 0 auto;
+  width: 100%;
+  padding-bottom: 40px;
+}
+
+.plan-panel.plan-fullscreen-active .plan-content-area {
+  background: #ffffff;
+  padding: 32px 48px;
+  border-radius: var(--radius-xl);
+  border: 1px solid var(--border-subtle);
+  box-shadow: var(--shadow-sm);
+}
+
+.plan-panel.plan-fullscreen-active .plan-toc-sidebar {
+  max-height: calc(100vh - 120px);
 }
 
 /* Responsive Media Queries */
