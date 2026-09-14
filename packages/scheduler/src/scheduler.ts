@@ -89,13 +89,17 @@ export class Scheduler {
       created_at: now(),
     });
   }
-  next(lastProject?: string, aging = 10) {
+  next(lastProject?: string, aging = 10, running?: Set<string> | string[]) {
     const entries = this.store.list<{
       id: string;
       project: string;
       priority: number;
       created_at: string;
     }>("queue");
+    const runningSet =
+      running instanceof Set
+        ? running
+        : new Set(running ? Array.from(running) : []);
     const projects = [...new Set(entries.map((e) => e.project))];
     const index = lastProject ? projects.indexOf(lastProject) : -1;
     const ordered = [
@@ -104,7 +108,7 @@ export class Scheduler {
     ];
     for (const project of ordered) {
       const candidates = entries
-        .filter((e) => e.project === project)
+        .filter((e) => e.project === project && !runningSet.has(e.id))
         .sort(
           (a, b) =>
             b.priority +
