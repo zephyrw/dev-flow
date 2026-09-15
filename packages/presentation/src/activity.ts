@@ -93,6 +93,7 @@ const stageIndex: Record<string, number> = {
   COMMIT_PARTIAL: 6,
 };
 export function workflowProgress(w: any, events: any[]) {
+  const completed = w.state === "COMMITTED";
   const paused = [
     "BLOCKED",
     "STOPPED",
@@ -134,7 +135,12 @@ export function workflowProgress(w: any, events: any[]) {
   return {
     index,
     paused,
-    title: index === undefined ? "等待确认阶段" : stages[index],
+    completed,
+    title: completed
+      ? "已完成本地提交"
+      : index === undefined
+        ? "等待确认阶段"
+        : stages[index],
     next: paused
       ? "处理下方问题后，点击“继续这个任务”；保留已有计划和修改，重新核验完成证据。"
       : (next[w.state] ?? "等待工作流更新"),
@@ -376,6 +382,12 @@ export function readableLogs(events: any[], workflow: string): LogEntry[] {
       if (p.to === "BLOCKED") {
         title = "执行暂停";
         text = p.blocker?.message ?? "执行已暂停，等待处理";
+      } else if (p.to === "COMMITTED") {
+        title = "本地提交完成";
+        text = "已生成本地提交记录，所有交付检查与复核已全部通过";
+      } else if (p.to === "COMMITTING") {
+        title = "正在本地提交";
+        text = "正在执行本地提交操作并生成 Git 提交记录";
       } else {
         title = "阶段更新";
         text =
@@ -474,7 +486,9 @@ export function readableLogs(events: any[], workflow: string): LogEntry[] {
         e.type === "BuildFailed" ||
         (e.type === "StateChanged" && p.to === "BLOCKED")
           ? "error"
-          : undefined,
+          : e.type === "StateChanged" && p.to === "COMMITTED"
+            ? "done"
+            : undefined,
     });
   }
   // Old runs must not continue to look active after a stop/failure or a new run.

@@ -1201,6 +1201,59 @@ const CentralWorkspace = React.memo(
         >
           {tab === "overview" && (
             <div className="two-column">
+              {w.state === "COMMITTED" && (
+                <div
+                  className="banner committed-banner"
+                  style={{
+                    gridColumn: "1 / -1",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "12px",
+                    background: "var(--color-success-bg, #f6ffed)",
+                    border: "1px solid var(--color-success-border, #b7eb8f)",
+                    borderRadius: "var(--radius-md, 8px)",
+                    padding: "14px 18px",
+                    color: "var(--color-success-text, #135200)",
+                  }}
+                >
+                  <span
+                    style={{
+                      display: "grid",
+                      placeItems: "center",
+                      width: "28px",
+                      height: "28px",
+                      borderRadius: "50%",
+                      background: "var(--color-success, #52c41a)",
+                      color: "#ffffff",
+                      fontSize: "16px",
+                      fontWeight: "bold",
+                      flexShrink: 0,
+                    }}
+                  >
+                    ✓
+                  </span>
+                  <div>
+                    <div
+                      style={{
+                        fontWeight: 700,
+                        fontSize: "14px",
+                        color: "var(--color-success-text, #135200)",
+                      }}
+                    >
+                      本工作流所有阶段已全部通过并已提交入库
+                    </div>
+                    <div
+                      style={{
+                        fontSize: "12px",
+                        color: "var(--text-secondary, #555)",
+                        marginTop: "3px",
+                      }}
+                    >
+                      需求调研、方案批准、开发实施、自动测试、人工验收、独立复核及本地提交均已完整交付。
+                    </div>
+                  </div>
+                </div>
+              )}
               <section className="panel">
                 <h2>这次要解决什么</h2>
                 <p className="request">{w.title}</p>
@@ -2317,29 +2370,27 @@ function App() {
                 {progress && (
                   <div className="compact-progress" aria-label="当前执行进度">
                     <ol className="stage-track" aria-label={progress.title}>
-                      {stages.map((name, index) => (
-                        <li
-                          key={name}
-                          aria-current={
-                            index === progress.index ? "step" : undefined
-                          }
-                          className={
-                            index === progress.index
-                              ? "current"
-                              : index < (progress.index ?? -1)
-                                ? "past"
-                                : ""
-                          }
-                        >
-                          <span className="step-circle">
-                            {index < (progress.index ?? -1) ? "✓" : index + 1}
-                          </span>
-                          <span className="step-name">{name}</span>
-                          {index === progress.index && progress.paused
-                            ? " · 暂停"
-                            : ""}
-                        </li>
-                      ))}
+                      {stages.map((name, index) => {
+                        const isDone =
+                          progress.completed || index < (progress.index ?? -1);
+                        const isCurrent =
+                          !progress.completed && index === progress.index;
+                        return (
+                          <li
+                            key={name}
+                            aria-current={isCurrent ? "step" : undefined}
+                            className={
+                              isCurrent ? "current" : isDone ? "past" : ""
+                            }
+                          >
+                            <span className="step-circle">
+                              {isDone ? "✓" : index + 1}
+                            </span>
+                            <span className="step-name">{name}</span>
+                            {isCurrent && progress.paused ? " · 暂停" : ""}
+                          </li>
+                        );
+                      })}
                     </ol>
                     <div className="compact-summary">
                       <DeliveryStrip detail={detail} />

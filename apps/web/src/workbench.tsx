@@ -29,6 +29,12 @@ export function DeliveryStrip({ detail }: { detail: any }) {
           <small>待批准清单</small>
         </span>
       )}
+      {detail.workflow?.state === "COMMITTED" && (
+        <span className="metric-chip success-chip">
+          <span className="chip-label">交付结果</span>
+          <b className="chip-value">已提交至仓库</b>
+        </span>
+      )}
       {!leaf ? (
         <span className="metric-chip empty-chip">尚未生成细项清单</span>
       ) : (
