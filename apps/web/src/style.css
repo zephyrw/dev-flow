@@ -984,6 +984,12 @@ header h1 {
   color: var(--color-warning-text);
 }
 
+.metric-chip.success-chip {
+  background: var(--color-success-bg);
+  border-color: var(--color-success-border);
+  color: var(--color-success-text);
+}
+
 /* Latest Activity Ticker */
 .latest-activity {
   flex: 0 1 auto;
