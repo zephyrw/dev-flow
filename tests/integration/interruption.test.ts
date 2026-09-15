@@ -52,16 +52,27 @@ for (const cancel of [true, false])
       await expect
         .poll(() => s.store.list<any>("run", w.id)[0]?.status)
         .toBe(cancel ? "stopped" : "failed");
-      await expect.poll(() => (s.engine as any).running.size).toBe(0);
-      const detail = s.engine.detail(w.id);
-      expect(detail.workflow.state).toBe(cancel ? "STOPPED" : "BLOCKED");
-      expect(detail.attention?.message).toContain(
-        cancel ? "你在控制台暂停了执行" : "upstream connection failed",
-      );
-      expect(detail.attention?.interruption?.source).toBe(
-        cancel ? "local_console" : "runtime",
-      );
-      if (cancel) expect(detail.runs[0]?.result).not.toHaveProperty("error");
+      if (cancel) {
+        await expect.poll(() => (s.engine as any).running.size).toBe(0);
+        const detail = s.engine.detail(w.id);
+        expect(detail.workflow.state).toBe("STOPPED");
+        expect(detail.attention?.message).toContain("你在控制台暂停了执行");
+        expect(detail.attention?.interruption?.source).toBe("local_console");
+        expect(detail.runs[0]?.result).not.toHaveProperty("error");
+      } else {
+        await expect
+          .poll(() => s.store.list("run", w.id).length, { timeout: 20000 })
+          .toBeGreaterThan(1);
+        expect(s.store.get<any>("repair_state", w.id)?.last_error).toContain(
+          "upstream connection failed",
+        );
+        expect(s.store.list<any>("run", w.id)[0].result.error).toContain(
+          "upstream connection failed",
+        );
+        expect(s.engine.get(w.id).feedback.join("\n")).toContain(
+          "upstream connection failed",
+        );
+      }
     } finally {
       if ((s.engine as any).running.size) {
         await s.engine.stop(w.id);
@@ -90,9 +101,7 @@ it("legacy stops never invent a human actor", async () => {
   );
   s.engine.transition(w.id, ["RESEARCHING"], "STOPPING", "stop");
   s.engine.transition(w.id, ["STOPPING"], "STOPPED", "stopped");
-  expect(s.engine.detail(w.id).attention?.message).toBe(
-    "执行已暂停，等待处理",
-  );
+  expect(s.engine.detail(w.id).attention?.message).toBe("执行已暂停，等待处理");
   expect(s.engine.detail(w.id).attention?.interruption?.source).not.toBe(
     "local_console",
   );

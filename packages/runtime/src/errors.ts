@@ -1,5 +1,12 @@
 export function classifyFailure(text: string) {
   const lower = text.toLowerCase();
+  if (/policy_default_deny|denied_actions.*\[\s*\{/.test(lower))
+    return {
+      code: "AUTHORIZATION_ROUTING_REQUIRED",
+      retry: "model",
+      message:
+        "额外操作必须通过 devflow_request_operation 提交到工作台授权；读取工具合同后继续，不使用原生工具绕过。",
+    };
   if (/429|quota|rate.?limit|额度|配额/.test(lower))
     return {
       code: "MODEL_QUOTA",

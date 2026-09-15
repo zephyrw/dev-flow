@@ -4,7 +4,9 @@ import { recordController } from "../../../packages/service/src/descriptor.js";
 import { loadConfig } from "../../../packages/contracts/src/config.js";
 import { Store } from "../../../packages/store/src/store.js";
 import { Engine } from "../../../packages/core/src/engine.js";
+import { WorkspaceObserver } from "../../../packages/runtime/src/workspace-observer.js";
 import { LocalRuntime } from "../../../packages/runtime/src/runtime.js";
+import { resumeModelWaits } from "../../../packages/runtime/src/recovery.js";
 import { buildServer } from "./server.js";
 import { archiveLogs } from "../../../packages/runtime/src/maintenance.js";
 import { acquireControllerLock } from "../../../packages/process/src/controller-lock.js";
@@ -26,6 +28,7 @@ try {
 }
 // Bind first: a duplicate controller must fail before mutating persisted runs.
 engine.recover();
+const workspaceObserver = new WorkspaceObserver(engine);
 recordController(config.storage_root, fileURLToPath(import.meta.url));
 console.log(`DevFlow ${config.server.human_origin}`);
 const tick = setInterval(() => {
@@ -41,6 +44,9 @@ const tick = setInterval(() => {
     }
   }
   void engine.dispatch().catch((e) => console.error("调度失败", String(e)));
+  void resumeModelWaits(engine).catch((e) =>
+    console.error("额度恢复调度失败", String(e)),
+  );
 }, 5000);
 const maintenance = setInterval(() => {
   try {
@@ -50,6 +56,7 @@ const maintenance = setInterval(() => {
   }
 }, 86400000);
 const close = async () => {
+  workspaceObserver.close();
   clearInterval(tick);
   clearInterval(maintenance);
   await engine.runtime!.close();

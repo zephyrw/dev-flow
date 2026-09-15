@@ -11,6 +11,8 @@ export function ExecutionPanel({
   resize,
   locate,
   read,
+  loadHistory,
+  interaction,
 }: {
   entries: LogEntry[];
   connected: boolean;
@@ -19,9 +21,12 @@ export function ExecutionPanel({
   resize: (width: number) => void;
   locate?: { sequence: number; request: number };
   read: (sequence: number) => void;
+  loadHistory?: () => Promise<void>;
+  interaction?: React.ReactNode;
 }) {
   const scroll = useRef<HTMLDivElement>(null);
   const [follow, setFollow] = useState(true);
+  const [loadingHistory, setLoadingHistory] = useState(false);
   const last = Math.max(0, ...entries.map((e) => e.sequence));
   useEffect(() => {
     if (follow && scroll.current) {
@@ -74,12 +79,18 @@ export function ExecutionPanel({
       <div className="execution-heading">
         <div className="execution-heading-left">
           <h2>执行过程</h2>
-          <span className={`conn-pill ${connected ? "connected" : "reconnecting"}`}>
+          <span
+            className={`conn-pill ${connected ? "connected" : "reconnecting"}`}
+          >
             <span className="conn-dot" />
             <small>{connected ? "已连接" : "重连中"}</small>
           </span>
         </div>
-        <button className="btn-icon-close" onClick={close} aria-label="收起执行过程">
+        <button
+          className="btn-icon-close"
+          onClick={close}
+          aria-label="收起执行过程"
+        >
           收起 ✕
         </button>
       </div>
@@ -91,6 +102,18 @@ export function ExecutionPanel({
           setFollow(el.scrollHeight - el.scrollTop - el.clientHeight < 40);
         }}
       >
+        {loadHistory && (
+          <button
+            disabled={loadingHistory}
+            onClick={() => {
+              setFollow(false);
+              setLoadingHistory(true);
+              void loadHistory().finally(() => setLoadingHistory(false));
+            }}
+          >
+            {loadingHistory ? "正在加载…" : "加载更早的执行记录"}
+          </button>
+        )}
         {entries.map((e) => (
           <article
             className={`activity ${e.kind}`}
@@ -139,6 +162,7 @@ export function ExecutionPanel({
         ))}
         {!entries.length && <p className="empty">还没有执行记录</p>}
       </div>
+      {interaction}
       {!follow && (
         <button className="back-to-latest" onClick={() => setFollow(true)}>
           ↓ 回到最新
@@ -147,4 +171,3 @@ export function ExecutionPanel({
     </section>
   );
 }
-

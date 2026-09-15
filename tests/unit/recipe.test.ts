@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { BrowserGateway } from "../../packages/runtime/src/browser.js";
 import { project } from "../helpers.js";
 import { objectHash } from "../../packages/core/src/util.js";
+import { workerNames } from "../../packages/mcp/src/tools.js";
 it("UT-15 browser evidence records only observed assertions and fails missing values", () => {
   expect(
     assertResult(
@@ -50,7 +51,9 @@ it("UT-05 agy grants are scoped to a unique project and never permit native comm
     const id = crypto.randomUUID();
     const result = writeAgyProject(s.root, id, join(s.root, "container"));
     const p = JSON.parse(readFileSync(result.path, "utf8"));
-    expect(p.permissionGrants.permissionGrants.allow).toHaveLength(10);
+    expect(p.permissionGrants.permissionGrants.allow).toEqual(
+      workerNames.map((name) => `mcp(devflow_worker/${name})`),
+    );
     expect(
       p.permissionGrants.permissionGrants.allow.every((x: string) =>
         x.startsWith("mcp(devflow_worker/devflow_"),

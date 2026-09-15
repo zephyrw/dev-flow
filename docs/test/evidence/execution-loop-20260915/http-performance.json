@@ -1,0 +1,165 @@
+{
+  "measured_at": "2026-09-15T03:42:49.053Z",
+  "measurements": [
+    {
+      "id": "wf-508be4f4-4c5a-453c-9ac6-c6dafe717a08",
+      "mode": "summary",
+      "sample": 0,
+      "status": 200,
+      "ms": 165.7,
+      "bytes": 126146
+    },
+    {
+      "id": "wf-508be4f4-4c5a-453c-9ac6-c6dafe717a08",
+      "mode": "summary",
+      "sample": 1,
+      "status": 200,
+      "ms": 33.4,
+      "bytes": 126146
+    },
+    {
+      "id": "wf-508be4f4-4c5a-453c-9ac6-c6dafe717a08",
+      "mode": "summary",
+      "sample": 2,
+      "status": 200,
+      "ms": 29.2,
+      "bytes": 126146
+    },
+    {
+      "id": "wf-508be4f4-4c5a-453c-9ac6-c6dafe717a08",
+      "mode": "summary",
+      "sample": 3,
+      "status": 200,
+      "ms": 61.8,
+      "bytes": 126146
+    },
+    {
+      "id": "wf-508be4f4-4c5a-453c-9ac6-c6dafe717a08",
+      "mode": "summary",
+      "sample": 4,
+      "status": 200,
+      "ms": 36.8,
+      "bytes": 126146
+    },
+    {
+      "id": "wf-508be4f4-4c5a-453c-9ac6-c6dafe717a08",
+      "mode": "detail",
+      "sample": 0,
+      "status": 200,
+      "ms": 123.5,
+      "bytes": 935651
+    },
+    {
+      "id": "wf-508be4f4-4c5a-453c-9ac6-c6dafe717a08",
+      "mode": "detail",
+      "sample": 1,
+      "status": 200,
+      "ms": 96.2,
+      "bytes": 935651
+    },
+    {
+      "id": "wf-508be4f4-4c5a-453c-9ac6-c6dafe717a08",
+      "mode": "detail",
+      "sample": 2,
+      "status": 200,
+      "ms": 93.3,
+      "bytes": 935651
+    },
+    {
+      "id": "wf-508be4f4-4c5a-453c-9ac6-c6dafe717a08",
+      "mode": "detail",
+      "sample": 3,
+      "status": 200,
+      "ms": 83.5,
+      "bytes": 935651
+    },
+    {
+      "id": "wf-508be4f4-4c5a-453c-9ac6-c6dafe717a08",
+      "mode": "detail",
+      "sample": 4,
+      "status": 200,
+      "ms": 87.5,
+      "bytes": 935651
+    },
+    {
+      "id": "wf-9fe59b2c-e9cb-4ddd-aa9e-07dd05d3f2e3",
+      "mode": "summary",
+      "sample": 0,
+      "status": 200,
+      "ms": 25.4,
+      "bytes": 64970
+    },
+    {
+      "id": "wf-9fe59b2c-e9cb-4ddd-aa9e-07dd05d3f2e3",
+      "mode": "summary",
+      "sample": 1,
+      "status": 200,
+      "ms": 28.3,
+      "bytes": 64970
+    },
+    {
+      "id": "wf-9fe59b2c-e9cb-4ddd-aa9e-07dd05d3f2e3",
+      "mode": "summary",
+      "sample": 2,
+      "status": 200,
+      "ms": 34.1,
+      "bytes": 64970
+    },
+    {
+      "id": "wf-9fe59b2c-e9cb-4ddd-aa9e-07dd05d3f2e3",
+      "mode": "summary",
+      "sample": 3,
+      "status": 200,
+      "ms": 28.6,
+      "bytes": 64970
+    },
+    {
+      "id": "wf-9fe59b2c-e9cb-4ddd-aa9e-07dd05d3f2e3",
+      "mode": "summary",
+      "sample": 4,
+      "status": 200,
+      "ms": 35,
+      "bytes": 64970
+    },
+    {
+      "id": "wf-9fe59b2c-e9cb-4ddd-aa9e-07dd05d3f2e3",
+      "mode": "detail",
+      "sample": 0,
+      "status": 200,
+      "ms": 78.6,
+      "bytes": 745137
+    },
+    {
+      "id": "wf-9fe59b2c-e9cb-4ddd-aa9e-07dd05d3f2e3",
+      "mode": "detail",
+      "sample": 1,
+      "status": 200,
+      "ms": 103.2,
+      "bytes": 745137
+    },
+    {
+      "id": "wf-9fe59b2c-e9cb-4ddd-aa9e-07dd05d3f2e3",
+      "mode": "detail",
+      "sample": 2,
+      "status": 200,
+      "ms": 86.8,
+      "bytes": 745137
+    },
+    {
+      "id": "wf-9fe59b2c-e9cb-4ddd-aa9e-07dd05d3f2e3",
+      "mode": "detail",
+      "sample": 3,
+      "status": 200,
+      "ms": 95,
+      "bytes": 745137
+    },
+    {
+      "id": "wf-9fe59b2c-e9cb-4ddd-aa9e-07dd05d3f2e3",
+      "mode": "detail",
+      "sample": 4,
+      "status": 200,
+      "ms": 107.3,
+      "bytes": 745137
+    }
+  ]
+}

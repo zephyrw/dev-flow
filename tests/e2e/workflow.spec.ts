@@ -61,7 +61,7 @@ test("E2E-01/05/06/08 local button approval, diagrams, evidence and accepted com
   await page.locator(".task-module > summary").first().click();
   await expect(page.locator(".test-case")).toContainText("已通过");
   await page.getByRole("button", { name: "任务进度", exact: true }).click();
-  await expect(page.locator(".task .badge")).toHaveText("已完成");
+  await expect(page.locator(".task .badge")).toHaveText("开发完成");
   await page.screenshot({ path: ".cache/e2e-evidence.png", fullPage: true });
   const before = await (
     await page.request.get("/api/workflows/" + state.workflow_id)

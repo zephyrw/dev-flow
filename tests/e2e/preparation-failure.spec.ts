@@ -89,14 +89,16 @@ test("build failure retains submitted progress and explains the local verificati
   await page.routeWebSocket("**/api/notifications", () => {});
   await page.routeWebSocket("**/api/events?*", () => {});
   await page.goto("/?workflow=" + workflow.id);
-  await expect(page.getByLabel("实现提交进度")).toHaveAttribute("value", "4");
+  await expect(page.getByLabel("开发完成进度")).toHaveAttribute("value", "0");
   await expect(page.getByLabel("测试通过进度")).toHaveAttribute("value", "0");
-  await expect(page.locator(".delivery-strip")).toContainText("已提交实现");
+  await expect(page.locator(".delivery-strip")).toContainText("开发完成");
   await expect(page.locator(".delivery-strip")).not.toContainText("已完成任务");
   await page.getByRole("button", { name: "执行过程", exact: true }).click();
-  await expect(page.locator(".logs")).toContainText("构建失败，执行已阻断");
+  await expect(page.locator(".logs")).toContainText("构建失败，需要修复");
   await page.getByRole("button", { name: "任务进度", exact: true }).click();
-  await expect(page.locator(".task-module")).toContainText("已提交 4 / 4");
+  await expect(page.locator(".task-module")).toContainText(
+    "开发 0 / 4 · 验证 0 / 4",
+  );
   await expect(page.locator(".task .badge.needs_recheck")).toHaveCount(3);
   await expect(page.locator(".task-module")).not.toContainText("未开始");
   await page.getByRole("button", { name: "本机验证副本", exact: true }).click();

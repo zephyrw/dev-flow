@@ -1,0 +1,44 @@
+{
+  "at": "2026-09-15T05:58:15.050Z",
+  "workflow_id": "wf-508be4f4-4c5a-453c-9ac6-c6dafe717a08",
+  "replay_run_id": "run-8255a2a5-c824-4e6b-9330-afe8ff59fb0d",
+  "historical_error_ignored": true,
+  "actual_current_failure": {
+    "code": "SCOPE_VIOLATION",
+    "message": "发现范围外修改 .reports/unit.json"
+  },
+  "archived_outputs": [
+    {
+      "at": "2026-09-15T05:55:07.370Z",
+      "path": ".reports/e2e.json",
+      "archive": "D:\\Code\\system-handle\\.devflow\\evidence\\wf-508be4f4-4c5a-453c-9ac6-c6dafe717a08\\check-298939d7-331d-4039-b64f-a5a5b6578bc0\\report.json"
+    },
+    {
+      "at": "2026-09-15T05:53:31.306Z",
+      "path": ".reports/integration.json",
+      "archive": "D:\\Code\\system-handle\\.devflow\\evidence\\wf-508be4f4-4c5a-453c-9ac6-c6dafe717a08\\check-7c727e1a-c7db-4b47-aec8-9f27a6dcea75\\report.json"
+    },
+    {
+      "at": "2026-09-15T05:51:59.270Z",
+      "path": ".reports/unit.json",
+      "archive": "D:\\Code\\system-handle\\.devflow\\evidence\\wf-508be4f4-4c5a-453c-9ac6-c6dafe717a08\\check-f16248cc-53ce-4c9d-8a02-290a25abca6c\\report.json"
+    },
+    {
+      "at": "2026-09-15T05:51:13.491Z",
+      "path": ".reports/unit.json",
+      "archive": "D:\\Code\\system-handle\\.devflow\\evidence\\wf-508be4f4-4c5a-453c-9ac6-c6dafe717a08\\check-867f05da-4b9b-474d-bd5c-369829da2f08\\unparsed-report.txt"
+    },
+    {
+      "at": "2026-09-15T05:30:57.964Z",
+      "path": ".reports/portable-unit.json",
+      "archive": "D:\\Code\\system-handle\\.devflow\\evidence\\wf-508be4f4-4c5a-453c-9ac6-c6dafe717a08\\check-867f05da-4b9b-474d-bd5c-369829da2f08\\unparsed-report.txt"
+    }
+  ],
+  "maintenance_lock_exists": false,
+  "service_health": {
+    "ok": true,
+    "version": "0.2.0",
+    "service": "devflow",
+    "instance": "30580e33263ba75ce24cd87a02704441c746841e3af96d768dcc091378f627ba"
+  }
+}

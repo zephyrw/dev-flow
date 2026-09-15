@@ -1,0 +1,40 @@
+{
+  "at": "2026-09-15T05:49:08.601Z",
+  "workflow_id": "wf-508be4f4-4c5a-453c-9ac6-c6dafe717a08",
+  "run_id": "run-8255a2a5-c824-4e6b-9330-afe8ff59fb0d",
+  "prior_errors": [
+    {
+      "at": "2026-09-15T04:12:16.180Z",
+      "error": "Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 2h49m37s."
+    },
+    {
+      "at": "2026-09-15T04:11:36.174Z",
+      "error": "Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 2h49m37s."
+    },
+    {
+      "at": "2026-09-15T03:47:36.010Z",
+      "error": "Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 2h49m37s."
+    },
+    {
+      "at": "2026-09-15T02:10:36.412Z",
+      "error": "Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 2h49m37s."
+    }
+  ],
+  "result_footer": {
+    "status": "ERROR",
+    "error": "Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 2h49m37s.",
+    "duration_seconds": 59796.1348724
+  },
+  "ignored_as_historical": true,
+  "actual_current_failure": {
+    "code": "SCOPE_VIOLATION",
+    "message": "发现范围外修改 .reports/unit.json"
+  },
+  "report_proof": {
+    "path": "D:/Code/system-handle/.devflow/worktrees/project-4b84075106c10a29/wf-508be4f4-4c5a-453c-9ac6-c6dafe717a08/main/.reports/unit.json",
+    "archive": "D:\\Code\\system-handle\\.devflow\\evidence\\wf-508be4f4-4c5a-453c-9ac6-c6dafe717a08\\check-867f05da-4b9b-474d-bd5c-369829da2f08\\unparsed-report.txt",
+    "hash": "5b70181c2bc4f10cea47dfa637e365fcbc4feacfea5a124bbc0e4db6b9e49b7a",
+    "archive_matches": true,
+    "source_matches": true
+  }
+}

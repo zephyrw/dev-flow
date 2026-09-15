@@ -5,7 +5,8 @@ for await (const chunk of process.stdin) {
   if (raw.length > 1048576) break;
 }
 let decision = "deny",
-  reason = "POLICY_DEFAULT_DENY";
+  reason =
+    "POLICY_DEFAULT_DENY: 使用已批准的 devflow_worker 工具。需要额外命令时调用 devflow_request_operation，由工作台展示具体操作并取得用户授权；不要请求用户去其他客户端处理。";
 let permissionOverrides: string[] = [];
 try {
   const event = JSON.parse(raw);
@@ -48,7 +49,11 @@ try {
       try {
         const text = await response.text();
         const data = JSON.parse(text);
-        if (data && data.allowed === true && (!data.tool || data.tool === name)) {
+        if (
+          data &&
+          data.allowed === true &&
+          (!data.tool || data.tool === name)
+        ) {
           decision = "allow";
           reason = "APPROVED_SCOPED_TOOL";
           permissionOverrides = [`mcp(devflow_worker/${name})`];

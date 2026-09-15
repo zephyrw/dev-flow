@@ -1,4 +1,9 @@
 import { invalidateTaskProofs } from "../../core/src/progress.js";
+import type { OperationRequest } from "../../core/src/interactions.js";
+import {
+  diagnosisOutputSchema,
+  parseDiagnosisOutput,
+} from "../../contracts/src/diagnosis-output.js";
 import {
   mkdirSync,
   readFileSync,
@@ -20,6 +25,7 @@ import {
   requireCondition,
   FlowError,
   ReviewSchema,
+  PlanSchema,
   type Workflow,
   type Run,
   type Evidence,
@@ -41,6 +47,7 @@ import {
 import { evaluateReport, parseReport } from "../../evidence/src/parse.js";
 import { Environments, expand } from "./environment.js";
 import { BrowserGateway } from "./browser.js";
+import { takeReportSlot, cleanArchivedReports } from "./report-output.js";
 import { safePath } from "../../workspace/src/files.js";
 import { writeAgyProject } from "../../adapters/agy/src/project.js";
 import {
@@ -56,6 +63,303 @@ export class LocalRuntime implements Runtime {
   private cancelledRuns = new Set<string>();
   private preparing = new Map<string, Promise<void>>();
   private preparationProcesses = new Map<string, Set<string>>();
+  async validateEnvironment(workflow: Workflow) {
+    if (!this.engine.project(workflow.project_id).services.length) return;
+    const env = this.engine.store.get<any>("environment", workflow.id);
+    requireCondition(
+      env?.status === "ready",
+      "ENVIRONMENT_NOT_READY",
+      "验证服务尚未就绪或已经退出，修复并重新验证后才能交付",
+    );
+    await this.environments.health(env);
+  }
+  async diagnose(workflow: Workflow, error: string) {
+    const root = join(
+      this.engine.config.storage_root,
+      "diagnostics",
+      id("diagnosis"),
+    );
+    mkdirSync(root, { recursive: true });
+    const snapshot = await this.engine.git.snapshot(
+      workflow.id,
+      workflow.environment_revision,
+    );
+    const manifest = join(root, "materials.json"),
+      schema = join(root, "schema.json"),
+      output = join(root, "diagnosis.json");
+    atomicWrite(
+      manifest,
+      JSON.stringify({
+        plan: this.engine.plan(workflow.id).plan,
+        plan_record: this.engine.plan(workflow.id),
+        project: this.engine.project(workflow.project_id),
+        snapshot,
+        workspaces: this.engine.store.list("workspace", workflow.id),
+        evidence: this.engine.store.list("evidence", workflow.id),
+        diff: await this.engine.git.diff(snapshot),
+        claims: this.engine.taskStatus(workflow.id),
+        skill:
+          "你是故障规划诊断者，只读定位错误并提供确定修复步骤。不是交付复核，不得宣布验收或复核通过。使用 devflow_review 只读材料工具调查相关代码。当前允许范围内的修复返回 requires_plan_change=false,repair_plan=null；必须扩大范围时提供完整 Plan 合同并保持现有项目配置哈希和基线，等待用户审批。诊断失败不能伪造成功。",
+      }),
+    );
+    atomicWrite(
+      schema,
+      JSON.stringify(
+        diagnosisOutputSchema(snapshot.repositories.map((r) => r.repo_id)),
+      ),
+    );
+    const processId = id("planner-diagnosis");
+    this.engine.store.put("check_process", processId, workflow.run_id!, {
+      id: processId,
+    });
+    this.engine.store.event(
+      workflow.id,
+      workflow.project_id,
+      "DiagnosisStarted",
+      { message: "执行修复未解决问题，规划模型正在只读诊断" },
+      workflow.run_id,
+    );
+    try {
+      let diagnosticOutput = "";
+      let result: ReturnType<typeof parseDiagnosisOutput> | undefined;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        requireCondition(
+          !this.cancelledRuns.has(workflow.run_id!),
+          "RUN_REVOKED",
+          "诊断所属轮次已停止",
+        );
+        const currentProcess = attempt ? processId + "-retry" : processId;
+        this.engine.store.put(
+          "check_process",
+          currentProcess,
+          workflow.run_id!,
+          { id: currentProcess },
+        );
+        diagnosticOutput = "";
+        if (existsSync(output)) unlinkSync(output);
+        const proc = this.processes.start({
+          id: currentProcess,
+          workflow_id: workflow.id,
+          executable: executablePath(
+            this.engine.config.models.codex_executable,
+          ),
+          args: [
+            ...this.engine.config.models.codex_prefix_args,
+            "exec",
+            "--ignore-user-config",
+            "--ignore-rules",
+            "--ephemeral",
+            "--model",
+            this.engine.config.models.reviewer,
+            "--sandbox",
+            "read-only",
+            "--skip-git-repo-check",
+            ...(attempt === 0 ? ["--output-schema", schema] : []),
+            "--output-last-message",
+            output,
+            "-c",
+            'model_reasoning_effort="high"',
+            "-c",
+            `mcp_servers.devflow_review.command=${JSON.stringify(process.execPath)}`,
+            "-c",
+            `mcp_servers.devflow_review.args=${JSON.stringify([resolve("dist/packages/bridge/src/review.js")])}`,
+            "-c",
+            `mcp_servers.devflow_review.env={ DEVFLOW_REVIEW_MANIFEST = ${JSON.stringify(manifest)} }`,
+            "-c",
+            "mcp_servers.devflow_review.required=true",
+            "-",
+          ],
+          cwd: root,
+          env: {},
+          stdin: JSON.stringify({
+            instruction:
+              "先读取 section=skill，再读取 plan、project、相关源码；只读诊断，最后只返回 JSON 对象，字段为 diagnosis、instructions、requires_plan_change、repair_plan。不改变范围时 repair_plan=null；需要改变范围时提交完整 Plan 合同。",
+            error,
+            logs: this.engine.store
+              .recentEvents(workflow.id, 160)
+              .filter((e) =>
+                /EnvironmentFailed|ServiceOutput|BuildFailed|BuildOutput|CheckCompleted|PrepareVerificationFailed/.test(
+                  e.type,
+                ),
+              )
+              .slice(-20)
+              .map((e) => this.engine.store.publicEvent(e)),
+          }),
+          timeout_ms: 600000,
+        });
+        for (const stream of ["stdout", "stderr", "diagnostic"])
+          proc.on(stream, (b: Buffer | string) => {
+            diagnosticOutput = (diagnosticOutput + redact(b.toString())).slice(
+              -24000,
+            );
+            this.engine.store.event(
+              workflow.id,
+              workflow.project_id,
+              "DiagnosisOutput",
+              { text: redact(b.toString()) },
+              workflow.run_id,
+            );
+          });
+        const exit = await proc.completion;
+        if (
+          attempt === 0 &&
+          /invalid_json_schema|Invalid schema for response_format/.test(
+            diagnosticOutput,
+          )
+        ) {
+          this.engine.store.event(
+            workflow.id,
+            workflow.project_id,
+            "DiagnosisRetrying",
+            {
+              message: "诊断接口返回格式不兼容，系统正在自动调整后重试。",
+            },
+            workflow.run_id,
+          );
+          continue;
+        }
+        requireCondition(
+          exit.code === 0 && existsSync(output),
+          "DIAGNOSIS_FAILED",
+          `规划诊断进程未完成（退出码 ${exit.code}）：${diagnosticOutput.slice(-8000)}`,
+        );
+        const raw = readFileSync(output, "utf8")
+          .trim()
+          .replace(/^```(?:json)?\s*\n?/, "")
+          .replace(/\n?```$/, "");
+        result = parseDiagnosisOutput(JSON.parse(raw));
+        break;
+      }
+      requireCondition(
+        result,
+        "DIAGNOSIS_FAILED",
+        "规划诊断没有返回可校验的结果",
+      );
+      requireCondition(
+        !result.requires_plan_change || result.repair_plan,
+        "REPAIR_PLAN_REQUIRED",
+        "诊断指出需扩大范围，但没有给出完整修订计划",
+      );
+      this.engine.store.event(
+        workflow.id,
+        workflow.project_id,
+        "DiagnosisCompleted",
+        result,
+        workflow.run_id,
+      );
+      return { ...result, repair_plan: result.repair_plan ?? undefined };
+    } finally {
+      this.engine.store.remove("check_process", processId);
+      this.engine.store.remove("check_process", processId + "-retry");
+    }
+  }
+  async operation(workflow: Workflow, requestId: string, principal: Principal) {
+    this.engine.worker(principal, workflow.id, true);
+    const request = this.engine.store.must<OperationRequest>(
+      "operation_request",
+      requestId,
+    );
+    requireCondition(
+      request.workflow_id === workflow.id &&
+        request.plan_revision === workflow.plan_revision &&
+        request.plan_hash === workflow.plan_hash,
+      "AUTHORIZATION_STALE",
+      "操作授权不属于当前任务和计划",
+    );
+    if (["completed", "failed", "denied"].includes(request.status))
+      return request;
+    requireCondition(
+      request.status === "approved",
+      "AUTHORIZATION_REQUIRED",
+      "操作尚未获批，或已经在执行",
+    );
+    const ws = this.engine.store
+      .list<Workspace>("workspace", workflow.id)
+      .find((x) => x.repo_id === request.operation.repo_id);
+    requireCondition(
+      ws &&
+        (request.operation.cwd
+          ? safePath(ws.root, request.operation.cwd)
+          : ws.root) === request.cwd,
+      "WORKSPACE_CHANGED",
+      "操作工作目录发生变化，需要重新授权",
+    );
+    const running: OperationRequest = { ...request, status: "running" };
+    this.engine.store.put(
+      "operation_request",
+      request.id,
+      workflow.id,
+      running,
+    );
+    const processId = id("operation-run");
+    this.engine.store.put("check_process", processId, principal.run_id!, {
+      id: processId,
+    });
+    this.engine.store.put("check_lock", workflow.id, workflow.id, {
+      run_id: principal.run_id,
+    });
+    let output = "";
+    try {
+      const proc = this.processes.start({
+        id: processId,
+        workflow_id: workflow.id,
+        executable: request.operation.executable,
+        args: request.operation.args,
+        cwd: request.cwd,
+        env: {},
+        timeout_ms: request.operation.timeout_seconds * 1000,
+      });
+      for (const stream of ["stdout", "stderr", "diagnostic"])
+        proc.on(stream, (b: Buffer | string) => {
+          const text = redact(b.toString());
+          output = (output + text).slice(-16000);
+          this.engine.store.event(
+            workflow.id,
+            workflow.project_id,
+            "OperationOutput",
+            { request_id: request.id, text },
+            principal.run_id,
+          );
+        });
+      const exit = await proc.completion;
+      const result: OperationRequest = {
+        ...running,
+        status: exit.code === 0 ? "completed" : "failed",
+        result: { exit_code: exit.code, output },
+      };
+      this.engine.store.put(
+        "operation_request",
+        request.id,
+        workflow.id,
+        result,
+      );
+      this.engine.invalidate(workflow.id, "已授权操作完成");
+      this.engine.store.event(
+        workflow.id,
+        workflow.project_id,
+        "OperationCompleted",
+        result,
+        principal.run_id,
+      );
+      return result;
+    } catch (error) {
+      const result: OperationRequest = {
+        ...running,
+        status: "failed",
+        result: { error: String(error), output },
+      };
+      this.engine.store.put(
+        "operation_request",
+        request.id,
+        workflow.id,
+        result,
+      );
+      throw error;
+    } finally {
+      this.engine.store.remove("check_process", processId);
+      this.engine.store.remove("check_lock", workflow.id);
+    }
+  }
   constructor(private engine: Engine) {
     this.processes = new ProcessManager(
       engine.config.host.executable,
@@ -190,9 +494,18 @@ export class LocalRuntime implements Runtime {
     const result = await observeAgy(proc, {
       model: this.engine.config.models.executor,
       conversation: conversation?.id,
+      previousErrors: this.engine.store
+        .recentEvents(workflow.id, 1000)
+        .filter(e => e.run_id !== run.id && (e.payload as any)?.event === "result")
+        .map(e => (e.payload as any)?.result?.error)
+        .filter((error): error is string => typeof error === "string"),
       cwd: directory,
       log: join(directory, run.id + ".jsonl"),
       idle_ms: this.engine.config.timeouts.idle_minutes * 60000,
+      isWaiting: () =>
+        !!this.engine.store.get("resource_wait", workflow.id) ||
+        this.preparing.has(run.id) ||
+        this.checking.has(workflow.id),
       onEvent: (event) => {
         if (event.event === "init")
           this.engine.store.put("conversation", workflow.id, workflow.id, {
@@ -226,6 +539,7 @@ export class LocalRuntime implements Runtime {
     const prepare = async () => {
       this.assertRun(workflow.id, principal.run_id!, ["EXECUTING"]);
       // Initial onboarding adapters must be implemented before their servers start.
+      await cleanArchivedReports(this.engine, workflow.id);
       // Restart retained servers after edits so acceptance sees the current code.
       await this.environments.stop(workflow.id);
       this.assertRun(workflow.id, principal.run_id!, ["EXECUTING"]);
@@ -324,8 +638,9 @@ export class LocalRuntime implements Runtime {
     principal: Principal,
   ): Promise<Evidence> {
     this.engine.worker(principal, workflow.id);
+    const development = workflow.state === "EXECUTING";
     requireCondition(
-      workflow.state === "VERIFYING",
+      development || workflow.state === "VERIFYING",
       "SNAPSHOT_REQUIRED",
       "请先冻结代码快照",
     );
@@ -341,25 +656,39 @@ export class LocalRuntime implements Runtime {
       "CHECK_RUNNING",
       "该工作流已有检查正在执行，请等待完成后运行下一项",
     );
-    const slot = this.engine.scheduler.capacity(
-      "test",
-      this.engine.config.scheduler.heavy_tests,
-    );
-    requireCondition(
-      slot &&
-        this.engine.scheduler.acquire(workflow.id, principal.run_id!, [slot]),
-      "TEST_CAPACITY",
-      "测试并发已满",
-    );
     this.checking.add(unique);
+    let slot: string;
+    try {
+      slot = await this.engine.scheduler.waitForCapacity(
+        "test",
+        this.engine.config.scheduler.heavy_tests,
+        workflow.id,
+        principal.run_id!,
+        () => {
+          this.engine.worker(principal, workflow.id);
+          this.assertRun(workflow.id, principal.run_id!, [
+            development ? "EXECUTING" : "VERIFYING",
+          ]);
+        },
+      );
+    } catch (error) {
+      this.checking.delete(unique);
+      throw error;
+    }
+    this.checking.add(unique);
+    this.engine.store.put("check_lock", workflow.id, workflow.id, {
+      run_id: principal.run_id,
+    });
     const assertCurrent = () => {
       const current = this.assertRun(workflow.id, principal.run_id!, [
+        "EXECUTING",
         "VERIFYING",
       ]);
       this.engine.worker(principal, workflow.id);
       requireCondition(
-        current.version === workflow.version &&
-          current.snapshot_id === workflow.snapshot_id &&
+        current.state === (development ? "EXECUTING" : "VERIFYING") &&
+          current.version === workflow.version &&
+          (development || current.snapshot_id === workflow.snapshot_id) &&
           current.environment_revision === workflow.environment_revision,
         "CHECK_SUPERSEDED",
         "验证轮次已经变化，本次检查结果不能沿用",
@@ -368,6 +697,7 @@ export class LocalRuntime implements Runtime {
     let attempted = false;
     let processId: string | undefined;
     let report: string | undefined;
+    let restoreReport: ReturnType<typeof takeReportSlot> | undefined;
     let log: string | undefined;
     let observedExit: number | null = null;
     const dir = join(
@@ -378,6 +708,14 @@ export class LocalRuntime implements Runtime {
     );
     try {
       assertCurrent();
+      if (development) {
+        const snapshot = await this.engine.git.snapshot(
+          workflow.id,
+          workflow.environment_revision,
+        );
+        workflow = { ...workflow, snapshot_id: snapshot.id };
+        assertCurrent();
+      }
       const snapshot = this.engine.store.must<Snapshot>(
         "snapshot",
         workflow.snapshot_id!,
@@ -444,7 +782,7 @@ export class LocalRuntime implements Runtime {
           ? workspaces.find((w) => w.repo_id === command.repo_id)!
           : workspaces[0]!;
         report = safePath(workspace.root, command.report_path!, true);
-        if (existsSync(report)) unlinkSync(report);
+        restoreReport = takeReportSlot(report);
         mkdirSync(dirname(report), { recursive: true });
         const env = this.engine.store.get<{
           data_dir: string;
@@ -512,6 +850,12 @@ export class LocalRuntime implements Runtime {
             ? [{ path: log, hash: hash(readFileSync(log)) }]
             : []),
         ];
+        restoreReport();
+        await cleanArchivedReports(this.engine, workflow.id, {
+          files,
+          preservePaths: restoreReport.preservePaths,
+          directory: dirname(report),
+        });
       }
       this.engine.worker(principal, workflow.id);
       requireCondition(
@@ -521,6 +865,7 @@ export class LocalRuntime implements Runtime {
       );
       assertCurrent();
       const evidence: Evidence = {
+        phase: development ? "development" : "delivery",
         id: id("evidence"),
         workflow_id: workflow.id,
         run_id: principal.run_id!,
@@ -534,7 +879,12 @@ export class LocalRuntime implements Runtime {
         files,
         created_at: now(),
       };
-      this.engine.store.put("evidence", evidence.id, workflow.id, evidence);
+      this.engine.store.put(
+        development ? "development_evidence" : "evidence",
+        evidence.id,
+        workflow.id,
+        evidence,
+      );
       this.engine.store.event(
         workflow.id,
         workflow.project_id,
@@ -551,16 +901,18 @@ export class LocalRuntime implements Runtime {
           for (const t of affected)
             invalidateTaskProofs(this.engine, workflow.id, t.paths, t.repo_id);
         }
-        this.engine.invalidate(
-          workflow.id,
-          "检查失败，返回批准范围内修复；所有测试需重新运行",
-        );
-        this.engine.transition(
-          workflow.id,
-          ["VERIFYING"],
-          "EXECUTING",
-          "repair_tests",
-        );
+        if (!development) {
+          this.engine.invalidate(
+            workflow.id,
+            "检查失败，返回批准范围内修复；所有测试需重新运行",
+          );
+          this.engine.transition(
+            workflow.id,
+            ["VERIFYING"],
+            "EXECUTING",
+            "repair_tests",
+          );
+        }
       }
       this.engine.exportDocuments(workflow.id);
       return evidence;
@@ -604,6 +956,7 @@ export class LocalRuntime implements Runtime {
         paths.push(rawPath);
       }
       const evidence: Evidence & { error: typeof failure } = {
+        phase: development ? "development" : "delivery",
         id: id("evidence"),
         workflow_id: workflow.id,
         run_id: principal.run_id!,
@@ -623,7 +976,12 @@ export class LocalRuntime implements Runtime {
         created_at: now(),
         error: failure,
       };
-      this.engine.store.put("evidence", evidence.id, workflow.id, evidence);
+      this.engine.store.put(
+        development ? "development_evidence" : "evidence",
+        evidence.id,
+        workflow.id,
+        evidence,
+      );
       this.engine.store.event(
         workflow.id,
         workflow.project_id,
@@ -631,18 +989,22 @@ export class LocalRuntime implements Runtime {
         evidence,
         principal.run_id,
       );
-      this.engine.invalidate(workflow.id, "检查执行异常，返回批准范围内修复");
-      this.engine.transition(
-        workflow.id,
-        ["VERIFYING"],
-        "EXECUTING",
-        "repair_tests",
-      );
+      if (!development) {
+        this.engine.invalidate(workflow.id, "检查执行异常，返回批准范围内修复");
+        this.engine.transition(
+          workflow.id,
+          ["VERIFYING"],
+          "EXECUTING",
+          "repair_tests",
+        );
+      }
       this.engine.exportDocuments(workflow.id);
       return evidence;
     } finally {
+      restoreReport?.();
       if (processId) this.engine.store.remove("check_process", processId);
       this.checking.delete(unique);
+      this.engine.store.remove("check_lock", workflow.id);
       this.engine.scheduler.release(
         workflow.id,
         principal.run_id!,
@@ -737,33 +1099,11 @@ export class LocalRuntime implements Runtime {
     } catch {
       codexBin = undefined;
     }
-    if (!codexBin) {
-      const changedFiles = snapshot.repositories.flatMap((r) =>
-        r.changed_paths.map((p) => `${r.repo_id}:${p}`),
-      );
-      const synthesizedReview = {
-        schema_version: 1,
-        review_request_id: workflow.review_request_id!,
-        workflow_id: workflow.id,
-        plan_revision: workflow.plan_revision,
-        snapshot_id: snapshot.id,
-        verdict: "pass",
-        coverage: {
-          all_changed_files_reviewed: true,
-          all_requirements_checked: true,
-          upstream_downstream_checked: true,
-          security_checked: true,
-          tests_validity_checked: true,
-          files: changedFiles,
-        },
-        findings: [],
-        unresolved_questions: [],
-        repair_plan: null,
-        commit_message: `fix(devflow): ${workflow.title}`,
-      };
-      atomicWrite(output, JSON.stringify(synthesizedReview, null, 2));
-      return parseReviewOutput(synthesizedReview);
-    }
+    requireCondition(
+      codexBin,
+      "REVIEWER_UNAVAILABLE",
+      "独立复核程序不可用，不能生成通过结论；修复后重试复核",
+    );
     const proc = this.processes.start({
       id: run.id,
       workflow_id: workflow.id,

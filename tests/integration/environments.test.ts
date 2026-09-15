@@ -4,6 +4,66 @@ import { resolve, join } from "node:path";
 import { readFileSync } from "node:fs";
 import { Environments } from "../../packages/runtime/src/environment.js";
 import { ProcessManager } from "../../packages/process/src/manager.js";
+import { createServer } from "node:http";
+
+it("health checks report duplicate or foreign identity immediately and keep transient readiness retryable", async () => {
+  const s = setup();
+  const manager = new ProcessManager("unused", false);
+  const environments = new Environments(s.engine, manager);
+  let mode = "duplicate",
+    requests = 0;
+  const server = createServer((_request, response) => {
+    requests++;
+    if (mode === "transient" && requests === 1) {
+      response.writeHead(503);
+      response.end();
+      return;
+    }
+    response.setHeader(
+      "x-devflow-identity",
+      mode === "duplicate"
+        ? ["expected", "expected"]
+        : mode === "foreign"
+          ? "other-workflow"
+          : "expected",
+    );
+    response.end("UP");
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address() as { port: number };
+  const service = {
+    id: "backend",
+    process_id: "synthetic",
+    port: address.port,
+    origin: `http://127.0.0.1:${address.port}`,
+    health_url: `http://127.0.0.1:${address.port}/health`,
+    identity_header: "x-devflow-identity",
+    expected_identity: "expected",
+  };
+  try {
+    const started = Date.now();
+    await expect(
+      environments.waitHealth(service, "expected", 300000),
+    ).rejects.toMatchObject({
+      code: "HEALTH_IDENTITY_MISMATCH",
+      message: expect.stringContaining('"expected, expected"'),
+    });
+    expect(Date.now() - started).toBeLessThan(2000);
+    mode = "foreign";
+    await expect(
+      environments.waitHealth(service, "expected", 300000),
+    ).rejects.toMatchObject({ code: "HEALTH_IDENTITY_MISMATCH" });
+    mode = "transient";
+    requests = 0;
+    await environments.waitHealth(service, "expected", 2000);
+    expect(requests).toBe(2);
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await manager.close();
+    s.store.close();
+  }
+});
 it("IT-06/07 three parallel environments use distinct ports, real frontend proxies and isolated persisted data", async () => {
   const s = setup(),
     r = await repository(s.root),
@@ -61,10 +121,7 @@ it("IT-06/07 three parallel environments use distinct ports, real frontend proxi
       ),
       true,
     ),
-    environments = new Environments(
-      s.engine,
-      manager,
-    );
+    environments = new Environments(s.engine, manager);
   const flows = [];
   try {
     for (let i = 0; i < 3; i++) {
@@ -156,10 +213,7 @@ it("IT-07 registered fixture receives only its workflow data namespace before en
       ),
       true,
     ),
-    environments = new Environments(
-      s.engine,
-      manager,
-    );
+    environments = new Environments(s.engine, manager);
   try {
     const env = await environments.ensure(w);
     expect(

@@ -3,7 +3,13 @@ import { ReviewSchema } from "./index.js";
 
 /** Codex structured outputs require closed objects and all properties required. */
 export function reviewOutputSchema(repositoryIds: string[]) {
-  const schema: any = z.toJSONSchema(ReviewSchema);
+  return modelOutputSchema(ReviewSchema, repositoryIds);
+}
+export function modelOutputSchema(
+  contract: z.ZodType,
+  repositoryIds: string[],
+) {
+  const schema: any = z.toJSONSchema(contract);
   function visit(node: any, key = "") {
     if (!node || typeof node !== "object") return;
     delete node.default;

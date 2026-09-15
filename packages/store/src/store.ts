@@ -3,11 +3,12 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { EventEmitter } from "node:events";
 import { FlowError, type DomainEvent } from "../../contracts/src/index.js";
-import { canonical, hash, id, now } from "../../core/src/util.js";
+import { canonical, hash, id, now, publicEvent } from "../../core/src/util.js";
 export class Store extends EventEmitter {
   db: Database.Database;
   private depth = 0;
   private pending: DomainEvent[] = [];
+  private publicCache = new Map<string, DomainEvent>();
   constructor(public file: string) {
     super();
     mkdirSync(dirname(file), { recursive: true });
@@ -82,6 +83,13 @@ export class Store extends EventEmitter {
       )
       .run(kind, key, owner, canonical(data));
   }
+  entries<T>(kind: string, owner: string): { id: string; value: T }[] {
+    return (
+      this.db
+        .prepare("SELECT id,data FROM entities WHERE kind=? AND owner=?")
+        .all(kind, owner) as { id: string; data: string }[]
+    ).map((row) => ({ id: row.id, value: JSON.parse(row.data) as T }));
+  }
   remove(kind: string, key: string) {
     this.db
       .prepare("DELETE FROM entities WHERE kind=? AND id=?")
@@ -132,6 +140,25 @@ export class Store extends EventEmitter {
       .all(workflow, Math.min(1000, limit))
       .reverse()
       .map((r) => JSON.parse(r.data as string));
+  }
+  publicEvent(event: DomainEvent): DomainEvent {
+    const key = `${event.workflow_id}:${event.event_seq}`;
+    const cached = this.publicCache.get(key);
+    if (cached) return cached;
+    const result = publicEvent(event) as DomainEvent;
+    this.publicCache.set(key, result);
+    if (this.publicCache.size > 4000)
+      this.publicCache.delete(this.publicCache.keys().next().value!);
+    return result;
+  }
+  eventCursor(workflow: string): number {
+    return (
+      this.db
+        .prepare(
+          "SELECT COALESCE(MAX(seq),0) AS seq FROM events WHERE workflow_id=?",
+        )
+        .get(workflow) as { seq: number }
+    ).seq;
   }
   deduplicate<T>(key: string, request: unknown, fn: () => T): T {
     return this.transaction(() => {

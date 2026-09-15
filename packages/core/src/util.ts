@@ -52,13 +52,15 @@ export function redact(text: string) {
 /** Redact values, never serialized JSON syntax. Also handles nested tool JSON. */
 export function publicEvent(value: unknown): any {
   if (typeof value === "string") {
-    try {
-      const parsed = JSON.parse(value);
-      if (parsed && typeof parsed === "object")
-        return JSON.stringify(publicEvent(parsed));
-    } catch {
-      /* Ordinary text, including incomplete streamed JSON. */
-    }
+    const first = value.trimStart()[0];
+    if (first === "{" || first === "[")
+      try {
+        const parsed = JSON.parse(value);
+        if (parsed && typeof parsed === "object")
+          return JSON.stringify(publicEvent(parsed));
+      } catch {
+        /* Ordinary text, including incomplete streamed JSON. */
+      }
     if (/[\u0000-\u0008\u000e-\u001f]/.test(value)) return "[已省略二进制内容]";
     return redact(value);
   }

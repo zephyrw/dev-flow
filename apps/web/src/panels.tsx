@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 export const taskLabels: Record<string, string> = {
-  completed: "已完成",
+  completed: "开发完成",
   active: "进行中",
   pending_check: "待核验",
   needs_changes: "需修改",
@@ -26,7 +26,8 @@ export function TaskTree({ detail, title }: { detail: any; title?: string }) {
     (t: any) =>
       (!filter ||
         `${t.id} ${t.title}`.toLowerCase().includes(filter.toLowerCase())) &&
-      (state === "all" || t.implementation_status === state),
+      (state === "all" ||
+        (t.development_status ?? t.implementation_status) === state),
   );
   return (
     <div className="task-tree-container">
@@ -83,7 +84,8 @@ export function TaskTree({ detail, title }: { detail: any; title?: string }) {
             visible = tasks.filter((t: any) => !leaf || t.module_id === m.id);
           if (!visible.length) return null;
           const completedCount = all.filter(
-            (t: any) => t.has_implementation ?? t.completed,
+            (t: any) =>
+              t.development_status === "completed" || t.status === "verified",
           ).length;
           const isAllDone = all.length > 0 && completedCount === all.length;
           return (
@@ -102,7 +104,7 @@ export function TaskTree({ detail, title }: { detail: any; title?: string }) {
                 </span>
                 <span className={`module-badge ${isAllDone ? "all-done" : ""}`}>
                   {leaf
-                    ? `已提交 ${completedCount} / ${all.length}`
+                    ? `开发 ${completedCount} / ${all.length} · 验证 ${all.filter((t: any) => t.status === "verified").length} / ${all.length}`
                     : `${all.length} 个工作包`}
                 </span>
               </summary>
@@ -110,20 +112,35 @@ export function TaskTree({ detail, title }: { detail: any; title?: string }) {
                 {visible.map((t: any) => (
                   <div className={`task ${t.implementation_status}`} key={t.id}>
                     <span
-                      className={"checkbox " + (t.completed ? "checked" : "")}
+                      className={
+                        "checkbox " + (t.status === "verified" ? "checked" : "")
+                      }
                     >
-                      {t.completed ? "✓" : ""}
+                      {t.status === "verified" ? "✓" : ""}
                     </span>
                     <div className="task-main">
                       <div className="task-header-row">
                         <b className="task-title">{t.title}</b>
                         <span className={`badge ${t.implementation_status}`}>
-                          {t.implementation_status === "completed"
-                            ? "已完成"
-                            : t.status === "verified"
-                              ? "测试已通过"
-                              : (taskLabels[t.implementation_status] ??
-                                "未开始")}
+                          {taskLabels[
+                            t.development_status ?? t.implementation_status
+                          ] ?? "未开始"}
+                        </span>
+                        <span className="validation-status">
+                          验证：
+                          {
+                            (
+                              {
+                                passed: "已通过",
+                                failed: "失败",
+                                stale: "需重测",
+                                not_run: "未验证",
+                              } as Record<string, string>
+                            )[
+                              t.validation_status ??
+                                (t.status === "verified" ? "passed" : "not_run")
+                            ]
+                          }
                         </span>
                       </div>
                       {t.summary && <p className="task-summary">{t.summary}</p>}

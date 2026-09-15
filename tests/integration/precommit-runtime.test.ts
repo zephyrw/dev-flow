@@ -488,10 +488,13 @@ it("R4 a late result cannot be attached after invalidation and refreezing identi
       "fixture invalidates verification while result is in flight",
     );
     s.engine.transition(s.key, ["VERIFYING"], "EXECUTING", "repair_tests");
-    await s.engine.freeze(s.key, s.principal);
-    expect(s.engine.get(s.key).snapshot_id).toBe(snapshotId);
+    await expect(s.engine.freeze(s.key, s.principal)).rejects.toMatchObject({
+      code: "CHECK_RUNNING",
+    });
     gate.resolve(true);
     await pending;
+    await s.engine.freeze(s.key, s.principal);
+    expect(s.engine.get(s.key).snapshot_id).toBe(snapshotId);
     expect(s.store.list("evidence", s.key)).toHaveLength(0);
     expect(s.engine.get(s.key).state).toBe("VERIFYING");
   } finally {
