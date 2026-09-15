@@ -90,8 +90,23 @@ export function ExecutionPanel({
           className="btn-icon-close"
           onClick={close}
           aria-label="收起执行过程"
+          title="收起执行过程"
         >
-          收起 ✕
+          <span>收起</span>
+          <svg
+            className="collapse-icon"
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2.2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <polyline points="9 18 15 12 9 6" />
+          </svg>
         </button>
       </div>
       <div

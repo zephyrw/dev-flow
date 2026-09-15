@@ -12,9 +12,7 @@ export function DeliveryStrip({ detail }: { detail: any }) {
   const verified =
     detail.task_counts?.verified ??
     detail.tasks.filter((t: any) => t.status === "verified").length;
-  const pending = detail.tasks.filter(
-    (t: any) => t.has_implementation && !t.completed,
-  ).length;
+
   const test = detail.test_progress;
   const taskPercent = total > 0 ? Math.round((completed / total) * 100) : 0;
   const testPercent =
@@ -59,11 +57,6 @@ export function DeliveryStrip({ detail }: { detail: any }) {
           </b>
         </span>
       )}
-      {pending > 0 && (
-        <span className="metric-chip stale-chip">
-          待核验实现 <b>{pending}</b>
-        </span>
-      )}
       {test?.total > 0 && (
         <span className="metric-chip">
           <span className="chip-label">已通过测试</span>
@@ -84,9 +77,9 @@ export function DeliveryStrip({ detail }: { detail: any }) {
           失败 <b>{test.failed}</b>
         </span>
       )}
-      {test?.stale > 0 && (
+      {test?.previously_passed > 0 && (
         <span className="metric-chip stale-chip">
-          待复测 <b>{test.stale}</b>
+          曾通过待复测 <b>{test.previously_passed}</b>
         </span>
       )}
     </div>
