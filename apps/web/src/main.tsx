@@ -2106,15 +2106,31 @@ function App() {
                       "加载中…")
                   : "开发工作台"}
             </p>
-            <h1 title={w?.title}>
-              {showGuide
-                ? "使用指南"
-                : selected
-                  ? (w?.title ??
-                    flows.find((f) => f.id === selected)?.title ??
-                    "加载中…")
-                  : "工作流总览"}
-            </h1>
+            <div className="header-title-wrapper">
+              <h1 title={w?.title}>
+                {showGuide
+                  ? "使用指南"
+                  : selected
+                    ? (w?.title ??
+                      flows.find((f) => f.id === selected)?.title ??
+                      "加载中…")
+                    : "工作流总览"}
+              </h1>
+              {w && (
+                <span className={"badge " + w.state}>
+                  <span className="badge-dot" />
+                  {detail.queue?.kind === "preparing"
+                    ? "准备工作区"
+                    : w.state === "BLOCKED" &&
+                        w.blocker?.code === "MODEL_QUOTA" &&
+                        detail.attention?.category === "queue"
+                      ? "等待模型额度"
+                    : w.stage === "auto_repair"
+                      ? "准备自动修复"
+                      : labels[w.state]}
+                </span>
+              )}
+            </div>
           </div>
         </header>
         {updated && (
@@ -2243,130 +2259,14 @@ function App() {
           </>
         ) : (
           w && (
-            <>
-              <div className="workflow-top-deck">
-                <div className="workflow-bar">
-                  <div className="workflow-bar-left">
-                    <span className={"badge " + w.state}>
-                      <span className="badge-dot" />
-                      {detail.queue?.kind === "preparing"
-                        ? "准备工作区"
-                        : w.state === "BLOCKED" &&
-                            w.blocker?.code === "MODEL_QUOTA" &&
-                            detail.attention?.category === "queue"
-                          ? "等待模型额度"
-                        : w.stage === "auto_repair"
-                          ? "准备自动修复"
-                          : labels[w.state]}
-                    </span>
-                  </div>
-
-                  <div className="actions">
-                    {[
-                      "EXECUTING",
-                      "VERIFYING",
-                      "BLOCKED",
-                      "STOPPED",
-                      "RECOVERY_REQUIRED",
-                      "WAITING_INPUT",
-                      "WAITING_AUTHORIZATION",
-                    ].includes(w.state) && (
-                      <button
-                        className="btn-secondary"
-                        onClick={() => toggleSidebar(true)}
-                      >
-                        指导模型
-                      </button>
-                    )}
-                    {[
-                      "BLOCKED",
-                      "STOPPED",
-                      "RECOVERY_REQUIRED",
-                      "COMMIT_PARTIAL",
-                    ].includes(w.state) && (
-                      <>
-                        <button
-                          className="btn-secondary"
-                          disabled={pending}
-                          onClick={() =>
-                            void attempt(async () => {
-                              await api(
-                                `/workflows/${selected}/browser/reconcile`,
-                                {},
-                              );
-                              await api(
-                                `/workflows/${selected}/environment/stop`,
-                                {},
-                              ).catch(() => {});
-                              await api(
-                                `/workflows/${selected}/${w.state === "COMMIT_PARTIAL" ? "commit/retry" : "recover"}`,
-                                {},
-                              );
-                              await refresh();
-                            })
-                          }
-                        >
-                          {w.state === "COMMIT_PARTIAL"
-                            ? "核实现场并重试原提交"
-                            : w.blocker?.code === "MODEL_QUOTA"
-                              ? "立即重试"
-                            : "继续这个任务"}
-                        </button>
-                      </>
-                    )}
-                    {["PLAN_PENDING", "REPAIR_PLAN_PENDING"].includes(
-                      w.state,
-                    ) && (
-                      <button
-                        className="primary"
-                        disabled={pending}
-                        onClick={() => void attempt(() => approve("approve"))}
-                      >
-                        批准当前计划
-                      </button>
-                    )}
-                    {w.state === "HUMAN_PENDING" && (
-                      <button
-                        className="primary"
-                        disabled={pending}
-                        onClick={() => void attempt(() => approve("accept"))}
-                      >
-                        验收通过，启动复核
-                      </button>
-                    )}
-                    {["HUMAN_PENDING", "BLOCKED", "STOPPED"].includes(
-                      w.state,
-                    ) && (
-                      <button
-                        className="btn-secondary"
-                        onClick={() => {
-                          setModal("feedback");
-                          setText("");
-                        }}
-                      >
-                        反馈问题
-                      </button>
-                    )}
-                    {[
-                      "QUEUED",
-                      "EXECUTING",
-                      "VERIFYING",
-                      "REVIEW_QUEUED",
-                      "REVIEWING",
-                      "STOPPING",
-                    ].includes(w.state) && (
-                      <button
-                        className="danger"
-                        disabled={stopping || w.state === "STOPPING"}
-                        onClick={stopSelected}
-                      >
-                        {stopping || w.state === "STOPPING"
-                          ? "正在暂停…"
-                          : "暂停"}
-                      </button>
-                    )}
-                  </div>
-                </div>
+            <div
+              className={
+                "workflow-workbench-layout " +
+                (sidebarOpen ? "with-execution" : "")
+              }
+            >
+              <div className="workflow-main-column">
+                <div className="workflow-top-deck">
                 {progress && (
                   <div className="compact-progress" aria-label="当前执行进度">
                     <ol className="stage-track" aria-label={progress.title}>
@@ -2418,15 +2318,94 @@ function App() {
                           </time>
                         </button>
                       )}
-                      <button
-                        className={`execution-toggle ${sidebarOpen ? "active" : ""}`}
-                        aria-label="执行过程"
-                        aria-expanded={sidebarOpen}
-                        onClick={() => toggleSidebar(!sidebarOpen)}
-                      >
-                        <span className="toggle-icon">⚡</span>
-                        执行过程
-                      </button>
+                      <div className="compact-summary-actions">
+                        <div className="actions">
+                          {[
+                            "BLOCKED",
+                            "STOPPED",
+                            "RECOVERY_REQUIRED",
+                            "COMMIT_PARTIAL",
+                          ].includes(w.state) && (
+                            <button
+                              className="btn-secondary"
+                              disabled={pending}
+                              onClick={() =>
+                                void attempt(async () => {
+                                  await api(
+                                    `/workflows/${selected}/browser/reconcile`,
+                                    {},
+                                  );
+                                  await api(
+                                    `/workflows/${selected}/environment/stop`,
+                                    {},
+                                  ).catch(() => {});
+                                  await api(
+                                    `/workflows/${selected}/${w.state === "COMMIT_PARTIAL" ? "commit/retry" : "recover"}`,
+                                    {},
+                                  );
+                                  await refresh();
+                                })
+                              }
+                            >
+                              {w.state === "COMMIT_PARTIAL"
+                                ? "核实现场并重试原提交"
+                                : w.blocker?.code === "MODEL_QUOTA"
+                                  ? "立即重试"
+                                : "继续这个任务"}
+                            </button>
+                          )}
+                          {["PLAN_PENDING", "REPAIR_PLAN_PENDING"].includes(
+                            w.state,
+                          ) && (
+                            <button
+                              className="primary"
+                              disabled={pending}
+                              onClick={() => void attempt(() => approve("approve"))}
+                            >
+                              批准当前计划
+                            </button>
+                          )}
+                          {w.state === "HUMAN_PENDING" && (
+                            <button
+                              className="primary"
+                              disabled={pending}
+                              onClick={() => void attempt(() => approve("accept"))}
+                            >
+                              验收通过，启动复核
+                            </button>
+                          )}
+
+                          {[
+                            "QUEUED",
+                            "EXECUTING",
+                            "VERIFYING",
+                            "REVIEW_QUEUED",
+                            "REVIEWING",
+                            "STOPPING",
+                          ].includes(w.state) && (
+                            <button
+                              className="danger"
+                              disabled={stopping || w.state === "STOPPING"}
+                              onClick={stopSelected}
+                            >
+                              {stopping || w.state === "STOPPING"
+                                ? "正在暂停…"
+                                : "暂停"}
+                            </button>
+                          )}
+                        </div>
+                        {!sidebarOpen && (
+                          <button
+                            className="execution-toggle"
+                            aria-label="执行过程"
+                            aria-expanded={false}
+                            onClick={() => toggleSidebar(true)}
+                          >
+                            <span className="toggle-icon">⚡</span>
+                            执行过程
+                          </button>
+                        )}
+                      </div>
                     </div>
                   </div>
                 )}
@@ -2459,11 +2438,7 @@ function App() {
                     </div>
                   )}
               </div>
-              <div
-                className={
-                  "workspace-columns " + (sidebarOpen ? "with-execution" : "")
-                }
-              >
+              <div className="workspace-columns">
                 {detail.loading ? (
                   <section className="panel" role="status">
                     正在加载任务明细，状态和操作已可用…
@@ -2484,60 +2459,61 @@ function App() {
                     setNotice={setNotice}
                   />
                 )}
-                {sidebarOpen && (
-                  <ExecutionPanel
-                    key={selected}
-                    interaction={
-                      <TaskInteraction
-                        key={selected}
-                        detail={detail}
-                        send={api}
-                        refresh={refresh}
-                      />
-                    }
-                    loadHistory={
-                      detail.history_cursor === null
-                        ? undefined
-                        : async () => {
-                            const oldest =
-                              detail.history_cursor ??
-                              detail.events?.[0]?.event_seq;
-                            if (!oldest) return;
-                            await attempt(async () => {
-                              const history = await api(
-                                `/workflows/${selected}/history?before=${oldest}&limit=100`,
-                              );
-                              if (selection.current === selected)
-                                setDetail((previous: any) => ({
-                                  ...previous,
-                                  history_cursor: history.next_before,
-                                  events: [
-                                    ...history.events,
-                                    ...previous.events,
-                                  ],
-                                }));
-                            });
-                          }
-                    }
-                    entries={timeline}
-                    connected={connected}
-                    width={sidebarWidth}
-                    resize={resizeSidebar}
-                    locate={locate}
-                    close={() => toggleSidebar(false)}
-                    read={(sequence) =>
-                      setSeen((previous) =>
-                        previous[selected] === sequence
-                          ? previous
-                          : { ...previous, [selected]: sequence },
-                      )
-                    }
-                  />
-                )}
               </div>
-            </>
+            </div>
+            {sidebarOpen && (
+              <ExecutionPanel
+                key={selected}
+                interaction={
+                  <TaskInteraction
+                    key={selected}
+                    detail={detail}
+                    send={api}
+                    refresh={refresh}
+                  />
+                }
+                loadHistory={
+                  detail.history_cursor === null
+                    ? undefined
+                    : async () => {
+                        const oldest =
+                          detail.history_cursor ??
+                          detail.events?.[0]?.event_seq;
+                        if (!oldest) return;
+                        await attempt(async () => {
+                          const history = await api(
+                            `/workflows/${selected}/history?before=${oldest}&limit=100`,
+                          );
+                          if (selection.current === selected)
+                            setDetail((previous: any) => ({
+                              ...previous,
+                              history_cursor: history.next_before,
+                              events: [
+                                ...history.events,
+                                ...previous.events,
+                              ],
+                            }));
+                        });
+                      }
+                }
+                entries={timeline}
+                connected={connected}
+                width={sidebarWidth}
+                resize={resizeSidebar}
+                locate={locate}
+                close={() => toggleSidebar(false)}
+                read={(sequence) =>
+                  setSeen((previous) =>
+                    previous[selected] === sequence
+                      ? previous
+                      : { ...previous, [selected]: sequence },
+                  )
+                }
+              />
+            )}
+            </div>
           )
-        )}
+      )}
       </main>
       {fileDiff && (
         <div className="modal-backdrop" onClick={() => setFileDiff(null)}>

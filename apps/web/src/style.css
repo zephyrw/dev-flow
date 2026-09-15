@@ -783,6 +783,13 @@ header h1 {
   margin: 0;
 }
 
+.header-title-wrapper {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
 /* ==========================================================================
    Workflow Top Deck (The Modern Command Header)
    ========================================================================== */
@@ -1076,7 +1083,36 @@ header h1 {
 .execution-toggle.active {
   background: var(--primary-light);
   border-color: var(--primary-border);
-  color: var(--primary-text);
+  color: var(--primary);
+}
+
+.compact-summary-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.compact-summary-actions .actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: 0;
+}
+
+.compact-summary-actions .actions button {
+  height: 28px;
+  padding: 0 12px;
+  font-size: 12px;
+  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  box-sizing: border-box;
+}
+
+.compact-summary-actions .execution-toggle {
+  margin-left: 0;
 }
 
 .toggle-icon {
@@ -1142,6 +1178,24 @@ header h1 {
 /* ==========================================================================
    Central Workspace & Modern Tabs
    ========================================================================== */
+
+.workflow-workbench-layout {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  gap: 16px;
+  overflow: hidden;
+  position: relative;
+}
+
+.workflow-main-column {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
 
 .workspace-columns {
   display: flex;
@@ -1698,17 +1752,29 @@ select:focus {
 }
 
 .btn-icon-close {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   background: transparent;
   border: none;
   box-shadow: none;
-  padding: 3px 6px;
+  padding: 4px 8px;
+  border-radius: var(--radius-sm, 4px);
   color: var(--text-light);
   font-size: 12px;
+  cursor: pointer;
+  transition: all var(--transition-fast, 0.15s ease);
 }
 
 .btn-icon-close:hover {
   color: var(--text-main);
   background: rgba(0, 0, 0, 0.05);
+}
+
+.btn-icon-close .collapse-icon {
+  display: inline-block;
+  vertical-align: middle;
+  flex-shrink: 0;
 }
 
 /* Timeline Stream */
@@ -3112,6 +3178,7 @@ select:focus {
 
 /* Responsive Media Queries */
 @media (max-width: 1280px) {
+  .workflow-workbench-layout.with-execution .execution-sidebar,
   .workspace-columns.with-execution .execution-sidebar {
     position: absolute;
     right: 0;
@@ -3194,3 +3261,72 @@ select:focus {
 .execution-sidebar:has(.authorization-card) .task-interaction {
   max-height: 72%;
 }
+
+/* Guidance trigger & form in execution sidebar */
+.guidance-trigger-wrapper {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 6px 0;
+  width: 100%;
+}
+
+.btn-guidance-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 7px 18px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--primary, #2563eb);
+  background: var(--bg-surface-subtle, #f8fafc);
+  border: 1px dashed var(--border-subtle, #cbd5e1);
+  border-radius: var(--radius-md, 6px);
+  cursor: pointer;
+  box-shadow: var(--shadow-xs, 0 1px 2px rgba(0, 0, 0, 0.04));
+  transition: all var(--transition-fast, 0.15s ease);
+}
+
+.btn-guidance-trigger:hover {
+  background: #eff6ff;
+  border: 1px solid var(--primary, #2563eb);
+  color: var(--primary-hover, #1d4ed8);
+}
+
+.guidance-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.guidance-form textarea {
+  width: 100%;
+  padding: 8px 10px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  border: 1px solid var(--border-subtle, #cbd5e1);
+  border-radius: var(--radius-md, 6px);
+  resize: vertical;
+  outline: none;
+  font-family: inherit;
+  box-sizing: border-box;
+  transition: border-color var(--transition-fast);
+}
+
+.guidance-form textarea:focus {
+  border-color: var(--primary, #2563eb);
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.15);
+}
+
+.guidance-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.guidance-actions button {
+  padding: 5px 12px;
+  font-size: 12.5px;
+}
+

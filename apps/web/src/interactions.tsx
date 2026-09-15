@@ -12,7 +12,8 @@ export function TaskInteraction({
   const [text, setText] = useState(""),
     [pending, setPending] = useState(false),
     [error, setError] = useState(""),
-    [notice, setNotice] = useState("");
+    [notice, setNotice] = useState(""),
+    [isGuiding, setIsGuiding] = useState(false);
   const w = detail.workflow;
   const requests = (detail.operations ?? []).filter(
     (r: any) => r.status === "pending",
@@ -135,30 +136,88 @@ export function TaskInteraction({
           </div>
         </article>
       ))}
-      <label htmlFor={`guidance-${w.id}`}>
-        {requests.length ? "授权处理意见（可选）" : "给执行模型补充指导"}
-      </label>
-      <textarea
-        id={`guidance-${w.id}`}
-        rows={2}
-        value={text}
-        onChange={(e) => setText(e.target.value)}
-        placeholder="例如：先读取后端启动日志，修复启动错误，再继续测试。"
-      />
+      {requests.length > 0 && (
+        <div className="authorization-note-form">
+          <label htmlFor={`guidance-${w.id}`}>
+            授权处理意见（可选）
+          </label>
+          <textarea
+            id={`guidance-${w.id}`}
+            rows={2}
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            placeholder="可在此填写授权决定的补充说明…"
+          />
+        </div>
+      )}
       {canGuide && !requests.length && (
-        <button
-          disabled={pending || !text.trim()}
-          onClick={() =>
-            void act(() =>
-              send(`/workflows/${w.id}/feedback`, {
-                text,
-                scope: "within_plan",
-              }),
-            )
-          }
-        >
-          {pending ? "正在交接…" : "发送指导并继续"}
-        </button>
+        !isGuiding ? (
+          <div className="guidance-trigger-wrapper">
+            <button
+              type="button"
+              className="btn-guidance-trigger"
+              onClick={() => setIsGuiding(true)}
+            >
+              给执行模型补充指导
+            </button>
+          </div>
+        ) : (
+          <div className="guidance-form">
+            <textarea
+              id={`guidance-${w.id}`}
+              rows={3}
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              placeholder="例如：先读取后端启动日志，修复启动错误，再继续测试。"
+              autoFocus
+              onKeyDown={(e) => {
+                if (
+                  (e.ctrlKey || e.metaKey) &&
+                  e.key === "Enter" &&
+                  text.trim() &&
+                  !pending
+                ) {
+                  e.preventDefault();
+                  void act(async () => {
+                    await send(`/workflows/${w.id}/feedback`, {
+                      text,
+                      scope: "within_plan",
+                    });
+                    setIsGuiding(false);
+                  });
+                }
+              }}
+            />
+            <div className="guidance-actions">
+              <button
+                type="button"
+                className="btn-secondary"
+                disabled={pending}
+                onClick={() => {
+                  setIsGuiding(false);
+                  setText("");
+                }}
+              >
+                取消
+              </button>
+              <button
+                className="primary"
+                disabled={pending || !text.trim()}
+                onClick={() =>
+                  void act(async () => {
+                    await send(`/workflows/${w.id}/feedback`, {
+                      text,
+                      scope: "within_plan",
+                    });
+                    setIsGuiding(false);
+                  })
+                }
+              >
+                {pending ? "正在交接…" : "发送指导并继续"}
+              </button>
+            </div>
+          </div>
+        )
       )}
       {error && (
         <p role="alert" className="error">
@@ -166,22 +225,6 @@ export function TaskInteraction({
         </p>
       )}
       {notice && <p role="status">{notice}</p>}
-      {detail.repair && (
-        <details>
-          <summary>最近一次自动修复</summary>
-          <p>
-            {detail.repair.user_summary ?? "已保存最近的修复过程和原始错误。"}
-          </p>
-          <details>
-            <summary>技术诊断详情</summary>
-            <pre>{detail.repair.instructions}</pre>
-          </details>
-          <small>
-            已尝试 {detail.repair.attempts} 次，规划诊断{" "}
-            {detail.repair.diagnoses ?? 0} 次
-          </small>
-        </details>
-      )}
       {detail.queue?.owners?.length > 0 && (
         <p>
           占用任务：
