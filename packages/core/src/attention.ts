@@ -1,8 +1,25 @@
 import type { Engine, PlanRecord } from "./engine.js";
+import { failureSummary } from "../../presentation/src/failure.js";
 
 // Present authoritative state; legacy recovery must not invent a human actor.
 export function workflowAttention(engine: Engine, key: string) {
   const w = engine.get(key);
+  const modelRetry = engine.store.get<{ retry_at: number }>("model_retry", key);
+  if (w.state === "BLOCKED" && w.blocker?.code === "MODEL_QUOTA" && modelRetry)
+    return {
+      category: "queue",
+      message: `执行模型额度暂时用完。预计 ${new Date(modelRetry.retry_at).toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false })} 自动继续，无需补充指导。`,
+      action: "查看执行过程",
+      at: w.updated_at,
+    };
+  const resource = engine.store.get<any>("resource_wait", key);
+  if (resource)
+    return {
+      category: "queue",
+      message: resource.message,
+      action: "查看等待资源",
+      at: w.updated_at,
+    };
   let interruption = engine.store.get<any>("interruption", key);
   if (!interruption && w.run_id) {
     interruption = engine.store.get<any>("run_stop", w.run_id);
@@ -85,7 +102,7 @@ export function workflowAttention(engine: Engine, key: string) {
       w.state === "STOPPING"
         ? "正在暂停执行"
         : w.state === "BLOCKED"
-          ? (w.blocker?.message ?? "执行遇到问题")
+          ? failureSummary(w.blocker?.code, w.blocker?.message)
           : w.state === "RECOVERY_REQUIRED"
             ? "服务重启后，需要核实中断的执行再继续"
             : (interruption?.message ?? "执行已暂停，等待处理");
@@ -107,8 +124,29 @@ export function workflowAttention(engine: Engine, key: string) {
   if (["QUEUED", "REVIEW_QUEUED"].includes(w.state))
     return {
       category: "queue",
-      message: "正在排队，等待执行名额或共享资源释放",
+      message:
+        engine.store.get<any>("queue_wait", key)?.message ??
+        "已提交，正在安排执行",
       action: "查看执行过程",
+      at: w.updated_at,
+    };
+  if (w.state === "WAITING_AUTHORIZATION")
+    return {
+      category: "authorization",
+      message: "有具体操作等待你授权，模型会话已保留",
+      action: "查看待授权操作",
+      at: w.updated_at,
+    };
+  if (w.state === "WAITING_INPUT")
+    return {
+      category: "guidance",
+      message:
+        w.blocker?.code === "DIAGNOSIS_FAILED"
+          ? "平台的故障诊断调用失败，尚未完成排查。可继续自动排查，无需你解释技术日志。"
+          : w.blocker?.code === "REPAIR_NEEDS_GUIDANCE"
+            ? "多次自动排查仍未解决问题，现场已保留，可以继续自动排查。"
+            : (w.blocker?.message ?? "需要你补充指导后继续"),
+      action: "输入指导并继续",
       at: w.updated_at,
     };
   return null;

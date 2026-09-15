@@ -1,4 +1,5 @@
 import { ExecutionPanel } from "./execution-panel.js";
+import { TaskInteraction } from "./interactions.js";
 import { DeliveryStrip, EnvironmentSummary } from "./workbench.js";
 import guideText from "../../../docs/guide/使用指南.md?raw";
 import { TaskTree, TestResults } from "./panels.js";
@@ -27,13 +28,16 @@ const labels: Record<string, string> = {
   STOPPED: "已暂停",
   BLOCKED: "需要处理",
   RECOVERY_REQUIRED: "需要恢复检查",
+  WAITING_AUTHORIZATION: "等待操作授权",
+  WAITING_INPUT: "等待你的指导",
 };
-async function api(path: string, body?: unknown) {
+async function api(path: string, body?: unknown, signal?: AbortSignal) {
   const r = await fetch("/api" + path, {
     method: body === undefined ? "GET" : "POST",
     credentials: "same-origin",
     headers: body === undefined ? {} : { "Content-Type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
+    signal,
   });
   const result = await r.json();
   if (!r.ok) throw Error(result.error?.message ?? "请求失败");
@@ -278,13 +282,19 @@ const Diagram = React.memo(function Diagram({ source }: { source: string }) {
 function extractTextFromChildren(children: any): string {
   if (!children) return "";
   if (typeof children === "string") return children;
-  if (Array.isArray(children)) return children.map(extractTextFromChildren).join("");
-  if (children.props?.children) return extractTextFromChildren(children.props.children);
+  if (Array.isArray(children))
+    return children.map(extractTextFromChildren).join("");
+  if (children.props?.children)
+    return extractTextFromChildren(children.props.children);
   return "";
 }
 
 function slugifyHeading(text: string): string {
-  const clean = text.trim().toLowerCase().replace(/\s+/g, "-").replace(/[^\w\u4e00-\u9fa5-]+/g, "");
+  const clean = text
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "-")
+    .replace(/[^\w\u4e00-\u9fa5-]+/g, "");
   return encodeURIComponent(clean) || "section";
 }
 
@@ -486,10 +496,14 @@ function CodeDiffPanel({
     return list;
   }, [diff]);
 
-  const [selectedFile, setSelectedFile] = useState<CodeDiffFileItem | null>(null);
+  const [selectedFile, setSelectedFile] = useState<CodeDiffFileItem | null>(
+    null,
+  );
   const [searchQuery, setSearchQuery] = useState("");
   const [viewMode, setViewMode] = useState<"tree" | "flat">("tree");
-  const [collapsedFolders, setCollapsedFolders] = useState<Record<string, boolean>>({});
+  const [collapsedFolders, setCollapsedFolders] = useState<
+    Record<string, boolean>
+  >({});
   const [inlineDiff, setInlineDiff] = useState<{
     path: string;
     branch?: string;
@@ -511,7 +525,9 @@ function CodeDiffPanel({
     setSelectedFile((current) => {
       if (
         current &&
-        allFiles.some((f) => f.repo_id === current.repo_id && f.path === current.path)
+        allFiles.some(
+          (f) => f.repo_id === current.repo_id && f.path === current.path,
+        )
       ) {
         return current;
       }
@@ -607,14 +623,18 @@ function CodeDiffPanel({
         e.preventDefault();
         const currentIndex = selectedFile
           ? filteredFiles.findIndex(
-              (f) => f.repo_id === selectedFile.repo_id && f.path === selectedFile.path,
+              (f) =>
+                f.repo_id === selectedFile.repo_id &&
+                f.path === selectedFile.path,
             )
           : -1;
         let nextIndex = 0;
         if (e.key === "ArrowDown") {
-          nextIndex = currentIndex < filteredFiles.length - 1 ? currentIndex + 1 : 0;
+          nextIndex =
+            currentIndex < filteredFiles.length - 1 ? currentIndex + 1 : 0;
         } else {
-          nextIndex = currentIndex > 0 ? currentIndex - 1 : filteredFiles.length - 1;
+          nextIndex =
+            currentIndex > 0 ? currentIndex - 1 : filteredFiles.length - 1;
         }
         setSelectedFile(filteredFiles[nextIndex] ?? null);
       }
@@ -665,10 +685,30 @@ function CodeDiffPanel({
     string,
     { label: string; textClass: string; bgClass: string; title: string }
   > = {
-    A: { label: "A", textClass: "status-tag-add", bgClass: "status-pill-add", title: "新增文件" },
-    M: { label: "M", textClass: "status-tag-mod", bgClass: "status-pill-mod", title: "修改文件" },
-    D: { label: "D", textClass: "status-tag-del", bgClass: "status-pill-del", title: "删除文件" },
-    T: { label: "T", textClass: "status-tag-type", bgClass: "status-pill-type", title: "类型变化" },
+    A: {
+      label: "A",
+      textClass: "status-tag-add",
+      bgClass: "status-pill-add",
+      title: "新增文件",
+    },
+    M: {
+      label: "M",
+      textClass: "status-tag-mod",
+      bgClass: "status-pill-mod",
+      title: "修改文件",
+    },
+    D: {
+      label: "D",
+      textClass: "status-tag-del",
+      bgClass: "status-pill-del",
+      title: "删除文件",
+    },
+    T: {
+      label: "T",
+      textClass: "status-tag-type",
+      bgClass: "status-pill-type",
+      title: "类型变化",
+    },
   };
 
   const parseBranch = (branch?: string) => {
@@ -706,13 +746,14 @@ function CodeDiffPanel({
             }
           >
             <span className="diff-branch-icon">⎇</span>
-            <span className="diff-branch-name">
-              {branchInfo.display}
-            </span>
+            <span className="diff-branch-name">{branchInfo.display}</span>
             {firstRepo?.frozen ? (
               <span className="badge VERIFYING">测试版本</span>
             ) : isWorktree ? (
-              <span className="badge VERIFYING" title="运行在独立 Worktree 隔离工作区">
+              <span
+                className="badge VERIFYING"
+                title="运行在独立 Worktree 隔离工作区"
+              >
                 Worktree 副本
               </span>
             ) : (
@@ -906,7 +947,10 @@ function CodeDiffPanel({
                                   {statusInfo.label}
                                 </span>
                                 <div className="diff-file-meta">
-                                  <span className="diff-file-name" title={f.path}>
+                                  <span
+                                    className="diff-file-name"
+                                    title={f.path}
+                                  >
                                     {fileName}
                                   </span>
                                 </div>
@@ -984,15 +1028,25 @@ function CodeDiffPanel({
                         {parsedDiff.lines.map((line, idx) => {
                           if (line.type === "hunk") {
                             return (
-                              <span key={idx} className="diff-line-row diff-row-hunk">
-                                <i className="hunk-header-cell">{line.content}</i>
+                              <span
+                                key={idx}
+                                className="diff-line-row diff-row-hunk"
+                              >
+                                <i className="hunk-header-cell">
+                                  {line.content}
+                                </i>
                               </span>
                             );
                           }
                           if (line.type === "meta") {
                             return (
-                              <span key={idx} className="diff-line-row diff-row-meta">
-                                <i className="meta-header-cell">{line.content}</i>
+                              <span
+                                key={idx}
+                                className="diff-line-row diff-row-meta"
+                              >
+                                <i className="meta-header-cell">
+                                  {line.content}
+                                </i>
                               </span>
                             );
                           }
@@ -1106,7 +1160,10 @@ const CentralWorkspace = React.memo(
     }, [planFullscreen]);
 
     const planMarkdown = detail.plan?.plan?.markdown ?? "";
-    const tocItems = React.useMemo(() => extractToc(planMarkdown), [planMarkdown]);
+    const tocItems = React.useMemo(
+      () => extractToc(planMarkdown),
+      [planMarkdown],
+    );
 
     const scrollToHeading = (id: string) => {
       const el = document.getElementById(id);
@@ -1273,8 +1330,7 @@ const CentralWorkspace = React.memo(
                       </p>
                       {detail.project?.repositories.map((r: any) => (
                         <p key={r.id}>
-                          {r.id}：
-                          {detail.context?.roots?.[r.id] ?? r.path}
+                          {r.id}：{detail.context?.roots?.[r.id] ?? r.path}
                         </p>
                       ))}
                       {detail.project?.commands.map((c: any) => (
@@ -1338,9 +1394,7 @@ const CentralWorkspace = React.memo(
                   </p>
                   <details>
                     <summary>技术详情</summary>
-                    <p className="mono">
-                      快照：{detail.review.snapshot_id}
-                    </p>
+                    <p className="mono">快照：{detail.review.snapshot_id}</p>
                   </details>
                   {detail.review.findings.map((f: any, index: number) => (
                     <article key={index} className="panel">
@@ -1419,9 +1473,7 @@ const CentralWorkspace = React.memo(
                               `/workflows/${selected}/browser/lock`,
                               {},
                             );
-                            setNotice(
-                              "已保留共享浏览器，完成场景后请释放。",
-                            );
+                            setNotice("已保留共享浏览器，完成场景后请释放。");
                           })
                         }
                       >
@@ -1575,31 +1627,84 @@ function App() {
   useEffect(() => {
     if (selected && tab === "diff") void attempt(refreshDiff);
   }, [selected, tab]);
+  const detailCache = useRef(new Map<string, any>());
+  const savedCursors = useRef(new Map<string, number>());
   const refresh = async () => {
-    const [p, f] = await Promise.all([api("/projects"), api("/workflows")]);
+    const key = selected;
+    const [p, f, next] = await Promise.all([
+      api("/projects"),
+      api("/workflows"),
+      key ? api("/workflows/" + key) : Promise.resolve(null),
+    ]);
     setProjects(p);
     setFlows(f);
-    if (selected) {
-      const next = await api("/workflows/" + selected);
-      if (selection.current === selected)
-        setDetail((previous: any) => {
-          const current = previous?.workflow.id === selected ? previous : null;
-          const latest =
-            current?.workflow.version > next.workflow.version ? current : next;
-          return {
-            ...latest,
-            events: mergeEvents(
-              selected,
-              current?.events ?? [],
-              next.events,
-              eventBuffer.current,
-            ),
-          };
-        });
-    }
+    if (next && selection.current === key)
+      setDetail((previous: any) => {
+        const current = previous?.workflow.id === key ? previous : null;
+        if (current?.workflow.version > next.workflow.version) return current;
+        const merged = {
+          ...next,
+          events: mergeEvents(
+            key,
+            current?.events ?? [],
+            next.events,
+            eventBuffer.current,
+          ),
+        };
+        detailCache.current.set(key, merged);
+        return merged;
+      });
   };
   useEffect(() => {
-    void refresh().catch((e) => setError(String(e)));
+    void Promise.all([api("/projects"), api("/workflows")])
+      .then(([p, f]) => {
+        setProjects(p);
+        setFlows(f);
+      })
+      .catch((e) => setError(String(e)));
+  }, []);
+  useEffect(() => {
+    if (!selected) return;
+    const abort = new AbortController();
+    const cached = detailCache.current.get(selected);
+    setDetail(cached ?? null);
+    void (async () => {
+      const summary = await api(
+        `/workflows/${selected}?view=summary`,
+        undefined,
+        abort.signal,
+      );
+      if (abort.signal.aborted || selection.current !== selected) return;
+      setDetail((previous: any) =>
+        previous?.workflow.id === selected &&
+        !previous.loading &&
+        previous.workflow.version === summary.workflow.version
+          ? previous
+          : summary,
+      );
+      const next = await api(`/workflows/${selected}`, undefined, abort.signal);
+      if (abort.signal.aborted || selection.current !== selected) return;
+      setDetail((previous: any) => {
+        const current = previous?.workflow.id === selected ? previous : null;
+        if (current?.workflow.version > next.workflow.version) return current;
+        const result = {
+          ...next,
+          events: mergeEvents(
+            selected,
+            current?.events ?? [],
+            next.events,
+            eventBuffer.current,
+          ),
+        };
+        detailCache.current.set(selected, result);
+        if (detailCache.current.size > 10)
+          detailCache.current.delete(detailCache.current.keys().next().value!);
+        return result;
+      });
+    })().catch((e) => {
+      if (!abort.signal.aborted) setError(String(e));
+    });
+    return () => abort.abort();
   }, [selected]);
   useEffect(() => {
     let disposed = false,
@@ -1642,15 +1747,16 @@ function App() {
   }, []);
   useEffect(() => {
     if (!selected) return;
-    eventCursor.current = 0;
+    eventCursor.current = savedCursors.current.get(selected) ?? 0;
     eventBuffer.current = [];
     let ws: WebSocket,
       disposed = false,
       timer: ReturnType<typeof setTimeout>,
-      refreshTimer: ReturnType<typeof setTimeout> | undefined;
+      refreshTimer: ReturnType<typeof setTimeout> | undefined,
+      streamTimer: ReturnType<typeof setTimeout> | undefined;
     const connect = () => {
       ws = new WebSocket(
-        `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/api/events?workflow_id=${selected}&after=${eventCursor.current}`,
+        `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/api/events?workflow_id=${selected}&after=${eventCursor.current}&tail=100`,
       );
       ws.onopen = () => {
         if (!disposed) setConnected(true);
@@ -1660,17 +1766,28 @@ function App() {
         const event = JSON.parse(e.data);
         if (event.workflow_id !== selected) return;
         eventCursor.current = Math.max(eventCursor.current, event.event_seq);
-        eventBuffer.current = mergeEvents(selected, eventBuffer.current, [
-          event,
-        ]);
-        setDetail((previous: any) =>
-          previous?.workflow.id === selected
-            ? {
+        savedCursors.current.set(selected, eventCursor.current);
+        eventBuffer.current.push(event);
+        if (eventBuffer.current.length > 5000)
+          eventBuffer.current.splice(0, eventBuffer.current.length - 5000);
+        if (!streamTimer)
+          streamTimer = setTimeout(() => {
+            streamTimer = undefined;
+            if (disposed) return;
+            setDetail((previous: any) => {
+              if (previous?.workflow.id !== selected) return previous;
+              const next = {
                 ...previous,
-                events: mergeEvents(selected, previous.events, [event]),
-              }
-            : previous,
-        );
+                events: mergeEvents(
+                  selected,
+                  previous.events,
+                  eventBuffer.current,
+                ),
+              };
+              detailCache.current.set(selected, next);
+              return next;
+            });
+          }, 50);
         // Stream output immediately. Only domain changes need an HTTP refresh;
         // a continuous token stream must never postpone displaying the log.
         if (
@@ -1702,6 +1819,7 @@ function App() {
       disposed = true;
       clearTimeout(timer);
       clearTimeout(refreshTimer);
+      clearTimeout(streamTimer);
       ws?.close();
     };
   }, [selected]);
@@ -1807,7 +1925,17 @@ function App() {
     )
     .at(-1);
   const sidebarOpen =
-    sidebarPrefs[selected] ?? ["EXECUTING", "VERIFYING"].includes(w?.state);
+    sidebarPrefs[selected] ??
+    [
+      "EXECUTING",
+      "VERIFYING",
+      "WAITING_AUTHORIZATION",
+      "WAITING_INPUT",
+    ].includes(w?.state);
+  useEffect(() => {
+    if (["WAITING_AUTHORIZATION", "WAITING_INPUT"].includes(w?.state))
+      setSidebarPrefs((previous) => ({ ...previous, [selected]: true }));
+  }, [selected, w?.state]);
   const toggleSidebar = (open: boolean) => {
     setSidebarPrefs((previous) => {
       const next = { ...previous, [selected]: open };
@@ -1896,7 +2024,10 @@ function App() {
             aria-label="使用指南"
             onClick={() => setShowGuide(true)}
           >
-            <span className="nav-icon" aria-hidden="true">📖</span> 使用指南
+            <span className="nav-icon" aria-hidden="true">
+              📖
+            </span>{" "}
+            使用指南
           </button>
           <div className="connection-status">
             <span className={"dot " + (connected ? "COMMITTED" : "")} />{" "}
@@ -2065,11 +2196,35 @@ function App() {
                   <div className="workflow-bar-left">
                     <span className={"badge " + w.state}>
                       <span className="badge-dot" />
-                      {labels[w.state]}
+                      {detail.queue?.kind === "preparing"
+                        ? "准备工作区"
+                        : w.state === "BLOCKED" &&
+                            w.blocker?.code === "MODEL_QUOTA" &&
+                            detail.attention?.category === "queue"
+                          ? "等待模型额度"
+                        : w.stage === "auto_repair"
+                          ? "准备自动修复"
+                          : labels[w.state]}
                     </span>
                   </div>
 
                   <div className="actions">
+                    {[
+                      "EXECUTING",
+                      "VERIFYING",
+                      "BLOCKED",
+                      "STOPPED",
+                      "RECOVERY_REQUIRED",
+                      "WAITING_INPUT",
+                      "WAITING_AUTHORIZATION",
+                    ].includes(w.state) && (
+                      <button
+                        className="btn-secondary"
+                        onClick={() => toggleSidebar(true)}
+                      >
+                        指导模型
+                      </button>
+                    )}
                     {[
                       "BLOCKED",
                       "STOPPED",
@@ -2100,6 +2255,8 @@ function App() {
                         >
                           {w.state === "COMMIT_PARTIAL"
                             ? "核实现场并重试原提交"
+                            : w.blocker?.code === "MODEL_QUOTA"
+                              ? "立即重试"
                             : "继续这个任务"}
                         </button>
                       </>
@@ -2150,7 +2307,9 @@ function App() {
                         disabled={stopping || w.state === "STOPPING"}
                         onClick={stopSelected}
                       >
-                        {stopping || w.state === "STOPPING" ? "正在暂停…" : "暂停"}
+                        {stopping || w.state === "STOPPING"
+                          ? "正在暂停…"
+                          : "暂停"}
                       </button>
                     )}
                   </div>
@@ -2203,7 +2362,9 @@ function App() {
                               ? ` · ${latest.text.slice(0, 120).replace(/\s+/g, " ")}`
                               : ""}
                           </span>
-                          <time>{new Date(latest.created_at).toLocaleTimeString()}</time>
+                          <time>
+                            {new Date(latest.created_at).toLocaleTimeString()}
+                          </time>
                         </button>
                       )}
                       <button
@@ -2221,49 +2382,92 @@ function App() {
                 {attention &&
                   attention.source !== "local_console" &&
                   !attention.message?.includes("你在控制台暂停") && (
-                  <div
-                    className={"attention-strip " + attention.category}
-                    role="status"
-                  >
-                    <span className="attention-icon">⚠️</span>
-                    <span className="attention-message" title={attention.message}>{attention.message}</span>
-                    <time>{new Date(attention.at).toLocaleTimeString()}</time>
-                    <button
-                      className="btn-attention-action"
-                      onClick={() => {
-                        if (attention.category === "approval") setTab("plan");
-                        else if (attention.category === "acceptance")
-                          setTab("environment");
-                        else toggleSidebar(true);
-                      }}
+                    <div
+                      className={"attention-strip " + attention.category}
+                      role="status"
                     >
-                      {attention.action}
-                    </button>
-                  </div>
-                )}
+                      <span className="attention-icon">⚠️</span>
+                      <span
+                        className="attention-message"
+                        title={attention.message}
+                      >
+                        {attention.message}
+                      </span>
+                      <time>{new Date(attention.at).toLocaleTimeString()}</time>
+                      <button
+                        className="btn-attention-action"
+                        onClick={() => {
+                          if (attention.category === "approval") setTab("plan");
+                          else if (attention.category === "acceptance")
+                            setTab("environment");
+                          else toggleSidebar(true);
+                        }}
+                      >
+                        {attention.action}
+                      </button>
+                    </div>
+                  )}
               </div>
               <div
                 className={
                   "workspace-columns " + (sidebarOpen ? "with-execution" : "")
                 }
               >
-                <CentralWorkspace
-                  selected={selected}
-                  tab={tab}
-                  setTab={setTab}
-                  w={w}
-                  detail={detail}
-                  diff={diff}
-                  pending={pending}
-                  refreshDiff={refreshDiff}
-                  refresh={refresh}
-                  setFileDiff={setFileDiff}
-                  attempt={attempt}
-                  setNotice={setNotice}
-                />
+                {detail.loading ? (
+                  <section className="panel" role="status">
+                    正在加载任务明细，状态和操作已可用…
+                  </section>
+                ) : (
+                  <CentralWorkspace
+                    selected={selected}
+                    tab={tab}
+                    setTab={setTab}
+                    w={w}
+                    detail={detail}
+                    diff={diff}
+                    pending={pending}
+                    refreshDiff={refreshDiff}
+                    refresh={refresh}
+                    setFileDiff={setFileDiff}
+                    attempt={attempt}
+                    setNotice={setNotice}
+                  />
+                )}
                 {sidebarOpen && (
                   <ExecutionPanel
                     key={selected}
+                    interaction={
+                      <TaskInteraction
+                        key={selected}
+                        detail={detail}
+                        send={api}
+                        refresh={refresh}
+                      />
+                    }
+                    loadHistory={
+                      detail.history_cursor === null
+                        ? undefined
+                        : async () => {
+                            const oldest =
+                              detail.history_cursor ??
+                              detail.events?.[0]?.event_seq;
+                            if (!oldest) return;
+                            await attempt(async () => {
+                              const history = await api(
+                                `/workflows/${selected}/history?before=${oldest}&limit=100`,
+                              );
+                              if (selection.current === selected)
+                                setDetail((previous: any) => ({
+                                  ...previous,
+                                  history_cursor: history.next_before,
+                                  events: [
+                                    ...history.events,
+                                    ...previous.events,
+                                  ],
+                                }));
+                            });
+                          }
+                    }
                     entries={timeline}
                     connected={connected}
                     width={sidebarWidth}

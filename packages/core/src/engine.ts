@@ -1,4 +1,6 @@
 import { workflowAttention } from "./attention.js";
+import { scheduleModelRetry } from "./model-retry.js";
+import { repairFailure } from "./repair.js";
 import {
   latestEvidence,
   currentEvidence,
@@ -43,6 +45,21 @@ export interface PlanRecord {
   created_at: string;
 }
 export interface Runtime {
+  validateEnvironment?(workflow: Workflow): Promise<void>;
+  operation?(
+    workflow: Workflow,
+    requestId: string,
+    principal: Principal,
+  ): Promise<unknown>;
+  diagnose?(
+    workflow: Workflow,
+    error: string,
+  ): Promise<{
+    diagnosis: string;
+    instructions: string;
+    requires_plan_change: boolean;
+    repair_plan?: unknown;
+  }>;
   prepareVerification?(workflow: Workflow, principal: Principal): Promise<void>;
   execute(workflow: Workflow, run: Run, token: string): Promise<void>;
   review(workflow: Workflow, run: Run): Promise<unknown>;
@@ -62,6 +79,16 @@ export class Engine {
   private busy = new Set<string>();
   private dispatching = false;
   private running = new Set<string>();
+  async waitForIdle(key: string) {
+    const deadline = Date.now() + 30000;
+    while (this.running.has(key) && Date.now() < deadline)
+      await new Promise((r) => setTimeout(r, 25));
+    requireCondition(
+      !this.running.has(key),
+      "RUN_STILL_STOPPING",
+      "旧执行轮次尚未退出，保留输入后请稍后继续",
+    );
+  }
   constructor(
     public store: Store,
     public config: Config,
@@ -87,7 +114,57 @@ export class Engine {
     const w = this.get(key);
     return this.store.must<PlanRecord>("plan", `${key}-${w.plan_revision}`);
   }
-  detail(key: string) {
+  summary(key: string) {
+    const w = this.get(key);
+    const plan = w.plan_revision ? this.plan(key) : null;
+    const tasks = this.taskStatus(key, false);
+    return {
+      workflow: w,
+      attention: workflowAttention(this, key),
+      loading: true,
+      plan: plan
+        ? {
+            ...plan,
+            plan: {
+              task_model: plan.plan.task_model,
+              tasks: [],
+              tests: [],
+              modules: [],
+              markdown: "",
+            },
+          }
+        : null,
+      tasks: [],
+      task_counts: {
+        total: tasks.length,
+        developed: tasks.filter((t) => t.development_status === "completed")
+          .length,
+        verified: tasks.filter((t) => t.status === "verified").length,
+        submitted: tasks.filter((t) => t.has_implementation).length,
+      },
+      test_progress: testProgress(
+        plan?.plan ?? null,
+        this.store.list<Evidence>("evidence", key),
+        w,
+      ),
+      workspaces: this.store.list("workspace", key),
+      environment: this.store.get("environment", key),
+      project: this.project(w.project_id),
+      context: this.store.get("entry_context", key),
+      events: this.store
+        .recentEvents(key, 30)
+        .map((e) => this.store.publicEvent(e)),
+      event_cursor: this.store.eventCursor(key),
+      runs: [],
+      evidence: [],
+      commits: [],
+      operations: this.store.list("operation_request", key),
+      repair: this.store.get("repair_state", key),
+      queue: this.store.get("queue_wait", key),
+      active_task: this.store.get("task_activity", key),
+    };
+  }
+  detail(key: string, verifyFiles = true) {
     const w = this.get(key);
     return {
       workflow: w,
@@ -96,7 +173,7 @@ export class Engine {
       workspaces: this.store.list<Workspace>("workspace", key),
       runs: this.store.list<Run>("run", key),
       evidence: this.store.list<Evidence>("evidence", key),
-      tasks: this.taskStatus(key),
+      tasks: this.taskStatus(key, verifyFiles),
       test_progress: testProgress(
         w.plan_revision ? this.plan(key).plan : null,
         this.store.list<Evidence>("evidence", key),
@@ -131,6 +208,14 @@ export class Engine {
       commits: this.store.list("commit_result", key),
       project: this.project(w.project_id),
       context: this.store.get("entry_context", key),
+      operations: this.store.list("operation_request", key),
+      repair: this.store.get("repair_state", key),
+      queue:
+        this.store.get("resource_wait", key) ??
+        this.store.get("queue_wait", key),
+      development_evidence: this.store.list("development_evidence", key),
+      event_cursor: this.store.eventCursor(key),
+      history_cursor: Math.max(1, this.store.eventCursor(key) - 499),
     };
   }
   async registerProject(input: unknown) {
@@ -459,6 +544,7 @@ export class Engine {
         "代码变化，请重新测试",
       );
       this.verifyEvidence(key);
+      await this.runtime?.validateEnvironment?.(w);
       this.store.transaction(() => {
         this.auth.consumeProof(proof, "accept", binding);
         this.store.put("acceptance", key, key, {
@@ -478,7 +564,14 @@ export class Engine {
   feedback(key: string, text: string, scope: "within_plan" | "new_scope") {
     const w = this.get(key);
     requireCondition(
-      ["HUMAN_PENDING", "STOPPED", "BLOCKED"].includes(w.state),
+      [
+        "HUMAN_PENDING",
+        "STOPPED",
+        "BLOCKED",
+        "WAITING_INPUT",
+        "RECOVERY_REQUIRED",
+        "WAITING_AUTHORIZATION",
+      ].includes(w.state),
       "INVALID_STATE",
       "请先停止当前执行再反馈",
     );
@@ -488,6 +581,8 @@ export class Engine {
       "反馈内容无效",
     );
     if (scope === "within_plan") this.assertProjectConfiguration(key);
+    this.store.remove("model_retry", key);
+    this.store.remove("repair_state", key);
     this.invalidate(key, "用户反馈");
     const state = scope === "new_scope" ? "REPAIR_RESEARCH_REQUIRED" : "QUEUED";
     const next = this.transition(
@@ -503,7 +598,11 @@ export class Engine {
     }
     return next;
   }
-  invalidate(key: string, reason: string) {
+  invalidate(
+    key: string,
+    reason: string,
+    changed?: { paths: string[]; repo: string },
+  ) {
     this.store.transaction(() => {
       const current = this.get(key);
       this.store.put("workflow", key, current.project_id, {
@@ -515,6 +614,41 @@ export class Engine {
       for (const e of this.store.list<Evidence>("evidence", key))
         if (e.status !== "stale")
           this.store.put("evidence", e.id, key, { ...e, status: "stale" });
+      if (reason === "代码修改" || reason.startsWith("已授权操作")) {
+        const plan = current.plan_revision ? this.plan(key).plan : null;
+        const impacted = new Set(
+          plan?.tasks
+            .filter(
+              (t) =>
+                !changed ||
+                ((!t.repo_id || t.repo_id === changed.repo) &&
+                  t.paths.some((p) => changed.paths.includes(p))),
+            )
+            .map((t) => t.id),
+        );
+        for (let added = true; added; ) {
+          added = false;
+          for (const t of plan?.tasks ?? [])
+            if (
+              !impacted.has(t.id) &&
+              t.depends_on.some((d) => impacted.has(d))
+            ) {
+              impacted.add(t.id);
+              added = true;
+            }
+        }
+        for (const e of this.store.list<Evidence>("development_evidence", key))
+          if (
+            !changed ||
+            plan?.tests
+              .find((t) => t.id === e.test_id)
+              ?.task_ids.some((t) => impacted.has(t))
+          )
+            this.store.put("development_evidence", e.id, key, {
+              ...e,
+              status: "stale",
+            });
+      }
       this.store.remove("acceptance", key);
       for (const r of this.store.list<{ id: string }>("review", key))
         this.store.put("review", r.id, key, {
@@ -554,7 +688,9 @@ export class Engine {
     }
     if (write)
       requireCondition(
-        w.state === "EXECUTING" && !this.busy.has(key),
+        w.state === "EXECUTING" &&
+          !this.busy.has(key) &&
+          !this.store.get("check_lock", key),
         "SNAPSHOT_FROZEN",
         "测试和验收阶段禁止修改",
         403,
@@ -571,7 +707,7 @@ export class Engine {
       root: ws.root,
       broker: new FileBroker((paths) => {
         invalidateTaskProofs(this, key, paths, repo);
-        this.invalidate(key, "代码修改");
+        this.invalidate(key, "代码修改", { paths, repo });
         this.store.event(
           key,
           this.get(key).project_id,
@@ -640,20 +776,16 @@ export class Engine {
           : "声明已记录；勾选仍需要当前快照测试证据。",
     };
   }
-  taskStatus(key: string) {
+  taskStatus(key: string, verifyFiles = true) {
     const w = this.get(key);
     if (!w.plan_revision) return [];
     const plan = this.plan(key).plan;
     const workspaces = this.store.list<Workspace>("workspace", key);
     const proofs = new Map<string, any>();
     if (plan.task_model === "leaf-v1") {
-      for (const t of plan.tasks) {
-        const p = this.store.get<any>(
-          "task_proof",
-          `${key}-${w.plan_revision}-${t.id}`,
-        );
-        if (p) proofs.set(t.id, p);
-      }
+      for (const p of this.store.entries<any>("task_proof", key))
+        if (p.id === `${key}-${w.plan_revision}-${p.value.task_id}`)
+          proofs.set(p.value.task_id, p.value);
     }
     const memo = {
       ownValid: new Map<string, boolean>(),
@@ -665,12 +797,31 @@ export class Engine {
       w,
     };
     const evidence = this.store.list<Evidence>("evidence", key);
+    const developmentEvidence = this.store.list<Evidence>(
+      "development_evidence",
+      key,
+    );
+    const developmentSnapshots = new Map<string, Snapshot>();
+    for (const e of developmentEvidence)
+      if (e.status === "passed" && !developmentSnapshots.has(e.snapshot_id)) {
+        const snapshot = this.store.get<Snapshot>("snapshot", e.snapshot_id);
+        if (snapshot) developmentSnapshots.set(e.snapshot_id, snapshot);
+      }
+    const claims = new Map(
+      this.store
+        .list<any>("task_claim", key)
+        .filter((c) => c.plan_revision === w.plan_revision)
+        .map((c) => [c.id, c]),
+    );
+    if (!verifyFiles)
+      for (const task of plan.tasks)
+        memo.ownValid.set(
+          task.id,
+          !!proofs.get(task.id) && !proofs.get(task.id).stale,
+        );
     const activity = this.store.get<any>("task_activity", key);
     return plan.tasks.map((t) => {
-      const claim = this.store.get<{ summary: string }>(
-        "task_claim",
-        `${key}-${w.plan_revision}-${t.id}`,
-      );
+      const claim = claims.get(t.id);
       const verified =
         !!claim &&
         t.test_ids.every((test) => {
@@ -683,11 +834,62 @@ export class Engine {
         taskProofValid(this, key, t.id, false, new Set(), memo);
       const ownValid =
         !!proof && taskProofValid(this, key, t.id, true, new Set(), memo);
+      const unitTests = plan.tests.filter(
+        (test) => test.layer === "unit" && t.test_ids.includes(test.id),
+      );
+      const basicChecks = unitTests.map((test) =>
+        latestEvidence(developmentEvidence, test.id, w),
+      );
+      const basicPassed =
+        unitTests.length > 0 &&
+        basicChecks.every((e) => {
+          if (e?.status !== "passed" || !proof) return false;
+          const repo = developmentSnapshots
+            .get(e.snapshot_id)
+            ?.repositories.find((r) => !t.repo_id || r.repo_id === t.repo_id);
+          return (
+            !!repo &&
+            t.paths.every(
+              (path) =>
+                (repo.files.find((f) => f.path === path)?.hash ?? null) ===
+                proof.hashes[path],
+            )
+          );
+        });
+      const basicFailed = basicChecks.some((e) => e?.status === "failed");
+      const developmentStatus =
+        verified || (completed && basicPassed)
+          ? "completed"
+          : basicFailed
+            ? "needs_changes"
+            : completed
+              ? "pending_check"
+              : undefined;
       return {
         id: t.id,
         title: t.title,
         module_id: t.module_id,
         completed,
+        development_status:
+          developmentStatus ??
+          (proof && !ownValid
+            ? "needs_changes"
+            : claim
+              ? "pending_check"
+              : "pending"),
+        validation_status: verified
+          ? "passed"
+          : t.test_ids.some(
+                (test) =>
+                  latestEvidence(evidence, test, w)?.status === "failed",
+              )
+            ? "failed"
+            : t.test_ids.some(
+                  (test) =>
+                    latestEvidence(evidence, test, w)?.status === "stale",
+                )
+              ? "stale"
+              : "not_run",
         has_implementation: !!claim || !!proof,
         recheck_reason:
           !completed && proof
@@ -755,6 +957,11 @@ export class Engine {
         "不能重复冻结",
       );
       requireCondition(
+        !this.store.get("check_lock", key),
+        "CHECK_RUNNING",
+        "等待当前开发检查完成后再冻结",
+      );
+      requireCondition(
         this.taskStatus(key).every((t) =>
           this.plan(key).plan.task_model === "leaf-v1"
             ? t.completed
@@ -765,16 +972,43 @@ export class Engine {
       );
       try {
         await this.runtime?.prepareVerification?.(w, principal);
+        this.store.remove(
+          "freeze_attempts",
+          `${key}:${principal.run_id}:freeze_attempts`,
+        );
       } catch (error) {
         const current = this.get(key);
         if (
           current.run_id === principal.run_id &&
           current.state === "EXECUTING"
         ) {
+          const repair = await repairFailure(
+            this,
+            key,
+            error,
+            principal.run_id!,
+          );
+          this.store.event(
+            key,
+            w.project_id,
+            "PrepareVerificationFailed",
+            {
+              attempt: this.store.get<any>("repair_state", key)?.attempts ?? 1,
+              error: error instanceof Error ? error.message : String(error),
+              code:
+                error instanceof FlowError ? error.code : "VERIFICATION_ERROR",
+            },
+            principal.run_id,
+          );
+          if (repair?.retry)
+            throw new FlowError(
+              error instanceof FlowError
+                ? error.code
+                : "PREPARE_VERIFICATION_FAILED",
+              `${repair.instructions}\n执行会话已保留。修复后再次调用 devflow_freeze。`,
+            );
+          if (!repair) this.block(key, error);
           this.auth.revokeRun(principal.run_id!);
-          this.block(key, error);
-          // Preparation has settled before stopping the executor, so stop()
-          // cannot wait on its own preparation promise.
           await this.runtime?.stop(principal.run_id!).catch(() => {});
         }
         throw error;
@@ -819,6 +1053,7 @@ export class Engine {
       "尚未冻结并测试",
     );
     this.verifyEvidence(key);
+    await this.runtime?.validateEnvironment?.(w);
     requireCondition(
       await this.git.matches(this.store.must("snapshot", w.snapshot_id!)),
       "SNAPSHOT_CHANGED",
@@ -855,6 +1090,7 @@ export class Engine {
     if (w.run_id) this.store.put("run_stop", w.run_id, key, interruption);
     if (w.run_id) this.auth.revokeRun(w.run_id);
     this.store.remove("queue", key);
+    this.store.remove("model_retry", key);
     this.transition(key, [w.state], "STOPPING", "stop");
     if (w.run_id) await this.runtime?.stop(w.run_id);
     const next = this.transition(key, ["STOPPING"], "STOPPED", "stopped");
@@ -915,15 +1151,64 @@ export class Engine {
             ? this.config.scheduler.reviewers
             : this.config.scheduler.executors,
         );
-        if (!slot) continue;
+        if (!slot) {
+          this.store.put("queue_wait", w.id, w.id, {
+            kind: "capacity",
+            resource: review ? "reviewer" : "executor",
+            message: review ? "等待独立复核名额" : "等待执行模型名额",
+            owners: this.store
+              .list<any>("lease")
+              .filter((l) =>
+                l.id.startsWith(review ? "reviewer:" : "executor:"),
+              )
+              .map((l) => l.owner),
+          });
+          continue;
+        }
         const runId = id("run");
+        const known = this.store.list<Workspace>("workspace", w.id);
+        const context = this.store.get<{ roots: Record<string, string> }>(
+          "entry_context",
+          w.id,
+        );
+        const roots = known.length
+          ? known.map((ws) => ws.root)
+          : this.project(w.project_id).repositories.map((repo) =>
+              w.workspace_mode === "existing_workspace"
+                ? (context?.roots[repo.id] ?? repo.path)
+                : join(this.config.workspace_root, w.project_id, w.id, repo.id),
+            );
         const leases = this.scheduler.acquire(w.id, runId, [
           slot,
-          ...this.store
-            .list<Workspace>("workspace", w.id)
-            .map((ws) => "write:" + ws.root.toLowerCase()),
+          ...roots.map((root) => "write:" + root.toLowerCase()),
         ]);
-        if (!leases) continue;
+        if (!leases) {
+          const owners = this.store
+            .list<any>("lease")
+            .filter((l) =>
+              roots.some((root) => l.id === "write:" + root.toLowerCase()),
+            )
+            .map((l) => l.owner);
+          this.store.put("queue_wait", w.id, w.id, {
+            kind: "workspace",
+            resource: roots.join("、"),
+            message: "等待工作目录写入权限",
+            owners,
+          });
+          continue;
+        }
+        this.store.put("queue_wait", w.id, w.id, {
+          kind: "preparing",
+          message: "已取得执行名额，正在准备任务工作区",
+          owners: [],
+        });
+        this.store.event(
+          w.id,
+          w.project_id,
+          "PreparationStarted",
+          { message: "正在准备任务工作区" },
+          runId,
+        );
         this.store.remove("queue", w.id);
         this.running.add(w.id);
         void this.run(
@@ -1025,6 +1310,7 @@ export class Engine {
         },
       );
       activated = true;
+      this.store.remove("queue_wait", key);
       const deadline = Date.now() + this.config.timeouts.agent_minutes * 60000;
       const run: Run = {
         id: runId,
@@ -1110,12 +1396,32 @@ export class Engine {
           "COMMITTING",
           "HUMAN_PENDING",
         ].includes(w.state);
-      if (ownsRun || (!activated && ownsPreparation())) this.block(key, e);
+      if (ownsRun && !review) {
+        const repair = await repairFailure(this, key, e, runId);
+        if (repair?.retry) {
+          const current = this.get(key);
+          this.invalidate(key, "异常修复，交付证据需重验");
+          this.transition(key, [current.state], "QUEUED", "auto_repair", {
+            feedback: [...current.feedback, repair.instructions],
+            blocker: undefined,
+          });
+          this.scheduler.enqueue(key, current.project_id);
+        } else if (!repair) this.block(key, e);
+      } else if (ownsRun || (!activated && ownsPreparation()))
+        this.block(key, e);
       const run = this.store.get<Run>("run", runId);
       if (run)
         this.store.put("run", runId, key, {
           ...run,
-          status: this.store.get("run_stop", runId) ? "stopped" : "failed",
+          status: this.store.get("run_stop", runId)
+            ? "stopped"
+            : [
+                  "WAITING_AUTHORIZATION",
+                  "WAITING_INPUT",
+                  "REPAIR_PLAN_PENDING",
+                ].includes(this.get(key).state)
+              ? "waiting"
+              : "failed",
           ended_at: now(),
           result: this.store.get("run_stop", runId)
             ? { interruption: this.store.get("run_stop", runId) }
@@ -1123,6 +1429,8 @@ export class Engine {
         });
     } finally {
       this.scheduler.release(key, runId, leases, true);
+      if (!["QUEUED", "REVIEW_QUEUED"].includes(this.get(key).state))
+        this.store.remove("queue_wait", key);
       this.exportDocuments(key);
       this.running.delete(key);
       queueMicrotask(() => void this.dispatch());
@@ -1335,8 +1643,36 @@ export class Engine {
         message,
       },
     });
+    if (code === "MODEL_QUOTA" && error instanceof FlowError)
+      scheduleModelRetry(
+        this,
+        key,
+        String((error.details as any)?.result?.error ?? ""),
+      );
   }
   recover() {
+    for (const w of this.list()) {
+      if (
+        w.state !== "BLOCKED" ||
+        w.blocker?.code !== "MODEL_QUOTA" ||
+        this.store.get("model_retry", w.id)
+      )
+        continue;
+      const result = this.store
+        .recentEvents(w.id, 100)
+        .reverse()
+        .find(
+          (e) =>
+            e.run_id === w.run_id && (e.payload as any)?.event === "result",
+        );
+      if (result)
+        scheduleModelRetry(
+          this,
+          w.id,
+          String((result.payload as any)?.result?.error ?? ""),
+          Date.parse(result.created_at),
+        );
+    }
     for (const w of this.list())
       if (w.state === "QUEUED") this.scheduler.enqueue(w.id, w.project_id);
     for (const w of this.list())
@@ -1388,7 +1724,7 @@ export class Engine {
     const tasks = this.taskStatus(key)
       .map((t) => {
         const definition = p.plan.tasks.find((task) => task.id === t.id)!;
-        return `### ${t.id} ${t.title}\n\n-[${(p.plan.task_model === "leaf-v1" ? t.completed : t.status === "verified") ? "x" : " "}] 完成状态：${({ completed: "已完成", active: "进行中", needs_changes: "需修改", pending_check: "待检查", pending: "未开始" } as Record<string, string>)[t.implementation_status] ?? t.status}\n\n修改位置：${definition.repo_id ?? "默认仓库"} / ${definition.paths.join("、")}\n\n输入：${definition.inputs}\n\n核心实现：${definition.implementation}\n\n保持行为：${definition.preserve}\n\n完成标准：${definition.completion}\n\n前置任务：${definition.depends_on.join("、") || "无"}；关联测试：${definition.test_ids.join("、")}\n\n停止条件：${definition.stop_conditions}\n\n实际声明：${t.summary || "尚未提交"}\n`;
+        return `### ${t.id} ${t.title}\n\n-[${t.development_status === "completed" ? "x" : " "}] 开发完成：${({ completed: "已完成", active: "进行中", needs_changes: "需修改", pending_check: "待检查", pending: "未开始" } as Record<string, string>)[t.development_status] ?? t.development_status}\n\n- [${t.validation_status === "passed" ? "x" : " "}] 验证完成：${({ passed: "已通过", failed: "未通过", stale: "需重测", not_run: "未验证" } as Record<string, string>)[t.validation_status]}\n\n修改位置：${definition.repo_id ?? "默认仓库"} / ${definition.paths.join("、")}\n\n输入：${definition.inputs}\n\n核心实现：${definition.implementation}\n\n保持行为：${definition.preserve}\n\n完成标准：${definition.completion}\n\n前置任务：${definition.depends_on.join("、") || "无"}；关联测试：${definition.test_ids.join("、")}\n\n停止条件：${definition.stop_conditions}\n\n实际声明：${t.summary || "尚未提交"}\n`;
       })
       .join("\n");
     const tests = p.plan.tests

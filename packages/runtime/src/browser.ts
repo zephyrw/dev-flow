@@ -78,9 +78,14 @@ export class BrowserGateway {
   async reconcile(workflow: string) {
     const w = this.engine.get(workflow);
     requireCondition(
-      ["RECOVERY_REQUIRED", "STOPPED", "BLOCKED", "COMMIT_PARTIAL"].includes(
-        w.state,
-      ),
+      [
+        "RECOVERY_REQUIRED",
+        "STOPPED",
+        "BLOCKED",
+        "COMMIT_PARTIAL",
+        "WAITING_AUTHORIZATION",
+        "WAITING_INPUT",
+      ].includes(w.state),
       "INVALID_STATE",
       "当前不能恢复浏览器",
     );
@@ -168,8 +173,12 @@ export class BrowserGateway {
     );
     const { project_hash, ...input } = stored;
     const recipe = BrowserRecipeSchema.parse(input);
-    requireCondition(!project.browser_recipe_hashes || project.browser_recipe_hashes[sceneId] === objectHash(recipe),
-      "SCENE_CHANGED", "浏览器动作已变化，需要重新规划并批准");
+    requireCondition(
+      !project.browser_recipe_hashes ||
+        project.browser_recipe_hashes[sceneId] === objectHash(recipe),
+      "SCENE_CHANGED",
+      "浏览器动作已变化，需要重新规划并批准",
+    );
     const env = this.engine.store.must<{
       services: { id: string; origin: string }[];
     }>("environment", workflow);

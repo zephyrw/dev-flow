@@ -1,0 +1,417 @@
+{
+  "at": "2026-09-15T05:58:15.334Z",
+  "workflows": [
+    {
+      "id": "wf-9fe59b2c-e9cb-4ddd-aa9e-07dd05d3f2e3",
+      "state": "EXECUTING",
+      "stage": "execute",
+      "run_id": "run-3bd66e2f-b117-45ee-8f2a-04b1073da42d",
+      "updated_at": "2026-09-15T05:58:01.366Z",
+      "attention": null,
+      "conversation_id": "f0a1b326-17f3-4c24-a83f-5c268d931fb0",
+      "recent_events": [
+        {
+          "seq": 16413,
+          "type": "AgentEvent",
+          "at": "2026-09-15T05:58:13.958Z",
+          "event": "step_update",
+          "tool": "devflow_start_task",
+          "tool_state": "DONE"
+        },
+        {
+          "seq": 16412,
+          "type": "TaskStarted",
+          "at": "2026-09-15T05:58:13.926Z"
+        },
+        {
+          "seq": 16411,
+          "type": "AgentEvent",
+          "at": "2026-09-15T05:58:12.437Z",
+          "event": "step_update",
+          "tool": "devflow_start_task",
+          "tool_state": "ACTIVE"
+        },
+        {
+          "seq": 16410,
+          "type": "AgentEvent",
+          "at": "2026-09-15T05:58:12.435Z",
+          "event": "step_update",
+          "tool_state": "DONE"
+        },
+        {
+          "seq": 16409,
+          "type": "AgentEvent",
+          "at": "2026-09-15T05:58:10.405Z",
+          "event": "step_update",
+          "tool": "devflow_claim_task",
+          "tool_state": "DONE"
+        },
+        {
+          "seq": 16408,
+          "type": "TaskClaimed",
+          "at": "2026-09-15T05:58:10.391Z"
+        },
+        {
+          "seq": 16407,
+          "type": "TaskCompleted",
+          "at": "2026-09-15T05:58:10.391Z"
+        },
+        {
+          "seq": 16406,
+          "type": "AgentEvent",
+          "at": "2026-09-15T05:58:09.593Z",
+          "event": "step_update",
+          "tool": "devflow_claim_task",
+          "tool_state": "ACTIVE"
+        },
+        {
+          "seq": 16405,
+          "type": "AgentEvent",
+          "at": "2026-09-15T05:58:09.592Z",
+          "event": "step_update",
+          "tool_state": "DONE"
+        },
+        {
+          "seq": 16404,
+          "type": "AgentEvent",
+          "at": "2026-09-15T05:58:07.502Z",
+          "event": "step_update",
+          "tool": "devflow_start_task",
+          "tool_state": "DONE"
+        },
+        {
+          "seq": 16403,
+          "type": "TaskStarted",
+          "at": "2026-09-15T05:58:07.493Z"
+        },
+        {
+          "seq": 16402,
+          "type": "AgentEvent",
+          "at": "2026-09-15T05:58:06.560Z",
+          "event": "step_update",
+          "tool": "devflow_start_task",
+          "tool_state": "ACTIVE"
+        },
+        {
+          "seq": 16401,
+          "type": "AgentEvent",
+          "at": "2026-09-15T05:58:06.559Z",
+          "event": "step_update",
+          "tool_state": "DONE"
+        },
+        {
+          "seq": 16400,
+          "type": "AgentEvent",
+          "at": "2026-09-15T05:58:04.596Z",
+          "event": "step_update",
+          "tool": "devflow_claim_task",
+          "tool_state": "DONE"
+        },
+        {
+          "seq": 16399,
+          "type": "TaskClaimed",
+          "at": "2026-09-15T05:58:04.582Z"
+        },
+        {
+          "seq": 16398,
+          "type": "TaskCompleted",
+          "at": "2026-09-15T05:58:04.581Z"
+        },
+        {
+          "seq": 16397,
+          "type": "AgentEvent",
+          "at": "2026-09-15T05:58:03.759Z",
+          "event": "step_update",
+          "tool": "devflow_claim_task",
+          "tool_state": "ACTIVE"
+        },
+        {
+          "seq": 16396,
+          "type": "AgentEvent",
+          "at": "2026-09-15T05:58:03.758Z",
+          "event": "step_update",
+          "tool_state": "DONE"
+        },
+        {
+          "seq": 16395,
+          "type": "AgentEvent",
+          "at": "2026-09-15T05:58:01.396Z",
+          "event": "step_update",
+          "tool": "devflow_apply_files",
+          "tool_state": "DONE"
+        },
+        {
+          "seq": 16394,
+          "type": "FilesChanged",
+          "at": "2026-09-15T05:58:01.371Z"
+        },
+        {
+          "seq": 16393,
+          "type": "EvidenceInvalidated",
+          "at": "2026-09-15T05:58:01.371Z"
+        },
+        {
+          "seq": 16392,
+          "type": "AgentEvent",
+          "at": "2026-09-15T05:58:00.524Z",
+          "event": "step_update",
+          "tool": "devflow_apply_files",
+          "tool_state": "ACTIVE"
+        },
+        {
+          "seq": 16391,
+          "type": "AgentEvent",
+          "at": "2026-09-15T05:58:00.522Z",
+          "event": "step_update",
+          "tool_state": "DONE"
+        },
+        {
+          "seq": 16390,
+          "type": "AgentEvent",
+          "at": "2026-09-15T05:57:57.641Z",
+          "event": "step_update",
+          "tool": "devflow_start_task",
+          "tool_state": "DONE"
+        },
+        {
+          "seq": 16389,
+          "type": "TaskStarted",
+          "at": "2026-09-15T05:57:57.612Z"
+        },
+        {
+          "seq": 16388,
+          "type": "AgentEvent",
+          "at": "2026-09-15T05:57:56.627Z",
+          "event": "step_update",
+          "tool": "devflow_start_task",
+          "tool_state": "ACTIVE"
+        },
+        {
+          "seq": 16387,
+          "type": "AgentEvent",
+          "at": "2026-09-15T05:57:56.626Z",
+          "event": "step_update",
+          "tool_state": "DONE"
+        },
+        {
+          "seq": 16386,
+          "type": "AgentEvent",
+          "at": "2026-09-15T05:57:53.365Z",
+          "event": "step_update",
+          "tool": "devflow_claim_task",
+          "tool_state": "DONE"
+        },
+        {
+          "seq": 16385,
+          "type": "TaskClaimed",
+          "at": "2026-09-15T05:57:53.333Z"
+        },
+        {
+          "seq": 16384,
+          "type": "TaskCompleted",
+          "at": "2026-09-15T05:57:53.332Z"
+        }
+      ]
+    },
+    {
+      "id": "wf-508be4f4-4c5a-453c-9ac6-c6dafe717a08",
+      "state": "EXECUTING",
+      "stage": "execute",
+      "run_id": "run-6869c251-17ab-4869-9baf-3006a07a2edc",
+      "updated_at": "2026-09-15T05:57:25.640Z",
+      "attention": null,
+      "conversation_id": "ad2f8571-465c-4736-8d43-e165753d09e8",
+      "recent_events": [
+        {
+          "seq": 6453,
+          "type": "AgentEvent",
+          "at": "2026-09-15T05:57:52.370Z",
+          "event": "step_update",
+          "tool": "devflow_start_task",
+          "tool_state": "DONE"
+        },
+        {
+          "seq": 6452,
+          "type": "TaskStarted",
+          "at": "2026-09-15T05:57:52.343Z"
+        },
+        {
+          "seq": 6451,
+          "type": "AgentEvent",
+          "at": "2026-09-15T05:57:51.379Z",
+          "event": "step_update",
+          "tool": "devflow_start_task",
+          "tool_state": "ACTIVE"
+        },
+        {
+          "seq": 6450,
+          "type": "AgentEvent",
+          "at": "2026-09-15T05:57:51.378Z",
+          "event": "step_update",
+          "tool_state": "DONE"
+        },
+        {
+          "seq": 6449,
+          "type": "AgentEvent",
+          "at": "2026-09-15T05:57:45.297Z",
+          "event": "step_update",
+          "tool": "devflow_execute_context",
+          "tool_state": "DONE"
+        },
+        {
+          "seq": 6448,
+          "type": "AgentEvent",
+          "at": "2026-09-15T05:57:44.038Z",
+          "event": "step_update",
+          "tool": "devflow_execute_context",
+          "tool_state": "ACTIVE"
+        },
+        {
+          "seq": 6447,
+          "type": "AgentEvent",
+          "at": "2026-09-15T05:57:44.036Z",
+          "event": "step_update",
+          "tool_state": "DONE"
+        },
+        {
+          "seq": 6446,
+          "type": "AgentEvent",
+          "at": "2026-09-15T05:57:36.458Z",
+          "event": "step_update",
+          "tool_state": "DONE"
+        },
+        {
+          "seq": 6445,
+          "type": "AgentEvent",
+          "at": "2026-09-15T05:57:36.456Z",
+          "event": "step_update",
+          "tool_state": "DONE"
+        },
+        {
+          "seq": 6444,
+          "type": "AgentEvent",
+          "at": "2026-09-15T05:57:34.775Z",
+          "event": "init"
+        },
+        {
+          "seq": 6443,
+          "type": "StateChanged",
+          "at": "2026-09-15T05:57:25.640Z"
+        },
+        {
+          "seq": 6442,
+          "type": "PreparationStarted",
+          "at": "2026-09-15T05:57:25.326Z",
+          "message": "正在准备任务工作区"
+        },
+        {
+          "seq": 6441,
+          "type": "StateChanged",
+          "at": "2026-09-15T05:57:25.324Z"
+        },
+        {
+          "seq": 6440,
+          "type": "EvidenceInvalidated",
+          "at": "2026-09-15T05:57:25.323Z"
+        },
+        {
+          "seq": 6439,
+          "type": "ProcessesReconciled",
+          "at": "2026-09-15T05:57:25.322Z"
+        },
+        {
+          "seq": 6438,
+          "type": "EvidenceInvalidated",
+          "at": "2026-09-15T05:57:25.169Z"
+        },
+        {
+          "seq": 6437,
+          "type": "Stopped",
+          "at": "2026-09-15T05:55:52.216Z",
+          "message": "你在控制台暂停了执行"
+        },
+        {
+          "seq": 6436,
+          "type": "StateChanged",
+          "at": "2026-09-15T05:55:52.215Z"
+        },
+        {
+          "seq": 6435,
+          "type": "StateChanged",
+          "at": "2026-09-15T05:55:52.139Z"
+        },
+        {
+          "seq": 6434,
+          "type": "AgentEvent",
+          "at": "2026-09-15T05:55:50.316Z",
+          "event": "step_update",
+          "tool": "devflow_run_check",
+          "tool_state": "ACTIVE"
+        },
+        {
+          "seq": 6433,
+          "type": "AgentEvent",
+          "at": "2026-09-15T05:55:50.315Z",
+          "event": "step_update",
+          "tool_state": "DONE"
+        },
+        {
+          "seq": 6432,
+          "type": "AgentEvent",
+          "at": "2026-09-15T05:55:37.690Z",
+          "event": "step_update",
+          "tool": "devflow_run_check",
+          "tool_state": "DONE"
+        },
+        {
+          "seq": 6431,
+          "type": "CheckCompleted",
+          "at": "2026-09-15T05:55:37.559Z"
+        },
+        {
+          "seq": 6430,
+          "type": "CheckStarted",
+          "at": "2026-09-15T05:55:26.423Z"
+        },
+        {
+          "seq": 6429,
+          "type": "AgentEvent",
+          "at": "2026-09-15T05:55:21.518Z",
+          "event": "step_update",
+          "tool": "devflow_run_check",
+          "tool_state": "ACTIVE"
+        },
+        {
+          "seq": 6428,
+          "type": "AgentEvent",
+          "at": "2026-09-15T05:55:21.517Z",
+          "event": "step_update",
+          "tool_state": "DONE"
+        },
+        {
+          "seq": 6427,
+          "type": "AgentEvent",
+          "at": "2026-09-15T05:55:18.495Z",
+          "event": "step_update",
+          "tool": "devflow_run_check",
+          "tool_state": "DONE"
+        },
+        {
+          "seq": 6426,
+          "type": "CheckCompleted",
+          "at": "2026-09-15T05:55:18.280Z"
+        },
+        {
+          "seq": 6425,
+          "type": "CheckOutput",
+          "at": "2026-09-15T05:55:17.423Z"
+        },
+        {
+          "seq": 6424,
+          "type": "CheckStarted",
+          "at": "2026-09-15T05:55:16.691Z"
+        }
+      ]
+    }
+  ]
+}

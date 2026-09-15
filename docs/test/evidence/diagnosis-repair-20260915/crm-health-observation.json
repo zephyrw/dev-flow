@@ -1,0 +1,25 @@
+{
+  "at": "2026-09-15T05:05:14.225Z",
+  "environment_status": "ready",
+  "services": [
+    {
+      "id": "backend",
+      "status": "ready",
+      "origin": "http://127.0.0.1:18081",
+      "http_status": 200,
+      "identity": "identity-66cc634b-961c-43a9-a147-69a3f643836a:backend",
+      "expected_identity": "identity-66cc634b-961c-43a9-a147-69a3f643836a:backend",
+      "matches": true
+    },
+    {
+      "id": "frontend",
+      "status": "ready",
+      "origin": "http://127.0.0.1:15174",
+      "http_status": 200,
+      "identity": "identity-66cc634b-961c-43a9-a147-69a3f643836a:frontend",
+      "expected_identity": "identity-66cc634b-961c-43a9-a147-69a3f643836a:frontend",
+      "matches": true,
+      "upstream_matches": true
+    }
+  ]
+}

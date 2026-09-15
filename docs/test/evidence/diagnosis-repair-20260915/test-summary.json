@@ -1,0 +1,49 @@
+{
+  "at": "2026-09-15T05:06:26.233Z",
+  "batches": [
+    {
+      "name": "diagnosis-repair-tests",
+      "success": true,
+      "passed": 29,
+      "failed": 0
+    },
+    {
+      "name": "diagnosis-presentation-tests",
+      "success": true,
+      "passed": 8,
+      "failed": 0
+    },
+    {
+      "name": "diagnosis-environment-tests",
+      "success": true,
+      "passed": 6,
+      "failed": 0
+    },
+    {
+      "name": "model-retry-tests",
+      "success": true,
+      "passed": 7,
+      "failed": 0
+    },
+    {
+      "name": "report-output-tests",
+      "success": true,
+      "passed": 16,
+      "failed": 0
+    },
+    {
+      "name": "health-diagnosis-tests",
+      "success": true,
+      "passed": 7,
+      "failed": 0
+    },
+    {
+      "name": "environment-repair-tool-tests",
+      "success": true,
+      "passed": 13,
+      "failed": 0
+    }
+  ],
+  "uniqueTests": 60,
+  "uniquePassed": 60
+}

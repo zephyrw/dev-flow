@@ -3,12 +3,66 @@ import type { Engine } from "../../core/src/engine.js";
 import { requireCondition } from "../../contracts/src/index.js";
 import type { Lease } from "../../scheduler/src/scheduler.js";
 import { now } from "../../core/src/util.js";
+import type { OperationRequest } from "../../core/src/interactions.js";
+import type { ModelRetry } from "../../core/src/model-retry.js";
+import type { LocalRuntime } from "./runtime.js";
+
+const resuming = new WeakMap<Engine, Set<string>>();
+export async function resumeModelWaits(engine: Engine, at = Date.now()) {
+  let active = resuming.get(engine);
+  if (!active) resuming.set(engine, (active = new Set()));
+  for (const retry of engine.store.list<ModelRetry>("model_retry")) {
+    if (active.has(retry.id)) continue;
+    const valid = () => {
+      const w = engine.get(retry.id);
+      return (
+        w.state === "BLOCKED" &&
+        w.blocker?.code === "MODEL_QUOTA" &&
+        w.run_id === retry.run_id &&
+        w.plan_hash === retry.plan_hash &&
+        w.plan_revision === retry.plan_revision
+      );
+    };
+    if (!valid()) {
+      engine.store.remove("model_retry", retry.id);
+      continue;
+    }
+    if (retry.retry_at > at) continue;
+    active.add(retry.id);
+    try {
+      await engine.waitForIdle(retry.id);
+      const runtime = engine.runtime as LocalRuntime | undefined;
+      await runtime?.browser?.reconcile(retry.id);
+      await runtime?.environments?.stop(retry.id);
+      if (!valid()) continue;
+      resumeApproved(engine, retry.id);
+      engine.store.remove("model_retry", retry.id);
+      engine.store.event(
+        retry.id,
+        engine.get(retry.id).project_id,
+        "ModelRetryStarted",
+        { message: "已到预计额度恢复时间，正在继续原任务。" },
+      );
+      void engine.dispatch();
+    } catch (error) {
+      engine.store.remove("model_retry", retry.id);
+      engine.block(retry.id, error);
+    } finally {
+      active.delete(retry.id);
+    }
+  }
+}
 export function reconcileProcesses(engine: Engine, key: string) {
   const w = engine.get(key);
   requireCondition(
-    ["RECOVERY_REQUIRED", "BLOCKED", "STOPPED", "COMMIT_PARTIAL"].includes(
-      w.state,
-    ),
+    [
+      "RECOVERY_REQUIRED",
+      "BLOCKED",
+      "STOPPED",
+      "COMMIT_PARTIAL",
+      "WAITING_AUTHORIZATION",
+      "WAITING_INPUT",
+    ].includes(w.state),
     "INVALID_STATE",
     "当前不能进行恢复对账",
   );
@@ -17,26 +71,28 @@ export function reconcileProcesses(engine: Engine, key: string) {
     status: string;
     confirmed?: boolean;
   }>("process_record", key);
-  const results = records.map((record) => {
-    const result = JSON.parse(
-      execFileSync(engine.config.host.executable, ["job-status", record.id], {
-        encoding: "utf8",
-        windowsHide: true,
-        timeout: 10000,
-        env: {
-          ...process.env,
-          DOTNET_ROOT:
-            process.env.DOTNET_ROOT ?? process.cwd() + "/.cache/dotnet",
-        },
-      }),
-    );
-    requireCondition(
-      result.id === record.id && !result.alive,
-      "PROCESS_STILL_ACTIVE",
-      `受管进程 ${record.id} 尚未退出`,
-    );
-    return result;
-  });
+  const results = records
+    .filter((record) => !(record.status === "exited" && record.confirmed))
+    .map((record) => {
+      const result = JSON.parse(
+        execFileSync(engine.config.host.executable, ["job-status", record.id], {
+          encoding: "utf8",
+          windowsHide: true,
+          timeout: 10000,
+          env: {
+            ...process.env,
+            DOTNET_ROOT:
+              process.env.DOTNET_ROOT ?? process.cwd() + "/.cache/dotnet",
+          },
+        }),
+      );
+      requireCondition(
+        result.id === record.id && !result.alive,
+        "PROCESS_STILL_ACTIVE",
+        `受管进程 ${record.id} 尚未退出`,
+      );
+      return result;
+    });
   const leases = engine.store.list<Lease>("lease", key);
   requireCondition(
     !leases.some((l) => l.id === "browser:shared"),
@@ -49,6 +105,27 @@ export function reconcileProcesses(engine: Engine, key: string) {
     "缺少旧运行的进程登记，不能凭租约超时释放资源",
   );
   engine.store.transaction(() => {
+    engine.store.remove("check_lock", key);
+    for (const operation of engine.store.list<OperationRequest>(
+      "operation_request",
+      key,
+    )) {
+      if (operation.status !== "running") continue;
+      engine.store.put("operation_request", operation.id, key, {
+        ...operation,
+        status: "failed",
+        result: {
+          error: "OPERATION_INTERRUPTED",
+          message:
+            "操作执行期间中断，退出结果未保存。先检查实际效果；原授权已消费，重试必须重新申请授权。",
+          outcome_unknown: true,
+        },
+      });
+      engine.invalidate(key, "已授权操作中断");
+      engine.store.event(key, w.project_id, "OperationInterrupted", {
+        request_id: operation.id,
+      });
+    }
     for (const record of records)
       engine.store.put("process_record", record.id, key, {
         ...record,
@@ -70,6 +147,13 @@ export function resumeApproved(engine: Engine, key: string) {
   reconcileProcesses(engine, key);
   const w = engine.get(key);
   requireCondition(
+    !engine.store
+      .list<{ status: string }>("operation_request", key)
+      .some((r) => r.status === "pending"),
+    "AUTHORIZATION_PENDING",
+    "先在工作台批准或拒绝待授权操作，再继续执行",
+  );
+  requireCondition(
     w.state !== "COMMIT_PARTIAL",
     "COMMIT_RECOVERY_REQUIRED",
     "部分提交只能重试原提交，不能启动开发",
@@ -84,6 +168,7 @@ export function resumeApproved(engine: Engine, key: string) {
     "当前计划未获批准",
   );
   engine.invalidate(key, "用户恢复执行，旧证据失效");
+  engine.store.remove("model_retry", key);
   engine.transition(key, [w.state], "QUEUED", "execute", {
     blocker: undefined,
   });

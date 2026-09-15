@@ -5,6 +5,7 @@ import { AgyProtocol, JsonLines } from "./protocol.js";
 import type { ManagedProcess } from "../../../process/src/manager.js";
 import { requireCondition, FlowError } from "../../../contracts/src/index.js";
 import { classifyFailure } from "../../../runtime/src/errors.js";
+import { CurrentTurn } from "./current-turn.js";
 export function writeAgyConfiguration(
   directory: string,
   node: string,
@@ -80,11 +81,14 @@ export async function observeAgy(
     cwd: string;
     log: string;
     idle_ms?: number;
+    isWaiting?: () => boolean;
+    previousErrors?: string[];
     onEvent: (event: Record<string, unknown>) => void;
     onDiagnostic: (text: string) => void;
   },
 ) {
   const protocol = new AgyProtocol(options.model, options.conversation);
+  const currentTurn = new CurrentTurn();
   let failure: unknown;
   let diagnosticTail = "";
   let idleTimer: NodeJS.Timeout | undefined;
@@ -92,13 +96,22 @@ export async function observeAgy(
     if (idleTimer) clearTimeout(idleTimer);
     if (options.idle_ms)
       idleTimer = setTimeout(() => {
-        failure = new FlowError("TIMEOUT", "AGY_IDLE_TIMEOUT: 长时间没有过程输出", 422);
+        if (options.isWaiting?.()) {
+          activity();
+          return;
+        }
+        failure = new FlowError(
+          "TIMEOUT",
+          "AGY_IDLE_TIMEOUT: 长时间没有过程输出",
+          422,
+        );
         void proc.stop();
       }, options.idle_ms);
   };
   activity();
   const lines = new JsonLines((event) => {
     protocol.accept(event);
+    currentTurn.accept(event);
     if (event.event === "init") {
       const init = event.init as Record<string, unknown>;
       requireCondition(
@@ -134,15 +147,49 @@ export async function observeAgy(
   if (failure) throw failure;
   const reason = exit.termination_reason ?? proc.termination_reason;
   if (reason === "timeout") {
-    throw new FlowError("TIMEOUT", "本轮执行达到配置时限，现场已保留，可继续执行", 422, {
-      exit_code: exit.code,
-      result: protocol.result,
-      termination_reason: "timeout",
-    });
+    throw new FlowError(
+      "TIMEOUT",
+      "本轮执行达到配置时限，现场已保留，可继续执行",
+      422,
+      {
+        exit_code: exit.code,
+        result: protocol.result,
+        termination_reason: "timeout",
+      },
+    );
   }
-  if (!protocol.success(exit.code)) {
+  const historicalError =
+    !reason &&
+    !["MODEL_QUOTA", "MODEL_AUTH"].includes(
+      classifyFailure(diagnosticTail).code,
+    ) &&
+    currentTurn.staleError(
+      protocol.result,
+      options.previousErrors ?? [],
+      exit.code,
+    );
+  if (historicalError) {
+    options.onDiagnostic(
+      "已识别并保留历史会话错误；本轮按新的模型响应、工具结果与工作流证据判定。\n",
+    );
+    const currentFailure = currentTurn.reportedFailure(
+      protocol.result?.response,
+    );
+    if (currentFailure)
+      throw new FlowError(currentFailure.code, currentFailure.message, 422, {
+        exit_code: exit.code,
+        result: protocol.result,
+        historical_error_ignored: true,
+      });
+  }
+  if (!historicalError && !protocol.success(exit.code)) {
     const raw = redact(
-      JSON.stringify(protocol.result ?? {}) + " " + diagnosticTail,
+      JSON.stringify({
+        error: protocol.result?.error,
+        denied_actions: protocol.result?.denied_actions,
+      }) +
+        " " +
+        diagnosticTail,
     );
     const classification = classifyFailure(raw);
     throw new FlowError(classification.code, classification.message, 422, {

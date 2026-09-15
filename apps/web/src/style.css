@@ -5,9 +5,13 @@
 
 :root {
   /* Typography */
-  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
-  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-  
+  --font-sans:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  --font-mono:
+    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+    "Courier New", monospace;
+
   /* Modern Neutral Palette (Light Workspace) */
   --bg-app: #f8fafc;
   --bg-surface: #ffffff;
@@ -63,10 +67,14 @@
 
   /* Elevations & Shadows */
   --shadow-xs: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
-  --shadow-sm: 0 1px 3px 0 rgba(0, 0, 0, 0.07), 0 1px 2px -1px rgba(0, 0, 0, 0.07);
-  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.07), 0 2px 4px -2px rgba(0, 0, 0, 0.05);
-  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.08), 0 4px 6px -4px rgba(0, 0, 0, 0.05);
-  --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.06);
+  --shadow-sm:
+    0 1px 3px 0 rgba(0, 0, 0, 0.07), 0 1px 2px -1px rgba(0, 0, 0, 0.07);
+  --shadow-md:
+    0 4px 6px -1px rgba(0, 0, 0, 0.07), 0 2px 4px -2px rgba(0, 0, 0, 0.05);
+  --shadow-lg:
+    0 10px 15px -3px rgba(0, 0, 0, 0.08), 0 4px 6px -4px rgba(0, 0, 0, 0.05);
+  --shadow-xl:
+    0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.06);
 
   /* Radius */
   --radius-sm: 6px;
@@ -92,7 +100,9 @@
   -moz-osx-font-smoothing: grayscale;
 }
 
-*, *::before, *::after {
+*,
+*::before,
+*::after {
   box-sizing: border-box;
 }
 
@@ -107,7 +117,10 @@ body {
    Base Interactive Controls
    ========================================================================== */
 
-button, input, textarea, select {
+button,
+input,
+textarea,
+select {
   font-family: inherit;
   font-size: inherit;
   line-height: inherit;
@@ -151,7 +164,9 @@ button.primary {
   background: linear-gradient(180deg, #2563eb, #1d4ed8);
   color: #ffffff;
   border-color: #1d4ed8;
-  box-shadow: 0 1px 2px rgba(37, 99, 235, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.2);
+  box-shadow:
+    0 1px 2px rgba(37, 99, 235, 0.3),
+    inset 0 1px 0 rgba(255, 255, 255, 0.2);
 }
 
 button.primary:hover {
@@ -195,7 +210,10 @@ a:hover {
   text-decoration: underline;
 }
 
-h1, h2, h3, p {
+h1,
+h2,
+h3,
+p {
   margin: 0;
 }
 
@@ -219,7 +237,9 @@ h3 {
   color: var(--text-main);
 }
 
-.mono, code, pre {
+.mono,
+code,
+pre {
   font-family: var(--font-mono);
 }
 
@@ -352,7 +372,8 @@ aside .mark {
   box-shadow: 0 2px 8px rgba(59, 130, 246, 0.4);
 }
 
-.nav, .flow-nav {
+.nav,
+.flow-nav {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -366,23 +387,28 @@ aside .mark {
   font-size: 13px;
   font-weight: 500;
   box-shadow: none;
-  transition: background var(--transition), color var(--transition);
+  transition:
+    background var(--transition),
+    color var(--transition);
   margin-bottom: 2px;
 }
 
-.nav:hover, .flow-nav:hover {
+.nav:hover,
+.flow-nav:hover {
   background: var(--sidebar-hover);
   color: #f1f5f9;
 }
 
-.nav.active, .flow-nav.active {
+.nav.active,
+.flow-nav.active {
   background: var(--sidebar-active);
   color: #ffffff;
   font-weight: 600;
   position: relative;
 }
 
-.nav.active::before, .flow-nav.active::before {
+.nav.active::before,
+.flow-nav.active::before {
   content: "";
   position: absolute;
   left: 0;
@@ -437,23 +463,35 @@ aside .mark {
   box-shadow: 0 0 6px var(--color-success);
 }
 
-.dot.EXECUTING, .dot.VERIFYING, .dot.REVIEWING {
+.dot.EXECUTING,
+.dot.VERIFYING,
+.dot.REVIEWING {
   background: #38bdf8;
   box-shadow: 0 0 6px #38bdf8;
   animation: pulse-dot 1.8s infinite;
 }
 
-.dot.STOPPED, .dot.STOPPING, .dot.paused {
+.dot.STOPPED,
+.dot.STOPPING,
+.dot.paused {
   background: var(--color-warning-text);
 }
 
-.dot.BLOCKED, .dot.RECOVERY_REQUIRED {
+.dot.BLOCKED,
+.dot.RECOVERY_REQUIRED {
   background: var(--color-danger);
 }
 
 @keyframes pulse-dot {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50% { opacity: 0.5; transform: scale(0.85); }
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.5;
+    transform: scale(0.85);
+  }
 }
 
 .sidebar-bottom {
@@ -580,7 +618,9 @@ header h1 {
   display: grid;
   grid-template-columns: 1fr auto;
   box-shadow: var(--shadow-xs);
-  transition: transform var(--transition), box-shadow var(--transition);
+  transition:
+    transform var(--transition),
+    box-shadow var(--transition);
 }
 
 .stats > div:hover {
@@ -962,7 +1002,10 @@ header h1 {
   color: var(--text-muted);
   box-shadow: none;
   cursor: pointer;
-  transition: background var(--transition), color var(--transition), border-color var(--transition);
+  transition:
+    background var(--transition),
+    color var(--transition),
+    border-color var(--transition);
   overflow: hidden;
   white-space: nowrap;
   text-align: left;
@@ -1045,7 +1088,8 @@ header h1 {
 }
 
 /* Modern Toast / Banner Strips */
-.attention-strip, .update-banner {
+.attention-strip,
+.update-banner {
   display: flex;
   gap: 10px;
   align-items: center;
@@ -1244,17 +1288,23 @@ header h1 {
   padding-left: 34px;
 }
 
-input, textarea, select {
+input,
+textarea,
+select {
   border: 1px solid var(--border-medium);
   border-radius: var(--radius-md);
   background: var(--bg-surface);
   padding: 7px 12px;
   color: var(--text-main);
   box-shadow: var(--shadow-xs);
-  transition: border-color var(--transition), box-shadow var(--transition);
+  transition:
+    border-color var(--transition),
+    box-shadow var(--transition);
 }
 
-input:focus, textarea:focus, select:focus {
+input:focus,
+textarea:focus,
+select:focus {
   outline: none;
   border-color: var(--primary);
   box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15);
@@ -1268,7 +1318,8 @@ input:focus, textarea:focus, select:focus {
    Task Tree & Accordion Components
    ========================================================================== */
 
-.task-modules-list, .test-layers-list {
+.task-modules-list,
+.test-layers-list {
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -1432,7 +1483,8 @@ input:focus, textarea:focus, select:focus {
   cursor: pointer;
 }
 
-.task-spec-box, .test-spec-box {
+.task-spec-box,
+.test-spec-box {
   margin-top: 8px;
   padding: 10px 14px;
   background: var(--bg-surface-subtle);
@@ -1690,12 +1742,14 @@ input:focus, textarea:focus, select:focus {
   transition: all var(--transition);
 }
 
-.indicator-dot.active, .indicator-dot.running {
+.indicator-dot.active,
+.indicator-dot.running {
   background: var(--primary);
   box-shadow: 0 0 6px var(--primary);
 }
 
-.indicator-dot.done, .indicator-dot.completed {
+.indicator-dot.done,
+.indicator-dot.completed {
   background: var(--color-success);
 }
 
@@ -2491,7 +2545,9 @@ input:focus, textarea:focus, select:focus {
 }
 
 @keyframes diff-spin {
-  to { transform: rotate(360deg); }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 /* Diff 代码流容器 */
@@ -2642,7 +2698,9 @@ input:focus, textarea:focus, select:focus {
   color: var(--text-main);
 }
 
-.document h1, .document h2, .document h3 {
+.document h1,
+.document h2,
+.document h3 {
   margin-top: 24px;
   margin-bottom: 12px;
 }
@@ -2713,7 +2771,9 @@ input:focus, textarea:focus, select:focus {
   opacity: 0;
   transform: translateY(-4px);
   pointer-events: none;
-  transition: opacity 0.2s var(--ease), transform 0.2s var(--ease);
+  transition:
+    opacity 0.2s var(--ease),
+    transform 0.2s var(--ease);
 }
 
 .diagram-wrapper:hover .diagram-toolbar {
@@ -3078,4 +3138,53 @@ input:focus, textarea:focus, select:focus {
   .stats {
     grid-template-columns: 1fr;
   }
+}
+.task-interaction {
+  margin: 8px 0;
+  padding: 12px 16px;
+  border: 1px solid #d8dfeb;
+  border-radius: 10px;
+  background: #fff;
+}
+.task-interaction > label {
+  display: block;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+.task-interaction textarea {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  margin-bottom: 8px;
+}
+.authorization-card {
+  border-left: 4px solid #b4770d;
+  background: #fff9ec;
+  padding: 12px;
+  margin-bottom: 12px;
+}
+.authorization-card dl {
+  display: grid;
+  grid-template-columns: 90px minmax(0, 1fr);
+  gap: 6px;
+}
+.authorization-card dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.authorization-card pre {
+  white-space: pre-wrap;
+  max-height: 180px;
+  overflow: auto;
+}
+.execution-sidebar .task-interaction {
+  flex-shrink: 0;
+  margin: 0;
+  border-radius: 0;
+  max-height: 50%;
+  overflow: auto;
+  padding: 8px 12px;
+}
+.execution-sidebar:has(.authorization-card) .task-interaction {
+  max-height: 72%;
 }

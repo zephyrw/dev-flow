@@ -4,9 +4,43 @@ import { existsSync, writeFileSync, readFileSync } from "node:fs";
 import { ProcessManager } from "../../packages/process/src/manager.js";
 import { setup } from "../helpers.js";
 import { acquireControllerLock } from "../../packages/process/src/controller-lock.js";
+import { vi } from "vitest";
 const host = resolve(
   "host/DevFlow.WinHost/bin/Release/net10.0-windows/DevFlow.WinHost.exe",
 );
+it("managed PowerShell executes a batch program with Windows runtime variables while secrets stay excluded", async () => {
+  const s = setup(),
+    manager = new ProcessManager(host, true);
+  const batch = join(s.root, "probe.cmd");
+  const shell =
+    "C:/Users/yckj4798/.cache/codex-runtimes/codex-primary-runtime/dependencies/native/powershell/pwsh.exe";
+  writeFileSync(batch, "@echo off\r\necho batch-really-ran\r\nexit /b 7\r\n");
+  vi.stubEnv("DEVFLOW_PRIVATE_SECRET", "must-not-leak");
+  vi.stubEnv("JAVA_HOME", "C:\\synthetic-java-runtime");
+  try {
+    const proc = manager.start({
+      id: "batch-" + crypto.randomUUID(),
+      executable: shell,
+      args: [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        `$ErrorActionPreference='Stop'; if ($env:DEVFLOW_PRIVATE_SECRET) { throw 'secret leaked' }; if ($env:JAVA_HOME -ne 'C:\\synthetic-java-runtime') { throw 'runtime missing' }; & '${batch.replaceAll("'", "''")}'; exit $LASTEXITCODE`,
+      ],
+      cwd: s.root,
+      env: {},
+      timeout_ms: 15000,
+    });
+    let output = "";
+    proc.on("stdout", (b) => (output += b.toString()));
+    expect((await proc.completion).code).toBe(7);
+    expect(output).toContain("batch-really-ran");
+  } finally {
+    vi.unstubAllEnvs();
+    await manager.close();
+    s.store.close();
+  }
+});
 it("IT-08 Windows Host captures Unicode output and terminates job descendants on stop", async () => {
   expect(existsSync(host)).toBe(true);
   const s = setup();

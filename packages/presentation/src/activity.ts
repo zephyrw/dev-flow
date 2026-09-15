@@ -1,3 +1,4 @@
+import { failureSummary } from "./failure.js";
 export interface LogEntry {
   key: string;
   sequence: number;
@@ -98,6 +99,8 @@ export function workflowProgress(w: any, events: any[]) {
     "STOPPING",
     "RECOVERY_REQUIRED",
     "COMMIT_PARTIAL",
+    "WAITING_AUTHORIZATION",
+    "WAITING_INPUT",
   ].includes(w.state);
   const transitions = events
     .filter((e) => e.workflow_id === w.id && e.type === "StateChanged")
@@ -150,10 +153,57 @@ export function readableLogs(events: any[], workflow: string): LogEntry[] {
   )) {
     const p = e.payload ?? {},
       step = p.step_update;
+    const lifecycle: Record<string, string> = {
+      AuthorizationRequested: "等待操作授权",
+      AuthorizationDecided: "已收到授权决定",
+      UserGuidance: "收到你的指导",
+      RepairScheduled: "执行模型自动修复",
+      DiagnosisStarted: "规划模型正在诊断",
+      DiagnosisCompleted: "规划诊断完成",
+      DiagnosisRetrying: "正在重新发起诊断",
+      DiagnosisDeferred: "执行模型继续排查",
+      PreparationStarted: "准备任务工作区",
+      ServiceExited: "服务运行中退出",
+      OperationCompleted: "授权操作已结束",
+      ResourceWaiting: "等待共享资源",
+      ModelRetryScheduled: "等待模型额度恢复",
+      ModelRetryStarted: "额度恢复后继续执行",
+    };
+    if (lifecycle[e.type]) {
+      rows.push({
+        key: `${workflow}:${e.event_seq}`,
+        sequence: e.event_seq,
+        created_at: e.created_at,
+        title: lifecycle[e.type]!,
+        text:
+          e.type === "RepairScheduled"
+            ? failureSummary(p.code, p.message ?? "")
+            : e.type === "DiagnosisCompleted"
+              ? "已获得故障原因和修复步骤，执行模型将继续处理。"
+              : (p.message ??
+                p.text ??
+                p.instructions ??
+                p.operation?.reason ??
+                p.diagnosis ??
+                (p.approved === true
+                  ? "用户批准本次操作"
+                  : p.approved === false
+                    ? "用户拒绝本次操作"
+                    : "")),
+        raw: [e],
+        kind: "message",
+      });
+      continue;
+    }
     if (
-      ["ServiceOutput", "FixtureOutput", "CheckOutput", "BuildOutput"].includes(
-        e.type,
-      )
+      [
+        "ServiceOutput",
+        "FixtureOutput",
+        "CheckOutput",
+        "BuildOutput",
+        "OperationOutput",
+        "DiagnosisOutput",
+      ].includes(e.type)
     ) {
       if (typeof p.text !== "string" || !p.text.trim()) continue;
       const key = [
@@ -354,7 +404,7 @@ export function readableLogs(events: any[], workflow: string): LogEntry[] {
     }
     if (e.type === "EnvironmentFailed") {
       title = "本机验证副本准备失败";
-      text = p.message;
+      text = failureSummary("ENVIRONMENT_FAILED", p.message);
     }
     if (["BuildStarted", "BuildReady", "BuildFailed"].includes(e.type)) {
       title =
@@ -362,8 +412,11 @@ export function readableLogs(events: any[], workflow: string): LogEntry[] {
           ? "正在构建"
           : e.type === "BuildReady"
             ? "构建通过"
-            : "构建失败，执行已阻断";
-      text = p.message;
+            : "构建失败，需要修复";
+      text =
+        e.type === "BuildFailed"
+          ? failureSummary("BUILD_FAILED", p.message)
+          : p.message;
     }
     if (e.type === "Stopped") {
       title = "执行已暂停";
@@ -387,7 +440,7 @@ export function readableLogs(events: any[], workflow: string): LogEntry[] {
     }
     if (
       e.type !== "AgentEvent" &&
-      !([
+      ![
         "TaskStarted",
         "TaskCompleted",
         "EnvironmentFailed",
@@ -404,7 +457,7 @@ export function readableLogs(events: any[], workflow: string): LogEntry[] {
         "FilesChanged",
         "AgentDiagnostic",
         "WorkflowCreated",
-      ].includes(e.type))
+      ].includes(e.type)
     ) {
       continue;
     }

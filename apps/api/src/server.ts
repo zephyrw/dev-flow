@@ -13,7 +13,11 @@ import {
 } from "../../../packages/contracts/src/index.js";
 import { makeMcp, workerNames } from "../../../packages/mcp/src/tools.js";
 import type { Engine } from "../../../packages/core/src/engine.js";
-import { objectHash, hash, publicEvent } from "../../../packages/core/src/util.js";
+import {
+  objectHash,
+  hash,
+  publicEvent,
+} from "../../../packages/core/src/util.js";
 import type { LocalRuntime } from "../../../packages/runtime/src/runtime.js";
 import {
   resumeApproved,
@@ -141,16 +145,52 @@ export async function buildServer(engine: Engine) {
   });
   app.get("/api/workflows/:id", async (req) => {
     human(req);
-    const detail = engine.detail(Id.parse((req.params as any).id));
-    return { ...detail, events: detail.events.map(publicEvent) };
+    const key = Id.parse((req.params as any).id);
+    if ((req.query as any)?.view === "summary") return engine.summary(key);
+    const detail = engine.detail(key, false);
+    return {
+      ...detail,
+      events: detail.events.map((e) => engine.store.publicEvent(e)),
+    };
+  });
+  app.get("/api/workflows/:id/history", async (req) => {
+    human(req);
+    const key = Id.parse((req.params as any).id);
+    engine.get(key);
+    const query = z
+      .object({
+        before: z.coerce.number().int().positive().optional(),
+        limit: z.coerce.number().int().min(1).max(200).default(100),
+      })
+      .parse(req.query);
+    const events = (
+      engine.store.db
+        .prepare(
+          "SELECT data FROM events WHERE workflow_id=? AND seq<? ORDER BY seq DESC LIMIT ?",
+        )
+        .all(key, query.before ?? Number.MAX_SAFE_INTEGER, query.limit) as {
+        data: string;
+      }[]
+    )
+      .reverse()
+      .map((row) => engine.store.publicEvent(JSON.parse(row.data)));
+    return {
+      events,
+      next_before: events.length === query.limit ? events[0]!.event_seq : null,
+    };
   });
   app.get("/api/workflows/:id/diff", async (req) => {
     human(req);
     const w = engine.get(Id.parse((req.params as any).id));
-    const query = z.object({repo_id: Id.optional(), path: z.string().optional()}).parse(req.query);
-    const snapshot = w.snapshot_id ? engine.store.must<any>("snapshot", w.snapshot_id) : undefined;
-    if (query.repo_id && query.path) return engine.git.fileDiff(w.id,query.repo_id,query.path,snapshot);
-    return engine.git.changes(w.id,snapshot);
+    const query = z
+      .object({ repo_id: Id.optional(), path: z.string().optional() })
+      .parse(req.query);
+    const snapshot = w.snapshot_id
+      ? engine.store.must<any>("snapshot", w.snapshot_id)
+      : undefined;
+    if (query.repo_id && query.path)
+      return engine.git.fileDiff(w.id, query.repo_id, query.path, snapshot);
+    return engine.git.changes(w.id, snapshot);
   });
   app.get("/api/workflows/:id/documents/:name", async (req, reply) => {
     human(req);
@@ -267,13 +307,42 @@ export async function buildServer(engine: Engine) {
   app.post("/api/workflows/:id/feedback", async (req) => {
     human(req);
     const b = z
-      .object({ text: z.string(), scope: z.enum(["within_plan", "new_scope"]) })
+      .object({
+        text: z.string().trim().min(1).max(19999),
+        scope: z.enum(["within_plan", "new_scope"]),
+      })
       .parse(req.body);
-    const result = engine.feedback(
-      Id.parse((req.params as any).id),
-      b.text,
-      b.scope,
+    const key = Id.parse((req.params as any).id);
+    const w = engine.get(key);
+    engine.store.event(key, w.project_id, "UserGuidance", {
+      text: b.text,
+      scope: b.scope,
+      status: "received",
+    });
+    if (["EXECUTING", "VERIFYING", "QUEUED", "HUMAN_PENDING"].includes(w.state))
+      await engine.stop(key, "local_console");
+    await engine.waitForIdle(key);
+    if (
+      [
+        "STOPPED",
+        "BLOCKED",
+        "RECOVERY_REQUIRED",
+        "WAITING_INPUT",
+        "WAITING_AUTHORIZATION",
+      ].includes(engine.get(key).state)
+    ) {
+      await (engine.runtime as LocalRuntime)?.browser?.reconcile(key);
+      await (engine.runtime as LocalRuntime)?.environments?.stop(key);
+      reconcileProcesses(engine, key);
+    }
+    requireCondition(
+      !engine.store
+        .list<{ status: string }>("operation_request", key)
+        .some((r) => r.status === "pending"),
+      "AUTHORIZATION_PENDING",
+      "先批准或拒绝待授权操作；可以在授权卡片中填写处理意见",
     );
+    const result = engine.feedback(key, b.text, b.scope);
     void engine.dispatch();
     return result;
   });
@@ -284,8 +353,47 @@ export async function buildServer(engine: Engine) {
   app.post("/api/workflows/:id/recover", async (req) => {
     human(req);
     const key = Id.parse((req.params as any).id);
-    await (engine.runtime as LocalRuntime)?.environments?.stop(key).catch(() => {});
+    await engine.waitForIdle(key);
+    await (engine.runtime as LocalRuntime)?.browser?.reconcile(key);
+    await (engine.runtime as LocalRuntime)?.environments
+      ?.stop(key)
+      .catch(() => {});
     const result = resumeApproved(engine, key);
+    void engine.dispatch();
+    return result;
+  });
+  app.post("/api/workflows/:id/operations/:requestId/decision", async (req) => {
+    human(req);
+    const { id: key, requestId } = z
+      .object({ id: Id, requestId: Id })
+      .parse(req.params);
+    const body = z
+      .object({
+        approved: z.boolean(),
+        fingerprint: z.string().min(1),
+        note: z.string().max(4000).default(""),
+      })
+      .strict()
+      .parse(req.body);
+    const request = decideOperation(
+      engine,
+      key,
+      requestId,
+      body.approved,
+      body.fingerprint,
+      body.note,
+    );
+    const w = engine.get(key);
+    if (w.run_id) await engine.runtime?.stop(w.run_id);
+    await engine.waitForIdle(key);
+    await (engine.runtime as LocalRuntime)?.browser?.reconcile(key);
+    await (engine.runtime as LocalRuntime)?.environments?.stop(key);
+    reconcileProcesses(engine, key);
+    const result = engine.feedback(
+      key,
+      `用户${body.approved ? "批准" : "拒绝"}操作 ${request.id}。${body.note}。读取 operations 上下文；${body.approved ? "调用 devflow_run_operation 执行该请求，不重复申请授权" : "不能执行该操作，按用户意见调整做法"}。`,
+      "within_plan",
+    );
     void engine.dispatch();
     return result;
   });
@@ -424,6 +532,7 @@ export async function buildServer(engine: Engine) {
       .object({
         workflow_id: Id,
         after: z.coerce.number().int().nonnegative().default(0),
+        tail: z.coerce.number().int().min(1).max(200).optional(),
       })
       .safeParse(req.query);
     if (!query.success) {
@@ -432,13 +541,19 @@ export async function buildServer(engine: Engine) {
     }
     let cursor = query.data.after;
     const workflow = query.data.workflow_id;
+    if (cursor === 0 && query.data.tail) {
+      const tail = engine.store.recentEvents(workflow, query.data.tail);
+      cursor = tail.length
+        ? tail[0]!.event_seq - 1
+        : engine.store.eventCursor(workflow);
+    }
     const send = (event: any) => {
       if (event.workflow_id === workflow && event.event_seq > cursor) {
         if (socket.bufferedAmount > 8 * 1024 * 1024) {
           socket.close(1013, "Reconnect with cursor");
           return;
         }
-        socket.send(JSON.stringify(publicEvent(event)));
+        socket.send(JSON.stringify(engine.store.publicEvent(event)));
         cursor = event.event_seq;
       }
     };
@@ -469,3 +584,4 @@ export async function buildServer(engine: Engine) {
   }
   return app;
 }
+import { decideOperation } from "../../../packages/core/src/interactions.js";

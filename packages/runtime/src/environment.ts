@@ -42,6 +42,7 @@ export async function portAvailable(port: number) {
   });
 }
 export class Environments {
+  private stopping = new Set<string>();
   constructor(
     private engine: Engine,
     private processes: ProcessManager,
@@ -52,6 +53,7 @@ export class Environments {
     trackProcess: (id: string) => void = () => {},
   ) {
     assertActive();
+    this.stopping.delete(workflow.id);
     const current = this.engine.store.get<Environment>(
       "environment",
       workflow.id,
@@ -61,15 +63,6 @@ export class Environments {
       return current;
     }
     const project = this.engine.project(workflow.project_id);
-    const slot = this.engine.scheduler.capacity(
-      "environment",
-      this.engine.config.scheduler.live_environments,
-    );
-    requireCondition(
-      slot,
-      "ENVIRONMENT_CAPACITY",
-      "保留的测试环境已达到上限，请释放不用的环境",
-    );
     const activity = (type: string, payload: Record<string, unknown>) =>
       this.engine.store.event(
         workflow.id,
@@ -91,15 +84,15 @@ export class Environments {
       data_dir: join(this.engine.config.storage_root, "data", workflow.id),
       services: [],
     };
-    requireCondition(
-      this.engine.scheduler.acquire(workflow.id, env.id, [
-        slot,
-        ...(project.data.mode === "external_lock"
-          ? ["data:" + project.data.resource_id]
-          : []),
-      ]),
-      "DATA_BUSY",
-      "测试数据资源正在使用",
+    await this.engine.scheduler.waitForCapacity(
+      "environment",
+      this.engine.config.scheduler.live_environments,
+      workflow.id,
+      env.id,
+      assertActive,
+      project.data.mode === "external_lock"
+        ? ["data:" + project.data.resource_id]
+        : [],
     );
     try {
       this.engine.store.put("environment", workflow.id, workflow.id, env);
@@ -276,7 +269,7 @@ export class Environments {
               this.waitHealth(
                 entry,
                 entry.expected_identity,
-                30000,
+                command.timeout_seconds * 1000,
                 assertActive,
                 probe.signal,
               ),
@@ -302,6 +295,71 @@ export class Environments {
               origin,
               process_id: processId,
             });
+            void proc.completion
+              .then(({ code, signal }) => {
+                const latest = this.engine.store.get<Environment>(
+                  "environment",
+                  workflow.id,
+                );
+                if (
+                  this.stopping.has(workflow.id) ||
+                  latest?.id !== env.id ||
+                  latest.status !== "ready"
+                )
+                  return;
+                const message = `服务 ${service.id} 启动后退出（${code ?? signal ?? "未知"}）：${output.trim()}`;
+                this.engine.store.put("environment", workflow.id, workflow.id, {
+                  ...latest,
+                  status: "failed",
+                  error: message,
+                });
+                activity("ServiceExited", { service_id: service.id, message });
+                const current = this.engine.get(workflow.id);
+                if (
+                  ["EXECUTING", "VERIFYING", "HUMAN_PENDING"].includes(
+                    current.state,
+                  )
+                ) {
+                  this.engine.invalidate(
+                    workflow.id,
+                    "运行服务退出，验证结果失效",
+                  );
+                  if (current.state === "VERIFYING")
+                    this.engine.transition(
+                      workflow.id,
+                      ["VERIFYING"],
+                      "EXECUTING",
+                      "repair_service",
+                      {
+                        feedback: [
+                          ...current.feedback,
+                          message +
+                            "。读取环境日志并修复启动问题，重新启动和测试。",
+                        ],
+                      },
+                    );
+                  else if (current.state === "HUMAN_PENDING") {
+                    this.engine.transition(
+                      workflow.id,
+                      ["HUMAN_PENDING"],
+                      "QUEUED",
+                      "repair_service",
+                      {
+                        feedback: [
+                          ...current.feedback,
+                          message + "。修复后重新验证并交还人工验收。",
+                        ],
+                      },
+                    );
+                    this.engine.scheduler.enqueue(
+                      workflow.id,
+                      workflow.project_id,
+                    );
+                    void this.engine.dispatch();
+                  }
+                }
+              })
+              .catch(() => {});
             running = true;
             break;
           } catch (error) {
@@ -384,6 +442,7 @@ export class Environments {
     signal?: AbortSignal,
   ) {
     const deadline = Date.now() + ms;
+    let lastObservation = "尚未收到响应";
     while (Date.now() < deadline) {
       assertActive();
       signal?.throwIfAborted();
@@ -394,15 +453,25 @@ export class Environments {
             : AbortSignal.timeout(1000),
           redirect: "error",
         });
-        if (
-          response.ok &&
-          response.headers.get(service.identity_header) === identity
-        )
-          return;
-      } catch {}
+        const actualIdentity = response.headers.get(service.identity_header);
+        lastObservation = `HTTP ${response.status}`;
+        if (response.ok) {
+          if (actualIdentity === identity) return;
+          throw new FlowError(
+            "HEALTH_IDENTITY_MISMATCH",
+            `服务 ${service.id} 已响应 HTTP ${response.status}，但 ${service.identity_header} 不符合当前工作流。预期一个值 ${identity}；实际 ${JSON.stringify(actualIdentity)}。检查健康接口与过滤器是否重复添加响应头，或是否连接到了旧服务。地址：${service.health_url}`,
+          );
+        }
+      } catch (error) {
+        if (error instanceof FlowError) throw error;
+        lastObservation = error instanceof Error ? error.message : String(error);
+      }
       await new Promise((r) => setTimeout(r, 200));
     }
-    throw new Error(`健康检查或工作流身份不匹配：${service.health_url}`);
+    throw new FlowError(
+      "HEALTH_CHECK_FAILED",
+      `服务 ${service.id} 未在配置时间内通过健康检查：${service.health_url}；最后观察：${lastObservation}`,
+    );
   }
   async health(env: Environment) {
     for (const service of env.services) {
@@ -416,6 +485,7 @@ export class Environments {
     }
   }
   async stop(workflow: string) {
+    this.stopping.add(workflow);
     const env = this.engine.store.get<Environment>("environment", workflow);
     if (!env) return;
     for (const service of env.services)

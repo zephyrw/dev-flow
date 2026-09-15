@@ -51,6 +51,7 @@ it("compiler exit stops health polling immediately, starts once, releases leases
     stop: vi.fn(async () => {}),
   };
   const environments = new Environments(s.engine, manager);
+  const health = vi.spyOn(environments, "waitHealth");
   const started = Date.now();
   try {
     await expect(
@@ -58,6 +59,7 @@ it("compiler exit stops health polling immediately, starts once, releases leases
     ).rejects.toThrow("TS1127");
     expect(Date.now() - started).toBeLessThan(3000);
     expect(manager.start).toHaveBeenCalledTimes(1);
+    expect(health.mock.calls[0]?.[2]).toBe(300000);
     expect(s.store.list("lease", s.workflow.id)).toHaveLength(0);
     expect(s.store.get("environment", s.workflow.id)).toMatchObject({
       status: "failed",
@@ -108,7 +110,7 @@ it("only a confirmed port collision retries, using a different port", async () =
     s.store.close();
   }
 });
-it("failed build blocks freeze and old worker tools, starts no preview and stops the executor", async () => {
+it("failed build preserves the worker for repair and a corrected build can enter verification", async () => {
   const s = await prepared();
   const p = previewProject(s);
   p.commands.push({
@@ -137,22 +139,20 @@ it("failed build blocks freeze and old worker tools, starts no preview and stops
     await expect(s.engine.freeze(s.workflow.id, s.principal)).rejects.toThrow(
       "TS1002",
     );
-    expect(s.engine.get(s.workflow.id)).toMatchObject({
-      state: "BLOCKED",
-      blocker: {
-        code: "BUILD_FAILED",
-        message: expect.stringContaining("TS1002"),
-      },
-    });
+    expect(s.engine.get(s.workflow.id).state).toBe("EXECUTING");
     expect(start).toHaveBeenCalledTimes(1);
     expect(ensure).not.toHaveBeenCalled();
-    expect(stop).toHaveBeenCalledWith(s.principal.run_id);
-    await expect(s.engine.freeze(s.workflow.id, s.principal)).rejects.toThrow();
-    expect(start).toHaveBeenCalledTimes(1);
+    expect(stop).not.toHaveBeenCalled();
     expect(() =>
       s.engine.files(s.principal, s.workflow.id, "main", true),
-    ).toThrow();
+    ).not.toThrow();
     expect(s.store.list("snapshot", s.workflow.id)).toHaveLength(0);
+    start.mockImplementation((spec) => exited(spec.id, "build fixed", 0));
+    ensure.mockResolvedValue({ status: "ready" } as any);
+    await s.engine.freeze(s.workflow.id, s.principal);
+    expect(s.engine.get(s.workflow.id).state).toBe("VERIFYING");
+    expect(start).toHaveBeenCalledTimes(2);
+    expect(ensure).toHaveBeenCalledTimes(1);
   } finally {
     await runtime.close();
     s.store.close();

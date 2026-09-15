@@ -2,10 +2,16 @@ import React from "react";
 
 export function DeliveryStrip({ detail }: { detail: any }) {
   const leaf = detail.plan?.plan.task_model === "leaf-v1";
-  const total = detail.tasks.length,
-    completed = detail.tasks.filter(
-      (t: any) => t.has_implementation ?? t.completed,
-    ).length;
+  const total = detail.task_counts?.total ?? detail.tasks.length,
+    completed =
+      detail.task_counts?.developed ??
+      detail.tasks.filter(
+        (t: any) =>
+          t.development_status === "completed" || t.status === "verified",
+      ).length;
+  const verified =
+    detail.task_counts?.verified ??
+    detail.tasks.filter((t: any) => t.status === "verified").length;
   const pending = detail.tasks.filter(
     (t: any) => t.has_implementation && !t.completed,
   ).length;
@@ -27,16 +33,24 @@ export function DeliveryStrip({ detail }: { detail: any }) {
         <span className="metric-chip empty-chip">尚未生成细项清单</span>
       ) : (
         <span className="metric-chip">
-          <span className="chip-label">已提交实现</span>
+          <span className="chip-label">开发完成</span>
           <b className="chip-value">
             {completed}/{total}
           </b>
           <span className="chip-percent">{taskPercent}%</span>
           <progress
-            aria-label="实现提交进度"
+            aria-label="开发完成进度"
             value={completed}
             max={total || 1}
           />
+        </span>
+      )}
+      {leaf && (
+        <span className="metric-chip">
+          <span className="chip-label">验证完成</span>
+          <b className="chip-value">
+            {verified}/{total}
+          </b>
         </span>
       )}
       {pending > 0 && (

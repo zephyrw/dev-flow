@@ -132,8 +132,9 @@ test.describe("Run Deadline and Pause Display", () => {
     await page.route("**/api/workflows", (route) =>
       route.fulfill({ json: [workflow] }),
     );
-    await page.route(`**/api/workflows/${workflowId}`, (route) =>
-      route.fulfill({ json: detailData }),
+    await page.route(
+      (url) => url.pathname === `/api/workflows/${workflowId}`,
+      (route) => route.fulfill({ json: detailData }),
     );
     await page.route(`**/api/workflows/${workflowId}/events`, (route) =>
       route.fulfill({ json: events }),
@@ -151,9 +152,9 @@ test.describe("Run Deadline and Pause Display", () => {
     await page
       .getByRole("button", { name: "超时暂停与恢复测试", exact: true })
       .click();
-    if (!await page.locator(".logs").isVisible())
+    if (!(await page.locator(".logs").isVisible()))
       await page.getByRole("button", { name: "执行过程", exact: true }).click();
-    await expect(page.getByLabel("实现提交进度")).toHaveAttribute("value", "6");
+    await expect(page.getByLabel("开发完成进度")).toHaveAttribute("value", "0");
     await expect(page.getByLabel("测试通过进度")).toHaveAttribute("value", "0");
 
     await expect(page.locator("body")).toContainText("执行暂停");
@@ -229,8 +230,9 @@ test.describe("Run Deadline and Pause Display", () => {
     await page.route("**/api/workflows", (route) =>
       route.fulfill({ json: [workflow] }),
     );
-    await page.route(`**/api/workflows/${workflowId}`, (route) =>
-      route.fulfill({ json: detailData }),
+    await page.route(
+      (url) => url.pathname === `/api/workflows/${workflowId}`,
+      (route) => route.fulfill({ json: detailData }),
     );
     await page.route(`**/api/workflows/${workflowId}/events`, (route) =>
       route.fulfill({ json: events }),
@@ -240,7 +242,7 @@ test.describe("Run Deadline and Pause Display", () => {
     await page
       .getByRole("button", { name: "人工停止与历史暂停测试", exact: true })
       .click();
-    if (!await page.locator(".logs").isVisible())
+    if (!(await page.locator(".logs").isVisible()))
       await page.getByRole("button", { name: "执行过程", exact: true }).click();
 
     await expect(page.locator("body")).toContainText("你在控制台停止了执行");

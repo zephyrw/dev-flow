@@ -11,6 +11,51 @@ export interface Lease {
 }
 export class Scheduler {
   constructor(private store: Store) {}
+  async waitForCapacity(
+    prefix: string,
+    count: number,
+    owner: string,
+    run: string,
+    assertActive: () => void,
+    extraKeys: string[] = [],
+  ) {
+    let announced = false;
+    try {
+      for (;;) {
+        assertActive();
+        const slot = this.capacity(prefix, count);
+        if (slot && this.acquire(owner, run, [slot, ...extraKeys])) return slot;
+        if (!announced) {
+          const leases = this.store
+            .list<Lease>("lease")
+            .filter((l) => l.id.startsWith(prefix + ":"));
+          const message =
+            slot && extraKeys.length
+              ? `等待共享资源：${extraKeys.join("、")}`
+              : `等待${prefix === "test" ? "测试" : "验证环境"}名额，当前 ${leases.length}/${count} 已占用`;
+          this.store.put("resource_wait", owner, owner, {
+            resource: prefix,
+            message,
+            owners: leases.map((l) => l.owner),
+            run_id: run,
+          });
+          const w = this.store.get<{ project_id: string }>("workflow", owner);
+          if (w)
+            this.store.event(
+              owner,
+              w.project_id,
+              "ResourceWaiting",
+              { message, resource: prefix },
+              run,
+            );
+          announced = true;
+        }
+        await new Promise((r) => setTimeout(r, 200));
+      }
+    } finally {
+      this.store.remove("resource_wait", owner);
+    }
+  }
   acquire(owner: string, run: string, keys: string[]): Lease[] | null {
     return this.store.transaction(() => {
       const sorted = [...new Set(keys)].sort();

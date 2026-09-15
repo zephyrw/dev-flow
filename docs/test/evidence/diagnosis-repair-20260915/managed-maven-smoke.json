@@ -1,0 +1,8 @@
+{
+  "at": "2026-09-15T04:44:47.535Z",
+  "completion": {
+    "code": 0
+  },
+  "stdout": "COMSPEC=C:\\WINDOWS\\system32\\cmd.exe\r\nPATHEXT=.COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC;.CPL\r\nJAVA_HOME=C:\\Program Files\\Java\\jdk-17\r\nApache Maven 3.9.10 (5f519b97e944483d878815739f519b2eade0a91d)\r\nMaven home: C:\\Program Files\\Apache\\apache-maven-3.9.10\r\nJava version: 17.0.12, vendor: Oracle Corporation, runtime: C:\\Program Files\\Java\\jdk-17\r\nDefault locale: zh_CN, platform encoding: GBK\r\nOS name: \"windows 11\", version: \"10.0\", arch: \"amd64\", family: \"windows\"\r\n",
+  "stderr": ""
+}

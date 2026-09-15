@@ -62,6 +62,19 @@ export class ProcessManager {
       "USERPROFILE",
       "APPDATA",
       "LOCALAPPDATA",
+      // Windows shells need these to resolve and execute .cmd/.bat programs.
+      // Keep an explicit runtime allowlist; do not inherit tokens or secrets.
+      "ComSpec",
+      "PATHEXT",
+      "SystemDrive",
+      "ProgramFiles",
+      "ProgramFiles(x86)",
+      "ProgramW6432",
+      "ProgramData",
+      "JAVA_HOME",
+      "JDK_HOME",
+      "MAVEN_HOME",
+      "M2_HOME",
     ])
       if (process.env[key]) inherited[key] = process.env[key]!;
     if (useHost) {
@@ -159,9 +172,7 @@ export class ProcessManager {
       } else {
         child.stdout.on("data", (b) => events.emit("stdout", b));
         child.stderr.on("data", (b) => events.emit("stderr", b));
-        child.on("close", (code, signal) =>
-          settle(code, signal ?? undefined),
-        );
+        child.on("close", (code, signal) => settle(code, signal ?? undefined));
       }
     });
     events.completion = done;

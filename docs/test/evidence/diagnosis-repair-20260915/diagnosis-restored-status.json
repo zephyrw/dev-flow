@@ -1,0 +1,400 @@
+{
+  "at": "2026-09-15T05:06:42.015Z",
+  "workflows": [
+    {
+      "id": "wf-9fe59b2c-e9cb-4ddd-aa9e-07dd05d3f2e3",
+      "state": "EXECUTING",
+      "stage": "execute",
+      "run_id": "run-5ab523fc-1133-45b2-9cf9-24ba62a600f3",
+      "updated_at": "2026-09-15T05:05:10.454Z",
+      "attention": null,
+      "conversation_id": "f0a1b326-17f3-4c24-a83f-5c268d931fb0",
+      "recent_events": [
+        {
+          "seq": 8044,
+          "type": "DiagnosisOutput",
+          "at": "2026-09-15T05:06:34.469Z"
+        },
+        {
+          "seq": 8043,
+          "type": "DiagnosisOutput",
+          "at": "2026-09-15T05:06:34.468Z"
+        },
+        {
+          "seq": 8042,
+          "type": "DiagnosisOutput",
+          "at": "2026-09-15T05:06:34.468Z"
+        },
+        {
+          "seq": 8041,
+          "type": "DiagnosisOutput",
+          "at": "2026-09-15T05:06:34.467Z"
+        },
+        {
+          "seq": 8040,
+          "type": "DiagnosisOutput",
+          "at": "2026-09-15T05:06:34.467Z"
+        },
+        {
+          "seq": 8039,
+          "type": "DiagnosisOutput",
+          "at": "2026-09-15T05:06:34.466Z"
+        },
+        {
+          "seq": 8038,
+          "type": "DiagnosisOutput",
+          "at": "2026-09-15T05:06:34.466Z"
+        },
+        {
+          "seq": 8037,
+          "type": "DiagnosisOutput",
+          "at": "2026-09-15T05:06:34.465Z"
+        },
+        {
+          "seq": 8036,
+          "type": "DiagnosisOutput",
+          "at": "2026-09-15T05:06:34.464Z"
+        },
+        {
+          "seq": 8035,
+          "type": "DiagnosisOutput",
+          "at": "2026-09-15T05:06:34.464Z"
+        },
+        {
+          "seq": 8034,
+          "type": "DiagnosisOutput",
+          "at": "2026-09-15T05:06:32.760Z"
+        },
+        {
+          "seq": 8033,
+          "type": "DiagnosisOutput",
+          "at": "2026-09-15T05:06:32.759Z"
+        },
+        {
+          "seq": 8032,
+          "type": "DiagnosisOutput",
+          "at": "2026-09-15T05:06:32.759Z"
+        },
+        {
+          "seq": 8031,
+          "type": "DiagnosisOutput",
+          "at": "2026-09-15T05:06:32.758Z"
+        },
+        {
+          "seq": 8030,
+          "type": "DiagnosisOutput",
+          "at": "2026-09-15T05:06:32.758Z"
+        },
+        {
+          "seq": 8029,
+          "type": "DiagnosisOutput",
+          "at": "2026-09-15T05:06:32.757Z"
+        },
+        {
+          "seq": 8028,
+          "type": "DiagnosisOutput",
+          "at": "2026-09-15T05:06:32.756Z"
+        },
+        {
+          "seq": 8027,
+          "type": "DiagnosisOutput",
+          "at": "2026-09-15T05:06:32.756Z"
+        },
+        {
+          "seq": 8026,
+          "type": "DiagnosisOutput",
+          "at": "2026-09-15T05:06:32.755Z"
+        },
+        {
+          "seq": 8025,
+          "type": "DiagnosisOutput",
+          "at": "2026-09-15T05:06:32.754Z"
+        },
+        {
+          "seq": 8024,
+          "type": "DiagnosisOutput",
+          "at": "2026-09-15T05:06:32.747Z"
+        },
+        {
+          "seq": 8023,
+          "type": "DiagnosisOutput",
+          "at": "2026-09-15T05:06:32.746Z"
+        },
+        {
+          "seq": 8022,
+          "type": "DiagnosisOutput",
+          "at": "2026-09-15T05:06:32.744Z"
+        },
+        {
+          "seq": 8021,
+          "type": "DiagnosisOutput",
+          "at": "2026-09-15T05:06:32.743Z"
+        },
+        {
+          "seq": 8020,
+          "type": "DiagnosisOutput",
+          "at": "2026-09-15T05:06:32.742Z"
+        },
+        {
+          "seq": 8019,
+          "type": "DiagnosisOutput",
+          "at": "2026-09-15T05:06:32.741Z"
+        },
+        {
+          "seq": 8018,
+          "type": "DiagnosisOutput",
+          "at": "2026-09-15T05:06:32.741Z"
+        },
+        {
+          "seq": 8017,
+          "type": "DiagnosisOutput",
+          "at": "2026-09-15T05:06:32.738Z"
+        },
+        {
+          "seq": 8016,
+          "type": "DiagnosisOutput",
+          "at": "2026-09-15T05:06:32.737Z"
+        },
+        {
+          "seq": 8015,
+          "type": "DiagnosisOutput",
+          "at": "2026-09-15T05:06:32.736Z"
+        }
+      ]
+    },
+    {
+      "id": "wf-508be4f4-4c5a-453c-9ac6-c6dafe717a08",
+      "state": "BLOCKED",
+      "stage": "blocked",
+      "blocker": {
+        "code": "MODEL_QUOTA",
+        "message": "模型额度不足。保留现场，等待用户恢复额度后继续；不切换模型或计费方式。"
+      },
+      "run_id": "run-3b9f3ec4-cf20-4c9d-bfea-304c1ffef6ae",
+      "updated_at": "2026-09-15T04:12:17.624Z",
+      "attention": {
+        "category": "queue",
+        "message": "执行模型额度暂时用完。预计 2026/9/15 15:02:53 自动继续，无需补充指导。",
+        "action": "查看执行过程",
+        "at": "2026-09-15T04:12:17.624Z"
+      },
+      "retry": {
+        "id": "wf-508be4f4-4c5a-453c-9ac6-c6dafe717a08",
+        "plan_hash": "b88565042c4719e1b10062864a90813b8245abbcd53eff13d16401e6ee0e0475",
+        "plan_revision": 3,
+        "retry_at": 1789455773180,
+        "run_id": "run-3b9f3ec4-cf20-4c9d-bfea-304c1ffef6ae"
+      },
+      "conversation_id": "ad2f8571-465c-4736-8d43-e165753d09e8",
+      "recent_events": [
+        {
+          "seq": 6048,
+          "type": "ModelRetryScheduled",
+          "at": "2026-09-15T04:42:51.731Z",
+          "message": "模型额度暂时不足，已按提供方的恢复时间安排自动继续。"
+        },
+        {
+          "seq": 6047,
+          "type": "StateChanged",
+          "at": "2026-09-15T04:12:17.624Z"
+        },
+        {
+          "seq": 6046,
+          "type": "AgentEvent",
+          "at": "2026-09-15T04:12:16.180Z",
+          "event": "result",
+          "result_error": "Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 2h49m37s."
+        },
+        {
+          "seq": 6045,
+          "type": "AgentEvent",
+          "at": "2026-09-15T04:12:16.001Z",
+          "event": "step_update",
+          "tool_state": "DONE"
+        },
+        {
+          "seq": 6044,
+          "type": "AgentEvent",
+          "at": "2026-09-15T04:12:15.975Z",
+          "event": "step_update",
+          "tool_state": "ACTIVE"
+        },
+        {
+          "seq": 6043,
+          "type": "AgentEvent",
+          "at": "2026-09-15T04:12:15.950Z",
+          "event": "step_update",
+          "tool_state": "ACTIVE"
+        },
+        {
+          "seq": 6042,
+          "type": "AgentEvent",
+          "at": "2026-09-15T04:12:15.923Z",
+          "event": "step_update",
+          "tool_state": "ACTIVE"
+        },
+        {
+          "seq": 6041,
+          "type": "AgentEvent",
+          "at": "2026-09-15T04:12:15.898Z",
+          "event": "step_update",
+          "tool_state": "ACTIVE"
+        },
+        {
+          "seq": 6040,
+          "type": "AgentEvent",
+          "at": "2026-09-15T04:12:15.873Z",
+          "event": "step_update",
+          "tool_state": "ACTIVE"
+        },
+        {
+          "seq": 6039,
+          "type": "AgentEvent",
+          "at": "2026-09-15T04:12:15.847Z",
+          "event": "step_update",
+          "tool_state": "ACTIVE"
+        },
+        {
+          "seq": 6038,
+          "type": "AgentEvent",
+          "at": "2026-09-15T04:12:15.822Z",
+          "event": "step_update",
+          "tool_state": "ACTIVE"
+        },
+        {
+          "seq": 6037,
+          "type": "AgentEvent",
+          "at": "2026-09-15T04:12:15.796Z",
+          "event": "step_update",
+          "tool_state": "ACTIVE"
+        },
+        {
+          "seq": 6036,
+          "type": "AgentEvent",
+          "at": "2026-09-15T04:12:15.774Z",
+          "event": "step_update",
+          "tool_state": "ACTIVE"
+        },
+        {
+          "seq": 6035,
+          "type": "AgentEvent",
+          "at": "2026-09-15T04:12:15.773Z",
+          "event": "step_update",
+          "tool_state": "ACTIVE"
+        },
+        {
+          "seq": 6034,
+          "type": "AgentEvent",
+          "at": "2026-09-15T04:12:15.772Z",
+          "event": "step_update",
+          "tool_state": "ACTIVE"
+        },
+        {
+          "seq": 6033,
+          "type": "AgentEvent",
+          "at": "2026-09-15T04:12:15.772Z",
+          "event": "step_update",
+          "tool_state": "ACTIVE"
+        },
+        {
+          "seq": 6032,
+          "type": "AgentEvent",
+          "at": "2026-09-15T04:12:15.771Z",
+          "event": "step_update",
+          "tool_state": "ACTIVE"
+        },
+        {
+          "seq": 6031,
+          "type": "AgentEvent",
+          "at": "2026-09-15T04:12:15.771Z",
+          "event": "step_update",
+          "tool_state": "ACTIVE"
+        },
+        {
+          "seq": 6030,
+          "type": "AgentEvent",
+          "at": "2026-09-15T04:12:15.737Z",
+          "event": "step_update",
+          "tool_state": "ACTIVE"
+        },
+        {
+          "seq": 6029,
+          "type": "AgentEvent",
+          "at": "2026-09-15T04:12:15.588Z",
+          "event": "step_update",
+          "tool_state": "ACTIVE"
+        },
+        {
+          "seq": 6028,
+          "type": "AgentEvent",
+          "at": "2026-09-15T04:12:15.564Z",
+          "event": "step_update",
+          "tool_state": "ACTIVE"
+        },
+        {
+          "seq": 6027,
+          "type": "AgentEvent",
+          "at": "2026-09-15T04:12:15.537Z",
+          "event": "step_update",
+          "tool_state": "ACTIVE"
+        },
+        {
+          "seq": 6026,
+          "type": "AgentEvent",
+          "at": "2026-09-15T04:12:15.512Z",
+          "event": "step_update",
+          "tool_state": "ACTIVE"
+        },
+        {
+          "seq": 6025,
+          "type": "AgentEvent",
+          "at": "2026-09-15T04:12:15.487Z",
+          "event": "step_update",
+          "tool_state": "ACTIVE"
+        },
+        {
+          "seq": 6024,
+          "type": "AgentEvent",
+          "at": "2026-09-15T04:12:15.461Z",
+          "event": "step_update",
+          "tool_state": "ACTIVE"
+        },
+        {
+          "seq": 6023,
+          "type": "AgentEvent",
+          "at": "2026-09-15T04:12:15.432Z",
+          "event": "step_update",
+          "tool_state": "ACTIVE"
+        },
+        {
+          "seq": 6022,
+          "type": "AgentEvent",
+          "at": "2026-09-15T04:12:15.406Z",
+          "event": "step_update",
+          "tool_state": "ACTIVE"
+        },
+        {
+          "seq": 6021,
+          "type": "AgentEvent",
+          "at": "2026-09-15T04:12:15.380Z",
+          "event": "step_update",
+          "tool_state": "ACTIVE"
+        },
+        {
+          "seq": 6020,
+          "type": "AgentEvent",
+          "at": "2026-09-15T04:12:15.355Z",
+          "event": "step_update",
+          "tool_state": "ACTIVE"
+        },
+        {
+          "seq": 6019,
+          "type": "AgentEvent",
+          "at": "2026-09-15T04:12:15.329Z",
+          "event": "step_update",
+          "tool_state": "ACTIVE"
+        }
+      ]
+    }
+  ]
+}

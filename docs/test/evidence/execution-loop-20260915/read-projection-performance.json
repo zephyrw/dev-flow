@@ -1,0 +1,142 @@
+[
+  {
+    "id": "wf-508be4f4-4c5a-453c-9ac6-c6dafe717a08",
+    "mode": "summary",
+    "run": 0,
+    "ms": 227.1,
+    "bytes": 120097
+  },
+  {
+    "id": "wf-508be4f4-4c5a-453c-9ac6-c6dafe717a08",
+    "mode": "summary",
+    "run": 1,
+    "ms": 31.6,
+    "bytes": 120097
+  },
+  {
+    "id": "wf-508be4f4-4c5a-453c-9ac6-c6dafe717a08",
+    "mode": "summary",
+    "run": 2,
+    "ms": 26.1,
+    "bytes": 120097
+  },
+  {
+    "id": "wf-508be4f4-4c5a-453c-9ac6-c6dafe717a08",
+    "mode": "summary",
+    "run": 3,
+    "ms": 32.8,
+    "bytes": 120097
+  },
+  {
+    "id": "wf-508be4f4-4c5a-453c-9ac6-c6dafe717a08",
+    "mode": "summary",
+    "run": 4,
+    "ms": 23.7,
+    "bytes": 120097
+  },
+  {
+    "id": "wf-508be4f4-4c5a-453c-9ac6-c6dafe717a08",
+    "mode": "detail",
+    "run": 0,
+    "ms": 167.1,
+    "bytes": 934028
+  },
+  {
+    "id": "wf-508be4f4-4c5a-453c-9ac6-c6dafe717a08",
+    "mode": "detail",
+    "run": 1,
+    "ms": 75.3,
+    "bytes": 934028
+  },
+  {
+    "id": "wf-508be4f4-4c5a-453c-9ac6-c6dafe717a08",
+    "mode": "detail",
+    "run": 2,
+    "ms": 59.1,
+    "bytes": 934028
+  },
+  {
+    "id": "wf-508be4f4-4c5a-453c-9ac6-c6dafe717a08",
+    "mode": "detail",
+    "run": 3,
+    "ms": 87,
+    "bytes": 934028
+  },
+  {
+    "id": "wf-508be4f4-4c5a-453c-9ac6-c6dafe717a08",
+    "mode": "detail",
+    "run": 4,
+    "ms": 68.4,
+    "bytes": 934028
+  },
+  {
+    "id": "wf-9fe59b2c-e9cb-4ddd-aa9e-07dd05d3f2e3",
+    "mode": "summary",
+    "run": 0,
+    "ms": 20.1,
+    "bytes": 61516
+  },
+  {
+    "id": "wf-9fe59b2c-e9cb-4ddd-aa9e-07dd05d3f2e3",
+    "mode": "summary",
+    "run": 1,
+    "ms": 22.8,
+    "bytes": 61516
+  },
+  {
+    "id": "wf-9fe59b2c-e9cb-4ddd-aa9e-07dd05d3f2e3",
+    "mode": "summary",
+    "run": 2,
+    "ms": 15.6,
+    "bytes": 61516
+  },
+  {
+    "id": "wf-9fe59b2c-e9cb-4ddd-aa9e-07dd05d3f2e3",
+    "mode": "summary",
+    "run": 3,
+    "ms": 17,
+    "bytes": 61516
+  },
+  {
+    "id": "wf-9fe59b2c-e9cb-4ddd-aa9e-07dd05d3f2e3",
+    "mode": "summary",
+    "run": 4,
+    "ms": 15.7,
+    "bytes": 61516
+  },
+  {
+    "id": "wf-9fe59b2c-e9cb-4ddd-aa9e-07dd05d3f2e3",
+    "mode": "detail",
+    "run": 0,
+    "ms": 130.3,
+    "bytes": 744345
+  },
+  {
+    "id": "wf-9fe59b2c-e9cb-4ddd-aa9e-07dd05d3f2e3",
+    "mode": "detail",
+    "run": 1,
+    "ms": 43.6,
+    "bytes": 744345
+  },
+  {
+    "id": "wf-9fe59b2c-e9cb-4ddd-aa9e-07dd05d3f2e3",
+    "mode": "detail",
+    "run": 2,
+    "ms": 61.1,
+    "bytes": 744345
+  },
+  {
+    "id": "wf-9fe59b2c-e9cb-4ddd-aa9e-07dd05d3f2e3",
+    "mode": "detail",
+    "run": 3,
+    "ms": 47.4,
+    "bytes": 744345
+  },
+  {
+    "id": "wf-9fe59b2c-e9cb-4ddd-aa9e-07dd05d3f2e3",
+    "mode": "detail",
+    "run": 4,
+    "ms": 57.9,
+    "bytes": 744345
+  }
+]

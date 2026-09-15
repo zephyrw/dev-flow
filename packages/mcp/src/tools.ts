@@ -1,4 +1,9 @@
 import { startTask } from "../../core/src/progress.js";
+import { repairFailure } from "../../core/src/repair.js";
+import {
+  OperationSchema,
+  requestOperation,
+} from "../../core/src/interactions.js";
 import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { readFileSync } from "node:fs";
@@ -29,6 +34,10 @@ export const workerNames = [
   "devflow_freeze",
   "devflow_run_check",
   "devflow_finish",
+  "devflow_request_operation",
+  "devflow_run_operation",
+  "devflow_environment",
+  "devflow_diagnose",
 ] as const;
 export function makeMcp(engine: Engine, principal: Principal) {
   const toolContracts: Record<string, unknown> = {};
@@ -188,6 +197,8 @@ export function makeMcp(engine: Engine, principal: Principal) {
             "environment",
             "tool",
             "response",
+            "operations",
+            "diagnostics",
           ])
           .default("overview"),
         id: z.string().optional(),
@@ -235,6 +246,25 @@ export function makeMcp(engine: Engine, principal: Principal) {
           value = a.id ? plan.tests.find((t) => t.id === a.id) : plan.tests;
         else if (a.section === "scope") value = plan.scope;
         else if (a.section === "feedback") value = w.feedback;
+        else if (a.section === "operations")
+          value = engine.store.list("operation_request", workflow);
+        else if (a.section === "diagnostics")
+          value = {
+            repair: engine.store.get("repair_state", workflow),
+            events: engine.store
+              .recentEvents(workflow, 100)
+              .filter((e) =>
+                [
+                  "BuildFailed",
+                  "EnvironmentFailed",
+                  "ServiceExited",
+                  "CheckCompleted",
+                  "OperationCompleted",
+                  "UserGuidance",
+                ].includes(e.type),
+              )
+              .map((e) => engine.store.publicEvent(e)),
+          };
         else if (a.section === "environment")
           value = engine.store.get("environment", workflow) ?? null;
         else if (a.section === "tool") value = toolContracts[a.id];
@@ -382,6 +412,107 @@ export function makeMcp(engine: Engine, principal: Principal) {
       "运行批准的测试编号，返回真实报告。失败会使旧证据失效并回到 EXECUTING：修复后重新 freeze 并重跑全部检查。",
       z.object({ test_id: Id }),
       (a) => engine.runtime!.check(engine.get(workflow), a.test_id, principal),
+    );
+    register(
+      "devflow_request_operation",
+      "需要未登记的安装、诊断等命令时，提交具体可执行文件、参数、任务仓库和理由，请用户在工作台授权。提交后本轮结束，系统在批准或拒绝后续接同一会话；不能使用原生终端绕过。",
+      OperationSchema,
+      (a) => requestOperation(engine, principal, workflow, a),
+    );
+    register(
+      "devflow_run_operation",
+      "执行用户批准的具体操作；一个授权请求只执行一次，重复读取返回原结果。拒绝时按用户意见调整。",
+      z.object({ request_id: Id }),
+      (a) =>
+        engine.runtime!.operation!(
+          engine.get(workflow),
+          a.request_id,
+          principal,
+        ),
+    );
+    register(
+      "devflow_environment",
+      "开发过程中构建并启动/重启验证环境，或查询状态和最新日志。失败留在执行阶段，按诊断修复后重试。",
+      z.object({ action: z.enum(["start", "restart", "status", "logs"]) }),
+      async (a) => {
+        engine.worker(principal, workflow);
+        if (["start", "restart"].includes(a.action)) {
+          engine.worker(principal, workflow, true);
+          await engine.exclusive(workflow, async () => {
+            try {
+              await engine.runtime!.prepareVerification!(
+                engine.get(workflow),
+                principal,
+              );
+            } catch (error) {
+              const repair = await repairFailure(
+                engine,
+                workflow,
+                error,
+                principal.run_id!,
+              );
+              if (repair?.retry)
+                throw new FlowError(
+                  error instanceof FlowError
+                    ? error.code
+                    : "ENVIRONMENT_FAILED",
+                  repair.instructions,
+                );
+              if (repair) {
+                engine.auth.revokeRun(principal.run_id!);
+                setTimeout(
+                  () =>
+                    void engine.runtime
+                      ?.stop(principal.run_id!)
+                      .catch(() => {}),
+                  100,
+                );
+              }
+              throw error;
+            }
+          });
+        }
+        return {
+          environment: engine.store.get("environment", workflow),
+          logs: engine.store
+            .recentEvents(workflow, 100)
+            .filter((e) => /Build|Service|Environment/.test(e.type))
+            .map((e) => engine.store.publicEvent(e)),
+        };
+      },
+    );
+    register(
+      "devflow_diagnose",
+      "多次修复没有进展时，调用规划模型进行一次只读故障诊断。诊断不会替代独立复核，也不会批准新增范围。",
+      z.object({ problem: z.string().min(10).max(8000) }),
+      async (a) => {
+        engine.worker(principal, workflow);
+        const result = await engine.runtime!.diagnose!(
+          engine.get(workflow),
+          a.problem,
+        );
+        engine.worker(principal, workflow);
+        if (result.requires_plan_change) {
+          const w = engine.get(workflow);
+          engine.transition(
+            workflow,
+            [w.state],
+            "REPAIR_RESEARCH_REQUIRED",
+            "research",
+          );
+          await engine.submitValidatedPlan(
+            workflow,
+            result.repair_plan,
+            engine.get(workflow).version,
+            crypto.randomUUID(),
+          );
+          setTimeout(
+            () => void engine.runtime?.stop(principal.run_id!).catch(() => {}),
+            100,
+          );
+        }
+        return result;
+      },
     );
     register(
       "devflow_finish",

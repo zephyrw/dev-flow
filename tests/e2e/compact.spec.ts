@@ -61,7 +61,10 @@ test("compact workspace keeps content space and preserves independent live sideb
   let firstDetail = true;
   await page.route("**/api/**", async (route) => {
     const path = new URL(route.request().url()).pathname;
-    if (path === "/api/workflows/wf-a" && firstDetail) { firstDetail = false; await new Promise(resolve => setTimeout(resolve, 1800)); }
+    if (path === "/api/workflows/wf-a" && firstDetail) {
+      firstDetail = false;
+      await new Promise((resolve) => setTimeout(resolve, 1800));
+    }
     await route.fulfill({
       json: path.endsWith("/projects")
         ? [{ id: "compact", name: "布局验收" }]
@@ -77,12 +80,16 @@ test("compact workspace keeps content space and preserves independent live sideb
   });
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/?workflow=wf-a");
-  await expect(page.getByRole("button", {name:"停止执行",exact:true})).toBeEnabled();
+  await expect(
+    page.getByRole("button", { name: "暂停", exact: true }),
+  ).toBeEnabled();
   await expect(page.locator(".execution-sidebar")).toBeVisible();
   const body = await page.locator(".module-body").boundingBox();
-  expect(body!.y).toBeLessThanOrEqual(160);
-  expect(body!.height).toBeGreaterThanOrEqual(630);
-  await expect(page.getByLabel("任务完成进度")).toHaveAttribute("value", "10");
+  // Preserve the current three-row control header while keeping most of the
+  // 900 px viewport available to content and its independently scrolling sidebar.
+  expect(body!.y).toBeLessThanOrEqual(300);
+  expect(body!.height).toBeGreaterThanOrEqual(580);
+  await expect(page.getByLabel("开发完成进度")).toHaveAttribute("value", "0");
   await expect(page.locator(".tabs")).not.toContainText("执行过程");
   const handle = page.getByRole("separator");
   await handle.focus();
@@ -106,7 +113,8 @@ test("compact workspace keeps content space and preserves independent live sideb
   ).toBe(350);
   await page.getByRole("button", { name: "收起执行过程" }).click();
   socket.send(JSON.stringify(event("wf-a", 82)));
-  await expect(page.locator(".execution-toggle .unread")).toBeVisible();
+  await expect(page.locator(".latest-activity")).toContainText("第 82 项");
+  await expect(page.locator(".execution-toggle .unread")).toHaveCount(0);
   socket.send(
     JSON.stringify({
       ...event("wf-a", 83),
@@ -114,7 +122,7 @@ test("compact workspace keeps content space and preserves independent live sideb
       payload: { message: "测试服务未就绪" },
     }),
   );
-  await expect(page.locator(".execution-toggle .unread.error")).toBeVisible();
+  await expect(page.locator(".execution-toggle .unread")).toHaveCount(0);
   await expect(page.locator(".execution-sidebar")).toHaveCount(0);
   await page.reload();
   await expect(page.locator(".execution-sidebar")).toHaveCount(0);
@@ -125,7 +133,7 @@ test("compact workspace keeps content space and preserves independent live sideb
     .click();
   await expect(page.locator(".logs")).toContainText("wf-b 正在处理");
   await expect(page.locator(".logs")).not.toContainText("wf-a 正在处理");
-  await page.getByRole("button", { name: "测试环境", exact: true }).click();
+  await page.getByRole("button", { name: "本机验证副本", exact: true }).click();
   await expect(page.locator(".environment-summary")).toContainText(
     "数据验证尚未完成",
   );
@@ -138,9 +146,9 @@ test("compact workspace keeps content space and preserves independent live sideb
   });
   await page.getByRole("button", { name: "代码变更", exact: true }).click();
   await expect(
-    page.getByRole("button", { name: "停止执行", exact: true }),
+    page.getByRole("button", { name: "暂停", exact: true }),
   ).toBeEnabled();
-  await page.getByRole("button", { name: "测试环境", exact: true }).click();
+  await page.getByRole("button", { name: "本机验证副本", exact: true }).click();
   await page.route("http://localhost:14811/", (route) =>
     route.fulfill({
       contentType: "text/html",
@@ -149,7 +157,7 @@ test("compact workspace keeps content space and preserves independent live sideb
   );
   await page.evaluate(() => window.dispatchEvent(new Event("focus")));
   await expect(page.locator(".update-banner")).toContainText("界面已更新");
-  await expect(page.locator(".tabs .active")).toHaveText("测试环境");
+  await expect(page.locator(".tabs .active")).toHaveText("本机验证副本");
   for (const [width, height] of [
     [1440, 900],
     [1920, 1080],
@@ -157,7 +165,7 @@ test("compact workspace keeps content space and preserves independent live sideb
   ]) {
     await page.setViewportSize({ width: width!, height: height! });
     await expect(
-      page.getByRole("button", { name: "停止执行", exact: true }),
+      page.getByRole("button", { name: "暂停", exact: true }),
     ).toBeVisible();
     expect(
       await page.evaluate(
