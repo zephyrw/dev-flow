@@ -1,5 +1,62 @@
 import { test, expect } from "@playwright/test";
 
+test("implementation, development checks and final validation remain distinct in the workbench", async ({
+  page,
+}) => {
+  const workflow = {
+    id: "wf-progress",
+    project_id: "p1",
+    title: "真实进度",
+    state: "EXECUTING",
+    plan_revision: 1,
+  };
+  const detail = {
+    workflow,
+    project: { id: "p1", name: "进度测试" },
+    plan: {
+      plan: { task_model: "leaf-v1", modules: [], tasks: [], tests: [] },
+    },
+    tasks: [
+      {
+        id: "T1",
+        has_implementation: true,
+        development_status: "completed",
+        status: "claimed",
+      },
+    ],
+    test_progress: { total: 2, passed: 1, failed: 1, cases: [] },
+    events: [],
+    runs: [],
+    evidence: [],
+    attention: null,
+  };
+  await page.route("**/api/**", (route) => {
+    const path = new URL(route.request().url()).pathname;
+    return route.fulfill({
+      json: path.endsWith("/projects")
+        ? [detail.project]
+        : path.endsWith("/workflows")
+          ? [workflow]
+          : detail,
+    });
+  });
+  await page.routeWebSocket("**/api/notifications", () => {});
+  await page.routeWebSocket("**/api/events?*", () => {});
+  await page.goto("/?workflow=wf-progress");
+  const strip = page.getByLabel("交付进度");
+  await page.getByRole("button", { name: "任务进度", exact: true }).click();
+  await expect(page.getByLabel("实现记录")).toContainText("已提交实现 1/1");
+  await expect(
+    strip.locator(".metric-chip").filter({ hasText: "开发完成" }),
+  ).toContainText("1/1");
+  await expect(
+    strip.locator(".metric-chip").filter({ hasText: "验证完成" }),
+  ).toContainText("0/1");
+  await expect(
+    strip.locator(".metric-chip").filter({ hasText: "已通过测试" }),
+  ).toContainText("1/2");
+});
+
 test("a user who switched accounts can retry now without waiting for the old quota timer", async ({
   page,
 }) => {
@@ -47,7 +104,9 @@ test("a user who switched accounts can retry now without waiting for the old quo
   await page.goto("/?workflow=" + workflow.id);
   await page.getByRole("button", { name: "立即重试", exact: true }).click();
   await expect.poll(() => recovered).toBe(true);
-  await expect(page.locator(".workflow-bar")).toContainText("排队中");
+  await expect(page.locator(".header-title-wrapper .badge")).toContainText(
+    "排队中",
+  );
   await expect(page.locator(".attention-strip")).not.toContainText("16:22");
 });
 
@@ -96,11 +155,13 @@ test("quota wait explains automatic continuation and allows cancelling it", asyn
   await page.routeWebSocket("**/api/notifications", () => {});
   await page.routeWebSocket("**/api/events?*", () => {});
   await page.goto("/?workflow=" + workflow.id);
-  await expect(page.locator(".workflow-bar")).toContainText("等待模型额度");
+  await expect(page.locator(".header-title-wrapper .badge")).toContainText(
+    "等待模型额度",
+  );
   await expect(page.locator(".attention-strip")).toContainText(
     "15:02 自动继续",
   );
-  await page.getByRole("button", { name: "指导模型", exact: true }).click();
+  await page.getByRole("button", { name: "执行过程", exact: true }).click();
   await page.getByRole("button", { name: "暂停自动继续", exact: true }).click();
   await expect.poll(() => stopped).toBe(true);
   await expect(
@@ -164,7 +225,7 @@ test("a technical diagnosis failure offers automatic retry without requiring use
   await page.goto("/?workflow=" + workflow.id);
   await expect(page.locator(".attention-strip")).not.toContainText("FlowError");
   await expect(page.locator(".attention-strip")).not.toContainText("devflow_");
-  await expect(page.getByLabel("给执行模型补充指导")).toHaveValue("");
+  await expect(page.locator(".task-interaction textarea")).toHaveCount(0);
   await page.getByRole("button", { name: "继续自动排查", exact: true }).click();
   await expect.poll(() => received?.scope).toBe("within_plan");
   expect(received.text).toContain("继续在原批准范围内自动排查");
@@ -262,7 +323,9 @@ for (const approved of [true, false])
         note: "处理后继续原任务，不要重新开发。",
       });
     await expect(page.locator(".authorization-card")).toHaveCount(0);
-    await expect(page.locator(".workflow-bar")).toContainText("排队中");
+    await expect(page.locator(".header-title-wrapper .badge")).toContainText(
+      "排队中",
+    );
   });
 
 test("guidance remains available in a recovered task and is sent without starting another workflow", async ({
@@ -314,9 +377,12 @@ test("guidance remains available in a recovered task and is sent without startin
   await page.routeWebSocket("**/api/notifications", () => {});
   await page.routeWebSocket("**/api/events?*", () => {});
   await page.goto("/?workflow=" + w.id);
-  await page.getByRole("button", { name: "指导模型", exact: true }).click();
+  await page.getByRole("button", { name: "执行过程", exact: true }).click();
   await page
-    .getByLabel("给执行模型补充指导")
+    .getByRole("button", { name: "给执行模型补充指导", exact: true })
+    .click();
+  await page
+    .locator(".guidance-form textarea")
     .fill("读取启动日志，修复报错并继续测试。");
   await page.getByRole("button", { name: "发送指导并继续" }).click();
   await expect

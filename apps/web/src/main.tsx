@@ -1530,7 +1530,7 @@ const CentralWorkspace = React.memo(
                           })
                         }
                       >
-                        开始浏览器验收
+                        占用人工核验浏览器
                       </button>
                       <button
                         onClick={() =>
@@ -1543,7 +1543,7 @@ const CentralWorkspace = React.memo(
                           })
                         }
                       >
-                        结束浏览器验收
+                        释放人工核验浏览器
                       </button>
                     </div>
                   )}
@@ -1840,7 +1840,7 @@ function App() {
               detailCache.current.set(selected, next);
               return next;
             });
-          }, 50);
+          }, 500);
         // Stream output immediately. Only domain changes need an HTTP refresh;
         // a continuous token stream must never postpone displaying the log.
         if (

@@ -1,4 +1,5 @@
 node_modules/
+.pnpm-store/
 dist/
 .cache/
 .devflow/
@@ -32,3 +33,6 @@ Thumbs.db
 Desktop.ini
 __pycache__/
 *.py[cod]
+
+# Local review scratch files and source snapshots
+/scratch/

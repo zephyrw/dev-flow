@@ -37,7 +37,7 @@ function ensureDir(filePath) {
 
 switch (command) {
   case "bootstrap": {
-    run(nodeCmd, [resolve(dirname(nodeCmd), "node_modules/npm/bin/npm-cli.js"), "ci", "--ignore-scripts=false"]);
+    run(nodeCmd, [resolve(dirname(nodeCmd), "node_modules/corepack/dist/pnpm.js"), "install", "--frozen-lockfile"]);
     break;
   }
   case "build": {

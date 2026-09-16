@@ -1,0 +1,30 @@
+{
+  "review_date": "2026-09-16",
+  "root": "C:/Code/system-handle",
+  "head": "e8f5dfc135d24ca4337a0888df13392595e333c8",
+  "typecheck": {
+    "command": "node node_modules/typescript/bin/tsc --noEmit",
+    "exit_code": 0
+  },
+  "vitest": {
+    "command": "node node_modules/vitest/vitest.mjs run",
+    "exit_code": 0,
+    "test_files": 39,
+    "tests": 151,
+    "duration_seconds": 254.69,
+    "output": "\n Test Files  39 passed (39)\n      Tests  151 passed (151)\n   Start at  09:53:59\n   Duration  254.69s (transform 2.26s, setup 0ms, import 32.17s, tests 454.00s, environment 13ms)\n\n"
+  },
+  "probe": {
+    "source": "reproduce.mjs",
+    "exit_code": 0,
+    "scenario_count": 13,
+    "extra_probe": "host-record-edge.mjs",
+    "extra_scenario_count": 1
+  },
+  "not_run": [
+    "production build",
+    "browser E2E",
+    "real model smoke"
+  ],
+  "scope": "Isolated fixtures only. No implementation edits, no production workflow resume, no project commit."
+}

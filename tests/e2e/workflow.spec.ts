@@ -54,9 +54,12 @@ test("E2E-01/05/06/08 local button approval, diagrams, evidence and accepted com
   await expect(page.locator(".diagram svg")).toBeVisible();
   await page.screenshot({ path: ".cache/e2e-plan.png", fullPage: true });
   await page.getByRole("button", { name: "批准当前计划" }).click();
-  await expect(page.locator(".workflow-bar")).toContainText("等待你的验收", {
-    timeout: 60000,
-  });
+  await expect(page.locator(".header-title-wrapper .badge")).toContainText(
+    "等待你的验收",
+    {
+      timeout: 60000,
+    },
+  );
   await page.getByRole("button", { name: "测试结果", exact: true }).click();
   await page.locator(".task-module > summary").first().click();
   await expect(page.locator(".test-case")).toContainText("已通过");
@@ -66,11 +69,15 @@ test("E2E-01/05/06/08 local button approval, diagrams, evidence and accepted com
   const before = await (
     await page.request.get("/api/workflows/" + state.workflow_id)
   ).json();
-  await page.getByRole("button", { name: "反馈问题", exact: true }).click();
+  if (!(await page.locator(".execution-sidebar").isVisible()))
+    await page.getByRole("button", { name: "执行过程", exact: true }).click();
   await page
-    .getByLabel("问题反馈")
+    .getByRole("button", { name: "给执行模型补充指导", exact: true })
+    .click();
+  await page
+    .locator(".guidance-form textarea")
     .fill("请在原批准范围内再次核对内容与末尾换行，并重新运行测试。");
-  await page.getByRole("button", { name: "保存并继续" }).click();
+  await page.getByRole("button", { name: "发送指导并继续" }).click();
   await expect
     .poll(async () => {
       const d = await (
@@ -79,26 +86,28 @@ test("E2E-01/05/06/08 local button approval, diagrams, evidence and accepted com
       return d.runs.length;
     })
     .toBeGreaterThan(before.runs.length);
-  await expect(page.locator(".workflow-bar")).toContainText("等待你的验收", {
-    timeout: 60000,
-  });
+  await expect(page.locator(".header-title-wrapper .badge")).toContainText(
+    "等待你的验收",
+    {
+      timeout: 60000,
+    },
+  );
   const after = await (
     await page.request.get("/api/workflows/" + state.workflow_id)
   ).json();
   expect(after.evidence.some((e: any) => e.status === "stale")).toBe(true);
   expect(after.evidence.some((e: any) => e.status === "passed")).toBe(true);
   await page.reload();
-  await page.locator(".execution-toggle").waitFor();
-  if (
-    (await page.locator(".execution-toggle").getAttribute("aria-expanded")) ===
-    "false"
-  )
+  if (!(await page.locator(".execution-sidebar").isVisible()))
     await page.getByRole("button", { name: "执行过程", exact: true }).click();
   await expect(page.locator(".logs")).toContainText("进入开发实施");
   await page.getByRole("button", { name: "验收通过，启动复核" }).click();
-  await expect(page.locator(".workflow-bar")).toContainText("已提交", {
-    timeout: 60000,
-  });
+  await expect(page.locator(".header-title-wrapper .badge")).toContainText(
+    "已提交",
+    {
+      timeout: 60000,
+    },
+  );
   await page.getByRole("button", { name: "代码复核", exact: true }).click();
   await expect(
     page.getByRole("heading", { name: "独立复核结果" }),
@@ -127,9 +136,13 @@ test("E2E-05 a fresh browser opens the console and restores a deep link without 
     readFileSync(resolve(".cache/e2e-state.json"), "utf8"),
   );
   await page.goto("/?workflow=" + state.workflow_id);
-  await expect(page.locator(".workflow-bar")).toContainText("已提交");
+  await expect(page.locator(".header-title-wrapper .badge")).toContainText(
+    "已提交",
+  );
   await page.reload();
-  await expect(page.locator(".workflow-bar")).toContainText("已提交");
+  await expect(page.locator(".header-title-wrapper .badge")).toContainText(
+    "已提交",
+  );
   expect((await page.request.get("/api/workflows")).status()).toBe(200);
   await expect(page.getByRole("button", { name: /登录|通行密钥/ })).toHaveCount(
     0,

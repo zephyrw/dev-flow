@@ -1,5 +1,5 @@
 import { it, expect } from "vitest";
-import { writeFileSync, readFileSync } from "node:fs";
+import { writeFileSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { prepared } from "../helpers.js";
 import { LocalRuntime } from "../../packages/runtime/src/runtime.js";
@@ -21,6 +21,12 @@ it("a rejected output schema retries once without wire constraints and validates
   );
   s.config.models.codex_executable = process.execPath;
   s.config.models.codex_prefix_args = [cli];
+  s.store.put("evidence", "delivery-fixture", s.workflow.id, {
+    id: "delivery-fixture",
+  });
+  s.store.put("development_evidence", "development-fixture", s.workflow.id, {
+    id: "development-fixture",
+  });
   try {
     expect(
       await runtime.diagnose(s.workflow, "启动服务没有真正执行且提前退出"),
@@ -32,6 +38,17 @@ it("a rejected output schema retries once without wire constraints and validates
         .filter((e) => e.type === "DiagnosisRetrying"),
     ).toHaveLength(1);
     expect(s.store.list("check_process", s.principal.run_id)).toHaveLength(0);
+    const diagnostics = join(s.config.storage_root, "diagnostics");
+    const manifest = JSON.parse(
+      readFileSync(
+        join(diagnostics, readdirSync(diagnostics)[0]!, "materials.json"),
+        "utf8",
+      ),
+    );
+    expect(manifest.evidence.map((e: any) => e.id)).toEqual([
+      "delivery-fixture",
+      "development-fixture",
+    ]);
   } finally {
     await runtime.close();
     s.store.close();

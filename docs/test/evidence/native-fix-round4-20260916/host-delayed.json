@@ -1,0 +1,26 @@
+{
+  "root": "C:\\Users\\yckj4798\\AppData\\Local\\Temp\\devflow-native-live-YZumRe",
+  "events": {
+    "user_input:DONE": 1,
+    "agent_response:DONE": 7,
+    "tool:ACTIVE": 6,
+    "tool:DONE": 6,
+    "system_message:DONE": 1,
+    "agent_response:ACTIVE": 10
+  },
+  "tools": {
+    "run_command": 2,
+    "manage_task": 8,
+    "view_file": 2
+  },
+  "facts": [
+    {
+      "tool_call_id": "call_111561",
+      "exit_code": 0,
+      "has_inputs": true,
+      "reports": [
+        "[\"main\",\".reports/unit.xml\"]"
+      ]
+    }
+  ]
+}

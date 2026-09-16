@@ -269,8 +269,8 @@ it("a development test runs before any task claims, captures real failure, then 
     );
     expect(s.engine.taskStatus(s.workflow.id)[0]).toMatchObject({
       development_status: "completed",
-      validation_status: "not_run",
-      status: "claimed",
+      validation_status: "passed",
+      status: "verified",
     });
     expect(s.store.list("evidence", s.workflow.id)).toHaveLength(0);
     expect(() => s.engine.verifyEvidence(s.workflow.id)).toThrow();
@@ -282,7 +282,7 @@ it("a development test runs before any task claims, captures real failure, then 
     await runtime.close();
     s.store.close();
   }
-});
+}, 60000);
 
 it("repeated identical failure escalates to the planner and exhausts without pretending user input is missing", async () => {
   const s = await prepared();

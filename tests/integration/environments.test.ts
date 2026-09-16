@@ -122,6 +122,8 @@ it("IT-06/07 three parallel environments use distinct ports, real frontend proxi
       true,
     ),
     environments = new Environments(s.engine, manager);
+  // This test explicitly exercises three concurrent environments.
+  s.config.scheduler.live_environments = 3;
   const flows = [];
   try {
     for (let i = 0; i < 3; i++) {

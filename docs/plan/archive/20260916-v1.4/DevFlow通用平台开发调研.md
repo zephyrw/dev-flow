@@ -1,0 +1,158 @@
+# DevFlow 通用平台开发调研
+
+## 执行方式与边界
+
+这是 v1.2 的完整开发任务。使用新的隔离 worktree，基线为 d5bc298；原工作区两个未跟踪文档由下附批准全文及内容哈希带入，不预先提交用户资料。当前运行的 DevFlow 作为父控制器保持服务；新平台在子工作树、独立端口和数据目录开发。完整范围保留八工具、单工具全流程、七 Skill、一键安装和开源交付，不拆成缩水 MVP。
+
+当前服务首次接入脚本尚未存在，P00-02 是第一执行细项；由执行器通过 FileBroker 写入后才能调用登记的 bootstrap/build/test 命令。不要在入口脚本写入前运行命令。Node来自本机已验证安装，仅属于本开发任务的宿主配置，不进入公共发行包固定路径。
+
+### 现状与根因
+
+```mermaid
+flowchart LR
+  Old[固定配置] --> Engine[核心选择Codex或agy]
+  Engine --> Win[Windows Host]
+  Engine --> Tabs[OpenTabs]
+  Win --> Bound[依赖本机应用和路径]
+  Tabs --> Bound
+```
+
+结论：需要移走厂商、进程平台与浏览器绑定；只修改模型字符串无法完成目标。
+
+### 目标关键时序
+
+```mermaid
+sequenceDiagram
+  actor User as 用户
+  participant Client as 任一入口
+  participant Core as DevFlow
+  participant Agent as 所选CLI
+  participant Tests as 普通测试进程
+  User->>Client: 自然语言需求
+  Client->>Core: 创建工作流
+  Core->>Agent: 规划与实施
+  Core->>Agent: 测试角色与冻结快照
+  Agent->>Core: 发起批准的测试
+  Core->>Tests: 执行并采集原始报告
+  Tests-->>Core: 退出码与报告
+  Core-->>Agent: 测试证据
+  User->>Core: 人工验收
+  Core->>Agent: 新会话只读复核
+```
+
+同一个 CLI 可以完成所有 AI 角色。普通测试程序不是第二个 AI 工具；无 AI 监工轮询。
+
+### 修改边界
+
+```mermaid
+flowchart TB
+  Parent[父DevFlow控制器保持运行]
+  Parent --> Child[新worktree中的全部开发]
+  Child --> Core[合同和流程引擎]
+  Child --> Adapters[八工具和七Skill安装]
+  Child --> Host[六平台宿主与发行包]
+  Child --> UI[真实控制台与验收]
+  UI --> Evidence[独立数据和端口]
+  Child --> Candidate[可审核公开发布候选]
+```
+
+不得让子平台升级覆盖父平台正在加载的二进制、数据库与配置。最终外部公开发布是单独人工动作；在此之前把源码、安装器、验证和发布候选做完整，尚未完成的真实平台认证不能写成通过。
+
+### 工作包依赖
+
+```mermaid
+flowchart LR
+  P00[基线接入] --> P01[配置合同]
+  P01 --> P02[跨平台宿主]
+  P02 --> P03[通用运行器]
+  P03 --> P04[八工具适配]
+  P04 --> P05[Skill与安装]
+  P05 --> P06[流程与测试角色]
+  P06 --> P07[辅助工具]
+  P07 --> P08[一键发行]
+  P08 --> P09[迁移和完整验收]
+  P09 --> P10[开源交付]
+```
+
+modules只做分组，tasks为下表可核验的叶子任务；各工作包全部前置细项结束后进入下一包。每项必须更新真实进度及文件证明，不将一个大工作包一次标记完成。
+
+## 核查输入
+
+# DevFlow 八工具适配方案本机核查
+
+核查日期：2026-09-14。对应 `docs/plan/DevFlow跨平台通用工作流平台实施方案.md` 1.2 修订。环境：Windows x64；源码基线 `2316d7d`，工作区有其他正在进行的修改。
+
+本次完成源码、官方文档及本机版本/帮助参数核查，用于修正实施合同。没有实施八适配器，没有运行真实模型、测试 MCP 往返、安装新 Skill 或执行跨平台业务闭环，下面的“通过”仅表示所列探针通过。
+
+## 1. 本机结果
+
+| 工具 | 版本证据 | 实际检查 | 结果与范围 |
+|---|---|---|---|
+| Codex CLI | npm 包 0.152.0；桌面原生 CLI 0.154.0-alpha.6.2 | npm JS 入口的 `exec --help`；桌面 exe 的 `--version` | 通过；help 明确支持 json、model、resume、read-only、ignore-user-config/rules；临时 arg0 目录出现权限警告，不据此声称鉴权可用 |
+| Antigravity CLI（agy） | 1.2.2 | `--version`、`--help` | 通过；print、stream-json、conversation、model、effort 可见；正式八工具中的 Antigravity CLI，命令入口为 agy |
+| Claude Code | 2.1.270 | 安装完成后发现 npm claude 入口，运行 `--version`、`--help` | 通过；print、stream-json、verbose、model、resume、tools、strict-mcp-config、settings 可见 |
+| OpenCode | 1.18.30 | npm 声明入口与平台实际 exe 分别检查；实际 exe 的 `--version`、`run --help`、`debug --help` | npm 入口启动失败；实际 Windows x64 exe 通过；format json、pure、agent、model、session、dir 与 debug skill 可见 |
+| Cursor Agent CLI | 2026.08.11-e8db854 | `agent.ps1 --version`、`agent.ps1 --help`，读取包装器定位规则 | 通过；print、stream-json、model、resume、workspace、MCP 可见；这是 Agent CLI，独立于编辑器 cursor 命令 |
+| Kimi Code | 0.37.2 | npm 安装元信息与 `kimi --version` | 版本通过；本次未重跑其完整 headless 协议 |
+| Grok Build | 无本机版本证据 | 官方 headless、MCP、Skills、权限、安装文档核查 | 本机未测 |
+| Qoder CLI | 无本机版本证据 | 官方 CLI、MCP、Skills、权限、安装文档核查 | 本机未测；官方明确 Windows arm64 不支持 |
+
+## 2. 可复核的入口与命令
+
+路径以 `<USER_HOME>` 表示实际用户目录，避免公共文档包含私人路径。这些是本次实际发现的本机位置，不是新安装器的固定路径。
+
+| 工具 | 本机执行入口 | 参数 |
+|---|---|---|
+| npm Codex | Node + `<USER_HOME>/AppData/Roaming/npm/node_modules/@openai/codex/bin/codex.js` | `exec --help` |
+| 桌面 Codex | `<USER_HOME>/AppData/Local/OpenAI/Codex/bin/bffc5354119c8421/codex.exe` | `--version` |
+| Antigravity CLI（agy） | `<USER_HOME>/AppData/Local/agy/bin/agy.exe` | `--version`、`--help` |
+| Claude Code | `<USER_HOME>/AppData/Roaming/npm/claude.ps1` | `--version`、`--help` |
+| OpenCode 有效入口 | `<USER_HOME>/AppData/Roaming/npm/node_modules/opencode-ai/node_modules/opencode-windows-x64/bin/opencode.exe` | `--version`、`run --help`、`debug --help` |
+| Cursor Agent | `<USER_HOME>/AppData/Local/cursor-agent/agent.ps1` | `--version`、`--help` |
+| Kimi Code | `<USER_HOME>/AppData/Roaming/npm/kimi.ps1` | `--version` |
+
+OpenCode 的 npm 声明入口 `opencode-ai/bin/opencode.exe` 实际为 479 字节文本文件，开头是 `echo "Error: opencode-ai's ...`，无法作为 Windows PE 执行；错误为“不是此操作系统平台的有效应用程序”。真实平台依赖中的 exe 能启动，因此只能判定当前 npm 入口有问题，不能判定 OpenCode 整体不可用。本次没有修改或重新安装用户的 OpenCode。
+
+额外尝试的 Node 批量探针在当前执行环境中遭遇 `spawn EPERM`；本报告采用 PowerShell 直接调用上述入口取得的结果，不把该运行环境错误归为某一 CLI 的功能失败。
+
+## 3. 已写入实施方案的修正
+
+1. 八种工具分别实现适配器、客户端安装、原生模型继承、权限约束和真实终态解析；Antigravity CLI（agy）纳入正式八工具，并承担原有流程迁移。
+2. 单工具模式绑定四角色，所有 AI 节点的 adapter 必须一致；测试 Agent 调普通测试程序不算第二个 AI 工具。
+3. 增加 `devflow-test`，七个 Skill 在八客户端共 56 个基础安装格子；安装、发现、真实触发分别验证。
+4. Grok 的 `streaming-json`、OpenCode 的 `--format json` 与各家的 `stream-json` 分别解析，不能共用一个厂商事件 schema。
+5. 安装发现检查 executable 格式、CPU、实际版本与帮助协议，处理 npm 文本占位入口、重复版本、陈旧 PATH 和编辑器/Agent 混淆。
+6. 单工具完整验收为八工具 × 四个必需目标，共 32 个真实闭环；本机只读探针不计入这些完成数。
+
+## 4. 官方依据
+
+| 工具 | 本次使用的主要资料 |
+|---|---|
+| Antigravity CLI（agy） | [Headless](https://www.agy.dev/docs/cli/headless/)、[Plugins 与 Skills](https://www.agy.dev/docs/cli/plugins/)、本机 1.2.2 help |
+| Codex | [非交互模式](https://learn.chatgpt.com/docs/non-interactive-mode)、[Skills](https://learn.chatgpt.com/docs/build-skills) |
+| Grok Build | [Headless](https://docs.x.ai/build/cli/headless-scripting)、[CLI](https://docs.x.ai/build/cli/reference)、[MCP](https://docs.x.ai/build/features/mcp-servers)、[Skills](https://docs.x.ai/build/features/skills-plugins-marketplaces) |
+| Claude Code | [Headless](https://code.claude.com/docs/en/headless)、[CLI](https://code.claude.com/docs/en/cli-reference)、本机 2.1.270 help |
+| Kimi Code | [命令参考](https://www.kimi.com/code/docs/en/kimi-code-cli/reference/kimi-command) |
+| Qoder | [脚本运行](https://docs.qoder.com/cli/run-in-scripts)、[MCP](https://docs.qoder.com/cli/mcp-servers)、[Skills](https://docs.qoder.com/cli/Skills)、[安装及架构限制](https://docs.qoder.com/cli/installation) |
+| OpenCode | [CLI](https://opencode.ai/docs/cli/)、[配置](https://opencode.ai/docs/config/)、[MCP](https://opencode.ai/docs/mcp-servers/)、本机 run/debug help |
+| Cursor | [参数](https://prod.cursor.com/docs/cli/reference/parameters)、[安装](https://prod.cursor.com/docs/cli/installation)、[MCP](https://prod.cursor.com/docs/cli/mcp)、[Skills](https://cursor.com/docs/skills) |
+
+最终支持状态以实施方案第 14 节对应发布 commit 的完整认证为准。当前本机结果不代表其他操作系统、其他 CLI 版本或账号配置已经通过。
+
+
+## 2026-09-14 任务组合与执行交互合并调研
+
+本次需求并入原工作流wf-508be4f4-4c5a-453c-9ac6-c6dafe717a08，主设计升级1.3，完整新增设计在实施方案第16节；不建立第二个产品开发任务。
+
+当前源码仍有models.executor/reviewer固定literal、Run.adapter固定agy/codex、运行器固定执行分支；现有stop/recovery与细项进度可以复用，但缺少任务spec、文档bundle、指令seq和旁路权限模型。源码证据：packages/contracts/src/config.ts、packages/contracts/src/index.ts、packages/runtime/src/runtime.ts、packages/core/src/engine.ts、packages/entry/src/intake.ts、packages/core/src/progress.ts。
+
+关键决定：每工作流冻结角色绑定并允许实施/测试细项覆盖；所有正式改向走停止旧Run、新会话和完整文档ack；三文档状态以平台事件和真实证据为准；临时问答用同工具同模型独立无工具会话，DevFlow不持久化问答内容且不进入主流程；上游保留与原生会话能力明确区分。
+
+本轮浏览核对Cursor参数、OpenCode CLI、Kimi命令和Claude Code /btw官方文档，链接及证据边界见实施方案16.11。未运行真实模型认证。原1.2调研结论继续保留，其任务级交互不足由1.3补齐。
+
+
+## 2026-09-14 主工作区代码同步调研（1.4）
+
+已核对GitManager.prepare只使用计划基线创建worktree，已有工作区直接复用；Engine.run传plan.baselines，snapshot及commit仍绑定旧baseline。当前没有自动merge/pull入口，不能以手工git merge替代受管基线迁移。
+
+本轮用户选最新已提交版本，冻结6eb47cca18dc65397aab125e96eb329cecc344d2。原任务无执行工作树，故直接修订plan.baselines；保留其他未提交修改。第17节新增审批输入选择、详情合并按钮、稳定输入快照、三方合并、冲突及恢复、execution_base和复核证据范围；同任务新增P12。Git官方依据见主设计17.9。

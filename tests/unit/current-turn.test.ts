@@ -99,24 +99,32 @@ it.each([
     ],
   },
   { events: [step(31, "agent_response")] },
-  { events: [step(30, "user_input"), step(31, "agent_response"), step(32, "tool")] },
+  {
+    events: [
+      step(30, "user_input"),
+      step(31, "agent_response"),
+      step(32, "tool"),
+    ],
+  },
 ])(
   "a fresh provider failure or missing new-turn boundary still blocks on real quota",
   async ({ events }) => {
-    await expect(observe(events, "", oldError)).rejects.toMatchObject({
+    await expect(
+      observe(events, "上一条已完成的回复", oldError),
+    ).rejects.toMatchObject({
       code: "MODEL_QUOTA",
     });
   },
 );
-it("an error never seen before is not treated as historical", async () => {
+it("a completed new turn overrides a changed quota footer even when old result events have fallen outside the history window", async () => {
   await expect(
     observe(
       [step(1, "user_input"), step(2, "agent_response")],
       "reply",
-      oldError,
+      "API error (attempt 6): RESOURCE_EXHAUSTED (code 429): Individual quota reached. Resets in 1h36m57s.",
       [],
     ),
-  ).rejects.toMatchObject({ code: "MODEL_QUOTA" });
+  ).resolves.toMatchObject({ conversation: "same-conversation" });
 });
 it("a model response discussing quota does not itself prove a quota failure", async () => {
   await expect(

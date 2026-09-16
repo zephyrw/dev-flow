@@ -1,0 +1,41 @@
+{
+  "at": "2026-09-15T07:13:31.335Z",
+  "workflows": [
+    {
+      "id": "wf-9fe59b2c-e9cb-4ddd-aa9e-07dd05d3f2e3",
+      "state": "STOPPED",
+      "stage": "stopped",
+      "task_counts": {
+        "total": 42,
+        "developed": 0,
+        "verified": 0,
+        "submitted": 42
+      },
+      "test_progress": {
+        "total": 81,
+        "passed": 37,
+        "failed": 16,
+        "stale": 0,
+        "previously_passed": 0
+      }
+    },
+    {
+      "id": "wf-508be4f4-4c5a-453c-9ac6-c6dafe717a08",
+      "state": "STOPPED",
+      "stage": "stopped",
+      "task_counts": {
+        "total": 88,
+        "developed": 0,
+        "verified": 0,
+        "submitted": 88
+      },
+      "test_progress": {
+        "total": 275,
+        "passed": 0,
+        "failed": 0,
+        "stale": 26,
+        "previously_passed": 0
+      }
+    }
+  ]
+}

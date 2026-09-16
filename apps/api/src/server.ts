@@ -229,10 +229,16 @@ export async function buildServer(engine: Engine) {
           index: z.coerce.number().int().nonnegative(),
         })
         .parse(req.params);
-      const evidence = engine.store.must<{
-        workflow_id: string;
-        files: { path: string; hash: string }[];
-      }>("evidence", a.evidence);
+      const evidence =
+        engine.store.get<{
+          workflow_id: string;
+          files: { path: string; hash: string }[];
+        }>("evidence", a.evidence) ??
+        engine.store.get<{
+          workflow_id: string;
+          files: { path: string; hash: string }[];
+        }>("development_evidence", a.evidence);
+      requireCondition(evidence, "NOT_FOUND", "测试证据不存在", 404);
       requireCondition(
         evidence.workflow_id === a.id,
         "FORBIDDEN",

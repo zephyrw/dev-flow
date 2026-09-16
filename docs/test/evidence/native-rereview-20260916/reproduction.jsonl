@@ -1,0 +1,14 @@
+{"id":"S01-host-records","asyncCommandFinished":{"valid":false,"reason":"宿主原始执行 'pnpm test' 尚未完成或未取得明确退出码 (状态: DONE)"},"stdoutCodeZero":{"valid":false,"reason":"宿主原始执行 'pnpm test' 尚未完成或未取得明确退出码 (状态: DONE)"},"echoCommand":{"valid":true,"actualExitCode":0}}
+{"id":"S02-preserved-time","delivery":"accepted","issues":[]}
+{"id":"S03-other-input","changed":"config.json","declaredImplementations":[{"repo_id":"main","task_id":"T01","path":"app.txt"}],"delivery":"accepted"}
+{"id":"S04-wrong-identity","submitted":{"workflow_id":"OTHER","run_id":"OLD-RUN","plan_revision":999},"delivery":"accepted"}
+{"id":"S05-scope-failure","delivery":"accepted","issues":[],"snapshot_id":null}
+{"id":"S06-running-accept","delivery":"accepted","run_status":"running","execution_finished":true,"after_accept":"REVIEW_QUEUED"}
+{"id":"S07-tampered-report","delivery":"accepted","modified_archive":true,"error":null,"state":"REVIEW_QUEUED"}
+{"id":"S08-required-hook","delivery":"accepted","error":{"code":"HOOK_EVIDENCE_MISSING","message":"FlowError: 缺少提交前检查 unit"},"legacy_evidence_count":0,"native_acceptance_count":1}
+{"id":"S09-wrong-report-owner","report_belongs_to":"call-1","mapping_points_to":"call-2","delivery":"accepted"}
+{"id":"S10-second-repo","delivery":"accepted","second_report_exists":false,"second_unapproved_change":true,"input_repos":["main"]}
+{"id":"S11-buffer-concurrency","writesBeforeRelease":6,"maxActive":6,"configuredMemoryBytes":1,"queuedWrites":6}
+{"id":"S12-rejected-idempotence","status_a":"rejected","status_b":"rejected","same_delivery":false,"deliveries":2,"issues":2}
+{"id":"S13-stale-progress","state":"HUMAN_PENDING","tasks":[{"status":"verified","validation_status":"passed"}],"verifyEvidenceError":null}
+{"id":"summary","scenario_count":13,"synthetic_fixtures":true,"no_live_workflow_started":true}

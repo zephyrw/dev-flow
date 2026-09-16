@@ -1,0 +1,12 @@
+{"id":"R1-agy-shape","facts":0}
+{"id":"R2-missing-exit","fact":{"tool_call_id":"unknown-exit","command":"pnpm test","cwd":"C:\\Users\\yckj4798\\AppData\\Local\\Temp\\devflow-review-20260916-XMieV0\\repo","exit_code":0,"output":"Process still running"},"verification":{"valid":true,"actualExitCode":0}}
+{"id":"R3-command-mismatch","verification":{"valid":true,"actualExitCode":0}}
+{"id":"R4-final-lifecycle","delivery":"accepted","state":"HUMAN_PENDING","snapshot_id":null,"run_status":"running","tasks":[{"id":"T01","title":"修改文本","completed":false,"development_status":"pending","validation_status":"not_run","has_implementation":false,"implementation_status":"pending","status":"pending","summary":""}],"acceptError":{"code":"NOT_FOUND","message":"FlowError: snapshot undefined 不存在"}}
+{"id":"R5-stale-report","changedSinceReport":{"matches":false,"changedFiles":["app.txt"]},"delivery":"accepted","issues":[]}
+{"id":"R6-wrong-mapping-and-conflict","delivery":"accepted","acceptance":[{"id":"acr-aed2ed9e-5a0e-42dc-9e61-1f92b0b4f9e7","workflow_id":"wf-b3a07b36-10d5-4e10-bd67-4afab3eab734","delivery_id":"del-99271ade-1995-49d4-9ee5-b0a6b86b7c0c","requirement_id":"UT01","scene_id":"updates content","test_execution_id":"NONEXISTENT-CALL","case_id":"updates content","status":"passed"}],"issues":[]}
+{"id":"R7-report-format","delivery":"rejected","issueCodes":["EMPTY_REPORT","CASE_NOT_FOUND_IN_REPORT"]}
+{"id":"R8-input-exclusions","files":[],"changed":false}
+{"id":"R9-outside-scope","approvedPaths":["app.txt"],"extraPath":"unapproved.txt","delivery":"accepted"}
+{"id":"R10-resume-plan","plan_revision":2,"design":"# revision 1 old design","workspaces_in_full":false,"resume_has_design_file":false}
+{"id":"R11-existing-agy-logs","logs":[{"file":"run-2631fef6-16ed-4f85-8fc5-c52e53f2fc04.jsonl","events":{"init":1,"step_update":5},"toolSteps":2,"parsedFacts":0},{"file":"run-00a24538-5863-4aa8-b0af-2e4ba34e6167.jsonl","events":{"init":1,"step_update":55},"toolSteps":35,"parsedFacts":0},{"file":"run-02da3168-1b0c-4827-bd8e-17dfd4add8f4.jsonl","events":{"init":1,"step_update":298},"toolSteps":198,"parsedFacts":0}]}
+{"complete":true,"isolatedRoot":"C:\\Users\\yckj4798\\AppData\\Local\\Temp\\devflow-review-20260916-XMieV0","resultCount":11}

@@ -1,0 +1,64 @@
+{
+  "verified_at": "2026-09-16T11:19:18.3033718+08:00",
+  "head": "e8f5dfc135d24ca4337a0888df13392595e333c8",
+  "frozen_count": 56,
+  "source_changes_during_review": [],
+  "changed_since_round2": [
+    "package.json",
+    "packages/contracts/src/index.ts",
+    "packages/core/src/buffered-sink.ts",
+    "packages/core/src/engine.ts",
+    "packages/evidence/src/delivery-importer.ts",
+    "packages/evidence/src/native-run-records.ts",
+    "packages/evidence/src/validator.ts",
+    "packages/runtime/src/runtime.ts",
+    "pnpm-lock.yaml",
+    "tests/integration/native-review-regression.test.ts",
+    "tests/unit/native-devflow.test.ts"
+  ],
+  "reproductions": 12,
+  "unexpected_errors": [],
+  "ids": [
+    "R01-slow-buffer",
+    "R02-callback-interception",
+    "R03-old-report-copied",
+    "R04-second-report-missing",
+    "R05-second-report-failed",
+    "R06-unexecuted-build",
+    "R07-unexecuted-extra-check",
+    "R08-snapshot-branch-failure",
+    "R09-failed-run-accept",
+    "R10-wrong-conversation",
+    "R11-idempotent-retry",
+    "R12-invalidated-retry"
+  ],
+  "verdict": "changes_required",
+  "implementation_modified": false,
+  "project_commit_created": false,
+  "typecheck": {
+    "command": "node node_modules/typescript/bin/tsc --noEmit",
+    "exit_code": 0
+  },
+  "vitest": {
+    "command": "node node_modules/vitest/vitest.mjs run",
+    "exit_code": 0,
+    "files_passed": 40,
+    "tests_passed": 165,
+    "output": "\n Test Files  40 passed (40)\n      Tests  165 passed (165)\n   Start at  11:01:33\n   Duration  436.87s (transform 16.22s, setup 0ms, import 81.21s, tests 720.37s, environment 20ms)\n\n"
+  },
+  "reproduction": {
+    "command": "node --import tsx docs/test/evidence/native-review-round3-20260916/reproduce.mjs",
+    "exit_code": 0,
+    "scenarios": 12,
+    "unexpected_errors": 0,
+    "fixture_mode": "temporary repositories and SQLite; synthetic host facts and reports; simulated human/reviewer gates for R06/R07; commits only in fixtures"
+  },
+  "document_readback_exact": true,
+  "not_run": [
+    "real AGY executor",
+    "browser E2E",
+    "real business acceptance",
+    "resource and Token benchmark"
+  ],
+  "scope": "Review against prior round2 snapshot. Preserve pnpm migration, C drive migration and unrelated workspace changes."
+}

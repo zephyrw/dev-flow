@@ -66,12 +66,7 @@ test("continuous WebSocket output becomes visible before the stream ends and sur
       .getByRole("button")
       .filter({ has: page.getByRole("heading", { name: workflow.title }) })
       .click();
-    await page.locator(".execution-toggle").waitFor();
-    if (
-      (await page
-        .locator(".execution-toggle")
-        .getAttribute("aria-expanded")) === "false"
-    )
+    if (!(await page.locator(".execution-sidebar").isVisible()))
       await page.getByRole("button", { name: "执行过程", exact: true }).click();
     await expect(page.locator(".logs")).toContainText("流式日志-1", {
       timeout: 2000,

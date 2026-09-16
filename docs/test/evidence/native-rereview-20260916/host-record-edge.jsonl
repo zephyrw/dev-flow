@@ -1,0 +1,1 @@
+{"id":"S14-stdout-code","verification":{"valid":true,"actualExitCode":0},"fact":{"tool_call_id":"step-1","command":"pnpm test","cwd":"C:/test","conversation_id":"c","exit_code":0,"status":"DONE","output":"application response code: 0\nProcess still running. Command ID: cmd-1"}}

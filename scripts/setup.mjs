@@ -1,9 +1,10 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync, cpSync, readdirSync, copyFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
 import { parse, stringify } from "yaml";
+import { installSkills } from "./install-skills.mjs";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const stamp = new Date().toISOString().replace(/[:.]/g, "-");
 function run(command, args) {
@@ -29,12 +30,7 @@ const skills = join(codexHome, "skills");
 const backups = join(codexHome, "devflow-backups", stamp);
 mkdirSync(backups, { recursive: true });
 mkdirSync(skills, { recursive: true });
-for (const name of readdirSync(join(root, "packages/skills"))) {
-  if (!/^devflow(?:-[a-z-]+)?$/.test(name)) continue;
-  const target = join(skills, name);
-  if (existsSync(target)) cpSync(target, join(backups, name), { recursive: true });
-  cpSync(join(root, "packages/skills", name), target, { recursive: true });
-}
+installSkills(join(root, "packages/skills"), skills, backups);
 const settingsPath = join(codexHome, "config.toml");
 let settings = existsSync(settingsPath) ? readFileSync(settingsPath, "utf8") : "";
 if (existsSync(settingsPath)) copyFileSync(settingsPath, join(backups, "config.toml"));

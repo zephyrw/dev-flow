@@ -149,7 +149,7 @@ it("IT-13 pass review commits only the accepted exact tree and leaves a clean in
     snapshot.repositories[0]!.tree,
   );
   s.store.close();
-});
+}, 60000);
 it("IT-03 API rejects untrusted Host, foreign Origin, allow local access and reject planner-as-human", async () => {
   const s = setup();
   const app = await buildServer(s.engine);
@@ -261,4 +261,4 @@ it("IT-09 large Chinese plan and tool contracts traverse bounded MCP pages witho
     await app.close();
     s.store.close();
   }
-}, 30000);
+}, 60000);

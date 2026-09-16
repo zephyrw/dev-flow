@@ -1,0 +1,25 @@
+{
+  "root": "C:/Users/yckj4798/AppData/Local/Temp/devflow-native-live-A4tyPO",
+  "resumed": true,
+  "events": {
+    "user_input:DONE": 1,
+    "system_message:DONE": 1,
+    "agent_response:DONE": 2,
+    "tool:ACTIVE": 1,
+    "tool:DONE": 1,
+    "agent_response:ACTIVE": 4
+  },
+  "tools": {
+    "run_command": 2
+  },
+  "facts": [
+    {
+      "tool_call_id": "call_149620",
+      "exit_code": 0,
+      "has_inputs": true,
+      "reports": [
+        "[\"main\",\".reports/unit.xml\"]"
+      ]
+    }
+  ]
+}

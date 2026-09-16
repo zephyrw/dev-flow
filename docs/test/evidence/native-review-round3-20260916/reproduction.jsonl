@@ -1,0 +1,12 @@
+{"id":"R01-slow-buffer","expected":"close waits for all writes; maxActive=1","atClose":{"elapsed_ms":119,"completed":1,"active":2,"maxActive":2},"finalCompleted":3}
+{"id":"R02-callback-interception","expected":"unrelated queued callbacks remain uncalled","callbackCalls":1,"queued":1}
+{"id":"R03-old-report-copied","expected":"reject old test result for changed code","delivery":"accepted","issues":[],"reportUnchanged":true,"hostFacts":[{"tool_call_id":"call-1","command":"pnpm test","cwd":"C:\\Users\\yckj4798\\AppData\\Local\\Temp\\devflow-test-DW1TTD\\repo","exit_code":0}]}
+{"id":"R04-second-report-missing","expected":"reject missing second repo report","delivery":"accepted","issues":[],"secondReportExists":false,"acceptances":[{"requirement_id":"UT01","status":"passed"},{"requirement_id":"UT02","status":"passed"}]}
+{"id":"R05-second-report-failed","expected":"reject failed second repo report","delivery":"accepted","issues":[],"secondReportStatus":"failed","acceptances":[{"requirement_id":"UT01","status":"passed"},{"requirement_id":"UT02","status":"passed"}]}
+{"id":"R06-unexecuted-build","expected":"HOOK_EVIDENCE_MISSING","delivery":"accepted","error":null,"state":"COMMITTED","hostCommands":["pnpm test"],"hasBuildReady":false}
+{"id":"R07-unexecuted-extra-check","expected":"HOOK_EVIDENCE_MISSING","delivery":"accepted","error":null,"state":"COMMITTED","hostCommands":["pnpm test"],"requiredCommand":"integration-required"}
+{"id":"R08-snapshot-branch-failure","expected":"reject snapshot failure without marking tasks verified","delivery":"accepted","issues":[],"snapshot_id":null,"snapshotError":"BRANCH_CHANGED","taskProofs":[{"verified":true},{"verified":true}]}
+{"id":"R09-failed-run-accept","expected":"reject non-successful run completion","delivery":"accepted","runStatus":"failed","error":null,"state":"REVIEW_QUEUED"}
+{"id":"R10-wrong-conversation","expected":"reject mismatched host conversation","delivery":"accepted","issues":[],"claimed":"different-conversation","actual":"actual-conversation"}
+{"id":"R11-idempotent-retry","expected":"same accepted result after successful response was lost","first":"accepted","retryError":{"code":"INVALID_STATE","message":"FlowError: 当前工作流不在执行或验证阶段，不能交付"},"state":"HUMAN_PENDING"}
+{"id":"R12-invalidated-retry","expected":"reject invalidated evidence; do not return cached accepted","first":"accepted","retry":"accepted","message":"终局核验全部通过，已进入人工验收阶段 (HUMAN_PENDING)。","state":"EXECUTING","revisions":[{"invalidated":true}]}

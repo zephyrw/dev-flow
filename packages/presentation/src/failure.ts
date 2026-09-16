@@ -1,5 +1,7 @@
 /** User-facing causes only; raw commands and diagnostics remain in details. */
 export function failureSummary(code = "", detail = "") {
+  if (code === "TEST_PLACEHOLDER")
+    return "测试仍是恒真占位断言，执行模型需要补齐真实业务检查。";
   if (/MODEL_QUOTA/.test(code))
     return "执行模型的可用额度已用完，暂时无法继续生成代码。";
   if (/MODEL_AUTH|UNAUTHORIZED/.test(code))

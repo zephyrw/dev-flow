@@ -1,0 +1,49 @@
+{
+  "typecheck": {
+    "command": "pnpm run typecheck",
+    "exit_code": 0
+  },
+  "build": {
+    "command": "pnpm run build",
+    "exit_code": 0
+  },
+  "script_tests": {
+    "passed": 3,
+    "failed": 0
+  },
+  "full_run": {
+    "passed": 203,
+    "failed": 2,
+    "total": 205
+  },
+  "final_regression": {
+    "passed": 78,
+    "failed": 0,
+    "total": 78
+  },
+  "latest_per_case": {
+    "total": 206,
+    "passed": 206,
+    "not_passed": []
+  },
+  "live_host_checks": [
+    "success",
+    "delayed success",
+    "expected failure exit 1",
+    "same-conversation resume"
+  ],
+  "diff_check_exit_code": 0,
+  "browser_e2e": {
+    "startTime": "2026-09-16T06:13:30.019Z",
+    "duration": 143673.066,
+    "expected": 16,
+    "skipped": 0,
+    "unexpected": 0,
+    "flaky": 0
+  },
+  "source_integrity": {
+    "checked_files": 30,
+    "changed_after_freeze": []
+  },
+  "completed_at": "2026-09-16T06:16:45.596Z"
+}

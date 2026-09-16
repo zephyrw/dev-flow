@@ -20,8 +20,10 @@ import {
   Id,
   PlanSchema,
   RelativePath,
+  NativeDeliveryManifestSchema,
   FlowError,
   requireCondition,
+  resolveTaskModel,
 } from "../../contracts/src/index.js";
 export const workerNames = [
   "devflow_execute_context",
@@ -34,6 +36,8 @@ export const workerNames = [
   "devflow_freeze",
   "devflow_run_check",
   "devflow_finish",
+  "devflow_deliver",
+  "devflow_report_conflict",
   "devflow_request_operation",
   "devflow_run_operation",
   "devflow_environment",
@@ -180,6 +184,14 @@ export function makeMcp(engine: Engine, principal: Principal) {
     );
   } else if (principal.role === "worker") {
     const workflow = principal.workflow_id!;
+    let taskModel: "legacy" | "leaf-v1" | "native-v2" = "legacy";
+    try {
+      const planRecord = engine.plan(workflow);
+      taskModel = resolveTaskModel(planRecord?.plan);
+    } catch {
+      taskModel = "legacy";
+    }
+    const isNativeV2 = taskModel === "native-v2";
     const repo = z.object({ repo_id: Id });
     register(
       "devflow_execute_context",
@@ -219,14 +231,15 @@ export function makeMcp(engine: Engine, principal: Principal) {
             repositories: engine.store
               .list<any>("workspace", workflow)
               .map((ws) => ({ repo_id: ws.repo_id, root: ws.root })),
-            task_model: plan.task_model ?? "legacy",
+            task_model: taskModel,
             modules: plan.modules,
             task_progress: engine.taskStatus(workflow),
             active_task: engine.store.get("task_activity", workflow),
             task_count: plan.tasks.length,
             test_count: plan.tests.length,
-            instructions:
-              "使用本工具 section=plan/skill/tasks/tests/scope/feedback/environment 读取批准信息；每次响应 text 是内容分段，next_offset 非 null 时继续相同 section 和 id。section=tool,id=完整工具名 可读取准确参数 Schema。先完整读取计划、任务及测试再修改。禁止原生工具。",
+            instructions: isNativeV2
+              ? "原生开发模式：请使用原生文件查看工具阅读 HANDOFF.md 完整设计与验收要求，使用原生终端和编辑工具开发与自测，测试通过后使用 devflow_deliver 交付。"
+              : "使用本工具 section=plan/skill/tasks/tests/scope/feedback/environment 读取批准信息；每次响应 text 是内容分段，next_offset 非 null 时继续相同 section 和 id。section=tool,id=完整工具名 可读取准确参数 Schema。先完整读取计划、任务及测试再修改。禁止原生工具。",
           };
         let value: unknown;
         if (a.section === "plan") value = plan.markdown;
@@ -247,28 +260,18 @@ export function makeMcp(engine: Engine, principal: Principal) {
         else if (a.section === "scope") value = plan.scope;
         else if (a.section === "feedback") value = w.feedback;
         else if (a.section === "operations")
-          value = engine.store.list("operation_request", workflow);
+          value = engine.store
+            .list<any>("operation_request", workflow)
+            .filter((o) => o.run_id === principal.run_id);
         else if (a.section === "diagnostics")
-          value = {
-            repair: engine.store.get("repair_state", workflow),
-            events: engine.store
-              .recentEvents(workflow, 100)
-              .filter((e) =>
-                [
-                  "BuildFailed",
-                  "EnvironmentFailed",
-                  "ServiceExited",
-                  "CheckCompleted",
-                  "OperationCompleted",
-                  "UserGuidance",
-                ].includes(e.type),
-              )
-              .map((e) => engine.store.publicEvent(e)),
-          };
+          value = engine.store.get("diagnostic_summary", workflow);
         else if (a.section === "environment")
-          value = engine.store.get("environment", workflow) ?? null;
-        else if (a.section === "tool") value = toolContracts[a.id];
-        else if (a.section === "response") {
+          value = engine.store.get("environment", workflow);
+        else if (a.section === "tool") {
+          const tool = toolContracts[a.id ?? ""];
+          requireCondition(tool, "TOOL_NOT_FOUND", "未知工具名");
+          value = tool;
+        } else if (a.section === "response") {
           const response = engine.store.must<any>(
             "worker_response",
             a.id ?? "",
@@ -307,112 +310,169 @@ export function makeMcp(engine: Engine, principal: Principal) {
       },
       true,
     );
-    register(
-      "devflow_list_files",
-      "列出已绑定仓库内目录。",
-      repo.extend({ path: RelativePath.optional() }),
-      (a) => {
-        const f = engine.files(principal, workflow, a.repo_id);
-        return f.broker.list(f.root, a.path);
-      },
-      true,
-    );
-    register(
-      "devflow_read_file",
-      "分页读取仓库文件，返回供并发校验的完整文件哈希。",
-      repo.extend({
-        path: RelativePath,
-        start: z.number().int().positive().default(1),
-        limit: z.number().int().positive().max(1000).default(300),
-      }),
-      (a) => {
-        const f = engine.files(principal, workflow, a.repo_id);
-        return f.broker.read(f.root, a.path, a.start, a.limit);
-      },
-      true,
-    );
-    register(
-      "devflow_search_files",
-      "在当前仓库中按文本查询，不运行 shell。",
-      repo.extend({ query: z.string().min(1).max(500) }),
-      (a) => {
-        const f = engine.files(principal, workflow, a.repo_id);
-        return f.broker.search(f.root, a.query);
-      },
-      true,
-    );
-    register(
-      "devflow_apply_files",
-      "按批准的精确路径修改文件。expected_hash 必须匹配当前内容；新文件为 null。",
-      repo.extend({
-        changes: z
-          .array(
-            z
-              .object({
-                path: RelativePath,
-                expected_hash: z.string().nullable(),
-                content: z.string().nullable(),
-              })
-              .strict(),
-          )
-          .min(1)
-          .max(50),
-      }),
-      (a) => {
-        const f = engine.files(principal, workflow, a.repo_id, true);
-        const plan = engine.plan(workflow).plan,
-          scope = plan.scope;
-        if (plan.task_model === "leaf-v1") {
-          const active = engine.store.get<any>("task_activity", workflow);
-          const task = plan.tasks.find((t) => t.id === active?.task_id);
+    if (!isNativeV2) {
+      register(
+        "devflow_list_files",
+        "列出已绑定仓库内目录。",
+        repo.extend({ path: RelativePath.optional() }),
+        (a) => {
           requireCondition(
-            active?.run_id === principal.run_id &&
-              task &&
-              (!task.repo_id || task.repo_id === a.repo_id),
-            "TASK_NOT_STARTED",
-            "修改前先开始当前仓库的细项任务",
+            !isNativeV2,
+            "INVALID_MODE",
+            "native-v2 模式下不能调用旧模式工具",
           );
+          const f = engine.files(principal, workflow, a.repo_id);
+          return f.broker.list(f.root, a.path);
+        },
+        true,
+      );
+      register(
+        "devflow_read_file",
+        "分页读取仓库文件，返回供并发校验的完整文件哈希。",
+        repo.extend({
+          path: RelativePath,
+          start: z.number().int().positive().default(1),
+          limit: z.number().int().positive().max(1000).default(300),
+        }),
+        (a) => {
           requireCondition(
-            a.changes.every((c: any) => task.paths.includes(c.path)),
-            "TASK_SCOPE",
-            "文件不属于当前细项，不能扩大修改范围",
+            !isNativeV2,
+            "INVALID_MODE",
+            "native-v2 模式下不能调用旧模式工具",
           );
-        }
-        return f.broker.apply(
-          f.root,
-          {
-            ...scope,
-            allowed_paths:
-              scope.repository_paths[a.repo_id] ?? scope.allowed_paths,
-          },
-          a.changes,
-        );
-      },
-    );
-    register(
-      "devflow_start_task",
-      "开始细项或更新当前细项进展；必须先完成依赖。",
-      z.object({ task_id: Id, summary: z.string().min(1).max(500).optional() }),
-      (a) => startTask(engine, principal, workflow, a.task_id, a.summary),
-    );
-    register(
-      "devflow_claim_task",
-      "提交当前细项的实际实现说明并检查完成条件；测试通过情况单独统计，尚未通过全部验收门禁不能交付。",
-      z.object({ task_id: Id, summary: z.string().min(10) }),
-      (a) => engine.claimTask(principal, workflow, a.task_id, a.summary),
-    );
-    register(
-      "devflow_freeze",
-      "结束代码修改并冻结当前快照，进入测试阶段。",
-      z.object({}),
-      () => engine.freeze(workflow, principal),
-    );
-    register(
-      "devflow_run_check",
-      "运行批准的测试编号，返回真实报告。失败会使旧证据失效并回到 EXECUTING：修复后重新 freeze 并重跑全部检查。",
-      z.object({ test_id: Id }),
-      (a) => engine.runtime!.check(engine.get(workflow), a.test_id, principal),
-    );
+          const f = engine.files(principal, workflow, a.repo_id);
+          return f.broker.read(f.root, a.path, a.start, a.limit);
+        },
+        true,
+      );
+      register(
+        "devflow_search_files",
+        "在当前仓库中按文本查询，不运行 shell。",
+        repo.extend({ query: z.string().min(1).max(500) }),
+        (a) => {
+          requireCondition(
+            !isNativeV2,
+            "INVALID_MODE",
+            "native-v2 模式下不能调用旧模式工具",
+          );
+          const f = engine.files(principal, workflow, a.repo_id);
+          return f.broker.search(f.root, a.query);
+        },
+        true,
+      );
+      register(
+        "devflow_apply_files",
+        "按批准的精确路径修改文件。expected_hash 必须匹配当前内容；新文件为 null。",
+        repo.extend({
+          changes: z
+            .array(
+              z
+                .object({
+                  path: RelativePath,
+                  expected_hash: z.string().nullable(),
+                  content: z.string().nullable(),
+                })
+                .strict(),
+            )
+            .min(1)
+            .max(50),
+        }),
+        (a) => {
+          requireCondition(
+            !isNativeV2,
+            "INVALID_MODE",
+            "native-v2 模式下不能调用旧模式工具",
+          );
+          const f = engine.files(principal, workflow, a.repo_id, true);
+          const plan = engine.plan(workflow).plan,
+            scope = plan.scope;
+          if (plan.task_model === "leaf-v1") {
+            const active = engine.store.get<any>("task_activity", workflow);
+            const task = plan.tasks.find((t) => t.id === active?.task_id);
+            requireCondition(
+              active?.run_id === principal.run_id &&
+                task &&
+                (!task.repo_id || task.repo_id === a.repo_id),
+              "TASK_NOT_STARTED",
+              "修改前先开始当前仓库的细项任务",
+            );
+            requireCondition(
+              a.changes.every((c: any) => task.paths.includes(c.path)),
+              "TASK_SCOPE",
+              "文件不属于当前细项，不能扩大修改范围",
+            );
+          }
+          return f.broker.apply(
+            f.root,
+            {
+              ...scope,
+              allowed_paths:
+                scope.repository_paths[a.repo_id] ?? scope.allowed_paths,
+            },
+            a.changes,
+          );
+        },
+      );
+      register(
+        "devflow_start_task",
+        "开始细项或更新当前细项进展；必须先完成依赖。",
+        z.object({
+          task_id: Id,
+          summary: z.string().min(1).max(500).optional(),
+        }),
+        (a) => {
+          requireCondition(
+            !isNativeV2,
+            "INVALID_MODE",
+            "native-v2 模式下不能调用旧模式工具",
+          );
+          return startTask(engine, principal, workflow, a.task_id, a.summary);
+        },
+      );
+      register(
+        "devflow_claim_task",
+        "提交当前细项的实际实现说明并检查完成条件；测试通过情况单独统计，尚未通过全部验收门禁不能交付。",
+        z.object({ task_id: Id, summary: z.string().min(10) }),
+        (a) => {
+          requireCondition(
+            !isNativeV2,
+            "INVALID_MODE",
+            "native-v2 模式下不能调用旧模式工具",
+          );
+          return engine.claimTask(principal, workflow, a.task_id, a.summary);
+        },
+      );
+      register(
+        "devflow_freeze",
+        "结束代码修改并冻结当前快照，进入测试阶段。",
+        z.object({}),
+        () => {
+          requireCondition(
+            !isNativeV2,
+            "INVALID_MODE",
+            "native-v2 模式下不能调用旧模式工具",
+          );
+          return engine.freeze(workflow, principal);
+        },
+      );
+      register(
+        "devflow_run_check",
+        "运行批准的测试编号，返回真实报告。失败会使旧证据失效并回到 EXECUTING：修复后重新 freeze 并重跑全部检查。",
+        z.object({ test_id: Id }),
+        (a) => {
+          requireCondition(
+            !isNativeV2,
+            "INVALID_MODE",
+            "native-v2 模式下不能调用旧模式工具",
+          );
+          return engine.runtime!.check(
+            engine.get(workflow),
+            a.test_id,
+            principal,
+          );
+        },
+      );
+    }
     register(
       "devflow_request_operation",
       "需要未登记的安装、诊断等命令时，提交具体可执行文件、参数、任务仓库和理由，请用户在工作台授权。提交后本轮结束，系统在批准或拒绝后续接同一会话；不能使用原生终端绕过。",
@@ -514,12 +574,55 @@ export function makeMcp(engine: Engine, principal: Principal) {
         return result;
       },
     );
-    register(
-      "devflow_finish",
-      "核验本轮所有任务和证据；成功后结束模型进程，等待人工验收。",
-      z.object({}),
-      () => engine.finish(workflow, principal),
-    );
+    if (!isNativeV2) {
+      register(
+        "devflow_finish",
+        "核验本轮所有任务和证据；成功后结束模型进程，等待人工验收。",
+        z.object({}),
+        () => {
+          requireCondition(
+            !isNativeV2,
+            "INVALID_MODE",
+            "native-v2 模式下不能调用 devflow_finish 工具",
+          );
+          return engine.finish(workflow, principal);
+        },
+      );
+    }
+    if (isNativeV2) {
+      register(
+        "devflow_deliver",
+        "原生终局交付工具：在原生环境下连续开发和自测完成后，提交交付清单进行终局批量核验。证据通过并且执行器成功结束后进入人工验收。",
+        NativeDeliveryManifestSchema,
+        async (a) => {
+          requireCondition(
+            isNativeV2,
+            "INVALID_MODE",
+            "非 native-v2 模式下不能调用终局交付工具",
+          );
+          engine.worker(principal, workflow);
+          return engine.deliver(workflow, a);
+        },
+      );
+      register(
+        "devflow_report_conflict",
+        "当架构、数据结构、外部接口或核心业务规则与规划设计存在真实冲突时上报具体证据，由规划模型修订原方案。",
+        z.object({
+          description: z.string().min(10),
+          conflict_evidence: z.string().min(10),
+          affected_modules: z.array(z.string()).default([]),
+        }),
+        async (a) => {
+          requireCondition(
+            isNativeV2,
+            "INVALID_MODE",
+            "非 native-v2 模式下不能调用冲突上报工具",
+          );
+          engine.worker(principal, workflow);
+          return engine.reportConflict(workflow, a);
+        },
+      );
+    }
   }
   return server;
 }

@@ -82,7 +82,7 @@ export const TestSchema = z
   .strict();
 export const PlanSchema = z
   .object({
-    task_model: z.literal("leaf-v1").optional(),
+    task_model: z.enum(["legacy", "leaf-v1", "native-v2"]).optional(),
     modules: z
       .array(z.object({ id: Id, title: z.string().min(1) }).strict())
       .min(1)
@@ -111,6 +111,14 @@ export const PlanSchema = z
   })
   .strict();
 export type Plan = z.infer<typeof PlanSchema>;
+
+export function resolveTaskModel(
+  plan?: { task_model?: string } | null,
+): "legacy" | "leaf-v1" | "native-v2" {
+  if (plan?.task_model === "native-v2") return "native-v2";
+  if (plan?.task_model === "leaf-v1") return "leaf-v1";
+  return "legacy";
+}
 export const CommandSchema = z
   .object({
     repo_id: Id.optional(),
@@ -340,4 +348,199 @@ export function requireCondition(
   status = 409,
 ): asserts value {
   if (!value) throw new FlowError(code, message, status);
+}
+
+export const DeliveryManifestSchema = z
+  .object({
+    schema_version: z.string().optional(),
+    submission_id: z.string().optional(),
+    workflow_id: z.string().optional(),
+    run_id: z.string().optional(),
+    conversation_id: z.string().optional(),
+    plan_revision: z.number().int().optional(),
+    plan_hash: z.string().optional(),
+    implementations: z
+      .array(
+        z
+          .object({
+            repo_id: z.string().optional(),
+            module_id: Id.optional(),
+            task_id: Id.optional(),
+            path: RelativePath,
+            description: z.string().optional(),
+          })
+          .strict(),
+      )
+      .default([]),
+    test_executions: z
+      .array(
+        z
+          .object({
+            tool_call_id: z.string().min(1),
+            command: z.string().min(1),
+            cwd: z.string().default(""),
+            repo_id: z.string().optional(),
+            started_at: z.string().optional(),
+            ended_at: z.string().optional(),
+            exit_code: z.number().int().optional(),
+            output_path: z.string().optional(),
+            report_paths: z.array(RelativePath).default([]),
+            format: z
+              .enum(["vitest_json", "playwright_json", "junit", "auto"])
+              .optional(),
+          })
+          .strict(),
+      )
+      .default([]),
+    acceptance_mappings: z
+      .array(
+        z
+          .object({
+            requirement_id: z.string().min(1),
+            scene_id: z.string().min(1),
+            test_execution_id: z.string().min(1),
+            report_path: RelativePath,
+            case_id: z.string().min(1),
+          })
+          .strict(),
+      )
+      .default([]),
+    unfinished_items: z
+      .array(
+        z
+          .object({
+            id: z.string().min(1),
+            reason: z.string().min(1),
+          })
+          .strict(),
+      )
+      .default([]),
+    plan_conflicts: z
+      .array(
+        z
+          .object({
+            id: z.string().min(1),
+            description: z.string().min(1),
+            proposed_change: z.string().optional(),
+          })
+          .strict(),
+      )
+      .default([]),
+  })
+  .strict();
+export const NativeDeliveryManifestSchema = DeliveryManifestSchema.extend({
+  schema_version: z.literal("v2"),
+  submission_id: Id,
+  workflow_id: Id,
+  run_id: Id,
+  conversation_id: Id,
+  plan_revision: z.number().int().positive(),
+  plan_hash: z.string().min(1),
+});
+export type DeliveryManifest = z.infer<typeof DeliveryManifestSchema>;
+
+export interface Delivery {
+  id: string;
+  submission_id?: string;
+  manifest_hash?: string;
+  workflow_id: string;
+  run_id: string;
+  plan_revision: number;
+  plan_hash?: string;
+  status: "pending" | "passed" | "rejected";
+  input_manifest_id?: string;
+  report_hashes?: Record<string, string>;
+  manifest: DeliveryManifest;
+  submitted_at: string;
+}
+
+export interface DeliveryRevision {
+  id: string;
+  workflow_id: string;
+  delivery_id: string;
+  snapshot_id?: string;
+  plan_revision: number;
+  plan_hash: string;
+  input_fingerprints: Record<string, string>; // repo_id -> fingerprint
+  execution_finished: boolean;
+  invalidated?: boolean;
+  run_id?: string;
+  conversation_id?: string;
+  created_at: string;
+}
+
+export interface VerificationBatch {
+  id: string;
+  workflow_id: string;
+  repo_id: string;
+  input_manifest_id: string;
+  fingerprint: string;
+  started_at: string;
+  ended_at?: string;
+}
+
+export interface TestExecution {
+  delivery_id?: string;
+  input_fingerprints?: Record<string, string>;
+  report_hashes?: Record<string, string>;
+  id: string;
+  workflow_id: string;
+  run_id: string;
+  tool_call_id: string;
+  command: string;
+  cwd: string;
+  repo_id?: string;
+  started_at: string;
+  ended_at: string;
+  exit_code: number;
+  output_path?: string;
+  report_paths: string[];
+}
+
+export interface AcceptanceResult {
+  id: string;
+  workflow_id: string;
+  delivery_id: string;
+  requirement_id: string;
+  scene_id: string;
+  test_execution_id: string;
+  case_id: string;
+  status: "passed" | "failed" | "skipped";
+  reason?: string;
+}
+
+export interface InputManifest {
+  id: string;
+  workflow_id: string;
+  repo_id?: string;
+  fingerprint: string;
+  files: { path: string; hash: string }[];
+  created_at: string;
+}
+
+export interface DeliveryIssue {
+  id: string;
+  issue_key?: string;
+  workflow_id: string;
+  delivery_id: string;
+  code: string;
+  message: string;
+  module_id?: string;
+  scene_id?: string;
+  status: "open" | "resolved";
+  first_seen_at?: string;
+  resolved_at?: string;
+  created_at: string;
+}
+
+export interface RunUsage {
+  id: string;
+  run_id: string;
+  workflow_id: string;
+  available?: boolean;
+  input_tokens?: number;
+  output_tokens?: number;
+  cached_tokens?: number;
+  reasoning_tokens?: number;
+  recorded_at: string;
 }
