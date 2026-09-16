@@ -1,0 +1,7 @@
+saveExact: true
+allowBuilds:
+  # 13.0.3 ships N-API prebuilds and declares gypfile: false.
+  # pnpm 11.7 still attempts an implicit node-gyp build for binding.gyp.
+  better-sqlite3@13.0.3: false
+  esbuild: true
+  fsevents: true

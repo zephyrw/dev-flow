@@ -38,7 +38,15 @@ export function atomicWrite(file: string, content: string | Buffer) {
   } finally {
     closeSync(fd);
   }
-  renameSync(temp, file);
+  for (let i = 0; i < 5; i++) {
+    try {
+      renameSync(temp, file);
+      break;
+    } catch (e: any) {
+      if (i === 4 || !["EPERM", "EBUSY", "EACCES"].includes(e.code)) throw e;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 15);
+    }
+  }
 }
 export function redact(text: string) {
   return text
@@ -68,10 +76,20 @@ export function publicEvent(value: unknown): any {
   if (value && typeof value === "object")
     return Object.fromEntries(
       Object.entries(value)
-        .filter(([key]) => !/thought|reasoning/i.test(key))
+        .filter(
+          ([key, item]) =>
+            !/thought|reasoning/i.test(key) ||
+            (key === "reasoning_tokens" && typeof item === "number"),
+        )
         .map(([key, item]) => [
           key,
-          /secret|token|password|api[_-]?key/i.test(key)
+          /secret|token|password|api[_-]?key/i.test(key) &&
+          !(
+            typeof item === "number" &&
+            /^(input|output|cached|reasoning|thinking|cache_read|cache_write|total|prompt|completion)_tokens$/.test(
+              key,
+            )
+          )
             ? "[REDACTED]"
             : publicEvent(item),
         ]),

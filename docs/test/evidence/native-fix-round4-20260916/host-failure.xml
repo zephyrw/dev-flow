@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<testsuites>
+	<testcase name="input is correct" time="0.005890" classname="test" failure="Expected values to be strictly equal:+ actual - expected+ 'incorrect'- 'correct'">
+		<failure type="testCodeFailure" message="Expected values to be strictly equal:+ actual - expected+ 'incorrect'- 'correct'">
+[Error [ERR_TEST_FAILURE]: Expected values to be strictly equal:
++ actual - expected
+
++ 'incorrect'
+- 'correct'
+] {
+  code: 'ERR_TEST_FAILURE',
+  failureType: 'testCodeFailure',
+  cause: AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  + actual - expected
+  
+  + 'incorrect'
+  - 'correct'
+  
+      at TestContext.&lt;anonymous> (C:\Users\yckj4798\AppData\Local\Temp\devflow-native-live-RHMjYa\test.cjs:1:127)
+      at Test.runInAsyncScope (node:async_hooks:214:14)
+      at Test.run (node:internal/test_runner/test:1047:25)
+      at Test.start (node:internal/test_runner/test:944:17)
+      at startSubtestAfterBootstrap (node:internal/test_runner/harness:296:17) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 'incorrect',
+    expected: 'correct',
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+}
+		</failure>
+	</testcase>
+	<!-- tests 1 -->
+	<!-- suites 0 -->
+	<!-- pass 0 -->
+	<!-- fail 1 -->
+	<!-- cancelled 0 -->
+	<!-- skipped 0 -->
+	<!-- todo 0 -->
+	<!-- duration_ms 428.6121 -->
+</testsuites>

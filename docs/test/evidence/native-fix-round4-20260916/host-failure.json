@@ -1,0 +1,23 @@
+{
+  "root": "C:\\Users\\yckj4798\\AppData\\Local\\Temp\\devflow-native-live-RHMjYa",
+  "events": {
+    "user_input:DONE": 1,
+    "agent_response:DONE": 2,
+    "tool:ACTIVE": 1,
+    "tool:DONE": 1,
+    "agent_response:ACTIVE": 3
+  },
+  "tools": {
+    "run_command": 2
+  },
+  "facts": [
+    {
+      "tool_call_id": "call_185237",
+      "exit_code": 1,
+      "has_inputs": true,
+      "reports": [
+        "[\"main\",\".reports/unit.xml\"]"
+      ]
+    }
+  ]
+}

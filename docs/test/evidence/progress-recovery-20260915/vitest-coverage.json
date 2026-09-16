@@ -1,0 +1,927 @@
+{
+  "at": "2026-09-15T07:18:02.556Z",
+  "initial": {
+    "total": 130,
+    "passed": 127,
+    "failed": 3
+  },
+  "recheck": {
+    "total": 9,
+    "passed": 9,
+    "failed": 0
+  },
+  "unique": 130,
+  "passed": 130,
+  "tests": [
+    {
+      "file": "D:/Code/system-handle/tests/integration/check-repair.test.ts",
+      "index": 0,
+      "title": "IT-10 failed real test reopens scoped repair and invalidates all old evidence before retest",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/diagnosis-runtime.test.ts",
+      "index": 0,
+      "title": "a rejected output schema retries once without wire constraints and validates the actual returned diagnosis",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/environment-repair-tool.test.ts",
+      "index": 0,
+      "title": "development environment MCP calls escalate repeated failures to diagnosis and preserve bounded recovery",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/environments.test.ts",
+      "index": 0,
+      "title": "health checks report duplicate or foreign identity immediately and keep transient readiness retryable",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/environments.test.ts",
+      "index": 1,
+      "title": "IT-06/07 three parallel environments use distinct ports, real frontend proxies and isolated persisted data",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/environments.test.ts",
+      "index": 2,
+      "title": "IT-07 registered fixture receives only its workflow data namespace before environment readiness",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/execution-loop.test.ts",
+      "index": 0,
+      "title": "operation authorization binds exact arguments and plan, survives restart, and executes at most once",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/execution-loop.test.ts",
+      "index": 1,
+      "title": "denied operations never execute and a changed plan invalidates prior approval",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/execution-loop.test.ts",
+      "index": 2,
+      "title": "interrupted authorized commands retain unknown outcome and cannot consume approval twice",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/execution-loop.test.ts",
+      "index": 3,
+      "title": "HTTP authorization rejects foreign callers and resumes the original workflow with the exact decision",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/execution-loop.test.ts",
+      "index": 4,
+      "title": "a development test runs before any task claims, captures real failure, then passes without freezing delivery",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/execution-loop.test.ts",
+      "index": 5,
+      "title": "repeated identical failure escalates to the planner and exhausts without pretending user input is missing",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/execution-loop.test.ts",
+      "index": 6,
+      "title": "planner infrastructure failure keeps the executor repairing and new errors get their own retry budget",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/execution-loop.test.ts",
+      "index": 7,
+      "title": "quota and revoked runs are not blindly retried",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/execution-loop.test.ts",
+      "index": 8,
+      "title": "resource waiting names the owner, resumes on release and can be cancelled",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/execution-loop.test.ts",
+      "index": 9,
+      "title": "an external source edit invalidates a recorded implementation without a page-triggered file scan",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/execution-loop.test.ts",
+      "index": 10,
+      "title": "missing reviewer executable cannot synthesize a passing review",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/execution-loop.test.ts",
+      "index": 11,
+      "title": "HTTP summary and detail use read projections; history has a bounded backwards cursor",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/hook.test.ts",
+      "index": 0,
+      "title": "IT-09 Windows Hook preserves Chinese JSON and enforces live run revocation",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/intake.test.ts",
+      "index": 0,
+      "title": "unified entry discovers onboarding, reuses a conversation and keeps worktrees and new tasks distinct",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/interruption.test.ts",
+      "index": 0,
+      "title": "execution stop keeps its real cause after process rejection",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/interruption.test.ts",
+      "index": 1,
+      "title": "execution crash keeps its real cause after process rejection",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/interruption.test.ts",
+      "index": 2,
+      "title": "legacy stops never invent a human actor",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/interruption.test.ts",
+      "index": 3,
+      "title": "infers pause from legacy agent_stopped event and heals interruption entity",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/model-retry.test.ts",
+      "index": 0,
+      "title": "manual recovery after account switch clears the quota wait and dispatches immediately",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/model-retry.test.ts",
+      "index": 1,
+      "title": "uses the provider reset time plus grace and never invents a reset time",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/model-retry.test.ts",
+      "index": 2,
+      "title": "quota wait persists, does not run early, and resumes the same approved workflow when due",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/model-retry.test.ts",
+      "index": 3,
+      "title": "a user pause cancels deferred execution",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/precommit-runtime.test.ts",
+      "index": 0,
+      "title": "R1 'missing report' records the actual error and reopens repair without invented passing cases",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/precommit-runtime.test.ts",
+      "index": 1,
+      "title": "R1 'malformed report' records the actual error and reopens repair without invented passing cases",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/precommit-runtime.test.ts",
+      "index": 2,
+      "title": "R1 browser assertion exceptions record failure instead of trapping the worker in VERIFYING",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/precommit-runtime.test.ts",
+      "index": 3,
+      "title": "R1 waiting for a browser lease is a retryable precondition and creates no failed evidence",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/precommit-runtime.test.ts",
+      "index": 4,
+      "title": "R2 stopping during verification preparation cannot launch a late agent",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/precommit-runtime.test.ts",
+      "index": 5,
+      "title": "R2 stopping during review preparation cannot launch a late agent",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/precommit-runtime.test.ts",
+      "index": 6,
+      "title": "R2 stopping while checking the snapshot cannot launch a late test or reopen a stopped workflow",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/precommit-runtime.test.ts",
+      "index": 7,
+      "title": "R2 an old queued preparation success cannot activate or block a recovered queue entry",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/precommit-runtime.test.ts",
+      "index": 8,
+      "title": "R2 an old queued preparation failure cannot activate or block a recovered queue entry",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/precommit-runtime.test.ts",
+      "index": 9,
+      "title": "R3 changed project configuration is rejected at feedback, recovery and dispatch before workspace or model execution",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/precommit-runtime.test.ts",
+      "index": 10,
+      "title": "R3 project registration rechecks active workflows after repository inspection",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/precommit-runtime.test.ts",
+      "index": 11,
+      "title": "R4 different tests of one workflow cannot concurrently consume a shared report path",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/precommit-runtime.test.ts",
+      "index": 12,
+      "title": "R4 a late result cannot be attached after invalidation and refreezing identical source",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/preparation-failure.test.ts",
+      "index": 0,
+      "title": "compiler exit stops health polling immediately, starts once, releases leases and preserves its diagnostic",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/preparation-failure.test.ts",
+      "index": 1,
+      "title": "only a confirmed port collision retries, using a different port",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/preparation-failure.test.ts",
+      "index": 2,
+      "title": "failed build preserves the worker for repair and a corrected build can enter verification",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/preparation-failure.test.ts",
+      "index": 3,
+      "title": "manual stop while preparing stays stopped and is not relabeled as a build failure",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/process.test.ts",
+      "index": 0,
+      "title": "managed PowerShell executes a batch program with Windows runtime variables while secrets stay excluded",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/process.test.ts",
+      "index": 1,
+      "title": "IT-08 Windows Host captures Unicode output and terminates job descendants on stop",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/process.test.ts",
+      "index": 2,
+      "title": "IT-15 one controller owns each state directory and releases ownership on exit",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/process.test.ts",
+      "index": 3,
+      "title": "IT-09 Host preserves large Chinese JSON stdin and escaped Windows paths byte-for-byte",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/progress-recovery.test.ts",
+      "index": 0,
+      "title": "a shared test failure preserves unchanged implementation and displays passed development cases",
+      "status": "passed",
+      "round": "recheck"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/progress-recovery.test.ts",
+      "index": 1,
+      "title": "legacy invalidations reconcile only exact unchanged source and do not manufacture verification",
+      "status": "passed",
+      "round": "recheck"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/progress-recovery.test.ts",
+      "index": 2,
+      "title": "repeated unchanged declarations do not emit additional completion events",
+      "status": "passed",
+      "round": "recheck"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/progress-recovery.test.ts",
+      "index": 3,
+      "title": "constant-only placeholder tests cannot be declared or executed as business evidence",
+      "status": "passed",
+      "round": "recheck"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/progress.test.ts",
+      "index": 0,
+      "title": "keeps downstream submissions and timestamps across prerequisite repair without repeating claims or restoring test evidence",
+      "status": "passed",
+      "round": "recheck"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/progress.test.ts",
+      "index": 1,
+      "title": "tracks a leaf task, refuses premature completion, invalidates changed implementation and lists per-file diffs from task branch baseline",
+      "status": "passed",
+      "round": "recheck"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/progress.test.ts",
+      "index": 2,
+      "title": "counts current planned cases once; latest failure, skipped and stale results never inflate passes",
+      "status": "passed",
+      "round": "recheck"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/recovery.test.ts",
+      "index": 0,
+      "title": "IT-14 exact multi-repository commit resumes after second branch update fails",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/recovery.test.ts",
+      "index": 1,
+      "title": "IT-15 named job reconciliation distinguishes active process trees from terminated ones",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/repair-review.test.ts",
+      "index": 0,
+      "title": "IT-12 repair plan requires new approval and cannot reuse evidence even when source snapshot is identical",
+      "status": "passed",
+      "round": "recheck"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/repair-review.test.ts",
+      "index": 1,
+      "title": "IT-04 approved filename cannot write through a hardlink into another directory",
+      "status": "passed",
+      "round": "recheck"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/report-output.test.ts",
+      "index": 0,
+      "title": "renamed legacy reports are cleaned only from the dedicated directory with exact archive proof",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/report-output.test.ts",
+      "index": 1,
+      "title": "a real development test archives an unignored report without changing the code snapshot",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/report-output.test.ts",
+      "index": 2,
+      "title": "pre-existing report files are restored and legacy cleanup requires a matching archive",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/review-gates.test.ts",
+      "index": 0,
+      "title": "UT-16/17 independent commit gates reject missing approval, stale acceptance, evidence, coverage and changed project configuration",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/review-reader.test.ts",
+      "index": 0,
+      "title": "IT-12 reviewer MCP exposes only read tools and rejects foreign or changed snapshot files",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/run-deadline.test.ts",
+      "index": 0,
+      "title": "DF-STAGE-I01 policy rejects at shared deadline before token expiry",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/run-deadline.test.ts",
+      "index": 1,
+      "title": "DF-STAGE-I02 process timeout and manual stop remain distinct",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/run-deadline.test.ts",
+      "index": 2,
+      "title": "DF-STAGE-I03 resumed run rejects old worker",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/run-failure.test.ts",
+      "index": 0,
+      "title": "DF-STAGE-I04 hook preserves policy failure categories",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/run-failure.test.ts",
+      "index": 1,
+      "title": "DF-STAGE-I05 hook rejects malformed or mismatched allow response",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/session.test.ts",
+      "index": 0,
+      "title": "local console opens without pairing, cookies or login, including old credentials",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/session.test.ts",
+      "index": 1,
+      "title": "button approval binds the viewed version, rejects foreign pages and repeated submissions",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/session.test.ts",
+      "index": 2,
+      "title": "event streams work without login and reject missing or foreign Origin at upgrade",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/workflow.test.ts",
+      "index": 0,
+      "title": "IT-04 rejects outside scope, stale writes, hardlinks and freezes writes during tests",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/workflow.test.ts",
+      "index": 1,
+      "title": "IT-05 independently prepares two worktrees in one shared repository",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/workflow.test.ts",
+      "index": 2,
+      "title": "IT-10 snapshot detects source changes and task declarations never substitute for evidence",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/workflow.test.ts",
+      "index": 3,
+      "title": "IT-13 pass review commits only the accepted exact tree and leaves a clean index",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/workflow.test.ts",
+      "index": 4,
+      "title": "IT-03 API rejects untrusted Host, foreign Origin, allow local access and reject planner-as-human",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/workflow.test.ts",
+      "index": 5,
+      "title": "IT-03 MCP exposes planning tools without any human-approval capability",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/integration/workflow.test.ts",
+      "index": 6,
+      "title": "IT-09 large Chinese plan and tool contracts traverse bounded MCP pages without temp-file fallback",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/unit/contracts.test.ts",
+      "index": 0,
+      "title": "配置与计划合同 UT-01 rejects unknown keys and invalid model substitutions",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/unit/contracts.test.ts",
+      "index": 1,
+      "title": "配置与计划合同 UT-02 canonical hash is independent of object key order",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/unit/contracts.test.ts",
+      "index": 2,
+      "title": "配置与计划合同 UT-06 validates DAG, test links, layers and diagrams",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/unit/contracts.test.ts",
+      "index": 3,
+      "title": "配置与计划合同 UT-06 rejects absent diagrams and unresolved decisions",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/unit/contracts.test.ts",
+      "index": 4,
+      "title": "配置与计划合同 UT-07 blocks traversal and Windows alternate stream paths",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/unit/contracts.test.ts",
+      "index": 5,
+      "title": "配置与计划合同 UT-10 parses fragmented multibyte JSONL and final non-newline result",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/unit/contracts.test.ts",
+      "index": 6,
+      "title": "配置与计划合同 UT-10 rejects invalid and oversized events",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/unit/contracts.test.ts",
+      "index": 7,
+      "title": "配置与计划合同 UT-11 binds model and conversation and requires exit success",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/unit/contracts.test.ts",
+      "index": 8,
+      "title": "配置与计划合同 UT-13 rejects zero tests, skipped tests and missing expected assertions",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/unit/contracts.test.ts",
+      "index": 9,
+      "title": "配置与计划合同 UT-13 parses real report shapes",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/unit/contracts.test.ts",
+      "index": 10,
+      "title": "配置与计划合同 UT-19 redacts secrets from public logs",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/unit/contracts.test.ts",
+      "index": 11,
+      "title": "配置与计划合同 UT-20 safely resolves executables and rejects missing binaries with structured errors",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/unit/current-turn.test.ts",
+      "index": 0,
+      "title": "resumed scope failure is not replaced by a historical quota footer",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/unit/current-turn.test.ts",
+      "index": 1,
+      "title": "a completed new turn can finish transport despite a known historical error; task evidence is still engine-gated",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/unit/current-turn.test.ts",
+      "index": 2,
+      "title": "a fresh provider failure or missing new-turn boundary still blocks on real quota",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/unit/current-turn.test.ts",
+      "index": 3,
+      "title": "a fresh provider failure or missing new-turn boundary still blocks on real quota",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/unit/current-turn.test.ts",
+      "index": 4,
+      "title": "a fresh provider failure or missing new-turn boundary still blocks on real quota",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/unit/current-turn.test.ts",
+      "index": 5,
+      "title": "a fresh provider failure or missing new-turn boundary still blocks on real quota",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/unit/current-turn.test.ts",
+      "index": 6,
+      "title": "a completed new turn overrides a changed quota footer even when old result events have fallen outside the history window",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/unit/current-turn.test.ts",
+      "index": 7,
+      "title": "a model response discussing quota does not itself prove a quota failure",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/unit/diagnosis-output.test.ts",
+      "index": 0,
+      "title": "diagnosis wire format closes repository maps and makes optional fields nullable",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/unit/diagnosis-output.test.ts",
+      "index": 1,
+      "title": "nullable wire optionals decode while invalid repair plans still fail validation",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/unit/diagnosis-output.test.ts",
+      "index": 2,
+      "title": "user failure summaries do not expose internal commands or stack traces",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/unit/diagrams.test.ts",
+      "index": 0,
+      "title": "UT-06 parses Chinese labels in an isolated DOM and rejects invalid diagram grammar",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/unit/log-safety.test.ts",
+      "index": 0,
+      "title": "redacts nested tool JSON values without corrupting quotes or the event structure",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/unit/log-safety.test.ts",
+      "index": 1,
+      "title": "search ignores compiled output and binary bytes and rejects direct binary reads",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/unit/logs.test.ts",
+      "index": 0,
+      "title": "UT-19 log projection orders and deduplicates events, joins text chunks and never mixes workflows or runs",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/unit/logs.test.ts",
+      "index": 1,
+      "title": "summarizes tool calls, hides prompts and marks interrupted operations",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/unit/logs.test.ts",
+      "index": 2,
+      "title": "groups blank and high-volume service output without crowding meaningful progress",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/unit/logs.test.ts",
+      "index": 3,
+      "title": "DF-STAGE-U08 blocked event explains timeout without inventing history",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/unit/maintenance.test.ts",
+      "index": 0,
+      "title": "UT-20 backup manifest detects tampering and rejects traversal",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/unit/maintenance.test.ts",
+      "index": 1,
+      "title": "IT-16 backup restores database and evidence at their original paths",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/unit/maintenance.test.ts",
+      "index": 2,
+      "title": "UT-20 retention compresses only expired terminal logs and preserves exact bytes",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/unit/recipe.test.ts",
+      "index": 0,
+      "title": "UT-15 browser evidence records only observed assertions and fails missing values",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/unit/recipe.test.ts",
+      "index": 1,
+      "title": "UT-05 agy grants are scoped to a unique project and never permit native commands",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/unit/recipe.test.ts",
+      "index": 2,
+      "title": "UT-15 browser scenes cannot enter controller approval even if an origin is misconfigured",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/unit/review-output.test.ts",
+      "index": 0,
+      "title": "UT-16 Codex wire schema uses explicit repository keys and closed required properties",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/unit/run-deadline.test.ts",
+      "index": 0,
+      "title": "DF-STAGE-U02 one deadline includes preparation time",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/unit/run-deadline.test.ts",
+      "index": 1,
+      "title": "DF-STAGE-U03 credential grace never authorizes expired run",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/unit/run-deadline.test.ts",
+      "index": 2,
+      "title": "DF-STAGE-U04 first termination reason wins",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/unit/run-failure.test.ts",
+      "index": 0,
+      "title": "DF-STAGE-U05 policy reasons stay distinct from model auth",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/unit/run-failure.test.ts",
+      "index": 1,
+      "title": "DF-STAGE-U06 timeout without result retains TIMEOUT",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/unit/run-failure.test.ts",
+      "index": 2,
+      "title": "DF-STAGE-U07 exit 130 alone does not prove timeout",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/unit/stage-adapter.test.ts",
+      "index": 0,
+      "title": "DF-STAGE-U01 rejects missing isolated preview environment",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/unit/state.test.ts",
+      "index": 0,
+      "title": "UT-03 transaction rollback removes events and idempotency prevents duplicate transitions",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/unit/state.test.ts",
+      "index": 1,
+      "title": "UT-04 human proofs cannot approve a different plan revision",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/unit/state.test.ts",
+      "index": 2,
+      "title": "UT-05 revoked and foreign worker credentials are rejected",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/unit/state.test.ts",
+      "index": 3,
+      "title": "UT-08 resource acquisition is atomic, fenced and cannot steal expired leases",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/unit/state.test.ts",
+      "index": 4,
+      "title": "UT-08 scheduler rotates projects and retains per-project order",
+      "status": "passed",
+      "round": "initial"
+    },
+    {
+      "file": "D:/Code/system-handle/tests/unit/state.test.ts",
+      "index": 5,
+      "title": "UT-18 restart revokes live runs without marking stale leases free",
+      "status": "passed",
+      "round": "initial"
+    }
+  ]
+}

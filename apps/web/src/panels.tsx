@@ -4,6 +4,7 @@ export const taskLabels: Record<string, string> = {
   active: "进行中",
   pending_check: "待核验",
   needs_changes: "需修改",
+  check_failed: "自检未通过",
   needs_recheck: "等待前置核验",
   pending: "未开始",
 };
@@ -19,7 +20,15 @@ export function TaskTree({ detail, title }: { detail: any; title?: string }) {
   const [filter, setFilter] = useState(""),
     [state, setState] = useState("all");
   const leaf = detail.plan?.plan.task_model === "leaf-v1";
-  const groups = leaf
+  const native = detail.plan?.plan.task_model === "native-v2";
+  const structured =
+    leaf ||
+    native ||
+    (detail.plan?.plan?.modules && detail.plan.plan.modules.length > 0);
+  const submitted = detail.tasks.filter(
+    (t: any) => t.has_implementation,
+  ).length;
+  const groups = structured
     ? detail.plan.plan.modules
     : [{ id: "legacy", title: "工作包" }];
   const tasks = detail.tasks.filter(
@@ -71,7 +80,18 @@ export function TaskTree({ detail, title }: { detail: any; title?: string }) {
           </div>
         </div>
       </div>
-      {!leaf && (
+      {leaf && submitted > 0 && (
+        <p className="notice-subtle" aria-label="实现记录">
+          已提交实现 {submitted}/{detail.tasks.length}
+          。基础测试未通过会标为“自检未通过”，实现记录保留；完成统计按当前测试结果计算。
+        </p>
+      )}
+      {native && (
+        <p className="notice-subtle" aria-label="原生执行">
+          原生开发模式：连续开发与自测，终局批量核验与批量更新。
+        </p>
+      )}
+      {!leaf && !native && (
         <p className="notice-subtle">
           尚未建立细项清单 · {detail.tasks.length} 个工作包
         </p>
@@ -201,11 +221,15 @@ export function TestResults({
 }) {
   const [state, setState] = useState("all");
   const progress = detail.test_progress ?? { cases: [] };
+  const evidence = [
+    ...(detail.evidence ?? []),
+    ...(detail.development_evidence ?? []),
+  ];
   const layers: Record<string, string> = {
     unit: "单元测试",
     integration: "集成测试",
     e2e: "浏览器自动测试",
-    opentabs: "真实浏览器验收",
+    opentabs: "E2E（历史浏览器用例）",
   };
   return (
     <div className="test-results-container">
@@ -284,13 +308,13 @@ export function TestResults({
                         {c.evidence_id && (
                           <div className="evidence-files">
                             <span className="evidence-label">证据文件：</span>
-                            {detail.evidence
+                            {evidence
                               .find((e: any) => e.id === c.evidence_id)
                               ?.files?.map((f: any) => (
                                 <a
                                   key={f.path}
                                   className="evidence-file-link"
-                                  href={`/api/workflows/${detail.workflow.id}/evidence/${c.evidence_id}/files/${detail.evidence.find((e: any) => e.id === c.evidence_id).files.indexOf(f)}`}
+                                  href={`/api/workflows/${detail.workflow.id}/evidence/${c.evidence_id}/files/${evidence.find((e: any) => e.id === c.evidence_id).files.indexOf(f)}`}
                                 >
                                   📄 {f.path.split(/[\\/]/).at(-1)}
                                 </a>

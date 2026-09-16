@@ -19,7 +19,7 @@ describe("配置与计划合同", () => {
     expect(() =>
       ConfigSchema.parse({ models: { executor: "other" } }),
     ).toThrow();
-    expect(ConfigSchema.parse({}).scheduler.executors).toBe(3);
+    expect(ConfigSchema.parse({}).scheduler.executors).toBe(1);
   });
   it("UT-02 canonical hash is independent of object key order", () =>
     expect(objectHash({ a: 1, b: 2 })).toBe(objectHash({ b: 2, a: 1 })));

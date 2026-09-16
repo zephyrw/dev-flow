@@ -1,0 +1,42 @@
+{
+  "review_date": "2026-09-16",
+  "root": "C:/Code/system-handle",
+  "head": "e8f5dfc135d24ca4337a0888df13392595e333c8",
+  "commands": [
+    {
+      "command": "node node_modules/typescript/bin/tsc --noEmit",
+      "exit_code": 0,
+      "result": "passed"
+    },
+    {
+      "command": "node node_modules/vitest/vitest.mjs run",
+      "exit_code": 0,
+      "test_files": 38,
+      "tests": 141,
+      "duration_seconds": 144.62,
+      "output": "\n Test Files  38 passed (38)\n      Tests  141 passed (141)\n   Start at  07:45:15\n   Duration  144.62s (transform 1.96s, setup 0ms, import 23.16s, tests 250.24s, environment 8ms)\n\n"
+    },
+    {
+      "command": "PowerShell literal here-string piped to node --import tsx --input-type=module",
+      "reproduction_source": "reproduce.mjs",
+      "exit_code": 0,
+      "results": 11,
+      "result": "10 synthetic defect scenarios plus 3 existing-log event-format samples"
+    }
+  ],
+  "not_run": [
+    "production build",
+    "Playwright E2E",
+    "paid model live native smoke"
+  ],
+  "limitations": [
+    "Reproduction uses synthetic reports and injected host facts except existing log format counts.",
+    "No live business workflow was started or resumed.",
+    "No implementation files were edited and no project commit was made."
+  ],
+  "artifacts": [
+    "reproduce.mjs",
+    "reproduction.jsonl",
+    "reviewed-files.json"
+  ]
+}

@@ -1,4 +1,8 @@
-import { invalidateTaskProofs } from "../../core/src/progress.js";
+import { AgyNativeRecordSource } from "../../adapters/agy/src/native-record-source.js";
+import { AgentTelemetry } from "./agent-telemetry.js";
+import { NativeExecutionObserver } from "../../evidence/src/native-execution-observer.js";
+import { reconcileImplementationProofs } from "../../core/src/progress.js";
+import { assertMeaningfulTestFiles } from "../../core/src/test-quality.js";
 import type { OperationRequest } from "../../core/src/interactions.js";
 import {
   diagnosisOutputSchema,
@@ -25,7 +29,7 @@ import {
   requireCondition,
   FlowError,
   ReviewSchema,
-  PlanSchema,
+  resolveTaskModel,
   type Workflow,
   type Run,
   type Evidence,
@@ -55,6 +59,9 @@ import {
   agyArguments,
   observeAgy,
 } from "../../adapters/agy/src/session.js";
+import { writeAgyNativeConfiguration } from "../../adapters/agy/src/native-adapter.js";
+import { HandoffBuilder } from "../../adapters/agy/src/handoff.js";
+import { BufferedEventSink } from "../../core/src/buffered-sink.js";
 export class LocalRuntime implements Runtime {
   processes: ProcessManager;
   environments: Environments;
@@ -95,7 +102,10 @@ export class LocalRuntime implements Runtime {
         project: this.engine.project(workflow.project_id),
         snapshot,
         workspaces: this.engine.store.list("workspace", workflow.id),
-        evidence: this.engine.store.list("evidence", workflow.id),
+        evidence: [
+          ...this.engine.store.list("evidence", workflow.id),
+          ...this.engine.store.list("development_evidence", workflow.id),
+        ],
         diff: await this.engine.git.diff(snapshot),
         claims: this.engine.taskStatus(workflow.id),
         skill:
@@ -403,6 +413,7 @@ export class LocalRuntime implements Runtime {
     return current;
   }
   async execute(workflow: Workflow, run: Run, token: string) {
+    reconcileImplementationProofs(this.engine, workflow.id);
     this.assertRun(workflow.id, run.id, ["EXECUTING"]);
     if (run.deadline_at && Date.now() >= run.deadline_at) {
       throw new FlowError("TIMEOUT", "执行启动前已达到截止时间");
@@ -423,7 +434,15 @@ export class LocalRuntime implements Runtime {
       "BUILD_REQUIRED",
       "请先完成生产构建",
     );
-    writeAgyConfiguration(directory, process.execPath, bridge, hook);
+    const planRecord = this.engine.plan(workflow.id);
+    const plan = planRecord.plan;
+    const isNativeV2 = resolveTaskModel(plan) === "native-v2";
+
+    if (isNativeV2) {
+      writeAgyNativeConfiguration(directory, process.execPath, bridge);
+    } else {
+      writeAgyConfiguration(directory, process.execPath, bridge, hook);
+    }
     const projectBinding = this.engine.store.get<{ id: string }>(
       "agy_project",
       workflow.id,
@@ -435,30 +454,96 @@ export class LocalRuntime implements Runtime {
       workflow.id,
       projectBinding,
     );
-    const bundle = {
-      workflow: this.engine.get(workflow.id),
-      plan: this.engine.plan(workflow.id),
-      environment: this.engine.store.get("environment", workflow.id),
-      package_hash: run.package_hash,
-    };
-    atomicWrite(
-      join(directory, "handoff.json"),
-      JSON.stringify(bundle, null, 2),
-    );
     const conversation = this.engine.store.get<{ id: string }>(
       "conversation",
       workflow.id,
     );
-    // Full plans travel through MCP. Keeping argv small avoids Windows' 32 KiB limit.
-    const prompt = JSON.stringify({
-      workflow_id: workflow.id,
-      run_id: run.id,
-      plan_revision: workflow.plan_revision,
-      plan_hash: workflow.plan_hash,
-      package_hash: run.package_hash,
-      instruction:
-        "首先调用 devflow_execute_context，读取完整批准计划与 Skill。逐任务实施，仅使用 devflow_worker 工具。报告任务后 devflow_freeze，逐项 devflow_run_check，全部通过后 devflow_finish。遇到范围外问题报告阻塞并结束。",
-    });
+
+    if (isNativeV2) {
+      const workspaces = this.engine.store.list<Workspace>(
+        "workspace",
+        workflow.id,
+      );
+      if (!conversation?.id) {
+        const fullPkg = HandoffBuilder.buildFullHandoff({
+          workflow: this.engine.get(workflow.id),
+          plan,
+          runId: run.id,
+          packageHash: run.package_hash,
+          workspaces,
+        });
+        HandoffBuilder.writeHandoffFiles(directory, fullPkg, plan.markdown);
+      } else {
+        const issues = this.engine.store.list<any>(
+          "delivery_issue",
+          workflow.id,
+        );
+        const cursor = this.engine.store.get<{
+          plan_hash: string;
+          feedback_count: number;
+        }>("handoff_cursor", workflow.id);
+        const resumePkg = HandoffBuilder.buildResumeHandoff({
+          workflow: this.engine.get(workflow.id),
+          plan,
+          runId: run.id,
+          conversationId: conversation.id,
+          packageHash: run.package_hash,
+          workspaces,
+          deliveryIssues: issues,
+        });
+        resumePkg.feedback = resumePkg.feedback?.slice(
+          cursor?.feedback_count ?? 0,
+        );
+        resumePkg.design_changed = cursor?.plan_hash !== workflow.plan_hash;
+        if (!resumePkg.design_changed) {
+          resumePkg.index = {
+            ...resumePkg.index,
+            modules: [],
+            tasks: [],
+            acceptance_items: [],
+          };
+          resumePkg.instructions +=
+            " 设计和索引未变，沿用前轮完整工作包；本轮仅提供新增反馈和未解决事项。";
+        }
+        HandoffBuilder.writeHandoffFiles(
+          directory,
+          resumePkg,
+          resumePkg.design_changed ? plan.markdown : undefined,
+        );
+      }
+    } else {
+      const bundle = {
+        workflow: this.engine.get(workflow.id),
+        plan: planRecord,
+        environment: this.engine.store.get("environment", workflow.id),
+        package_hash: run.package_hash,
+      };
+      atomicWrite(
+        join(directory, "handoff.json"),
+        JSON.stringify(bundle, null, 2),
+      );
+    }
+
+    const prompt = isNativeV2
+      ? JSON.stringify({
+          workflow_id: workflow.id,
+          run_id: run.id,
+          plan_revision: workflow.plan_revision,
+          plan_hash: workflow.plan_hash,
+          package_hash: run.package_hash,
+          instruction: conversation?.id
+            ? "会话恢复：请查看 handoff.json 中的反馈与核验 issues，针对性地使用原生工具修复和自测，然后提交交付清单。"
+            : "原生开发模式：请先阅读工作包 HANDOFF.md 与 handoff.json。使用客户端原生工具（编辑、终端、运行测试）连续完成实现与自测。所有必需验收场景自测通过后，通过 devflow_deliver 或交付清单文件完成终局交付。",
+        })
+      : JSON.stringify({
+          workflow_id: workflow.id,
+          run_id: run.id,
+          plan_revision: workflow.plan_revision,
+          plan_hash: workflow.plan_hash,
+          package_hash: run.package_hash,
+          instruction:
+            "首先调用 devflow_execute_context，读取完整批准计划与 Skill。逐任务实施，仅使用 devflow_worker 工具。报告任务后 devflow_freeze，逐项 devflow_run_check，全部通过后 devflow_finish。遇到范围外问题报告阻塞并结束。",
+        });
     this.assertRun(workflow.id, run.id, ["EXECUTING"]);
     const remainingMs = run.deadline_at
       ? Math.max(0, run.deadline_at - Date.now())
@@ -480,6 +565,9 @@ export class LocalRuntime implements Runtime {
         ),
         "--add-dir",
         directory,
+        ...this.engine.store
+          .list<Workspace>("workspace", workflow.id)
+          .flatMap((ws) => ["--add-dir", ws.root]),
       ],
       cwd: directory,
       env: {
@@ -491,14 +579,37 @@ export class LocalRuntime implements Runtime {
       timeout_ms: remainingMs,
       deadline_at: run.deadline_at,
     });
+    const telemetry = new AgentTelemetry(
+      this.engine.store,
+      workflow.id,
+      workflow.project_id,
+      run.id,
+    );
+    const nativeRecords = new AgyNativeRecordSource(homedir());
+    const nativeObserver = isNativeV2
+      ? new NativeExecutionObserver({
+          workflow_id: workflow.id,
+          run_id: run.id,
+          plan_hash: workflow.plan_hash!,
+          workspaces: this.engine.store.list<Workspace>(
+            "workspace",
+            workflow.id,
+          ),
+          reports: this.engine.project(workflow.project_id).commands,
+          readHostStep: (conversation, index) =>
+            nativeRecords.read(conversation, index),
+          save: (fact) =>
+            this.engine.store.put(
+              "native_execution",
+              run.id + ":" + hash(fact.tool_call_id),
+              run.id,
+              fact,
+            ),
+        })
+      : undefined;
     const result = await observeAgy(proc, {
       model: this.engine.config.models.executor,
       conversation: conversation?.id,
-      previousErrors: this.engine.store
-        .recentEvents(workflow.id, 1000)
-        .filter(e => e.run_id !== run.id && (e.payload as any)?.event === "result")
-        .map(e => (e.payload as any)?.result?.error)
-        .filter((error): error is string => typeof error === "string"),
       cwd: directory,
       log: join(directory, run.id + ".jsonl"),
       idle_ms: this.engine.config.timeouts.idle_minutes * 60000,
@@ -511,13 +622,8 @@ export class LocalRuntime implements Runtime {
           this.engine.store.put("conversation", workflow.id, workflow.id, {
             id: event.conversation_id,
           });
-        this.engine.store.event(
-          workflow.id,
-          workflow.project_id,
-          "AgentEvent",
-          publicEvent(event),
-          run.id,
-        );
+        nativeObserver?.accept(event);
+        telemetry.accept(event);
       },
       onDiagnostic: (text) =>
         this.engine.store.event(
@@ -527,10 +633,15 @@ export class LocalRuntime implements Runtime {
           { text },
           run.id,
         ),
-    });
+    }).finally(() => telemetry.flush());
     this.engine.store.put("conversation", workflow.id, workflow.id, {
       id: result.conversation,
     });
+    if (isNativeV2)
+      this.engine.store.put("handoff_cursor", workflow.id, workflow.id, {
+        plan_hash: workflow.plan_hash,
+        feedback_count: this.engine.get(workflow.id).feedback.length,
+      });
   }
   async prepareVerification(workflow: Workflow, principal: Principal) {
     const run = principal.run_id!;
@@ -648,6 +759,19 @@ export class LocalRuntime implements Runtime {
       .plan(workflow.id)
       .plan.tests.find((t) => t.id === testId);
     requireCondition(test, "TEST_MISSING", "未知测试");
+    const checkPlan = this.engine.plan(workflow.id).plan;
+    for (const ws of test.layer === "e2e"
+      ? this.engine.store.list<Workspace>("workspace", workflow.id)
+      : []) {
+      const paths = checkPlan.tasks
+        .filter(
+          (t) =>
+            test.task_ids.includes(t.id) &&
+            (!t.repo_id || t.repo_id === ws.repo_id),
+        )
+        .flatMap((t) => t.paths);
+      assertMeaningfulTestFiles(ws.root, [...new Set(paths)]);
+    }
     // A workflow shares its frozen phase and may share command report paths.
     // Different workflows remain independent users of the global test slots.
     const unique = workflow.id;
@@ -893,14 +1017,8 @@ export class LocalRuntime implements Runtime {
         principal.run_id,
       );
       if (evidence.status === "failed") {
-        if (evidence.cases?.some((c) => c.status === "failed")) {
-          const plan = this.engine.plan(workflow.id).plan;
-          const affected = plan.tasks.filter((t) =>
-            test.task_ids.includes(t.id),
-          );
-          for (const t of affected)
-            invalidateTaskProofs(this.engine, workflow.id, t.paths, t.repo_id);
-        }
+        // A failed assertion changes validation, not the recorded source bytes.
+        // Only a real source change invalidates an implementation proof.
         if (!development) {
           this.engine.invalidate(
             workflow.id,
@@ -1035,7 +1153,7 @@ export class LocalRuntime implements Runtime {
       acceptance: this.engine.store.get("acceptance", workflow.id) ?? null,
       project: this.engine.project(workflow.project_id),
       claims: this.engine.taskStatus(workflow.id),
-      evidence: this.engine.store.list("evidence", workflow.id),
+      evidence: this.engine.getEvidence(workflow.id),
       skill: readFileSync(
         resolve("packages/skills/devflow-review/SKILL.md"),
         "utf8",
@@ -1060,7 +1178,7 @@ export class LocalRuntime implements Runtime {
       snapshot_id: snapshot.id,
       plan: this.engine.plan(workflow.id).plan,
       diff: await this.engine.git.diff(snapshot),
-      evidence: this.engine.store.list("evidence", workflow.id),
+      evidence: this.engine.getEvidence(workflow.id),
       workspaces: this.engine.store
         .list<Workspace>("workspace", workflow.id)
         .map((w) => ({ repo_id: w.repo_id, path: w.root })),
@@ -1155,6 +1273,14 @@ export class LocalRuntime implements Runtime {
     await this.preparing.get(run)?.catch(() => {});
     await this.browser.stop(run);
     await this.processes.stop(run);
+    const record = this.engine.store.get<Run>("run", run);
+    if (
+      record &&
+      !this.engine.config.retain_services_on_stop &&
+      resolveTaskModel(this.engine.plan(record.workflow_id).plan) ===
+        "native-v2"
+    )
+      await this.environments.stop(record.workflow_id);
     for (const p of this.engine.store.list<{ id: string }>(
       "check_process",
       run,

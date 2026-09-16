@@ -38,7 +38,7 @@ const config = loadConfig(process.env.DEVFLOW_CONFIG);
 async function main() {
   if (command === "help") {
     console.log(
-      `DevFlow 本地工作流\n\n  init                         写入示例配置（不覆盖）\n  doctor                       检查运行环境，不调用模型\n  pair                         旧命令：提示直接打开工作台\n  planner-token                生成 Codex MCP 专用令牌和配置片段\n  project <config.json>        导入受信任项目配置\n  browser-recipe <json>        导入固定 OpenTabs 场景和断言\n  skills <destination>         安装 DevFlow Skill（不覆盖已有目录）\n  backup <directory>           一致性数据库与证据备份\n  verify-backup <directory>    校验备份文件内容哈希\n  recover <workflow-id>        核实退出后恢复已批准工作流排队\n  retry-commit <workflow-id>   重试同一快照的部分提交\n\n服务：npm run build && npm start\n配置：DEVFLOW_CONFIG 环境变量指向 YAML。开发时不启动任何模型。`,
+      `DevFlow 本地工作流\n\n  init                         写入示例配置（不覆盖）\n  doctor                       检查运行环境，不调用模型\n  pair                         旧命令：提示直接打开工作台\n  planner-token                生成 Codex MCP 专用令牌和配置片段\n  project <config.json>        导入受信任项目配置\n  browser-recipe <json>        导入固定 OpenTabs 场景和断言\n  skills <destination>         安装 DevFlow Skill（不覆盖已有目录）\n  backup <directory>           一致性数据库与证据备份\n  verify-backup <directory>    校验备份文件内容哈希\n  recover <workflow-id>        核实退出后恢复已批准工作流排队\n  retry-commit <workflow-id>   重试同一快照的部分提交\n\n服务：pnpm run build && pnpm start\n配置：DEVFLOW_CONFIG 环境变量指向 YAML。开发时不启动任何模型。`,
     );
     console.log(
       "\n  schema <kind>                输出 config/project/plan/review/browser-recipe Schema\n  validate-plan <json>         校验计划结构、任务关系及 Mermaid\n  restore <backup> <storage>   恢复到原始且不存在的状态目录\n  archive-logs                压缩过期日志并验证完整性",
@@ -237,7 +237,7 @@ async function main() {
       requireCondition(args[1], "ARGUMENT", "缺少工作流编号");
       reconcileProcesses(engine, args[1]);
       console.log(JSON.stringify(await engine.retryCommit(args[1]), null, 2));
-    } else throw new Error("未知命令。运行 npm run cli -- help");
+    } else throw new Error("未知命令。运行 pnpm run cli help");
   } finally {
     store.close();
   }

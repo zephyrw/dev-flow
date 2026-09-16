@@ -174,6 +174,7 @@ export function readableLogs(events: any[], workflow: string): LogEntry[] {
       ResourceWaiting: "等待共享资源",
       ModelRetryScheduled: "等待模型额度恢复",
       ModelRetryStarted: "额度恢复后继续执行",
+      ImplementationReconciled: "已有实现已核对",
     };
     if (lifecycle[e.type]) {
       rows.push({

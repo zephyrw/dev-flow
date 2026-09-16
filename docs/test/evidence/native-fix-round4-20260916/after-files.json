@@ -1,0 +1,122 @@
+[
+  {
+    "path": "packages/workspace/src/fingerprint.ts",
+    "sha256": "02445cb3e7ac111328afae2f6b6195d25e14c8fe2a45c063d9c84d3653683667"
+  },
+  {
+    "path": "packages/mcp/src/tools.ts",
+    "sha256": "5ff5bb89a74c637584a9d0d85e2fff65d62c4f9a8951597ce7016203e069c9a3"
+  },
+  {
+    "path": "packages/contracts/src/index.ts",
+    "sha256": "57c53fdc94fc276b79ef9eaf92835e9a168606b287ece9acd0b044d9e1115e38"
+  },
+  {
+    "path": "packages/contracts/src/config.ts",
+    "sha256": "b5b87c51a82ca2b58fed9f68aa77ed11fd6a69c10628f93474c3e0d6659a4d36"
+  },
+  {
+    "path": "tests/unit/native-devflow.test.ts",
+    "sha256": "e25f2a9fd8e07879b05a2c866d764b7982415a1a6a149a1ad992c180d1353740"
+  },
+  {
+    "path": "tests/unit/contracts.test.ts",
+    "sha256": "8068c1bd18b4cd5d6b2acaf23da486101884aad2cff2262eeba1a6537e0df4d3"
+  },
+  {
+    "path": "tests/integration/native-round3-regression.test.ts",
+    "sha256": "5f13c68dbeeae4bad34fc013478ee3021e0226e28c393ec48fd72d39e9d2ec7c"
+  },
+  {
+    "path": "tests/integration/native-review-regression.test.ts",
+    "sha256": "97d89a42ecd4377b33276d965df4bcf41ef1f6e441bd4c9417003264e24293ba"
+  },
+  {
+    "path": "tests/integration/native-rereview-regression.test.ts",
+    "sha256": "e96821c6052855753264cc3bc12566510ec1c4777c03a653cbb428b9a2f9462e"
+  },
+  {
+    "path": "tests/integration/native-delivery.test.ts",
+    "sha256": "07d50dd795a6bfb481b4dc5de6202a35a8bde4d3cd32d1a7e593d57e3be46d36"
+  },
+  {
+    "path": "tests/integration/environments.test.ts",
+    "sha256": "6c6cf373def559b8b7f1a8daefa19e825d284b8bd4d41d1f3fbe4478b16205af"
+  },
+  {
+    "path": "packages/core/src/engine.ts",
+    "sha256": "e1643aaf7f8362f65c2f905d685ffad9559a33e511b092641dd456a6d920bf52"
+  },
+  {
+    "path": "packages/core/src/buffered-sink.ts",
+    "sha256": "07b6023e0eb5dbe95f276ae82ac648688dd19c50fc196dbb44d9c7f75d42f92f"
+  },
+  {
+    "path": "packages/core/src/util.ts",
+    "sha256": "b0585feb57a41518e6ed4368d5e37aeeed64910b9dc5a9138f962e0bf97a1104"
+  },
+  {
+    "path": "packages/evidence/src/validator.ts",
+    "sha256": "08fbca8c9874bc5f4d04666cf3def9a857157bcad6c5bafcfddbb9ab8b551981"
+  },
+  {
+    "path": "packages/evidence/src/native-run-records.ts",
+    "sha256": "d0c53b4508914ddffd3147d00bcc148b18b53f23ea7857f05bdfe95a0d39f767"
+  },
+  {
+    "path": "packages/evidence/src/delivery-importer.ts",
+    "sha256": "1561a7a978e1b4956d5a351a7394b02e055fa945c9a59a070db6836dd4d39f20"
+  },
+  {
+    "path": "packages/adapters/agy/src/session.ts",
+    "sha256": "a12766e0b2b4eabc8f721ea4c34e0f602f6f7be2de098799d1b1a39c787079d3"
+  },
+  {
+    "path": "packages/adapters/agy/src/handoff.ts",
+    "sha256": "12c9cacc18c1b5b98ccc79239c500e55e1598eb0c4952882583b2c66ca8359bb"
+  },
+  {
+    "path": "packages/process/src/manager.ts",
+    "sha256": "b06db06772e7f4e01d3340d2a9f777565bdb426df1bcff3e6d2b0202ebd252a8"
+  },
+  {
+    "path": "packages/runtime/src/runtime.ts",
+    "sha256": "3800446fc56a0201c024277db48ea585e927ed08f82219d8783636d68aa465cd"
+  },
+  {
+    "path": "packages/adapters/agy/src/native-record-source.ts",
+    "sha256": "62d7a2808e96f721620d3bdea3193a425ee5ca9fcceb4afbf0cf708ef1eb90f6"
+  },
+  {
+    "path": "packages/evidence/src/native-execution-observer.ts",
+    "sha256": "0f0ab4387614464c682b77047b3f3b5ab2d5fdf8216980f7e961b2a2e80f8347"
+  },
+  {
+    "path": "packages/evidence/src/command-match.ts",
+    "sha256": "8766615316958a721754fb75b813e5a404527d6b9bbee8d8ccfc2461f22a52c1"
+  },
+  {
+    "path": "packages/runtime/src/agent-telemetry.ts",
+    "sha256": "18f671d52c756eb08467695bf1b9796ff185e4757dbcf88d52ea9a23f77f79bb"
+  },
+  {
+    "path": "tests/native-fixture.ts",
+    "sha256": "707c4e6f8d016d5bcb6d1e7cae3ba513964ba3aa11956b1fdfa2a3a130825962"
+  },
+  {
+    "path": "tests/unit/native-safety.test.ts",
+    "sha256": "570708978b0cdfa5399eef334fdafa89acd104d16f43e88acff78cf9784e209d"
+  },
+  {
+    "path": "tests/unit/native-record-source.test.ts",
+    "sha256": "106d17b526b2f15557f49a25eae00a50e6f8a61a4888f8d066469bfb7ac27b7f"
+  },
+  {
+    "path": "tests/live/native-receipt-smoke.ts",
+    "sha256": "7c7172122fa370c2bf427fff6daf53070ea0842586fca26a963e99bc84241d61"
+  },
+  {
+    "path": "packages/skills/devflow-execute/SKILL.md",
+    "sha256": "9ec732d833eeaf5f7e51851472f260e296167849a2f0e4bd1c22bb7a3cd4dc38"
+  }
+]

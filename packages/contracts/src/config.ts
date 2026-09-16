@@ -14,6 +14,7 @@ export const ConfigSchema = z
       })
       .strict()
       .prefault({}),
+    retain_services_on_stop: z.boolean().default(false),
     storage_root: z.string().default(".devflow"),
     workspace_root: z.string().default(".devflow/worktrees"),
     models: z
@@ -31,10 +32,10 @@ export const ConfigSchema = z
       .prefault({}),
     scheduler: z
       .object({
-        executors: positive.max(16).default(3),
+        executors: positive.max(16).default(1),
         reviewers: positive.max(4).default(1),
-        heavy_tests: positive.max(8).default(2),
-        live_environments: positive.max(16).default(6),
+        heavy_tests: positive.max(8).default(1),
+        live_environments: positive.max(16).default(1),
         aging_minutes: positive.default(10),
       })
       .strict()

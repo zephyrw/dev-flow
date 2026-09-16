@@ -1,0 +1,59 @@
+{
+  "at": "2026-09-15T06:57:07.672Z",
+  "replays": [
+    {
+      "workflow": "wf-9fe59b2c-e9cb-4ddd-aa9e-07dd05d3f2e3",
+      "run": "run-3bd66e2f-b117-45ee-8f2a-04b1073da42d",
+      "event_count": 2533,
+      "user": {
+        "at": "2026-09-15T05:57:38.686Z",
+        "index": 3469,
+        "state": "DONE"
+      },
+      "tool": {
+        "at": "2026-09-15T06:21:57.098Z",
+        "index": 3708,
+        "state": "DONE"
+      },
+      "response": {
+        "at": "2026-09-15T06:22:04.943Z",
+        "index": 3709,
+        "state": "DONE"
+      },
+      "footer": {
+        "status": "ERROR",
+        "error": "API error (attempt 6): RESOURCE_EXHAUSTED (code 429): Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 1h36m57s."
+      },
+      "ignores_stale_footer_without_error_history": true
+    },
+    {
+      "workflow": "wf-508be4f4-4c5a-453c-9ac6-c6dafe717a08",
+      "run": "run-8255a2a5-c824-4e6b-9330-afe8ff59fb0d",
+      "event_count": 185,
+      "user": {
+        "at": "2026-09-15T05:30:46.725Z",
+        "index": 2598,
+        "state": "DONE"
+      },
+      "tool": {
+        "at": "2026-09-15T05:31:26.701Z",
+        "index": 2603,
+        "state": "ERROR"
+      },
+      "response": {
+        "at": "2026-09-15T05:31:36.168Z",
+        "index": 2604,
+        "state": "DONE"
+      },
+      "footer": {
+        "status": "ERROR",
+        "error": "Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 2h49m37s."
+      },
+      "ignores_stale_footer_without_error_history": true,
+      "current_tool_failure": {
+        "code": "SCOPE_VIOLATION",
+        "message": "发现范围外修改 .reports/unit.json"
+      }
+    }
+  ]
+}

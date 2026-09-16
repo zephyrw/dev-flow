@@ -6,6 +6,7 @@ import type { ManagedProcess } from "../../../process/src/manager.js";
 import { requireCondition, FlowError } from "../../../contracts/src/index.js";
 import { classifyFailure } from "../../../runtime/src/errors.js";
 import { CurrentTurn } from "./current-turn.js";
+import { BufferedEventSink } from "../../../core/src/buffered-sink.js";
 export function writeAgyConfiguration(
   directory: string,
   node: string,
@@ -123,10 +124,27 @@ export async function observeAgy(
     }
     options.onEvent(event);
   });
+  const logSink = new BufferedEventSink({
+    maxBytes: 65536,
+    flushIntervalMs: 500,
+    onFlush: (chunk) => {
+      appendFileSync(options.log, chunk);
+    },
+  });
+  let outputDrain = Promise.resolve();
   proc.on("stdout", (b: Buffer) => {
     activity();
-    appendFileSync(options.log, b);
     try {
+      proc.pauseOutput?.();
+      outputDrain = outputDrain
+        .then(() => logSink.writeAsync(b))
+        .then(
+          () => proc.resumeOutput?.(),
+          (error) => {
+            failure = error;
+            void proc.stop();
+          },
+        );
       lines.push(b);
     } catch (e) {
       failure = e;
@@ -144,6 +162,8 @@ export async function observeAgy(
     if (idleTimer) clearTimeout(idleTimer);
   });
   lines.finish();
+  await outputDrain;
+  await logSink.close();
   if (failure) throw failure;
   const reason = exit.termination_reason ?? proc.termination_reason;
   if (reason === "timeout") {

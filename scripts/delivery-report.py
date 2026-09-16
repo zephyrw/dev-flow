@@ -16,7 +16,7 @@ out.mkdir(parents=True, exist_ok=True)
 copies = {
  '.cache/test-report.json':'test-report.json',
  '.cache/e2e-report.json':'e2e-report.json',
- '.cache/npm-audit.json':'npm-audit.json',
+ '.cache/pnpm-audit.json':'pnpm-audit.json',
  '.cache/doctor.json':'doctor.json',
  '.cache/installed-mcp-check.json':'installed-mcp-check.json',
  '.cache/installed-config-check.json':'installed-config-check.json',
@@ -51,7 +51,7 @@ for directory in ['apps','packages','host','scripts','tests','examples','config'
     for file in (root/directory).rglob('*'):
         if file.is_file() and not any(p in {'bin','obj','__pycache__'} for p in file.relative_to(root).parts):
             files.append({'path':file.relative_to(root).as_posix(),'sha256':digest(file)})
-for name in ['package.json','package-lock.json','tsconfig.json','tsconfig.build.json','vitest.config.ts','playwright.config.ts','.gitignore','.gitattributes','.npmrc']:
+for name in ['package.json','pnpm-lock.yaml','pnpm-workspace.yaml','tsconfig.json','tsconfig.build.json','vitest.config.ts','playwright.config.ts','.gitignore','.gitattributes','.npmrc']:
     files.append({'path':name,'sha256':digest(root/name)})
 files.sort(key=lambda f:f['path'])
 report=json.loads((root/'.cache/test-report.json').read_text(encoding='utf-8-sig'))
@@ -131,7 +131,7 @@ for line in text.splitlines():
     if len(cols)>=8 and re.fullmatch(r'(UT|IT|E2E|BROWSER|HUMAN)-\d+',cols[2]):
         key=cols[2];line=f"| [{'x' if key in full else ' '}] | {key} | {cols[3]} | {cols[4]} | {cols[5]} | {state(key)} |"
     if line.startswith('- 当前状态：') and current:line=f'- 当前状态：{state(current)}；证据：[验证清单](验证清单.json)、[实施与联调报告](实施与联调报告.md)。'
-    if line.startswith('测试编排命令由 T-02/T-21 实现后固定为'):line='测试脚本已实现：npm run test:unit、npm run test:integration、npm run test:e2e；真实调用由 tests/live/ 中的独立测试入口执行。原始报告已复制到 docs/test/evidence 以便随交付保存。'
+    if line.startswith('测试编排命令由 T-02/T-21 实现后固定为'):line='测试脚本已实现：pnpm run test:unit、pnpm run test:integration、pnpm run test:e2e；真实调用由 tests/live/ 中的独立测试入口执行。原始报告已复制到 docs/test/evidence 以便随交付保存。'
     lines.append(line)
 testfile.write_text('\n'.join(lines)+'\n',encoding='utf-8')
 print(json.dumps({'tests':manifest['tests'],'e2e':manifest['e2e'],'source_sha256':manifest['source_sha256']},ensure_ascii=False))

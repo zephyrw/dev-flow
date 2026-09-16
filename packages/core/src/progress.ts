@@ -10,6 +10,7 @@ import {
 } from "../../contracts/src/index.js";
 import { safePath } from "../../workspace/src/files.js";
 import { hash, now } from "./util.js";
+import { assertMeaningfulTestFiles } from "./test-quality.js";
 
 export function latestEvidence(
   evidence: Evidence[],
@@ -35,6 +36,20 @@ export function currentEvidence(e: Evidence | undefined, w: Workflow) {
     (!e.plan_revision || e.plan_revision === w.plan_revision)
   );
 }
+/** Progress includes checks run during development. Final delivery still uses
+ * currentEvidence and verifies every report against the frozen snapshot. */
+export function progressEvidence(e: Evidence | undefined, w: Workflow) {
+  return (
+    !!e &&
+    !!e.snapshot_id &&
+    e.status !== "stale" &&
+    (e.phase === "development" ||
+      !w.snapshot_id ||
+      e.snapshot_id === w.snapshot_id) &&
+    (!e.plan_revision || e.plan_revision === w.plan_revision) &&
+    (e.layer === "unit" || e.environment_revision === w.environment_revision)
+  );
+}
 export function testProgress(
   plan: Plan | null,
   evidence: Evidence[],
@@ -42,7 +57,7 @@ export function testProgress(
 ) {
   const cases = (plan?.tests ?? []).flatMap((test) => {
     const e = latestEvidence(evidence, test.id, w),
-      valid = currentEvidence(e, w);
+      valid = progressEvidence(e, w);
     return test.expected_case_ids.map((id) => {
       const actual = e?.cases?.find((c) => c.id === id);
       const status = !e
@@ -59,6 +74,8 @@ export function testProgress(
         layer: test.layer,
         task_ids: test.task_ids,
         status,
+        last_status: actual?.status,
+        phase: e?.phase,
         evidence_id: e?.id,
       };
     });
@@ -68,6 +85,9 @@ export function testProgress(
     passed: cases.filter((c) => c.status === "passed").length,
     failed: cases.filter((c) => c.status === "failed").length,
     stale: cases.filter((c) => c.status === "stale").length,
+    previously_passed: cases.filter(
+      (c) => c.status === "stale" && c.last_status === "passed",
+    ).length,
     cases,
   };
 }
@@ -233,6 +253,7 @@ export function recordTaskProof(
   taskId: string,
 ) {
   const { w, task, workspace } = taskInfo(engine, key, taskId);
+  assertMeaningfulTestFiles(workspace.root, task.paths);
   const active = engine.store.get<any>("task_activity", key);
   requireCondition(
     active?.task_id === taskId && active?.run_id === principal.run_id,
@@ -252,6 +273,16 @@ export function recordTaskProof(
       `细项完成检查未通过：${check.path}`,
     );
   }
+  const prior = engine.store.get<any>(
+    "task_proof",
+    `${key}-${w.plan_revision}-${taskId}`,
+  );
+  if (
+    prior &&
+    !prior.stale &&
+    task.paths.every((p) => prior.hashes[p] === hashes[p])
+  )
+    return false;
   const proof = {
     task_id: taskId,
     hashes,
@@ -273,6 +304,59 @@ export function recordTaskProof(
     { task_id: taskId, title: task.title, module_id: task.module_id },
     principal.run_id,
   );
+  return true;
+}
+
+/** Recover legacy records invalidated by a shared test failure. Exact source
+ * hashes and current completion checks must still match; no test is promoted. */
+export function reconcileImplementationProofs(engine: Engine, key: string) {
+  const w = engine.get(key),
+    plan = engine.plan(key).plan;
+  if (plan.task_model !== "leaf-v1") return;
+  const workspaces = engine.store.list<Workspace>("workspace", key);
+  const contents = new Map<string, Buffer | null>();
+  const read = (root: string, path: string) => {
+    const file = safePath(root, path);
+    if (!contents.has(file))
+      contents.set(file, existsSync(file) ? readFileSync(file) : null);
+    return contents.get(file)!;
+  };
+  const restored: string[] = [];
+  for (const task of plan.tasks) {
+    const id = `${key}-${w.plan_revision}-${task.id}`;
+    const proof = engine.store.get<any>("task_proof", id);
+    const ws = workspaces.find(
+      (ws) => !task.repo_id || ws.repo_id === task.repo_id,
+    );
+    if (!proof?.stale || !ws) continue;
+    if (
+      !task.paths.every((path) => {
+        const bytes = read(ws.root, path);
+        return proof.hashes[path] === (bytes === null ? null : hash(bytes));
+      }) ||
+      !task.completion_checks?.every((check) =>
+        read(ws.root, check.path)?.toString("utf8").includes(check.contains),
+      )
+    )
+      continue;
+    engine.store.put("task_proof", id, key, {
+      ...proof,
+      stale: false,
+      stale_reason: undefined,
+    });
+    restored.push(task.id);
+  }
+  if (restored.length)
+    engine.store.event(
+      key,
+      w.project_id,
+      "ImplementationReconciled",
+      {
+        task_ids: restored,
+        message: `已核对并保留 ${restored.length} 项未变化的实现，测试状态单独记录。`,
+      },
+      w.run_id,
+    );
 }
 export function invalidateTaskProofs(
   engine: Engine,

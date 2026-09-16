@@ -23,6 +23,8 @@ export interface ManagedProcess extends EventEmitter {
     termination_reason?: "timeout" | "manual";
   }>;
   stop: () => Promise<void>;
+  pauseOutput?: () => void;
+  resumeOutput?: () => void;
   termination_reason?: "timeout" | "manual";
 }
 export class ProcessManager {
@@ -103,6 +105,12 @@ export class ProcessManager {
       if (spec.stdin) child.stdin.end(spec.stdin);
       else child.stdin.end();
     }
+    events.pauseOutput = () => {
+      child.stdout.pause();
+    };
+    events.resumeOutput = () => {
+      child.stdout.resume();
+    };
     let settled = false;
     let termination_reason: "timeout" | "manual" | undefined;
     let timer: NodeJS.Timeout | undefined;

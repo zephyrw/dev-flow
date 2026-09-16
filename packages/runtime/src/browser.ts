@@ -6,7 +6,14 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Engine } from "../../core/src/engine.js";
 import { requireCondition } from "../../contracts/src/index.js";
-import { atomicWrite, hash, id, now, objectHash } from "../../core/src/util.js";
+import {
+  atomicWrite,
+  hash,
+  id,
+  now,
+  objectHash,
+  redact,
+} from "../../core/src/util.js";
 import {
   BrowserRecipeSchema,
   assertResult,
@@ -271,7 +278,7 @@ export class BrowserGateway {
         requireCondition(
           !result.isError,
           "BROWSER_TOOL_FAILED",
-          "OpenTabs 返回失败",
+          `浏览器操作 ${name} 失败：${redact(JSON.stringify(result.content ?? result)).slice(0, 3000)}`,
         );
         return toolData(result);
       };
