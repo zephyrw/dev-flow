@@ -8,6 +8,7 @@ import { objectHash, hash, atomicWrite } from "../../packages/core/src/util.js";
 import { git } from "../../packages/git/src/git.js";
 import { buildServer } from "../../apps/api/src/server.js";
 import type { Workflow, Run } from "../../packages/contracts/src/index.js";
+import { seedSourceChange } from "../fixtures/source-change.js";
 const s = setup();
 s.config.server.port = 14811;
 s.config.server.human_origin = "http://localhost:14811";
@@ -78,7 +79,8 @@ engine.runtime = {
   plan: (w, r) => runtime.plan(w, r),
   aside: (w, r, q) => runtime.aside(w, r, q),
   async execute(flow: Workflow, run: Run, token: string) {
-    if (flow.project_id === "native") return runtime.execute(flow, run, token);
+    if (engine.plan(flow.id).plan.task_model === "native-v2")
+      return runtime.execute(flow, run, token);
     const principal = engine.auth.verify(token);
     for (let i = 0; i < 10; i++) {
       if (stopped.has(run.id)) return;
@@ -110,7 +112,8 @@ engine.runtime = {
     await runtime.check(engine.get(flow.id), "UT01", principal);
   },
   async review(flow: Workflow, run: Run) {
-    if (flow.project_id === "native") return runtime.review(flow, run);
+    if (engine.plan(flow.id).plan.task_model === "native-v2")
+      return runtime.review(flow, run);
     return {
       schema_version: 1,
       review_request_id: flow.review_request_id,
@@ -150,9 +153,16 @@ atomicWrite(
     nativeRepo: nativeRepo.repo,
   }),
 );
-const app = await buildServer(engine);
+const app = await buildServer(engine, {
+  webRoot: process.env.DEVFLOW_E2E_WEB_ROOT,
+});
 const dispatchTimer = setInterval(() => void engine.dispatch(), 1000);
 dispatchTimer.unref();
+app.post("/__fixture/source-change", async (request, reply) => {
+  if ((request.body as { token?: string })?.token !== shutdownToken)
+    return reply.code(403).send({ ok: false });
+  return seedSourceChange(engine, s.root);
+});
 app.post("/__fixture/shutdown", async (request, reply) => {
   if ((request.body as { token?: string })?.token !== shutdownToken)
     return reply.code(403).send({ ok: false });

@@ -1,0 +1,64 @@
+.plan-review-dialog {
+  width: min(760px, calc(100vw - 32px));
+  max-height: 88vh;
+  overflow-y: auto;
+}
+.plan-review-dialog textarea {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  margin: 8px 0 12px;
+  resize: vertical;
+}
+.plan-review-dialog .actions {
+  justify-content: flex-end;
+}
+.plan-question-history {
+  max-height: 40vh;
+  overflow-y: auto;
+  margin: 16px 0;
+}
+.plan-question-history article {
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin-bottom: 12px;
+}
+.plan-question-history h3 {
+  font-size: 13px;
+  margin: 0 0 6px;
+}
+.plan-question-history p {
+  margin: 6px 0 12px;
+}
+.plan-question-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.plan-question-answer {
+  overflow-wrap: anywhere;
+}
+.plan-question-answer pre {
+  overflow: auto;
+}
+.source-change-repo,
+.source-change-choice {
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin: 12px 0;
+}
+.source-change-repo pre {
+  max-height: 180px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.source-change-repo .muted {
+  overflow-wrap: anywhere;
+}
+.source-change-repo h3,
+.source-change-choice h3 {
+  margin: 0 0 8px;
+  font-size: 15px;
+}

@@ -14,6 +14,41 @@ import { buildServer } from "../../apps/api/src/server.js";
 import { WorkspaceObserver } from "../../packages/runtime/src/workspace-observer.js";
 import { reconcileProcesses } from "../../packages/runtime/src/recovery.js";
 
+it.each([
+  "NATIVE_PERMISSION_DENIED",
+  "AUTHORIZATION_ROUTING_REQUIRED",
+  "POLICY_FAILED",
+])(
+  "permission failure %s blocks without enqueuing repair or inventing authorization",
+  async (code) => {
+    const s = await prepared();
+    const diagnose = vi.fn();
+    s.engine.runtime = { diagnose } as any;
+    try {
+      const error = new FlowError(
+        code,
+        "replace_file_content: C:/work/app.txt 被拒绝",
+      );
+      expect(
+        await repairFailure(s.engine, s.workflow.id, error, s.principal.run_id),
+      ).toBeNull();
+      s.engine.block(s.workflow.id, error);
+      expect(s.engine.get(s.workflow.id)).toMatchObject({
+        state: "BLOCKED",
+        blocker: { code, message: error.message },
+      });
+      expect(s.store.get("repair_state", s.workflow.id)).toBeUndefined();
+      expect(s.store.list("operation_request", s.workflow.id)).toEqual([]);
+      expect(
+        s.store.events(s.workflow.id).some((e) => e.type === "RepairScheduled"),
+      ).toBe(false);
+      expect(diagnose).not.toHaveBeenCalled();
+    } finally {
+      s.store.close();
+    }
+  },
+);
+
 it("operation authorization binds exact arguments and plan, survives restart, and executes at most once", async () => {
   const s = await prepared();
   const runtime = new LocalRuntime(s.engine);

@@ -28,14 +28,16 @@ if (!file) throw new Error("Missing original handoff: prompt was " + JSON.string
 const m = JSON.parse(fs.readFileSync(file, "utf8")),
   stage = process.env.DEVFLOW_STAGE;
 const emit = (o) => process.stdout.write(JSON.stringify(o) + "\n");
+const resumeFlag = ["resume", "--resume", "--conversation"].find(flag => args.includes(flag));
 emit({
   type: "thread.started",
-  thread_id: "fixture-" + process.env.DEVFLOW_WORKFLOW_ID,
+  thread_id: resumeFlag ? args[args.indexOf(resumeFlag) + 1] : "fixture-" + process.env.DEVFLOW_RUN_ID,
 });
 let result;
 if (stage === "planning") {
   const markdown =
-    "# 正式计划\n\n将 app.txt 修改为 after，保留换行及其余文件。使用真实 Node 子进程验证输出，并回归未修改文件。\n";
+    "# 正式计划\n\n将 app.txt 修改为 after，保留换行及其余文件。使用真实 Node 子进程验证输出，并回归未修改文件。\n" +
+    (m.current_plan ? "\n## 修改说明\n" + m.feedback.map(f => f.text).join("\n") + "\n" : "");
   result = {
     markdown,
     plan: {
@@ -76,6 +78,10 @@ if (stage === "planning") {
     answer:
       "当前任务正在按正式计划修改 app.txt；这次只读提问没有更改工作流或代码。",
   };
+  if (m.question.plan_revision) {
+    if (!m.plan.markdown?.includes("# 正式计划")) throw new Error("Missing full plan document");
+    result.answer += `\n问题：${m.question.question}\n计划版本：${m.plan.revision}\n完整正文：\n${m.plan.markdown}\n已有问答：${m.previous_questions.length}`;
+  }
 } else if (stage === "review" || stage === "quality_before_human") {
   const w = m.workflow;
   result = {

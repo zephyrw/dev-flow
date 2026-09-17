@@ -55,6 +55,7 @@ export function agyArguments(
   minutes: number,
   conversation?: string,
   project?: string,
+  mode?: "accept-edits" | "plan",
 ) {
   return [
     "--model",
@@ -65,6 +66,7 @@ export function agyArguments(
     "stream-json",
     "--print-timeout",
     `${minutes}m`,
+    ...(mode ? ["--mode", mode] : []),
     "-p",
     prompt,
     ...(conversation
@@ -92,6 +94,7 @@ export async function observeAgy(
   const currentTurn = new CurrentTurn();
   let failure: unknown;
   let diagnosticTail = "";
+  const failedTools = new Map<number, { name: string; target?: string }>();
   let idleTimer: NodeJS.Timeout | undefined;
   const activity = () => {
     if (idleTimer) clearTimeout(idleTimer);
@@ -113,6 +116,19 @@ export async function observeAgy(
   const lines = new JsonLines((event) => {
     protocol.accept(event);
     currentTurn.accept(event);
+    const step = event.step_update as any;
+    if (
+      event.event === "step_update" &&
+      step?.step_type === "tool" &&
+      step.state === "ERROR"
+    ) {
+      const parameters = step.tool_info?.parameters ?? {};
+      failedTools.set(step.step_index, {
+        name: step.tool_name ?? step.tool_info?.name ?? "unknown",
+        target:
+          parameters.TargetFile ?? parameters.AbsolutePath ?? parameters.path,
+      });
+    }
     if (event.event === "init") {
       const init = event.init as Record<string, unknown>;
       requireCondition(
@@ -212,11 +228,39 @@ export async function observeAgy(
         diagnosticTail,
     );
     const classification = classifyFailure(raw);
-    throw new FlowError(classification.code, classification.message, 422, {
-      exit_code: exit.code,
-      result: protocol.result,
-      ...(reason ? { termination_reason: reason } : {}),
-    });
+    const deniedActions = Array.isArray(protocol.result?.denied_actions)
+      ? protocol.result.denied_actions
+      : [];
+    const deniedNames = new Set(
+      deniedActions.map((a) =>
+        String(a?.display_name ?? "")
+          .replaceAll("_", "")
+          .toLowerCase(),
+      ),
+    );
+    const deniedTools = [...failedTools.values()].filter((t) =>
+      deniedNames.has(t.name.replaceAll("_", "").toLowerCase()),
+    );
+    const deniedDetail =
+      classification.code === "NATIVE_PERMISSION_DENIED"
+        ? deniedTools
+            .map((t) => `${t.name}${t.target ? `：${t.target}` : ""}`)
+            .join("；")
+        : "";
+    throw new FlowError(
+      classification.code,
+      classification.message +
+        (deniedDetail
+          ? ` 被拒绝的操作：${redact(deniedDetail).slice(0, 1500)}`
+          : ""),
+      422,
+      {
+        exit_code: exit.code,
+        result: protocol.result,
+        ...(deniedTools.length ? { denied_tools: deniedTools } : {}),
+        ...(reason ? { termination_reason: reason } : {}),
+      },
+    );
   }
   return {
     conversation: protocol.conversation!,

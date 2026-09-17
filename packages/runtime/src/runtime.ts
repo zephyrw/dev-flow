@@ -5,6 +5,8 @@ import {
 import { PlanSelfCheckReportSchema } from "../../contracts/src/plan-self-check.js";
 import { AgyNativeRecordSource } from "../../adapters/agy/src/native-record-source.js";
 import { AgentTelemetry } from "./agent-telemetry.js";
+import { rejectedDeliveryFeedback } from "../../core/src/delivery-feedback.js";
+import { batchExecutionInstructions } from "../../core/src/execution-guidance.js";
 import { NativeExecutionObserver } from "../../evidence/src/native-execution-observer.js";
 import { reconcileImplementationProofs } from "../../core/src/progress.js";
 import { assertMeaningfulTestFiles } from "../../core/src/test-quality.js";
@@ -497,10 +499,8 @@ export class LocalRuntime implements Runtime {
         });
         HandoffBuilder.writeHandoffFiles(directory, fullPkg, plan.markdown);
       } else {
-        const issues = this.engine.store.list<any>(
-          "delivery_issue",
-          workflow.id,
-        );
+        const issues =
+          rejectedDeliveryFeedback(this.engine.store, workflow)?.issues ?? [];
         const cursor = this.engine.store.get<{
           plan_hash: string;
           feedback_count: number;
@@ -586,10 +586,11 @@ export class LocalRuntime implements Runtime {
           package_hash: run.package_hash,
           instruction:
             run.stage === PLAN_SELF_CHECK_STAGE
-              ? "程序强制发起的独立计划复核轮次：重新阅读 AUTHORITATIVE_PLANS.json 中原始计划和正式整改计划全文，以及 HANDOFF.md、handoff.json。按 self_check.check_ids 逐项对照实际代码与测试，遗漏或偏离必须修复并重新自测。禁止另建或使用 implementation_plan.md 等替代计划。依据 plan-self-check.schema.json 在当前轮次交付清单中填写 plan_self_check，绑定 handoff.json 的请求和轮次。全部核对及测试通过后提交 devflow_deliver；这不是规划模型的独立代码审查，不可自行宣布跳过它。"
+              ? "程序强制发起的独立计划复核轮次：重新阅读 AUTHORITATIVE_PLANS.json 中原始计划和正式整改计划全文，以及 HANDOFF.md、handoff.json。先按 self_check.check_ids 完整核查实际代码与测试，汇总遗漏及根因，完成整批修复后统一测试。禁止另建或使用 implementation_plan.md 等替代计划。依据 plan-self-check.schema.json 在当前轮次交付清单中填写 plan_self_check，绑定 handoff.json 的请求和轮次。全部核对及测试通过后提交 devflow_deliver；这不是规划模型的独立代码审查，不可自行宣布跳过它。"
               : conversation?.id
-                ? "会话恢复：请查看 handoff.json 中的反馈与核验 issues，针对性地使用原生工具修复和自测，然后提交交付清单。"
-                : "原生开发模式：请先阅读工作包 HANDOFF.md 与 handoff.json。使用客户端原生工具（编辑、终端、运行测试）连续完成实现与自测。所有必需验收场景自测通过后，通过 devflow_deliver 或交付清单文件完成终局交付。",
+                ? "会话恢复：请完整查看 handoff.json 中的全部反馈与核验 issues，核清全部已知问题根因后使用原生工具完成整批修复，统一测试后提交交付清单。"
+                : "原生开发模式：请先阅读工作包 HANDOFF.md 与 handoff.json。使用客户端原生工具完成批准范围内全部实现和测试代码，再统一运行测试。所有必需验收场景通过后，通过 devflow_deliver 或交付清单文件完成终局交付。",
+          execution_order: batchExecutionInstructions,
         })
       : JSON.stringify({
           workflow_id: workflow.id,
@@ -599,6 +600,7 @@ export class LocalRuntime implements Runtime {
           package_hash: run.package_hash,
           instruction:
             "首先调用 devflow_execute_context，读取完整批准计划与 Skill。逐任务实施，仅使用 devflow_worker 工具。报告任务后 devflow_freeze，逐项 devflow_run_check，全部通过后 devflow_finish。遇到范围外问题报告阻塞并结束。",
+          execution_order: batchExecutionInstructions,
         });
     this.assertRun(workflow.id, run.id, ["EXECUTING"]);
     const remainingMs = run.deadline_at
@@ -618,6 +620,7 @@ export class LocalRuntime implements Runtime {
           this.engine.config.timeouts.agent_minutes,
           conversation?.id,
           projectBinding.id,
+          isNativeV2 ? "accept-edits" : undefined,
         ),
         "--add-dir",
         directory,

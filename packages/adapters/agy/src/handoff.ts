@@ -1,5 +1,6 @@
 import type { PlanSelfCheckRequest } from "../../../contracts/src/plan-self-check.js";
 import { atomicWrite } from "../../../core/src/util.js";
+import { batchExecutionInstructions } from "../../../core/src/execution-guidance.js";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -11,6 +12,7 @@ import {
 } from "../../../contracts/src/index.js";
 
 const nativeTestingInstructions =
+  batchExecutionInstructions +
   "测试采用单元、集成、E2E 三层，仅 test_exemptions 中已批准的不适用项可豁免。" +
   "E2E 覆盖新需求全部业务流程，以及真实差异、上下游和共享依赖影响的旧功能回归；" +
   "将需求/受影响旧功能、影响依据、场景 ID、步骤、断言和实际用例逐项映射。" +
@@ -89,7 +91,7 @@ export class HandoffBuilder {
       self_check_schema_file: "plan-self-check.schema.json",
       instructions:
         "这是程序单独调度的计划逐项复核。必须重新读取 AUTHORITATIVE_PLANS.json 内全部原始计划和正式整改计划，" +
-        "按 self_check.check_ids 逐项核对正文、实际代码、所有验收项及受影响旧功能；正式变更须引用对应批准修订。发现问题先修复、重测，" +
+        "先按 self_check.check_ids 完整核对正文、实际代码、所有验收项及受影响旧功能，汇总全部问题及根因，完成整批修复后统一测试；正式变更须引用对应批准修订。" +
         "在当前交付清单的 plan_self_check 内逐项记录真实文件/测试报告/用例定位与整改结果（这是执行记录，不是新计划）。" +
         "禁止创建、改写或采用 implementation_plan.md 等替代计划，禁止把本轮任务缩减为局部补丁。所有问题解决且本轮测试与交付证据通过后才提交。" +
         nativeTestingInstructions,
@@ -151,7 +153,7 @@ export class HandoffBuilder {
       feedback: workflow.feedback,
       instructions:
         "原生开发模式：请使用原生文件查看工具阅读 HANDOFF.md 完整设计与验收要求；" +
-        "在工作区使用客户端原生工具（编辑、终端、运行测试等）连续完成实现并调试；" +
+        "在工作区使用客户端原生工具完成批准范围内全部实现和测试代码，再统一运行测试；" +
         "所有必需验收场景自测通过后，组装交付清单并提交终局核验。" +
         "只能执行规划模型正式批准的计划，禁止另建 implementation_plan.md 或工具内计划作为替代执行依据。" +
         nativeTestingInstructions,
@@ -228,8 +230,8 @@ export class HandoffBuilder {
       feedback: workflow.feedback,
       delivery_issues: openIssues,
       instructions:
-        "会话恢复：本轮续接历史执行会话，重点根据核验反馈与 delivery_issues 进行针对性修复；" +
-        "补齐失效或未通过的测试后重新提交交付清单。" +
+        "会话恢复：本轮续接历史执行会话，先完整核查全部核验反馈与 delivery_issues 的根因及影响，再完成整批修复；" +
+        "统一运行失效、未通过及必需的回归测试后重新提交交付清单。" +
         "原始计划和正式整改计划是唯一依据，禁止另建或改写替代执行计划；发现设计冲突应上报规划模型。" +
         nativeTestingInstructions,
     };

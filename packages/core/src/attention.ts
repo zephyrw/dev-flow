@@ -1,9 +1,18 @@
 import type { Engine, PlanRecord } from "./engine.js";
 import { failureSummary } from "../../presentation/src/failure.js";
+import { canResolveSourceChange } from "./source-change.js";
 
 // Present authoritative state; legacy recovery must not invent a human actor.
 export function workflowAttention(engine: Engine, key: string) {
   const w = engine.get(key);
+  if (canResolveSourceChange(engine, w))
+    return {
+      category: "source_change",
+      message:
+        "项目代码在计划制定后发生了更新。请查看变化，选择使用当前代码继续，或重新规划。",
+      action: "处理代码更新",
+      at: w.updated_at,
+    };
   const modelRetry = engine.store.get<{ retry_at: number }>("model_retry", key);
   if (w.state === "BLOCKED" && w.blocker?.code === "MODEL_QUOTA" && modelRetry)
     return {
@@ -109,9 +118,12 @@ export function workflowAttention(engine: Engine, key: string) {
     return {
       category: w.state === "BLOCKED" ? "error" : "paused",
       message,
-      at: interruption?.at ?? w.updated_at,
+      at:
+        w.state === "BLOCKED"
+          ? w.updated_at
+          : (interruption?.at ?? w.updated_at),
       action: "查看执行过程",
-      interruption,
+      interruption: w.state === "BLOCKED" ? undefined : interruption,
     };
   }
   if (
@@ -133,7 +145,11 @@ export function workflowAttention(engine: Engine, key: string) {
   )
     return {
       category: "queue",
-      message: "执行模型计划复核已通过，等待规划模型审查代码质量",
+      message:
+        w.state === "REVIEWING"
+          ? "规划模型正在审查代码质量与测试证据，无需手动启动"
+          : (engine.store.get<any>("queue_wait", key)?.message ??
+            "计划复核已通过，已自动排队等待规划模型审查"),
       action: "查看执行过程",
       at: w.updated_at,
     };

@@ -3,9 +3,15 @@ import { TaskInteraction } from "./interactions.js";
 import { DeliveryStrip, EnvironmentSummary } from "./workbench.js";
 import guideText from "../../../docs/guide/使用指南.md?raw";
 import { TaskTree, TestResults } from "./panels.js";
+import { useNativeProgress } from "./native-progress.js";
 import { CreateWorkflowModal } from "./components/CreateWorkflowModal.js";
 import { ToolModelDrawer } from "./components/ToolModelDrawer.js";
 import { RequirementComposer } from "./components/RequirementComposer.js";
+import { SourceChangeDialog } from "./components/SourceChangeDialog.js";
+import {
+  PlanReviewDialog,
+  type PlanReviewTarget,
+} from "./components/PlanReviewDialog.js";
 import React, { useEffect, useRef, useState } from "react";
 
 import { createRoot } from "react-dom/client";
@@ -13,7 +19,13 @@ import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import mermaid from "mermaid";
 import "./style.css";
-import { readableLogs, mergeEvents, workflowProgress, stages } from "./logs.js";
+import {
+  readableLogs,
+  userFacingLogs,
+  mergeEvents,
+  workflowProgress,
+  stages,
+} from "./logs.js";
 const labels: Record<string, string> = {
   RESEARCHING: "调研中",
   PLANNING: "规划中",
@@ -1104,7 +1116,7 @@ function CodeDiffPanel({
                   <span
                     title={
                       selectedFile.branch
-                        ? `分支引用: ${selectedFile.branch} · 基线: ${selectedFile.baseline}`
+                        ? `分支引用: ${selectedFile.branch} · 起始代码版本: ${selectedFile.baseline}`
                         : undefined
                     }
                   >
@@ -1614,7 +1626,7 @@ function App() {
     [selected, setSelected] = useState(
       () => new URLSearchParams(location.search).get("workflow") ?? "",
     ),
-    [detail, setDetail] = useState<any>(null),
+    [rawDetail, setDetail] = useState<any>(null),
     [tab, setTab] = useState(
       () =>
         sessionStorage.getItem(
@@ -1627,6 +1639,16 @@ function App() {
     [pending, setPending] = useState(false),
     [scope, setScope] = useState("within_plan"),
     [diff, setDiff] = useState<any[]>([]);
+  const detail = useNativeProgress(rawDetail);
+  const [planReview, setPlanReview] = useState<PlanReviewTarget | null>(null);
+  const [sourceChange, setSourceChange] = useState<{
+    workflowId: string;
+    version: number;
+  } | null>(null);
+  useEffect(() => {
+    setPlanReview(null);
+    setSourceChange(null);
+  }, [selected]);
   useEffect(() => {
     const url = new URL(location.href);
     if (selected) url.searchParams.set("workflow", selected);
@@ -1978,7 +2000,9 @@ function App() {
                   }
                 : null;
   const progress = w ? workflowProgress(w, detail.events) : undefined;
-  const timeline = w ? readableLogs(detail.events, selected) : [];
+  const timeline = w
+    ? userFacingLogs(readableLogs(detail.events, selected), w.run_id)
+    : [];
   const phaseStart =
     [...(detail?.events ?? [])]
       .reverse()
@@ -2167,7 +2191,9 @@ function App() {
                 <span className={"badge " + w.state}>
                   <span className="badge-dot" />
                   {detail.queue?.kind === "preparing"
-                    ? "准备工作区"
+                    ? w.workspace_mode === "existing_workspace"
+                      ? "检查主工作区"
+                      : "准备独立工作区"
                     : w.state === "BLOCKED" &&
                         w.blocker?.code === "MODEL_QUOTA" &&
                         detail.attention?.category === "queue"
@@ -2345,7 +2371,11 @@ function App() {
                         {latest && (
                           <button
                             className="latest-activity"
-                            title={latest.text || latest.title}
+                            title={
+                              latest.command?.split(/\r?\n/, 1)[0] ||
+                              latest.text ||
+                              latest.title
+                            }
                             onClick={() => {
                               toggleSidebar(true);
                               setLocate({
@@ -2358,7 +2388,7 @@ function App() {
                             <span className="activity-text">
                               <b>{latest.title}</b>
                               {latest.text
-                                ? ` · ${latest.text.slice(0, 120).replace(/\s+/g, " ")}`
+                                ? ` · ${(latest.command?.split(/\r?\n/, 1)[0] ?? latest.text).slice(0, 120).replace(/\s+/g, " ")}`
                                 : ""}
                             </span>
                             <time>
@@ -2373,46 +2403,95 @@ function App() {
                               "STOPPED",
                               "RECOVERY_REQUIRED",
                               "COMMIT_PARTIAL",
-                            ].includes(w.state) && (
+                            ].includes(w.state) &&
+                              attention?.category !== "source_change" && (
+                                <button
+                                  className="btn-secondary"
+                                  disabled={pending}
+                                  onClick={() =>
+                                    void attempt(async () => {
+                                      await api(
+                                        `/workflows/${selected}/browser/reconcile`,
+                                        {},
+                                      );
+                                      await api(
+                                        `/workflows/${selected}/environment/stop`,
+                                        {},
+                                      ).catch(() => {});
+                                      await api(
+                                        `/workflows/${selected}/${w.state === "COMMIT_PARTIAL" ? "commit/retry" : "recover"}`,
+                                        {},
+                                      );
+                                      await refresh();
+                                    })
+                                  }
+                                >
+                                  {w.state === "COMMIT_PARTIAL"
+                                    ? "核实现场并重试原提交"
+                                    : w.blocker?.code === "MODEL_QUOTA"
+                                      ? "立即重试"
+                                      : "继续这个任务"}
+                                </button>
+                              )}
+                            {attention?.category === "source_change" && (
                               <button
-                                className="btn-secondary"
+                                className="primary"
                                 disabled={pending}
                                 onClick={() =>
-                                  void attempt(async () => {
-                                    await api(
-                                      `/workflows/${selected}/browser/reconcile`,
-                                      {},
-                                    );
-                                    await api(
-                                      `/workflows/${selected}/environment/stop`,
-                                      {},
-                                    ).catch(() => {});
-                                    await api(
-                                      `/workflows/${selected}/${w.state === "COMMIT_PARTIAL" ? "commit/retry" : "recover"}`,
-                                      {},
-                                    );
-                                    await refresh();
+                                  setSourceChange({
+                                    workflowId: w.id,
+                                    version: w.version,
                                   })
                                 }
                               >
-                                {w.state === "COMMIT_PARTIAL"
-                                  ? "核实现场并重试原提交"
-                                  : w.blocker?.code === "MODEL_QUOTA"
-                                    ? "立即重试"
-                                    : "继续这个任务"}
+                                处理代码更新
                               </button>
                             )}
                             {["PLAN_PENDING", "REPAIR_PLAN_PENDING"].includes(
                               w.state,
                             ) && (
+                              <>
+                                <button
+                                  className="primary"
+                                  disabled={pending}
+                                  onClick={() =>
+                                    void attempt(() => approve("approve"))
+                                  }
+                                >
+                                  批准当前计划
+                                </button>
+                                <button
+                                  className="btn-secondary"
+                                  disabled={pending}
+                                  onClick={() =>
+                                    setPlanReview({
+                                      workflow_id: w.id,
+                                      expected_version: w.version,
+                                      plan_revision: w.plan_revision,
+                                      plan_hash: w.plan_hash,
+                                      mode: "reject",
+                                    })
+                                  }
+                                >
+                                  驳回并修正
+                                </button>
+                              </>
+                            )}
+                            {w.plan_revision > 0 && (
                               <button
-                                className="primary"
+                                className="btn-secondary"
                                 disabled={pending}
                                 onClick={() =>
-                                  void attempt(() => approve("approve"))
+                                  setPlanReview({
+                                    workflow_id: w.id,
+                                    expected_version: w.version,
+                                    plan_revision: w.plan_revision,
+                                    plan_hash: w.plan_hash,
+                                    mode: "question",
+                                  })
                                 }
                               >
-                                批准当前计划
+                                计划问答
                               </button>
                             )}
                             {w.state === "HUMAN_PENDING" && (
@@ -2452,7 +2531,8 @@ function App() {
                               style={{
                                 padding: "6px 12px",
                                 borderRadius: "6px",
-                                border: "1px solid var(--color-border-default, #d0d7de)",
+                                border:
+                                  "1px solid var(--color-border-default, #d0d7de)",
                                 background: "var(--color-btn-bg, #f6f8fa)",
                                 cursor: "pointer",
                                 fontSize: "13px",
@@ -2502,6 +2582,11 @@ function App() {
                           onClick={() => {
                             if (attention.category === "approval")
                               setTab("plan");
+                            else if (attention.category === "source_change")
+                              setSourceChange({
+                                workflowId: w.id,
+                                version: w.version,
+                              });
                             else if (attention.category === "acceptance")
                               setTab("environment");
                             else toggleSidebar(true);
@@ -2693,6 +2778,36 @@ function App() {
             {error && <div className="error">{error}</div>}
           </section>
         </div>
+      )}
+      {sourceChange && (
+        <SourceChangeDialog
+          key={sourceChange.workflowId}
+          {...sourceChange}
+          onClose={() => setSourceChange(null)}
+          onResolved={(choice) => {
+            setSourceChange(null);
+            setNotice(
+              choice === "continue"
+                ? "已确认使用当前代码，将按原计划继续执行。"
+                : "规划模型将结合当前代码修正计划，新版仍需你批准。",
+            );
+            void refresh().catch((e) => setError(String(e)));
+          }}
+        />
+      )}
+      {planReview && (
+        <PlanReviewDialog
+          key={`${planReview.workflow_id}:${planReview.plan_revision}:${planReview.mode}`}
+          target={planReview}
+          onClose={() => setPlanReview(null)}
+          onRejected={() => {
+            setPlanReview(null);
+            setNotice(
+              "计划已驳回，规划模型将按修改意见提交新版，等待你重新批准。",
+            );
+            void refresh().catch((e) => setError(String(e)));
+          }}
+        />
       )}
       <CreateWorkflowModal
         isOpen={isCreateModalOpen}

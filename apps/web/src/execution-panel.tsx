@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { LogEntry } from "./logs.js";
+import { CommandPreview } from "./command-preview.js";
 
 export function ExecutionPanel({
   entries,
@@ -142,11 +143,10 @@ export function ExecutionPanel({
             <div className="activity-body">
               <div className="activity-heading">
                 <b className="activity-title">{e.title}</b>
-                {e.status && (
+                {e.status && e.status !== "done" && (
                   <span className={`activity-status ${e.status}`}>
                     {{
                       active: "进行中",
-                      done: "已完成",
                       error: "失败",
                       interrupted: "已中断",
                     }[e.status] ?? e.status}
@@ -154,7 +154,9 @@ export function ExecutionPanel({
                 )}
                 <time>{new Date(e.created_at).toLocaleTimeString()}</time>
               </div>
-              {e.kind === "message" ? (
+              {e.command ? (
+                <CommandPreview command={e.command} cwd={e.cwd} />
+              ) : e.kind === "message" || e.kind === "event" ? (
                 <div className="activity-markdown">
                   <Markdown remarkPlugins={[remarkGfm]}>{e.text}</Markdown>
                 </div>
@@ -164,14 +166,9 @@ export function ExecutionPanel({
                   {e.text.length > 600 ? "…" : ""}
                 </p>
               ) : null}
-              <details className="activity-details">
-                <summary>查看操作详情</summary>
-                <pre className="terminal-pre">
-                  {e.kind === "diagnostic"
-                    ? e.text
-                    : JSON.stringify(e.raw, null, 2)}
-                </pre>
-              </details>
+              {e.kind === "tool" && e.resultText && (
+                <p className="activity-result">{e.resultText}</p>
+              )}
             </div>
           </article>
         ))}

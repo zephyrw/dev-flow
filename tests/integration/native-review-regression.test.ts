@@ -344,6 +344,41 @@ describe("DevFlow 原生执行改造审核缺陷回归套件 (R1~R10)", () => {
     }
   });
 
+  it.each([
+    ["src/nested/allowed.ts", undefined],
+    ["src-old/outside.ts", "OUTSIDE_SCOPE_FILE"],
+    ["src/private/secret.ts", "PROTECTED_PATH"],
+    ["src/package.json", "DEPENDENCY_DENIED"],
+  ])("directory scope verifies %s with result %s", async (file, expected) => {
+    const s = await fixture();
+    try {
+      const rec = s.engine.plan(s.w.id);
+      rec.plan.scope.repository_paths = { main: ["app.txt", "src"] };
+      rec.plan.scope.protected_paths.push("src/private");
+      s.store.put("plan", rec.id, s.w.id, rec);
+      mkdirSync(join(ri.repo, file!.split("/").slice(0, -1).join("/")), {
+        recursive: true,
+      });
+      writeFileSync(join(ri.repo, file!), "{}\n");
+      const reader = attestFixture(
+        s.engine,
+        s.w.id,
+        s.manifest,
+        new NativeRunRecordReader([hostCall]),
+      );
+      const result = await s.engine.deliver(s.w.id, s.manifest, reader);
+      if (expected) {
+        expect(result.status).toBe("rejected");
+        expect(result.issues?.some((i) => i.code === expected)).toBe(true);
+      } else {
+        expect(result.issues).toBeUndefined();
+        expect(result.status).toBe("accepted");
+      }
+    } finally {
+      s.store.close();
+    }
+  });
+
   it("R10: 计划修订递增时恢复交接包包含 HANDOFF.md 并包含 workspaces 真实列表", async () => {
     const s = await fixture();
     try {

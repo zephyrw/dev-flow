@@ -2,6 +2,7 @@ import React from "react";
 
 export function DeliveryStrip({ detail }: { detail: any }) {
   const leaf = detail.plan?.plan.task_model === "leaf-v1";
+  const native = detail.plan?.plan.task_model === "native-v2";
   const total = detail.task_counts?.total ?? detail.tasks.length,
     completed =
       detail.task_counts?.developed ??
@@ -64,25 +65,29 @@ export function DeliveryStrip({ detail }: { detail: any }) {
         </span>
       )}
 
-      {!leaf ? (
+      {!leaf && !native ? (
         <span className="metric-chip empty-chip">尚未生成细项清单</span>
       ) : (
         <span className="metric-chip">
-          <span className="chip-label">开发完成</span>
+          <span className="chip-label">
+            {native ? "工作包已开展" : "开发完成"}
+          </span>
           <b className="chip-value">
-            {completed}/{total}
+            {native ? (detail.task_counts?.started ?? 0) : completed}/{total}
           </b>
-          <span className="chip-percent">{taskPercent}%</span>
+          {!native && <span className="chip-percent">{taskPercent}%</span>}
           <progress
-            aria-label="开发完成进度"
-            value={completed}
+            aria-label={native ? "工作包开展进度" : "开发完成进度"}
+            value={native ? (detail.task_counts?.started ?? 0) : completed}
             max={total || 1}
           />
         </span>
       )}
-      {leaf && (
+      {(leaf || native) && (
         <span className="metric-chip">
-          <span className="chip-label">验证完成</span>
+          <span className="chip-label">
+            {native ? "工作包已核验" : "验证完成"}
+          </span>
           <b className="chip-value">
             {verified}/{total}
           </b>
@@ -90,7 +95,9 @@ export function DeliveryStrip({ detail }: { detail: any }) {
       )}
       {test?.total > 0 && (
         <span className="metric-chip">
-          <span className="chip-label">已通过测试</span>
+          <span className="chip-label">
+            {native ? "计划用例已核验" : "已通过测试"}
+          </span>
           <b className="chip-value">
             {test.passed}/{test.total}
           </b>
@@ -106,6 +113,34 @@ export function DeliveryStrip({ detail }: { detail: any }) {
         <span className="metric-chip error-chip">
           <span className="error-dot" />
           失败 <b>{test.failed}</b>
+        </span>
+      )}
+      {native && detail.native_progress?.tests.length > 0 && (
+        <span className="metric-chip" aria-label="自测执行次数">
+          已执行自测 <b>{detail.native_progress.tests.length}</b> 次
+        </span>
+      )}
+      {native && detail.native_progress?.running > 0 && (
+        <span className="metric-chip">
+          自测运行中 <b>{detail.native_progress.running}</b>
+        </span>
+      )}
+      {native && detail.native_progress?.latest_result && (
+        <span className="metric-chip" aria-label="最近自测结果">
+          最近自测：
+          {detail.native_progress.latest_result.passed !== undefined ? (
+            <>
+              {detail.native_progress.latest_result.status === "failed"
+                ? "命令失败 · "
+                : ""}
+              通过 <b>{detail.native_progress.latest_result.passed}</b> · 失败{" "}
+              <b>{detail.native_progress.latest_result.failed ?? 0}</b>
+            </>
+          ) : detail.native_progress.latest_result.status === "failed" ? (
+            "执行失败"
+          ) : (
+            "结果待确认"
+          )}
         </span>
       )}
       {test?.previously_passed > 0 && (

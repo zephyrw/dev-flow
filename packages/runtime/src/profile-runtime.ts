@@ -26,11 +26,12 @@ import {
   ReviewSchema,
   DeliveryManifestSchema,
   requireCondition,
+  FlowError,
   MergeConflictReceiptSchema,
   type MergeConflictRequest,
   type MergeConflictReceipt,
 } from "../../contracts/src/index.js";
-import { git } from "../../git/src/git.js";
+import { git, repositoryInfo } from "../../git/src/git.js";
 import { NativePlanSchema } from "../../contracts/src/native-plan.js";
 import { PlanSelfCheckReportSchema } from "../../contracts/src/plan-self-check.js";
 import {
@@ -52,6 +53,11 @@ import {
 } from "../../evidence/src/native-execution-observer.js";
 import type { HostToolExecutionFact } from "../../evidence/src/native-run-records.js";
 import type { ProcessManager } from "../../process/src/manager.js";
+import { classifyFailure } from "./errors.js";
+import { rejectedDeliveryFeedback } from "../../core/src/delivery-feedback.js";
+import { readPlanMaterial } from "../../core/src/plan-review.js";
+import type { SourceInput } from "../../core/src/source-change.js";
+import { batchExecutionInstructions } from "../../core/src/execution-guidance.js";
 
 /** One native process per purpose. No model polling, scheduler or shadow execution plan. */
 export class ProfileRuntime {
@@ -60,6 +66,8 @@ export class ProfileRuntime {
     private processes: ProcessManager,
   ) {}
   async plan(w: Workflow, run: Run) {
+    const workspaces = await this.planningWorkspaces(w);
+    const selectedSource = this.engine.store.get<SourceInput>("source_input", w.id);
     const schema = z.object({
       markdown: z.string().min(1),
       plan: NativePlanSchema,
@@ -69,20 +77,26 @@ export class ProfileRuntime {
       run,
       {
         instructions:
-          "你是规划模型。读取需求及引用的真实工作区文件，返回唯一正式计划。包含完整需求、确定实施步骤、单元/集成/E2E场景及受影响旧功能回归；等待用户批准后才实施。只读，不修改代码。",
+          "你是规划模型。读取需求及引用的真实工作区文件，返回唯一正式计划。包含完整需求、确定实施步骤、单元/集成/E2E场景及受影响旧功能回归；等待用户批准后才实施。只读，不修改代码。如果提供 current_plan，须在同一任务中按用户的规划反馈修正该计划，逐条回应修改意见并提交完整新版，不能自行批准或启动实施。",
+        current_plan: w.plan_revision
+          ? readPlanMaterial(this.engine.store, w.id, w.plan_revision)
+          : null,
+        selected_source: selectedSource?.plan_hash === w.plan_hash ? selectedSource : null,
         requirements: this.engine.store.list("requirement_message", w.id),
         request: w.request,
         project: this.engine.project(w.project_id),
         feedback: this.engine.store.list("feedback_message", w.id),
         baselines: Object.fromEntries(
-          this.workspaces(w).map((ws) => [ws.repo_id, ws.baseline]),
+          workspaces.map((ws) => [ws.repo_id, ws.baseline]),
         ),
         project_config_hash: objectHash(this.engine.project(w.project_id)),
       },
       modelOutputSchema(
         schema,
-        this.workspaces(w).map((ws) => ws.repo_id),
+        workspaces.map((ws) => ws.repo_id),
       ),
+      undefined,
+      workspaces,
     );
     const value = response as { markdown: string; plan: any };
     requireCondition(
@@ -94,7 +108,7 @@ export class ProfileRuntime {
       ...value.plan,
       revision: w.plan_revision + 1,
       baselines: Object.fromEntries(
-        this.workspaces(w).map((ws) => [ws.repo_id, ws.baseline]),
+        workspaces.map((ws) => [ws.repo_id, ws.baseline]),
       ),
       project_config_hash: objectHash(this.engine.project(w.project_id)),
       design_ref: {
@@ -159,18 +173,45 @@ export class ProfileRuntime {
   async aside(
     w: Workflow,
     run: Run,
-    question: { question: string; refs: unknown[] },
+    question: {
+      question: string;
+      refs: unknown[];
+      plan_revision?: number;
+      plan_hash?: string;
+    },
   ) {
+    const revision = question.plan_revision ?? w.plan_revision;
+    const plan = revision
+      ? readPlanMaterial(this.engine.store, w.id, revision)
+      : null;
+    requireCondition(
+      !question.plan_hash || plan?.hash === question.plan_hash,
+      "PLAN_CHANGED",
+      "提问绑定的计划版本不一致",
+      409,
+    );
     const value = await this.invoke(
       w,
       run,
       {
         instructions:
-          "只读临时提问，不修改代码，不接管主任务，不形成正式反馈。回答当前问题。",
+          "你是本任务的规划模型。只读回答当前问题，结合所附计划完整正文解释细节，尽量指出对应章节。提问不表示驳回或批准，不修改计划或代码，不接管主任务，不形成正式反馈。需要改变计划时只说明建议，由用户决定是否驳回修正。",
         question,
         request: w.request,
         current_state: w.state,
-        plan: w.plan_revision ? this.engine.plan(w.id) : null,
+        plan,
+        previous_questions: question.plan_revision
+          ? this.engine.store
+              .list<any>("aside_session", w.id)
+              .filter(
+                (q) =>
+                  q.plan_revision === question.plan_revision &&
+                  q.status === "completed",
+              )
+              .sort((a, b) => a.created_at.localeCompare(b.created_at))
+              .slice(-10)
+              .map((q) => ({ question: q.question, answer: q.answer }))
+          : [],
       },
       modelOutputSchema(z.object({ answer: z.string().min(1) }), []),
     );
@@ -184,8 +225,9 @@ export class ProfileRuntime {
         : null;
     const materials = {
       instructions: check
-        ? "程序强制计划自查：逐项重新核对原始正式计划与全部正式整改正文，按 check.check_ids 覆盖真实代码及测试。发现遗漏须在本轮修复并重测。最终 delivery.plan_self_check 填写给定 schema。不得另建或执行 implementation_plan.md 等替代计划。"
+        ? "程序强制计划自查：先完整核对原始正式计划与全部正式整改正文，按 check.check_ids 汇总全部遗漏及根因，再完成整批修复，最后统一测试。最终 delivery.plan_self_check 填写给定 schema。不得另建或执行 implementation_plan.md 等替代计划。"
         : "严格按原始正式计划和批准的整改正文完成全部开发与单元/集成/E2E测试，覆盖新流程及受影响旧逻辑。不得另建或执行替代计划。发现计划矛盾应报告阻塞。完成后返回 delivery 交付清单，不得自行提交 Git 或宣布人工验收通过。",
+      execution_order: batchExecutionInstructions,
       workflow: w,
       run,
       plan,
@@ -198,6 +240,11 @@ export class ProfileRuntime {
       workspaces: this.workspaces(w),
       repair_assignment:
         this.engine.store.get("repair_assignment", w.id) ?? null,
+      repair_instructions:
+        this.engine.store.get<any>("repair_state", w.id)?.instructions ??
+        this.engine.store.get<any>("repair_assignment", w.id)?.instructions ??
+        null,
+      delivery_feedback: rejectedDeliveryFeedback(this.engine.store, w),
       delivery_instruction:
         "测试报告放入 .reports/；测试声明须匹配本轮真实工具命令、退出码、报告及验收项，不能制造宿主记录。最终输出 JSON {delivery: ...}。",
     };
@@ -229,11 +276,11 @@ export class ProfileRuntime {
       ...parsed.delivery,
     };
     const result = await this.engine.deliver(w.id, delivery);
-    requireCondition(
-      result.status === "accepted",
-      "DELIVERY_REJECTED",
-      result.message,
-    );
+    if (result.status !== "accepted")
+      throw new FlowError("DELIVERY_REJECTED", result.message, 422, {
+        delivery_id: result.delivery_id,
+        issues: result.issues,
+      });
   }
   async resolveMergeConflict(
     w: Workflow,
@@ -338,12 +385,51 @@ export class ProfileRuntime {
   private workspaces(w: Workflow) {
     return this.engine.store.list<Workspace>("workspace", w.id);
   }
+  private async planningWorkspaces(w: Workflow): Promise<Workspace[]> {
+    const existing = this.workspaces(w);
+    const context = this.engine.store.get<{ roots: Record<string, string> }>(
+      "entry_context",
+      w.id,
+    );
+    let baselines = w.plan_revision
+      ? this.engine.plan(w.id).plan.baselines
+      : {};
+    const selected = this.engine.store.get<SourceInput>("source_input", w.id);
+    if (
+      w.state === "PLANNING" &&
+      selected?.choice === "replan" &&
+      selected.plan_hash === w.plan_hash
+    )
+      baselines = Object.fromEntries(
+        selected.repositories.map((r) => [r.repo_id, r.current_commit]),
+      );
+    // Externally submitted plans may not have execution workspaces until approval.
+    // Read the registered source in place without creating or persisting a worktree.
+    return Promise.all(
+      this.engine.project(w.project_id).repositories.map(async (repo) => {
+        const workspace = existing.find((ws) => ws.repo_id === repo.id);
+        if (workspace) return workspace;
+        const info = await repositoryInfo(context?.roots[repo.id] ?? repo.path);
+        return {
+          id: `readonly-${w.id}-${repo.id}`,
+          workflow_id: w.id,
+          repo_id: repo.id,
+          root: info.path,
+          common_dir: info.common_dir,
+          branch: info.branch,
+          baseline: baselines[repo.id] ?? info.head,
+          owned: false,
+        };
+      }),
+    );
+  }
   private async invoke(
     w: Workflow,
     run: Run,
     materials: unknown,
     schema: unknown,
     token?: string,
+    planningWorkspaces?: Workspace[],
   ): Promise<any> {
     const profile = profileForRun(this.engine.store, run);
     const adapter = createDefaultAdapterRegistry().mustGet(profile.adapterId);
@@ -355,6 +441,11 @@ export class ProfileRuntime {
     atomicWrite(handoff, JSON.stringify(materials, null, 2));
     atomicWrite(schemaPath, JSON.stringify(schema));
     const purpose = run.purpose!;
+    const workspaces =
+      planningWorkspaces ??
+      (["planning", "aside"].includes(purpose)
+        ? await this.planningWorkspaces(w)
+        : this.workspaces(w));
     // Read-only review/aside always starts a separate conversation; implementation resumes only the exact profile.
     const sessionKey =
       w.id +
@@ -364,9 +455,13 @@ export class ProfileRuntime {
       (["implement", "plan_self_check", "functional_fix"].includes(purpose)
         ? "execution"
         : purpose);
-    const previous = !readOnlyPurpose(purpose)
-      ? this.engine.store.get<{ id: string }>("native_conversation", sessionKey)
-      : undefined;
+    const previous =
+      purpose === "planning" || !readOnlyPurpose(purpose)
+        ? this.engine.store.get<{ id: string }>(
+            "native_conversation",
+            sessionKey,
+          )
+        : undefined;
     const context = {
       workflowId: w.id,
       runId: run.id,
@@ -374,7 +469,7 @@ export class ProfileRuntime {
       epoch: w.version,
       purpose,
       workspaceRoots: Object.fromEntries(
-        this.workspaces(w).map((ws) => [ws.repo_id, ws.root]),
+        workspaces.map((ws) => [ws.repo_id, ws.root]),
       ),
       allowedPaths: w.plan_revision
         ? this.engine.plan(w.id).plan.scope.allowed_paths
@@ -400,7 +495,6 @@ export class ProfileRuntime {
           previousConversationId: previous.id,
         })
       : await adapter.prepare(context);
-    const workspaces = this.workspaces(w);
     const baseline = readOnlyPurpose(purpose)
       ? captureInputs(workspaces)
       : undefined;
@@ -495,9 +589,26 @@ export class ProfileRuntime {
       text = "",
       conversation = previous?.id,
       failure: string | undefined;
+    let permissionFailure: FlowError | undefined;
     const handle = (event: NormalizedEvent) => {
       const v = event.raw as any;
       if (v && typeof v === "object") {
+        if (
+          profile.adapterId === "agy" &&
+          v.event === "result" &&
+          Array.isArray(v.result?.denied_actions) &&
+          v.result.denied_actions.length
+        ) {
+          const denied = redact(
+            JSON.stringify({ denied_actions: v.result.denied_actions }),
+          );
+          const cause = classifyFailure(denied);
+          permissionFailure = new FlowError(
+            cause.code,
+            cause.message + " " + denied.slice(0, 1500),
+            422,
+          );
+        }
         agy?.accept(v);
         const session =
           v.thread_id ??
@@ -578,6 +689,28 @@ export class ProfileRuntime {
       exit_code: exit.code,
       conversation_id: conversation,
     });
+    if (permissionFailure) {
+      // A denied operation still belongs to a real session. Preserve its exact
+      // identity for an explicitly authorized resume; never silently start over.
+      if (
+        !readOnlyPurpose(purpose) &&
+        conversation &&
+        !failure &&
+        (!previous || previous.id === conversation)
+      ) {
+        this.engine.store.put("native_conversation", sessionKey, w.id, {
+          id: conversation,
+          profile,
+          run_id: run.id,
+        });
+        this.engine.store.put("conversation", w.id, w.id, {
+          id: conversation,
+          profile,
+          run_id: run.id,
+        });
+      }
+      throw permissionFailure;
+    }
     requireCondition(
       exit.code === 0 &&
         !exit.termination_reason &&

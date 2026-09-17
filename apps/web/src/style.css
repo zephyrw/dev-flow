@@ -904,13 +904,10 @@ header h1 {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  height: 38px;
   min-height: 38px;
-  max-height: 38px;
   padding-top: 4px;
   border-top: 1px solid var(--border-subtle);
-  overflow: hidden;
-  flex-wrap: nowrap;
+  flex-wrap: wrap;
 }
 
 /* Delivery Strip with Metric Chips */
@@ -918,9 +915,8 @@ header h1 {
   display: flex;
   align-items: center;
   gap: 8px;
-  flex-wrap: nowrap;
-  flex-shrink: 0;
-  overflow: hidden;
+  flex-wrap: wrap;
+  min-width: 0;
 }
 
 .metric-chip {
@@ -1890,12 +1886,101 @@ select:focus {
   margin-left: auto;
 }
 
+.command-preview {
+  min-width: 0;
+  margin: 6px 0;
+}
+.command-preview-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.command-first-line {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--text-secondary, #64748b);
+  font-size: 12px;
+}
+.command-preview-row > button {
+  flex: none;
+  padding: 2px 5px;
+  font-size: 12px;
+  color: #2563eb;
+  background: transparent;
+  border: 0;
+}
+.command-full {
+  max-height: 360px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.native-test-run {
+  padding: 12px 0;
+  min-width: 0;
+  border-bottom: 1px solid #e2e8f0;
+}
+.native-test-run time {
+  margin-left: auto;
+  font-size: 12px;
+  color: #64748b;
+}
+.native-test-run .test-case-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.native-test-progress {
+  margin-bottom: 20px;
+  min-width: 0;
+}
+.activity-result,
 .activity-summary {
+  white-space: pre-wrap;
   font-size: 12.5px;
   color: var(--text-muted);
   line-height: 1.6;
   margin: 4px 0 8px;
   overflow-wrap: anywhere;
+}
+
+.activity-markdown {
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: 12.5px;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+.activity-markdown :is(h1, h2, h3, h4, h5, h6) {
+  margin: 12px 0 6px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-main);
+}
+.activity-markdown p {
+  margin: 4px 0 8px;
+}
+.activity-markdown :is(ul, ol) {
+  margin: 6px 0;
+  padding-inline-start: 20px;
+}
+.activity-markdown :is(pre, code) {
+  max-width: 100%;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.activity-markdown table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+}
+.activity-markdown img {
+  max-width: 100%;
 }
 
 .activity-details {
@@ -3329,4 +3414,3 @@ select:focus {
   padding: 5px 12px;
   font-size: 12.5px;
 }
-

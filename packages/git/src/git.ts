@@ -162,7 +162,7 @@ export class GitManager {
         requireCondition(
           info.head === baseline,
           "BASELINE_CHANGED",
-          "现有目录基线变化",
+          `项目代码已更新：制定计划时为 ${baseline.slice(0, 12)}，当前为 ${info.head.slice(0, 12)}。请在“处理代码更新”中查看变化，选择使用当前代码继续或重新规划。`,
         );
         // Preserve staged and unstaged user edits in a separate initial tree.
       }

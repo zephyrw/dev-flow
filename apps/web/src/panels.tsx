@@ -1,4 +1,6 @@
 import React, { useState } from "react";
+import { CommandPreview } from "./command-preview.js";
+import type { NativeTestRun } from "../../../packages/presentation/src/native-progress.js";
 export const taskLabels: Record<string, string> = {
   completed: "开发完成",
   active: "进行中",
@@ -7,6 +9,7 @@ export const taskLabels: Record<string, string> = {
   check_failed: "自检未通过",
   needs_recheck: "等待前置核验",
   pending: "未开始",
+  unobserved: "等待进度同步",
 };
 export const caseLabels: Record<string, string> = {
   passed: "已通过",
@@ -88,7 +91,7 @@ export function TaskTree({ detail, title }: { detail: any; title?: string }) {
       )}
       {native && (
         <p className="notice-subtle" aria-label="原生执行">
-          原生开发模式：连续开发与自测，终局批量核验与批量更新。
+          根据实际文件变更和执行记录同步进度；执行模型自主安排开发与自测，工作包完成情况另行核验。
         </p>
       )}
       {!leaf && !native && (
@@ -99,9 +102,11 @@ export function TaskTree({ detail, title }: { detail: any; title?: string }) {
       <div className="task-modules-list">
         {groups.map((m: any) => {
           const all = detail.tasks.filter(
-              (t: any) => !leaf || t.module_id === m.id,
+              (t: any) => !structured || t.module_id === m.id,
             ),
-            visible = tasks.filter((t: any) => !leaf || t.module_id === m.id);
+            visible = tasks.filter(
+              (t: any) => !structured || t.module_id === m.id,
+            );
           if (!visible.length) return null;
           const completedCount = all.filter(
             (t: any) =>
@@ -123,9 +128,11 @@ export function TaskTree({ detail, title }: { detail: any; title?: string }) {
                   <span className="module-title">{m.title}</span>
                 </span>
                 <span className={`module-badge ${isAllDone ? "all-done" : ""}`}>
-                  {leaf
-                    ? `开发 ${completedCount} / ${all.length} · 验证 ${all.filter((t: any) => t.status === "verified").length} / ${all.length}`
-                    : `${all.length} 个工作包`}
+                  {native
+                    ? `已开展 ${all.filter((t: any) => ["active", "completed", "pending_check"].includes(t.development_status)).length} / ${all.length} · 已核验 ${all.filter((t: any) => t.status === "verified").length} / ${all.length}`
+                    : leaf
+                      ? `开发 ${completedCount} / ${all.length} · 验证 ${all.filter((t: any) => t.status === "verified").length} / ${all.length}`
+                      : `${all.length} 个工作包`}
                 </span>
               </summary>
               <div className="module-tasks-body">
@@ -252,6 +259,67 @@ export function TestResults({
           </div>
         </div>
       </div>
+      {detail.native_progress && (
+        <section className="native-test-progress" aria-label="原生自测进度">
+          <h3>实时自测</h3>
+          <p className="notice-subtle">
+            这里显示测试工具返回的运行状态和用例数量。下方计划用例按交付证据核验，两种数量分别统计；修改代码后仍需复测。
+          </p>
+          {detail.native_progress.tests.length === 0 && (
+            <p className="empty">
+              尚未观察到测试命令；执行记录更新后自动同步。
+            </p>
+          )}
+          {detail.native_progress.latest.map((run: NativeTestRun) => (
+            <article className="native-test-run" key={run.key}>
+              <div className="test-case-row">
+                <b>
+                  {
+                    {
+                      running: "测试运行中",
+                      passed: "自测通过",
+                      failed: "自测失败",
+                      returned: "自测已执行，用例数量待确认",
+                      interrupted: "执行已结束，未收到最终测试结果",
+                    }[run.status]
+                  }
+                </b>
+                {run.passed !== undefined && (
+                  <span>
+                    通过 {run.passed} · 失败 {run.failed ?? 0} · 跳过{" "}
+                    {run.skipped ?? 0}
+                  </span>
+                )}
+                <time>{new Date(run.created_at).toLocaleTimeString()}</time>
+              </div>
+              <CommandPreview command={run.command} cwd={run.cwd} />
+            </article>
+          ))}
+          <details className="activity-details">
+            <summary>
+              查看近期测试执行记录（{detail.native_progress.tests.length} 次）
+            </summary>
+            {detail.native_progress.tests.map((run: NativeTestRun) => (
+              <div key={run.key} className="native-test-run">
+                <span>
+                  {new Date(run.created_at).toLocaleTimeString()} ·{" "}
+                  {
+                    {
+                      running: "运行中",
+                      passed: "通过",
+                      failed: "失败",
+                      returned: "结果待确认",
+                      interrupted: "已中断",
+                    }[run.status]
+                  }
+                </span>
+                <CommandPreview command={run.command} cwd={run.cwd} />
+              </div>
+            ))}
+          </details>
+          <h3>计划用例核验</h3>
+        </section>
+      )}
       <div className="test-layers-list">
         {Object.entries(layers).map(([layer, label]) => {
           const all = progress.cases.filter((c: any) => c.layer === layer),

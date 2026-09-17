@@ -81,6 +81,8 @@ export const AsideSessionSchema = z
     workflow_id: Id,
     profile_revision: z.string().min(1),
     context_ref: z.string().min(1),
+    plan_revision: z.number().int().positive().optional(),
+    plan_hash: z.string().min(1).optional(),
     question: z.string().min(1),
     refs: z.array(WorkspaceReferenceSchema).default([]),
     status: z
