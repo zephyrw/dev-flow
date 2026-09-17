@@ -1,3 +1,36 @@
+import { FlowError } from "../../contracts/src/index.js";
+import { runtimeFailureResolution } from "../../contracts/src/runtime-failure.js";
+import { redact } from "../../core/src/util.js";
+
+export function normalizeRuntimeFailure(error: unknown) {
+  const code = error instanceof FlowError ? error.code : "INTERNAL_FAILURE";
+  const diagnostic = redact(
+    error instanceof Error ? error.message : String(error),
+  );
+  const resolution = runtimeFailureResolution(code, diagnostic);
+  if (!resolution) return error;
+  return new FlowError(
+    resolution.code,
+    resolution.message,
+    error instanceof FlowError ? error.status : 422,
+    {
+      ...(error instanceof FlowError &&
+      error.details &&
+      typeof error.details === "object"
+        ? error.details
+        : {}),
+      diagnostic: redact(
+        String(
+          (error instanceof FlowError
+            ? (error.details as any)?.diagnostic
+            : undefined) ?? diagnostic,
+        ),
+      ),
+      resolution,
+    },
+  );
+}
+
 export function classifyFailure(text: string) {
   const lower = text.toLowerCase();
   if (/policy_default_deny/.test(lower))
@@ -14,7 +47,23 @@ export function classifyFailure(text: string) {
       message:
         "AGY 拒绝了原生工具操作，执行已暂停并保留现场。核对客户端权限和具体操作后继续；不会自动重试或改用其他工具绕过拒绝。",
     };
-  if (/429|quota|rate.?limit|额度|配额/.test(lower))
+  if (
+    /bad record mac|local error:\s*tls:|streamGenerateContent.*(?:request failed|bad record mac)/i.test(
+      lower,
+    )
+  ) {
+    const res = runtimeFailureResolution("MODEL_CONNECTION_FAILED", text);
+    return {
+      code: "MODEL_CONNECTION_FAILED",
+      retry: "auto",
+      message:
+        res?.message ??
+        "模型通信底层网络/TLS 连接异常，属于偶发网络故障，已安排自动重试。",
+    };
+  }
+  const resolution = runtimeFailureResolution("", text);
+  if (resolution) return { ...resolution, retry: "manual" };
+  if (/\b429\b|\bquota\b|rate.?limit|额度不足|配额耗尽/.test(lower))
     return {
       code: "MODEL_QUOTA",
       retry: "manual",
@@ -45,13 +94,14 @@ export function classifyFailure(text: string) {
       retry: "manual",
       message: "策略检查失败。",
     };
-  if (/model_auth|unauthenticated|login|登录/.test(lower))
+  if (/model_auth|unauthenticated|please .*login|登录失效/.test(lower))
     return {
       code: "MODEL_AUTH",
       retry: "manual",
-      message: "模型登录状态需要修复。请在对应受管身份下完成登录。",
+      message:
+        "模型登录状态需要修复。请使用当前系统用户在对应 CLI 中完成登录。",
     };
-  if (/enospc|disk full|磁盘/.test(lower))
+  if (/enospc|disk full|磁盘空间不足/.test(lower))
     return {
       code: "DISK_FULL",
       retry: "manual",

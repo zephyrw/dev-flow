@@ -169,7 +169,7 @@ test("native tool actions show concrete targets and output while repair transiti
   await expect(logs.locator(".activity-status.error")).toHaveText("失败");
   const report = logs
     .locator(".activity")
-    .filter({ hasText: "Gemini 执行结果" });
+    .filter({ hasText: "模型执行结果" });
   await expect(
     report.getByRole("heading", { name: "交付报告", exact: true }),
   ).toBeVisible();

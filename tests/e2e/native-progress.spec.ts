@@ -144,7 +144,7 @@ test("native work and test progress follow read-only facts while commands stay c
   await expect(strip).toContainText("工作包已开展1/2");
   await expect(strip.getByLabel("自测执行次数")).toContainText("1 次");
   await expect(strip).not.toContainText("尚未生成细项清单");
-  await expect(strip).toContainText("计划用例已核验0/26");
+  await expect(strip).toContainText("计划用例报告通过0/26");
   await expect(strip).toContainText(/最近自测：通过\s*3/);
   await page.getByRole("button", { name: "任务进度", exact: true }).click();
   await expect(page.locator(".task-module")).toHaveCount(2);
@@ -203,7 +203,7 @@ test("native work and test progress follow read-only facts while commands stay c
   await expect(strip).toContainText("最近自测：执行失败");
   send(3, 2, "DONE", " Tests 5 passed (5)");
   await expect(strip).toContainText(/最近自测：通过\s*5\s*· 失败\s*0/);
-  await expect(strip).toContainText("计划用例已核验0/26");
+  await expect(strip).toContainText("计划用例报告通过0/26");
   const selfTests = page.getByLabel("原生自测进度");
   await expect(selfTests.locator(".native-test-run").first()).toContainText(
     "自测通过",

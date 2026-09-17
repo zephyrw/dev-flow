@@ -1,10 +1,22 @@
 import type { Engine, PlanRecord } from "./engine.js";
 import { failureSummary } from "../../presentation/src/failure.js";
 import { canResolveSourceChange } from "./source-change.js";
+import { runtimeFailureResolution } from "../../contracts/src/runtime-failure.js";
+import { reviewCompletionContext } from "./review-completion.js";
 
 // Present authoritative state; legacy recovery must not invent a human actor.
 export function workflowAttention(engine: Engine, key: string) {
   const w = engine.get(key);
+  if (
+    ["REVIEW_QUEUED", "REVIEWING"].includes(w.state) &&
+    reviewCompletionContext(engine, w)
+  )
+    return {
+      category: "queue",
+      message: "规划模型正在补齐详细整改计划，无需你编写；完成后继续质量流程。",
+      action: "查看执行过程",
+      at: w.updated_at,
+    };
   if (canResolveSourceChange(engine, w))
     return {
       category: "source_change",
@@ -13,6 +25,29 @@ export function workflowAttention(engine: Engine, key: string) {
       action: "处理代码更新",
       at: w.updated_at,
     };
+  if (w.state === "BLOCKED") {
+    const repair = engine.store.get<any>("repair_state", key);
+    const resolution =
+      runtimeFailureResolution(w.blocker?.code, w.blocker?.message) ??
+      (w.blocker?.code === "REPAIR_EXHAUSTED" &&
+      repair?.plan_revision === w.plan_revision
+        ? runtimeFailureResolution(repair.code, repair.last_error)
+        : undefined);
+    if (resolution && resolution.code !== "MODEL_QUOTA") {
+      const interruption = engine.store.get<any>("interruption", key);
+      const run = w.run_id ? engine.store.get<any>("run", w.run_id) : undefined;
+      return {
+        category: "error",
+        message: `${resolution.title}：${resolution.message}`,
+        action: "查看处理方法",
+        at: w.updated_at,
+        resolution,
+        runtime_context:
+          interruption?.run_id === w.run_id ? interruption?.details : undefined,
+        profile: run?.profile,
+      };
+    }
+  }
   const modelRetry = engine.store.get<{ retry_at: number }>("model_retry", key);
   if (w.state === "BLOCKED" && w.blocker?.code === "MODEL_QUOTA" && modelRetry)
     return {

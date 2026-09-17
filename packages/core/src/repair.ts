@@ -4,30 +4,28 @@ import { id, now, redact, objectHash } from "./util.js";
 import { failureSummary } from "../../presentation/src/failure.js";
 import { rejectedDeliveryFeedback } from "./delivery-feedback.js";
 import { batchExecutionInstructions } from "./execution-guidance.js";
+import { normalizeRuntimeFailure } from "../../runtime/src/errors.js";
+import { runtimeFailureResolution } from "../../contracts/src/runtime-failure.js";
 
 export function prepareRepairResume(engine: Engine, key: string) {
+  if (resolveTaskModel(engine.plan(key).plan) !== "native-v2") return;
   const w = engine.get(key);
-  const previous = engine.store.get<any>("repair_state", key);
+  if (w.state === "BLOCKED" && w.blocker?.code === "REPAIR_EXHAUSTED")
+    engine.store.remove("repair_state", key);
+  const assignment = engine.store.get<any>("repair_assignment", key);
+  if (!assignment?.planner) return;
   if (
-    w.state !== "BLOCKED" ||
-    w.blocker?.code !== "REPAIR_EXHAUSTED" ||
-    resolveTaskModel(engine.plan(key).plan) !== "native-v2" ||
-    previous?.plan_revision !== w.plan_revision ||
-    previous?.code !== "DELIVERY_REJECTED" ||
-    (previous.executor_failures ?? previous.consecutive ?? 0) < 3
+    assignment.source === "quality_review" &&
+    assignment.plan_revision === w.plan_revision &&
+    assignment.plan_hash === w.plan_hash &&
+    assignment.source_review_id ===
+      engine.quality.getGate(key, assignment.phase)?.current_review_id &&
+    engine.quality.canTakeOver(key, assignment.phase)
   )
     return;
-  const assignment = engine.store.get<any>("repair_assignment", key);
-  engine.store.put("repair_assignment", key, key, {
-    ...assignment,
-    planner: true,
-    phase: assignment?.phase ?? "before_human",
-    source: "execution_failure",
-    plan_revision: w.plan_revision,
-    instructions:
-      "执行模型已多轮修复失败。本次恢复由规划模型在原批准范围内接手，完整核查全部拒绝原因，保留已有工作，完成整批修改后统一测试和交付。" + batchExecutionInstructions,
-  });
-  engine.store.remove("repair_state", key);
+  // Old execution-failure counters never authorize planner ownership. Recheck
+  // at resume/dispatch boundaries without interrupting an active model run.
+  engine.store.remove("repair_assignment", key);
 }
 
 export async function repairFailure(
@@ -39,7 +37,10 @@ export async function repairFailure(
   const w = engine.get(key);
   if (w.run_id !== run || !["EXECUTING", "VERIFYING"].includes(w.state))
     return null;
+  error = normalizeRuntimeFailure(error);
   const code = error instanceof FlowError ? error.code : "INTERNAL_FAILURE";
+  // Infrastructure failures do not consume either model's repair budget.
+  if (runtimeFailureResolution(code)) return null;
   if (
     [
       "MODEL_QUOTA",
@@ -192,31 +193,31 @@ function repairNativeFailure(
 ) {
   const w = engine.get(key);
   const run = engine.store.get<any>("run", runId);
+  prepareRepairResume(engine, key);
   const assignment = engine.store.get<any>("repair_assignment", key);
   const planner =
-    run?.purpose === "planner_takeover" ||
-    (run?.purpose === "plan_self_check" && assignment?.planner === true);
+    assignment?.planner === true &&
+    ["planner_takeover", "plan_self_check"].includes(run?.purpose);
   const phase =
     run?.purpose === "plan_self_check" ? "plan_self_check" : "implementation";
   const saved = engine.store.get<any>("repair_state", key);
   const prior =
-    saved?.plan_revision === w.plan_revision && saved?.phase === phase
-      ? saved
-      : null;
+    saved?.plan_revision === w.plan_revision ? saved : null;
   const failures: Array<{ run_id: string; planner: boolean }> =
     prior?.failed_runs ?? [];
   if (!failures.some((f) => f.run_id === runId))
     failures.push({ run_id: runId, planner });
   const executorFailures = failures.filter((f) => !f.planner).length;
   const plannerFailures = failures.filter((f) => f.planner).length;
-  const takeover = planner || executorFailures >= 3;
-  const exhausted = planner && plannerFailures >= 3;
+  // Execution recovery is bounded independently of quality remediation. It
+  // retains the assigned owner and can never grant planner takeover.
+  const exhausted = planner ? plannerFailures >= 3 : executorFailures >= 6;
   const code = error instanceof FlowError ? error.code : "INTERNAL_FAILURE";
   const message = redact(
     error instanceof Error ? error.message : String(error),
   );
   const delivery = rejectedDeliveryFeedback(engine.store, w);
-  const owner = takeover ? "规划模型" : "执行模型";
+  const owner = planner ? "规划模型" : "执行模型";
   const instructions = `${owner}在原批准工作区和范围内实际修复 ${code}：${message}。保留已有实现，先完整核查本次全部核验拒绝原因及共因，再完成整批代码修改，最后统一测试并提交新的真实交付；不得只给诊断建议。${batchExecutionInstructions}不得更改原批准计划或伪造测试记录、调用编号和报告。需要改变范围、权限或外部条件时报告具体阻塞。`;
   engine.store.put("repair_state", key, key, {
     plan_revision: w.plan_revision,
@@ -232,38 +233,26 @@ function repairNativeFailure(
     user_summary: failureSummary(code, message),
     status: exhausted
       ? "exhausted"
-      : takeover
-        ? "planner_takeover"
-        : "repairing",
+      : "repairing",
     updated_at: now(),
   });
   if (exhausted) {
     engine.transition(key, [w.state], "BLOCKED", "repair_exhausted", {
       blocker: {
         code: "REPAIR_EXHAUSTED",
-        message: `规划模型接手后连续三轮仍未解决：${failureSummary(code, message)}已停止重复尝试并保留修复现场。`,
+        message: `${owner}执行恢复连续${planner ? "三" : "六"}轮仍未完成：${failureSummary(code, message)}已保留现场；执行异常不计入代码质量整改次数，不因此更换模型。`,
       },
     });
     return { retry: false, instructions };
   }
-  if (takeover)
-    engine.store.put("repair_assignment", key, key, {
-      ...assignment,
-      planner: true,
-      phase: assignment?.phase ?? "before_human",
-      source: "execution_failure",
-      plan_revision: w.plan_revision,
-    });
   engine.store.event(
     key,
     w.project_id,
-    takeover ? "PlannerRepairScheduled" : "RepairScheduled",
+    "RepairScheduled",
     {
       attempt: failures.length,
       code,
-      message: takeover
-        ? "执行模型未能完成修复，已安排规划模型接手修改代码、补齐测试并重新核验。"
-        : `${failureSummary(code, message)}执行模型将继续修复。`,
+      message: `${failureSummary(code, message)}${owner}将继续修复；本次执行异常不计入质量整改次数。`,
       instructions,
     },
     runId,

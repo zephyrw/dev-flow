@@ -129,7 +129,7 @@ export function TaskTree({ detail, title }: { detail: any; title?: string }) {
                 </span>
                 <span className={`module-badge ${isAllDone ? "all-done" : ""}`}>
                   {native
-                    ? `已开展 ${all.filter((t: any) => ["active", "completed", "pending_check"].includes(t.development_status)).length} / ${all.length} · 已核验 ${all.filter((t: any) => t.status === "verified").length} / ${all.length}`
+                    ? `已开展 ${all.filter((t: any) => ["active", "completed", "pending_check"].includes(t.development_status)).length} / ${all.length} · 已交付 ${all.filter((t: any) => t.status === "verified").length} / ${all.length}`
                     : leaf
                       ? `开发 ${completedCount} / ${all.length} · 验证 ${all.filter((t: any) => t.status === "verified").length} / ${all.length}`
                       : `${all.length} 个工作包`}
@@ -154,7 +154,7 @@ export function TaskTree({ detail, title }: { detail: any; title?: string }) {
                           ] ?? "未开始"}
                         </span>
                         <span className="validation-status">
-                          验证：
+                          {native ? "交付记录：" : "验证："}
                           {
                             (
                               {
@@ -170,7 +170,13 @@ export function TaskTree({ detail, title }: { detail: any; title?: string }) {
                           }
                         </span>
                       </div>
-                      {t.summary && <p className="task-summary">{t.summary}</p>}
+                      {t.summary && (
+                        <p className="task-summary">
+                          {native && t.status === "verified"
+                            ? "已收到实现与测试交付记录；质量审核和人工验收分别记录。"
+                            : t.summary}
+                        </p>
+                      )}
                       {t.recheck_reason && (
                         <p className="notice-subtle">{t.recheck_reason}</p>
                       )}
@@ -227,6 +233,10 @@ export function TestResults({
   title?: string;
 }) {
   const [state, setState] = useState("all");
+  const native = detail.plan?.plan?.task_model === "native-v2";
+  const labels: Record<string, string> = native
+    ? { ...caseLabels, passed: "报告通过" }
+    : caseLabels;
   const progress = detail.test_progress ?? { cases: [] };
   const evidence = [
     ...(detail.evidence ?? []),
@@ -250,7 +260,7 @@ export function TestResults({
               onChange={(e) => setState(e.target.value)}
             >
               <option value="all">全部结果</option>
-              {Object.entries(caseLabels).map(([k, v]) => (
+              {Object.entries(labels).map(([k, v]) => (
                 <option key={k} value={k}>
                   {v}
                 </option>
@@ -263,7 +273,7 @@ export function TestResults({
         <section className="native-test-progress" aria-label="原生自测进度">
           <h3>实时自测</h3>
           <p className="notice-subtle">
-            这里显示测试工具返回的运行状态和用例数量。下方计划用例按交付证据核验，两种数量分别统计；修改代码后仍需复测。
+            这里显示测试工具返回的运行状态和用例数量；计划用例按提交的对应关系统计报告结果，两种数量分别统计。
           </p>
           {detail.native_progress.tests.length === 0 && (
             <p className="empty">
@@ -317,8 +327,13 @@ export function TestResults({
               </div>
             ))}
           </details>
-          <h3>计划用例核验</h3>
+          <h3>计划用例报告结果</h3>
         </section>
+      )}
+      {native && (
+        <p className="notice-subtle">
+          报告通过表示关联测试的报告结果；是否满足原计划由现有质量审核判断，人工验收单独确认。
+        </p>
       )}
       <div className="test-layers-list">
         {Object.entries(layers).map(([layer, label]) => {
@@ -357,7 +372,7 @@ export function TestResults({
                     <div className="test-case-row">
                       <b className="test-case-id">{c.id}</b>
                       <span className={"badge " + c.status}>
-                        {caseLabels[c.status]}
+                        {labels[c.status]}
                       </span>
                     </div>
                     <details className="test-case-details">

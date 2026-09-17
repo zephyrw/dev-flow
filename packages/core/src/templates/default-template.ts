@@ -2,7 +2,7 @@ import { parse } from "yaml";
 
 export const DEFAULT_TEMPLATE_YAML = `
 id: native-development
-revision: 4
+revision: 5
 task_model: native-v2
 roles:
   planner: task.plannerProfile
@@ -30,7 +30,7 @@ plan_self_check:
   counts_as_quality_rejection: false
 quality:
   max_executor_rejections: 3
-  first_failed_delivery_counts: true
+  first_failed_delivery_counts: false
   takeover: planner
   takeover_self_review: fresh_readonly_session
 feedback:

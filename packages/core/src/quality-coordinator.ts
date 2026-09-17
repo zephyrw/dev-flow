@@ -3,6 +3,8 @@ import {
   type Workflow,
   type QualityGate,
   type QualityPhase,
+  type QualityRepairAssignment,
+  type QualityReviewResult,
   type Run,
   QualityReviewResultSchema,
   requireCondition,
@@ -39,6 +41,7 @@ export class QualityCoordinator {
       phase,
       cycle: 1,
       executor_rejections: 0,
+      failed_repair_review_ids: [],
       takeover: false,
       status: "pending",
       updated_at: now(),
@@ -82,6 +85,80 @@ export class QualityCoordinator {
       422,
     );
     return gate;
+  }
+  canTakeOver(workflowId: string, phase: QualityPhase) {
+    const gate = this.getGate(workflowId, phase);
+    const reviews = gate?.failed_repair_review_ids ?? [];
+    return (
+      gate?.status === "rejected" &&
+      gate.takeover === true &&
+      gate.executor_rejections === 3 &&
+      reviews.length === 3 &&
+      new Set(reviews).size === 3 &&
+      reviews.every((id) => {
+        const review = this.store.get<QualityReviewResult & {
+          executor_repair_run_id?: string;
+        }>("quality_review", id);
+        return (
+          review?.workflow_id === workflowId &&
+          review.phase === phase &&
+          review.verdict === "changes_required" &&
+          !!review.executor_repair_run_id
+        );
+      })
+    );
+  }
+  private completedExecutorRepair(w: Workflow, gate: QualityGate) {
+    const assignment = this.store.get<QualityRepairAssignment>(
+      "repair_assignment",
+      w.id,
+    );
+    if (
+      gate.status !== "rejected" ||
+      gate.takeover ||
+      !assignment ||
+      assignment.planner !== false ||
+      assignment.source !== "quality_review" ||
+      assignment.phase !== gate.phase ||
+      assignment.source_review_id !== gate.current_review_id ||
+      assignment.plan_revision !== w.plan_revision ||
+      assignment.plan_hash !== w.plan_hash
+    )
+      return;
+    const source = this.store.get<QualityReviewResult>(
+      "quality_review",
+      assignment.source_review_id,
+    );
+    if (
+      source?.workflow_id !== w.id ||
+      source.phase !== gate.phase ||
+      source.verdict !== "changes_required" ||
+      !source.repair_plan.length
+    )
+      return;
+    // The completed self-check binds the implementation which actually ran the
+    // approved repair. A retry, an unsubmitted delivery or a second review of
+    // the same implementation is not another completed repair attempt.
+    const check = new PlanSelfCheckCoordinator(this.store).current(w.id);
+    const run = check && this.store.get<Run>("run", check.source_run_id);
+    if (
+      !run ||
+      run.workflow_id !== w.id ||
+      run.plan_revision !== w.plan_revision ||
+      run.purpose !== "implement" ||
+      run.status !== "completed" ||
+      run.exit_code !== 0 ||
+      this.store.get("run_stop", run.id) ||
+      (gate.failed_repair_review_ids ?? []).some(
+        (id) =>
+          this.store.get<{ executor_repair_run_id?: string }>(
+            "quality_review",
+            id,
+          )?.executor_repair_run_id === run.id,
+      )
+    )
+      return;
+    return run.id;
   }
   evaluateReviewResult(workflowId: string, input: unknown): Decision {
     const parsed = QualityReviewResultSchema.safeParse(input);
@@ -147,21 +224,31 @@ export class QualityCoordinator {
       return reject("REVIEW_CYCLE_STALE: 审查周期已变化");
     if (result.verdict === "incomplete")
       return reject("质量审查未完成，不增加失败计数");
+    const repairRunId = this.completedExecutorRepair(w, gate);
     return this.store.transaction(() => {
       let decision: Decision;
       if (result.verdict === "passed") {
         gate.status = "passed";
+        gate.executor_rejections = 0;
+        gate.failed_repair_review_ids = [];
+        gate.takeover = false;
         gate.passed_input_fingerprint = fingerprint;
+        if (
+          this.store.get<QualityRepairAssignment>("repair_assignment", workflowId)
+            ?.phase === phase
+        )
+          this.store.remove("repair_assignment", workflowId);
         decision = {
           action: "pass",
           rejectionCount: gate.executor_rejections,
           message: "质量审查通过",
         };
       } else {
-        // Once the planner owns repair, its failures do not count as executor failures.
-        if (!gate.takeover)
-          gate.executor_rejections = Math.min(3, gate.executor_rejections + 1);
-        gate.takeover = gate.takeover || gate.executor_rejections === 3;
+        const failures = gate.failed_repair_review_ids ?? [];
+        if (repairRunId) failures.push(result.run_id);
+        gate.failed_repair_review_ids = failures;
+        gate.executor_rejections = failures.length;
+        gate.takeover = gate.executor_rejections === 3;
         gate.status = "rejected";
         gate.cycle++;
         delete gate.passed_input_fingerprint;
@@ -169,7 +256,7 @@ export class QualityCoordinator {
           action: gate.takeover ? "takeover_by_planner" : "repair_by_executor",
           rejectionCount: gate.executor_rejections,
           message: gate.takeover
-            ? "三次不合格，规划模型接管修复"
+            ? "正式整改连续三次复核不通过，规划模型接管修复"
             : "按完整整改文档继续修复",
         };
       }
@@ -184,6 +271,7 @@ export class QualityCoordinator {
       this.store.put("quality_review", result.run_id, workflowId, {
         ...result,
         input_fingerprint: fingerprint,
+        ...(repairRunId ? { executor_repair_run_id: repairRunId } : {}),
       });
       this.store.put("quality_eval_dedup", dedupKey, workflowId, {
         resultHash,
@@ -198,7 +286,7 @@ export class QualityCoordinator {
   ) {
     const gate = this.getGate(workflowId, phase);
     requireCondition(
-      gate?.takeover && gate.executor_rejections === 3,
+      this.canTakeOver(workflowId, phase),
       "TAKEOVER_NOT_REQUIRED",
       "尚未达到规划模型接管条件",
     );
@@ -206,6 +294,10 @@ export class QualityCoordinator {
     this.store.put("repair_assignment", workflowId, workflowId, {
       planner: true,
       phase,
+      source: "quality_review",
+      source_review_id: gate!.current_review_id,
+      plan_revision: w.plan_revision,
+      plan_hash: w.plan_hash,
     });
     // The scheduler creates the Run only when it actually acquires a slot.
     const next = {

@@ -385,8 +385,9 @@ it("DF-STAGE-U08 blocked event explains timeout without inventing history", () =
   });
 
   expect(rows[1]).toMatchObject({
-    title: "执行暂停",
-    text: "本轮执行达到配置时限，现场已保留，可继续执行",
+    title: "运行达到时限",
+    text: expect.stringContaining("尚不能据此判定代码修复失败"),
     status: "error",
   });
+  expect(rows[1]?.text).toContain("处理对应阻塞");
 });

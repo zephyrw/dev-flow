@@ -1,5 +1,15 @@
+import { runtimeFailureResolution } from "../../contracts/src/runtime-failure.js";
+
 /** User-facing causes only; raw commands and diagnostics remain in details. */
 export function failureSummary(code = "", detail = "") {
+  if (
+    code === "REPAIR_PLAN_INCOMPLETE" ||
+    code === "REVIEW_COMPLETION_EXHAUSTED"
+  )
+    return "规划模型尚未完成详细整改计划。应由规划模型继续补齐，无需你编写计划。";
+  const resolution = runtimeFailureResolution(code, detail);
+  if (resolution)
+    return `${resolution.title}：${resolution.message}处理方法：${resolution.steps.join(" ")}`;
   if (code === "BASELINE_CHANGED")
     return "项目代码已更新，与制定计划时不同。请查看变化后选择继续方式。";
   if (code === "NATIVE_PERMISSION_DENIED")
