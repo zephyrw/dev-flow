@@ -1,0 +1,46 @@
+{
+  "findings": [
+    "RQ-01",
+    "RQ-02",
+    "RQ-03",
+    "RQ-04",
+    "RQ-05",
+    "RQ-06",
+    "RQ-07",
+    "RQ-08",
+    "RQ-09",
+    "RQ-10",
+    "RQ-11",
+    "RQ-12",
+    "RQ-13",
+    "RQ-14",
+    "RQ-15",
+    "RQ-16",
+    "RQ-17",
+    "RQ-18",
+    "RQ-19",
+    "RQ-20",
+    "RQ-21",
+    "RQ-22",
+    "RQ-23",
+    "RQ-24",
+    "RQ-25"
+  ],
+  "finding_count": 25,
+  "local_markdown_links": "verified",
+  "skill_validator": {
+    "devflow-review": "passed (-X utf8)",
+    "devflow-plan": "passed (-X utf8)",
+    "devflow-execute": "passed (-X utf8)"
+  },
+  "changed_document_diff_check": "passed",
+  "preexisting_product_diff_check_issue": "packages/contracts/src/index.ts:562 blank line at EOF; preserved original product file",
+  "product_source_unchanged": true,
+  "review_verdict": "changes_required",
+  "committed": false,
+  "full_platform_e2e_matrix_run_in_this_review": false,
+  "isolated_defect_reproductions": {
+    "R01_R20": 20,
+    "H01_H03": 3
+  }
+}

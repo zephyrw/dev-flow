@@ -1,0 +1,234 @@
+{
+  "audited_at": "2026-09-16T08:50:28.832Z",
+  "isolation_root": "C:\\Users\\yckj4798\\AppData\\Local\\Temp\\devflow-test-Dp5JqH",
+  "results": [
+    {
+      "id": "R01",
+      "defect_reproduced": false,
+      "observed": {
+        "create": 200,
+        "detail": 200
+      }
+    },
+    {
+      "id": "R02",
+      "defect_reproduced": false,
+      "observed": {
+        "state": "PLANNING",
+        "sqlOutbox": 1,
+        "entityOutbox": 0
+      }
+    },
+    {
+      "id": "R03",
+      "defect_reproduced": false,
+      "observed": {
+        "workspace_mode": "new_worktree",
+        "rootEqualsSource": true,
+        "owned": false
+      }
+    },
+    {
+      "id": "R04",
+      "defect_reproduced": false,
+      "observed": {
+        "requested": [
+          "codex",
+          "claude-code"
+        ],
+        "actual": [
+          "codex",
+          "claude-code"
+        ],
+        "mode": "composite"
+      }
+    },
+    {
+      "id": "R05",
+      "defect_reproduced": false,
+      "observed": {
+        "http": 409
+      }
+    },
+    {
+      "id": "R06",
+      "defect_reproduced": false,
+      "observed": {
+        "sameResultActions": [
+          "retry_incomplete",
+          "retry_incomplete",
+          "retry_incomplete"
+        ],
+        "rejections": [
+          0,
+          0,
+          0
+        ],
+        "workflowPhase": "PLANNING"
+      }
+    },
+    {
+      "id": "R07",
+      "defect_reproduced": false,
+      "observed": {
+        "withoutFix": true,
+        "passedInput": "false"
+      }
+    },
+    {
+      "id": "R08",
+      "defect_reproduced": false,
+      "observed": {
+        "activeInSameWorkflow": 1,
+        "secondWorkflow": "queued",
+        "outboxJobs": 2
+      }
+    },
+    {
+      "id": "R09",
+      "defect_reproduced": false,
+      "observed": {
+        "duplicateFormalMessages": 1
+      }
+    },
+    {
+      "id": "R10",
+      "defect_reproduced": false,
+      "observed": {
+        "item": {
+          "ref_id": "ref-44094901-ca2b-4401-b216-080bbc1ddb55",
+          "repo_id": "main",
+          "relative_path": "visible.txt",
+          "kind": "file"
+        },
+        "expectedKeys": [
+          "ref_id",
+          "repo_id",
+          "relative_path",
+          "kind"
+        ]
+      }
+    },
+    {
+      "id": "R11",
+      "defect_reproduced": false,
+      "observed": {
+        "traversalRead": "",
+        "linkedAvailability": "outside_workspace"
+      }
+    },
+    {
+      "id": "R12",
+      "defect_reproduced": false,
+      "observed": {
+        "available": false,
+        "fingerprintMismatch": "版本命令输出未匹配到产品指纹",
+        "claimed": {
+          "nativeEditing": false,
+          "terminal": false,
+          "browser": false,
+          "exactResume": false,
+          "readOnlySession": false,
+          "structuredToolFacts": false,
+          "asyncProcessFacts": false,
+          "usageReporting": false
+        }
+      }
+    },
+    {
+      "id": "R13",
+      "defect_reproduced": false,
+      "observed": {
+        "resumeArgs": [
+          "exec",
+          "--read-only",
+          "--resume",
+          "EXACT_OLD_SESSION",
+          "--read-only"
+        ],
+        "readonlyFlagPresent": false,
+        "splitEventTypes": [
+          "tool_call"
+        ],
+        "facts": {
+          "facts": [
+            {
+              "tool_call_id": "fact_wf-51dd979a-1f95-434b-9c35-d25319d3a389_audit-run",
+              "command": "noop",
+              "cwd": "C:\\Code\\system-handle",
+              "status": "completed"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "R14",
+      "defect_reproduced": false,
+      "observed": {
+        "stopReported": true,
+        "childStillRunning": false
+      }
+    },
+    {
+      "id": "R15",
+      "defect_reproduced": false,
+      "observed": {
+        "engineReadsPlan": "native-v2",
+        "readerReason": "缺少当前计划版本的有效交付核验记录"
+      }
+    },
+    {
+      "id": "R16",
+      "defect_reproduced": false,
+      "observed": {
+        "missingWorkspace": true,
+        "missingRun": true,
+        "missingReport": true,
+        "valid": false
+      }
+    },
+    {
+      "id": "R17",
+      "defect_reproduced": false,
+      "observed": {
+        "reportedMcp": true,
+        "configExists": true,
+        "referenceCopied": true,
+        "restoredBrowserSkill": false
+      }
+    },
+    {
+      "id": "R18",
+      "defect_reproduced": false,
+      "observed": {
+        "nativeSchemaAccepted": true,
+        "productionValidatorRejected": false
+      }
+    },
+    {
+      "id": "R19",
+      "defect_reproduced": false,
+      "observed": {
+        "committedFiles": [
+          "task.txt"
+        ],
+        "candidateIsSha": true
+      }
+    },
+    {
+      "id": "R20",
+      "defect_reproduced": false,
+      "observed": {
+        "cleanup": {
+          "workflow_id": "wf-clean-audit",
+          "worktree_removed": true,
+          "branch_deleted": true,
+          "cleaned_at": "2026-09-16T08:50:28.821Z"
+        },
+        "stateRecorded": null
+      }
+    }
+  ],
+  "reproduced": 0
+}

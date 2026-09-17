@@ -1,0 +1,160 @@
+{
+  "timestamp": "2026-09-16T13:05:48.229Z",
+  "platform": "win32",
+  "arch": "x64",
+  "verification_scope": "local executable identity and help only; no paid model invocation",
+  "tools": [
+    {
+      "tool": "codex",
+      "status": "blocked",
+      "live_workflow_verified": false,
+      "adapterId": "codex",
+      "available": false,
+      "executablePath": "C:\\Users\\yckj4798\\AppData\\Roaming/npm/codex.cmd",
+      "capabilities": {
+        "nativeEditing": false,
+        "terminal": false,
+        "browser": false,
+        "exactResume": false,
+        "readOnlySession": false,
+        "structuredToolFacts": false,
+        "asyncProcessFacts": false,
+        "usageReporting": false
+      },
+      "unsupportedReason": "Error: spawnSync C:\\Program Files\\nodejs\\node.exe ETIMEDOUT"
+    },
+    {
+      "tool": "agy",
+      "status": "blocked",
+      "live_workflow_verified": false,
+      "adapterId": "agy",
+      "available": false,
+      "executablePath": "C:\\Users\\yckj4798\\AppData\\Local/agy/bin/agy.exe",
+      "capabilities": {
+        "nativeEditing": false,
+        "terminal": false,
+        "browser": false,
+        "exactResume": false,
+        "readOnlySession": false,
+        "structuredToolFacts": false,
+        "asyncProcessFacts": false,
+        "usageReporting": false
+      },
+      "unsupportedReason": "Error: spawnSync C:\\Users\\yckj4798\\AppData\\Local/agy/bin/agy.exe ETIMEDOUT"
+    },
+    {
+      "tool": "grok-build",
+      "status": "blocked",
+      "live_workflow_verified": false,
+      "adapterId": "grok-build",
+      "available": false,
+      "executablePath": "C:\\Users\\yckj4798\\AppData\\Roaming/npm/grok.exe",
+      "capabilities": {
+        "nativeEditing": false,
+        "terminal": false,
+        "browser": false,
+        "exactResume": false,
+        "readOnlySession": false,
+        "structuredToolFacts": false,
+        "asyncProcessFacts": false,
+        "usageReporting": false
+      },
+      "unsupportedReason": "Error: spawnSync C:\\Users\\yckj4798\\AppData\\Roaming/npm/grok.exe ETIMEDOUT"
+    },
+    {
+      "tool": "claude-code",
+      "status": "blocked",
+      "live_workflow_verified": false,
+      "adapterId": "claude-code",
+      "available": false,
+      "executablePath": "C:\\Users\\yckj4798\\AppData\\Roaming/npm/claude.cmd",
+      "capabilities": {
+        "nativeEditing": false,
+        "terminal": false,
+        "browser": false,
+        "exactResume": false,
+        "readOnlySession": false,
+        "structuredToolFacts": false,
+        "asyncProcessFacts": false,
+        "usageReporting": false
+      },
+      "unsupportedReason": "Error: spawnSync C:\\Users\\yckj4798\\AppData\\Roaming\\npm\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe ETIMEDOUT"
+    },
+    {
+      "tool": "kimi-code",
+      "status": "blocked",
+      "live_workflow_verified": false,
+      "adapterId": "kimi-code",
+      "available": false,
+      "executablePath": "C:\\Users\\yckj4798\\AppData\\Roaming/npm/kimi.cmd",
+      "capabilities": {
+        "nativeEditing": false,
+        "terminal": false,
+        "browser": false,
+        "exactResume": false,
+        "readOnlySession": false,
+        "structuredToolFacts": false,
+        "asyncProcessFacts": false,
+        "usageReporting": false
+      },
+      "unsupportedReason": "FlowError: 请配置实际 CLI 二进制或 Node 入口；不通过 shell 执行：C:\\Users\\yckj4798\\AppData\\Roaming/npm/kimi.cmd"
+    },
+    {
+      "tool": "qoder",
+      "status": "blocked",
+      "live_workflow_verified": false,
+      "adapterId": "qoder",
+      "available": false,
+      "executablePath": "C:\\Users\\yckj4798\\AppData\\Roaming/npm/qoder.exe",
+      "capabilities": {
+        "nativeEditing": false,
+        "terminal": false,
+        "browser": false,
+        "exactResume": false,
+        "readOnlySession": false,
+        "structuredToolFacts": false,
+        "asyncProcessFacts": false,
+        "usageReporting": false
+      },
+      "unsupportedReason": "Error: spawnSync C:\\Users\\yckj4798\\AppData\\Roaming/npm/qoder.exe ETIMEDOUT"
+    },
+    {
+      "tool": "opencode",
+      "status": "blocked",
+      "live_workflow_verified": false,
+      "adapterId": "opencode",
+      "available": false,
+      "executablePath": "C:\\Users\\yckj4798\\AppData\\Roaming/npm/opencode.cmd",
+      "capabilities": {
+        "nativeEditing": false,
+        "terminal": false,
+        "browser": false,
+        "exactResume": false,
+        "readOnlySession": false,
+        "structuredToolFacts": false,
+        "asyncProcessFacts": false,
+        "usageReporting": false
+      },
+      "unsupportedReason": "Error: spawnSync C:\\Users\\yckj4798\\AppData\\Roaming\\npm\\node_modules\\opencode-ai\\bin\\opencode.exe ETIMEDOUT"
+    },
+    {
+      "tool": "cursor-agent",
+      "status": "blocked",
+      "live_workflow_verified": false,
+      "adapterId": "cursor-agent",
+      "available": false,
+      "executablePath": "C:\\Users\\yckj4798\\AppData\\Local/cursor-agent/agent.cmd",
+      "capabilities": {
+        "nativeEditing": false,
+        "terminal": false,
+        "browser": false,
+        "exactResume": false,
+        "readOnlySession": false,
+        "structuredToolFacts": false,
+        "asyncProcessFacts": false,
+        "usageReporting": false
+      },
+      "unsupportedReason": "Error: spawnSync C:\\Users\\yckj4798\\AppData\\Local\\cursor-agent\\versions\\2026.08.11-e8db854\\node.exe ETIMEDOUT"
+    }
+  ]
+}

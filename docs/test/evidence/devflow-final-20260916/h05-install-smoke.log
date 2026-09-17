@@ -1,0 +1,12 @@
+RUN tests/live/devflow-v2-install.mjs
+INSTALL_SMOKE_PASSED
+{
+  "code": 0,
+  "missing_source_rejected": true,
+  "hash_mismatch_rejected": true,
+  "real_service_healthy": true,
+  "ui_served": true,
+  "six_skills_and_references": true,
+  "mcp_configured": true,
+  "retry_same_process": true
+}

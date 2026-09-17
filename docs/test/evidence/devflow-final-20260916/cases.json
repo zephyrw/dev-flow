@@ -1,0 +1,1076 @@
+[
+  {
+    "case_id": "H00",
+    "type": "phase_gate",
+    "requirement_ids": [
+      "H00"
+    ],
+    "source_hash_manifest": "source-hashes-start.json",
+    "status": "passed",
+    "assertions": [
+      "工作区根目录确认为C:/Code/system-handle",
+      "收集HEAD/分支/修改状态完成",
+      "553个源码文件计算起始SHA-256",
+      "13份历史报告全量归档并建立索引",
+      "进程与端口检查完成，确认31268用户服务并保护",
+      "cases.json初始化完成"
+    ],
+    "evidence_files": [
+      "baseline.json",
+      "source-hashes-start.json",
+      "history/index.json",
+      "cases.json"
+    ],
+    "limitations": [],
+    "ended_at": "2026-09-16T15:21:17.553Z"
+  },
+  {
+    "case_id": "H01",
+    "type": "phase_gate",
+    "requirement_ids": [
+      "H01"
+    ],
+    "source_hash_manifest": "source-hashes-start.json",
+    "status": "passed",
+    "assertions": [
+      "Prettier检查指定文件全部通过 (退出码0)",
+      "修复WorkflowActivity.tsx中TS2345类型错误",
+      "pnpm run typecheck 全部通过 (退出码0)",
+      "pnpm run build 生产构建通过 (退出码0)",
+      "pnpm run build:host 构建通过 (退出码0)",
+      "dist/web/index.html 产物及资源更新确认",
+      "Mermaid缓存LRU上限64、成功缓存、validatePlan未跳过断言通过",
+      "Windows descriptor/launcher/installer超时等待期限一致性核验通过"
+    ],
+    "evidence_files": [
+      "h01-prettier.log",
+      "h01-typecheck.log",
+      "h01-build.log",
+      "h01-build-host.log",
+      "h01-dist-web-check.json",
+      "source-hashes-H01.json"
+    ],
+    "limitations": [],
+    "ended_at": "2026-09-16T15:31:40.695Z"
+  },
+  {
+    "case_id": "H02",
+    "type": "phase_gate",
+    "requirement_ids": [
+      "H02"
+    ],
+    "source_hash_manifest": "source-hashes-start.json",
+    "status": "passed",
+    "assertions": [
+      "H02-C01通过：functional-issues返回对象时局部展示错误且无pageerror",
+      "H02-C02通过：asides返回非数组时展示局部错误，恢复合法数组后刷新错误消失",
+      "H02-C03通过：任务切换立即清理旧任务问题，延迟响应期间不展示旧可操作问题",
+      "H02-C04通过：发送指导返回409时保留全文与@引用且不关闭输入框",
+      "H02-C05通过：四份旧mock测试完成规范兼容，无删除失败断言或降级",
+      "H02-C06通过：全量Playwright 25个测试用例全部执行，0 failed、0 unexpected、0 interrupted"
+    ],
+    "evidence_files": [
+      "h02-playwright.log",
+      "e2e-report-h02.json"
+    ],
+    "limitations": [],
+    "ended_at": "2026-09-16T15:53:17.591Z"
+  },
+  {
+    "case_id": "H03",
+    "type": "phase_gate",
+    "requirement_ids": [
+      "H03"
+    ],
+    "source_hash_manifest": "source-hashes-H03.json",
+    "status": "passed",
+    "assertions": [
+      "H03-C01通过：复验9个核心测试套件27个用例全部通过",
+      "H03-C02通过：补齐合并冲突数据契约、运行时模型交互与协调器流转",
+      "H03-C02测试1通过：同行冲突责任模型修复并保留双方需求，补测终审后发布并清理临时工作树与分支",
+      "H03-C02测试2通过：未批准路径与模型异常退出时主工作区HEAD保持不变且工作树现场完整保留",
+      "H03-C02测试3通过：目标工作区脏或外部再次推进时拒绝发布",
+      "H03全量回归通过：63个测试文件270个测试用例全部通过，0 failed，0 unhandled error"
+    ],
+    "evidence_files": [
+      "source-hashes-H03.json",
+      "h03-merge-conflict.log",
+      "h03-all.json"
+    ],
+    "limitations": [],
+    "ended_at": "2026-09-16T23:36:08.727Z"
+  },
+  {
+    "case_id": "H04",
+    "type": "phase_gate",
+    "requirement_ids": [
+      "H04"
+    ],
+    "source_hash_manifest": "source-hashes-H04.json",
+    "status": "passed",
+    "assertions": [
+      "H04-C01通过：UI控制区增加工具与模型配置抽屉，MCP新增devflow_update_execution_spec，支持运行时安全中断与版本自增",
+      "H04-C01通过：当前Run配置不可原地篡改，未知Profile拒绝隐式回退保持fail-closed",
+      "H04-C02通过：顺序完成八工具真实发现与版本认证(codex/agy/grok-build/claude-code/kimi-code/qoder/opencode/cursor-agent)",
+      "H04-C02通过：Windows平台shim精确解析为真实Node/可执行文件",
+      "H04-C02通过：只读审查沙箱参数与会话精确续接契约核验通过",
+      "H04-C02通过：如实记录八工具真实登录与blocked状态，不伪造网络认证",
+      "H04-C02通过：完成八工具首尾闭合相邻组合及Kimi+Claude组合矩阵认证并输出结构化证据",
+      "H04适配器回归测试通过：tests/integration/devflow-v2-adapters.test.ts 6个用例全部通过"
+    ],
+    "evidence_files": [
+      "source-hashes-H04.json",
+      "h04-tool-matrix.json",
+      "h04-adapters-test.log"
+    ],
+    "limitations": [],
+    "ended_at": "2026-09-16T23:46:18.119Z"
+  },
+  {
+    "case_id": "H05",
+    "type": "phase_gate",
+    "requirement_ids": [
+      "H05"
+    ],
+    "source_hash_manifest": "source-hashes-H05.json",
+    "status": "passed",
+    "assertions": [
+      "H05-C01通过：生产包生成与sha256校验通过，坏hash被拒，缺source返回20",
+      "H05-C01通过：全新隔离安装烟测devflow-v2-install.mjs执行通过，退出码0",
+      "H05-C01通过：真实服务健康探测与首页静态资源就绪，六Skill与完整references分发就绪",
+      "H05-C01通过：MCP正确配置，二次安装复用同一进程，测试清理保留用户真实服务",
+      "H05-C02通过：平台统一路径解析、可用回环端口分配及受管闭包分发验证通过",
+      "H05-C03通过：UpgradeManager数据库一致性快照备份与current.json原子切换通过",
+      "H05-C04通过：卸载受管条目清理与用户自定义配置保护核验通过",
+      "H05安装器回归测试通过：tests/integration/devflow-v2-installer.test.ts 6个用例全部通过"
+    ],
+    "evidence_files": [
+      "source-hashes-H05.json",
+      "installer-smoke.json",
+      "h05-install-smoke.log",
+      "h05-installer-test.log"
+    ],
+    "limitations": [],
+    "ended_at": "2026-09-16T23:50:15.371Z"
+  },
+  {
+    "case_id": "H06",
+    "type": "phase_gate",
+    "requirement_ids": [
+      "H06"
+    ],
+    "source_hash_manifest": "source-hashes-start.json",
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  },
+  {
+    "case_id": "H07",
+    "type": "phase_gate",
+    "requirement_ids": [
+      "H07"
+    ],
+    "source_hash_manifest": "source-hashes-start.json",
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  },
+  {
+    "case_id": "H08",
+    "type": "phase_gate",
+    "requirement_ids": [
+      "H08"
+    ],
+    "source_hash_manifest": "source-hashes-start.json",
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  },
+  {
+    "case_id": "H09",
+    "type": "phase_gate",
+    "requirement_ids": [
+      "H09"
+    ],
+    "source_hash_manifest": "source-hashes-start.json",
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  },
+  {
+    "case_id": "H10",
+    "type": "phase_gate",
+    "requirement_ids": [
+      "H10"
+    ],
+    "source_hash_manifest": "source-hashes-start.json",
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  },
+  {
+    "case_id": "H11",
+    "type": "phase_gate",
+    "requirement_ids": [
+      "H11"
+    ],
+    "source_hash_manifest": "source-hashes-start.json",
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  },
+  {
+    "case_id": "V01",
+    "type": "verification_target",
+    "requirement_ids": [
+      "V01"
+    ],
+    "source_hash_manifest": "source-hashes-start.json",
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  },
+  {
+    "case_id": "V02",
+    "type": "verification_target",
+    "requirement_ids": [
+      "V02"
+    ],
+    "source_hash_manifest": "source-hashes-start.json",
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  },
+  {
+    "case_id": "V03",
+    "type": "verification_target",
+    "requirement_ids": [
+      "V03"
+    ],
+    "source_hash_manifest": "source-hashes-start.json",
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  },
+  {
+    "case_id": "V04",
+    "type": "verification_target",
+    "requirement_ids": [
+      "V04"
+    ],
+    "source_hash_manifest": "source-hashes-start.json",
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  },
+  {
+    "case_id": "V05",
+    "type": "verification_target",
+    "requirement_ids": [
+      "V05"
+    ],
+    "source_hash_manifest": "source-hashes-start.json",
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  },
+  {
+    "case_id": "V06",
+    "type": "verification_target",
+    "requirement_ids": [
+      "V06"
+    ],
+    "source_hash_manifest": "source-hashes-start.json",
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  },
+  {
+    "case_id": "V07",
+    "type": "verification_target",
+    "requirement_ids": [
+      "V07"
+    ],
+    "source_hash_manifest": "source-hashes-start.json",
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  },
+  {
+    "case_id": "V08",
+    "type": "verification_target",
+    "requirement_ids": [
+      "V08"
+    ],
+    "source_hash_manifest": "source-hashes-start.json",
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  },
+  {
+    "case_id": "V09",
+    "type": "verification_target",
+    "requirement_ids": [
+      "V09"
+    ],
+    "source_hash_manifest": "source-hashes-start.json",
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  },
+  {
+    "case_id": "V10",
+    "type": "verification_target",
+    "requirement_ids": [
+      "V10"
+    ],
+    "source_hash_manifest": "source-hashes-start.json",
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  },
+  {
+    "case_id": "LF-01",
+    "type": "low_friction_requirement",
+    "requirement_ids": [
+      "LF-01"
+    ],
+    "source_hash_manifest": "source-hashes-start.json",
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  },
+  {
+    "case_id": "LF-02",
+    "type": "low_friction_requirement",
+    "requirement_ids": [
+      "LF-02"
+    ],
+    "source_hash_manifest": "source-hashes-start.json",
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  },
+  {
+    "case_id": "LF-03",
+    "type": "low_friction_requirement",
+    "requirement_ids": [
+      "LF-03"
+    ],
+    "source_hash_manifest": "source-hashes-start.json",
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  },
+  {
+    "case_id": "LF-04",
+    "type": "low_friction_requirement",
+    "requirement_ids": [
+      "LF-04"
+    ],
+    "source_hash_manifest": "source-hashes-start.json",
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  },
+  {
+    "case_id": "LF-05",
+    "type": "low_friction_requirement",
+    "requirement_ids": [
+      "LF-05"
+    ],
+    "source_hash_manifest": "source-hashes-start.json",
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  },
+  {
+    "case_id": "LF-06",
+    "type": "low_friction_requirement",
+    "requirement_ids": [
+      "LF-06"
+    ],
+    "source_hash_manifest": "source-hashes-start.json",
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  },
+  {
+    "case_id": "LF-07",
+    "type": "low_friction_requirement",
+    "requirement_ids": [
+      "LF-07"
+    ],
+    "source_hash_manifest": "source-hashes-start.json",
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  },
+  {
+    "case_id": "LF-08",
+    "type": "low_friction_requirement",
+    "requirement_ids": [
+      "LF-08"
+    ],
+    "source_hash_manifest": "source-hashes-start.json",
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  },
+  {
+    "case_id": "LF-09",
+    "type": "low_friction_requirement",
+    "requirement_ids": [
+      "LF-09"
+    ],
+    "source_hash_manifest": "source-hashes-start.json",
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  },
+  {
+    "case_id": "LF-10",
+    "type": "low_friction_requirement",
+    "requirement_ids": [
+      "LF-10"
+    ],
+    "source_hash_manifest": "source-hashes-start.json",
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  },
+  {
+    "case_id": "LF-11",
+    "type": "low_friction_requirement",
+    "requirement_ids": [
+      "LF-11"
+    ],
+    "source_hash_manifest": "source-hashes-start.json",
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  },
+  {
+    "case_id": "LF-12",
+    "type": "low_friction_requirement",
+    "requirement_ids": [
+      "LF-12"
+    ],
+    "source_hash_manifest": "source-hashes-start.json",
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  },
+  {
+    "case_id": "LF-13",
+    "type": "low_friction_requirement",
+    "requirement_ids": [
+      "LF-13"
+    ],
+    "source_hash_manifest": "source-hashes-start.json",
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  },
+  {
+    "case_id": "LF-14",
+    "type": "low_friction_requirement",
+    "requirement_ids": [
+      "LF-14"
+    ],
+    "source_hash_manifest": "source-hashes-start.json",
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  },
+  {
+    "case_id": "LF-15",
+    "type": "low_friction_requirement",
+    "requirement_ids": [
+      "LF-15"
+    ],
+    "source_hash_manifest": "source-hashes-start.json",
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  },
+  {
+    "case_id": "LF-16",
+    "type": "low_friction_requirement",
+    "requirement_ids": [
+      "LF-16"
+    ],
+    "source_hash_manifest": "source-hashes-start.json",
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  },
+  {
+    "case_id": "LF-17",
+    "type": "low_friction_requirement",
+    "requirement_ids": [
+      "LF-17"
+    ],
+    "source_hash_manifest": "source-hashes-start.json",
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  },
+  {
+    "case_id": "LF-18",
+    "type": "low_friction_requirement",
+    "requirement_ids": [
+      "LF-18"
+    ],
+    "source_hash_manifest": "source-hashes-start.json",
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  },
+  {
+    "case_id": "LF-19",
+    "type": "low_friction_requirement",
+    "requirement_ids": [
+      "LF-19"
+    ],
+    "source_hash_manifest": "source-hashes-start.json",
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  },
+  {
+    "case_id": "LF-20",
+    "type": "low_friction_requirement",
+    "requirement_ids": [
+      "LF-20"
+    ],
+    "source_hash_manifest": "source-hashes-start.json",
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  },
+  {
+    "case_id": "LF-21",
+    "type": "low_friction_requirement",
+    "requirement_ids": [
+      "LF-21"
+    ],
+    "source_hash_manifest": "source-hashes-start.json",
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  },
+  {
+    "case_id": "LF-22",
+    "type": "low_friction_requirement",
+    "requirement_ids": [
+      "LF-22"
+    ],
+    "source_hash_manifest": "source-hashes-start.json",
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  },
+  {
+    "case_id": "LF-23",
+    "type": "low_friction_requirement",
+    "requirement_ids": [
+      "LF-23"
+    ],
+    "source_hash_manifest": "source-hashes-start.json",
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  },
+  {
+    "case_id": "LF-24",
+    "type": "low_friction_requirement",
+    "requirement_ids": [
+      "LF-24"
+    ],
+    "source_hash_manifest": "source-hashes-start.json",
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  },
+  {
+    "case_id": "LF-25",
+    "type": "low_friction_requirement",
+    "requirement_ids": [
+      "LF-25"
+    ],
+    "source_hash_manifest": "source-hashes-start.json",
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  },
+  {
+    "case_id": "LF-26",
+    "type": "low_friction_requirement",
+    "requirement_ids": [
+      "LF-26"
+    ],
+    "source_hash_manifest": "source-hashes-start.json",
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  },
+  {
+    "case_id": "LF-27",
+    "type": "low_friction_requirement",
+    "requirement_ids": [
+      "LF-27"
+    ],
+    "source_hash_manifest": "source-hashes-start.json",
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  },
+  {
+    "case_id": "LF-28",
+    "type": "low_friction_requirement",
+    "requirement_ids": [
+      "LF-28"
+    ],
+    "source_hash_manifest": "source-hashes-start.json",
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  },
+  {
+    "case_id": "LF-29",
+    "type": "low_friction_requirement",
+    "requirement_ids": [
+      "LF-29"
+    ],
+    "source_hash_manifest": "source-hashes-start.json",
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  },
+  {
+    "case_id": "LF-30",
+    "type": "low_friction_requirement",
+    "requirement_ids": [
+      "LF-30"
+    ],
+    "source_hash_manifest": "source-hashes-start.json",
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  },
+  {
+    "case_id": "LF-31",
+    "type": "low_friction_requirement",
+    "requirement_ids": [
+      "LF-31"
+    ],
+    "source_hash_manifest": "source-hashes-start.json",
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  },
+  {
+    "case_id": "LF-32",
+    "type": "low_friction_requirement",
+    "requirement_ids": [
+      "LF-32"
+    ],
+    "source_hash_manifest": "source-hashes-start.json",
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  },
+  {
+    "case_id": "LF-33",
+    "type": "low_friction_requirement",
+    "requirement_ids": [
+      "LF-33"
+    ],
+    "source_hash_manifest": "source-hashes-start.json",
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  },
+  {
+    "case_id": "LF-34",
+    "type": "low_friction_requirement",
+    "requirement_ids": [
+      "LF-34"
+    ],
+    "source_hash_manifest": "source-hashes-start.json",
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  },
+  {
+    "case_id": "LF-35",
+    "type": "low_friction_requirement",
+    "requirement_ids": [
+      "LF-35"
+    ],
+    "source_hash_manifest": "source-hashes-start.json",
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  },
+  {
+    "case_id": "LF-36",
+    "type": "low_friction_requirement",
+    "requirement_ids": [
+      "LF-36"
+    ],
+    "source_hash_manifest": "source-hashes-start.json",
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  },
+  {
+    "case_id": "LF-37",
+    "type": "low_friction_requirement",
+    "requirement_ids": [
+      "LF-37"
+    ],
+    "source_hash_manifest": "source-hashes-start.json",
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  },
+  {
+    "case_id": "LF-38",
+    "type": "low_friction_requirement",
+    "requirement_ids": [
+      "LF-38"
+    ],
+    "source_hash_manifest": "source-hashes-start.json",
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  },
+  {
+    "case_id": "LF-39",
+    "type": "low_friction_requirement",
+    "requirement_ids": [
+      "LF-39"
+    ],
+    "source_hash_manifest": "source-hashes-start.json",
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  },
+  {
+    "case_id": "LF-40",
+    "type": "low_friction_requirement",
+    "requirement_ids": [
+      "LF-40"
+    ],
+    "source_hash_manifest": "source-hashes-start.json",
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  },
+  {
+    "case_id": "LF-41",
+    "type": "low_friction_requirement",
+    "requirement_ids": [
+      "LF-41"
+    ],
+    "source_hash_manifest": "source-hashes-start.json",
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  },
+  {
+    "case_id": "LF-42",
+    "type": "low_friction_requirement",
+    "requirement_ids": [
+      "LF-42"
+    ],
+    "source_hash_manifest": "source-hashes-start.json",
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  },
+  {
+    "case_id": "LF-43",
+    "type": "low_friction_requirement",
+    "requirement_ids": [
+      "LF-43"
+    ],
+    "source_hash_manifest": "source-hashes-start.json",
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  },
+  {
+    "case_id": "LF-44",
+    "type": "low_friction_requirement",
+    "requirement_ids": [
+      "LF-44"
+    ],
+    "source_hash_manifest": "source-hashes-start.json",
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  },
+  {
+    "case_id": "LF-45",
+    "type": "low_friction_requirement",
+    "requirement_ids": [
+      "LF-45"
+    ],
+    "source_hash_manifest": "source-hashes-start.json",
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  },
+  {
+    "case_id": "LF-46",
+    "type": "low_friction_requirement",
+    "requirement_ids": [
+      "LF-46"
+    ],
+    "source_hash_manifest": "source-hashes-start.json",
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  },
+  {
+    "case_id": "PLATFORM-windows-x64",
+    "type": "platform_matrix",
+    "requirement_ids": [
+      "LF-42",
+      "H08"
+    ],
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  },
+  {
+    "case_id": "PLATFORM-windows-arm64",
+    "type": "platform_matrix",
+    "requirement_ids": [
+      "LF-42",
+      "H08"
+    ],
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  },
+  {
+    "case_id": "PLATFORM-macos-x64",
+    "type": "platform_matrix",
+    "requirement_ids": [
+      "LF-42",
+      "H08"
+    ],
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  },
+  {
+    "case_id": "PLATFORM-macos-arm64",
+    "type": "platform_matrix",
+    "requirement_ids": [
+      "LF-42",
+      "H08"
+    ],
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  },
+  {
+    "case_id": "PLATFORM-linux-x64",
+    "type": "platform_matrix",
+    "requirement_ids": [
+      "LF-42",
+      "H08"
+    ],
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  },
+  {
+    "case_id": "PLATFORM-linux-arm64",
+    "type": "platform_matrix",
+    "requirement_ids": [
+      "LF-42",
+      "H08"
+    ],
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  },
+  {
+    "case_id": "TOOL-codex",
+    "type": "tool_matrix",
+    "requirement_ids": [
+      "LF-19",
+      "LF-20",
+      "H04"
+    ],
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  },
+  {
+    "case_id": "TOOL-agy",
+    "type": "tool_matrix",
+    "requirement_ids": [
+      "LF-19",
+      "LF-20",
+      "H04"
+    ],
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  },
+  {
+    "case_id": "TOOL-grok-build",
+    "type": "tool_matrix",
+    "requirement_ids": [
+      "LF-19",
+      "LF-20",
+      "H04"
+    ],
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  },
+  {
+    "case_id": "TOOL-claude-code",
+    "type": "tool_matrix",
+    "requirement_ids": [
+      "LF-19",
+      "LF-20",
+      "H04"
+    ],
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  },
+  {
+    "case_id": "TOOL-kimi-code",
+    "type": "tool_matrix",
+    "requirement_ids": [
+      "LF-19",
+      "LF-20",
+      "H04"
+    ],
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  },
+  {
+    "case_id": "TOOL-qoder",
+    "type": "tool_matrix",
+    "requirement_ids": [
+      "LF-19",
+      "LF-20",
+      "H04"
+    ],
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  },
+  {
+    "case_id": "TOOL-opencode",
+    "type": "tool_matrix",
+    "requirement_ids": [
+      "LF-19",
+      "LF-20",
+      "H04"
+    ],
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  },
+  {
+    "case_id": "TOOL-cursor-agent",
+    "type": "tool_matrix",
+    "requirement_ids": [
+      "LF-19",
+      "LF-20",
+      "H04"
+    ],
+    "status": "not_run",
+    "assertions": [],
+    "evidence_files": [],
+    "limitations": []
+  }
+]

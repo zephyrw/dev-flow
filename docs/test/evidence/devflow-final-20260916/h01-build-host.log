@@ -1,0 +1,13 @@
+Command: pnpm run build:host
+StartedAt: 2026-09-16T15:28:38.838Z
+EndedAt: 2026-09-16T15:29:07.112Z
+ExitCode: 0
+
+STDOUT:
+[build-host] Building cross-platform Go Host...
+[build-host] Go Host successfully built at: C:\Code\system-handle\dist\host\devflow-host.exe
+
+
+STDERR:
+$ node scripts/build-host.mjs
+

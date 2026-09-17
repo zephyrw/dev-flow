@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "locked_at": "2026-09-16T00:00:00.000Z",
+  "components": {
+    "node": {
+      "version": "22.23.2",
+      "required": true
+    },
+    "pnpm": {
+      "version": "11.7.0",
+      "required": true
+    },
+    "go": {
+      "version": "1.24",
+      "required": true
+    },
+    "better-sqlite3": {
+      "version": "13.0.3",
+      "required": true
+    },
+    "devflow-host": {
+      "version": "1.0.0",
+      "binary": "devflow-host.exe",
+      "required": true
+    },
+    "skills": {
+      "version": "0.2.0",
+      "allowlist": [
+        "devflow",
+        "devflow-project-onboard",
+        "devflow-plan",
+        "devflow-execute",
+        "devflow-test",
+        "devflow-review"
+      ]
+    }
+  }
+}

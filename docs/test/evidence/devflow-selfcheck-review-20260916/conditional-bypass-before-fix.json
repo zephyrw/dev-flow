@@ -1,0 +1,49 @@
+{
+  "source_sha256": "8c5e07e57bbf9887822771d92d58ff619c604946608003072b73bc4beb35bda2",
+  "unexpected_gate_conditions": [
+    {
+      "line": 612,
+      "text": "      if (resolveTaskModel(this.plan(key).plan) === \"native-v2\" && (w.title === \"计划自查\" || !!this.store.get(\"plan_check_enabled\", key))) this.planSelfCheck.assertPassed(w);"
+    },
+    {
+      "line": 623,
+      "text": "        if (w.title === \"计划自查\" || !!this.store.get(\"plan_check_enabled\", key)) {"
+    },
+    {
+      "line": 1581,
+      "text": "          const isPlanCheckMode = w.title === \"计划自查\" || w.title === \"原生执行交付核验\" || !!this.store.get(\"plan_check_enabled\", key) || run.stage === PLAN_SELF_CHECK_STAGE;"
+    },
+    {
+      "line": 1585,
+      "text": "            isPlanCheckMode ? \"VERIFYING\" : (isExecutionFinished ? \"HUMAN_PENDING\" : \"VERIFYING\"),"
+    },
+    {
+      "line": 1586,
+      "text": "            isPlanCheckMode ? (run.stage === PLAN_SELF_CHECK_STAGE ? PLAN_SELF_CHECK_STAGE : \"delivery_received\") : (isExecutionFinished ? \"manual_acceptance\" : \"delivery_received\"),"
+    },
+    {
+      "line": 1656,
+      "text": "    const isPlanCheckMode = w.title === \"计划自查\" || w.title === \"原生执行交付核验\" || !!this.store.get(\"plan_check_enabled\", key) || run.stage === PLAN_SELF_CHECK_STAGE;"
+    },
+    {
+      "line": 1657,
+      "text": "    if (isPlanCheckMode) {"
+    },
+    {
+      "line": 1672,
+      "text": "    if (isPlanCheckMode) {"
+    },
+    {
+      "line": 1697,
+      "text": "      } else if (isPlanCheckMode) {"
+    },
+    {
+      "line": 1936,
+      "text": "      const isPlanCheck = (w.title === \"计划自查\" || !!this.store.get(\"plan_check_enabled\", key));"
+    },
+    {
+      "line": 2211,
+      "text": "    if (resolveTaskModel(this.plan(key).plan) === \"native-v2\" && (w.title === \"计划自查\" || !!this.store.get(\"plan_check_enabled\", key)))"
+    }
+  ]
+}

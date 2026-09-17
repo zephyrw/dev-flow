@@ -1,0 +1,40 @@
+Command: pnpm exec playwright test
+StartedAt: 2026-09-16T15:49:48.282Z
+EndedAt: 2026-09-16T15:53:02.155Z
+ExitCode: 0
+
+STDOUT:
+
+Running 25 tests using 1 worker
+
+  ok  1 tests\e2e\activity-resilience.spec.ts:4:3 › H02 Activity & Guidance Resilience › H02-C01: functional-issues 返回对象时显示局部错误，不崩溃且无 pageerror，控制区与进度可操作 (2.7s)
+  ok  2 tests\e2e\activity-resilience.spec.ts:75:3 › H02 Activity & Guidance Resilience › H02-C02: asides 返回非数组时显示局部错误，恢复后刷新错误消失且无 pageerror (1.9s)
+  ok  3 tests\e2e\activity-resilience.spec.ts:143:3 › H02 Activity & Guidance Resilience › H02-C03: 切换任务时立即清理旧任务问题，延迟响应期间不展示A的可操作问题 (2.0s)
+  ok  4 tests\e2e\activity-resilience.spec.ts:264:3 › H02 Activity & Guidance Resilience › H02-C04: 发送需求/反馈 API 返回 409 时保留全文和 @ 引用，不关闭输入框 (2.4s)
+  ok  5 tests\e2e\compact.spec.ts:58:1 › compact workspace keeps content space and preserves independent live sidebar controls (7.8s)
+  ok  6 tests\e2e\devflow-v2-aside.spec.ts:3:1 › 真实只读提问不改变主任务，转正式反馈后重新规划 (7.6s)
+  ok  7 tests\e2e\devflow-v2-composer.spec.ts:4:3 › 真实创建拒绝保留需求草稿 1366 (1.3s)
+  ok  8 tests\e2e\devflow-v2-composer.spec.ts:4:3 › 真实创建拒绝保留需求草稿 1440 (1.6s)
+  ok  9 tests\e2e\devflow-v2-composer.spec.ts:4:3 › 真实创建拒绝保留需求草稿 1920 (1.8s)
+  ok 10 tests\e2e\devflow-v2-workbench.spec.ts:9:1 › 原生真实 UI 到规划、自查、问题复测、终审及工作树交付 @native (1.2m)
+  ok 11 tests\e2e\interactions.spec.ts:3:1 › implementation, development checks and final validation remain distinct in the workbench (1.4s)
+  ok 12 tests\e2e\interactions.spec.ts:62:1 › a user who switched accounts can retry now without waiting for the old quota timer (1.4s)
+  ok 13 tests\e2e\interactions.spec.ts:117:1 › quota wait explains automatic continuation and allows cancelling it (1.6s)
+  ok 14 tests\e2e\interactions.spec.ts:181:1 › a technical diagnosis failure offers automatic retry without requiring user troubleshooting text (1.5s)
+  ok 15 tests\e2e\interactions.spec.ts:243:3 › workbench approves the exact operation and continues the same task (1.8s)
+  ok 16 tests\e2e\interactions.spec.ts:243:3 › workbench rejects the exact operation and continues the same task (1.7s)
+  ok 17 tests\e2e\interactions.spec.ts:341:1 › guidance remains available in a recovered task and is sent without starting another workflow (1.7s)
+  ok 18 tests\e2e\log-stream.spec.ts:3:1 › continuous WebSocket output becomes visible before the stream ends and survives an older HTTP response (2.4s)
+  ok 19 tests\e2e\log-stream.spec.ts:86:1 › execution narrative keeps payloads collapsed and shows the interrupted stage on every tab (2.6s)
+  ok 20 tests\e2e\preparation-failure.spec.ts:3:1 › build failure retains submitted progress and explains the local verification copy (2.4s)
+  ok 21 tests\e2e\run-deadline.spec.ts:4:3 › Run Deadline and Pause Display › DF-STAGE-E01 timeout preserves progress and manual continuation (1.8s)
+  ok 22 tests\e2e\run-deadline.spec.ts:173:3 › Run Deadline and Pause Display › DF-STAGE-E02 manual and historical pauses are not mislabeled (1.7s)
+  ok 23 tests\e2e\workflow.spec.ts:5:1 › empty console explains the natural-language entry without manual registration (2.1s)
+  ok 24 tests\e2e\workflow.spec.ts:31:1 › E2E-01/05/06/08 local button approval, diagrams, evidence and accepted commit (52.2s)
+  ok 25 tests\e2e\workflow.spec.ts:132:1 › E2E-05 a fresh browser opens the console and restores a deep link without login (1.7s)
+
+  25 passed (3.2m)
+
+
+STDERR:
+

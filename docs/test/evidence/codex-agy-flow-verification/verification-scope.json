@@ -1,0 +1,23 @@
+{
+  "recorded_at": "2026-09-17",
+  "verification_scope": "fixture_cli_workflow_integration",
+  "real_model_workflow_verified": false,
+  "source_evidence": [
+    "execution-spec.json",
+    "runs.json",
+    "summary.json",
+    "../../../../tests/live/codex-agy-full-lifecycle.ts"
+  ],
+  "actual_executable": "node",
+  "actual_cli_script": "tests/fixtures/native-cli.mjs",
+  "reported_duration_seconds": 29.1,
+  "assertions_in_summary": 9,
+  "passed_assertions": 9,
+  "human_acceptance": "simulated_by_test_driver",
+  "preserves_original_evidence": true,
+  "limits": [
+    "Real CLI version/help probes do not certify model execution.",
+    "Profile and model labels do not prove actual model invocation.",
+    "Does not cover production merge-conflict runtime handler."
+  ]
+}

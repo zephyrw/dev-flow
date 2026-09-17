@@ -25,8 +25,9 @@ test("continuous WebSocket output becomes visible before the stream ends and sur
   };
   await page.route("**/api/**", async (route) => {
     const path = new URL(route.request().url()).pathname;
-    const data =
-      path === "/api/projects"
+    const data = /\/(functional-issues|asides)$/.test(path)
+      ? []
+      : path === "/api/projects"
         ? [{ id: "p1", name: "日志测试" }]
         : path === "/api/workflows"
           ? [workflow]
@@ -146,8 +147,11 @@ test("execution narrative keeps payloads collapsed and shows the interrupted sta
   };
   await page.route("**/api/**", (route) =>
     route.fulfill({
-      json:
-        new URL(route.request().url()).pathname === "/api/projects"
+      json: /\/(functional-issues|asides)$/.test(
+        new URL(route.request().url()).pathname,
+      )
+        ? []
+        : new URL(route.request().url()).pathname === "/api/projects"
           ? [{ id: "p1", name: "过程测试" }]
           : new URL(route.request().url()).pathname === "/api/workflows"
             ? [workflow]

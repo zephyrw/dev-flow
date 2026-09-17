@@ -1,0 +1,131 @@
+{
+  "test_title": "DevFlow Codex + agy 固定组合完整流程全生命周期验证",
+  "standard": "全流程闭环核验：创建 -> 规划 (Codex) -> 批准 -> 实施 (agy) -> 自查 (agy) -> 审查 (Codex) -> 验收 -> 终审 (Codex) -> Git 合并与清理",
+  "started_at": "2026-09-17T02:26:37.769Z",
+  "ended_at": "2026-09-17T02:27:06.877Z",
+  "total_duration_ms": 29099,
+  "total_duration_sec": "29.10",
+  "verdict": "PASSED",
+  "workflow": {
+    "id": "wf-5a8daffe-ceb8-4b84-9ee8-ac77cfe294a7",
+    "final_state": "COMPLETED",
+    "plan_revision": 1,
+    "task_model": "native-v2",
+    "workspace_mode": "new_worktree"
+  },
+  "execution_spec": {
+    "mode": "composite",
+    "planner": {
+      "profile_id": "profile-codex",
+      "adapter_id": "codex",
+      "model": "gpt-6-astra"
+    },
+    "executor": {
+      "profile_id": "profile-agy",
+      "adapter_id": "agy",
+      "model": "gemini-3.7-flash-high"
+    }
+  },
+  "stage_runs": [
+    {
+      "id": "run-5726488f-9773-4dad-9401-66c7d5dba5bc",
+      "stage": "planning",
+      "purpose": "planning",
+      "adapter": "codex",
+      "status": "completed",
+      "exit_code": 0
+    },
+    {
+      "id": "run-aaae8fcd-50bc-475a-8e3e-d2442740863a",
+      "stage": "execute",
+      "purpose": "implement",
+      "adapter": "agy",
+      "status": "completed",
+      "exit_code": 0
+    },
+    {
+      "id": "run-962278d0-b649-41df-864a-688540ae1715",
+      "stage": "executor_plan_self_check",
+      "purpose": "plan_self_check",
+      "adapter": "agy",
+      "status": "completed",
+      "exit_code": 0
+    },
+    {
+      "id": "run-70d49d79-b825-4f43-9680-1aa01442d9e3",
+      "stage": "quality_before_human",
+      "purpose": "quality_review",
+      "adapter": "codex",
+      "status": "completed",
+      "exit_code": 0
+    },
+    {
+      "id": "run-0b09f881-c8e4-4951-9f3a-faf9243585b6",
+      "stage": "review",
+      "purpose": "quality_review",
+      "adapter": "codex",
+      "status": "completed",
+      "exit_code": 0
+    }
+  ],
+  "assertions": [
+    {
+      "name": "执行规格组合为 composite",
+      "passed": true
+    },
+    {
+      "name": "规划模型精准绑定为 codex",
+      "passed": true
+    },
+    {
+      "name": "实施模型精准绑定为 agy",
+      "passed": true
+    },
+    {
+      "name": "自查模型精准继承实施模型 agy",
+      "passed": true
+    },
+    {
+      "name": "质量审查模型精准绑定为 codex",
+      "passed": true
+    },
+    {
+      "name": "人工验收确认正常流转",
+      "passed": true
+    },
+    {
+      "name": "Git 整合合入主工作区",
+      "passed": true
+    },
+    {
+      "name": "临时工作树与分支安全清理",
+      "passed": true
+    },
+    {
+      "name": "工作流最终状态达到 COMPLETED",
+      "passed": true
+    }
+  ],
+  "cli_audit": {
+    "codex": {
+      "available": true,
+      "version": "codex-cli 0.152.0",
+      "path": "C:\\Users\\yckj4798\\AppData\\Roaming/npm/codex.cmd"
+    },
+    "agy": {
+      "available": true,
+      "version": "1.2.3",
+      "path": "C:\\Users\\yckj4798\\AppData\\Local/agy/bin/agy.exe"
+    }
+  },
+  "evidence_files": [
+    "summary.json",
+    "execution-spec.json",
+    "workflow-detail.json",
+    "runs.json",
+    "deliveries.json",
+    "reviews.json",
+    "timeline.json",
+    "events.jsonl"
+  ]
+}

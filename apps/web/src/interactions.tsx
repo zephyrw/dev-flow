@@ -1,4 +1,9 @@
 import React, { useState } from "react";
+import { WorkflowActivity } from "./components/WorkflowActivity.js";
+import {
+  RequirementComposer,
+  type ReferenceItem,
+} from "./components/RequirementComposer.js";
 
 export function TaskInteraction({
   detail,
@@ -13,7 +18,11 @@ export function TaskInteraction({
     [pending, setPending] = useState(false),
     [error, setError] = useState(""),
     [notice, setNotice] = useState(""),
-    [isGuiding, setIsGuiding] = useState(false);
+    [isGuiding, setIsGuiding] = useState(false),
+    [interactionMode, setInteractionMode] = useState<"feedback" | "aside">(
+      "feedback",
+    );
+
   const w = detail.workflow;
   const requests = (detail.operations ?? []).filter(
     (r: any) => r.status === "pending",
@@ -21,6 +30,7 @@ export function TaskInteraction({
   const act = async (
     fn: () => Promise<any>,
     successMessage = "已保存，正在继续这个任务。",
+    propagateError = false,
   ) => {
     setPending(true);
     setError("");
@@ -29,14 +39,20 @@ export function TaskInteraction({
       await fn();
       setText("");
       await refresh();
+      window.dispatchEvent(new Event("devflow-activity"));
       setNotice(successMessage);
     } catch (e) {
       setError(String(e instanceof Error ? e.message : e));
+      if (propagateError) throw e;
     } finally {
       setPending(false);
     }
   };
   const canGuide = [
+    "PLANNING",
+    "PLAN_PENDING",
+    "REPAIR_PLAN_PENDING",
+    "REVIEWING",
     "EXECUTING",
     "VERIFYING",
     "QUEUED",
@@ -47,7 +63,8 @@ export function TaskInteraction({
     "WAITING_INPUT",
     "WAITING_AUTHORIZATION",
   ].includes(w.state);
-  if (!requests.length && !canGuide) return null;
+  if (!requests.length && !canGuide)
+    return <WorkflowActivity workflow={w} refresh={refresh} />;
   return (
     <section className="task-interaction" aria-label="指导执行模型">
       {w.state === "BLOCKED" &&
@@ -138,9 +155,7 @@ export function TaskInteraction({
       ))}
       {requests.length > 0 && (
         <div className="authorization-note-form">
-          <label htmlFor={`guidance-${w.id}`}>
-            授权处理意见（可选）
-          </label>
+          <label htmlFor={`guidance-${w.id}`}>授权处理意见（可选）</label>
           <textarea
             id={`guidance-${w.id}`}
             rows={2}
@@ -150,8 +165,9 @@ export function TaskInteraction({
           />
         </div>
       )}
-      {canGuide && !requests.length && (
-        !isGuiding ? (
+      {canGuide &&
+        !requests.length &&
+        (!isGuiding ? (
           <div className="guidance-trigger-wrapper">
             <button
               type="button"
@@ -162,69 +178,133 @@ export function TaskInteraction({
             </button>
           </div>
         ) : (
-          <div className="guidance-form">
-            <textarea
-              id={`guidance-${w.id}`}
-              rows={3}
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-              placeholder="例如：先读取后端启动日志，修复启动错误，再继续测试。"
-              autoFocus
-              onKeyDown={(e) => {
-                if (
-                  (e.ctrlKey || e.metaKey) &&
-                  e.key === "Enter" &&
-                  text.trim() &&
-                  !pending
-                ) {
-                  e.preventDefault();
-                  void act(async () => {
-                    await send(`/workflows/${w.id}/feedback`, {
-                      text,
-                      scope: "within_plan",
-                    });
+          <div
+            className="guidance-form"
+            style={{ display: "flex", flexDirection: "column", gap: "8px" }}
+          >
+            <div
+              style={{
+                display: "flex",
+                gap: "12px",
+                fontSize: "12px",
+                borderBottom: "1px solid var(--color-border, #d0d7de)",
+                paddingBottom: "4px",
+              }}
+            >
+              <label
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "4px",
+                  cursor: "pointer",
+                  fontWeight: interactionMode === "feedback" ? 600 : 400,
+                }}
+              >
+                <input
+                  type="radio"
+                  name="interactionMode"
+                  value="feedback"
+                  checked={interactionMode === "feedback"}
+                  onChange={() => setInteractionMode("feedback")}
+                />
+                反馈并调整
+              </label>
+              <label
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "4px",
+                  cursor: "pointer",
+                  fontWeight: interactionMode === "aside" ? 600 : 400,
+                }}
+              >
+                <input
+                  type="radio"
+                  name="interactionMode"
+                  value="aside"
+                  checked={interactionMode === "aside"}
+                  onChange={() => setInteractionMode("aside")}
+                />
+                临时提问 (/btw 只读)
+              </label>
+            </div>
+
+            <RequirementComposer
+              fetchReferences={async (query) => {
+                const response = await fetch(
+                  "/api/workspaces/references?workflow_id=" +
+                    encodeURIComponent(w.id) +
+                    "&query=" +
+                    encodeURIComponent(query),
+                );
+                if (!response.ok) throw new Error("无法读取工作区引用");
+                return (await response.json()).items;
+              }}
+              placeholder={
+                interactionMode === "feedback"
+                  ? "输入指导或调整内容... 输入 @ 引用文件或目录"
+                  : "向模型提出只读问题 (/btw)... 输入 @ 引用文件或目录"
+              }
+              disabled={pending}
+              submitLabel={
+                interactionMode === "feedback"
+                  ? pending
+                    ? "正在交接…"
+                    : "发送指导并继续"
+                  : pending
+                    ? "正在提问…"
+                    : "提交提问"
+              }
+              onSubmit={async (submittedText, submittedRefs) => {
+                await act(
+                  async () => {
+                    if (interactionMode === "aside") {
+                      await send(`/workflows/${w.id}/asides`, {
+                        question: submittedText,
+                        refs: submittedRefs,
+                      });
+                    } else {
+                      await send(
+                        `/workflows/${w.id}/${w.state === "HUMAN_PENDING" && detail.plan?.plan?.task_model === "native-v2" ? "functional-issues" : "feedback"}`,
+                        {
+                          request_id: crypto.randomUUID(),
+                          text: submittedText,
+                          refs: submittedRefs,
+                          scope: "within_plan",
+                        },
+                      );
+                    }
                     setIsGuiding(false);
-                  });
-                }
+                  },
+                  "已保存，正在继续这个任务。",
+                  true,
+                );
               }}
             />
-            <div className="guidance-actions">
+
+            <div style={{ display: "flex", justifyContent: "flex-start" }}>
               <button
                 type="button"
                 className="btn-secondary"
                 disabled={pending}
                 onClick={() => {
                   setIsGuiding(false);
-                  setText("");
                 }}
+                style={{ fontSize: "11px", padding: "2px 8px" }}
               >
-                取消
-              </button>
-              <button
-                className="primary"
-                disabled={pending || !text.trim()}
-                onClick={() =>
-                  void act(async () => {
-                    await send(`/workflows/${w.id}/feedback`, {
-                      text,
-                      scope: "within_plan",
-                    });
-                    setIsGuiding(false);
-                  })
-                }
-              >
-                {pending ? "正在交接…" : "发送指导并继续"}
+                收起指导
               </button>
             </div>
           </div>
-        )
-      )}
+        ))}
+
       {error && (
         <p role="alert" className="error">
           {error}
         </p>
       )}
       {notice && <p role="status">{notice}</p>}
+      <WorkflowActivity workflow={w} refresh={refresh} />
       {detail.queue?.owners?.length > 0 && (
         <p>
           占用任务：

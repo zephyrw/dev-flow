@@ -10,7 +10,7 @@ import type {
   DeliveryManifest,
 } from "../../packages/contracts/src/index.js";
 
-it("原生执行连续实施、测试导入与终局批量核验成功流转至 HUMAN_PENDING", async () => {
+it("原生执行连续实施、测试导入与终局批量核验成功后必须排队执行计划自查", async () => {
   const s = setup();
   const repoInfo = await repository(s.root);
   const proj = project(repoInfo.repo);
@@ -157,10 +157,10 @@ it("原生执行连续实施、测试导入与终局批量核验成功流转至 
   expect(deliveryResult.status).toBe("accepted");
   expect((deliveryResult as any).acceptance_results).toHaveLength(1);
 
-  // 校验工作流状态成功流转到 HUMAN_PENDING，阶段为 manual_acceptance
+  // 完成开发仅能排队自查，不能跳过规划质量审查
   const currentW = s.engine.get(w.id);
-  expect(currentW.state).toBe("HUMAN_PENDING");
-  expect(currentW.stage).toBe("manual_acceptance");
+  expect(currentW.state).toBe("QUEUED");
+  expect(currentW.stage).toBe("executor_plan_self_check");
 
   // 校验报告归档与任务状态批量更新
   const deliveries = s.store.list("delivery", w.id);

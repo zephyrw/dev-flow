@@ -38,13 +38,18 @@ export function atomicWrite(file: string, content: string | Buffer) {
   } finally {
     closeSync(fd);
   }
-  for (let i = 0; i < 5; i++) {
+  for (let i = 0; i < 8; i++) {
     try {
       renameSync(temp, file);
       break;
     } catch (e: any) {
-      if (i === 4 || !["EPERM", "EBUSY", "EACCES"].includes(e.code)) throw e;
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 15);
+      if (i === 7 || !["EPERM", "EBUSY", "EACCES"].includes(e.code)) throw e;
+      Atomics.wait(
+        new Int32Array(new SharedArrayBuffer(4)),
+        0,
+        0,
+        20 * (i + 1),
+      );
     }
   }
 }

@@ -1,0 +1,147 @@
+[
+  {
+    "adapter": "codex",
+    "conversation_id": "fixture-wf-5a8daffe-ceb8-4b84-9ee8-ac77cfe294a7",
+    "deadline_at": 1789615602683,
+    "ended_at": "2026-09-17T02:26:42.886Z",
+    "execution_spec_id": "spec-c4512a6f-8578-4517-ac87-fef674402d79",
+    "exit_code": 0,
+    "id": "run-5726488f-9773-4dad-9401-66c7d5dba5bc",
+    "package_hash": "50c6464470dcd9db467e998fa35e6284f769224aa426ede61ebc2e7ac9e4fdac",
+    "plan_revision": 0,
+    "profile": {
+      "adapterId": "codex",
+      "executableRef": "C:\\Program Files\\nodejs\\node.exe",
+      "id": "profile-codex",
+      "modelId": "gpt-6-astra",
+      "modelSelection": "explicit",
+      "options": {
+        "prefixArgs": [
+          "C:\\Code\\system-handle\\tests\\fixtures\\native-cli.mjs"
+        ]
+      },
+      "revision": 1
+    },
+    "purpose": "planning",
+    "stage": "planning",
+    "started_at": "2026-09-17T02:26:42.683Z",
+    "status": "completed",
+    "workflow_id": "wf-5a8daffe-ceb8-4b84-9ee8-ac77cfe294a7"
+  },
+  {
+    "adapter": "agy",
+    "conversation_id": "fixture-wf-5a8daffe-ceb8-4b84-9ee8-ac77cfe294a7",
+    "deadline_at": 1789615603363,
+    "ended_at": "2026-09-17T02:26:45.811Z",
+    "execution_spec_id": "spec-c4512a6f-8578-4517-ac87-fef674402d79",
+    "exit_code": 0,
+    "id": "run-aaae8fcd-50bc-475a-8e3e-d2442740863a",
+    "package_hash": "f25655073872f119b38e41760f287c655a3c230660aaa04dc5c59ddf702b946e",
+    "plan_revision": 1,
+    "profile": {
+      "adapterId": "agy",
+      "executableRef": "C:\\Program Files\\nodejs\\node.exe",
+      "id": "profile-agy",
+      "modelId": "gemini-3.7-flash-high",
+      "modelSelection": "explicit",
+      "options": {
+        "prefixArgs": [
+          "C:\\Code\\system-handle\\tests\\fixtures\\native-cli.mjs"
+        ]
+      },
+      "revision": 1
+    },
+    "purpose": "implement",
+    "stage": "execute",
+    "started_at": "2026-09-17T02:26:43.364Z",
+    "status": "completed",
+    "workflow_id": "wf-5a8daffe-ceb8-4b84-9ee8-ac77cfe294a7"
+  },
+  {
+    "adapter": "agy",
+    "conversation_id": "fixture-wf-5a8daffe-ceb8-4b84-9ee8-ac77cfe294a7",
+    "deadline_at": 1789615607789,
+    "ended_at": "2026-09-17T02:26:49.815Z",
+    "execution_spec_id": "spec-c4512a6f-8578-4517-ac87-fef674402d79",
+    "exit_code": 0,
+    "id": "run-962278d0-b649-41df-864a-688540ae1715",
+    "package_hash": "0d463d0953d1f685b50cfc8f55dfe717058701fde64524d6151ca8b8eac9040b",
+    "plan_revision": 1,
+    "profile": {
+      "adapterId": "agy",
+      "executableRef": "C:\\Program Files\\nodejs\\node.exe",
+      "id": "profile-agy",
+      "modelId": "gemini-3.7-flash-high",
+      "modelSelection": "explicit",
+      "options": {
+        "prefixArgs": [
+          "C:\\Code\\system-handle\\tests\\fixtures\\native-cli.mjs"
+        ]
+      },
+      "revision": 1
+    },
+    "purpose": "plan_self_check",
+    "stage": "executor_plan_self_check",
+    "started_at": "2026-09-17T02:26:47.790Z",
+    "status": "completed",
+    "workflow_id": "wf-5a8daffe-ceb8-4b84-9ee8-ac77cfe294a7"
+  },
+  {
+    "adapter": "codex",
+    "conversation_id": "fixture-wf-5a8daffe-ceb8-4b84-9ee8-ac77cfe294a7",
+    "deadline_at": 1789615612787,
+    "ended_at": "2026-09-17T02:26:54.662Z",
+    "execution_spec_id": "spec-c4512a6f-8578-4517-ac87-fef674402d79",
+    "exit_code": 0,
+    "id": "run-70d49d79-b825-4f43-9680-1aa01442d9e3",
+    "package_hash": "0d463d0953d1f685b50cfc8f55dfe717058701fde64524d6151ca8b8eac9040b",
+    "plan_revision": 1,
+    "profile": {
+      "adapterId": "codex",
+      "executableRef": "C:\\Program Files\\nodejs\\node.exe",
+      "id": "profile-codex",
+      "modelId": "gpt-6-astra",
+      "modelSelection": "explicit",
+      "options": {
+        "prefixArgs": [
+          "C:\\Code\\system-handle\\tests\\fixtures\\native-cli.mjs"
+        ]
+      },
+      "revision": 1
+    },
+    "purpose": "quality_review",
+    "stage": "quality_before_human",
+    "started_at": "2026-09-17T02:26:52.788Z",
+    "status": "completed",
+    "workflow_id": "wf-5a8daffe-ceb8-4b84-9ee8-ac77cfe294a7"
+  },
+  {
+    "adapter": "codex",
+    "conversation_id": "fixture-wf-5a8daffe-ceb8-4b84-9ee8-ac77cfe294a7",
+    "deadline_at": 1789615617535,
+    "ended_at": "2026-09-17T02:27:06.605Z",
+    "execution_spec_id": "spec-c4512a6f-8578-4517-ac87-fef674402d79",
+    "exit_code": 0,
+    "id": "run-0b09f881-c8e4-4951-9f3a-faf9243585b6",
+    "package_hash": "0d463d0953d1f685b50cfc8f55dfe717058701fde64524d6151ca8b8eac9040b",
+    "plan_revision": 1,
+    "profile": {
+      "adapterId": "codex",
+      "executableRef": "C:\\Program Files\\nodejs\\node.exe",
+      "id": "profile-codex",
+      "modelId": "gpt-6-astra",
+      "modelSelection": "explicit",
+      "options": {
+        "prefixArgs": [
+          "C:\\Code\\system-handle\\tests\\fixtures\\native-cli.mjs"
+        ]
+      },
+      "revision": 1
+    },
+    "purpose": "quality_review",
+    "stage": "review",
+    "started_at": "2026-09-17T02:26:57.535Z",
+    "status": "completed",
+    "workflow_id": "wf-5a8daffe-ceb8-4b84-9ee8-ac77cfe294a7"
+  }
+]

@@ -1,0 +1,74 @@
+{
+  "matrix_version": "2.0.0",
+  "verification_policy": "Discovery is not live workflow certification; use dated test evidence.",
+  "platforms": {
+    "win32-x64": {
+      "status": "local_regression_tested"
+    },
+    "win32-arm64": {
+      "status": "unverified"
+    },
+    "darwin-x64": {
+      "status": "unverified"
+    },
+    "darwin-arm64": {
+      "status": "unverified"
+    },
+    "linux-x64": {
+      "status": "unverified"
+    },
+    "linux-arm64": {
+      "status": "unverified"
+    }
+  },
+  "tools": {
+    "codex": {
+      "status": "adapter_implemented",
+      "live_workflow_verified": false,
+      "roles": ["planner", "executor", "tester", "reviewer"],
+      "modes": ["single", "composite"]
+    },
+    "agy": {
+      "status": "adapter_implemented",
+      "live_workflow_verified": false,
+      "roles": ["planner", "executor", "tester", "reviewer"],
+      "modes": ["single", "composite"]
+    },
+    "grok-build": {
+      "status": "adapter_implemented",
+      "live_workflow_verified": false,
+      "roles": ["planner", "executor", "tester", "reviewer"],
+      "modes": ["single", "composite"]
+    },
+    "claude-code": {
+      "status": "adapter_implemented",
+      "live_workflow_verified": false,
+      "roles": ["planner", "executor", "tester", "reviewer"],
+      "modes": ["single", "composite"]
+    },
+    "kimi-code": {
+      "status": "adapter_implemented",
+      "live_workflow_verified": false,
+      "roles": ["planner", "executor", "tester", "reviewer"],
+      "modes": ["single", "composite"]
+    },
+    "qoder": {
+      "status": "adapter_implemented",
+      "live_workflow_verified": false,
+      "roles": ["planner", "executor", "tester", "reviewer"],
+      "modes": ["single", "composite"]
+    },
+    "opencode": {
+      "status": "adapter_implemented",
+      "live_workflow_verified": false,
+      "roles": ["planner", "executor", "tester", "reviewer"],
+      "modes": ["single", "composite"]
+    },
+    "cursor-agent": {
+      "status": "adapter_implemented",
+      "live_workflow_verified": false,
+      "roles": ["planner", "executor", "tester", "reviewer"],
+      "modes": ["single", "composite"]
+    }
+  }
+}

@@ -1,0 +1,141 @@
+{
+  "created_at": "2026-09-16T10:55:44.051Z",
+  "scope": "isolated real API/store/dispatcher; no live models or user repositories",
+  "results": [
+    {
+      "id": "V01",
+      "defect": true,
+      "http_status": 200,
+      "model_calls": 0,
+      "state": "PLANNING",
+      "queue_present": false,
+      "pending_outbox": 0,
+      "run": [
+        {
+          "adapter": "agy",
+          "id": "run-febfa8f1-759e-439a-bd53-2f4bb9f33875",
+          "package_hash": "none",
+          "plan_revision": 0,
+          "stage": "planning",
+          "started_at": "2026-09-16T10:55:43.948Z",
+          "status": "running",
+          "workflow_id": "wf-9aa71004-807d-4b47-a41c-d8db127ab398"
+        }
+      ],
+      "spec": [
+        {
+          "created_at": "2026-09-16T10:55:43.945Z",
+          "executorProfile": {
+            "adapterId": "codex",
+            "id": "codex",
+            "modelSelection": "native-config",
+            "options": {},
+            "revision": 1
+          },
+          "id": "spec-9e4eeefc-0cae-4463-8d54-ad3240603c96",
+          "mode": "composite",
+          "plannerProfile": {
+            "adapterId": "claude-code",
+            "id": "claude",
+            "modelSelection": "native-config",
+            "options": {},
+            "revision": 1
+          },
+          "revision": 1,
+          "template_id": "native-development",
+          "template_revision": 4,
+          "workflow_id": "wf-9aa71004-807d-4b47-a41c-d8db127ab398"
+        }
+      ]
+    },
+    {
+      "id": "V02",
+      "defect": true,
+      "status": 200,
+      "state": "AFTER_HUMAN_REVIEW",
+      "acceptance_record": false,
+      "current_snapshot": null,
+      "pending_outbox": 0
+    },
+    {
+      "id": "V03",
+      "defect": true,
+      "status": 200,
+      "state": "COMPLETED",
+      "receipt": {
+        "receipt": {
+          "workflow_id": "wf-9aa71004-807d-4b47-a41c-d8db127ab398",
+          "worktree_removed": true,
+          "branch_deleted": true,
+          "cleaned_at": "2026-09-16T10:55:43.990Z"
+        }
+      },
+      "commits": []
+    },
+    {
+      "id": "V04",
+      "defect": true,
+      "result": {
+        "action": "pass",
+        "rejectionCount": 0,
+        "message": "质量审查第 before_human 阶段已顺利通过"
+      },
+      "plan_revision": 0,
+      "delivery_count": 0
+    },
+    {
+      "id": "V05",
+      "defect": true,
+      "facts": {
+        "facts": [
+          {
+            "tool_call_id": "fact_no-such-workflow_no-such-run",
+            "command": "noop",
+            "cwd": "C:\\Code\\system-handle",
+            "status": "completed"
+          }
+        ]
+      }
+    },
+    {
+      "id": "V06",
+      "defect": true,
+      "exit": 0,
+      "files": [
+        "state.json"
+      ],
+      "state": {
+        "installed_components": {
+          "node": {
+            "name": "node",
+            "version": "v22.23.2",
+            "state": "VERIFIED",
+            "updated_at": "2026-09-16T10:55:44.009Z"
+          },
+          "host": {
+            "name": "host",
+            "version": "1.0.0",
+            "state": "VERIFIED",
+            "updated_at": "2026-09-16T10:55:44.020Z"
+          },
+          "skills": {
+            "name": "skills",
+            "version": "0.2.0",
+            "state": "VERIFIED",
+            "updated_at": "2026-09-16T10:55:44.033Z"
+          }
+        },
+        "current_version": "0.2.0"
+      }
+    }
+  ],
+  "source_hashes": {
+    "apps/api/src/main.ts": "d80c05a0059406bd2e95c280d6afaa227b0f185eb6817123f2f3da8d3f84cb48",
+    "apps/api/src/server.ts": "7904ebe9b450ef1919310fe6a7dd1343f690128b658d97817c8218b8a8ff4dfd",
+    "packages/core/src/engine.ts": "c9fc4c56c4c9109635d4f1244f4bff84afb5438f5c4a4847e87a57a597720c81",
+    "packages/core/src/create-workflow.ts": "00f349ac454cde1a5de43c0c328bb6e86e8533b3003d23a1b0b311b26af81bb0",
+    "packages/core/src/quality-coordinator.ts": "b812c6579d90cbdd602288d5fc4fb5523eb558e7c3db04c053a54d379e70ecde",
+    "packages/adapters/sdk/src/base-adapter.ts": "257d03930485da3c56398ecaa0ebef957c90a895fe022ff66c60786c0798e419",
+    "packages/installer/src/main.ts": "606c18b73ea6ba6d24188760d42bc25b2cdf36c0fcb856117d23ad9e4acd8052"
+  }
+}

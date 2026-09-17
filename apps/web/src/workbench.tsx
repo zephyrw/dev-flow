@@ -27,12 +27,43 @@ export function DeliveryStrip({ detail }: { detail: any }) {
           <small>待批准清单</small>
         </span>
       )}
-      {detail.workflow?.state === "COMMITTED" && (
+      {detail.workflow?.state === "QUALITY_REVIEW" && (
+        <span className="metric-chip pending-chip">
+          <span className="chip-label">质量审查</span>
+          <b className="chip-value">规划模型审查中</b>
+        </span>
+      )}
+      {detail.workflow?.state === "PLANNER_TAKEOVER" && (
+        <span className="metric-chip error-chip">
+          <span className="chip-label">质量关卡</span>
+          <b className="chip-value">规划模型已接管修复</b>
+        </span>
+      )}
+      {["HUMAN_PENDING", "HUMAN_VERIFY"].includes(detail.workflow?.state) && (
+        <span className="metric-chip pending-chip">
+          <span className="chip-label">功能核验</span>
+          <b className="chip-value">待人工核验场景</b>
+        </span>
+      )}
+      {detail.workflow?.state === "INTEGRATING" && (
+        <span className="metric-chip">
+          <span className="chip-label">Git 整合</span>
+          <b className="chip-value">吸收主分支最新提交中</b>
+        </span>
+      )}
+      {detail.workflow?.state === "CLEANUP_PENDING" && (
+        <span className="metric-chip error-chip">
+          <span className="chip-label">清理待重试</span>
+          <b className="chip-value">工作树清理异常</b>
+        </span>
+      )}
+      {["COMMITTED", "COMPLETED"].includes(detail.workflow?.state) && (
         <span className="metric-chip success-chip">
           <span className="chip-label">交付结果</span>
           <b className="chip-value">已提交至仓库</b>
         </span>
       )}
+
       {!leaf ? (
         <span className="metric-chip empty-chip">尚未生成细项清单</span>
       ) : (

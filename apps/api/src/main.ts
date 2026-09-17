@@ -32,17 +32,6 @@ const workspaceObserver = new WorkspaceObserver(engine);
 recordController(config.storage_root, fileURLToPath(import.meta.url));
 console.log(`DevFlow ${config.server.human_origin}`);
 const tick = setInterval(() => {
-  for (const job of store.jobs()) {
-    if (job.kind === "dispatch") {
-      const w = engine.get(job.workflow_id);
-      if (
-        ["QUEUED", "REVIEW_QUEUED"].includes(w.state) &&
-        !store.get("queue", w.id)
-      )
-        engine.scheduler.enqueue(w.id, w.project_id);
-      store.jobStatus(job.id, "delivered");
-    }
-  }
   void engine.dispatch().catch((e) => console.error("调度失败", String(e)));
   void resumeModelWaits(engine).catch((e) =>
     console.error("额度恢复调度失败", String(e)),

@@ -66,11 +66,13 @@ test("compact workspace keeps content space and preserves independent live sideb
       await new Promise((resolve) => setTimeout(resolve, 1800));
     }
     await route.fulfill({
-      json: path.endsWith("/projects")
-        ? [{ id: "compact", name: "布局验收" }]
-        : path.endsWith("/workflows")
-          ? flows
-          : detail(path.split("/").at(-1)!),
+      json: /\/(functional-issues|asides)$/.test(path)
+        ? []
+        : path.endsWith("/projects")
+          ? [{ id: "compact", name: "布局验收" }]
+          : path.endsWith("/workflows")
+            ? flows
+            : detail(path.split("/").at(-1)!),
     });
   });
   let socket: any;

@@ -1,0 +1,44 @@
+ M apps/api/src/server.ts
+ M apps/web/src/interactions.tsx
+ M apps/web/src/main.tsx
+ M apps/web/src/workbench.tsx
+ M packages/contracts/src/index.ts
+ M scripts/build-host.mjs
+?? apps/web/src/components/CreateWorkflowModal.tsx
+?? apps/web/src/components/RequirementComposer.tsx
+?? docs/test/evidence/devflow-v2-review-20260916/source-manifest.json
+?? host/devflow-host/go.mod
+?? host/devflow-host/main.go
+?? host/devflow-host/process_posix.go
+?? host/devflow-host/process_windows.go
+?? packages/adapters/agy/src/adapter.ts
+?? packages/adapters/claude/src/adapter.ts
+?? packages/adapters/codex/src/adapter.ts
+?? packages/adapters/cursor/src/adapter.ts
+?? packages/adapters/grok/src/adapter.ts
+?? packages/adapters/kimi/src/adapter.ts
+?? packages/adapters/opencode/src/adapter.ts
+?? packages/adapters/qoder/src/adapter.ts
+?? packages/adapters/sdk/src/base-adapter.ts
+?? packages/adapters/sdk/src/index.ts
+?? packages/adapters/sdk/src/interface.ts
+?? packages/adapters/sdk/src/registry.ts
+?? packages/asides/src/service.ts
+?? packages/clients/src/installer.ts
+?? packages/contracts/src/base.ts
+?? packages/contracts/src/execution-spec.ts
+?? packages/contracts/src/feedback.ts
+?? packages/contracts/src/native-plan.ts
+?? packages/contracts/src/quality.ts
+?? packages/core/src/create-workflow.ts
+?? packages/core/src/functional-issues.ts
+?? packages/core/src/quality-coordinator.ts
+?? packages/core/src/templates/default-template.ts
+?? packages/evidence/src/current-delivery.ts
+?? packages/git/src/delivery-coordinator.ts
+?? packages/skills/devflow-browser-accept/SKILL.md
+?? packages/workspace/src/references.ts
+?? scripts/bootstrap/install.ps1
+?? scripts/bootstrap/install.sh
+?? tests/integration/devflow-v2-lf-scenarios.test.ts
+?? toolchains.lock.json

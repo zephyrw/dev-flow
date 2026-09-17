@@ -27,6 +27,7 @@ export function attestFixture(
     engine.store.put("run", run.id, key, {
       ...run,
       status: "completed",
+      exit_code: 0,
       ended_at: new Date().toISOString(),
     });
   Object.assign(manifest, {

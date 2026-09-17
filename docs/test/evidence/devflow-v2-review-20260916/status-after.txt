@@ -1,0 +1,43 @@
+ M apps/api/src/server.ts
+ M apps/web/src/interactions.tsx
+ M apps/web/src/main.tsx
+ M apps/web/src/workbench.tsx
+ M "docs/plan/DevFlow\350\267\250\345\271\263\345\217\260\351\200\232\347\224\250\345\267\245\344\275\234\346\265\201\345\271\263\345\217\260\345\256\236\346\226\275\346\226\271\346\241\210.md"
+ M packages/contracts/src/index.ts
+ M packages/skills/devflow-execute/SKILL.md
+ M packages/skills/devflow-plan/SKILL.md
+ M packages/skills/devflow-review/SKILL.md
+ M packages/skills/devflow-review/references/review-contract.md
+ M scripts/build-host.mjs
+?? apps/web/src/components/
+?? "docs/plan/DevFlow\350\267\250\345\271\263\345\217\260\351\200\232\347\224\250\345\271\263\345\217\260\345\256\236\346\226\275\345\244\215\346\240\270\344\270\216\350\257\246\347\273\206\346\225\264\346\224\271\350\246\201\346\261\202-20260916.md"
+?? docs/test/evidence/devflow-v2-review-20260916/
+?? host/devflow-host/
+?? packages/adapters/agy/src/adapter.ts
+?? packages/adapters/claude/
+?? packages/adapters/codex/
+?? packages/adapters/cursor/src/adapter.ts
+?? packages/adapters/grok/
+?? packages/adapters/kimi/
+?? packages/adapters/opencode/
+?? packages/adapters/qoder/
+?? packages/adapters/sdk/
+?? packages/asides/
+?? packages/clients/
+?? packages/contracts/src/base.ts
+?? packages/contracts/src/execution-spec.ts
+?? packages/contracts/src/feedback.ts
+?? packages/contracts/src/native-plan.ts
+?? packages/contracts/src/quality.ts
+?? packages/core/src/create-workflow.ts
+?? packages/core/src/functional-issues.ts
+?? packages/core/src/quality-coordinator.ts
+?? packages/core/src/templates/
+?? packages/evidence/src/current-delivery.ts
+?? packages/git/src/delivery-coordinator.ts
+?? packages/skills/devflow-browser-accept/
+?? packages/skills/devflow-review/references/repair-document-contract.md
+?? packages/workspace/src/references.ts
+?? scripts/bootstrap/
+?? tests/integration/devflow-v2-lf-scenarios.test.ts
+?? toolchains.lock.json

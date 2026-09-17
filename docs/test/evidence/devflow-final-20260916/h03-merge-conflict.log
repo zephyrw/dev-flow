@@ -1,0 +1,6 @@
+RUN tests/integration/devflow-v2-merge-conflict.test.ts
+✓ 同行冲突由责任模型修复并保留双方需求，补测终审后发布并清理 (69212ms)
+✓ 未批准路径与模型异常退出时主工作区HEAD不变且保留工作树现场 (2165ms)
+✓ 目标工作区脏或外部再次推进时拒绝发布 (28214ms)
+Test Files 1 passed (1)
+Tests 3 passed (3)

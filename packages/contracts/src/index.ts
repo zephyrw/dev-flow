@@ -1,4 +1,7 @@
 import { z } from "zod";
+import { PlanSelfCheckReportSchema } from "./plan-self-check.js";
+import { NativePlanSchema } from "./native-plan.js";
+import { QualityReviewResultSchema } from "./quality.js";
 export const Id = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,95}$/);
 export const RelativePath = z
   .string()
@@ -15,26 +18,37 @@ export const RelativePath = z
 export const Layer = z.enum(["unit", "integration", "e2e", "opentabs"]);
 export const States = [
   "RESEARCHING",
+  "PLANNING",
   "PLAN_PENDING",
   "QUEUED",
   "EXECUTING",
   "VERIFYING",
+  "DELIVERY_VERIFYING",
+  "QUALITY_REVIEW",
+  "AFTER_HUMAN_REVIEW",
+  "PLANNER_TAKEOVER",
   "HUMAN_PENDING",
+  "HUMAN_VERIFY",
   "REVIEW_QUEUED",
   "REVIEWING",
   "REPAIR_PLAN_PENDING",
   "REPAIR_RESEARCH_REQUIRED",
+  "INTEGRATING",
   "COMMITTING",
   "COMMITTED",
+  "COMPLETED",
+  "CLEANUP_PENDING",
   "COMMIT_PARTIAL",
   "STOPPING",
   "STOPPED",
+  "PAUSED",
   "BLOCKED",
   "RECOVERY_REQUIRED",
   "WAITING_AUTHORIZATION",
   "WAITING_INPUT",
 ] as const;
 export type State = (typeof States)[number];
+
 export const ScopeSchema = z
   .object({
     repository_paths: z.record(Id, z.array(RelativePath).min(1)).default({}),
@@ -80,17 +94,25 @@ export const TestSchema = z
     timeout_seconds: z.number().int().positive().max(7200).default(300),
   })
   .strict();
-export const PlanSchema = z
-  .object({
-    task_model: z.enum(["legacy", "leaf-v1", "native-v2"]).optional(),
-    modules: z
-      .array(z.object({ id: Id, title: z.string().min(1) }).strict())
-      .min(1)
-      .optional(),
-    markdown: z.string().min(80),
-    complexity: z.enum(["simple", "complex"]),
-    reason: z.string().min(1),
-    decisions: z.array(
+export const PlanSchema = z.object({
+  task_model: z.enum(["legacy", "leaf-v1", "native-v2"]).optional(),
+  revision: z.number().int().positive().default(1),
+  design_ref: NativePlanSchema.shape.design_ref.optional(),
+  modules: z
+    .array(
+      NativePlanSchema.shape.modules.element.extend({
+        paths: z.array(RelativePath).optional(),
+      }),
+    )
+    .default([]),
+  work_items: NativePlanSchema.shape.work_items.optional(),
+  acceptance_items: NativePlanSchema.shape.acceptance_items.optional(),
+  feedback_cursor: z.number().int().default(0),
+  markdown: z.string().optional(),
+  complexity: z.enum(["simple", "complex"]).optional(),
+  reason: z.string().optional(),
+  decisions: z
+    .array(
       z
         .object({
           question: z.string(),
@@ -98,18 +120,18 @@ export const PlanSchema = z
           source: z.string().min(1),
         })
         .strict(),
-    ),
-    unresolved_decisions: z.array(z.string()).length(0),
-    scope: ScopeSchema,
-    tasks: z.array(TaskSchema).min(1),
-    tests: z.array(TestSchema).min(1),
-    exemptions: z
-      .array(z.object({ layer: Layer, reason: z.string().min(10) }).strict())
-      .default([]),
-    baselines: z.record(Id, z.string().regex(/^[a-f0-9]{40,64}$/)),
-    project_config_hash: z.string().min(1),
-  })
-  .strict();
+    )
+    .default([]),
+  unresolved_decisions: z.array(z.string()).default([]),
+  scope: ScopeSchema,
+  tasks: z.array(TaskSchema).default([]),
+  tests: z.array(TestSchema).default([]),
+  exemptions: z
+    .array(z.object({ layer: Layer, reason: z.string().min(10) }).strict())
+    .default([]),
+  baselines: z.record(Id, z.string().regex(/^[a-f0-9]{40,64}$/)),
+  project_config_hash: z.string().min(1),
+});
 export type Plan = z.infer<typeof PlanSchema>;
 
 export function resolveTaskModel(
@@ -235,6 +257,8 @@ export const ReviewSchema = z
     unresolved_questions: z.array(z.string()),
     repair_plan: PlanSchema.nullable(),
     commit_message: z.string().min(1).max(500),
+    quality: QualityReviewResultSchema.nullish(),
+    repair_document: z.string().min(1).nullish(),
   })
   .strict();
 export type Review = z.infer<typeof ReviewSchema>;
@@ -268,12 +292,20 @@ export interface Workspace {
   baseline: string;
   branch: string;
   owned: boolean;
+  source_root?: string;
+  source_branch?: string;
+  execution_base?: string;
+  initial_index_tree?: string;
+  initial_worktree_tree?: string;
 }
 export interface Run {
   id: string;
   workflow_id: string;
   plan_revision: number;
-  adapter: "agy" | "codex";
+  adapter: import("./execution-spec.js").SupportedAdapterId;
+  purpose?: import("../../core/src/run-profile.js").RunPurpose;
+  execution_spec_id?: string;
+  profile?: import("./execution-spec.js").ToolProfile;
   stage: string;
   status: string;
   conversation_id?: string;
@@ -352,6 +384,7 @@ export function requireCondition(
 
 export const DeliveryManifestSchema = z
   .object({
+    plan_self_check: PlanSelfCheckReportSchema.optional(),
     schema_version: z.string().optional(),
     submission_id: z.string().optional(),
     workflow_id: z.string().optional(),
@@ -449,6 +482,7 @@ export interface Delivery {
   plan_hash?: string;
   status: "pending" | "passed" | "rejected";
   input_manifest_id?: string;
+  archive_root?: string;
   report_hashes?: Record<string, string>;
   manifest: DeliveryManifest;
   submitted_at: string;
@@ -544,3 +578,9 @@ export interface RunUsage {
   reasoning_tokens?: number;
   recorded_at: string;
 }
+
+export * from "./native-plan.js";
+export * from "./quality.js";
+export * from "./feedback.js";
+export * from "./execution-spec.js";
+export * from "./merge-conflict.js";

@@ -215,7 +215,7 @@ describe("DevFlow 原生执行改造审核缺陷回归套件 (R1~R10)", () => {
     expect(verification.valid).toBe(false);
   });
 
-  it("R4: 终局核验通过打通生命周期，可顺利进入人工验收", async () => {
+  it("R4: 终局核验后必须先完成程序自查与规划审查", async () => {
     const s = await fixture();
     s.store.put("run", s.runId, s.w.id, {
       ...s.store.must<Run>("run", s.runId),
@@ -242,16 +242,15 @@ describe("DevFlow 原生执行改造审核缺陷回归套件 (R1~R10)", () => {
       s.store.put("run", s.runId, s.w.id, {
         ...s.store.must<Run>("run", s.runId),
         status: "completed",
+        exit_code: 0,
         ended_at: new Date().toISOString(),
       });
       await s.engine.finalizeNativeDelivery(s.w.id, s.runId);
       const finishedProof = proof(s.engine, s.w.id, "accept");
-      const accepted = await s.engine.accept(
-        s.w.id,
-        finishedProof.proof,
-        finishedProof.binding,
-      );
-      expect(accepted.state).toBe("REVIEW_QUEUED");
+      await expect(
+        s.engine.accept(s.w.id, finishedProof.proof, finishedProof.binding),
+      ).rejects.toThrow("当前不能验收");
+      expect(s.engine.get(s.w.id).stage).toBe("executor_plan_self_check");
     } finally {
       s.store.close();
     }

@@ -33,11 +33,13 @@ test("implementation, development checks and final validation remain distinct in
   await page.route("**/api/**", (route) => {
     const path = new URL(route.request().url()).pathname;
     return route.fulfill({
-      json: path.endsWith("/projects")
-        ? [detail.project]
-        : path.endsWith("/workflows")
-          ? [workflow]
-          : detail,
+      json: /\/(functional-issues|asides)$/.test(path)
+        ? []
+        : path.endsWith("/projects")
+          ? [detail.project]
+          : path.endsWith("/workflows")
+            ? [workflow]
+            : detail,
     });
   });
   await page.routeWebSocket("**/api/notifications", () => {});
@@ -92,11 +94,13 @@ test("a user who switched accounts can retry now without waiting for the old quo
       return route.fulfill({ json: workflow });
     }
     return route.fulfill({
-      json: path.endsWith("/projects")
-        ? [detail.project]
-        : path.endsWith("/workflows")
-          ? [workflow]
-          : detail,
+      json: /\/(functional-issues|asides)$/.test(path)
+        ? []
+        : path.endsWith("/projects")
+          ? [detail.project]
+          : path.endsWith("/workflows")
+            ? [workflow]
+            : detail,
     });
   });
   await page.routeWebSocket("**/api/notifications", () => {});
@@ -145,11 +149,13 @@ test("quota wait explains automatic continuation and allows cancelling it", asyn
       return route.fulfill({ json: workflow });
     }
     return route.fulfill({
-      json: path.endsWith("/projects")
-        ? [detail.project]
-        : path.endsWith("/workflows")
-          ? [workflow]
-          : detail,
+      json: /\/(functional-issues|asides)$/.test(path)
+        ? []
+        : path.endsWith("/projects")
+          ? [detail.project]
+          : path.endsWith("/workflows")
+            ? [workflow]
+            : detail,
     });
   });
   await page.routeWebSocket("**/api/notifications", () => {});
@@ -213,11 +219,13 @@ test("a technical diagnosis failure offers automatic retry without requiring use
       return route.fulfill({ json: { ok: true } });
     }
     return route.fulfill({
-      json: path.endsWith("/projects")
-        ? [detail.project]
-        : path.endsWith("/workflows")
-          ? [workflow]
-          : detail,
+      json: /\/(functional-issues|asides)$/.test(path)
+        ? []
+        : path.endsWith("/projects")
+          ? [detail.project]
+          : path.endsWith("/workflows")
+            ? [workflow]
+            : detail,
     });
   });
   await page.routeWebSocket("**/api/notifications", () => {});
@@ -291,11 +299,13 @@ for (const approved of [true, false])
         return;
       }
       await route.fulfill({
-        json: url.pathname.endsWith("/projects")
-          ? [detail.project]
-          : url.pathname.endsWith("/workflows")
-            ? [w]
-            : detail,
+        json: /\/(functional-issues|asides)$/.test(url.pathname)
+          ? []
+          : url.pathname.endsWith("/projects")
+            ? [detail.project]
+            : url.pathname.endsWith("/workflows")
+              ? [w]
+              : detail,
       });
     });
     await page.routeWebSocket("**/api/notifications", () => {});
@@ -367,11 +377,13 @@ test("guidance remains available in a recovered task and is sent without startin
       return;
     }
     await route.fulfill({
-      json: path.endsWith("/projects")
-        ? [detail.project]
-        : path.endsWith("/workflows")
-          ? [w]
-          : detail,
+      json: /\/(functional-issues|asides)$/.test(path)
+        ? []
+        : path.endsWith("/projects")
+          ? [detail.project]
+          : path.endsWith("/workflows")
+            ? [w]
+            : detail,
     });
   });
   await page.routeWebSocket("**/api/notifications", () => {});
@@ -387,7 +399,7 @@ test("guidance remains available in a recovered task and is sent without startin
   await page.getByRole("button", { name: "发送指导并继续" }).click();
   await expect
     .poll(() => received)
-    .toEqual({
+    .toMatchObject({
       text: "读取启动日志，修复报错并继续测试。",
       scope: "within_plan",
     });

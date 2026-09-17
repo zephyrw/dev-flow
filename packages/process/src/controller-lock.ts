@@ -4,9 +4,9 @@ import { hash } from "../../core/src/util.js";
 import { requireCondition } from "../../contracts/src/index.js";
 export async function acquireControllerLock(host: string, root: string) {
   requireCondition(
-    process.platform === "win32" && host,
+    !!host,
     "HOST_REQUIRED",
-    "控制器需要 Windows Host 以独占状态目录",
+    "控制器需要 Process Host 以独占状态目录",
   );
   const child = spawn(
     host,

@@ -106,7 +106,7 @@ describe("DevFlow 原生执行改造第二轮复核缺陷回归套件 (S01~S14)"
       common_dir: join(repo, ".git"),
       baseline,
       branch: "task/fixture",
-      owned: true,
+      owned: false,
     });
 
     const ws = makeWs("main", ri.repo, ri.baseline);
@@ -331,16 +331,15 @@ describe("DevFlow 原生执行改造第二轮复核缺陷回归套件 (S01~S14)"
       s.store.put("run", s.runId, s.w.id, {
         ...s.store.must<Run>("run", s.runId),
         status: "completed",
+        exit_code: 0,
         ended_at: new Date().toISOString(),
       });
       await s.engine.finalizeNativeDelivery(s.w.id, s.runId);
       const finishedProof = proof(s.engine, s.w.id, "accept");
-      const accepted = await s.engine.accept(
-        s.w.id,
-        finishedProof.proof,
-        finishedProof.binding,
-      );
-      expect(accepted.state).toBe("REVIEW_QUEUED");
+      expect(s.engine.get(s.w.id).stage).toBe("executor_plan_self_check");
+      await expect(
+        s.engine.accept(s.w.id, finishedProof.proof, finishedProof.binding),
+      ).rejects.toThrow("当前不能验收");
     } finally {
       s.store.close();
     }
@@ -378,65 +377,137 @@ describe("DevFlow 原生执行改造第二轮复核缺陷回归套件 (S01~S14)"
     }
   });
 
-  it("S08: 原生交付核验通过后，复核能顺利通过且识别 native acceptance_result", async () => {
+  it("S08: 自查与两次规划审查均识别 native acceptance_result 后提交", async () => {
     const s = await fixture({ hook: true });
+    const stages: string[] = [];
     try {
-      const r = await s.engine.deliver(s.w.id, s.manifest, s.reader);
-      expect(r.status).toBe("accepted");
-
-      // 模拟完成退出
-      s.store.put("run", s.runId, s.w.id, {
-        ...s.store.must<Run>("run", s.runId),
-        status: "completed",
-        ended_at: new Date().toISOString(),
-      });
-      const revisions = s.store.list<DeliveryRevision>(
-        "delivery_revision",
-        s.w.id,
-      );
-      for (const rev of revisions) {
-        if (!rev.invalidated) {
-          s.store.put("delivery_revision", rev.id, s.w.id, {
-            ...rev,
-            execution_finished: true,
+      expect(
+        (await s.engine.deliver(s.w.id, s.manifest, s.reader)).status,
+      ).toBe("accepted");
+      expect(s.engine.get(s.w.id).stage).toBe("executor_plan_self_check");
+      s.engine.runtime = {
+        async execute(w, run) {
+          stages.push(run.stage);
+          expect(run.stage).toBe("executor_plan_self_check");
+          const request = s.engine.planSelfCheck.current(w.id)!;
+          const manifest = structuredClone(s.manifest);
+          manifest.plan_self_check = {
+            request_id: request.id,
+            source_delivery_revision_id: request.source_delivery_revision_id,
+            plan_revision: request.plan_revision,
+            plan_hash: request.plan_hash,
+            authority_hash: request.authority_hash,
+            run_id: run.id,
+            verdict: "passed",
+            checks: request.check_ids.map((check_id) => ({
+              check_id,
+              status: "passed",
+              evidence: ["main:app.txt / .reports/unit.json / updates content"],
+            })),
+            findings: [],
+          };
+          const timestamp = new Date().toISOString();
+          const reader = attestFixture(
+            s.engine,
+            w.id,
+            manifest,
+            new NativeRunRecordReader([
+              {
+                ...s.fact,
+                tool_call_id: "check-" + run.id,
+                started_at: timestamp,
+                ended_at: timestamp,
+              },
+            ]),
+            false,
+          );
+          manifest.submission_id = "submission-" + run.id;
+          manifest.test_executions[0]!.tool_call_id = "check-" + run.id;
+          manifest.acceptance_mappings[0]!.test_execution_id =
+            "check-" + run.id;
+          for (const fact of reader.getAllFacts())
+            s.store.put("native_execution", fact.tool_call_id, run.id, fact);
+          s.store.put("run", run.id, w.id, {
+            ...s.store.must<any>("run", run.id),
+            exit_code: 0,
           });
-        }
-      }
-
+          expect((await s.engine.deliver(w.id, manifest, reader)).status).toBe(
+            "accepted",
+          );
+        },
+        async review(w, run) {
+          stages.push(run.stage);
+          return {
+            schema_version: 1,
+            review_request_id: w.review_request_id,
+            workflow_id: w.id,
+            plan_revision: w.plan_revision,
+            snapshot_id: w.snapshot_id,
+            verdict: "pass",
+            coverage: {
+              all_changed_files_reviewed: true,
+              all_requirements_checked: true,
+              upstream_downstream_checked: true,
+              security_checked: true,
+              tests_validity_checked: true,
+              files: ["main:app.txt"],
+            },
+            findings: [],
+            unresolved_questions: [],
+            repair_plan: null,
+            commit_message: "test: isolated review",
+          };
+        },
+        async stop() {},
+        async close() {},
+        async check() {
+          throw new Error("unused");
+        },
+      };
+      const waitFor = async (state: string) => {
+        await expect
+          .poll(
+            async () => {
+              await s.engine.dispatch();
+              return s.engine.get(s.w.id).state;
+            },
+            { timeout: 180000, interval: 200 },
+          )
+          .toBe(state);
+        await s.engine.waitForIdle(s.w.id);
+      };
+      await waitFor("HUMAN_PENDING");
+      expect(stages).toEqual([
+        "executor_plan_self_check",
+        "quality_before_human",
+      ]);
       const p = proof(s.engine, s.w.id, "accept");
       await s.engine.accept(s.w.id, p.proof, p.binding);
-
-      s.engine.transition(s.w.id, ["REVIEW_QUEUED"], "REVIEWING", "review", {
-        review_request_id: "review-test",
-      });
-      const w = s.engine.get(s.w.id);
-
-      const updated = await s.engine.receiveReview(s.w.id, {
-        schema_version: 1,
-        review_request_id: "review-test",
-        workflow_id: s.w.id,
-        plan_revision: 1,
-        snapshot_id: w.snapshot_id,
-        verdict: "pass",
-        coverage: {
-          all_changed_files_reviewed: true,
-          all_requirements_checked: true,
-          upstream_downstream_checked: true,
-          security_checked: true,
-          tests_validity_checked: true,
-          files: ["main:app.txt"],
-        },
-        findings: [],
-        unresolved_questions: [],
-        repair_plan: null,
-        commit_message: "test: isolated review",
-      });
-
-      expect(updated.state).toBe("COMMITTED");
+      await waitFor("COMMITTED");
+      expect(stages).toEqual([
+        "executor_plan_self_check",
+        "quality_before_human",
+        "review",
+      ]);
+      expect(s.store.list("acceptance_result", s.w.id).length).toBeGreaterThan(
+        0,
+      );
     } finally {
+      s.engine.runtime = undefined;
+      if (
+        [
+          "EXECUTING",
+          "VERIFYING",
+          "REVIEWING",
+          "QUEUED",
+          "REVIEW_QUEUED",
+        ].includes(s.engine.get(s.w.id).state)
+      )
+        await s.engine.stop(s.w.id);
+      await s.engine.waitForIdle(s.w.id);
       s.store.close();
     }
-  });
+  }, 420000);
 
   it("S09: 验收映射引用的报告不属于对应测试执行时必须拒绝", async () => {
     const s = await fixture();

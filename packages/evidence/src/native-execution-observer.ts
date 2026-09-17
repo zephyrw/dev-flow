@@ -33,13 +33,17 @@ export function captureReports(
   const results: Record<string, { hash: string; version: string }> = {};
   for (const ws of workspaces) {
     const paths = new Set<string>();
-    const walk = (dir: string) => {
+    let entries = 0;
+    const walk = (dir: string, depth = 0) => {
+      if (depth > 12) throw new Error("Report directory depth exceeds limit");
       if (!existsSync(dir)) return;
       for (const ent of readdirSync(dir, { withFileTypes: true })) {
+        if (++entries > 4096)
+          throw new Error("Report directory entry limit exceeded");
         const full = join(dir, ent.name);
         if (ent.isSymbolicLink())
           throw new Error("Report links are not allowed");
-        if (ent.isDirectory()) walk(full);
+        if (ent.isDirectory()) walk(full, depth + 1);
         else if (ent.isFile())
           paths.add(relative(ws.root, full).replaceAll("\\", "/"));
       }

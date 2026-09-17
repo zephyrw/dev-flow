@@ -1,0 +1,494 @@
+diff --git a/apps/api/src/server.ts b/apps/api/src/server.ts
+index 2b69b4d..e7fa721 100644
+--- a/apps/api/src/server.ts
++++ b/apps/api/src/server.ts
+@@ -23,6 +23,11 @@ import {
+   resumeApproved,
+   reconcileProcesses,
+ } from "../../../packages/runtime/src/recovery.js";
++import { CreateWorkflowService } from "../../../packages/core/src/create-workflow.js";
++import { WorkspaceReferenceService } from "../../../packages/workspace/src/references.js";
++import { AsideSessionService } from "../../../packages/asides/src/service.js";
++import { FunctionalIssueService } from "../../../packages/core/src/functional-issues.js";
++
+ export async function buildServer(engine: Engine) {
+   const app = Fastify({ logger: false, bodyLimit: 8 * 1024 * 1024 });
+   await app.register(websocket, { options: { maxPayload: 65536 } });
+@@ -125,12 +130,30 @@ export async function buildServer(engine: Engine) {
+     human(req);
+     return engine.registerProject(req.body);
+   });
++  const createWorkflowService = new CreateWorkflowService(engine.store);
++  const asideService = new AsideSessionService(engine.store);
++  const issueService = new FunctionalIssueService(engine.store);
++
+   app.get("/api/workflows", async (req) => {
+     human(req);
+     return engine.list();
+   });
+   app.post("/api/workflows", async (req) => {
+     human(req);
++    const body = req.body as any;
++    if (body.workspace_root) {
++      // 统一新任务创建服务入口 (N06)
++      const res = createWorkflowService.execute({
++        request_id: body.request_id || body.idempotency_key || `req_${Date.now()}`,
++        workspace_root: body.workspace_root,
++        request_text: body.request_text || body.request || "",
++        refs: body.refs,
++        workspace_mode: body.workspace_mode,
++        planner_profile_id: body.planner_profile_id,
++        executor_profile_id: body.executor_profile_id,
++      });
++      return { workflow: res.workflow, is_existing: res.is_existing };
++    }
+     const b = z
+       .object({
+         project_id: Id,
+@@ -143,6 +166,72 @@ export async function buildServer(engine: Engine) {
+       .parse(req.body);
+     return engine.create(b, b.idempotency_key);
+   });
++
++  // 工作区 @ 引用发现与浏览路由 (N06)
++  app.get("/api/workspaces/references", async (req) => {
++    human(req);
++    const query = String((req.query as any)?.query || "");
++    const dir = (req.query as any)?.dir;
++    const root = engine.config.workspace_root || process.cwd();
++    if (dir !== undefined) {
++      return WorkspaceReferenceService.listDirectory(root, dir);
++    }
++    return WorkspaceReferenceService.searchReferences(root, query);
++  });
++
++  // /btw 临时只读提问路由 (N09)
++  app.post("/api/workflows/:id/asides", async (req) => {
++    human(req);
++    const workflowId = Id.parse((req.params as any).id);
++    const body = req.body as any;
++    return asideService.submitQuestion(
++      workflowId,
++      body.question,
++      body.refs ?? [],
++      body.profile_revision,
++    );
++  });
++
++  app.post("/api/workflows/:id/asides/:asideId/promote", async (req) => {
++    human(req);
++    const workflowId = Id.parse((req.params as any).id);
++    const asideId = Id.parse((req.params as any).asideId);
++    const body = req.body as any;
++    return asideService.promoteToFormalFeedback(
++      workflowId,
++      asideId,
++      body.text,
++      body.target_revision,
++    );
++  });
++
++  // 功能问题跟踪路由 (N09)
++  app.get("/api/workflows/:id/issues", async (req) => {
++    human(req);
++    const workflowId = Id.parse((req.params as any).id);
++    return issueService.listIssues(workflowId);
++  });
++
++  app.post("/api/workflows/:id/issues", async (req) => {
++    human(req);
++    const workflowId = Id.parse((req.params as any).id);
++    const body = req.body as any;
++    return issueService.createIssue(workflowId, body.description, body.refs ?? []);
++  });
++
++  app.post("/api/workflows/:id/issues/:issueId/confirm", async (req) => {
++    human(req);
++    const workflowId = Id.parse((req.params as any).id);
++    const issueId = Id.parse((req.params as any).issueId);
++    const body = req.body as any;
++    return issueService.userConfirmIssue(
++      workflowId,
++      issueId,
++      Boolean(body.passed),
++      body.feedback,
++    );
++  });
++
+   app.get("/api/workflows/:id", async (req) => {
+     human(req);
+     const key = Id.parse((req.params as any).id);
+diff --git a/apps/web/src/interactions.tsx b/apps/web/src/interactions.tsx
+index 6c64b70..6367a4d 100644
+--- a/apps/web/src/interactions.tsx
++++ b/apps/web/src/interactions.tsx
+@@ -1,4 +1,5 @@
+ import React, { useState } from "react";
++import { RequirementComposer, type ReferenceItem } from "./components/RequirementComposer.js";
+ 
+ export function TaskInteraction({
+   detail,
+@@ -13,7 +14,9 @@ export function TaskInteraction({
+     [pending, setPending] = useState(false),
+     [error, setError] = useState(""),
+     [notice, setNotice] = useState(""),
+-    [isGuiding, setIsGuiding] = useState(false);
++    [isGuiding, setIsGuiding] = useState(false),
++    [interactionMode, setInteractionMode] = useState<"feedback" | "aside">("feedback");
++
+   const w = detail.workflow;
+   const requests = (detail.operations ?? []).filter(
+     (r: any) => r.status === "pending",
+@@ -162,63 +165,70 @@ export function TaskInteraction({
+             </button>
+           </div>
+         ) : (
+-          <div className="guidance-form">
+-            <textarea
+-              id={`guidance-${w.id}`}
+-              rows={3}
+-              value={text}
+-              onChange={(e) => setText(e.target.value)}
+-              placeholder="例如：先读取后端启动日志，修复启动错误，再继续测试。"
+-              autoFocus
+-              onKeyDown={(e) => {
+-                if (
+-                  (e.ctrlKey || e.metaKey) &&
+-                  e.key === "Enter" &&
+-                  text.trim() &&
+-                  !pending
+-                ) {
+-                  e.preventDefault();
+-                  void act(async () => {
++          <div className="guidance-form" style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
++            <div style={{ display: "flex", gap: "12px", fontSize: "12px", borderBottom: "1px solid var(--color-border, #d0d7de)", paddingBottom: "4px" }}>
++              <label style={{ display: "flex", alignItems: "center", gap: "4px", cursor: "pointer", fontWeight: interactionMode === "feedback" ? 600 : 400 }}>
++                <input
++                  type="radio"
++                  name="interactionMode"
++                  value="feedback"
++                  checked={interactionMode === "feedback"}
++                  onChange={() => setInteractionMode("feedback")}
++                />
++                反馈并调整
++              </label>
++              <label style={{ display: "flex", alignItems: "center", gap: "4px", cursor: "pointer", fontWeight: interactionMode === "aside" ? 600 : 400 }}>
++                <input
++                  type="radio"
++                  name="interactionMode"
++                  value="aside"
++                  checked={interactionMode === "aside"}
++                  onChange={() => setInteractionMode("aside")}
++                />
++                临时提问 (/btw 只读)
++              </label>
++            </div>
++
++            <RequirementComposer
++              placeholder={interactionMode === "feedback" ? "输入指导或调整内容... 输入 @ 引用文件或目录" : "向模型提出只读问题 (/btw)... 输入 @ 引用文件或目录"}
++              disabled={pending}
++              submitLabel={interactionMode === "feedback" ? (pending ? "正在交接…" : "发送指导并继续") : (pending ? "正在提问…" : "提交提问")}
++              onSubmit={(submittedText, submittedRefs) => {
++                void act(async () => {
++                  if (interactionMode === "aside") {
++                    await send(`/workflows/${w.id}/asides`, {
++                      question: submittedText,
++                      refs: submittedRefs,
++                    });
++                  } else {
+                     await send(`/workflows/${w.id}/feedback`, {
+-                      text,
++                      text: submittedText,
++                      refs: submittedRefs,
+                       scope: "within_plan",
+                     });
+-                    setIsGuiding(false);
+-                  });
+-                }
++                  }
++                  setIsGuiding(false);
++                });
+               }}
+             />
+-            <div className="guidance-actions">
++
++            <div style={{ display: "flex", justifyContent: "flex-start" }}>
+               <button
+                 type="button"
+                 className="btn-secondary"
+                 disabled={pending}
+                 onClick={() => {
+                   setIsGuiding(false);
+-                  setText("");
+                 }}
++                style={{ fontSize: "11px", padding: "2px 8px" }}
+               >
+-                取消
+-              </button>
+-              <button
+-                className="primary"
+-                disabled={pending || !text.trim()}
+-                onClick={() =>
+-                  void act(async () => {
+-                    await send(`/workflows/${w.id}/feedback`, {
+-                      text,
+-                      scope: "within_plan",
+-                    });
+-                    setIsGuiding(false);
+-                  })
+-                }
+-              >
+-                {pending ? "正在交接…" : "发送指导并继续"}
++                收起指导
+               </button>
+             </div>
+           </div>
+         )
+       )}
++
+       {error && (
+         <p role="alert" className="error">
+           {error}
+diff --git a/apps/web/src/main.tsx b/apps/web/src/main.tsx
+index 67c5dce..9a2cb4e 100644
+--- a/apps/web/src/main.tsx
++++ b/apps/web/src/main.tsx
+@@ -3,7 +3,9 @@ import { TaskInteraction } from "./interactions.js";
+ import { DeliveryStrip, EnvironmentSummary } from "./workbench.js";
+ import guideText from "../../../docs/guide/使用指南.md?raw";
+ import { TaskTree, TestResults } from "./panels.js";
++import { CreateWorkflowModal } from "./components/CreateWorkflowModal.js";
+ import React, { useEffect, useRef, useState } from "react";
++
+ import { createRoot } from "react-dom/client";
+ import Markdown from "react-markdown";
+ import remarkGfm from "remark-gfm";
+@@ -1661,6 +1663,7 @@ function App() {
+     if (selected) sessionStorage.setItem("devflow.tab." + selected, tab);
+   }, [tab, selected]);
+   const [connected, setConnected] = useState(false);
++  const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
+   const attempt = async (fn: () => Promise<unknown>) => {
+     setError("");
+     setNotice("");
+@@ -2038,7 +2041,25 @@ function App() {
+         >
+           <span className="nav-icon">◫</span> 工作流总览
+         </button>
+-        <div className="nav-heading">项目</div>
++        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", paddingRight: "10px" }}>
++          <div className="nav-heading" style={{ marginBottom: 0 }}>项目</div>
++          <button
++            type="button"
++            className="btn-create-workflow-compact"
++            onClick={() => setIsCreateModalOpen(true)}
++            style={{
++              background: "var(--color-primary, #0969da)",
++              color: "#ffffff",
++              border: "none",
++              borderRadius: "4px",
++              padding: "2px 8px",
++              fontSize: "11px",
++              cursor: "pointer",
++            }}
++          >
++            + 新建
++          </button>
++        </div>
+         <div className="project-list-nav">
+           {projects.map((p) => (
+             <div key={p.id} className="project-nav">
+@@ -2611,7 +2632,24 @@ function App() {
+           </section>
+         </div>
+       )}
++      <CreateWorkflowModal
++        isOpen={isCreateModalOpen}
++        onClose={() => setIsCreateModalOpen(false)}
++        onCreated={(id) => {
++          setSelected(id);
++          void refresh();
++        }}
++        fetchReferences={async (query) => {
++          try {
++            const data = await api(`/workspaces/references?query=${encodeURIComponent(query)}`);
++            return data.items ?? [];
++          } catch {
++            return [];
++          }
++        }}
++      />
+     </div>
+   );
+ }
++
+ createRoot(document.getElementById("root")!).render(<App />);
+diff --git a/apps/web/src/workbench.tsx b/apps/web/src/workbench.tsx
+index 4235d46..83320a4 100644
+--- a/apps/web/src/workbench.tsx
++++ b/apps/web/src/workbench.tsx
+@@ -27,12 +27,43 @@ export function DeliveryStrip({ detail }: { detail: any }) {
+           <small>待批准清单</small>
+         </span>
+       )}
+-      {detail.workflow?.state === "COMMITTED" && (
++      {detail.workflow?.state === "QUALITY_REVIEW" && (
++        <span className="metric-chip pending-chip">
++          <span className="chip-label">质量审查</span>
++          <b className="chip-value">规划模型审查中</b>
++        </span>
++      )}
++      {detail.workflow?.state === "PLANNER_TAKEOVER" && (
++        <span className="metric-chip error-chip">
++          <span className="chip-label">质量关卡</span>
++          <b className="chip-value">规划模型已接管修复</b>
++        </span>
++      )}
++      {["HUMAN_PENDING", "HUMAN_VERIFY"].includes(detail.workflow?.state) && (
++        <span className="metric-chip pending-chip">
++          <span className="chip-label">功能核验</span>
++          <b className="chip-value">待人工核验场景</b>
++        </span>
++      )}
++      {detail.workflow?.state === "INTEGRATING" && (
++        <span className="metric-chip">
++          <span className="chip-label">Git 整合</span>
++          <b className="chip-value">吸收主分支最新提交中</b>
++        </span>
++      )}
++      {detail.workflow?.state === "CLEANUP_PENDING" && (
++        <span className="metric-chip error-chip">
++          <span className="chip-label">清理待重试</span>
++          <b className="chip-value">工作树清理异常</b>
++        </span>
++      )}
++      {["COMMITTED", "COMPLETED"].includes(detail.workflow?.state) && (
+         <span className="metric-chip success-chip">
+           <span className="chip-label">交付结果</span>
+           <b className="chip-value">已提交至仓库</b>
+         </span>
+       )}
++
+       {!leaf ? (
+         <span className="metric-chip empty-chip">尚未生成细项清单</span>
+       ) : (
+diff --git a/packages/contracts/src/index.ts b/packages/contracts/src/index.ts
+index 768fe4d..b1622e2 100644
+--- a/packages/contracts/src/index.ts
++++ b/packages/contracts/src/index.ts
+@@ -15,26 +15,36 @@ export const RelativePath = z
+ export const Layer = z.enum(["unit", "integration", "e2e", "opentabs"]);
+ export const States = [
+   "RESEARCHING",
++  "PLANNING",
+   "PLAN_PENDING",
+   "QUEUED",
+   "EXECUTING",
+   "VERIFYING",
++  "DELIVERY_VERIFYING",
++  "QUALITY_REVIEW",
++  "PLANNER_TAKEOVER",
+   "HUMAN_PENDING",
++  "HUMAN_VERIFY",
+   "REVIEW_QUEUED",
+   "REVIEWING",
+   "REPAIR_PLAN_PENDING",
+   "REPAIR_RESEARCH_REQUIRED",
++  "INTEGRATING",
+   "COMMITTING",
+   "COMMITTED",
++  "COMPLETED",
++  "CLEANUP_PENDING",
+   "COMMIT_PARTIAL",
+   "STOPPING",
+   "STOPPED",
++  "PAUSED",
+   "BLOCKED",
+   "RECOVERY_REQUIRED",
+   "WAITING_AUTHORIZATION",
+   "WAITING_INPUT",
+ ] as const;
+ export type State = (typeof States)[number];
++
+ export const ScopeSchema = z
+   .object({
+     repository_paths: z.record(Id, z.array(RelativePath).min(1)).default({}),
+@@ -544,3 +554,9 @@ export interface RunUsage {
+   reasoning_tokens?: number;
+   recorded_at: string;
+ }
++
++export * from "./native-plan.js";
++export * from "./quality.js";
++export * from "./feedback.js";
++export * from "./execution-spec.js";
++
+diff --git a/scripts/build-host.mjs b/scripts/build-host.mjs
+index 5774710..cae6dc6 100644
+--- a/scripts/build-host.mjs
++++ b/scripts/build-host.mjs
+@@ -1,28 +1,39 @@
+ import { spawnSync } from "node:child_process";
+-import { existsSync, mkdirSync } from "node:fs";
++import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+ import { resolve } from "node:path";
+-const local = resolve(".cache/dotnet/dotnet.exe");
+-const dotnet = existsSync(local) ? local : "dotnet";
+-const env = {
+-  ...process.env,
+-  APPDATA: resolve(".cache/appdata"),
+-  LOCALAPPDATA: resolve(".cache/localappdata"),
+-  DOTNET_CLI_HOME: resolve(".cache/dotnet-home"),
+-  NUGET_PACKAGES: resolve(".cache/nuget"),
+-  DOTNET_CLI_TELEMETRY_OPTOUT: "1",
+-  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: "1",
+-};
+-const result = spawnSync(
+-  dotnet,
+-  [
+-    "build",
+-    "host/DevFlow.WinHost",
+-    "-c",
+-    "Release",
+-    "--configfile",
+-    "host/NuGet.Config",
+-    "--nologo",
+-  ],
+-  { env, stdio: "inherit", windowsHide: true },
++
++mkdirSync("dist/host", { recursive: true });
++
++const isWin = process.platform === "win32";
++const binaryName = isWin ? "devflow-host.exe" : "devflow-host";
++const targetPath = resolve("dist/host", binaryName);
++
++console.log("[build-host] Building cross-platform Go Host...");
++const goResult = spawnSync(
++  "go",
++  ["build", "-o", targetPath, "."],
++  {
++    cwd: resolve("host/devflow-host"),
++    stdio: "inherit",
++    windowsHide: true,
++  },
+ );
+-process.exit(result.status ?? 1);
++
++if (goResult.status !== 0) {
++  console.error("[build-host] Failed to build Go Host with exit code:", goResult.status);
++  process.exit(goResult.status ?? 1);
++}
++
++// 写入锁定工具链信息
++const toolchainsLock = {
++  host_toolchain: "go",
++  go_version: "1.24",
++  target_os: process.platform,
++  target_arch: process.arch,
++  built_at: new Date().toISOString(),
++  binary: binaryName,
++};
++writeFileSync("toolchains.lock.json", JSON.stringify(toolchainsLock, null, 2));
++
++console.log("[build-host] Go Host successfully built at:", targetPath);
++process.exit(0);

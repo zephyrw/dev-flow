@@ -147,6 +147,7 @@ export class DeliveryImporter {
       plan_hash: manifest.plan_hash,
       status: "pending",
       input_manifest_id: inputManifest.id,
+      archive_root: deliveryDir,
       report_hashes: reportHashes,
       manifest,
       submitted_at: now(),

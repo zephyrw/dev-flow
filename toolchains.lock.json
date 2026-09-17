@@ -1,0 +1,13 @@
+{
+  "host_toolchain": "go",
+  "go_version": "1.24",
+  "targets": [
+    "windows/amd64",
+    "windows/arm64",
+    "darwin/amd64",
+    "darwin/arm64",
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "build_metadata": "dist/host/build.json"
+}

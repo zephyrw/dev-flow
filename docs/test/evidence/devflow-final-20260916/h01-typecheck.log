@@ -1,0 +1,11 @@
+Command: pnpm run typecheck
+StartedAt: 2026-09-16T15:25:19.637Z
+EndedAt: 2026-09-16T15:26:40.468Z
+ExitCode: 0
+
+STDOUT:
+
+
+STDERR:
+$ tsc --noEmit
+
