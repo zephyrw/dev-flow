@@ -10,8 +10,9 @@ import { AsideSessionService } from "../../asides/src/service.js";
 import { FunctionalIssueService } from "./functional-issues.js";
 import { matchesCommand } from "../../evidence/src/command-match.js";
 import { workflowAttention } from "./attention.js";
+import { assertSelectedSource } from "./source-change.js";
 import { scheduleModelRetry } from "./model-retry.js";
-import { repairFailure } from "./repair.js";
+import { repairFailure, prepareRepairResume } from "./repair.js";
 import {
   latestEvidence,
   currentEvidence,
@@ -756,6 +757,7 @@ export class Engine {
       "反馈内容无效",
     );
     if (scope === "within_plan") this.assertProjectConfiguration(key);
+    if (scope === "within_plan") prepareRepairResume(this, key);
     this.store.remove("model_retry", key);
     this.store.remove("repair_state", key);
     this.invalidate(key, "用户反馈");
@@ -2087,7 +2089,7 @@ export class Engine {
         const run: Run = {
           id: runId,
           workflow_id: w.id,
-          plan_revision: w.plan_revision,
+          plan_revision: aside.plan_revision ?? w.plan_revision,
           adapter: binding.profile.adapterId,
           ...binding,
           stage: "aside",
@@ -2421,14 +2423,22 @@ export class Engine {
         }
         this.store.put("queue_wait", w.id, w.id, {
           kind: "preparing",
-          message: "已取得执行名额，正在准备任务工作区",
+          message:
+            w.workspace_mode === "existing_workspace"
+              ? "已取得执行名额，正在检查主工作区"
+              : "已取得执行名额，正在准备独立工作区",
           owners: [],
         });
         this.store.event(
           w.id,
           w.project_id,
           "PreparationStarted",
-          { message: "正在准备任务工作区" },
+          {
+            message:
+              w.workspace_mode === "existing_workspace"
+                ? "正在检查主工作区"
+                : "正在准备独立工作区",
+          },
           runId,
         );
         this.store.remove("queue", w.id);
@@ -2465,6 +2475,7 @@ export class Engine {
     try {
       let w = queued;
       if (w.state === "PLANNING") {
+        await assertSelectedSource(this, w);
         await this.runPlanning(w, runId);
         return;
       }
@@ -2520,6 +2531,7 @@ export class Engine {
             "任务工作区已不属于登记仓库",
           );
         }
+        await assertSelectedSource(this, w);
         await this.git.prepare(
           sources,
           key,
@@ -2742,10 +2754,18 @@ export class Engine {
         if (repair?.retry) {
           const current = this.get(key);
           this.invalidate(key, "异常修复，交付证据需重验");
-          this.transition(key, [current.state], "QUEUED", "auto_repair", {
-            feedback: [...current.feedback, repair.instructions],
-            blocker: undefined,
-          });
+          this.transition(
+            key,
+            [current.state],
+            "QUEUED",
+            this.store.get<any>("repair_assignment", key)?.planner
+              ? "planner_takeover"
+              : "auto_repair",
+            {
+              feedback: [...current.feedback, repair.instructions],
+              blocker: undefined,
+            },
+          );
           this.scheduler.enqueue(key, current.project_id);
         } else if (!repair) this.block(key, e);
       } else if (ownsRun || (!activated && ownsPreparation()))

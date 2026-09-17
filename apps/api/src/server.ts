@@ -33,8 +33,13 @@ import { GitDeliveryCoordinator } from "../../../packages/git/src/delivery-coord
 import { DocumentService } from "../../../packages/core/src/document-service.js";
 import { ExecutionSpecService } from "../../../packages/core/src/execution-spec-service.js";
 import { FeedbackService } from "../../../packages/core/src/feedback-service.js";
+import { PlanReviewService } from "../../../packages/core/src/plan-review.js";
+import { SourceChangeService } from "../../../packages/core/src/source-change.js";
 
-export async function buildServer(engine: Engine) {
+export async function buildServer(
+  engine: Engine,
+  options: { webRoot?: string } = {},
+) {
   const app = Fastify({ logger: false, bodyLimit: 8 * 1024 * 1024 });
   await app.register(websocket, { options: { maxPayload: 65536 } });
   const origin = new URL(engine.config.server.human_origin);
@@ -854,6 +859,56 @@ export async function buildServer(engine: Engine) {
       engine.store.remove("human_proof", receipt);
     }
   });
+  app.post("/api/workflows/:id/plan/reject", async (req) => {
+    human(req);
+    const result = new PlanReviewService(engine).reject(
+      Id.parse((req.params as any).id),
+      req.body,
+    );
+    void engine.dispatch();
+    return result;
+  });
+  app.post("/api/workflows/:id/source-change/preview", async (req) => {
+    human(req);
+    const body = z
+      .object({ expected_version: z.number().int().positive() })
+      .strict()
+      .parse(req.body);
+    return new SourceChangeService(engine).preview(
+      Id.parse((req.params as any).id),
+      body.expected_version,
+    );
+  });
+  app.post("/api/workflows/:id/source-change/resolve", async (req) => {
+    human(req);
+    const result = await new SourceChangeService(engine).resolve(
+      Id.parse((req.params as any).id),
+      req.body,
+    );
+    void engine.dispatch();
+    return result;
+  });
+  app.post("/api/workflows/:id/plan/questions", async (req) => {
+    human(req);
+    const result = new PlanReviewService(engine).question(
+      Id.parse((req.params as any).id),
+      req.body,
+    );
+    void engine.dispatch();
+    return result;
+  });
+  app.get("/api/workflows/:id/plan/questions", async (req) => {
+    human(req);
+    const key = Id.parse((req.params as any).id);
+    engine.get(key);
+    const query = z
+      .object({ plan_revision: z.coerce.number().int().positive() })
+      .parse(req.query);
+    return engine.store
+      .list<any>("aside_session", key)
+      .filter((q) => q.plan_revision === query.plan_revision)
+      .sort((a, b) => a.created_at.localeCompare(b.created_at));
+  });
   app.post("/api/workflows/:id/accept", async (req) => {
     human(req);
     const b = z
@@ -1181,7 +1236,7 @@ export async function buildServer(engine: Engine) {
       if (batch.length < 200) break;
     }
   });
-  const webRoot = resolve("dist/web");
+  const webRoot = resolve(options.webRoot ?? "dist/web");
   if (existsSync(webRoot)) {
     await app.register(staticPlugin, { root: webRoot });
     app.setNotFoundHandler((req, reply) =>

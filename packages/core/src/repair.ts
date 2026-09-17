@@ -1,7 +1,34 @@
 import type { Engine } from "./engine.js";
-import { FlowError } from "../../contracts/src/index.js";
+import { FlowError, resolveTaskModel } from "../../contracts/src/index.js";
 import { id, now, redact, objectHash } from "./util.js";
 import { failureSummary } from "../../presentation/src/failure.js";
+import { rejectedDeliveryFeedback } from "./delivery-feedback.js";
+import { batchExecutionInstructions } from "./execution-guidance.js";
+
+export function prepareRepairResume(engine: Engine, key: string) {
+  const w = engine.get(key);
+  const previous = engine.store.get<any>("repair_state", key);
+  if (
+    w.state !== "BLOCKED" ||
+    w.blocker?.code !== "REPAIR_EXHAUSTED" ||
+    resolveTaskModel(engine.plan(key).plan) !== "native-v2" ||
+    previous?.plan_revision !== w.plan_revision ||
+    previous?.code !== "DELIVERY_REJECTED" ||
+    (previous.executor_failures ?? previous.consecutive ?? 0) < 3
+  )
+    return;
+  const assignment = engine.store.get<any>("repair_assignment", key);
+  engine.store.put("repair_assignment", key, key, {
+    ...assignment,
+    planner: true,
+    phase: assignment?.phase ?? "before_human",
+    source: "execution_failure",
+    plan_revision: w.plan_revision,
+    instructions:
+      "执行模型已多轮修复失败。本次恢复由规划模型在原批准范围内接手，完整核查全部拒绝原因，保留已有工作，完成整批修改后统一测试和交付。" + batchExecutionInstructions,
+  });
+  engine.store.remove("repair_state", key);
+}
 
 export async function repairFailure(
   engine: Engine,
@@ -18,6 +45,9 @@ export async function repairFailure(
       "MODEL_QUOTA",
       "MODEL_AUTH",
       "UNAUTHORIZED",
+      "NATIVE_PERMISSION_DENIED",
+      "AUTHORIZATION_ROUTING_REQUIRED",
+      "POLICY_FAILED",
       "RUN_REVOKED",
       "DISK_FULL",
       "PROJECT_CONFIG_CHANGED",
@@ -26,6 +56,9 @@ export async function repairFailure(
   )
     return null;
   const prior = engine.store.get<any>("repair_state", key);
+  if (resolveTaskModel(engine.plan(key).plan) === "native-v2") {
+    return repairNativeFailure(engine, key, error, run);
+  }
   const attempts =
     (prior?.plan_revision === w.plan_revision ? prior.attempts : 0) + 1;
   let diagnoses =
@@ -44,7 +77,11 @@ export async function repairFailure(
   let diagnosedSignature = prior?.diagnosed_signature;
   let diagnosisError: string | undefined;
   const userSummary = failureSummary(code, message);
-  let instructions = `本轮遇到 ${code}：${message}。读取 diagnostics 和 feedback 上下文，定位原因后修复。先运行能区分原因的检查，核对命令是否真的执行、退出码和完整错误；不要只改包装脚本或反复重报所有任务。需要未登记的诊断或安装命令时调用 devflow_request_operation。检查必须实际执行，不能重复声明完成后退出。`;
+  const executionGuidance =
+    resolveTaskModel(engine.plan(key).plan) === "native-v2"
+      ? "在正式批准范围内自主使用原生工具完成开发和自测，再提交真实交付证据。遇到权限拒绝时停止并报告具体操作，不得反复重试或换工具绕过。"
+      : "需要未登记的诊断或安装命令时调用 devflow_request_operation。";
+  let instructions = `本轮遇到 ${code}：${message}。完整读取 diagnostics、feedback 和已有执行记录，核对命令、退出码和全部错误，核清全部已知问题根因及影响后完成整批修复，再统一测试；不要只改包装脚本或反复重报所有任务。${batchExecutionInstructions}${executionGuidance}检查必须实际执行，不能重复声明完成后退出。`;
   const save = (status: string) =>
     engine.store.put("repair_state", key, key, {
       plan_revision: w.plan_revision,
@@ -87,7 +124,7 @@ export async function repairFailure(
         !["EXECUTING", "VERIFYING"].includes(current.state)
       )
         return { retry: false, instructions };
-      instructions = `规划诊断：${result.diagnosis}\n修复步骤：${result.instructions}`;
+      instructions = `规划诊断：${result.diagnosis}\n修复步骤：${result.instructions}\n${batchExecutionInstructions}`;
       if (result.requires_plan_change) {
         engine.transition(
           key,
@@ -138,10 +175,98 @@ export async function repairFailure(
     "RepairScheduled",
     {
       attempt: attempts,
+      code,
       message: `${userSummary}执行模型正在排查并修复。`,
       instructions,
     },
     run,
+  );
+  return { retry: true, instructions };
+}
+
+function repairNativeFailure(
+  engine: Engine,
+  key: string,
+  error: unknown,
+  runId: string,
+) {
+  const w = engine.get(key);
+  const run = engine.store.get<any>("run", runId);
+  const assignment = engine.store.get<any>("repair_assignment", key);
+  const planner =
+    run?.purpose === "planner_takeover" ||
+    (run?.purpose === "plan_self_check" && assignment?.planner === true);
+  const phase =
+    run?.purpose === "plan_self_check" ? "plan_self_check" : "implementation";
+  const saved = engine.store.get<any>("repair_state", key);
+  const prior =
+    saved?.plan_revision === w.plan_revision && saved?.phase === phase
+      ? saved
+      : null;
+  const failures: Array<{ run_id: string; planner: boolean }> =
+    prior?.failed_runs ?? [];
+  if (!failures.some((f) => f.run_id === runId))
+    failures.push({ run_id: runId, planner });
+  const executorFailures = failures.filter((f) => !f.planner).length;
+  const plannerFailures = failures.filter((f) => f.planner).length;
+  const takeover = planner || executorFailures >= 3;
+  const exhausted = planner && plannerFailures >= 3;
+  const code = error instanceof FlowError ? error.code : "INTERNAL_FAILURE";
+  const message = redact(
+    error instanceof Error ? error.message : String(error),
+  );
+  const delivery = rejectedDeliveryFeedback(engine.store, w);
+  const owner = takeover ? "规划模型" : "执行模型";
+  const instructions = `${owner}在原批准工作区和范围内实际修复 ${code}：${message}。保留已有实现，先完整核查本次全部核验拒绝原因及共因，再完成整批代码修改，最后统一测试并提交新的真实交付；不得只给诊断建议。${batchExecutionInstructions}不得更改原批准计划或伪造测试记录、调用编号和报告。需要改变范围、权限或外部条件时报告具体阻塞。`;
+  engine.store.put("repair_state", key, key, {
+    plan_revision: w.plan_revision,
+    phase,
+    failed_runs: failures,
+    attempts: failures.length,
+    executor_failures: executorFailures,
+    planner_failures: plannerFailures,
+    code,
+    last_error: message,
+    instructions,
+    delivery_feedback: delivery,
+    user_summary: failureSummary(code, message),
+    status: exhausted
+      ? "exhausted"
+      : takeover
+        ? "planner_takeover"
+        : "repairing",
+    updated_at: now(),
+  });
+  if (exhausted) {
+    engine.transition(key, [w.state], "BLOCKED", "repair_exhausted", {
+      blocker: {
+        code: "REPAIR_EXHAUSTED",
+        message: `规划模型接手后连续三轮仍未解决：${failureSummary(code, message)}已停止重复尝试并保留修复现场。`,
+      },
+    });
+    return { retry: false, instructions };
+  }
+  if (takeover)
+    engine.store.put("repair_assignment", key, key, {
+      ...assignment,
+      planner: true,
+      phase: assignment?.phase ?? "before_human",
+      source: "execution_failure",
+      plan_revision: w.plan_revision,
+    });
+  engine.store.event(
+    key,
+    w.project_id,
+    takeover ? "PlannerRepairScheduled" : "RepairScheduled",
+    {
+      attempt: failures.length,
+      code,
+      message: takeover
+        ? "执行模型未能完成修复，已安排规划模型接手修改代码、补齐测试并重新核验。"
+        : `${failureSummary(code, message)}执行模型将继续修复。`,
+      instructions,
+    },
+    runId,
   );
   return { retry: true, instructions };
 }

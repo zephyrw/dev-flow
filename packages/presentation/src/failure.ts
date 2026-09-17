@@ -1,5 +1,9 @@
 /** User-facing causes only; raw commands and diagnostics remain in details. */
 export function failureSummary(code = "", detail = "") {
+  if (code === "BASELINE_CHANGED")
+    return "项目代码已更新，与制定计划时不同。请查看变化后选择继续方式。";
+  if (code === "NATIVE_PERMISSION_DENIED")
+    return detail || "AGY 拒绝了原生工具操作，已暂停等待处理，不会自动重试。";
   if (code === "TEST_PLACEHOLDER")
     return "测试仍是恒真占位断言，执行模型需要补齐真实业务检查。";
   if (/MODEL_QUOTA/.test(code))
@@ -20,7 +24,9 @@ export function failureSummary(code = "", detail = "") {
     return "本轮执行达到配置时限，已保留修改和检查记录。";
   if (/AUTHORIZATION/.test(code)) return "有操作需要通过工作台确认后继续。";
   if (/REPAIR_EXHAUSTED|REPAIR_NEEDS_GUIDANCE/.test(code))
-    return "多次自动排查仍未取得进展，已保留现场。";
+    return detail.startsWith("规划模型接手后")
+      ? detail
+      : "多次自动排查仍未取得进展，已保留现场。";
   return detail.length <= 160 &&
     !/\b(?:FlowError|SERVICE_|DIAGNOSIS_|devflow_|[A-Z]:\\)/.test(detail)
     ? detail || "执行遇到技术问题，尚未完成验证。"

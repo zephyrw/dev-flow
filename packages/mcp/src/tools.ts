@@ -8,6 +8,7 @@ import { ExecutionSpecService } from "../../core/src/execution-spec-service.js";
 import { WorkspaceReferenceSchema } from "../../contracts/src/feedback.js";
 import { startTask } from "../../core/src/progress.js";
 import { repairFailure } from "../../core/src/repair.js";
+import { batchExecutionInstructions } from "../../core/src/execution-guidance.js";
 import {
   OperationSchema,
   requestOperation,
@@ -324,7 +325,7 @@ export function makeMcp(engine: Engine, principal: Principal) {
             task_count: plan.tasks.length,
             test_count: plan.tests.length,
             instructions: isNativeV2
-              ? "原生开发模式：请使用原生文件查看工具阅读 HANDOFF.md 完整设计与验收要求，使用原生终端和编辑工具开发与自测，测试通过后使用 devflow_deliver 交付。"
+              ? "原生开发模式：请使用原生文件查看工具阅读 HANDOFF.md 完整设计与验收要求，完成全部实现和测试代码后统一运行测试，通过后使用 devflow_deliver 交付。" + batchExecutionInstructions
               : "使用本工具 section=plan/skill/tasks/tests/scope/feedback/environment 读取批准信息；每次响应 text 是内容分段，next_offset 非 null 时继续相同 section 和 id。section=tool,id=完整工具名 可读取准确参数 Schema。先完整读取计划、任务及测试再修改。禁止原生工具。",
           };
         let value: unknown;
@@ -678,7 +679,7 @@ export function makeMcp(engine: Engine, principal: Principal) {
     if (isNativeV2) {
       register(
         "devflow_deliver",
-        "原生终局交付工具：在原生环境下连续开发和自测完成后，提交交付清单进行终局批量核验。证据通过且执行器成功结束后，程序另调执行模型逐项复核正式计划；复核轮次必须提交 plan_self_check，全部修复及测试完成后才交规划模型审查。",
+        "原生终局交付工具：在原生环境下完成全部实现、统一测试通过后，提交交付清单进行终局批量核验。证据通过且执行器成功结束后，程序另调执行模型完整复核正式计划、汇总问题并整批修复后统一测试；复核轮次必须提交 plan_self_check，全部修复及测试完成后才交规划模型审查。",
         NativeDeliveryManifestSchema,
         async (a) => {
           requireCondition(

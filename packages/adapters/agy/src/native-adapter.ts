@@ -2,11 +2,15 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { atomicWrite } from "../../../core/src/util.js";
 import { agyArguments, observeAgy } from "./session.js";
-import type { ProcessManager, ManagedProcess } from "../../../process/src/manager.js";
+import type {
+  ProcessManager,
+  ManagedProcess,
+} from "../../../process/src/manager.js";
 import type { Config } from "../../../contracts/src/config.js";
 import type { Store } from "../../../store/src/store.js";
 import type { Workflow, Run } from "../../../contracts/src/index.js";
 import { FlowError } from "../../../contracts/src/index.js";
+import { batchExecutionInstructions } from "../../../core/src/execution-guidance.js";
 import { executablePath } from "../../../process/src/executable.js";
 
 export function writeAgyNativeConfiguration(
@@ -60,8 +64,9 @@ export class AgyNativeAdapter {
       plan_revision: options.planRevision,
       package_hash: options.packageHash,
       instruction: isResume
-        ? "会话恢复：请查看 handoff.json 中的反馈与 delivery_issues，针对性地使用原生工具修复和补齐测试，然后提交交付清单。"
-        : "原生执行模式：请先阅读工作包 HANDOFF.md 与 handoff.json。使用原生工具（文件编辑、终端、运行测试）连续完成实现与自测。所有必需验收场景自测通过后，通过 devflow_deliver 或交付清单文件完成交接。",
+        ? "会话恢复：请完整查看 handoff.json 中的全部反馈与 delivery_issues，核清全部已知问题根因，完成整批修复与测试代码后统一测试，再提交交付清单。"
+        : "原生执行模式：请先阅读工作包 HANDOFF.md 与 handoff.json。使用原生工具完成批准范围内全部实现和测试代码，再统一运行测试。所有必需验收场景通过后，通过 devflow_deliver 或交付清单文件完成交接。",
+      execution_order: batchExecutionInstructions,
     });
   }
 
@@ -75,8 +80,16 @@ export class AgyNativeAdapter {
     prompt: string;
     remainingMs: number;
   }): ManagedProcess {
-    const { workflow, run, directory, token, conversationId, projectBindingId, prompt, remainingMs } =
-      options;
+    const {
+      workflow,
+      run,
+      directory,
+      token,
+      conversationId,
+      projectBindingId,
+      prompt,
+      remainingMs,
+    } = options;
 
     return this.processes.start({
       id: run.id,
@@ -89,6 +102,7 @@ export class AgyNativeAdapter {
           this.config.timeouts.agent_minutes,
           conversationId,
           projectBindingId,
+          "accept-edits",
         ),
         "--add-dir",
         directory,

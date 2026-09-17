@@ -20,6 +20,7 @@ export class AsideSessionService {
     question: string,
     refs: WorkspaceReference[] = [],
     profileRevision: string = "1",
+    planContext?: { plan_revision: number; plan_hash: string },
   ): AsideSession {
     const allGlobal = this.store.list<AsideSession>("aside_session");
     const globalActiveCount = allGlobal.filter(
@@ -44,7 +45,10 @@ export class AsideSessionService {
       id: sessionId,
       workflow_id: workflowId,
       profile_revision: profileRevision,
-      context_ref: `workflow:${workflowId}:context`,
+      context_ref: planContext
+        ? `workflow:${workflowId}:plan:${planContext.plan_revision}`
+        : `workflow:${workflowId}:context`,
+      ...planContext,
       question,
       refs,
       status: shouldBeActive ? "active" : "queued",

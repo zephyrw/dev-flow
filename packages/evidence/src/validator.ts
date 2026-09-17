@@ -20,6 +20,8 @@ import { WorkspaceFingerprintService } from "../../workspace/src/fingerprint.js"
 import { reportKey, reportSourceKey } from "./native-execution-observer.js";
 import { objectHash } from "../../core/src/util.js";
 import { safePath } from "../../workspace/src/files.js";
+import { matchesScopePath } from "../../contracts/src/path-scope.js";
+import { changesFromInitialInput } from "../../git/src/initial-state.js";
 
 export interface ValidationResult {
   passed: boolean;
@@ -546,59 +548,66 @@ export class EvidenceValidator {
 
       let wsChanged: string[] = [];
       try {
-        const raw = execFileSync(
-          "git",
-          ["status", "--porcelain", "-z", "-uall"],
-          {
-            cwd: wsRoot,
-            encoding: "utf8",
-            stdio: ["ignore", "pipe", "ignore"],
-          },
-        );
-        if (raw) {
-          const rawEntries = raw.split("\0");
-          for (let i = 0; i < rawEntries.length; i++) {
-            const entry = rawEntries[i];
-            if (!entry) continue;
-            const status = entry.slice(0, 2);
-            let rel = entry.slice(3).trim().replaceAll("\\", "/");
-            // 重命名 (R) 或 复制 (C) 在 -z 下紧跟原路径 (B04)
-            if (
-              (status[0] === "R" || status[0] === "C" || status[1] === "R") &&
-              i + 1 < rawEntries.length
-            ) {
-              const origPath = rawEntries[++i]?.trim().replaceAll("\\", "/");
-              if (origPath) {
-                wsChanged.push(origPath);
-                allChangedFilesWithRoot.push({ rel: origPath, wsRoot });
-              }
-            }
-            if (!rel) continue;
-
-            // 递归展开未跟踪目录 (B04)
-            const fullPath = join(wsRoot, rel);
-            if (
-              rel.endsWith("/") ||
-              (existsSync(fullPath) && statSync(fullPath).isDirectory())
-            ) {
-              const expandDir = (subRel: string) => {
-                const absSub = join(wsRoot, subRel);
-                if (!existsSync(absSub)) return;
-                const entries = readdirSync(absSub, { withFileTypes: true });
-                for (const ent of entries) {
-                  const childRel = `${subRel.replace(/\/+$/, "")}/${ent.name}`;
-                  if (ent.isDirectory()) {
-                    expandDir(childRel);
-                  } else if (ent.isFile()) {
-                    wsChanged.push(childRel);
-                    allChangedFilesWithRoot.push({ rel: childRel, wsRoot });
-                  }
+        if (ws.initial_worktree_tree) {
+          wsChanged = changesFromInitialInput(wsRoot, ws.initial_worktree_tree);
+          allChangedFilesWithRoot.push(
+            ...wsChanged.map((rel) => ({ rel, wsRoot })),
+          );
+        } else {
+          const raw = execFileSync(
+            "git",
+            ["status", "--porcelain", "-z", "-uall"],
+            {
+              cwd: wsRoot,
+              encoding: "utf8",
+              stdio: ["ignore", "pipe", "ignore"],
+            },
+          );
+          if (raw) {
+            const rawEntries = raw.split("\0");
+            for (let i = 0; i < rawEntries.length; i++) {
+              const entry = rawEntries[i];
+              if (!entry) continue;
+              const status = entry.slice(0, 2);
+              let rel = entry.slice(3).trim().replaceAll("\\", "/");
+              // 重命名 (R) 或 复制 (C) 在 -z 下紧跟原路径 (B04)
+              if (
+                (status[0] === "R" || status[0] === "C" || status[1] === "R") &&
+                i + 1 < rawEntries.length
+              ) {
+                const origPath = rawEntries[++i]?.trim().replaceAll("\\", "/");
+                if (origPath) {
+                  wsChanged.push(origPath);
+                  allChangedFilesWithRoot.push({ rel: origPath, wsRoot });
                 }
-              };
-              expandDir(rel.replace(/\/+$/, ""));
-            } else {
-              wsChanged.push(rel);
-              allChangedFilesWithRoot.push({ rel, wsRoot });
+              }
+              if (!rel) continue;
+
+              // 递归展开未跟踪目录 (B04)
+              const fullPath = join(wsRoot, rel);
+              if (
+                rel.endsWith("/") ||
+                (existsSync(fullPath) && statSync(fullPath).isDirectory())
+              ) {
+                const expandDir = (subRel: string) => {
+                  const absSub = join(wsRoot, subRel);
+                  if (!existsSync(absSub)) return;
+                  const entries = readdirSync(absSub, { withFileTypes: true });
+                  for (const ent of entries) {
+                    const childRel = `${subRel.replace(/\/+$/, "")}/${ent.name}`;
+                    if (ent.isDirectory()) {
+                      expandDir(childRel);
+                    } else if (ent.isFile()) {
+                      wsChanged.push(childRel);
+                      allChangedFilesWithRoot.push({ rel: childRel, wsRoot });
+                    }
+                  }
+                };
+                expandDir(rel.replace(/\/+$/, ""));
+              } else {
+                wsChanged.push(rel);
+                allChangedFilesWithRoot.push({ rel, wsRoot });
+              }
             }
           }
         }
@@ -611,10 +620,31 @@ export class EvidenceValidator {
 
       // 范围核对：该仓库变动必须在允许范围内
       for (const f of wsChanged) {
+        const within = (p: string) =>
+          matchesScopePath(f, p, /^[A-Za-z]:/.test(wsRoot));
+        if (plan.scope.protected_paths.some(within)) {
+          addIssue(
+            "PROTECTED_PATH",
+            `工作区 '${ws.repo_id}' 修改了受保护路径 '${f}'`,
+          );
+          continue;
+        }
+        if (
+          !plan.scope.allow_dependency_changes &&
+          /(^|\/)(package(?:-lock)?\.json|pnpm-lock\.yaml|yarn\.lock|pom\.xml|requirements.*\.txt)$/.test(
+            f,
+          )
+        ) {
+          addIssue(
+            "DEPENDENCY_DENIED",
+            `工作区 '${ws.repo_id}' 的依赖文件 '${f}' 未获修改批准`,
+          );
+          continue;
+        }
         if (f.startsWith(".reports/") || f.startsWith("reports/")) {
           continue;
         }
-        if (!allowedPaths.has(f)) {
+        if (![...allowedPaths].some(within)) {
           addIssue(
             "OUTSIDE_SCOPE_FILE",
             `工作区 '${ws.repo_id ?? "main"}' 文件 '${f}' 超出了计划批准的修改范围`,

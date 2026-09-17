@@ -29,3 +29,40 @@ export function captureInitialState(root: string) {
     } catch {}
   }
 }
+
+/** Compare against the preserved starting files using an isolated Git index. */
+export function changesFromInitialInput(root: string, initialTree: string) {
+  const temp = mkdtempSync(join(tmpdir(), "devflow-input-diff-"));
+  const index = join(temp, "index");
+  const git = (args: string[]) =>
+    execFileSync("git", args, {
+      cwd: root,
+      encoding: "utf8",
+      windowsHide: true,
+      env: { ...process.env, GIT_INDEX_FILE: index, GIT_OPTIONAL_LOCKS: "0" },
+      stdio: ["pipe", "pipe", "pipe"],
+      maxBuffer: 32 * 1024 * 1024,
+    });
+  try {
+    git(["read-tree", initialTree]);
+    git(["add", "--all", "--", "."]);
+    return git([
+      "diff",
+      "--cached",
+      "--name-only",
+      "--no-renames",
+      "-z",
+      initialTree,
+      "--",
+    ])
+      .split("\0")
+      .filter(Boolean);
+  } finally {
+    try {
+      unlinkSync(index);
+    } catch {}
+    try {
+      rmdirSync(temp);
+    } catch {}
+  }
+}

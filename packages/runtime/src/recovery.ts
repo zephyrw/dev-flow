@@ -6,6 +6,7 @@ import { now } from "../../core/src/util.js";
 import type { OperationRequest } from "../../core/src/interactions.js";
 import type { ModelRetry } from "../../core/src/model-retry.js";
 import type { LocalRuntime } from "./runtime.js";
+import { prepareRepairResume } from "../../core/src/repair.js";
 
 const resuming = new WeakMap<Engine, Set<string>>();
 export async function resumeModelWaits(engine: Engine, at = Date.now()) {
@@ -167,6 +168,7 @@ export function resumeApproved(engine: Engine, key: string) {
     "PLAN_NOT_APPROVED",
     "当前计划未获批准",
   );
+  prepareRepairResume(engine, key);
   engine.invalidate(key, "用户恢复执行，旧证据失效");
   engine.store.remove("model_retry", key);
   engine.transition(key, [w.state], "QUEUED", "execute", {
