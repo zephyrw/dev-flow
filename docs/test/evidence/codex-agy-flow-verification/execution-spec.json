@@ -1,0 +1,35 @@
+{
+  "created_at": "2026-09-17T02:26:42.279Z",
+  "executorProfile": {
+    "adapterId": "agy",
+    "executableRef": "C:\\Program Files\\nodejs\\node.exe",
+    "id": "profile-agy",
+    "modelId": "gemini-3.7-flash-high",
+    "modelSelection": "explicit",
+    "options": {
+      "prefixArgs": [
+        "C:\\Code\\system-handle\\tests\\fixtures\\native-cli.mjs"
+      ]
+    },
+    "revision": 1
+  },
+  "id": "spec-c4512a6f-8578-4517-ac87-fef674402d79",
+  "mode": "composite",
+  "plannerProfile": {
+    "adapterId": "codex",
+    "executableRef": "C:\\Program Files\\nodejs\\node.exe",
+    "id": "profile-codex",
+    "modelId": "gpt-6-astra",
+    "modelSelection": "explicit",
+    "options": {
+      "prefixArgs": [
+        "C:\\Code\\system-handle\\tests\\fixtures\\native-cli.mjs"
+      ]
+    },
+    "revision": 1
+  },
+  "revision": 1,
+  "template_id": "native-development",
+  "template_revision": 4,
+  "workflow_id": "wf-5a8daffe-ceb8-4b84-9ee8-ac77cfe294a7"
+}

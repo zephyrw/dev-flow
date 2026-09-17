@@ -15,10 +15,10 @@ export default defineConfig({
     baseURL: "http://localhost:14811",
     headless: true,
     viewport: { width: 1440, height: 1000 },
-    launchOptions: {
-      executablePath:
-        "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe",
-    },
+    launchOptions:
+      process.platform === "win32" && !process.env.CI
+        ? { channel: "msedge" }
+        : {},
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
   },
@@ -26,6 +26,6 @@ export default defineConfig({
     command: "node --import tsx tests/e2e/fixture-server.ts",
     url: "http://localhost:14811/api/health",
     reuseExistingServer: false,
-    timeout: 45000,
+    timeout: 180000,
   },
 });

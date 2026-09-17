@@ -1,3 +1,4 @@
+import { captureInitialState } from "./initial-state.js";
 import { safePath } from "../../workspace/src/files.js";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -163,16 +164,7 @@ export class GitManager {
           "BASELINE_CHANGED",
           "现有目录基线变化",
         );
-        requireCondition(
-          (await git(repo.path, ["status", "--porcelain"])).length === 0,
-          "DIRTY_WORKSPACE",
-          "现有目录有未提交修改",
-        );
-        requireCondition(
-          !["main", "master"].includes(branch),
-          "TASK_BRANCH_REQUIRED",
-          "现有目录必须处于任务分支",
-        );
+        // Preserve staged and unstaged user edits in a separate initial tree.
       }
       const ws: Workspace = {
         id: id("ws"),
@@ -183,6 +175,9 @@ export class GitManager {
         baseline,
         branch,
         owned: mode === "new_worktree",
+        source_root: repo.path,
+        source_branch: info.branch,
+        ...(mode === "existing_workspace" ? captureInitialState(root) : {}),
       };
       requireCondition(
         !this.store
@@ -215,13 +210,14 @@ export class GitManager {
   ): Promise<Snapshot> {
     const repositories: Snapshot["repositories"] = [];
     for (const ws of this.store.list<Workspace>("workspace", workflow)) {
+      const base = ws.execution_base ?? ws.baseline;
       const head = await git(ws.root, ["rev-parse", "HEAD"]);
       const intended = this.store.get<{ repos: Record<string, string> }>(
         "commit_intent",
         workflow,
       )?.repos[ws.repo_id];
       requireCondition(
-        head === ws.baseline || head === intended,
+        head === base || head === intended,
         "BASELINE_CHANGED",
         "HEAD 已变化",
       );
@@ -231,17 +227,17 @@ export class GitManager {
         "任务分支已切换",
       );
       const indexTree = await git(ws.root, ["write-tree"]);
-      const baselineTree = await git(ws.root, [
-        "rev-parse",
-        ws.baseline + "^{tree}",
-      ]);
+      const baselineTree = await git(ws.root, ["rev-parse", base + "^{tree}"]);
       const committedTree =
         head === intended
           ? await git(ws.root, ["rev-parse", head + "^{tree}"])
           : undefined;
       requireCondition(
-        indexTree === baselineTree ||
-          (committedTree !== undefined && indexTree === committedTree),
+        indexTree === (ws.initial_index_tree ?? baselineTree) ||
+          (committedTree !== undefined &&
+            indexTree ===
+              (this.store.get<any>("commit_index", workflow + "-" + ws.repo_id)
+                ?.tree ?? committedTree)),
         "INDEX_CHANGED",
         "工作区暂存区已被其他操作修改",
       );
@@ -290,7 +286,7 @@ export class GitManager {
       mkdirSync(resolve(index, ".."), { recursive: true });
       const env = { GIT_INDEX_FILE: index };
       try {
-        await git(ws.root, ["read-tree", ws.baseline], env);
+        await git(ws.root, ["read-tree", base], env);
         if (paths.length)
           await git(
             ws.root,
@@ -298,16 +294,53 @@ export class GitManager {
             env,
             paths.join("\0") + "\0",
           );
-        const tree = await git(ws.root, ["write-tree"], env);
+        let tree = await git(ws.root, ["write-tree"], env);
+        if (ws.initial_worktree_tree) {
+          const patch = await git(ws.root, [
+            "diff",
+            "--binary",
+            "--no-ext-diff",
+            "--no-textconv",
+            ws.initial_worktree_tree,
+            tree,
+            "--",
+          ]);
+          await git(ws.root, ["read-tree", base], env);
+          if (patch) {
+            try {
+              await git(
+                ws.root,
+                ["apply", "--cached", "--whitespace=nowarn", "-"],
+                env,
+                patch + "\n",
+              );
+            } catch {
+              throw new FlowError(
+                "USER_CHANGE_OVERLAP",
+                "任务修改与用户原有改动重叠，无法安全分离；保留现场等待处理",
+              );
+            }
+          }
+          tree = await git(ws.root, ["write-tree"], env);
+        }
         const changed_paths = (
-          await git(ws.root, ["diff", "--name-only", "-z", ws.baseline, tree])
+          await git(ws.root, [
+            "diff",
+            "--name-only",
+            "-z",
+            this.store.get<any>(
+              "integration_candidate",
+              workflow + ":" + ws.repo_id,
+            )?.source_commit ?? ws.baseline,
+            tree,
+          ])
         )
           .split("\0")
           .filter(Boolean);
         repositories.push({
           workspace_id: ws.id,
           repo_id: ws.repo_id,
-          baseline: ws.baseline,
+          baseline: base,
           branch: ws.branch,
           tree,
           files: metadata.sort((a, b) => a.path.localeCompare(b.path)),
@@ -489,7 +522,10 @@ export class GitManager {
           "--no-textconv",
           "--stat",
           "--patch",
-          r.baseline,
+          this.store.get<any>(
+            "integration_candidate",
+            snapshot.workflow_id + ":" + r.repo_id,
+          )?.source_commit ?? r.baseline,
           r.tree,
         ]),
       });
@@ -499,11 +535,14 @@ export class GitManager {
   async commit(snapshot: Snapshot, project: Project, message: string) {
     let identity = project.git;
     if (!identity) {
-      const name =
-        (await git(".", ["config", "user.name"]).catch(() => "")) || "YCKJ4798";
-      const email =
-        (await git(".", ["config", "user.email"]).catch(() => "")) ||
-        "zhuxinwang@cloudwalk.com";
+      const root = project.repositories[0]!.path;
+      const name = await git(root, ["config", "user.name"]).catch(() => "");
+      const email = await git(root, ["config", "user.email"]).catch(() => "");
+      requireCondition(
+        name && email,
+        "GIT_IDENTITY_REQUIRED",
+        "请为项目配置 Git 提交身份",
+      );
       identity = {
         author_name: name,
         author_email: email,
@@ -564,6 +603,55 @@ export class GitManager {
           intent,
         );
       }
+      const indexKey = snapshot.workflow_id + "-" + r.repo_id;
+      let commitIndex = this.store.get<{ tree: string }>(
+        "commit_index",
+        indexKey,
+      );
+      if (!commitIndex) {
+        let tree = r.tree;
+        if (ws.initial_index_tree) {
+          const index = join(this.storageRoot, "indices", id("commit-index"));
+          mkdirSync(resolve(index, ".."), { recursive: true });
+          const indexEnv = { GIT_INDEX_FILE: index };
+          try {
+            await git(ws.root, ["read-tree", ws.initial_index_tree], indexEnv);
+            const patch = await git(ws.root, [
+              "diff",
+              "--binary",
+              "--no-ext-diff",
+              "--no-textconv",
+              r.baseline,
+              r.tree,
+              "--",
+            ]);
+            if (patch)
+              try {
+                await git(
+                  ws.root,
+                  ["apply", "--cached", "--whitespace=nowarn", "-"],
+                  indexEnv,
+                  patch + "\n",
+                );
+              } catch {
+                throw new FlowError(
+                  "USER_INDEX_OVERLAP",
+                  "任务补丁与用户暂存改动重叠；未修改分支和索引",
+                );
+              }
+            tree = await git(ws.root, ["write-tree"], indexEnv);
+          } finally {
+            if (existsSync(index)) unlinkSync(index);
+          }
+        }
+        commitIndex = { tree };
+        this.store.put(
+          "commit_index",
+          indexKey,
+          snapshot.workflow_id,
+          commitIndex,
+        );
+      }
       const head = await git(ws.root, ["rev-parse", "refs/heads/" + r.branch]);
       if (head !== commit) {
         requireCondition(
@@ -580,7 +668,16 @@ export class GitManager {
       }
       // A crash after update-ref can leave the old index. matches() above
       // accepts only the original or intended tree, so this repair is bounded.
-      await git(ws.root, ["read-tree", r.tree]);
+      const currentIndex = await git(ws.root, ["write-tree"]);
+      requireCondition(
+        currentIndex ===
+          (ws.initial_index_tree ??
+            (await git(ws.root, ["rev-parse", r.baseline + "^{tree}"]))) ||
+          currentIndex === commitIndex.tree,
+        "INDEX_CHANGED",
+        "提交过程中暂存区变化，保留现场",
+      );
+      await git(ws.root, ["read-tree", commitIndex.tree]);
       requireCondition(
         (await git(ws.root, ["rev-parse", commit + "^{tree}"])) === r.tree,
         "COMMIT_TREE_MISMATCH",

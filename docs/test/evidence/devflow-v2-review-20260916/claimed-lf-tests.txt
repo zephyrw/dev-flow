@@ -1,0 +1,18 @@
+
+ RUN  v4.1.11 C:/Code/system-handle
+
+fatal: not a git repository (or any of the parent directories): .git
+ ✓ tests/integration/devflow-v2-lf-scenarios.test.ts > DevFlow 2.0 全量核心场景自动化验收套件 (LF-01 ~ LF-46) > LF-01: 网页完整需求创建任务自动进入规划，重复提交保证幂等 169ms
+ ✓ tests/integration/devflow-v2-lf-scenarios.test.ts > DevFlow 2.0 全量核心场景自动化验收套件 (LF-01 ~ LF-46) > LF-04/05/06: 工作区 @ 引用发现、逐级浏览、文本截断与有效性解析 22ms
+ ✓ tests/integration/devflow-v2-lf-scenarios.test.ts > DevFlow 2.0 全量核心场景自动化验收套件 (LF-01 ~ LF-46) > LF-09/10/11/12/13: 两道质量关卡、独立三次计数与规划模型接管回路 17ms
+ ✓ tests/integration/devflow-v2-lf-scenarios.test.ts > DevFlow 2.0 全量核心场景自动化验收套件 (LF-01 ~ LF-46) > LF-14/15: 功能问题清单跟踪，模型只能标记ready_for_retest，仅用户可确认关闭 17ms
+ ✓ tests/integration/devflow-v2-lf-scenarios.test.ts > DevFlow 2.0 全量核心场景自动化验收套件 (LF-01 ~ LF-46) > LF-17/18: /btw 临时只读提问排队管理、并发上限与转正式反馈通道 18ms
+ ✓ tests/integration/devflow-v2-lf-scenarios.test.ts > DevFlow 2.0 全量核心场景自动化验收套件 (LF-01 ~ LF-46) > LF-19/20: 默认注册表中完整装载八大适配器 16ms
+ ✓ tests/integration/devflow-v2-lf-scenarios.test.ts > DevFlow 2.0 全量核心场景自动化验收套件 (LF-01 ~ LF-46) > LF-20/20: 默认模板 native-development@3 契约规范与约束核实 38ms
+ ✓ tests/integration/devflow-v2-lf-scenarios.test.ts > DevFlow 2.0 全量核心场景自动化验收套件 (LF-01 ~ LF-46) > LF-39: ClientInstaller 成功发现并向客户端分发七个 DevFlow Skill 27ms
+
+ Test Files  1 passed (1)
+      Tests  8 passed (8)
+   Start at  15:42:52
+   Duration  1.83s (transform 724ms, setup 0ms, import 1.14s, tests 327ms, environment 0ms)
+

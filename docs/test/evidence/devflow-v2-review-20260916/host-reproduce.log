@@ -1,0 +1,59 @@
+[
+  {
+    "id": "H01",
+    "defect_reproduced": true,
+    "observed": {
+      "code": 0,
+      "elapsed_ms": 877,
+      "events": [
+        {
+          "type": "started",
+          "pid": 32748,
+          "job_id": "audit-only"
+        },
+        {
+          "type": "stdout",
+          "data": "b2s="
+        },
+        {
+          "type": "exit"
+        }
+      ],
+      "stderr": ""
+    }
+  },
+  {
+    "id": "H02",
+    "defect_reproduced": true,
+    "observed": {
+      "code": 0,
+      "elapsed_ms": 1531,
+      "events": [
+        {
+          "type": "started",
+          "pid": 26328,
+          "job_id": "audit-only"
+        },
+        {
+          "type": "exit"
+        }
+      ],
+      "stderr": ""
+    }
+  },
+  {
+    "id": "H03",
+    "defect_reproduced": true,
+    "observed": {
+      "code": 1,
+      "elapsed_ms": 480,
+      "events": [
+        {
+          "type": "error",
+          "message": "empty process spec"
+        }
+      ],
+      "stderr": ""
+    }
+  }
+]

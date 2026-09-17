@@ -1,0 +1,32 @@
+# Third-Party Software Notices and Information
+
+This project incorporates components from various third-party open-source libraries.
+Below is a list of major third-party components, their licenses, and copyright notices:
+
+1. Fastify (MIT License)
+   Copyright (c) Fastify contributors
+   https://github.com/fastify/fastify
+
+2. better-sqlite3 (MIT License)
+   Copyright (c) Joshua Wise
+   https://github.com/WiseLibs/better-sqlite3
+
+3. React & React-DOM (MIT License)
+   Copyright (c) Meta Platforms, Inc. and affiliates.
+   https://github.com/facebook/react
+
+4. Vite (MIT License)
+   Copyright (c) 2019-present Yuxi (Evan) You and Vite contributors
+   https://github.com/vitejs/vite
+
+5. Vitest (MIT License)
+   Copyright (c) 2021-present Anthony Fu and Vitest contributors
+   https://github.com/vitest-dev/vitest
+
+6. Zod (MIT License)
+   Copyright (c) 2020 Colin McDonnell
+   https://github.com/colinhacks/zod
+
+7. Model Context Protocol SDK (MIT License)
+   Copyright (c) Anthropic, PBC
+   https://github.com/modelcontextprotocol

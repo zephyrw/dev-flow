@@ -1,0 +1,48 @@
+[
+  {
+    "commit_message": "test: native fixture",
+    "coverage": {
+      "all_changed_files_reviewed": true,
+      "all_requirements_checked": true,
+      "files": [
+        "main:app.txt"
+      ],
+      "security_checked": true,
+      "tests_validity_checked": true,
+      "upstream_downstream_checked": true
+    },
+    "findings": [],
+    "id": "review-63ded4e3-0122-42a2-9d90-2035e7283ceb",
+    "plan_revision": 1,
+    "repair_plan": null,
+    "review_request_id": "review-63ded4e3-0122-42a2-9d90-2035e7283ceb",
+    "schema_version": 1,
+    "snapshot_id": "125e60516a2382521b0186b75cddce40f3f337f0004cb4d710c021e1e0347a59",
+    "unresolved_questions": [],
+    "verdict": "pass",
+    "workflow_id": "wf-5a8daffe-ceb8-4b84-9ee8-ac77cfe294a7"
+  },
+  {
+    "commit_message": "test: native fixture",
+    "coverage": {
+      "all_changed_files_reviewed": true,
+      "all_requirements_checked": true,
+      "files": [
+        "main:app.txt"
+      ],
+      "security_checked": true,
+      "tests_validity_checked": true,
+      "upstream_downstream_checked": true
+    },
+    "findings": [],
+    "id": "review-4d1f2d23-fc67-4065-b7e0-87df09a7c3fc",
+    "plan_revision": 1,
+    "repair_plan": null,
+    "review_request_id": "review-4d1f2d23-fc67-4065-b7e0-87df09a7c3fc",
+    "schema_version": 1,
+    "snapshot_id": "125e60516a2382521b0186b75cddce40f3f337f0004cb4d710c021e1e0347a59",
+    "unresolved_questions": [],
+    "verdict": "pass",
+    "workflow_id": "wf-5a8daffe-ceb8-4b84-9ee8-ac77cfe294a7"
+  }
+]

@@ -79,11 +79,13 @@ test("build failure retains submitted progress and explains the local verificati
   await page.route("**/api/**", (route) => {
     const path = new URL(route.request().url()).pathname;
     return route.fulfill({
-      json: path.endsWith("/projects")
-        ? [detail.project]
-        : path.endsWith("/workflows")
-          ? [workflow]
-          : detail,
+      json: /\/(functional-issues|asides)$/.test(path)
+        ? []
+        : path.endsWith("/projects")
+          ? [detail.project]
+          : path.endsWith("/workflows")
+            ? [workflow]
+            : detail,
     });
   });
   await page.routeWebSocket("**/api/notifications", () => {});

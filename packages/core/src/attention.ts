@@ -114,6 +114,29 @@ export function workflowAttention(engine: Engine, key: string) {
       interruption,
     };
   }
+  if (
+    w.stage === "executor_plan_self_check" &&
+    ["QUEUED", "EXECUTING", "VERIFYING"].includes(w.state)
+  )
+    return {
+      category: "queue",
+      message:
+        w.state === "QUEUED"
+          ? "等待执行模型逐项复核正式计划"
+          : "执行模型正在对照正式计划复核、修复和自测",
+      action: "查看执行过程",
+      at: w.updated_at,
+    };
+  if (
+    w.stage === "quality_before_human" &&
+    ["REVIEW_QUEUED", "REVIEWING"].includes(w.state)
+  )
+    return {
+      category: "queue",
+      message: "执行模型计划复核已通过，等待规划模型审查代码质量",
+      action: "查看执行过程",
+      at: w.updated_at,
+    };
   if (w.state === "HUMAN_PENDING")
     return {
       category: "acceptance",

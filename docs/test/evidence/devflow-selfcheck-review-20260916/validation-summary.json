@@ -1,0 +1,101 @@
+{
+  "created_at": "2026-09-16T11:01:13.473482+00:00",
+  "scope": "executor plan self-check and related native regression; not full platform acceptance",
+  "aggregation": "Most recent passing result per file; preserves raw failures and does not represent one combined Vitest invocation.",
+  "tests": {
+    "total": 40,
+    "passed": 40,
+    "files": [
+      {
+        "file": "tests/unit/executor-plan-self-check.test.ts",
+        "tests": 12,
+        "status": "passed",
+        "raw_report": "selfcheck-tests-final.json",
+        "source_sha256": "d0bfd63c1569833fadc9bd9dd5a87c6fdcb81b4c859fdc19222c7e5429bcdfb6"
+      },
+      {
+        "file": "tests/unit/native-devflow.test.ts",
+        "tests": 9,
+        "status": "passed",
+        "raw_report": "selfcheck-tests-final.json",
+        "source_sha256": "7533c432b91a6fd31ba92bf30478cfa131d8f33b1eb325f9d97ad87a7964765d"
+      },
+      {
+        "file": "tests/integration/executor-plan-self-check.test.ts",
+        "tests": 5,
+        "status": "passed",
+        "raw_report": "selfcheck-tests-final.json",
+        "source_sha256": "ff3efd044d1760df905917a067709a053508e9e35d75e5e35716265b88ec2de5"
+      },
+      {
+        "file": "tests/integration/native-rereview-regression.test.ts",
+        "tests": 14,
+        "status": "passed",
+        "raw_report": "native-regression-final.json",
+        "source_sha256": "bead1a7987317cb6ff23a16f04f9924124c8c8bcc99a9f2248d5916ff8f9bc34"
+      }
+    ]
+  },
+  "superseded_results": [
+    {
+      "report": "selfcheck-tests-final.json",
+      "total": 40,
+      "passed": 38,
+      "failed": 2,
+      "reason": "S06 and S08 expected direct human acceptance; updated to require the self-check and planner review flow, then rerun in native-regression-final.json."
+    },
+    {
+      "report": "selfcheck-tests.json",
+      "reason": "Earlier fixed-title fixtures did not expose title-dependent gating; not used as final acceptance evidence."
+    }
+  ],
+  "skills": {
+    "validated": 18,
+    "all_valid": true,
+    "report": "skills-validation.json"
+  },
+  "observed_command_results": {
+    "typecheck": {
+      "exit_code": 0
+    },
+    "backend_build": {
+      "exit_code": 0,
+      "output_directory": "C:\\Users\\yckj4798\\AppData\\Local\\Temp\\devflow-selfcheck-build-054010f71a3f42ba8921fc90cbe27e22\\dist"
+    },
+    "frontend_build": {
+      "exit_code": 0,
+      "output_directory": "C:\\Users\\yckj4798\\AppData\\Local\\Temp\\devflow-selfcheck-build-054010f71a3f42ba8921fc90cbe27e22\\web"
+    },
+    "git_diff_check": {
+      "exit_code": 0
+    }
+  },
+  "source_stability": {
+    "baseline": "source-hashes-final.json",
+    "checked_files": 122,
+    "changed": []
+  },
+  "independent_platform_review": {
+    "status": "failed",
+    "dynamically_reproduced": [
+      "V01",
+      "V02",
+      "V03",
+      "V04",
+      "V05",
+      "V06"
+    ],
+    "evidence": "runtime-review.json",
+    "remaining_source_or_cli_findings": [
+      "V07",
+      "V08",
+      "V09",
+      "V10"
+    ]
+  },
+  "limits": [
+    "Real isolated Git and test processes; model runtime and host receipts are explicit test fixtures.",
+    "No real-model eight-client certification, macOS execution, full repository suite or full-stack browser E2E in this run.",
+    "No running service restart or deployment, no user workflow launched, no git commit."
+  ]
+}

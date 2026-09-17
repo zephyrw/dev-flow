@@ -45,8 +45,18 @@ export function modelOutputSchema(
   visit(schema);
   return schema;
 }
+export function normalizeModelOutput(input: any): any {
+  if (Array.isArray(input)) return input.map(normalizeModelOutput);
+  if (input && typeof input === "object")
+    return Object.fromEntries(
+      Object.entries(input)
+        .filter(([key, value]) => value !== null || key === "repair_plan")
+        .map(([key, value]) => [key, normalizeModelOutput(value)]),
+    );
+  return input;
+}
 export function parseReviewOutput(input: any) {
-  const value = structuredClone(input);
+  const value = normalizeModelOutput(input);
   if (value.repair_plan) {
     for (const task of value.repair_plan.tasks ?? [])
       if (task.repo_id === null) delete task.repo_id;

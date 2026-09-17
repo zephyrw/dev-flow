@@ -1,0 +1,9 @@
+RUN tests/integration/devflow-v2-installer.test.ts
+✓ TC-INST-01: 完整分发 6 个核心 Skill 且包含全部 references 子目录与文件 (RQ-21)
+✓ TC-INST-02: Codex 配置写入保留用户已有配置并追加 [mcp_servers.devflow] (RQ-22)
+✓ TC-INST-03: AGY 客户端正确写入 mcp_config.json 并保留隔离环境 (RQ-21)
+✓ TC-INST-04: UpgradeManager 对活动数据库执行一致性快照备份，验证备份可读且与原库分离
+✓ TC-INST-05: 升级事务原子切换 current.json，若元数据持久化失败保留原有 current.json 不变
+✓ TC-INST-06: 卸载时受管配置保护与引用清理：保留用户自定义注释与无关配置，清理 devflow 条目
+Test Files 1 passed (1)
+Tests 6 passed (6)

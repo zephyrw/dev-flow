@@ -1,0 +1,233 @@
+fatal: not a git repository (or any of the parent directories): .git
+{
+  "audited_at": "2026-09-16T07:42:44.174Z",
+  "isolation_root": "C:\\Users\\yckj4798\\AppData\\Local\\Temp\\devflow-test-xv8FXO",
+  "results": [
+    {
+      "id": "R01",
+      "defect_reproduced": true,
+      "observed": {
+        "create": 200,
+        "detail": 404,
+        "error": {
+          "code": "NOT_FOUND",
+          "message": "project ws-41686c4b-0c0f-4597-aebd-40e782cfc4f9 不存在"
+        }
+      }
+    },
+    {
+      "id": "R02",
+      "defect_reproduced": true,
+      "observed": {
+        "state": "PLANNING",
+        "sqlOutbox": 0,
+        "entityOutbox": 1
+      }
+    },
+    {
+      "id": "R03",
+      "defect_reproduced": true,
+      "observed": {
+        "workspace_mode": "new_worktree",
+        "rootEqualsSource": true,
+        "owned": true
+      }
+    },
+    {
+      "id": "R04",
+      "defect_reproduced": true,
+      "observed": {
+        "requested": [
+          "codex",
+          "claude-code"
+        ],
+        "actual": [
+          "agy",
+          "agy"
+        ],
+        "mode": "single_tool"
+      }
+    },
+    {
+      "id": "R05",
+      "defect_reproduced": true,
+      "observed": {
+        "http": 200,
+        "is_existing": true,
+        "request": "Review synthetic requirement"
+      }
+    },
+    {
+      "id": "R06",
+      "defect_reproduced": true,
+      "observed": {
+        "sameResultActions": [
+          "repair_by_executor",
+          "repair_by_executor",
+          "takeover_by_planner"
+        ],
+        "rejections": [
+          1,
+          2,
+          3
+        ],
+        "workflowPhase": "PLANNING"
+      }
+    },
+    {
+      "id": "R07",
+      "defect_reproduced": true,
+      "observed": {
+        "withoutFix": true,
+        "passedInput": "false",
+        "result": "confirmed"
+      }
+    },
+    {
+      "id": "R08",
+      "defect_reproduced": true,
+      "observed": {
+        "activeInSameWorkflow": 2,
+        "secondWorkflow": "active",
+        "outboxJobs": 0
+      }
+    },
+    {
+      "id": "R09",
+      "defect_reproduced": true,
+      "observed": {
+        "duplicateFormalMessages": 2
+      }
+    },
+    {
+      "id": "R10",
+      "defect_reproduced": true,
+      "observed": {
+        "item": {
+          "relativePath": "visible.txt",
+          "kind": "file"
+        },
+        "expectedKeys": [
+          "ref_id",
+          "repo_id",
+          "relative_path",
+          "kind"
+        ]
+      }
+    },
+    {
+      "id": "R11",
+      "defect_reproduced": true,
+      "observed": {
+        "traversalRead": "SYNTHETIC_REVIEW_MARKER",
+        "linkedAvailability": "available"
+      }
+    },
+    {
+      "id": "R12",
+      "defect_reproduced": true,
+      "observed": {
+        "available": true,
+        "fingerprintMismatch": "版本命令输出未匹配到产品指纹",
+        "claimed": {
+          "nativeEditing": true,
+          "terminal": true,
+          "browser": true,
+          "exactResume": true,
+          "readOnlySession": true,
+          "structuredToolFacts": true,
+          "asyncProcessFacts": true,
+          "usageReporting": true
+        }
+      }
+    },
+    {
+      "id": "R13",
+      "defect_reproduced": true,
+      "observed": {
+        "resumeArgs": [
+          "exec",
+          "--context-file",
+          "C:\\Users\\yckj4798\\AppData\\Local\\Temp\\devflow-test-xv8FXO\\repo\\HANDOFF.md"
+        ],
+        "readonlyFlagPresent": false,
+        "splitEventTypes": [
+          "message",
+          "message"
+        ],
+        "facts": {
+          "facts": []
+        }
+      }
+    },
+    {
+      "id": "R14",
+      "defect_reproduced": true,
+      "observed": {
+        "stopReported": true,
+        "childStillRunning": true
+      }
+    },
+    {
+      "id": "R15",
+      "defect_reproduced": true,
+      "observed": {
+        "engineReadsPlan": "native-v2",
+        "readerReason": "非 native-v2 工作流"
+      }
+    },
+    {
+      "id": "R16",
+      "defect_reproduced": true,
+      "observed": {
+        "missingWorkspace": true,
+        "missingRun": true,
+        "missingReport": true,
+        "valid": true
+      }
+    },
+    {
+      "id": "R17",
+      "defect_reproduced": true,
+      "observed": {
+        "reportedMcp": true,
+        "configExists": false,
+        "referenceCopied": false,
+        "restoredBrowserSkill": true
+      }
+    },
+    {
+      "id": "R18",
+      "defect_reproduced": true,
+      "observed": {
+        "nativeSchemaAccepted": true,
+        "productionValidatorRejected": true
+      }
+    },
+    {
+      "id": "R19",
+      "defect_reproduced": true,
+      "observed": {
+        "committedFiles": [
+          "task.txt",
+          "user.txt"
+        ],
+        "candidateIsSha": false
+      }
+    },
+    {
+      "id": "R20",
+      "defect_reproduced": true,
+      "observed": {
+        "cleanup": {
+          "workflow_id": "wf-clean-audit",
+          "worktree_removed": false,
+          "branch_deleted": false,
+          "cleaned_at": "2026-09-16T07:42:44.166Z"
+        },
+        "stateRecorded": null
+      }
+    }
+  ],
+  "reproduced": 20
+}

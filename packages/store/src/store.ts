@@ -4,6 +4,8 @@ import { dirname } from "node:path";
 import { EventEmitter } from "node:events";
 import { FlowError, type DomainEvent } from "../../contracts/src/index.js";
 import { canonical, hash, id, now, publicEvent } from "../../core/src/util.js";
+import { runMigrations } from "./migrations/index.js";
+
 export class Store extends EventEmitter {
   db: Database.Database;
   private depth = 0;
@@ -13,15 +15,7 @@ export class Store extends EventEmitter {
     super();
     mkdirSync(dirname(file), { recursive: true });
     this.db = new Database(file, { timeout: 5000 });
-    this.db
-      .exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;
-    CREATE TABLE IF NOT EXISTS entities(kind TEXT NOT NULL,id TEXT NOT NULL,owner TEXT NOT NULL,data TEXT NOT NULL,version INTEGER NOT NULL DEFAULT 1,PRIMARY KEY(kind,id));
-    CREATE INDEX IF NOT EXISTS entities_owner ON entities(kind,owner);
-    CREATE TABLE IF NOT EXISTS events(workflow_id TEXT NOT NULL,seq INTEGER NOT NULL,data TEXT NOT NULL,PRIMARY KEY(workflow_id,seq));
-    CREATE TABLE IF NOT EXISTS dedup(key TEXT PRIMARY KEY,request_hash TEXT NOT NULL,result TEXT NOT NULL);
-    CREATE TABLE IF NOT EXISTS outbox(id TEXT PRIMARY KEY,workflow_id TEXT NOT NULL,kind TEXT NOT NULL,data TEXT NOT NULL,status TEXT NOT NULL,created_at TEXT NOT NULL);
-    CREATE TABLE IF NOT EXISTS tokens(hash TEXT PRIMARY KEY,data TEXT NOT NULL);
-    PRAGMA user_version=1;`);
+    runMigrations(this.db);
   }
   transaction<T>(fn: () => T): T {
     if (this.depth) return fn();

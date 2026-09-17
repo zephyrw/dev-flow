@@ -1,0 +1,161 @@
+[
+  {
+    "archive_root": "C:\\Users\\yckj4798\\AppData\\Local\\Temp\\devflow-test-9trhnv\\state\\deliveries\\del-3aa2b4fa-de1f-4a08-be4a-f999a90d68b6",
+    "id": "del-3aa2b4fa-de1f-4a08-be4a-f999a90d68b6",
+    "input_manifest_id": "man-ef076f05-103d-4c00-8bcb-335e214a266b",
+    "manifest": {
+      "acceptance_mappings": [
+        {
+          "case_id": "updates content",
+          "report_path": ".reports/unit.json",
+          "requirement_id": "UT01",
+          "scene_id": "UT01",
+          "test_execution_id": "call-run-aaae8fcd-50bc-475a-8e3e-d2442740863a"
+        }
+      ],
+      "conversation_id": "fixture-wf-5a8daffe-ceb8-4b84-9ee8-ac77cfe294a7",
+      "implementations": [
+        {
+          "path": "app.txt",
+          "repo_id": "main",
+          "task_id": "T01"
+        }
+      ],
+      "plan_conflicts": [],
+      "plan_hash": "2bce41c8fc365b2c152948c20d39bcf40fd805740383e4f5614cdd04b328aaa3",
+      "plan_revision": 1,
+      "run_id": "run-aaae8fcd-50bc-475a-8e3e-d2442740863a",
+      "schema_version": "v2",
+      "submission_id": "sub-run-aaae8fcd-50bc-475a-8e3e-d2442740863a",
+      "test_executions": [
+        {
+          "command": "\"C:\\Program Files\\nodejs\\node.exe\" .reports/check.cjs",
+          "cwd": "C:\\Users\\yckj4798\\AppData\\Local\\Temp\\devflow-test-9trhnv\\repo\\.git\\devflow\\worktrees\\wf-5a8daffe-ceb8-4b84-9ee8-ac77cfe294a7",
+          "exit_code": 0,
+          "format": "vitest_json",
+          "repo_id": "main",
+          "report_paths": [
+            ".reports/unit.json"
+          ],
+          "tool_call_id": "call-run-aaae8fcd-50bc-475a-8e3e-d2442740863a"
+        }
+      ],
+      "unfinished_items": [],
+      "workflow_id": "wf-5a8daffe-ceb8-4b84-9ee8-ac77cfe294a7"
+    },
+    "manifest_hash": "7800079862454b24119ba34d3824be3c50de077790cdd06c21c385d5db2a28db",
+    "plan_hash": "2bce41c8fc365b2c152948c20d39bcf40fd805740383e4f5614cdd04b328aaa3",
+    "plan_revision": 1,
+    "report_hashes": {
+      "0d7c0e0daa5900cab1ca717e8cbec8866f1a14dfca88ca5aafb1a9958946163a.report": "c1ade2aec6cf8a2a30ef707e915d5db80a225a2416e72090c4420dc9e49e0203"
+    },
+    "run_id": "run-aaae8fcd-50bc-475a-8e3e-d2442740863a",
+    "status": "passed",
+    "submission_id": "sub-run-aaae8fcd-50bc-475a-8e3e-d2442740863a",
+    "submitted_at": "2026-09-17T02:26:44.192Z",
+    "workflow_id": "wf-5a8daffe-ceb8-4b84-9ee8-ac77cfe294a7"
+  },
+  {
+    "archive_root": "C:\\Users\\yckj4798\\AppData\\Local\\Temp\\devflow-test-9trhnv\\state\\deliveries\\del-9b19d008-84b0-492f-ad16-d33d29e127d1",
+    "id": "del-9b19d008-84b0-492f-ad16-d33d29e127d1",
+    "input_manifest_id": "man-3d8c1061-5ac1-4ede-b337-62b50dabedb6",
+    "manifest": {
+      "acceptance_mappings": [
+        {
+          "case_id": "updates content",
+          "report_path": ".reports/unit.json",
+          "requirement_id": "UT01",
+          "scene_id": "UT01",
+          "test_execution_id": "call-run-962278d0-b649-41df-864a-688540ae1715"
+        }
+      ],
+      "conversation_id": "fixture-wf-5a8daffe-ceb8-4b84-9ee8-ac77cfe294a7",
+      "implementations": [
+        {
+          "path": "app.txt",
+          "repo_id": "main",
+          "task_id": "T01"
+        }
+      ],
+      "plan_conflicts": [],
+      "plan_hash": "2bce41c8fc365b2c152948c20d39bcf40fd805740383e4f5614cdd04b328aaa3",
+      "plan_revision": 1,
+      "plan_self_check": {
+        "authority_hash": "ad5c219ab89f757cec330f52abe304f80a264ab113b08d759b077d6c3a9d314d",
+        "checks": [
+          {
+            "check_id": "r1:document",
+            "evidence": [
+              "app.txt 和本轮真实 .reports/unit.json"
+            ],
+            "status": "passed"
+          },
+          {
+            "check_id": "r1:task:T01",
+            "evidence": [
+              "app.txt 和本轮真实 .reports/unit.json"
+            ],
+            "status": "passed"
+          },
+          {
+            "check_id": "r1:test:UT01",
+            "evidence": [
+              "app.txt 和本轮真实 .reports/unit.json"
+            ],
+            "status": "passed"
+          },
+          {
+            "check_id": "r1:work_item:T01",
+            "evidence": [
+              "app.txt 和本轮真实 .reports/unit.json"
+            ],
+            "status": "passed"
+          },
+          {
+            "check_id": "r1:acceptance:UT01",
+            "evidence": [
+              "app.txt 和本轮真实 .reports/unit.json"
+            ],
+            "status": "passed"
+          }
+        ],
+        "findings": [],
+        "plan_hash": "2bce41c8fc365b2c152948c20d39bcf40fd805740383e4f5614cdd04b328aaa3",
+        "plan_revision": 1,
+        "request_id": "plancheck-b9d48448-fcbd-4963-b5cc-9f1593c1034f",
+        "run_id": "run-962278d0-b649-41df-864a-688540ae1715",
+        "source_delivery_revision_id": "dlr-2d473086-cbf2-49bc-a70c-4e25b2db879a",
+        "verdict": "passed"
+      },
+      "run_id": "run-962278d0-b649-41df-864a-688540ae1715",
+      "schema_version": "v2",
+      "submission_id": "sub-run-962278d0-b649-41df-864a-688540ae1715",
+      "test_executions": [
+        {
+          "command": "\"C:\\Program Files\\nodejs\\node.exe\" .reports/check.cjs",
+          "cwd": "C:\\Users\\yckj4798\\AppData\\Local\\Temp\\devflow-test-9trhnv\\repo\\.git\\devflow\\worktrees\\wf-5a8daffe-ceb8-4b84-9ee8-ac77cfe294a7",
+          "exit_code": 0,
+          "format": "vitest_json",
+          "repo_id": "main",
+          "report_paths": [
+            ".reports/unit.json"
+          ],
+          "tool_call_id": "call-run-962278d0-b649-41df-864a-688540ae1715"
+        }
+      ],
+      "unfinished_items": [],
+      "workflow_id": "wf-5a8daffe-ceb8-4b84-9ee8-ac77cfe294a7"
+    },
+    "manifest_hash": "b7d773bfc4f45458a2abaa03ed16121b91d6eeb31aef59188023b090042a27a9",
+    "plan_hash": "2bce41c8fc365b2c152948c20d39bcf40fd805740383e4f5614cdd04b328aaa3",
+    "plan_revision": 1,
+    "report_hashes": {
+      "19e3140658b4e49d0f5c10aa23723a28b052fb4ba4b74ea71486baaa432824d2.report": "c1ade2aec6cf8a2a30ef707e915d5db80a225a2416e72090c4420dc9e49e0203"
+    },
+    "run_id": "run-962278d0-b649-41df-864a-688540ae1715",
+    "status": "passed",
+    "submission_id": "sub-run-962278d0-b649-41df-864a-688540ae1715",
+    "submitted_at": "2026-09-17T02:26:48.574Z",
+    "workflow_id": "wf-5a8daffe-ceb8-4b84-9ee8-ac77cfe294a7"
+  }
+]

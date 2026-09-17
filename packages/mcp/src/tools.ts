@@ -1,3 +1,11 @@
+import { resolveProfile } from "../../core/src/run-profile.js";
+import {
+  SupportedAdapters,
+  type ToolProfile,
+} from "../../contracts/src/execution-spec.js";
+import { CreateWorkflowService } from "../../core/src/create-workflow.js";
+import { ExecutionSpecService } from "../../core/src/execution-spec-service.js";
+import { WorkspaceReferenceSchema } from "../../contracts/src/feedback.js";
 import { startTask } from "../../core/src/progress.js";
 import { repairFailure } from "../../core/src/repair.js";
 import {
@@ -127,6 +135,47 @@ export function makeMcp(engine: Engine, principal: Principal) {
   };
   if (principal.role === "planner") {
     register(
+      "devflow_create_native_task",
+      "为尚无正式计划的新需求建立原生工作流，由已配置规划工具规划；已有指定计划禁止使用此入口重新规划。",
+      z.object({
+        request_id: Id,
+        workspace_root: z.string().min(1),
+        request_text: z.string().min(1),
+        refs: z.array(WorkspaceReferenceSchema).default([]),
+        workspace_mode: z
+          .enum(["existing_workspace", "new_worktree"])
+          .default("new_worktree"),
+        planner_profile_id: Id,
+        executor_profile_id: Id,
+      }),
+      (a) => {
+        const result = new CreateWorkflowService(engine.store).execute(a);
+        void engine.dispatch();
+        return {
+          ...result,
+          console_url:
+            engine.config.server.human_origin +
+            "/?workflow=" +
+            result.workflow.id,
+        };
+      },
+    );
+    register(
+      "devflow_list_tool_profiles",
+      "列出已保存配置及使用客户端原生配置的内置配置 ID；列表不代表工具已安装或认证。",
+      z.object({}),
+      () => {
+        const saved = engine.store.list<ToolProfile>("tool_profile");
+        return [
+          ...saved,
+          ...SupportedAdapters.filter(
+            (a) => !saved.some((p) => p.id === "profile-" + a),
+          ).map((a) => resolveProfile(engine.store, "profile-" + a)),
+        ];
+      },
+      true,
+    );
+    register(
       "devflow_start",
       "用户说用 DevFlow 时的统一入口。识别当前仓库、会话和任务阶段；自动引导首次接入，返回规划上下文或控制台链接。",
       IntakeSchema,
@@ -164,6 +213,43 @@ export function makeMcp(engine: Engine, principal: Principal) {
       z.object({ workflow_id: Id }),
       (a) => engine.detail(a.workflow_id),
       true,
+    );
+    register(
+      "devflow_update_execution_spec",
+      "安全修订已有工作流的工具配置规格（Profile/模型），若有正在执行的活动 Run 先审计停止后再应用新规格。",
+      z.object({
+        workflow_id: Id,
+        expected_version: z.number().int().optional(),
+        planner_profile: z.any().optional(),
+        executor_profile: z.any().optional(),
+        template_id: z.string().optional(),
+        template_revision: z.number().int().optional(),
+        interrupt_requested: z.boolean().optional(),
+      }),
+      async (a) => {
+        const w = engine.get(a.workflow_id);
+        const specService = new ExecutionSpecService(engine.store);
+        const result = specService.updateExecutionSpec({
+          request_id: `req_${Date.now()}`,
+          expected_version: a.expected_version ?? w.version,
+          workflow_id: a.workflow_id,
+          planner_profile: a.planner_profile,
+          executor_profile: a.executor_profile,
+          template_id: a.template_id,
+          template_revision: a.template_revision,
+          interrupt_requested: a.interrupt_requested,
+        });
+        if (a.interrupt_requested) {
+          if (["EXECUTING", "VERIFYING", "QUEUED"].includes(w.state)) {
+            await engine.stop(a.workflow_id, "local_console");
+          }
+        }
+        return {
+          ok: true,
+          spec: result.spec,
+          interrupt_required: result.interruptRequired,
+        };
+      },
     );
     register(
       "devflow_submit_plan",
@@ -592,7 +678,7 @@ export function makeMcp(engine: Engine, principal: Principal) {
     if (isNativeV2) {
       register(
         "devflow_deliver",
-        "原生终局交付工具：在原生环境下连续开发和自测完成后，提交交付清单进行终局批量核验。证据通过并且执行器成功结束后进入人工验收。",
+        "原生终局交付工具：在原生环境下连续开发和自测完成后，提交交付清单进行终局批量核验。证据通过且执行器成功结束后，程序另调执行模型逐项复核正式计划；复核轮次必须提交 plan_self_check，全部修复及测试完成后才交规划模型审查。",
         NativeDeliveryManifestSchema,
         async (a) => {
           requireCondition(

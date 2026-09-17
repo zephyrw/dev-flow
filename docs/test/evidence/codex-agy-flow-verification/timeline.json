@@ -1,0 +1,78 @@
+[
+  {
+    "step": "1. 审计本机真实 CLI 环境与适配器能力",
+    "timestamp": "2026-09-17T02:26:37.772Z",
+    "details": {
+      "planner": "codex",
+      "executor": "agy"
+    }
+  },
+  {
+    "step": "2. 初始化隔离测试环境与业务 Git 仓库",
+    "timestamp": "2026-09-17T02:26:39.910Z",
+    "details": {}
+  },
+  {
+    "step": "3. 注册 profile-codex 与 profile-agy 工具配置规格",
+    "timestamp": "2026-09-17T02:26:41.702Z",
+    "details": {}
+  },
+  {
+    "step": "4. 创建任务并固定 Codex (Planner) + agy (Executor) 复合执行规格",
+    "timestamp": "2026-09-17T02:26:41.702Z",
+    "details": {}
+  },
+  {
+    "step": "5. 执行规划阶段 (Planning Stage: 由 Codex 规划模型生成方案)",
+    "timestamp": "2026-09-17T02:26:42.677Z",
+    "details": {}
+  },
+  {
+    "step": "6. 批准当前计划 (Approval Stage: 生成凭证并推进到待执行队列)",
+    "timestamp": "2026-09-17T02:26:42.898Z",
+    "details": {}
+  },
+  {
+    "step": "7. 驱动实施阶段 (agy 修改代码并生成测试报告)、自查门禁 (agy 自查) 与首道质量复核 (Codex 审查)",
+    "timestamp": "2026-09-17T02:26:42.901Z",
+    "details": {}
+  },
+  {
+    "step": "8. 核验执行过程中的 Profile 绑定与门禁结论",
+    "timestamp": "2026-09-17T02:26:54.785Z",
+    "details": {
+      "execRun": {
+        "adapter": "agy",
+        "status": "completed"
+      },
+      "selfCheckRun": {
+        "adapter": "agy",
+        "status": "completed"
+      },
+      "reviewRun": {
+        "adapter": "codex",
+        "status": "completed"
+      }
+    }
+  },
+  {
+    "step": "9. 执行人工功能验收确认 (Human Acceptance & Confirmation)",
+    "timestamp": "2026-09-17T02:26:54.785Z",
+    "details": {}
+  },
+  {
+    "step": "10. 驱动终审 (After Human Review: 由 Codex 执行) 与 Git 整合合并到主工作区",
+    "timestamp": "2026-09-17T02:26:56.156Z",
+    "details": {}
+  },
+  {
+    "step": "11. 核验最终副作用：主工作区代码、工作树清理与分支删除",
+    "timestamp": "2026-09-17T02:27:06.713Z",
+    "details": {}
+  },
+  {
+    "step": "12. 归档全套验证证据至 docs/test/evidence/codex-agy-flow-verification/",
+    "timestamp": "2026-09-17T02:27:06.870Z",
+    "details": {}
+  }
+]

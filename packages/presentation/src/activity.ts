@@ -79,6 +79,7 @@ export const stages = [
 ];
 const stageIndex: Record<string, number> = {
   RESEARCHING: 0,
+  PLANNING: 0,
   REPAIR_RESEARCH_REQUIRED: 0,
   PLAN_PENDING: 1,
   REPAIR_PLAN_PENDING: 1,
@@ -90,10 +91,13 @@ const stageIndex: Record<string, number> = {
   REVIEWING: 5,
   COMMITTING: 6,
   COMMITTED: 6,
+  INTEGRATING: 6,
+  CLEANUP_PENDING: 6,
+  COMPLETED: 6,
   COMMIT_PARTIAL: 6,
 };
 export function workflowProgress(w: any, events: any[]) {
-  const completed = w.state === "COMMITTED";
+  const completed = ["COMMITTED", "COMPLETED"].includes(w.state);
   const paused = [
     "BLOCKED",
     "STOPPED",
@@ -121,11 +125,15 @@ export function workflowProgress(w: any, events: any[]) {
   const index = stageIndex[state];
   const next: Record<string, string> = {
     RESEARCHING: "等待调研和计划完成",
+    PLANNING: "规划模型正在读取需求和引用文件",
+    INTEGRATING: "吸收主分支变更并验证新候选后合回",
+    CLEANUP_PENDING: "提交整合已完成，等待清理自有工作树和临时分支",
+    COMPLETED: "整合交付及清理完成，发布由你另行通知",
     PLAN_PENDING: "阅读计划后点击批准",
     REPAIR_PLAN_PENDING: "阅读修复计划后点击批准",
     QUEUED: "等待可用执行资源",
     EXECUTING: "执行模型正在实施，完成后自动进入测试",
-    VERIFYING: "等待自动测试完成后进行人工验收",
+    VERIFYING: "核验交付后进行原计划自查及质量审查",
     HUMAN_PENDING: "打开测试环境，实际操作后确认验收或反馈问题",
     REVIEW_QUEUED: "等待独立复核启动",
     REVIEWING: "复核通过后自动提交；发现问题会生成修复计划",

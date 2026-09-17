@@ -1,0 +1,128 @@
+[
+  {
+    "path": "C:\\Code\\system-handle\\packages\\skills\\devflow",
+    "valid": true,
+    "message": "Skill is valid!",
+    "authority": 1,
+    "self_check": 1
+  },
+  {
+    "path": "C:\\Code\\system-handle\\packages\\skills\\devflow-project-onboard",
+    "valid": true,
+    "message": "Skill is valid!",
+    "authority": 1,
+    "self_check": 1
+  },
+  {
+    "path": "C:\\Code\\system-handle\\packages\\skills\\devflow-plan",
+    "valid": true,
+    "message": "Skill is valid!",
+    "authority": 1,
+    "self_check": 1
+  },
+  {
+    "path": "C:\\Code\\system-handle\\packages\\skills\\devflow-execute",
+    "valid": true,
+    "message": "Skill is valid!",
+    "authority": 1,
+    "self_check": 1
+  },
+  {
+    "path": "C:\\Code\\system-handle\\packages\\skills\\devflow-test",
+    "valid": true,
+    "message": "Skill is valid!",
+    "authority": 1,
+    "self_check": 1
+  },
+  {
+    "path": "C:\\Code\\system-handle\\packages\\skills\\devflow-review",
+    "valid": true,
+    "message": "Skill is valid!",
+    "authority": 1,
+    "self_check": 1
+  },
+  {
+    "path": "C:\\Users\\yckj4798\\.codex\\skills\\devflow",
+    "valid": true,
+    "message": "Skill is valid!",
+    "authority": 1,
+    "self_check": 1
+  },
+  {
+    "path": "C:\\Users\\yckj4798\\.codex\\skills\\devflow-project-onboard",
+    "valid": true,
+    "message": "Skill is valid!",
+    "authority": 1,
+    "self_check": 1
+  },
+  {
+    "path": "C:\\Users\\yckj4798\\.codex\\skills\\devflow-plan",
+    "valid": true,
+    "message": "Skill is valid!",
+    "authority": 1,
+    "self_check": 1
+  },
+  {
+    "path": "C:\\Users\\yckj4798\\.codex\\skills\\devflow-execute",
+    "valid": true,
+    "message": "Skill is valid!",
+    "authority": 1,
+    "self_check": 1
+  },
+  {
+    "path": "C:\\Users\\yckj4798\\.codex\\skills\\devflow-test",
+    "valid": true,
+    "message": "Skill is valid!",
+    "authority": 1,
+    "self_check": 1
+  },
+  {
+    "path": "C:\\Users\\yckj4798\\.codex\\skills\\devflow-review",
+    "valid": true,
+    "message": "Skill is valid!",
+    "authority": 1,
+    "self_check": 1
+  },
+  {
+    "path": "C:\\Users\\yckj4798\\.gemini\\antigravity\\skills\\devflow",
+    "valid": true,
+    "message": "Skill is valid!",
+    "authority": 1,
+    "self_check": 1
+  },
+  {
+    "path": "C:\\Users\\yckj4798\\.gemini\\antigravity\\skills\\devflow-project-onboard",
+    "valid": true,
+    "message": "Skill is valid!",
+    "authority": 1,
+    "self_check": 1
+  },
+  {
+    "path": "C:\\Users\\yckj4798\\.gemini\\antigravity\\skills\\devflow-plan",
+    "valid": true,
+    "message": "Skill is valid!",
+    "authority": 1,
+    "self_check": 1
+  },
+  {
+    "path": "C:\\Users\\yckj4798\\.gemini\\antigravity\\skills\\devflow-execute",
+    "valid": true,
+    "message": "Skill is valid!",
+    "authority": 1,
+    "self_check": 1
+  },
+  {
+    "path": "C:\\Users\\yckj4798\\.gemini\\antigravity\\skills\\devflow-test",
+    "valid": true,
+    "message": "Skill is valid!",
+    "authority": 1,
+    "self_check": 1
+  },
+  {
+    "path": "C:\\Users\\yckj4798\\.gemini\\antigravity\\skills\\devflow-review",
+    "valid": true,
+    "message": "Skill is valid!",
+    "authority": 1,
+    "self_check": 1
+  }
+]

@@ -66,11 +66,14 @@ const page = (text: string, offset: number) => {
 };
 register(
   "devflow_review_context",
-  "分页读取 plan/plan_record/approval/acceptance/project/claims/evidence/skill/diff/snapshot/workspaces；plan_record 含 hash，acceptance 为 null 表示尚无人类验收。读取直到 next_offset 为 null。",
+  "分页读取 plan/plan_record/plan_authorities/executor_plan_check/executor_plan_check_report/approval/acceptance/project/claims/evidence/skill/diff/snapshot/workspaces；plan_record 含 hash，acceptance 为 null 表示尚无人类验收。读取直到 next_offset 为 null。",
   z.object({
     section: z.enum([
       "plan",
       "plan_record",
+      "plan_authorities",
+      "executor_plan_check",
+      "executor_plan_check_report",
       "approval",
       "acceptance",
       "project",

@@ -1,0 +1,63 @@
+{
+  "cases": [
+    {
+      "id": "H01",
+      "defect_reproduced": false,
+      "observed": {
+        "code": 0,
+        "elapsed_ms": 249,
+        "events": [
+          {
+            "type": "started",
+            "pid": 24564,
+            "job_id": "audit-only"
+          },
+          {
+            "type": "stdout",
+            "data": "b2s="
+          },
+          {
+            "type": "exit",
+            "code": 0
+          }
+        ],
+        "stderr": ""
+      }
+    },
+    {
+      "id": "H02",
+      "defect_reproduced": false,
+      "observed": {
+        "code": 0,
+        "elapsed_ms": 151,
+        "events": [
+          {
+            "type": "started",
+            "pid": 31120,
+            "job_id": "audit-only"
+          },
+          {
+            "type": "exit",
+            "code": 1
+          }
+        ],
+        "stderr": ""
+      }
+    },
+    {
+      "id": "H03",
+      "defect_reproduced": false,
+      "observed": {
+        "code": 0,
+        "elapsed_ms": 157,
+        "events": [
+          {
+            "type": "lock",
+            "locked": true
+          }
+        ],
+        "stderr": ""
+      }
+    }
+  ]
+}

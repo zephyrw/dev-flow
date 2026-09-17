@@ -1,3 +1,10 @@
+import {
+  fixture as gatedFixture,
+  runtime as gatedRuntime,
+  until as gatedUntil,
+  cleanup as gatedCleanup,
+} from "../fixtures/native-flow.js";
+import { FlowError } from "../../packages/contracts/src/index.js";
 import { attestFixture } from "../native-fixture.js";
 import { describe, it, expect } from "vitest";
 import { mkdirSync, writeFileSync, readFileSync } from "node:fs";
@@ -283,146 +290,51 @@ describe("第三轮复核反例自动化回归套件 (R01 ~ R12)", () => {
     }
   });
 
-  it("R06: 必需 build 命令从未执行时，提交门禁抛出 HOOK_EVIDENCE_MISSING 阻断提交", async () => {
-    const s = await fixture({
-      extraChecks: [
-        {
-          id: "build",
-          executable: process.execPath,
-          args: ["-e", "process.exit(1)"],
-          parser: "none",
-          required_before_commit: true,
-        },
-      ],
-    });
-    try {
-      const r = await s.engine.deliver(s.w.id, s.manifest, s.reader);
-      expect(r.status, JSON.stringify(r)).toBe("accepted");
-
-      s.store.put("run", s.runId, s.w.id, {
-        ...s.store.get<any>("run", s.runId),
-        status: "completed",
-      });
-      for (const rev of s.store.list<DeliveryRevision>(
-        "delivery_revision",
-        s.w.id,
-      )) {
-        s.store.put("delivery_revision", rev.id, s.w.id, {
-          ...rev,
-          execution_finished: true,
-        });
-      }
-      const p = proof(s.engine, s.w.id, "accept");
-      await s.engine.accept(s.w.id, p.proof, p.binding);
-
-      s.engine.transition(s.w.id, ["REVIEW_QUEUED"], "REVIEWING", "review", {
-        review_request_id: "review-test",
-      });
-      const w = s.engine.get(s.w.id);
-
-      let reviewError: any = null;
-      try {
-        await s.engine.receiveReview(s.w.id, {
-          schema_version: 1,
-          review_request_id: "review-test",
-          workflow_id: s.w.id,
-          plan_revision: 1,
-          snapshot_id: w.snapshot_id,
-          verdict: "pass",
-          coverage: {
-            all_changed_files_reviewed: true,
-            all_requirements_checked: true,
-            upstream_downstream_checked: true,
-            security_checked: true,
-            tests_validity_checked: true,
-            files: ["main:app.txt"],
-          },
-          findings: [],
-          unresolved_questions: [],
-          repair_plan: null,
-          commit_message: "test: isolated round3 review",
-        });
-      } catch (e: any) {
-        reviewError = e;
-      }
-
-      expect(reviewError?.code).toBe("HOOK_EVIDENCE_MISSING");
-      expect(s.engine.get(s.w.id).state).not.toBe("COMMITTED");
-    } finally {
-      s.store.close();
-    }
-  });
-
-  it("R07: 额外必需检查从未执行时，提交门禁抛出 HOOK_EVIDENCE_MISSING 阻断提交", async () => {
-    const s = await fixture({
-      extraChecks: [
-        {
-          id: "integration-required",
-          executable: process.execPath,
-          args: ["-e", "process.exit(1)"],
-          parser: "vitest_json",
-          report_path: ".reports/extra.json",
-          required_before_commit: true,
-        },
-      ],
-    });
-    try {
-      const r = await s.engine.deliver(s.w.id, s.manifest, s.reader);
-      expect(r.status, JSON.stringify(r)).toBe("accepted");
-
-      s.store.put("run", s.runId, s.w.id, {
-        ...s.store.get<any>("run", s.runId),
-        status: "completed",
-      });
-      for (const rev of s.store.list<DeliveryRevision>(
-        "delivery_revision",
-        s.w.id,
-      )) {
-        s.store.put("delivery_revision", rev.id, s.w.id, {
-          ...rev,
-          execution_finished: true,
-        });
-      }
-      const p = proof(s.engine, s.w.id, "accept");
-      await s.engine.accept(s.w.id, p.proof, p.binding);
-
-      s.engine.transition(s.w.id, ["REVIEW_QUEUED"], "REVIEWING", "review", {
-        review_request_id: "review-test",
-      });
-      const w = s.engine.get(s.w.id);
-
-      let reviewError: any = null;
-      try {
-        await s.engine.receiveReview(s.w.id, {
-          schema_version: 1,
-          review_request_id: "review-test",
-          workflow_id: s.w.id,
-          plan_revision: 1,
-          snapshot_id: w.snapshot_id,
-          verdict: "pass",
-          coverage: {
-            all_changed_files_reviewed: true,
-            all_requirements_checked: true,
-            upstream_downstream_checked: true,
-            security_checked: true,
-            tests_validity_checked: true,
-            files: ["main:app.txt"],
-          },
-          findings: [],
-          unresolved_questions: [],
-          repair_plan: null,
-          commit_message: "test: isolated round3 review",
-        });
-      } catch (e: any) {
-        reviewError = e;
-      }
-
-      expect(reviewError?.code).toBe("HOOK_EVIDENCE_MISSING");
-      expect(s.engine.get(s.w.id).state).not.toBe("COMMITTED");
-    } finally {
-      s.store.close();
-    }
-  });
+  for (const command of ["build", "integration-required"])
+    it(
+      "提交必需检查缺失仍被真实终审入口拒绝: " + command,
+      async () => {
+        const s = await gatedFixture((p) =>
+          p.commands.push({
+            id: command,
+            executable: process.execPath,
+            args: ["-e", "process.exit(1)"],
+            parser: "none",
+            required_before_commit: true,
+            timeout_seconds: 30,
+            cwd: ".",
+            env: {},
+            lifecycle: "check",
+          }),
+        );
+        let rejected: string | undefined;
+        const receive = s.engine.receiveReview.bind(s.engine);
+        s.engine.receiveReview = async (key, input) => {
+          try {
+            return await receive(key, input);
+          } catch (e: any) {
+            rejected = e.code;
+            throw new FlowError(
+              "MODEL_AUTH",
+              "测试捕获提交门禁拒绝，停止继续派发",
+            );
+          }
+        };
+        s.engine.runtime = gatedRuntime(s);
+        try {
+          await gatedUntil(s, ["HUMAN_PENDING", "BLOCKED"]);
+          expect(s.engine.get(s.w.id).state).toBe("HUMAN_PENDING");
+          const p = proof(s.engine, s.w.id, "accept");
+          await s.engine.accept(s.w.id, p.proof, p.binding);
+          await gatedUntil(s, ["BLOCKED", "COMMITTED"]);
+          expect(rejected).toBe("HOOK_EVIDENCE_MISSING");
+          expect(s.store.list("commit_result", s.w.id)).toHaveLength(0);
+        } finally {
+          await gatedCleanup(s);
+        }
+      },
+      600000,
+    );
 
   it("R08: 实际分支与预期不一致导致快照失败时，拒绝交付且不标记任务 verified", async () => {
     const s = await fixture();
@@ -492,7 +404,7 @@ describe("第三轮复核反例自动化回归套件 (R01 ~ R12)", () => {
       s.manifest.submission_id = "fixed-submission-r11";
       const first = await s.engine.deliver(s.w.id, s.manifest, s.reader);
       expect(first.status, JSON.stringify(first)).toBe("accepted");
-      expect(s.engine.get(s.w.id).state).toBe("HUMAN_PENDING");
+      expect(s.engine.get(s.w.id).stage).toBe("executor_plan_self_check");
 
       const retry = await s.engine.deliver(s.w.id, s.manifest, s.reader);
       expect(retry.status).toBe("accepted");
@@ -512,7 +424,7 @@ describe("第三轮复核反例自动化回归套件 (R01 ~ R12)", () => {
       s.engine.invalidate(s.w.id, "changed code");
       s.engine.transition(
         s.w.id,
-        ["HUMAN_PENDING"],
+        ["QUEUED"],
         "EXECUTING",
         "review-probe-resume",
       );
@@ -589,6 +501,7 @@ it("R16: changes after delivery prevent finalization and task completion", async
     s.store.put("run", s.runId, s.w.id, {
       ...s.store.get<any>("run", s.runId),
       status: "completed",
+      exit_code: 0,
     });
     await expect(
       s.engine.finalizeNativeDelivery(s.w.id, s.runId),
@@ -628,6 +541,7 @@ it("R18: evidence display includes all cases for a requirement and waits for exe
     s.store.put("run", s.runId, s.w.id, {
       ...s.store.get<any>("run", s.runId),
       status: "completed",
+      exit_code: 0,
     });
     await s.engine.finalizeNativeDelivery(s.w.id, s.runId);
     const a = s.store.list<any>("acceptance_result", s.w.id)[0];

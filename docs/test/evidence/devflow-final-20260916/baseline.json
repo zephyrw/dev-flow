@@ -1,0 +1,26 @@
+{
+  "collected_at": "2026-09-16T15:19:57.598Z",
+  "root_dir": "C:/Code/system-handle",
+  "git": {
+    "head_sha": "9f0869117f45ec78dc09048a57d0e2ec356b21a6",
+    "current_branch": "main",
+    "diff_stat": "apps/api/src/main.ts                               |  11 -\n apps/api/src/server.ts                             | 666 ++++++++++++++-\n apps/web/src/interactions.tsx                      | 180 ++--\n apps/web/src/main.tsx                              | 602 +++++++------\n apps/web/src/workbench.tsx                         |  33 +-\n ...201\\242\\345\\244\\215\\346\\214\\207\\345\\215\\227.md\" |  18 +\n ...275\\277\\347\\224\\250\\346\\214\\207\\345\\215\\227.md\" |  18 +\n ...224\\271\\351\\200\\240\\346\\226\\271\\346\\241\\210.md\" |  24 +-\n ...256\\236\\346\\226\\275\\346\\226\\271\\346\\241\\210.md\" |  43 +-\n packages/adapters/agy/src/handoff.ts               |  28 +\n packages/bridge/src/review.ts                      |   5 +-\n packages/contracts/src/config.ts                   |   6 +-\n packages/contracts/src/index.ts                    |  87 +-\n packages/contracts/src/review-output.ts            |  12 +-\n packages/core/src/attention.ts                     |  23 +\n packages/core/src/engine.ts                        | 945 ++++++++++++++++++++-\n packages/core/src/util.ts                          |  11 +-\n packages/evidence/src/delivery-importer.ts         |   1 +\n packages/evidence/src/native-execution-observer.ts |   8 +-\n packages/git/src/git.ts                            | 153 +++-\n packages/mcp/src/tools.ts                          |  50 +-\n packages/plans/src/diagrams.ts                     |  31 +-\n packages/plans/src/validate.ts                     | 140 ++-\n packages/presentation/src/activity.ts              |  12 +-\n packages/process/src/controller-lock.ts            |   4 +-\n packages/process/src/manager.ts                    |  10 +-\n packages/runtime/src/runtime.ts                    |  90 +-\n packages/service/src/descriptor.ts                 |  32 +-\n packages/service/src/launcher.ts                   | 147 +++-\n packages/skills/devflow-execute/SKILL.md           |  35 +-\n packages/skills/devflow-plan/SKILL.md              |  32 +-\n .../devflow-plan/references/plan-contract.md       |  22 +\n packages/skills/devflow-project-onboard/SKILL.md   |  20 +-\n packages/skills/devflow-review/SKILL.md            |  32 +-\n .../devflow-review/references/review-contract.md   |  24 +\n packages/skills/devflow-test/SKILL.md              |  18 +\n packages/skills/devflow/SKILL.md                   |  28 +-\n packages/store/src/store.ts                        |  12 +-\n playwright.config.ts                               |  10 +-\n scripts/build-host.mjs                             |  60 +-\n tests/e2e/compact.spec.ts                          |  12 +-\n tests/e2e/fixture-server.ts                        |  44 +-\n tests/e2e/interactions.spec.ts                     |  72 +-\n tests/e2e/log-stream.spec.ts                       |  12 +-\n tests/e2e/preparation-failure.spec.ts              |  12 +-\n tests/integration/native-delivery.test.ts          |   8 +-\n .../integration/native-rereview-regression.test.ts | 187 ++--\n tests/integration/native-review-regression.test.ts |  13 +-\n tests/integration/native-round3-regression.test.ts | 198 ++---\n tests/native-fixture.ts                            |   1 +\n tests/unit/contracts.test.ts                       |  10 +-\n tests/unit/diagrams.test.ts                        |   2 +-\n tests/unit/native-devflow.test.ts                  |  53 +-\n vitest.config.ts                                   |   4 +-\n 54 files changed, 3460 insertions(+), 851 deletions(-)",
+    "diff_cached_stat": "",
+    "untracked_count": 78,
+    "modified_count": 53
+  },
+  "layout_reference_commit": "e8f5dfc",
+  "processes": {
+    "user_devflow_pid": {
+      "pid": 31268,
+      "info": "\"node.exe\",\"31268\",\"Console\",\"1\",\"22,624 K\""
+    },
+    "ports": [
+      {
+        "port": 4810,
+        "output": "TCP    127.0.0.1:4810         0.0.0.0:0              LISTENING       31268"
+      }
+    ]
+  },
+  "history_reports_count": 13
+}

@@ -3,7 +3,11 @@ import { TaskInteraction } from "./interactions.js";
 import { DeliveryStrip, EnvironmentSummary } from "./workbench.js";
 import guideText from "../../../docs/guide/使用指南.md?raw";
 import { TaskTree, TestResults } from "./panels.js";
+import { CreateWorkflowModal } from "./components/CreateWorkflowModal.js";
+import { ToolModelDrawer } from "./components/ToolModelDrawer.js";
+import { RequirementComposer } from "./components/RequirementComposer.js";
 import React, { useEffect, useRef, useState } from "react";
+
 import { createRoot } from "react-dom/client";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -12,6 +16,10 @@ import "./style.css";
 import { readableLogs, mergeEvents, workflowProgress, stages } from "./logs.js";
 const labels: Record<string, string> = {
   RESEARCHING: "调研中",
+  PLANNING: "规划中",
+  INTEGRATING: "整合代码中",
+  CLEANUP_PENDING: "等待清理工作树",
+  COMPLETED: "已完成",
   PLAN_PENDING: "等待计划批准",
   QUEUED: "排队中",
   EXECUTING: "实施中",
@@ -1319,6 +1327,16 @@ const CentralWorkspace = React.memo(
                       <span>{planFullscreen ? "退出全屏" : "全屏查看"}</span>
                     </button>
                   )}
+                  {detail.executor_plan_check && (
+                    <a
+                      className="download-link"
+                      href={`/api/workflows/${selected}/documents/plan-self-check`}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      查看计划自查记录
+                    </a>
+                  )}
                   {w.plan_revision > 0 && (
                     <a
                       className="download-link"
@@ -1661,6 +1679,8 @@ function App() {
     if (selected) sessionStorage.setItem("devflow.tab." + selected, tab);
   }, [tab, selected]);
   const [connected, setConnected] = useState(false);
+  const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
+  const [isToolDrawerOpen, setIsToolDrawerOpen] = useState(false);
   const attempt = async (fn: () => Promise<unknown>) => {
     setError("");
     setNotice("");
@@ -2038,7 +2058,34 @@ function App() {
         >
           <span className="nav-icon">◫</span> 工作流总览
         </button>
-        <div className="nav-heading">项目</div>
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            paddingRight: "10px",
+          }}
+        >
+          <div className="nav-heading" style={{ marginBottom: 0 }}>
+            项目
+          </div>
+          <button
+            type="button"
+            className="btn-create-workflow-compact"
+            onClick={() => setIsCreateModalOpen(true)}
+            style={{
+              background: "var(--color-primary, #0969da)",
+              color: "#ffffff",
+              border: "none",
+              borderRadius: "4px",
+              padding: "2px 8px",
+              fontSize: "11px",
+              cursor: "pointer",
+            }}
+          >
+            + 新建
+          </button>
+        </div>
         <div className="project-list-nav">
           {projects.map((p) => (
             <div key={p.id} className="project-nav">
@@ -2125,9 +2172,9 @@ function App() {
                         w.blocker?.code === "MODEL_QUOTA" &&
                         detail.attention?.category === "queue"
                       ? "等待模型额度"
-                    : w.stage === "auto_repair"
-                      ? "准备自动修复"
-                      : labels[w.state]}
+                      : w.stage === "auto_repair"
+                        ? "准备自动修复"
+                        : labels[w.state]}
                 </span>
               )}
             </div>
@@ -2267,253 +2314,277 @@ function App() {
             >
               <div className="workflow-main-column">
                 <div className="workflow-top-deck">
-                {progress && (
-                  <div className="compact-progress" aria-label="当前执行进度">
-                    <ol className="stage-track" aria-label={progress.title}>
-                      {stages.map((name, index) => {
-                        const isDone =
-                          progress.completed || index < (progress.index ?? -1);
-                        const isCurrent =
-                          !progress.completed && index === progress.index;
-                        return (
-                          <li
-                            key={name}
-                            aria-current={isCurrent ? "step" : undefined}
-                            className={
-                              isCurrent ? "current" : isDone ? "past" : ""
-                            }
-                          >
-                            <span className="step-circle">
-                              {isDone ? "✓" : index + 1}
-                            </span>
-                            <span className="step-name">{name}</span>
-                            {isCurrent && progress.paused ? " · 暂停" : ""}
-                          </li>
-                        );
-                      })}
-                    </ol>
-                    <div className="compact-summary">
-                      <DeliveryStrip detail={detail} />
-                      {latest && (
-                        <button
-                          className="latest-activity"
-                          title={latest.text || latest.title}
-                          onClick={() => {
-                            toggleSidebar(true);
-                            setLocate({
-                              sequence: latest.sequence,
-                              request: Date.now(),
-                            });
-                          }}
-                        >
-                          <span className="activity-pulse-dot" />
-                          <span className="activity-text">
-                            <b>{latest.title}</b>
-                            {latest.text
-                              ? ` · ${latest.text.slice(0, 120).replace(/\s+/g, " ")}`
-                              : ""}
-                          </span>
-                          <time>
-                            {new Date(latest.created_at).toLocaleTimeString()}
-                          </time>
-                        </button>
-                      )}
-                      <div className="compact-summary-actions">
-                        <div className="actions">
-                          {[
-                            "BLOCKED",
-                            "STOPPED",
-                            "RECOVERY_REQUIRED",
-                            "COMMIT_PARTIAL",
-                          ].includes(w.state) && (
-                            <button
-                              className="btn-secondary"
-                              disabled={pending}
-                              onClick={() =>
-                                void attempt(async () => {
-                                  await api(
-                                    `/workflows/${selected}/browser/reconcile`,
-                                    {},
-                                  );
-                                  await api(
-                                    `/workflows/${selected}/environment/stop`,
-                                    {},
-                                  ).catch(() => {});
-                                  await api(
-                                    `/workflows/${selected}/${w.state === "COMMIT_PARTIAL" ? "commit/retry" : "recover"}`,
-                                    {},
-                                  );
-                                  await refresh();
-                                })
+                  {progress && (
+                    <div className="compact-progress" aria-label="当前执行进度">
+                      <ol className="stage-track" aria-label={progress.title}>
+                        {stages.map((name, index) => {
+                          const isDone =
+                            progress.completed ||
+                            index < (progress.index ?? -1);
+                          const isCurrent =
+                            !progress.completed && index === progress.index;
+                          return (
+                            <li
+                              key={name}
+                              aria-current={isCurrent ? "step" : undefined}
+                              className={
+                                isCurrent ? "current" : isDone ? "past" : ""
                               }
                             >
-                              {w.state === "COMMIT_PARTIAL"
-                                ? "核实现场并重试原提交"
-                                : w.blocker?.code === "MODEL_QUOTA"
-                                  ? "立即重试"
-                                : "继续这个任务"}
-                            </button>
-                          )}
-                          {["PLAN_PENDING", "REPAIR_PLAN_PENDING"].includes(
-                            w.state,
-                          ) && (
-                            <button
-                              className="primary"
-                              disabled={pending}
-                              onClick={() => void attempt(() => approve("approve"))}
-                            >
-                              批准当前计划
-                            </button>
-                          )}
-                          {w.state === "HUMAN_PENDING" && (
-                            <button
-                              className="primary"
-                              disabled={pending}
-                              onClick={() => void attempt(() => approve("accept"))}
-                            >
-                              验收通过，启动复核
-                            </button>
-                          )}
+                              <span className="step-circle">
+                                {isDone ? "✓" : index + 1}
+                              </span>
+                              <span className="step-name">{name}</span>
+                              {isCurrent && progress.paused ? " · 暂停" : ""}
+                            </li>
+                          );
+                        })}
+                      </ol>
+                      <div className="compact-summary">
+                        <DeliveryStrip detail={detail} />
+                        {latest && (
+                          <button
+                            className="latest-activity"
+                            title={latest.text || latest.title}
+                            onClick={() => {
+                              toggleSidebar(true);
+                              setLocate({
+                                sequence: latest.sequence,
+                                request: Date.now(),
+                              });
+                            }}
+                          >
+                            <span className="activity-pulse-dot" />
+                            <span className="activity-text">
+                              <b>{latest.title}</b>
+                              {latest.text
+                                ? ` · ${latest.text.slice(0, 120).replace(/\s+/g, " ")}`
+                                : ""}
+                            </span>
+                            <time>
+                              {new Date(latest.created_at).toLocaleTimeString()}
+                            </time>
+                          </button>
+                        )}
+                        <div className="compact-summary-actions">
+                          <div className="actions">
+                            {[
+                              "BLOCKED",
+                              "STOPPED",
+                              "RECOVERY_REQUIRED",
+                              "COMMIT_PARTIAL",
+                            ].includes(w.state) && (
+                              <button
+                                className="btn-secondary"
+                                disabled={pending}
+                                onClick={() =>
+                                  void attempt(async () => {
+                                    await api(
+                                      `/workflows/${selected}/browser/reconcile`,
+                                      {},
+                                    );
+                                    await api(
+                                      `/workflows/${selected}/environment/stop`,
+                                      {},
+                                    ).catch(() => {});
+                                    await api(
+                                      `/workflows/${selected}/${w.state === "COMMIT_PARTIAL" ? "commit/retry" : "recover"}`,
+                                      {},
+                                    );
+                                    await refresh();
+                                  })
+                                }
+                              >
+                                {w.state === "COMMIT_PARTIAL"
+                                  ? "核实现场并重试原提交"
+                                  : w.blocker?.code === "MODEL_QUOTA"
+                                    ? "立即重试"
+                                    : "继续这个任务"}
+                              </button>
+                            )}
+                            {["PLAN_PENDING", "REPAIR_PLAN_PENDING"].includes(
+                              w.state,
+                            ) && (
+                              <button
+                                className="primary"
+                                disabled={pending}
+                                onClick={() =>
+                                  void attempt(() => approve("approve"))
+                                }
+                              >
+                                批准当前计划
+                              </button>
+                            )}
+                            {w.state === "HUMAN_PENDING" && (
+                              <button
+                                className="primary"
+                                disabled={pending}
+                                onClick={() =>
+                                  void attempt(() => approve("accept"))
+                                }
+                              >
+                                验收通过，启动复核
+                              </button>
+                            )}
 
-                          {[
-                            "QUEUED",
-                            "EXECUTING",
-                            "VERIFYING",
-                            "REVIEW_QUEUED",
-                            "REVIEWING",
-                            "STOPPING",
-                          ].includes(w.state) && (
+                            {[
+                              "QUEUED",
+                              "EXECUTING",
+                              "VERIFYING",
+                              "REVIEW_QUEUED",
+                              "REVIEWING",
+                              "STOPPING",
+                            ].includes(w.state) && (
+                              <button
+                                className="danger"
+                                disabled={stopping || w.state === "STOPPING"}
+                                onClick={stopSelected}
+                              >
+                                {stopping || w.state === "STOPPING"
+                                  ? "正在暂停…"
+                                  : "暂停"}
+                              </button>
+                            )}
                             <button
-                              className="danger"
-                              disabled={stopping || w.state === "STOPPING"}
-                              onClick={stopSelected}
+                              className="secondary"
+                              onClick={() => setIsToolDrawerOpen(true)}
+                              title="查看或安全修改当前任务的工具与模型配置"
+                              style={{
+                                padding: "6px 12px",
+                                borderRadius: "6px",
+                                border: "1px solid var(--color-border-default, #d0d7de)",
+                                background: "var(--color-btn-bg, #f6f8fa)",
+                                cursor: "pointer",
+                                fontSize: "13px",
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: "4px",
+                              }}
                             >
-                              {stopping || w.state === "STOPPING"
-                                ? "正在暂停…"
-                                : "暂停"}
+                              <span>🛠️</span>
+                              <span>工具与模型</span>
+                            </button>
+                          </div>
+                          {!sidebarOpen && (
+                            <button
+                              className="execution-toggle"
+                              aria-label="执行过程"
+                              aria-expanded={false}
+                              onClick={() => toggleSidebar(true)}
+                            >
+                              <span className="toggle-icon">⚡</span>
+                              执行过程
                             </button>
                           )}
                         </div>
-                        {!sidebarOpen && (
-                          <button
-                            className="execution-toggle"
-                            aria-label="执行过程"
-                            aria-expanded={false}
-                            onClick={() => toggleSidebar(true)}
-                          >
-                            <span className="toggle-icon">⚡</span>
-                            执行过程
-                          </button>
-                        )}
                       </div>
                     </div>
-                  </div>
-                )}
-                {attention &&
-                  attention.source !== "local_console" &&
-                  !attention.message?.includes("你在控制台暂停") && (
-                    <div
-                      className={"attention-strip " + attention.category}
-                      role="status"
-                    >
-                      <span className="attention-icon">⚠️</span>
-                      <span
-                        className="attention-message"
-                        title={attention.message}
-                      >
-                        {attention.message}
-                      </span>
-                      <time>{new Date(attention.at).toLocaleTimeString()}</time>
-                      <button
-                        className="btn-attention-action"
-                        onClick={() => {
-                          if (attention.category === "approval") setTab("plan");
-                          else if (attention.category === "acceptance")
-                            setTab("environment");
-                          else toggleSidebar(true);
-                        }}
-                      >
-                        {attention.action}
-                      </button>
-                    </div>
                   )}
+                  {attention &&
+                    attention.source !== "local_console" &&
+                    !attention.message?.includes("你在控制台暂停") && (
+                      <div
+                        className={"attention-strip " + attention.category}
+                        role="status"
+                      >
+                        <span className="attention-icon">⚠️</span>
+                        <span
+                          className="attention-message"
+                          title={attention.message}
+                        >
+                          {attention.message}
+                        </span>
+                        <time>
+                          {new Date(attention.at).toLocaleTimeString()}
+                        </time>
+                        <button
+                          className="btn-attention-action"
+                          onClick={() => {
+                            if (attention.category === "approval")
+                              setTab("plan");
+                            else if (attention.category === "acceptance")
+                              setTab("environment");
+                            else toggleSidebar(true);
+                          }}
+                        >
+                          {attention.action}
+                        </button>
+                      </div>
+                    )}
+                </div>
+                <div className="workspace-columns">
+                  {detail.loading ? (
+                    <section className="panel" role="status">
+                      正在加载任务明细，状态和操作已可用…
+                    </section>
+                  ) : (
+                    <CentralWorkspace
+                      selected={selected}
+                      tab={tab}
+                      setTab={setTab}
+                      w={w}
+                      detail={detail}
+                      diff={diff}
+                      pending={pending}
+                      refreshDiff={refreshDiff}
+                      refresh={refresh}
+                      setFileDiff={setFileDiff}
+                      attempt={attempt}
+                      setNotice={setNotice}
+                    />
+                  )}
+                </div>
               </div>
-              <div className="workspace-columns">
-                {detail.loading ? (
-                  <section className="panel" role="status">
-                    正在加载任务明细，状态和操作已可用…
-                  </section>
-                ) : (
-                  <CentralWorkspace
-                    selected={selected}
-                    tab={tab}
-                    setTab={setTab}
-                    w={w}
-                    detail={detail}
-                    diff={diff}
-                    pending={pending}
-                    refreshDiff={refreshDiff}
-                    refresh={refresh}
-                    setFileDiff={setFileDiff}
-                    attempt={attempt}
-                    setNotice={setNotice}
-                  />
-                )}
-              </div>
-            </div>
-            {sidebarOpen && (
-              <ExecutionPanel
-                key={selected}
-                interaction={
-                  <TaskInteraction
-                    key={selected}
-                    detail={detail}
-                    send={api}
-                    refresh={refresh}
-                  />
-                }
-                loadHistory={
-                  detail.history_cursor === null
-                    ? undefined
-                    : async () => {
-                        const oldest =
-                          detail.history_cursor ??
-                          detail.events?.[0]?.event_seq;
-                        if (!oldest) return;
-                        await attempt(async () => {
-                          const history = await api(
-                            `/workflows/${selected}/history?before=${oldest}&limit=100`,
-                          );
-                          if (selection.current === selected)
-                            setDetail((previous: any) => ({
-                              ...previous,
-                              history_cursor: history.next_before,
-                              events: [
-                                ...history.events,
-                                ...previous.events,
-                              ],
-                            }));
-                        });
-                      }
-                }
-                entries={timeline}
-                connected={connected}
-                width={sidebarWidth}
-                resize={resizeSidebar}
-                locate={locate}
-                close={() => toggleSidebar(false)}
-                read={(sequence) =>
-                  setSeen((previous) =>
-                    previous[selected] === sequence
-                      ? previous
-                      : { ...previous, [selected]: sequence },
-                  )
-                }
-              />
-            )}
+              {sidebarOpen && (
+                <ExecutionPanel
+                  key={selected}
+                  interaction={
+                    <TaskInteraction
+                      key={selected}
+                      detail={detail}
+                      send={api}
+                      refresh={refresh}
+                    />
+                  }
+                  loadHistory={
+                    detail.history_cursor === null
+                      ? undefined
+                      : async () => {
+                          const oldest =
+                            detail.history_cursor ??
+                            detail.events?.[0]?.event_seq;
+                          if (!oldest) return;
+                          await attempt(async () => {
+                            const history = await api(
+                              `/workflows/${selected}/history?before=${oldest}&limit=100`,
+                            );
+                            if (selection.current === selected)
+                              setDetail((previous: any) => ({
+                                ...previous,
+                                history_cursor: history.next_before,
+                                events: [...history.events, ...previous.events],
+                              }));
+                          });
+                        }
+                  }
+                  entries={timeline}
+                  connected={connected}
+                  width={sidebarWidth}
+                  resize={resizeSidebar}
+                  locate={locate}
+                  close={() => toggleSidebar(false)}
+                  read={(sequence) =>
+                    setSeen((previous) =>
+                      previous[selected] === sequence
+                        ? previous
+                        : { ...previous, [selected]: sequence },
+                    )
+                  }
+                />
+              )}
             </div>
           )
-      )}
+        )}
       </main>
       {fileDiff && (
         <div className="modal-backdrop" onClick={() => setFileDiff(null)}>
@@ -2583,35 +2654,78 @@ function App() {
                   <option value="new_scope">我想增加或改变需求</option>
                 </select>
               </label>
-              <textarea
-                aria-label="问题反馈"
-                rows={8}
-                value={text}
-                onChange={(e) => setText(e.target.value)}
-              />
-              <button
-                className="primary"
-                disabled={pending || !text.trim()}
-                onClick={() =>
-                  void attempt(async () => {
-                    await api(`/workflows/${selected}/feedback`, {
-                      text,
-                      scope,
-                    });
-                    setModal("");
-                    await refresh();
-                  })
+              <RequirementComposer
+                initialText={text}
+                disabled={pending}
+                submitLabel="保存并继续"
+                placeholder="问题反馈；输入 @ 引用文件或文件夹"
+                fetchReferences={async (query) =>
+                  (
+                    await api(
+                      "/workspaces/references?workflow_id=" +
+                        encodeURIComponent(selected) +
+                        "&query=" +
+                        encodeURIComponent(query),
+                    )
+                  ).items
                 }
-              >
-                保存并继续
-              </button>
+                onSubmit={async (text, refs) => {
+                  const current = await api("/workflows/" + selected);
+                  const endpoint =
+                    scope === "within_plan" &&
+                    current.workflow.state === "HUMAN_PENDING" &&
+                    current.plan?.plan?.task_model === "native-v2"
+                      ? "functional-issues"
+                      : "feedback";
+                  await api("/workflows/" + selected + "/" + endpoint, {
+                    request_id: crypto.randomUUID(),
+                    text,
+                    refs,
+                    scope,
+                  });
+                  setModal("");
+                  await refresh();
+                  window.dispatchEvent(new Event("devflow-activity"));
+                }}
+              />
             </>
 
             {error && <div className="error">{error}</div>}
           </section>
         </div>
       )}
+      <CreateWorkflowModal
+        isOpen={isCreateModalOpen}
+        onClose={() => setIsCreateModalOpen(false)}
+        onCreated={(id) => {
+          setSelected(id);
+          void refresh();
+        }}
+        defaultWorkspaceRoot={
+          detail?.project?.repositories?.[0]?.path ??
+          projects[0]?.repositories?.[0]?.path ??
+          ""
+        }
+        fetchReferences={async (query, workspaceRoot) => {
+          try {
+            const data = await api(
+              `/workspaces/references?workspace_root=${encodeURIComponent(workspaceRoot)}&query=${encodeURIComponent(query)}`,
+            );
+            return data.items ?? [];
+          } catch {
+            return [];
+          }
+        }}
+      />
+      <ToolModelDrawer
+        isOpen={isToolDrawerOpen}
+        onClose={() => setIsToolDrawerOpen(false)}
+        workflowId={selected}
+        workflowState={detail?.workflow?.state}
+        onSpecUpdated={() => void refresh()}
+      />
     </div>
   );
 }
+
 createRoot(document.getElementById("root")!).render(<App />);

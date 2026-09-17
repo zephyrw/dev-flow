@@ -1,0 +1,46 @@
+{
+  "checked_at": "2026-09-16T08:08:24.812277+00:00",
+  "baseline_head": "9f0869117f45ec78dc09048a57d0e2ec356b21a6",
+  "current_head": "9f0869117f45ec78dc09048a57d0e2ec356b21a6",
+  "baseline_file_count": 270,
+  "unchanged_count": 265,
+  "changed": [
+    {
+      "path": "docs/plan/DevFlow跨平台通用工作流平台实施方案.md",
+      "before": "30c78c7490e34e4098033b3d386b2c49cd130a410b29ce484d80e4b85d4deea6",
+      "after": "56932ed4561db5db980600d42934ef13aa9886fc37301b347bee4fe80bf400fe",
+      "authorized_document_edit": true
+    },
+    {
+      "path": "packages/skills/devflow-execute/SKILL.md",
+      "before": "9ec732d833eeaf5f7e51851472f260e296167849a2f0e4bd1c22bb7a3cd4dc38",
+      "after": "547882edd2c05f812cb64048ae57d280963e6cb270962cdcbb3bbd2a170d35d6",
+      "authorized_document_edit": true
+    },
+    {
+      "path": "packages/skills/devflow-plan/SKILL.md",
+      "before": "4c4154d1bac8b06ce89e138f32c1d2989d4c043b0aa1a8d4d43a358224a2a43e",
+      "after": "a2e1c58a85b5039439f74b87ad94102b5706ab1d4f7538b92f52c580644d0b83",
+      "authorized_document_edit": true
+    },
+    {
+      "path": "packages/skills/devflow-review/SKILL.md",
+      "before": "a76a3434b2fa59861e50ea8f1194310e152009594a0be6e8b3bdbad6b6dd3f79",
+      "after": "55d63ee2dc3f1b5727d983cfe07ee3bac9786bbc62dec561032ece2af65ac2cd",
+      "authorized_document_edit": true
+    },
+    {
+      "path": "packages/skills/devflow-review/references/review-contract.md",
+      "before": "e4e8d8534dedf2a9823fb05d3ebd28e50236bc666ad25370143303b831f373ef",
+      "after": "e20def8c0d7360362db67faa6764f852ffb466cfb9df1deb00c67922722472c4",
+      "authorized_document_edit": true
+    }
+  ],
+  "unexpected_changes": [],
+  "head_unchanged": true,
+  "new_artifacts": [
+    "docs/plan/DevFlow跨平台通用平台实施复核与详细整改要求-20260916.md",
+    "packages/skills/devflow-review/references/repair-document-contract.md",
+    "docs/test/evidence/devflow-v2-review-20260916/"
+  ]
+}

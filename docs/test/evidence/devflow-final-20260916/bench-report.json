@@ -1,0 +1,92 @@
+{
+  "timestamp": "2026-09-16T23:54:38.106Z",
+  "platform": "win32-x64",
+  "service_pid": 3268,
+  "host_pid": 4380,
+  "environment": {
+    "os": "Windows_NT 10.0.26100 (x64)",
+    "cpus": 8,
+    "total_memory_gb": 15.87,
+    "node_version": "v22.23.2"
+  },
+  "metrics": {
+    "latency": {
+      "health_p95_ms": 16.01,
+      "workflows_p95_ms": 16.17,
+      "details": {
+        "health": {
+          "samples": 100,
+          "p50Ms": 14.79,
+          "p95Ms": 16.01,
+          "p99Ms": 16.25,
+          "minMs": 0.99,
+          "maxMs": 16.55
+        },
+        "workflows": {
+          "samples": 100,
+          "p50Ms": 15.05,
+          "p95Ms": 16.17,
+          "p99Ms": 16.43,
+          "minMs": 1.16,
+          "maxMs": 18.48
+        }
+      }
+    },
+    "process": {
+      "service_rss_mib": 75,
+      "host_rss_mib": 0,
+      "total_platform_rss_mib": 75,
+      "measured_cpu_delta_seconds": 0.90625,
+      "wall_seconds": 8.89,
+      "cpu_percent_single_core": 10.19
+    },
+    "hash_throughput": {
+      "testSizeMB": 64,
+      "durationSec": 0.143,
+      "throughputGBPerSec": 0.437,
+      "digest": "3217ba41a808b27ec330c7105dd5e04e7a81cf810a75aac914676c1c0b023d55"
+    }
+  },
+  "thresholds": {
+    "idle_cpu_percent": {
+      "actual": 10.19,
+      "limit": 1,
+      "pass": false
+    },
+    "platform_memory_rss_mib": {
+      "actual": 75,
+      "limit": 200,
+      "pass": true
+    },
+    "metadata_api_p95_ms": {
+      "actual": 16.17,
+      "limit": 200,
+      "pass": true
+    },
+    "health_api_p95_ms": {
+      "actual": 16.01,
+      "limit": 200,
+      "pass": true
+    },
+    "hash_throughput_gb_per_sec": {
+      "actual": 0.437,
+      "limit": 1,
+      "pass": false
+    },
+    "platform_supplementary_runs": {
+      "actual": 0,
+      "limit": 0,
+      "pass": true
+    },
+    "extra_auth_processes": {
+      "actual": 0,
+      "limit": 0,
+      "pass": true
+    }
+  },
+  "verdict": "FAILED",
+  "macos_arm64": {
+    "status": "blocked",
+    "reason": "本机为 Windows x64 平台，无真实 macOS arm64 环境，按计划 441 节规范严禁伪造数据"
+  }
+}

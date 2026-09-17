@@ -1,8 +1,32 @@
 import { Worker } from "node:worker_threads";
 import { validatePlan } from "./validate.js";
 import { FlowError } from "../../contracts/src/index.js";
+import { createHash } from "node:crypto";
+const parsed = new Set<string>();
+const pending = new Map<string, Promise<void>>();
+let parserQueue = Promise.resolve();
+const keyOf = (sources: string[]) =>
+  createHash("sha256").update(JSON.stringify(sources)).digest("hex");
 export async function parsePlanDiagrams(input: unknown) {
   const validated = validatePlan(input);
+  if (!validated.diagrams.length) return validated;
+  const key = keyOf(validated.diagrams);
+  if (parsed.has(key)) return validated;
+  let task = pending.get(key);
+  if (!task) {
+    task = parserQueue.then(async () => {
+      await parseDiagrams(validated.diagrams);
+      parsed.add(key);
+      if (parsed.size > 64) parsed.delete(parsed.values().next().value!);
+    });
+    pending.set(key, task);
+    parserQueue = task.catch(() => {});
+    void task.finally(() => pending.delete(key)).catch(() => {});
+  }
+  await task;
+  return validated;
+}
+async function parseDiagrams(diagrams: string[]) {
   // Mermaid sanitizes labels through DOMPurify even during parse. Keep the DOM
   // in a disposable worker so browser globals cannot change the server SDKs.
   const worker = new Worker(
@@ -23,15 +47,15 @@ export async function parsePlanDiagrams(input: unknown) {
     })().catch(error => parentPort.postMessage({ ok: false, error: String(error) }));
   `,
     // Plain JavaScript dependency loading needs no parent test/dev hooks.
-    { eval: true, workerData: validated.diagrams, execArgv: [] },
+    { eval: true, workerData: diagrams, execArgv: [] },
   );
   try {
     await new Promise<void>((done, fail) => {
       // Cold Windows dependency loading can consume the entire parsing budget.
       // Bound initialization separately; actual grammar parsing still gets 30s.
       let timer = setTimeout(
-        () => fail(new Error("图表组件初始化超过 60 秒")),
-        60000,
+        () => fail(new Error("图表组件初始化超过 120 秒")),
+        120000,
       );
       const finish = (error?: Error) => {
         clearTimeout(timer);
@@ -59,5 +83,4 @@ export async function parsePlanDiagrams(input: unknown) {
   } finally {
     await worker.terminate();
   }
-  return validated;
 }

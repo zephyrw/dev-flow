@@ -8,7 +8,7 @@ it("UT-06 parses Chinese labels in an isolated DOM and rejects invalid diagram g
   const result = await parsePlanDiagrams(value);
   expect(result.diagrams).toHaveLength(1);
   expect(globalThis.window).toBe(before);
-  value.markdown = value.markdown.replace(
+  value.markdown = value.markdown!.replace(
     /```mermaid[\s\S]*?```/,
     "```mermaid\nflowchart LR\n A[未闭合\n```",
   );

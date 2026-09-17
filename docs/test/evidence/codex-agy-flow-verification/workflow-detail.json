@@ -1,0 +1,766 @@
+{
+  "workflow": {
+    "complexity": "simple",
+    "created_at": "2026-09-17T02:26:42.265Z",
+    "environment_revision": 1,
+    "feedback": [],
+    "id": "wf-5a8daffe-ceb8-4b84-9ee8-ac77cfe294a7",
+    "plan_hash": "2bce41c8fc365b2c152948c20d39bcf40fd805740383e4f5614cdd04b328aaa3",
+    "plan_revision": 1,
+    "project_id": "p1",
+    "request": "将 app.txt 内容更新为 after 加换行，通过真实 Node 子进程测试并完成两道质量审查与 Git 交付",
+    "review_request_id": "review-4d1f2d23-fc67-4065-b7e0-87df09a7c3fc",
+    "run_id": "run-0b09f881-c8e4-4951-9f3a-faf9243585b6",
+    "snapshot_id": "125e60516a2382521b0186b75cddce40f3f337f0004cb4d710c021e1e0347a59",
+    "stage": "done",
+    "state": "COMPLETED",
+    "title": "将 app.txt 内容更新为 after 加换行，通过真实 Node 子进程测试并完成两道质量审查与 Git 交付",
+    "updated_at": "2026-09-17T02:27:06.604Z",
+    "version": 17,
+    "workspace_mode": "new_worktree"
+  },
+  "attention": null,
+  "executor_plan_check": {
+    "authority_hash": "ad5c219ab89f757cec330f52abe304f80a264ab113b08d759b077d6c3a9d314d",
+    "check_ids": [
+      "r1:document",
+      "r1:task:T01",
+      "r1:test:UT01",
+      "r1:work_item:T01",
+      "r1:acceptance:UT01"
+    ],
+    "completed_at": "2026-09-17T02:26:51.226Z",
+    "context_hash": "573de071e6fbfb1a89f304df2499f9962975e6bfd9197cddc1138e6f475d4cd9",
+    "created_at": "2026-09-17T02:26:47.207Z",
+    "delivery_revision_id": "dlr-2cc50639-d2f2-4c88-b993-ac5cc696c707",
+    "id": "plancheck-b9d48448-fcbd-4963-b5cc-9f1593c1034f",
+    "plan_hash": "2bce41c8fc365b2c152948c20d39bcf40fd805740383e4f5614cdd04b328aaa3",
+    "plan_revision": 1,
+    "report_hash": "dc9a89eaa03eca678ddee5f0ad98572d5496081e988f744c9c6d920b48b2379c",
+    "run_id": "run-962278d0-b649-41df-864a-688540ae1715",
+    "source_delivery_revision_id": "dlr-2d473086-cbf2-49bc-a70c-4e25b2db879a",
+    "source_run_id": "run-aaae8fcd-50bc-475a-8e3e-d2442740863a",
+    "status": "passed",
+    "workflow_id": "wf-5a8daffe-ceb8-4b84-9ee8-ac77cfe294a7"
+  },
+  "plan": {
+    "created_at": "2026-09-17T02:26:42.876Z",
+    "hash": "2bce41c8fc365b2c152948c20d39bcf40fd805740383e4f5614cdd04b328aaa3",
+    "id": "wf-5a8daffe-ceb8-4b84-9ee8-ac77cfe294a7-1",
+    "plan": {
+      "acceptance_items": [
+        {
+          "expected_outcome": "after 加换行",
+          "id": "UT01",
+          "layer": "unit",
+          "scenario": "updates content",
+          "timeout_seconds": 300,
+          "work_item_ids": [
+            "T01"
+          ]
+        }
+      ],
+      "baselines": {
+        "main": "81773e532d44ec07d4e38135bd9053f567d10cec"
+      },
+      "decisions": [],
+      "design_ref": {
+        "content_hash": "a389df09a13ca726389c2b08fbe3bf9566a719abca2d1a83cca93a0a132de32a",
+        "summary": "修改文本"
+      },
+      "exemptions": [],
+      "feedback_cursor": 0,
+      "modules": [
+        {
+          "id": "M01",
+          "paths": [],
+          "title": "文本"
+        }
+      ],
+      "project_config_hash": "f4a9849655f53119345b0c835f7551fdfbe1245569bc3fae79b7d7557e6f4164",
+      "revision": 1,
+      "scope": {
+        "allow_dependency_changes": false,
+        "allow_public_api_changes": false,
+        "allowed_paths": [
+          "app.txt"
+        ],
+        "protected_paths": [
+          ".git",
+          ".agents",
+          ".codex"
+        ],
+        "repository_paths": {}
+      },
+      "task_model": "native-v2",
+      "tasks": [
+        {
+          "completion": "全部关联验收项通过",
+          "depends_on": [],
+          "id": "T01",
+          "implementation": "按照正式计划正文实施：修改文本",
+          "inputs": "正式计划正文",
+          "module_id": "M01",
+          "paths": [
+            "app.txt"
+          ],
+          "preserve": "保持批准范围外现有行为",
+          "repo_id": "main",
+          "requirements": [
+            "UT01"
+          ],
+          "stop_conditions": "与原始计划冲突时停止",
+          "test_ids": [
+            "UT01"
+          ],
+          "title": "修改文本"
+        }
+      ],
+      "tests": [
+        {
+          "assertions": [
+            "after 加换行"
+          ],
+          "expected_case_ids": [
+            "UT01"
+          ],
+          "id": "UT01",
+          "layer": "unit",
+          "steps": [
+            "updates content"
+          ],
+          "task_ids": [
+            "T01"
+          ],
+          "timeout_seconds": 300
+        }
+      ],
+      "unresolved_decisions": [],
+      "work_items": [
+        {
+          "acceptance_ids": [
+            "UT01"
+          ],
+          "depends_on": [],
+          "id": "T01",
+          "module_id": "M01",
+          "paths": [
+            "app.txt"
+          ],
+          "repo_id": "main",
+          "title": "修改文本"
+        }
+      ],
+      "markdown": "# 正式计划\n\n将 app.txt 修改为 after，保留换行及其余文件。使用真实 Node 子进程验证输出，并回归未修改文件。\n"
+    },
+    "revision": 1,
+    "workflow_id": "wf-5a8daffe-ceb8-4b84-9ee8-ac77cfe294a7"
+  },
+  "workspaces": [
+    {
+      "baseline": "81773e532d44ec07d4e38135bd9053f567d10cec",
+      "branch": "devflow/wf-5a8daffe-ceb8-4b84-9ee8-ac77cfe294a7",
+      "common_dir": "C:\\Users\\yckj4798\\AppData\\Local\\Temp\\devflow-test-9trhnv\\repo\\.git",
+      "id": "ws-4317e225-c99e-4bc1-8e0c-f7985cdac025",
+      "owned": true,
+      "repo_id": "main",
+      "root": "C:\\Users\\yckj4798\\AppData\\Local\\Temp\\devflow-test-9trhnv\\repo\\.git\\devflow\\worktrees\\wf-5a8daffe-ceb8-4b84-9ee8-ac77cfe294a7",
+      "source_branch": "task/fixture",
+      "source_root": "C:\\Users\\yckj4798\\AppData\\Local\\Temp\\devflow-test-9trhnv\\repo",
+      "workflow_id": "wf-5a8daffe-ceb8-4b84-9ee8-ac77cfe294a7"
+    }
+  ],
+  "runs": [
+    {
+      "adapter": "codex",
+      "conversation_id": "fixture-wf-5a8daffe-ceb8-4b84-9ee8-ac77cfe294a7",
+      "deadline_at": 1789615602683,
+      "ended_at": "2026-09-17T02:26:42.886Z",
+      "execution_spec_id": "spec-c4512a6f-8578-4517-ac87-fef674402d79",
+      "exit_code": 0,
+      "id": "run-5726488f-9773-4dad-9401-66c7d5dba5bc",
+      "package_hash": "50c6464470dcd9db467e998fa35e6284f769224aa426ede61ebc2e7ac9e4fdac",
+      "plan_revision": 0,
+      "profile": {
+        "adapterId": "codex",
+        "executableRef": "C:\\Program Files\\nodejs\\node.exe",
+        "id": "profile-codex",
+        "modelId": "gpt-6-astra",
+        "modelSelection": "explicit",
+        "options": {
+          "prefixArgs": [
+            "C:\\Code\\system-handle\\tests\\fixtures\\native-cli.mjs"
+          ]
+        },
+        "revision": 1
+      },
+      "purpose": "planning",
+      "stage": "planning",
+      "started_at": "2026-09-17T02:26:42.683Z",
+      "status": "completed",
+      "workflow_id": "wf-5a8daffe-ceb8-4b84-9ee8-ac77cfe294a7"
+    },
+    {
+      "adapter": "agy",
+      "conversation_id": "fixture-wf-5a8daffe-ceb8-4b84-9ee8-ac77cfe294a7",
+      "deadline_at": 1789615603363,
+      "ended_at": "2026-09-17T02:26:45.811Z",
+      "execution_spec_id": "spec-c4512a6f-8578-4517-ac87-fef674402d79",
+      "exit_code": 0,
+      "id": "run-aaae8fcd-50bc-475a-8e3e-d2442740863a",
+      "package_hash": "f25655073872f119b38e41760f287c655a3c230660aaa04dc5c59ddf702b946e",
+      "plan_revision": 1,
+      "profile": {
+        "adapterId": "agy",
+        "executableRef": "C:\\Program Files\\nodejs\\node.exe",
+        "id": "profile-agy",
+        "modelId": "gemini-3.7-flash-high",
+        "modelSelection": "explicit",
+        "options": {
+          "prefixArgs": [
+            "C:\\Code\\system-handle\\tests\\fixtures\\native-cli.mjs"
+          ]
+        },
+        "revision": 1
+      },
+      "purpose": "implement",
+      "stage": "execute",
+      "started_at": "2026-09-17T02:26:43.364Z",
+      "status": "completed",
+      "workflow_id": "wf-5a8daffe-ceb8-4b84-9ee8-ac77cfe294a7"
+    },
+    {
+      "adapter": "agy",
+      "conversation_id": "fixture-wf-5a8daffe-ceb8-4b84-9ee8-ac77cfe294a7",
+      "deadline_at": 1789615607789,
+      "ended_at": "2026-09-17T02:26:49.815Z",
+      "execution_spec_id": "spec-c4512a6f-8578-4517-ac87-fef674402d79",
+      "exit_code": 0,
+      "id": "run-962278d0-b649-41df-864a-688540ae1715",
+      "package_hash": "0d463d0953d1f685b50cfc8f55dfe717058701fde64524d6151ca8b8eac9040b",
+      "plan_revision": 1,
+      "profile": {
+        "adapterId": "agy",
+        "executableRef": "C:\\Program Files\\nodejs\\node.exe",
+        "id": "profile-agy",
+        "modelId": "gemini-3.7-flash-high",
+        "modelSelection": "explicit",
+        "options": {
+          "prefixArgs": [
+            "C:\\Code\\system-handle\\tests\\fixtures\\native-cli.mjs"
+          ]
+        },
+        "revision": 1
+      },
+      "purpose": "plan_self_check",
+      "stage": "executor_plan_self_check",
+      "started_at": "2026-09-17T02:26:47.790Z",
+      "status": "completed",
+      "workflow_id": "wf-5a8daffe-ceb8-4b84-9ee8-ac77cfe294a7"
+    },
+    {
+      "adapter": "codex",
+      "conversation_id": "fixture-wf-5a8daffe-ceb8-4b84-9ee8-ac77cfe294a7",
+      "deadline_at": 1789615612787,
+      "ended_at": "2026-09-17T02:26:54.662Z",
+      "execution_spec_id": "spec-c4512a6f-8578-4517-ac87-fef674402d79",
+      "exit_code": 0,
+      "id": "run-70d49d79-b825-4f43-9680-1aa01442d9e3",
+      "package_hash": "0d463d0953d1f685b50cfc8f55dfe717058701fde64524d6151ca8b8eac9040b",
+      "plan_revision": 1,
+      "profile": {
+        "adapterId": "codex",
+        "executableRef": "C:\\Program Files\\nodejs\\node.exe",
+        "id": "profile-codex",
+        "modelId": "gpt-6-astra",
+        "modelSelection": "explicit",
+        "options": {
+          "prefixArgs": [
+            "C:\\Code\\system-handle\\tests\\fixtures\\native-cli.mjs"
+          ]
+        },
+        "revision": 1
+      },
+      "purpose": "quality_review",
+      "stage": "quality_before_human",
+      "started_at": "2026-09-17T02:26:52.788Z",
+      "status": "completed",
+      "workflow_id": "wf-5a8daffe-ceb8-4b84-9ee8-ac77cfe294a7"
+    },
+    {
+      "adapter": "codex",
+      "conversation_id": "fixture-wf-5a8daffe-ceb8-4b84-9ee8-ac77cfe294a7",
+      "deadline_at": 1789615617535,
+      "ended_at": "2026-09-17T02:27:06.605Z",
+      "execution_spec_id": "spec-c4512a6f-8578-4517-ac87-fef674402d79",
+      "exit_code": 0,
+      "id": "run-0b09f881-c8e4-4951-9f3a-faf9243585b6",
+      "package_hash": "0d463d0953d1f685b50cfc8f55dfe717058701fde64524d6151ca8b8eac9040b",
+      "plan_revision": 1,
+      "profile": {
+        "adapterId": "codex",
+        "executableRef": "C:\\Program Files\\nodejs\\node.exe",
+        "id": "profile-codex",
+        "modelId": "gpt-6-astra",
+        "modelSelection": "explicit",
+        "options": {
+          "prefixArgs": [
+            "C:\\Code\\system-handle\\tests\\fixtures\\native-cli.mjs"
+          ]
+        },
+        "revision": 1
+      },
+      "purpose": "quality_review",
+      "stage": "review",
+      "started_at": "2026-09-17T02:26:57.535Z",
+      "status": "completed",
+      "workflow_id": "wf-5a8daffe-ceb8-4b84-9ee8-ac77cfe294a7"
+    }
+  ],
+  "evidence": [],
+  "tasks": [
+    {
+      "id": "T01",
+      "title": "修改文本",
+      "module_id": "M01",
+      "completed": true,
+      "development_status": "completed",
+      "validation_status": "passed",
+      "implementation_status": "completed",
+      "has_implementation": true,
+      "status": "verified",
+      "summary": "已通过终局核验交付 (del-9b19d008-84b0-492f-ad16-d33d29e127d1)",
+      "completed_at": "2026-09-17T02:26:48.574Z"
+    }
+  ],
+  "test_progress": {
+    "total": 1,
+    "passed": 0,
+    "failed": 0,
+    "stale": 0,
+    "previously_passed": 0,
+    "cases": [
+      {
+        "id": "UT01",
+        "test_id": "UT01",
+        "layer": "unit",
+        "task_ids": [
+          "T01"
+        ],
+        "status": "not_run"
+      }
+    ]
+  },
+  "active_task": null,
+  "events": [
+    {
+      "created_at": "2026-09-17T02:26:42.680Z",
+      "event_seq": 1,
+      "payload": {
+        "message": "正在准备任务工作区"
+      },
+      "project_id": "p1",
+      "run_id": "run-5726488f-9773-4dad-9401-66c7d5dba5bc",
+      "type": "PreparationStarted",
+      "workflow_id": "wf-5a8daffe-ceb8-4b84-9ee8-ac77cfe294a7"
+    },
+    {
+      "created_at": "2026-09-17T02:26:42.684Z",
+      "event_seq": 2,
+      "payload": {
+        "from": "PLANNING",
+        "stage": "planning",
+        "to": "PLANNING"
+      },
+      "project_id": "p1",
+      "type": "StateChanged",
+      "workflow_id": "wf-5a8daffe-ceb8-4b84-9ee8-ac77cfe294a7"
+    },
+    {
+      "created_at": "2026-09-17T02:26:42.876Z",
+      "event_seq": 3,
+      "payload": {
+        "from": "PLANNING",
+        "stage": "plan_approval",
+        "to": "PLAN_PENDING"
+      },
+      "project_id": "p1",
+      "type": "StateChanged",
+      "workflow_id": "wf-5a8daffe-ceb8-4b84-9ee8-ac77cfe294a7"
+    },
+    {
+      "created_at": "2026-09-17T02:26:42.900Z",
+      "event_seq": 4,
+      "payload": {
+        "from": "PLAN_PENDING",
+        "stage": "prepare",
+        "to": "QUEUED"
+      },
+      "project_id": "p1",
+      "type": "StateChanged",
+      "workflow_id": "wf-5a8daffe-ceb8-4b84-9ee8-ac77cfe294a7"
+    },
+    {
+      "created_at": "2026-09-17T02:26:42.904Z",
+      "event_seq": 5,
+      "payload": {
+        "message": "正在准备任务工作区"
+      },
+      "project_id": "p1",
+      "run_id": "run-aaae8fcd-50bc-475a-8e3e-d2442740863a",
+      "type": "PreparationStarted",
+      "workflow_id": "wf-5a8daffe-ceb8-4b84-9ee8-ac77cfe294a7"
+    },
+    {
+      "created_at": "2026-09-17T02:26:43.363Z",
+      "event_seq": 6,
+      "payload": {
+        "from": "QUEUED",
+        "stage": "execute",
+        "to": "EXECUTING"
+      },
+      "project_id": "p1",
+      "type": "StateChanged",
+      "workflow_id": "wf-5a8daffe-ceb8-4b84-9ee8-ac77cfe294a7"
+    },
+    {
+      "created_at": "2026-09-17T02:26:45.810Z",
+      "event_seq": 7,
+      "payload": {
+        "from": "EXECUTING",
+        "stage": "delivery_received",
+        "to": "VERIFYING"
+      },
+      "project_id": "p1",
+      "type": "StateChanged",
+      "workflow_id": "wf-5a8daffe-ceb8-4b84-9ee8-ac77cfe294a7"
+    },
+    {
+      "created_at": "2026-09-17T02:26:45.810Z",
+      "event_seq": 8,
+      "payload": {
+        "acceptance_count": 1,
+        "delivery_id": "del-3aa2b4fa-de1f-4a08-be4a-f999a90d68b6",
+        "run_id": "run-aaae8fcd-50bc-475a-8e3e-d2442740863a",
+        "snapshot_id": "125e60516a2382521b0186b75cddce40f3f337f0004cb4d710c021e1e0347a59"
+      },
+      "project_id": "p1",
+      "run_id": "run-aaae8fcd-50bc-475a-8e3e-d2442740863a",
+      "type": "DeliveryAccepted",
+      "workflow_id": "wf-5a8daffe-ceb8-4b84-9ee8-ac77cfe294a7"
+    },
+    {
+      "created_at": "2026-09-17T02:26:47.207Z",
+      "event_seq": 9,
+      "payload": {
+        "from": "VERIFYING",
+        "stage": "executor_plan_self_check",
+        "to": "QUEUED"
+      },
+      "project_id": "p1",
+      "type": "StateChanged",
+      "workflow_id": "wf-5a8daffe-ceb8-4b84-9ee8-ac77cfe294a7"
+    },
+    {
+      "created_at": "2026-09-17T02:26:47.208Z",
+      "event_seq": 10,
+      "payload": {
+        "authority_hash": "ad5c219ab89f757cec330f52abe304f80a264ab113b08d759b077d6c3a9d314d",
+        "check_ids": [
+          "r1:document",
+          "r1:task:T01",
+          "r1:test:UT01",
+          "r1:work_item:T01",
+          "r1:acceptance:UT01"
+        ],
+        "context_hash": "573de071e6fbfb1a89f304df2499f9962975e6bfd9197cddc1138e6f475d4cd9",
+        "created_at": "2026-09-17T02:26:47.207Z",
+        "id": "plancheck-b9d48448-fcbd-4963-b5cc-9f1593c1034f",
+        "plan_hash": "2bce41c8fc365b2c152948c20d39bcf40fd805740383e4f5614cdd04b328aaa3",
+        "plan_revision": 1,
+        "source_delivery_revision_id": "dlr-2d473086-cbf2-49bc-a70c-4e25b2db879a",
+        "source_run_id": "run-aaae8fcd-50bc-475a-8e3e-d2442740863a",
+        "status": "queued",
+        "workflow_id": "wf-5a8daffe-ceb8-4b84-9ee8-ac77cfe294a7"
+      },
+      "project_id": "p1",
+      "run_id": "run-aaae8fcd-50bc-475a-8e3e-d2442740863a",
+      "type": "ExecutorPlanSelfCheckQueued",
+      "workflow_id": "wf-5a8daffe-ceb8-4b84-9ee8-ac77cfe294a7"
+    },
+    {
+      "created_at": "2026-09-17T02:26:47.226Z",
+      "event_seq": 11,
+      "payload": {
+        "message": "正在准备任务工作区"
+      },
+      "project_id": "p1",
+      "run_id": "run-962278d0-b649-41df-864a-688540ae1715",
+      "type": "PreparationStarted",
+      "workflow_id": "wf-5a8daffe-ceb8-4b84-9ee8-ac77cfe294a7"
+    },
+    {
+      "created_at": "2026-09-17T02:26:47.789Z",
+      "event_seq": 12,
+      "payload": {
+        "from": "QUEUED",
+        "stage": "executor_plan_self_check",
+        "to": "EXECUTING"
+      },
+      "project_id": "p1",
+      "type": "StateChanged",
+      "workflow_id": "wf-5a8daffe-ceb8-4b84-9ee8-ac77cfe294a7"
+    },
+    {
+      "created_at": "2026-09-17T02:26:49.814Z",
+      "event_seq": 13,
+      "payload": {
+        "from": "EXECUTING",
+        "stage": "executor_plan_self_check",
+        "to": "VERIFYING"
+      },
+      "project_id": "p1",
+      "type": "StateChanged",
+      "workflow_id": "wf-5a8daffe-ceb8-4b84-9ee8-ac77cfe294a7"
+    },
+    {
+      "created_at": "2026-09-17T02:26:49.814Z",
+      "event_seq": 14,
+      "payload": {
+        "acceptance_count": 1,
+        "delivery_id": "del-9b19d008-84b0-492f-ad16-d33d29e127d1",
+        "run_id": "run-962278d0-b649-41df-864a-688540ae1715",
+        "snapshot_id": "125e60516a2382521b0186b75cddce40f3f337f0004cb4d710c021e1e0347a59"
+      },
+      "project_id": "p1",
+      "run_id": "run-962278d0-b649-41df-864a-688540ae1715",
+      "type": "DeliveryAccepted",
+      "workflow_id": "wf-5a8daffe-ceb8-4b84-9ee8-ac77cfe294a7"
+    },
+    {
+      "created_at": "2026-09-17T02:26:51.227Z",
+      "event_seq": 15,
+      "payload": {
+        "from": "VERIFYING",
+        "stage": "quality_before_human",
+        "to": "REVIEW_QUEUED"
+      },
+      "project_id": "p1",
+      "type": "StateChanged",
+      "workflow_id": "wf-5a8daffe-ceb8-4b84-9ee8-ac77cfe294a7"
+    },
+    {
+      "created_at": "2026-09-17T02:26:51.227Z",
+      "event_seq": 16,
+      "payload": {
+        "authority_hash": "ad5c219ab89f757cec330f52abe304f80a264ab113b08d759b077d6c3a9d314d",
+        "check_ids": [
+          "r1:document",
+          "r1:task:T01",
+          "r1:test:UT01",
+          "r1:work_item:T01",
+          "r1:acceptance:UT01"
+        ],
+        "completed_at": "2026-09-17T02:26:51.226Z",
+        "context_hash": "573de071e6fbfb1a89f304df2499f9962975e6bfd9197cddc1138e6f475d4cd9",
+        "created_at": "2026-09-17T02:26:47.207Z",
+        "delivery_revision_id": "dlr-2cc50639-d2f2-4c88-b993-ac5cc696c707",
+        "id": "plancheck-b9d48448-fcbd-4963-b5cc-9f1593c1034f",
+        "plan_hash": "2bce41c8fc365b2c152948c20d39bcf40fd805740383e4f5614cdd04b328aaa3",
+        "plan_revision": 1,
+        "report_hash": "dc9a89eaa03eca678ddee5f0ad98572d5496081e988f744c9c6d920b48b2379c",
+        "run_id": "run-962278d0-b649-41df-864a-688540ae1715",
+        "source_delivery_revision_id": "dlr-2d473086-cbf2-49bc-a70c-4e25b2db879a",
+        "source_run_id": "run-aaae8fcd-50bc-475a-8e3e-d2442740863a",
+        "status": "passed",
+        "workflow_id": "wf-5a8daffe-ceb8-4b84-9ee8-ac77cfe294a7"
+      },
+      "project_id": "p1",
+      "run_id": "run-962278d0-b649-41df-864a-688540ae1715",
+      "type": "ExecutorPlanSelfCheckPassed",
+      "workflow_id": "wf-5a8daffe-ceb8-4b84-9ee8-ac77cfe294a7"
+    },
+    {
+      "created_at": "2026-09-17T02:26:51.245Z",
+      "event_seq": 17,
+      "payload": {
+        "message": "正在准备任务工作区"
+      },
+      "project_id": "p1",
+      "run_id": "run-70d49d79-b825-4f43-9680-1aa01442d9e3",
+      "type": "PreparationStarted",
+      "workflow_id": "wf-5a8daffe-ceb8-4b84-9ee8-ac77cfe294a7"
+    },
+    {
+      "created_at": "2026-09-17T02:26:52.787Z",
+      "event_seq": 18,
+      "payload": {
+        "from": "REVIEW_QUEUED",
+        "stage": "quality_before_human",
+        "to": "REVIEWING"
+      },
+      "project_id": "p1",
+      "type": "StateChanged",
+      "workflow_id": "wf-5a8daffe-ceb8-4b84-9ee8-ac77cfe294a7"
+    },
+    {
+      "created_at": "2026-09-17T02:26:54.662Z",
+      "event_seq": 19,
+      "payload": {
+        "from": "REVIEWING",
+        "stage": "manual_acceptance",
+        "to": "HUMAN_PENDING"
+      },
+      "project_id": "p1",
+      "type": "StateChanged",
+      "workflow_id": "wf-5a8daffe-ceb8-4b84-9ee8-ac77cfe294a7"
+    },
+    {
+      "created_at": "2026-09-17T02:26:56.156Z",
+      "event_seq": 20,
+      "payload": {
+        "from": "HUMAN_PENDING",
+        "stage": "review",
+        "to": "REVIEW_QUEUED"
+      },
+      "project_id": "p1",
+      "type": "StateChanged",
+      "workflow_id": "wf-5a8daffe-ceb8-4b84-9ee8-ac77cfe294a7"
+    },
+    {
+      "created_at": "2026-09-17T02:26:56.159Z",
+      "event_seq": 21,
+      "payload": {
+        "message": "正在准备任务工作区"
+      },
+      "project_id": "p1",
+      "run_id": "run-0b09f881-c8e4-4951-9f3a-faf9243585b6",
+      "type": "PreparationStarted",
+      "workflow_id": "wf-5a8daffe-ceb8-4b84-9ee8-ac77cfe294a7"
+    },
+    {
+      "created_at": "2026-09-17T02:26:57.534Z",
+      "event_seq": 22,
+      "payload": {
+        "from": "REVIEW_QUEUED",
+        "stage": "review",
+        "to": "REVIEWING"
+      },
+      "project_id": "p1",
+      "type": "StateChanged",
+      "workflow_id": "wf-5a8daffe-ceb8-4b84-9ee8-ac77cfe294a7"
+    },
+    {
+      "created_at": "2026-09-17T02:26:59.252Z",
+      "event_seq": 23,
+      "payload": {
+        "from": "REVIEWING",
+        "stage": "commit",
+        "to": "COMMITTING"
+      },
+      "project_id": "p1",
+      "type": "StateChanged",
+      "workflow_id": "wf-5a8daffe-ceb8-4b84-9ee8-ac77cfe294a7"
+    },
+    {
+      "created_at": "2026-09-17T02:27:04.875Z",
+      "event_seq": 24,
+      "payload": {
+        "from": "COMMITTING",
+        "stage": "cleanup",
+        "to": "CLEANUP_PENDING"
+      },
+      "project_id": "p1",
+      "type": "StateChanged",
+      "workflow_id": "wf-5a8daffe-ceb8-4b84-9ee8-ac77cfe294a7"
+    },
+    {
+      "created_at": "2026-09-17T02:27:06.604Z",
+      "event_seq": 25,
+      "payload": {
+        "from": "CLEANUP_PENDING",
+        "stage": "done",
+        "to": "COMPLETED"
+      },
+      "project_id": "p1",
+      "type": "StateChanged",
+      "workflow_id": "wf-5a8daffe-ceb8-4b84-9ee8-ac77cfe294a7"
+    }
+  ],
+  "review": {
+    "commit_message": "test: native fixture",
+    "coverage": {
+      "all_changed_files_reviewed": true,
+      "all_requirements_checked": true,
+      "files": [
+        "main:app.txt"
+      ],
+      "security_checked": true,
+      "tests_validity_checked": true,
+      "upstream_downstream_checked": true
+    },
+    "findings": [],
+    "id": "review-4d1f2d23-fc67-4065-b7e0-87df09a7c3fc",
+    "plan_revision": 1,
+    "repair_plan": null,
+    "review_request_id": "review-4d1f2d23-fc67-4065-b7e0-87df09a7c3fc",
+    "schema_version": 1,
+    "snapshot_id": "125e60516a2382521b0186b75cddce40f3f337f0004cb4d710c021e1e0347a59",
+    "unresolved_questions": [],
+    "verdict": "pass",
+    "workflow_id": "wf-5a8daffe-ceb8-4b84-9ee8-ac77cfe294a7"
+  },
+  "commits": [
+    {
+      "commit": "71a51381c239e6ba745e5bdc4414d6e3df180125",
+      "parent": "81773e532d44ec07d4e38135bd9053f567d10cec",
+      "repo_id": "main",
+      "tree": "960dea6f4d6426a975850aef400d39e75828e6b9"
+    }
+  ],
+  "project": {
+    "browser_scenes": [],
+    "commands": [
+      {
+        "args": [
+          "verify.cjs"
+        ],
+        "cwd": "",
+        "env": {},
+        "executable": "C:\\Program Files\\nodejs\\node.exe",
+        "id": "unit",
+        "lifecycle": "check",
+        "parser": "none",
+        "report_path": ".reports/unit.json",
+        "required_before_commit": false,
+        "timeout_seconds": 300
+      }
+    ],
+    "data": {
+      "mode": "directory"
+    },
+    "git": {
+      "author_email": "tests@example.invalid",
+      "author_name": "DevFlow Tests",
+      "required_hooks": []
+    },
+    "id": "p1",
+    "name": "测试项目",
+    "repositories": [
+      {
+        "id": "main",
+        "path": "C:\\Users\\yckj4798\\AppData\\Local\\Temp\\devflow-test-9trhnv\\repo"
+      }
+    ],
+    "services": []
+  },
+  "context": {
+    "roots": {
+      "main": "C:\\Users\\yckj4798\\AppData\\Local\\Temp\\devflow-test-9trhnv\\repo"
+    }
+  },
+  "operations": [],
+  "development_evidence": [],
+  "event_cursor": 25,
+  "history_cursor": 1
+}

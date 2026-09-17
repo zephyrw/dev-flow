@@ -62,6 +62,8 @@ describe("DevFlow 原生执行与终局核验单元测试", () => {
 
     const mockPlan: Plan = {
       task_model: "native-v2",
+      revision: 1,
+      feedback_cursor: 0,
       modules: [{ id: "m1", title: "核心模块" }],
       markdown: "# 完整设计\n这是详细的架构与测试要求...",
       complexity: "simple",
@@ -321,6 +323,9 @@ describe("DevFlow 原生执行与终局核验单元测试", () => {
 
     const mockPlan: Plan = {
       task_model: "native-v2",
+      revision: 1,
+      modules: [],
+      feedback_cursor: 0,
       markdown: "# 设计正文",
       complexity: "simple",
       reason: "测试",
@@ -463,19 +468,17 @@ describe("DevFlow 原生执行与终局核验单元测试", () => {
         archivedReports.set(reportKey("main", call, path), info);
       }
       const boundReader = new NativeRunRecordReader(
-        hostReader
-          .getAllFacts()
-          .map((f) => ({
-            ...f,
-            workflow_id: mockWorkflow.id,
-            run_id: mockRun.id,
-            plan_hash: mockWorkflow.plan_hash,
-            conversation_id: "conv",
-            started_at: fp.timestamp,
-            ended_at: fp.timestamp,
-            input_fingerprints: { main: fp.fingerprint },
-            report_hashes: reportHashes,
-          })),
+        hostReader.getAllFacts().map((f) => ({
+          ...f,
+          workflow_id: mockWorkflow.id,
+          run_id: mockRun.id,
+          plan_hash: mockWorkflow.plan_hash,
+          conversation_id: "conv",
+          started_at: fp.timestamp,
+          ended_at: fp.timestamp,
+          input_fingerprints: { main: fp.fingerprint },
+          report_hashes: reportHashes,
+        })),
       );
       const validator = new EvidenceValidator(store);
       const result = validator.validate({
@@ -593,19 +596,17 @@ describe("DevFlow 原生执行与终局核验单元测试", () => {
         archivedReports.set(reportKey("main", call, path), info);
       }
       const boundReader = new NativeRunRecordReader(
-        hostReader
-          .getAllFacts()
-          .map((f) => ({
-            ...f,
-            workflow_id: mockWorkflow.id,
-            run_id: mockRun.id,
-            plan_hash: mockWorkflow.plan_hash,
-            conversation_id: "conv",
-            started_at: fp.timestamp,
-            ended_at: fp.timestamp,
-            input_fingerprints: { main: fp.fingerprint },
-            report_hashes: reportHashes,
-          })),
+        hostReader.getAllFacts().map((f) => ({
+          ...f,
+          workflow_id: mockWorkflow.id,
+          run_id: mockRun.id,
+          plan_hash: mockWorkflow.plan_hash,
+          conversation_id: "conv",
+          started_at: fp.timestamp,
+          ended_at: fp.timestamp,
+          input_fingerprints: { main: fp.fingerprint },
+          report_hashes: reportHashes,
+        })),
       );
       const validator = new EvidenceValidator(store);
       const result = validator.validate({

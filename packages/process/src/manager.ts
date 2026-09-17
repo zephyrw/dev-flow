@@ -42,12 +42,12 @@ export class ProcessManager {
     if (existing) return existing;
     const isWindows = process.platform === "win32";
     requireCondition(
-      !this.requireHost || (isWindows && existsSync(this.hostExecutable)),
+      !this.requireHost || existsSync(this.hostExecutable),
       "HOST_REQUIRED",
-      "Windows Host 尚未安装，不能执行受管进程",
+      "Process Host 尚未安装，不能执行受管进程",
       503,
     );
-    const useHost = isWindows && existsSync(this.hostExecutable);
+    const useHost = existsSync(this.hostExecutable);
     this.lifecycle?.(spec, { status: "starting", job_id: spec.id });
     const events = new EventEmitter() as ManagedProcess;
     events.id = spec.id;
@@ -62,6 +62,10 @@ export class ProcessManager {
       "TEMP",
       "TMP",
       "USERPROFILE",
+      "HOME",
+      "XDG_CONFIG_HOME",
+      "XDG_DATA_HOME",
+      "CODEX_HOME",
       "APPDATA",
       "LOCALAPPDATA",
       // Windows shells need these to resolve and execute .cmd/.bat programs.

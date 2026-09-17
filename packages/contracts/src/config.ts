@@ -19,10 +19,8 @@ export const ConfigSchema = z
     workspace_root: z.string().default(".devflow/worktrees"),
     models: z
       .object({
-        executor: z
-          .literal("gemini-3.7-flash-high")
-          .default("gemini-3.7-flash-high"),
-        reviewer: z.literal("gpt-6-astra").default("gpt-6-astra"),
+        executor: z.string().min(1).default("gemini-3.7-flash-high"),
+        reviewer: z.string().min(1).default("gpt-6-astra"),
         effort: z.literal("high").default("high"),
         agy_executable: z.string().default("agy"),
         codex_executable: z.string().default("codex"),

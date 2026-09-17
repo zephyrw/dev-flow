@@ -14,11 +14,11 @@ import {
 } from "../../packages/evidence/src/parse.js";
 import { executablePath } from "../../packages/process/src/executable.js";
 describe("配置与计划合同", () => {
-  it("UT-01 rejects unknown keys and invalid model substitutions", () => {
+  it("UT-01 rejects unknown keys and accepts configured models", () => {
     expect(() => ConfigSchema.parse({ unknown: true })).toThrow();
-    expect(() =>
-      ConfigSchema.parse({ models: { executor: "other" } }),
-    ).toThrow();
+    expect(
+      ConfigSchema.parse({ models: { executor: "other" } }).models.executor,
+    ).toBe("other");
     expect(ConfigSchema.parse({}).scheduler.executors).toBe(1);
   });
   it("UT-02 canonical hash is independent of object key order", () =>
@@ -34,7 +34,7 @@ describe("配置与计划合同", () => {
   });
   it("UT-06 rejects absent diagrams and unresolved decisions", () => {
     const p = plan("config", "a".repeat(40));
-    p.markdown = p.markdown.replace("```mermaid", "```text");
+    p.markdown = (p.markdown || "").replace("```mermaid", "```text");
     expect(() => validatePlan(p)).toThrow(/图解/);
     expect(() =>
       validatePlan({
