@@ -36,7 +36,6 @@ import { NativePlanSchema } from "../../contracts/src/native-plan.js";
 import { PlanSelfCheckReportSchema } from "../../contracts/src/plan-self-check.js";
 import {
   modelOutputSchema,
-  parseReviewOutput,
   normalizeModelOutput,
 } from "../../contracts/src/review-output.js";
 import { createDefaultAdapterRegistry } from "../../adapters/sdk/src/index.js";
@@ -53,11 +52,18 @@ import {
 } from "../../evidence/src/native-execution-observer.js";
 import type { HostToolExecutionFact } from "../../evidence/src/native-run-records.js";
 import type { ProcessManager } from "../../process/src/manager.js";
-import { classifyFailure } from "./errors.js";
+import { classifyFailure, normalizeRuntimeFailure } from "./errors.js";
+import { RunTelemetry } from "./run-telemetry.js";
+import { CodexSessionObserver } from "./codex-session-observer.js";
 import { rejectedDeliveryFeedback } from "../../core/src/delivery-feedback.js";
 import { readPlanMaterial } from "../../core/src/plan-review.js";
 import type { SourceInput } from "../../core/src/source-change.js";
 import { batchExecutionInstructions } from "../../core/src/execution-guidance.js";
+import {
+  reviewSkillResources,
+  reviewContractContext,
+  reviewInstructions,
+} from "./review-materials.js";
 
 /** One native process per purpose. No model polling, scheduler or shadow execution plan. */
 export class ProfileRuntime {
@@ -67,7 +73,10 @@ export class ProfileRuntime {
   ) {}
   async plan(w: Workflow, run: Run) {
     const workspaces = await this.planningWorkspaces(w);
-    const selectedSource = this.engine.store.get<SourceInput>("source_input", w.id);
+    const selectedSource = this.engine.store.get<SourceInput>(
+      "source_input",
+      w.id,
+    );
     const schema = z.object({
       markdown: z.string().min(1),
       plan: NativePlanSchema,
@@ -81,7 +90,8 @@ export class ProfileRuntime {
         current_plan: w.plan_revision
           ? readPlanMaterial(this.engine.store, w.id, w.plan_revision)
           : null,
-        selected_source: selectedSource?.plan_hash === w.plan_hash ? selectedSource : null,
+        selected_source:
+          selectedSource?.plan_hash === w.plan_hash ? selectedSource : null,
         requirements: this.engine.store.list("requirement_message", w.id),
         request: w.request,
         project: this.engine.project(w.project_id),
@@ -342,8 +352,9 @@ export class ProfileRuntime {
       w,
       run,
       {
-        instructions:
-          "你是独立质量复核者。只读审查所有改动文件、原始计划及正式整改版本、上下游及真实测试证据。执行模型自查不是审查结论。全部覆盖才可通过；有问题必须返回完整 repair_plan、repair_document 正文及 quality 的逐项确定性整改合同。禁止另写局部替代计划。quality.document_hash 为完整 repair_document 的 SHA-256；每项绑定下一计划版本。",
+        instructions: reviewInstructions,
+        skill_resources: reviewSkillResources(),
+        review_contract: reviewContractContext(this.engine, w, run),
         workflow: w,
         run,
         phase,
@@ -370,7 +381,7 @@ export class ProfileRuntime {
         this.workspaces(w).map((ws) => ws.repo_id),
       ),
     );
-    return parseReviewOutput(value);
+    return normalizeModelOutput(value);
   }
   private reviewSkill() {
     const dir = dirname(fileURLToPath(import.meta.url));
@@ -585,14 +596,25 @@ export class ProfileRuntime {
         DEVFLOW_BASE_URL: "http://127.0.0.1:" + this.engine.config.server.port,
       },
     });
+    const telemetry = new RunTelemetry(this.engine.store, w, run);
+    const sessionObserver = profile.adapterId === "codex"
+      ? new CodexSessionObserver({
+          home: invocation.env.CODEX_HOME ?? process.env.CODEX_HOME ?? join(homedir(), ".codex"),
+          cwd: invocation.cwd,
+          startedAt: run.started_at,
+          telemetry,
+        })
+      : undefined;
     let final: unknown,
       text = "",
       conversation = previous?.id,
-      failure: string | undefined;
+      failure: string | undefined,
+      stderrTail = "";
     let permissionFailure: FlowError | undefined;
     const handle = (event: NormalizedEvent) => {
       const v = event.raw as any;
       if (v && typeof v === "object") {
+        telemetry.accept(v);
         if (
           profile.adapterId === "agy" &&
           v.event === "result" &&
@@ -620,9 +642,17 @@ export class ProfileRuntime {
           if (previous && session !== previous.id)
             failure = "会话 ID 与精确续接目标不一致";
           conversation = session;
+          sessionObserver?.bind(session);
         }
-        if (v.is_error === true || v.type === "error" || v.event === "error")
-          failure = "CLI 返回错误：" + redact(JSON.stringify(v)).slice(0, 2000);
+        if (
+          v.is_error === true ||
+          v.type === "error" ||
+          v.event === "error" ||
+          v.type === "turn.failed" ||
+          (v.event === "result" && v.result?.error)
+        )
+          failure ??=
+            "CLI 返回错误：" + redact(JSON.stringify(v)).slice(0, 8000);
         if (v.structured_output) final = v.structured_output;
         if (v.type === "result" && typeof v.result === "string")
           text = v.result;
@@ -675,15 +705,35 @@ export class ProfileRuntime {
     });
     proc.on("stderr", (data: Buffer) => {
       try {
+        stderrTail = (stderrTail + data.toString("utf8")).slice(-16000);
         consume("stderr", data);
       } catch (e) {
         failure = String(e);
         void proc.stop();
       }
     });
-    const exit = await proc.completion;
-    consume("stdout", "", true);
-    consume("stderr", "", true);
+    // Process Host startup failures arrive as diagnostics rather than stderr.
+    proc.on("diagnostic", (data: unknown) => {
+      const diagnostic = redact(String(data));
+      stderrTail = (stderrTail + "\n" + diagnostic).slice(-16000);
+      try {
+        appendFileSync(join(root, "stderr.jsonl"), diagnostic + "\n");
+      } catch (error) {
+        failure ??= String(error);
+        void proc.stop();
+      }
+    });
+    let exit;
+    try {
+      exit = await proc.completion;
+      consume("stdout", "", true);
+      consume("stderr", "", true);
+    } finally {
+      await sessionObserver?.close();
+      telemetry.finish(
+        !exit || exit.code !== 0 || !!exit.termination_reason || !!failure || !!permissionFailure,
+      );
+    }
     this.engine.store.put("run", run.id, w.id, {
       ...this.engine.store.must<Run>("run", run.id),
       exit_code: exit.code,
@@ -711,14 +761,53 @@ export class ProfileRuntime {
       }
       throw permissionFailure;
     }
-    requireCondition(
-      exit.code === 0 &&
-        !exit.termination_reason &&
-        !failure &&
-        !this.engine.store.get("run_stop", run.id),
-      "NATIVE_RUN_FAILED",
-      failure ?? "CLI 未正常完成",
-    );
+    if (
+      exit.code !== 0 ||
+      exit.termination_reason ||
+      failure ||
+      this.engine.store.get("run_stop", run.id)
+    ) {
+      const diagnostic =
+        failure ?? (redact(stderrTail).trim() || "CLI 未正常完成");
+      const classified = classifyFailure(diagnostic);
+      const code =
+        this.engine.store.get("run_stop", run.id) ||
+        exit.termination_reason === "manual"
+          ? "RUN_REVOKED"
+          : exit.termination_reason === "timeout"
+            ? "TIMEOUT"
+            : classified.code === "EXECUTION_FAILED"
+              ? "NATIVE_RUN_FAILED"
+              : classified.code;
+      // A failed run is not a successful delivery, but its genuine conversation
+      // can still be continued once the runtime problem has been resolved.
+      if (
+        code !== "RUN_REVOKED" &&
+        !readOnlyPurpose(purpose) &&
+        conversation &&
+        (!previous || previous.id === conversation)
+      ) {
+        const retained = { id: conversation, profile, run_id: run.id };
+        this.engine.store.put(
+          "native_conversation",
+          sessionKey,
+          w.id,
+          retained,
+        );
+        this.engine.store.put("conversation", w.id, w.id, retained);
+      }
+      throw normalizeRuntimeFailure(
+        new FlowError(code, diagnostic, 422, {
+          diagnostic,
+          exit_code: exit.code,
+          termination_reason: exit.termination_reason,
+          adapter: profile.adapterId,
+          executable: invocation.executable,
+          executable_ref: profile.executableRef,
+          model: profile.modelId,
+        }),
+      );
+    }
     if (baseline)
       requireCondition(
         objectHash(baseline) === objectHash(captureInputs(workspaces)),

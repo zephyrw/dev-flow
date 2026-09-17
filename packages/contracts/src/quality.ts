@@ -296,10 +296,20 @@ export interface QualityGate {
   workflow_id: string;
   phase: QualityPhase;
   cycle: number;
-  executor_rejections: number; // 上限 3 次，第 3 次立即由规划模型接管
+  executor_rejections: number; // 已完成正式整改后仍被复核拒绝的连续次数，不含首次发现问题
+  failed_repair_review_ids?: string[]; // 只记录已绑定实际执行轮次的整改复核，旧计数不能直接触发接管
   takeover: boolean;
   status?: "pending" | "passed" | "rejected";
   current_review_id?: string;
   passed_input_fingerprint?: Record<string, string>;
   updated_at: string;
+}
+
+export interface QualityRepairAssignment {
+  planner: boolean;
+  phase: QualityPhase;
+  source: "quality_review";
+  source_review_id: string;
+  plan_revision: number;
+  plan_hash: string;
 }

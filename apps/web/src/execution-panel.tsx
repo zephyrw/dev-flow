@@ -4,6 +4,40 @@ import remarkGfm from "remark-gfm";
 import type { LogEntry } from "./logs.js";
 import { CommandPreview } from "./command-preview.js";
 
+/** 智能中间截断路径：优先完整显示文件名，有余量时尽量多显示前缀，极窄空间截取文件名后半段 */
+export function formatPathSummary(
+  text: string,
+  maxLength: number = 42,
+): string {
+  if (!text || text.length <= maxLength) return text;
+  const lastSepIndex = Math.max(text.lastIndexOf("/"), text.lastIndexOf("\\"));
+  if (lastSepIndex === -1) {
+    return maxLength > 3 ? "..." + text.slice(-(maxLength - 3)) : text;
+  }
+
+  const fileName = text.slice(lastSepIndex + 1);
+  const dirPath = text.slice(0, lastSepIndex);
+  const sep = text[lastSepIndex];
+
+  // 连文件名+省略号都放不下时，显示最后那段，前面显示 ...
+  if (fileName.length + 3 >= maxLength) {
+    return "..." + fileName.slice(-(maxLength - 3));
+  }
+
+  // 空间充足容纳文件名，计算前缀可用空间
+  const availableForPrefix = maxLength - fileName.length - 3;
+  if (availableForPrefix < 3) {
+    return `...${sep}${fileName}`;
+  }
+
+  let prefix = dirPath.slice(0, availableForPrefix);
+  // 保持形如 C:\Code\...ApplicationSaveService.java
+  if (!prefix.endsWith("\\") && !prefix.endsWith("/")) {
+    prefix = prefix + sep;
+  }
+  return `${prefix}...${fileName}`;
+}
+
 export function ExecutionPanel({
   entries,
   connected,
@@ -29,6 +63,7 @@ export function ExecutionPanel({
   const [follow, setFollow] = useState(true);
   const [loadingHistory, setLoadingHistory] = useState(false);
   const last = Math.max(0, ...entries.map((e) => e.sequence));
+  const maxSummaryChars = Math.max(24, Math.floor((width - 64) / 7.5));
   useEffect(() => {
     if (follow && scroll.current) {
       scroll.current.scrollTop = scroll.current.scrollHeight;
@@ -82,6 +117,7 @@ export function ExecutionPanel({
           <h2>执行过程</h2>
           <span
             className={`conn-pill ${connected ? "connected" : "reconnecting"}`}
+            title="页面与服务的事件连接状态；模型活动见右上角当前运行信息"
           >
             <span className="conn-dot" />
             <small>{connected ? "已连接" : "重连中"}</small>
@@ -161,9 +197,8 @@ export function ExecutionPanel({
                   <Markdown remarkPlugins={[remarkGfm]}>{e.text}</Markdown>
                 </div>
               ) : e.kind !== "diagnostic" && e.text ? (
-                <p className="activity-summary">
-                  {e.text.slice(0, 600)}
-                  {e.text.length > 600 ? "…" : ""}
+                <p className="activity-summary" title={e.text}>
+                  {formatPathSummary(e.text, maxSummaryChars)}
                 </p>
               ) : null}
               {e.kind === "tool" && e.resultText && (

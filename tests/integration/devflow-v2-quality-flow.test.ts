@@ -10,6 +10,8 @@ import {
 import { proof } from "../helpers.js";
 import { hash, now } from "../../packages/core/src/util.js";
 import type { Workflow, Run } from "../../packages/contracts/src/index.js";
+import { reviewContractContext } from "../../packages/runtime/src/review-materials.js";
+import { workflowAttention } from "../../packages/core/src/attention.js";
 function failReview(s: Fixture, w: Workflow, run: Run) {
   const phase =
     w.stage === "quality_before_human" ? "before_human" : "after_human";
@@ -35,7 +37,7 @@ function failReview(s: Fixture, w: Workflow, run: Run) {
         consequence: "输出不符",
         relation_to_change: "in_scope",
         disposition: "confirmed",
-        reason: "测试夹具强制前三轮拒绝，验证调度",
+        reason: "测试夹具强制拒绝，验证正式整改后的调度",
       },
     ],
     quality: {
@@ -120,7 +122,124 @@ function failReview(s: Fixture, w: Workflow, run: Run) {
   };
 }
 describe("质量审查生产调度闭环", { timeout: 1500000 }, () => {
-  it("两关各拒绝三次后分别由规划模型接管，逐轮自查后复核，最终真实提交", async () => {
+  it("审查材料缺失由规划模型补全，首次完整发现问题仍不计整改失败", async () => {
+    const s = await fixture();
+    const base = runtime(s);
+    let reviews = 0;
+    s.engine.runtime = {
+      ...base,
+      async review(w, r) {
+        reviews++;
+        const context = reviewContractContext(s.engine, w, r);
+        expect(context.run_id).toBe(r.id);
+        if (reviews === 1)
+          return {
+            ...failReview(s, w, r),
+            verdict: "incomplete",
+            quality: null,
+            unresolved_questions: ["缺少整改合同资料"],
+          };
+        if (reviews <= 3) {
+          expect(context.completion?.attempts[0]?.review).toMatchObject({
+            findings: [{ id: "F1" }],
+          });
+          expect(workflowAttention(s.engine, w.id)?.message).toContain(
+            "无需你编写",
+          );
+          expect(
+            s.engine.quality.getGate(w.id, "before_human")?.executor_rejections,
+          ).toBe(0);
+          if (reviews === 2) return passReview(w); // Dropping F1 must not evade review.
+          return failReview(s, w, r);
+        }
+        expect(context.completion).toBeNull(); // The new repair plan has fresh input.
+        return passReview(w);
+      },
+    };
+    try {
+      await until(s, ["HUMAN_PENDING", "BLOCKED", "REPAIR_PLAN_PENDING"]);
+      expect(s.engine.get(s.w.id).blocker).toBeUndefined();
+      expect(s.engine.get(s.w.id).state).toBe("HUMAN_PENDING");
+      expect(reviews).toBe(4);
+      expect(s.engine.get(s.w.id).plan_revision).toBe(2);
+      expect(s.engine.quality.getGate(s.w.id, "before_human")).toMatchObject({
+        executor_rejections: 0,
+        takeover: false,
+      });
+      expect(s.store.list("acceptance", s.w.id)).toHaveLength(0);
+    } finally {
+      await cleanup(s);
+    }
+  });
+
+  it("畸形整改最多自动补全两次，保留原交付，人工重试仍回到人工前复核", async () => {
+    const s = await fixture();
+    const base = runtime(s);
+    let reviews = 0;
+    s.engine.runtime = {
+      ...base,
+      async review(w, r) {
+        reviews++;
+        reviewContractContext(s.engine, w, r);
+        const malformed: any = failReview(s, w, r);
+        delete malformed.quality.repair_plan[0].root_cause;
+        if (reviews === 1) malformed.findings = [null];
+        return malformed;
+      },
+    };
+    try {
+      await until(s, ["BLOCKED", "HUMAN_PENDING"]);
+      expect(reviews).toBe(3);
+      expect(s.engine.get(s.w.id).blocker?.code).toBe(
+        "REVIEW_COMPLETION_EXHAUSTED",
+      );
+      expect(
+        s.engine.quality.getGate(s.w.id, "before_human")?.executor_rejections,
+      ).toBe(0);
+      const snapshot = s.engine.get(s.w.id).snapshot_id;
+      const delivery = s.engine.planSelfCheck.current(s.w.id);
+      s.engine.runtime = undefined;
+      await s.engine.retryReview(s.w.id);
+      expect(s.engine.get(s.w.id)).toMatchObject({
+        state: "REVIEW_QUEUED",
+        stage: "quality_before_human",
+        snapshot_id: snapshot,
+        plan_revision: 1,
+      });
+      expect(s.engine.planSelfCheck.current(s.w.id)).toEqual(delivery);
+      expect(s.store.get("acceptance", s.w.id)).toBeUndefined();
+    } finally {
+      await cleanup(s);
+    }
+  });
+
+  it("用户在补全排队时暂停，不再次调用复核模型", async () => {
+    const s = await fixture();
+    let reviews = 0;
+    s.engine.runtime = {
+      ...runtime(s),
+      async review(w, r) {
+        reviews++;
+        return { ...failReview(s, w, r), verdict: "incomplete", quality: null };
+      },
+    };
+    let stopping: Promise<unknown> | undefined;
+    s.store.on("event", (event) => {
+      if (event.type === "ReviewCompletionQueued")
+        stopping = s.engine.stop(s.w.id);
+    });
+    try {
+      await until(s, ["STOPPED", "BLOCKED"]);
+      await stopping;
+      expect(s.engine.get(s.w.id).state).toBe("STOPPED");
+      expect(reviews).toBe(1);
+      expect(s.store.get("queue", s.w.id)).toBeUndefined();
+    } finally {
+      await cleanup(s);
+    }
+  });
+
+  it("两关首次发现问题均不计数，三次完整整改仍被拒绝才接管，通过后清零并真实提交", async () => {
     const s = await fixture();
     const counts = { before_human: 0, after_human: 0 };
     const base = runtime(s);
@@ -129,6 +248,13 @@ describe("质量审查生产调度闭环", { timeout: 1500000 }, () => {
       ...base,
       async execute(w, r, t) {
         ownership.push([r.stage, r.adapter, r.purpose!]);
+        if (r.purpose === "planner_takeover") {
+          const phase = s.store.must<any>("repair_assignment", w.id).phase as
+            | "before_human"
+            | "after_human";
+          expect(counts[phase]).toBe(4); // Initial finding plus three completed repairs.
+          expect(s.engine.quality.canTakeOver(w.id, phase)).toBe(true);
+        }
         await base.execute(w, r, t);
       },
       async review(w, r) {
@@ -136,7 +262,9 @@ describe("质量审查生产调度闭环", { timeout: 1500000 }, () => {
         const phase =
           w.stage === "quality_before_human" ? "before_human" : "after_human";
         counts[phase]++;
-        return counts[phase] <= 3 ? failReview(s, w, r) : passReview(w);
+        expect(s.engine.quality.getOrCreateGate(w.id, phase).executor_rejections)
+          .toBe(Math.max(0, Math.min(3, counts[phase] - 2)));
+        return counts[phase] <= 4 ? failReview(s, w, r) : passReview(w);
       },
     };
     try {
@@ -147,10 +275,10 @@ describe("质量审查生产调度闭环", { timeout: 1500000 }, () => {
       );
       expect(s.engine.get(s.w.id).blocker).toBeUndefined();
       expect(s.engine.get(s.w.id).state).toBe("HUMAN_PENDING");
-      expect(counts.before_human).toBe(4);
+      expect(counts.before_human).toBe(5);
       expect(s.engine.quality.getGate(s.w.id, "before_human")).toMatchObject({
-        executor_rejections: 3,
-        takeover: true,
+        executor_rejections: 0,
+        takeover: false,
         status: "passed",
       });
       expect(
@@ -166,10 +294,10 @@ describe("质量审查生产调度闭环", { timeout: 1500000 }, () => {
       );
       expect(s.engine.get(s.w.id).blocker).toBeUndefined();
       expect(s.engine.get(s.w.id).state).toBe("COMMITTED");
-      expect(counts.after_human).toBe(4);
+      expect(counts.after_human).toBe(5);
       expect(s.engine.quality.getGate(s.w.id, "after_human")).toMatchObject({
-        executor_rejections: 3,
-        takeover: true,
+        executor_rejections: 0,
+        takeover: false,
         status: "passed",
       });
       expect(
@@ -180,6 +308,12 @@ describe("质量审查生产调度闭环", { timeout: 1500000 }, () => {
           .filter(([stage]) => stage === "planner_takeover")
           .every(([, adapter]) => adapter === "codex"),
       ).toBe(true);
+      for (const phase of ["before_human", "after_human"])
+        expect(
+          s.store.list<any>("quality_review", s.w.id).filter(
+            (review) => review.phase === phase && review.executor_repair_run_id,
+          ),
+        ).toHaveLength(3);
       expect(s.store.list("commit_result", s.w.id)).toHaveLength(1);
     } finally {
       await cleanup(s);

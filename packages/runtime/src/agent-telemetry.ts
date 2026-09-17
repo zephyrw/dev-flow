@@ -14,10 +14,34 @@ export class AgentTelemetry {
   accept(event: Record<string, any>) {
     const step = event.step_update;
     const key = step ? "step:" + step.step_index : "event:" + event.event;
+    const previous = this.events.get(key)?.step_update;
+    if (step && previous)
+      event = {
+        ...event,
+        step_update: {
+          ...previous,
+          ...step,
+          ...(typeof step.text_delta === "string"
+            ? { text_delta: (previous.text_delta ?? "") + step.text_delta }
+            : {}),
+          ...(previous.tool_info || step.tool_info
+            ? {
+                tool_info: {
+                  ...previous.tool_info,
+                  ...step.tool_info,
+                  parameters: {
+                    ...previous.tool_info?.parameters,
+                    ...step.tool_info?.parameters,
+                  },
+                },
+              }
+            : {}),
+        },
+      };
     this.events.set(key, event);
     if (event.event === "result")
       this.usage(event.result?.usage ?? event.usage);
-    if (["init", "result"].includes(event.event) || this.events.size >= 100)
+    if (["init", "result"].includes(event.event) || this.events.size >= 100 || (event.step_update?.text_delta?.length ?? 0) >= 16000)
       this.flush();
     else if (!this.timer) this.timer = setTimeout(() => this.flush(), 500);
   }

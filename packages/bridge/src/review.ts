@@ -66,7 +66,7 @@ const page = (text: string, offset: number) => {
 };
 register(
   "devflow_review_context",
-  "分页读取 plan/plan_record/plan_authorities/executor_plan_check/executor_plan_check_report/approval/acceptance/project/claims/evidence/skill/diff/snapshot/workspaces；plan_record 含 hash，acceptance 为 null 表示尚无人类验收。读取直到 next_offset 为 null。",
+  "分页读取 plan/plan_record/plan_authorities/executor_plan_check/executor_plan_check_report/approval/acceptance/project/claims/evidence/skill/skill_resources/review_contract/diff/snapshot/workspaces；skill_resources 含整改、测试及执行合同，review_contract 含当前审查绑定及待补全材料。读取直到 next_offset 为 null。",
   z.object({
     section: z.enum([
       "plan",
@@ -80,6 +80,8 @@ register(
       "claims",
       "evidence",
       "skill",
+      "skill_resources",
+      "review_contract",
       "diff",
       "snapshot",
       "workspaces",
@@ -87,6 +89,12 @@ register(
     offset: z.number().int().nonnegative().default(0),
   }),
   (a) => page(JSON.stringify(manifest[a.section] ?? null), a.offset),
+);
+register(
+  "devflow_review_hash_document",
+  "计算完整整改正文的 SHA-256（统一 LF 换行），用于逐项整改合同 document_hash；纯计算，不写入文件。",
+  z.object({ text: z.string().min(1).max(2000000) }),
+  (a) => ({ document_hash: hash(a.text.replace(/\r\n/g, "\n")) }),
 );
 const read = (repo: string, path: string) => {
   const workspace = (manifest.workspaces as Workspace[]).find(

@@ -802,7 +802,8 @@ export async function buildServer(
         engine.store.get<{
           workflow_id: string;
           files: { path: string; hash: string }[];
-        }>("development_evidence", a.evidence);
+        }>("development_evidence", a.evidence) ??
+        engine.displayEvidence(a.id).find((e) => e.id === a.evidence);
       requireCondition(evidence, "NOT_FOUND", "测试证据不存在", 404);
       requireCondition(
         evidence.workflow_id === a.id,
@@ -1071,18 +1072,7 @@ export async function buildServer(
   app.post("/api/workflows/:id/review/retry", async (req) => {
     human(req);
     const key = Id.parse((req.params as any).id);
-    const w = engine.get(key);
-    requireCondition(
-      w.state === "BLOCKED" && engine.store.get("acceptance", key),
-      "INVALID_STATE",
-      "只能对已验收但在复核时阻断的工作流重试复核",
-    );
-    engine.transition(key, ["BLOCKED"], "REVIEW_QUEUED", "review", {
-      blocker: undefined,
-    });
-    engine.scheduler.enqueue(key, w.project_id);
-    void engine.dispatch();
-    return engine.get(key);
+    return engine.retryReview(key);
   });
   app.post("/api/workflows/:id/environment/stop", async (req) => {
     human(req);

@@ -1,4 +1,5 @@
 import { failureSummary } from "./failure.js";
+import { runtimeFailureResolution } from "../../contracts/src/runtime-failure.js";
 import { toolSummary, toolOutputSummary } from "./tool-summary.js";
 export interface LogEntry {
   key: string;
@@ -26,6 +27,8 @@ export function mergeEvents(workflow: string, ...batches: any[][]): any[] {
       (e) =>
         ![
           "AgentEvent",
+          "NativeActivity",
+          "RunObserved",
           "ServiceOutput",
           "FixtureOutput",
           "CheckOutput",
@@ -101,7 +104,11 @@ const stageIndex: Record<string, number> = {
   COMPLETED: 6,
   COMMIT_PARTIAL: 6,
 };
-export function workflowProgress(w: any, events: any[]) {
+export function workflowProgress(
+  w: any,
+  events: any[],
+  display: { native?: boolean; humanAccepted?: boolean } = {},
+) {
   const completed = ["COMMITTED", "COMPLETED"].includes(w.state);
   const paused = [
     "BLOCKED",
@@ -127,7 +134,19 @@ export function workflowProgress(w: any, events: any[]) {
       }
     }
   }
-  const index = stageIndex[state];
+  const phase = stageIndex[w.state] === undefined
+    ? transitions.slice().reverse().find((e) => e.payload?.to === state)?.payload?.stage ?? w.stage
+    : w.stage;
+  // These are existing workflow phases, not new transitions or gates.
+  const labels = display.native
+    ? [...stages.slice(0, 4), "验收前质量审查", "人工验收", "验收后代码复核", "本地提交"]
+    : stages;
+  const index = display.native
+    ? state === "HUMAN_PENDING" ? 5
+      : ["REVIEW_QUEUED", "REVIEWING"].includes(state)
+        ? phase === "quality_before_human" ? 4 : 6
+        : stageIndex[state] === 6 ? 7 : stageIndex[state]
+    : stageIndex[state];
   const next: Record<string, string> = {
     RESEARCHING: "等待调研和计划完成",
     PLANNING: "规划模型正在读取需求和引用文件",
@@ -147,16 +166,22 @@ export function workflowProgress(w: any, events: any[]) {
   };
   return {
     index,
+    stages: labels,
+    done: labels.map((label, i) => label === "人工验收"
+      ? display.humanAccepted === true
+      : completed || i < (index ?? -1)),
     paused,
     completed,
     title: completed
       ? "已完成本地提交"
       : index === undefined
         ? "等待确认阶段"
-        : stages[index],
+        : labels[index],
     next: paused
       ? "处理下方问题后，点击“继续这个任务”；保留已有计划和修改，重新核验完成证据。"
-      : (next[w.state] ?? "等待工作流更新"),
+      : phase === "quality_before_human" && ["REVIEWING", "REVIEW_QUEUED"].includes(state)
+        ? "规划模型审查代码质量与测试结果，通过后进入人工验收"
+        : (next[w.state] ?? "等待工作流更新"),
   };
 }
 /** The original events stay intact; this is only a readable, scoped projection. */
@@ -174,6 +199,20 @@ export function readableLogs(events: any[], workflow: string): LogEntry[] {
   )) {
     const p = e.payload ?? {},
       step = p.step_update;
+    if (e.type === "RunObserved") continue;
+    if (e.type === "NativeActivity") {
+      if (!p.id || !["tool", "message", "event"].includes(p.kind)) continue;
+      const key = `${workflow}:${e.run_id}:native:${p.id}`;
+      let row = steps.get(key);
+      if (!row) {
+        row = { key, sequence: e.event_seq, created_at: e.created_at, title: p.title, text: "", raw: [] };
+        rows.push(row);
+        steps.set(key, row);
+      }
+      Object.assign(row, { sequence: e.event_seq, created_at: e.created_at, title: p.title,
+        text: p.text ?? "", kind: p.kind, status: p.status, command: p.command, cwd: p.cwd, resultText: p.resultText, raw: [e] });
+      continue;
+    }
     if (e.type === "ReviewDiagnostic") {
       const run = String(e.run_id ?? "unknown");
       const stream = reviewStreams.get(run) ?? { text: "" };
@@ -384,7 +423,7 @@ export function readableLogs(events: any[], workflow: string): LogEntry[] {
           key,
           sequence: e.event_seq,
           created_at: e.created_at,
-          title: "Gemini 步骤",
+          title: "模型步骤",
           text: "",
           raw: [],
         };
@@ -445,7 +484,7 @@ export function readableLogs(events: any[], workflow: string): LogEntry[] {
         row.kind = "message";
         row.title =
           step.step_type === "agent_response"
-            ? `Gemini 输出 · ${status}`
+            ? `模型输出 · ${status}`
             : `收到任务 · ${status}`;
         if (typeof step.text_delta === "string") row.text += step.text_delta;
       }
@@ -456,12 +495,12 @@ export function readableLogs(events: any[], workflow: string): LogEntry[] {
     let title = e.type,
       text = typeof p.text === "string" ? p.text : pretty(p);
     if (e.type === "AgentEvent" && p.event === "result") {
-      title = "Gemini 执行结果";
+      title = "模型执行结果";
       text = p.result?.response ?? pretty(p.result);
     }
     if (e.type === "AgentEvent" && p.event === "init") {
       title = "模型已启动";
-      text = `执行模型：${p.init?.model}`;
+      text = `执行模型：${p.init?.model ?? p.model ?? "实际模型未确认"}`;
     }
     if (e.type === "StateChanged") {
       if (p.to === "QUEUED") {
@@ -489,7 +528,7 @@ export function readableLogs(events: any[], workflow: string): LogEntry[] {
         repairPending = false;
         text =
           p.stage === "planner_takeover"
-            ? "规划模型正在原批准范围内修改代码、自测并重新交付。"
+            ? "正在启动规划模型；收到真实工具事件后展示修改、自测与交付过程。"
             : p.stage === "executor_plan_self_check"
               ? "执行模型正在对照正式计划检查实现和测试。"
               : "执行模型自主安排本轮开发与自测，完成后提交交付核验。";
@@ -500,8 +539,13 @@ export function readableLogs(events: any[], workflow: string): LogEntry[] {
             ? "正在自动审查代码质量、调用关系和测试证据，通过后进入人工验收。"
             : "正在自动进行独立复核，通过后进入本地提交。";
       } else if (p.to === "BLOCKED") {
-        title = "执行暂停";
-        text = p.blocker?.message ?? "执行已暂停，等待处理";
+        title =
+          runtimeFailureResolution(p.blocker?.code, p.blocker?.message)
+            ?.title ?? "执行暂停";
+        text = failureSummary(
+          p.blocker?.code,
+          p.blocker?.message ?? "执行已暂停，等待处理",
+        );
       } else if (p.to === "COMMITTED") {
         title = "本地提交完成";
         text = "已生成本地提交记录，所有交付检查与复核已全部通过";
@@ -558,6 +602,10 @@ export function readableLogs(events: any[], workflow: string): LogEntry[] {
           ? "你在控制台暂停了执行"
           : "执行已暂停，等待处理");
     }
+    if (e.type === "ReviewCompletionQueued") {
+      title = "规划模型补齐整改计划";
+      text = p.message;
+    }
     if (e.type === "ProcessesReconciled") {
       title = "任务已恢复";
       text = "";
@@ -580,6 +628,7 @@ export function readableLogs(events: any[], workflow: string): LogEntry[] {
         "BuildReady",
         "BuildFailed",
         "Stopped",
+        "ReviewCompletionQueued",
         "ProcessesReconciled",
         "StateChanged",
         "TaskClaimed",

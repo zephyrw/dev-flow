@@ -5,7 +5,7 @@ import { rejectedDeliveryFeedback } from "../../packages/core/src/delivery-feedb
 import { resumeApproved } from "../../packages/runtime/src/recovery.js";
 
 it.each(["feedback", "recover"])(
-  "resuming an exhausted delivery through %s transfers ownership to the planner",
+  "resuming an exhausted delivery through %s removes legacy execution-failure takeover",
   async (entry) => {
     const s = await fixture();
     try {
@@ -18,13 +18,16 @@ it.each(["feedback", "recover"])(
         consecutive: 6,
         code: "DELIVERY_REJECTED",
       });
-      expect(s.store.get("repair_assignment", s.w.id)).toBeUndefined();
-      if (entry === "recover") resumeApproved(s.engine, s.w.id);
-      else s.engine.feedback(s.w.id, "继续自动修复", "within_plan");
-      expect(s.store.get("repair_assignment", s.w.id)).toMatchObject({
+      s.store.put("repair_assignment", s.w.id, s.w.id, {
         planner: true,
         source: "execution_failure",
+        phase: "before_human",
+        plan_revision: 1,
       });
+      if (entry === "recover") resumeApproved(s.engine, s.w.id);
+      else s.engine.feedback(s.w.id, "继续自动修复", "within_plan");
+      expect(s.store.get("repair_assignment", s.w.id)).toBeUndefined();
+      expect(s.store.get("repair_state", s.w.id)).toBeUndefined();
       expect(s.engine.get(s.w.id)).toMatchObject({
         state: "QUEUED",
         plan_revision: 1,
@@ -35,7 +38,7 @@ it.each(["feedback", "recover"])(
   },
 );
 
-it("three failed native execution rounds transfer actual execution to the planner without changing the approved plan", async () => {
+it("three failed native execution rounds keep the executor and do not count as quality remediation", async () => {
   const s = await fixture();
   const base = runtime(s);
   const owners: string[] = [];
@@ -60,17 +63,21 @@ it("three failed native execution rounds transfer actual execution to the planne
     expect(s.engine.get(s.w.id).blocker).toBeUndefined();
     expect(s.engine.get(s.w.id).state).toBe("HUMAN_PENDING");
     expect(s.engine.get(s.w.id).plan_revision).toBe(1);
-    expect(owners).toEqual(["agy", "agy", "agy", "codex"]);
+    expect(owners).toEqual(["agy", "agy", "agy", "agy"]);
+    expect(s.engine.quality.getGate(s.w.id, "before_human")).toMatchObject({
+      executor_rejections: 0,
+      takeover: false,
+    });
     expect(diagnose).not.toHaveBeenCalled();
     expect(
       s.store.events(s.w.id).some((e) => e.type === "PlannerRepairScheduled"),
-    ).toBe(true);
+    ).toBe(false);
   } finally {
     await cleanup(s);
   }
 }, 150000);
 
-it("planner repair is bounded and cannot silently return ownership to the executor", async () => {
+it("execution recovery stops after six failed runs without switching to the planner", async () => {
   const s = await fixture();
   const owners: string[] = [];
   s.engine.runtime = {
@@ -85,14 +92,71 @@ it("planner repair is bounded and cannot silently return ownership to the execut
   };
   try {
     await until(s, ["BLOCKED"], 120000);
-    expect(owners).toEqual(["agy", "agy", "agy", "codex", "codex", "codex"]);
+    expect(owners).toEqual(Array(6).fill("agy"));
     expect(s.engine.get(s.w.id).blocker?.message).toContain(
-      "规划模型接手后连续三轮",
+      "执行模型执行恢复连续六轮",
     );
+    expect(s.store.get("repair_assignment", s.w.id)).toBeUndefined();
+    expect(s.store.list("quality_gate", s.w.id)).toHaveLength(0);
   } finally {
     await cleanup(s);
   }
 }, 150000);
+
+it("dispatch rejects a queued legacy takeover even without an explicit resume", async () => {
+  const s = await fixture();
+  const base = runtime(s);
+  const owners: string[] = [];
+  s.store.put("repair_assignment", s.w.id, s.w.id, {
+    planner: true,
+    phase: "before_human",
+    source: "execution_failure",
+    plan_revision: 1,
+  });
+  s.engine.runtime = {
+    ...base,
+    async execute(w, run, token) {
+      owners.push(run.adapter);
+      await base.execute(w, run, token);
+    },
+  };
+  try {
+    await until(s, ["HUMAN_PENDING", "BLOCKED"]);
+    expect(s.engine.get(s.w.id).state).toBe("HUMAN_PENDING");
+    expect(owners).toEqual(["agy", "agy"]);
+    expect(s.store.get("repair_assignment", s.w.id)).toBeUndefined();
+  } finally {
+    await cleanup(s);
+  }
+});
+
+it("three plan self-check failures never count as quality remediation or change ownership", async () => {
+  const s = await fixture();
+  const base = runtime(s);
+  let failures = 0;
+  const owners: string[] = [];
+  s.engine.runtime = {
+    ...base,
+    async execute(w, run, token) {
+      owners.push(run.adapter);
+      if (run.purpose === "plan_self_check" && failures++ < 3)
+        throw new FlowError("PLAN_SELF_CHECK_INCOMPLETE", "缺少逐项证据");
+      await base.execute(w, run, token);
+    },
+  };
+  try {
+    await until(s, ["HUMAN_PENDING", "BLOCKED"]);
+    expect(s.engine.get(s.w.id).state).toBe("HUMAN_PENDING");
+    expect(failures).toBe(4);
+    expect(owners.every((owner) => owner === "agy")).toBe(true);
+    expect(s.engine.quality.getGate(s.w.id, "before_human")).toMatchObject({
+      executor_rejections: 0,
+      takeover: false,
+    });
+  } finally {
+    await cleanup(s);
+  }
+});
 
 it("repair feedback contains only the latest rejected delivery for the approved plan", async () => {
   const s = await fixture();

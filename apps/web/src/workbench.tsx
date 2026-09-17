@@ -86,7 +86,7 @@ export function DeliveryStrip({ detail }: { detail: any }) {
       {(leaf || native) && (
         <span className="metric-chip">
           <span className="chip-label">
-            {native ? "工作包已核验" : "验证完成"}
+            {native ? "工作包已交付" : "验证完成"}
           </span>
           <b className="chip-value">
             {verified}/{total}
@@ -96,7 +96,7 @@ export function DeliveryStrip({ detail }: { detail: any }) {
       {test?.total > 0 && (
         <span className="metric-chip">
           <span className="chip-label">
-            {native ? "计划用例已核验" : "已通过测试"}
+            {native ? "计划用例报告通过" : "已通过测试"}
           </span>
           <b className="chip-value">
             {test.passed}/{test.total}

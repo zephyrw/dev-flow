@@ -5,6 +5,12 @@ import {
 } from "./plan-self-check.js";
 import { bindProfile } from "./run-profile.js";
 import { QualityCoordinator } from "./quality-coordinator.js";
+import {
+  queueReviewCompletion,
+  reviewCompletionContext,
+  seedReviewCompletion,
+} from "./review-completion.js";
+import { z } from "zod";
 import { DocumentService } from "./document-service.js";
 import { AsideSessionService } from "../../asides/src/service.js";
 import { FunctionalIssueService } from "./functional-issues.js";
@@ -12,7 +18,10 @@ import { matchesCommand } from "../../evidence/src/command-match.js";
 import { workflowAttention } from "./attention.js";
 import { assertSelectedSource } from "./source-change.js";
 import { scheduleModelRetry } from "./model-retry.js";
+import { currentRunObservation } from "./run-observation.js";
 import { repairFailure, prepareRepairResume } from "./repair.js";
+import { normalizeRuntimeFailure } from "../../runtime/src/errors.js";
+import { runtimeFailureResolution } from "../../contracts/src/runtime-failure.js";
 import {
   latestEvidence,
   currentEvidence,
@@ -170,6 +179,8 @@ export class Engine {
     const tasks = this.taskStatus(key, false);
     return {
       workflow: w,
+      runtime: currentRunObservation(this.store, w),
+      human_accepted: this.displayHumanAccepted(key),
       attention: workflowAttention(this, key),
       loading: true,
       plan: plan
@@ -195,8 +206,10 @@ export class Engine {
       test_progress: testProgress(
         plan?.plan ?? null,
         [
-          ...this.store.list<Evidence>("evidence", key),
-          ...this.store.list<Evidence>("development_evidence", key),
+          ...(w.plan_revision ? this.displayEvidence(key) : []),
+          ...(plan?.plan.task_model === "native-v2"
+            ? []
+            : this.store.list<Evidence>("development_evidence", key)),
         ],
         w,
       ),
@@ -221,6 +234,8 @@ export class Engine {
     const w = this.get(key);
     return {
       workflow: w,
+      runtime: currentRunObservation(this.store, w),
+      human_accepted: this.displayHumanAccepted(key),
       attention: workflowAttention(this, key),
       executor_plan_check: this.planSelfCheck.current(key) ?? null,
       plan: w.plan_revision
@@ -238,13 +253,15 @@ export class Engine {
         : null,
       workspaces: this.store.list<Workspace>("workspace", key),
       runs: this.store.list<Run>("run", key),
-      evidence: this.store.list<Evidence>("evidence", key),
+      evidence: w.plan_revision ? this.displayEvidence(key) : [],
       tasks: this.taskStatus(key, verifyFiles),
       test_progress: testProgress(
         w.plan_revision ? this.plan(key).plan : null,
         [
-          ...this.store.list<Evidence>("evidence", key),
-          ...this.store.list<Evidence>("development_evidence", key),
+          ...(w.plan_revision ? this.displayEvidence(key) : []),
+          ...(w.plan_revision && this.plan(key).plan.task_model === "native-v2"
+            ? []
+            : this.store.list<Evidence>("development_evidence", key)),
         ],
         w,
       ),
@@ -257,7 +274,7 @@ export class Engine {
       events: (() => {
         const rows = this.store.db
           .prepare(
-            "SELECT data FROM events WHERE workflow_id=? AND json_extract(data, '$.type') NOT IN ('ServiceOutput','FixtureOutput','CheckOutput','BuildOutput','AgentEvent') ORDER BY seq DESC LIMIT 500",
+            "SELECT data FROM events WHERE workflow_id=? AND json_extract(data, '$.type') NOT IN ('ServiceOutput','FixtureOutput','CheckOutput','BuildOutput','AgentEvent','NativeActivity','RunObserved') ORDER BY seq DESC LIMIT 500",
           )
           .all(key)
           .map((row: any) => JSON.parse(row.data))
@@ -759,7 +776,11 @@ export class Engine {
     if (scope === "within_plan") this.assertProjectConfiguration(key);
     if (scope === "within_plan") prepareRepairResume(this, key);
     this.store.remove("model_retry", key);
-    this.store.remove("repair_state", key);
+    if (
+      scope !== "within_plan" ||
+      !runtimeFailureResolution(w.blocker?.code, w.blocker?.message)
+    )
+      this.store.remove("repair_state", key);
     this.invalidate(key, "用户反馈");
     const state = scope === "new_scope" ? "REPAIR_RESEARCH_REQUIRED" : "QUEUED";
     const next = this.transition(
@@ -2493,6 +2514,7 @@ export class Engine {
       }
       const selfCheck = !review && !!this.planSelfCheck.pending(w);
       if (!review) {
+        prepareRepairResume(this, key);
         const plan = this.plan(key);
         const approval = this.store.must<{ plan_hash: string }>(
           "approval",
@@ -2640,7 +2662,24 @@ export class Engine {
             this.get(key).run_id === runId &&
             this.get(key).state === "REVIEWING"
           )
-            await this.receiveReview(key, result);
+            try {
+              await this.receiveReview(key, result);
+            } catch (error) {
+              const incomplete =
+                error instanceof z.ZodError ||
+                (error instanceof FlowError &&
+                  [
+                    "REPAIR_PLAN_INCOMPLETE",
+                    "REVIEW_INCOMPLETE",
+                    "REVIEW_FILE_MISSING",
+                  ].includes(error.code));
+              if (
+                !incomplete ||
+                resolveTaskModel(this.plan(key).plan) !== "native-v2"
+              )
+                throw error;
+              queueReviewCompletion(this, w, result, error);
+            }
         } else {
           const stopGraceMs = Math.max(
             (this.config.timeouts.stop_seconds ?? 0) * 1000,
@@ -2733,6 +2772,7 @@ export class Engine {
           resolveTaskModel(this.plan(key).plan) === "native-v2"
         )
           await this.finalizeNativeDelivery(key, runId);
+        this.store.remove("transient_network_retry", key);
       } finally {
         clearInterval(timer);
         this.auth.revokeRun(runId);
@@ -2750,24 +2790,85 @@ export class Engine {
           "HUMAN_PENDING",
         ].includes(w.state);
       if (ownsRun && !review) {
-        const repair = await repairFailure(this, key, e, runId);
-        if (repair?.retry) {
+        const normalized = normalizeRuntimeFailure(e);
+        const errorCode =
+          normalized instanceof FlowError
+            ? normalized.code
+            : e instanceof FlowError
+              ? e.code
+              : "INTERNAL_FAILURE";
+        const errorText =
+          normalized instanceof FlowError
+            ? String(normalized.message) +
+              " " +
+              JSON.stringify(normalized.details ?? {})
+            : String(e);
+        const isTransientNetwork =
+          errorCode === "MODEL_CONNECTION_FAILED" ||
+          /bad record mac|local error:\s*tls:|streamGenerateContent.*(?:request failed|bad record mac)/i.test(
+            errorText,
+          );
+
+        const retryState = this.store.get<{ count: number; last_at: number }>(
+          "transient_network_retry",
+          key,
+        ) ?? { count: 0, last_at: 0 };
+
+        if (isTransientNetwork && retryState.count < 10) {
+          retryState.count += 1;
+          retryState.last_at = Date.now();
+          this.store.put("transient_network_retry", key, key, retryState);
           const current = this.get(key);
-          this.invalidate(key, "异常修复，交付证据需重验");
+          this.store.event(
+            key,
+            current.project_id,
+            "ModelRetryScheduled",
+            {
+              attempt: retryState.count,
+              max_attempts: 10,
+              code: "MODEL_CONNECTION_FAILED",
+              message: `检测到偶发模型网络连接异常（第 ${retryState.count}/10 次重试），代码与现场已保留，正在安排自动重试。`,
+            },
+            runId,
+          );
           this.transition(
             key,
             [current.state],
             "QUEUED",
-            this.store.get<any>("repair_assignment", key)?.planner
-              ? "planner_takeover"
-              : "auto_repair",
+            current.stage,
             {
-              feedback: [...current.feedback, repair.instructions],
+              feedback: current.feedback,
               blocker: undefined,
             },
           );
-          this.scheduler.enqueue(key, current.project_id);
-        } else if (!repair) this.block(key, e);
+          const delayMs = Math.min(
+            30000,
+            3000 * Math.pow(1.5, retryState.count - 1),
+          );
+          setTimeout(() => {
+            this.scheduler.enqueue(key, current.project_id);
+            void this.dispatch();
+          }, delayMs);
+        } else {
+          const repair = await repairFailure(this, key, e, runId);
+          if (repair?.retry) {
+            const current = this.get(key);
+            this.invalidate(key, "异常修复，交付证据需重验");
+            this.transition(
+              key,
+              [current.state],
+              "QUEUED",
+              this.store.get<any>("repair_assignment", key)?.planner
+                ? "planner_takeover"
+                : "auto_repair",
+              {
+                feedback: [...current.feedback, repair.instructions],
+                blocker: undefined,
+              },
+            );
+            this.scheduler.enqueue(key, current.project_id);
+          } else if (!repair) this.block(key, e);
+        }
       } else if (ownsRun || (!activated && ownsPreparation()))
         this.block(key, e);
       const run = this.store.get<Run>("run", runId);
@@ -2800,7 +2901,7 @@ export class Engine {
     }
   }
 
-  private async applyNativeRepairReview(w: Workflow, review: Review) {
+  private async prepareNativeRepairReview(w: Workflow, review: Review) {
     requireCondition(
       review.verdict === "findings" &&
         review.repair_plan &&
@@ -2879,6 +2980,36 @@ export class Engine {
             ).includes(p),
           ),
       );
+    requireCondition(
+      review.unresolved_questions.length === 0 &&
+        review.coverage.all_changed_files_reviewed &&
+        review.coverage.all_requirements_checked &&
+        review.coverage.upstream_downstream_checked &&
+        review.coverage.security_checked &&
+        review.coverage.tests_validity_checked,
+      "REPAIR_PLAN_INCOMPLETE",
+      "规划模型须完成全范围调查并解决未决问题后再派发整改",
+    );
+    return { quality, body, revision, withinScope };
+  }
+
+  private async applyNativeRepairReview(w: Workflow, review: Review) {
+    let prepared: Awaited<ReturnType<Engine["prepareNativeRepairReview"]>>;
+    try {
+      prepared = await this.prepareNativeRepairReview(w, review);
+    } catch (error) {
+      if (!(error instanceof FlowError) && !(error instanceof z.ZodError))
+        throw error;
+      throw new FlowError("REPAIR_PLAN_INCOMPLETE", error.message, 422);
+    }
+    requireCondition(
+      this.get(w.id).state === "REVIEWING" &&
+        this.get(w.id).run_id === w.run_id &&
+        !this.store.get("run_stop", w.run_id!),
+      "RUN_REVOKED",
+      "审查已停止，不能派发整改",
+    );
+    const { quality, body, revision, withinScope } = prepared;
     const decision = this.quality.evaluateReviewResult(w.id, quality);
     requireCondition(
       decision.action !== "retry_incomplete",
@@ -2913,6 +3044,10 @@ export class Engine {
     this.store.put("repair_assignment", w.id, w.id, {
       planner: decision.action === "takeover_by_planner",
       phase,
+      source: "quality_review",
+      source_review_id: quality.run_id,
+      plan_revision: next.plan_revision,
+      plan_hash: next.plan_hash,
     });
     this.store.put("plan_check_review_intent", w.id, w.id, { phase });
     if (phase === "after_human" && acceptance) {
@@ -2990,6 +3125,25 @@ export class Engine {
         f.disposition === "confirmed" &&
         ["introduced", "in_scope"].includes(f.relation_to_change),
     );
+    const completion = reviewCompletionContext(this, w);
+    for (const attempt of completion?.attempts ?? []) {
+      const earlier = (attempt.review as Partial<Review> | null)?.findings;
+      if (!Array.isArray(earlier)) continue;
+      requireCondition(
+        earlier
+          .filter(
+            (f) =>
+              f &&
+              typeof f === "object" &&
+              typeof f.id === "string" &&
+              f.disposition === "confirmed" &&
+              ["introduced", "in_scope"].includes(f.relation_to_change),
+          )
+          .every((f) => review.findings.some((current) => current.id === f.id)),
+        "REVIEW_INCOMPLETE",
+        "补全审查不能遗漏已确认问题；须逐项保留或提供明确的误报/范围外处置依据",
+      );
+    }
     if (
       review.verdict !== "pass" ||
       confirmed.length ||
@@ -3270,6 +3424,64 @@ export class Engine {
     }
     return this.get(key);
   }
+  async retryReview(key: string) {
+    await this.waitForIdle(key);
+    const w = this.get(key);
+    const run = w.run_id ? this.store.get<Run>("run", w.run_id) : undefined;
+    requireCondition(
+      w.state === "BLOCKED" &&
+        run &&
+        ["review", BEFORE_HUMAN_REVIEW_STAGE].includes(run.stage),
+      "INVALID_STATE",
+      "只能重试因复核中断的任务",
+    );
+    this.assertProjectConfiguration(key);
+    requireCondition(
+      this.store.get<{ plan_hash: string }>(
+        "approval",
+        `${key}-${w.plan_revision}`,
+      )?.plan_hash === w.plan_hash,
+      "PLAN_NOT_APPROVED",
+      "当前计划未获批准",
+    );
+    const snapshot = this.store.must<Snapshot>("snapshot", w.snapshot_id!);
+    requireCondition(
+      await this.git.matches(snapshot),
+      "SNAPSHOT_CHANGED",
+      "复核对象已变化，需重新交付与自查",
+    );
+    requireCondition(
+      this.get(key).version === w.version,
+      "RUN_REVOKED",
+      "任务状态已变化",
+    );
+    if (resolveTaskModel(this.plan(key).plan) === "native-v2")
+      this.planSelfCheck.assertPassed(w);
+    if (run.stage === "review")
+      requireCondition(
+        this.store.get("acceptance", key),
+        "ACCEPTANCE_REQUIRED",
+        "终审需要有效人工确认",
+      );
+    const previous =
+      reviewCompletionContext(this, w)?.attempts.at(-1)?.review ??
+      (w.review_request_id &&
+        this.store.get<Review>("review", w.review_request_id));
+    if (previous)
+      seedReviewCompletion(
+        this,
+        w,
+        previous,
+        w.blocker?.message ?? "继续未完成审查",
+      );
+    this.transition(key, ["BLOCKED"], "REVIEW_QUEUED", run.stage, {
+      blocker: undefined,
+    });
+    this.scheduler.enqueue(key, w.project_id);
+    void this.dispatch();
+    return this.get(key);
+  }
+
   async retryCommit(key: string) {
     const w = this.get(key);
     requireCondition(
@@ -3388,6 +3600,7 @@ export class Engine {
     }
   }
   block(key: string, error: unknown) {
+    error = normalizeRuntimeFailure(error);
     const w = this.get(key);
     if (
       [
@@ -3410,6 +3623,7 @@ export class Engine {
       run_id: w.run_id,
       message,
       next_action: "处理错误后继续这个任务",
+      ...(error instanceof FlowError ? { details: error.details } : {}),
     });
     this.transition(key, [w.state], "BLOCKED", "blocked", {
       blocker: {
@@ -3421,7 +3635,11 @@ export class Engine {
       scheduleModelRetry(
         this,
         key,
-        String((error.details as any)?.result?.error ?? ""),
+        String(
+          (error.details as any)?.result?.error ??
+            (error.details as any)?.diagnostic ??
+            "",
+        ),
       );
   }
   recover() {
@@ -3558,6 +3776,36 @@ export class Engine {
         join(root, "计划.md"),
         `${p.plan.markdown}\n\n## 开发进度\n\n${tasks}\n\n## 测试进度\n\n${tests}\n`,
       );
+  }
+  // Read-only presentation: keep runner case names in review evidence, but use
+  // the submitted plan scene IDs when counting the plan's displayed results.
+  displayEvidence(key: string): Evidence[] {
+    const evidence = this.getEvidence(key);
+    if (resolveTaskModel(this.plan(key).plan) !== "native-v2") return evidence;
+    const results = this.store.list<AcceptanceResult>("acceptance_result", key);
+    return evidence.map((e) => {
+      const source = results.find((r) => r.id === e.id);
+      const expected = this.plan(key).plan.tests.find((t) => t.id === e.test_id)
+        ?.expected_case_ids ?? [];
+      const cases = source
+        ? results.filter((r) =>
+            r.delivery_id === source.delivery_id && r.requirement_id === e.test_id,
+          ).map((r) => ({
+            id: expected.includes(r.scene_id) ? r.scene_id : r.case_id,
+            status: r.status,
+          }))
+        : [];
+      return { ...e, cases, case_ids: cases.map((c) => c.id) };
+    });
+  }
+  // Display an existing confirmation only; never infer it from workflow order.
+  displayHumanAccepted(key: string): boolean {
+    const w = this.get(key);
+    const acceptance = this.store.get<any>("acceptance", key);
+    return !!acceptance && !!w.snapshot_id &&
+      acceptance.snapshot_id === w.snapshot_id &&
+      acceptance.plan_revision === w.plan_revision &&
+      acceptance.environment_revision === w.environment_revision;
   }
   getEvidence(key: string): Evidence[] {
     const existing = this.store.list<Evidence>("evidence", key);

@@ -1,11 +1,16 @@
-import { ExecutionPanel } from "./execution-panel.js";
+import { ExecutionPanel, formatPathSummary } from "./execution-panel.js";
 import { TaskInteraction } from "./interactions.js";
+import {
+  RuntimeFailureNotice,
+  runtimeFailureForTask,
+} from "./components/RuntimeFailureNotice.js";
 import { DeliveryStrip, EnvironmentSummary } from "./workbench.js";
 import guideText from "../../../docs/guide/使用指南.md?raw";
 import { TaskTree, TestResults } from "./panels.js";
 import { useNativeProgress } from "./native-progress.js";
 import { CreateWorkflowModal } from "./components/CreateWorkflowModal.js";
 import { ToolModelDrawer } from "./components/ToolModelDrawer.js";
+import { CurrentRuntime } from "./components/CurrentRuntime.js";
 import { RequirementComposer } from "./components/RequirementComposer.js";
 import { SourceChangeDialog } from "./components/SourceChangeDialog.js";
 import {
@@ -24,7 +29,6 @@ import {
   userFacingLogs,
   mergeEvents,
   workflowProgress,
-  stages,
 } from "./logs.js";
 const labels: Record<string, string> = {
   RESEARCHING: "调研中",
@@ -1889,6 +1893,8 @@ function App() {
           !refreshTimer &&
           ![
             "AgentEvent",
+            "NativeActivity",
+            "RunObserved",
             "AgentDiagnostic",
             "CheckOutput",
             "BuildOutput",
@@ -1959,9 +1965,16 @@ function App() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
   const w = detail?.workflow.id === selected ? detail.workflow : undefined;
+  const runtimeResolution = w ? runtimeFailureForTask(detail) : undefined;
   // Old controllers may still be finishing an active run while the new UI is served.
-  const attention =
-    detail?.attention !== undefined
+  const attention = runtimeResolution
+    ? {
+        category: "error",
+        message: `${runtimeResolution.title}：${runtimeResolution.message}`,
+        action: "查看处理方法",
+        at: w.updated_at,
+      }
+    : detail?.attention !== undefined
       ? detail.attention
       : !w
         ? null
@@ -1999,7 +2012,10 @@ function App() {
                     action: "查看本机验证副本",
                   }
                 : null;
-  const progress = w ? workflowProgress(w, detail.events) : undefined;
+  const progress = w ? workflowProgress(w, detail.events, {
+    native: detail.plan?.plan?.task_model === "native-v2",
+    humanAccepted: detail.human_accepted,
+  }) : undefined;
   const timeline = w
     ? userFacingLogs(readableLogs(detail.events, selected), w.run_id)
     : [];
@@ -2205,6 +2221,7 @@ function App() {
               )}
             </div>
           </div>
+          {w && !showGuide && <CurrentRuntime detail={detail} connected={connected} />}
         </header>
         {updated && (
           <div className="update-banner">
@@ -2343,10 +2360,8 @@ function App() {
                   {progress && (
                     <div className="compact-progress" aria-label="当前执行进度">
                       <ol className="stage-track" aria-label={progress.title}>
-                        {stages.map((name, index) => {
-                          const isDone =
-                            progress.completed ||
-                            index < (progress.index ?? -1);
+                        {progress.stages.map((name, index) => {
+                          const isDone = progress.done[index];
                           const isCurrent =
                             !progress.completed && index === progress.index;
                           return (
@@ -2388,7 +2403,7 @@ function App() {
                             <span className="activity-text">
                               <b>{latest.title}</b>
                               {latest.text
-                                ? ` · ${(latest.command?.split(/\r?\n/, 1)[0] ?? latest.text).slice(0, 120).replace(/\s+/g, " ")}`
+                                ? ` · ${(latest.command?.split(/\r?\n/, 1)[0] ?? formatPathSummary(latest.text, 65)).replace(/\s+/g, " ")}`
                                 : ""}
                             </span>
                             <time>
@@ -2404,12 +2419,28 @@ function App() {
                               "RECOVERY_REQUIRED",
                               "COMMIT_PARTIAL",
                             ].includes(w.state) &&
+                              !runtimeResolution &&
                               attention?.category !== "source_change" && (
                                 <button
                                   className="btn-secondary"
                                   disabled={pending}
                                   onClick={() =>
                                     void attempt(async () => {
+                                      if (
+                                        w.state === "BLOCKED" &&
+                                        [
+                                          "REPAIR_PLAN_INCOMPLETE",
+                                          "REVIEW_COMPLETION_EXHAUSTED",
+                                          "REVIEW_INCOMPLETE",
+                                        ].includes(w.blocker?.code)
+                                      ) {
+                                        await api(
+                                          `/workflows/${selected}/review/retry`,
+                                          {},
+                                        );
+                                        await refresh();
+                                        return;
+                                      }
                                       await api(
                                         `/workflows/${selected}/browser/reconcile`,
                                         {},
@@ -2428,9 +2459,15 @@ function App() {
                                 >
                                   {w.state === "COMMIT_PARTIAL"
                                     ? "核实现场并重试原提交"
-                                    : w.blocker?.code === "MODEL_QUOTA"
-                                      ? "立即重试"
-                                      : "继续这个任务"}
+                                    : [
+                                          "REPAIR_PLAN_INCOMPLETE",
+                                          "REVIEW_COMPLETION_EXHAUSTED",
+                                          "REVIEW_INCOMPLETE",
+                                        ].includes(w.blocker?.code)
+                                      ? "继续生成整改计划"
+                                      : w.blocker?.code === "MODEL_QUOTA"
+                                        ? "立即重试"
+                                        : "继续这个任务"}
                                 </button>
                               )}
                             {attention?.category === "source_change" && (
@@ -2589,7 +2626,15 @@ function App() {
                               });
                             else if (attention.category === "acceptance")
                               setTab("environment");
-                            else toggleSidebar(true);
+                            else if (
+                              document.getElementById(`runtime-failure-${w.id}`)
+                            ) {
+                              const card = document.getElementById(
+                                `runtime-failure-${w.id}`,
+                              )!;
+                              card.scrollIntoView({ block: "nearest" });
+                              card.focus();
+                            } else toggleSidebar(true);
                           }}
                         >
                           {attention.action}
@@ -2597,6 +2642,12 @@ function App() {
                       </div>
                     )}
                 </div>
+                <RuntimeFailureNotice
+                  key={w.id}
+                  detail={detail}
+                  send={api}
+                  refresh={refresh}
+                />
                 <div className="workspace-columns">
                   {detail.loading ? (
                     <section className="panel" role="status">

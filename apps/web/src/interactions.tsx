@@ -17,7 +17,6 @@ export function TaskInteraction({
   const [text, setText] = useState(""),
     [pending, setPending] = useState(false),
     [error, setError] = useState(""),
-    [notice, setNotice] = useState(""),
     [isGuiding, setIsGuiding] = useState(false),
     [interactionMode, setInteractionMode] = useState<"feedback" | "aside">(
       "feedback",
@@ -27,20 +26,14 @@ export function TaskInteraction({
   const requests = (detail.operations ?? []).filter(
     (r: any) => r.status === "pending",
   );
-  const act = async (
-    fn: () => Promise<any>,
-    successMessage = "已保存，正在继续这个任务。",
-    propagateError = false,
-  ) => {
+  const act = async (fn: () => Promise<any>, propagateError = false) => {
     setPending(true);
     setError("");
-    setNotice("");
     try {
       await fn();
       setText("");
       await refresh();
       window.dispatchEvent(new Event("devflow-activity"));
-      setNotice(successMessage);
     } catch (e) {
       setError(String(e instanceof Error ? e.message : e));
       if (propagateError) throw e;
@@ -72,12 +65,7 @@ export function TaskInteraction({
         detail.attention?.category === "queue" && (
           <button
             disabled={pending}
-            onClick={() =>
-              void act(
-                () => send(`/workflows/${w.id}/stop`, {}),
-                "已暂停，到点后不会自动继续。",
-              )
-            }
+            onClick={() => void act(() => send(`/workflows/${w.id}/stop`, {}))}
           >
             暂停自动继续
           </button>
@@ -256,29 +244,25 @@ export function TaskInteraction({
                     : "提交提问"
               }
               onSubmit={async (submittedText, submittedRefs) => {
-                await act(
-                  async () => {
-                    if (interactionMode === "aside") {
-                      await send(`/workflows/${w.id}/asides`, {
-                        question: submittedText,
+                await act(async () => {
+                  if (interactionMode === "aside") {
+                    await send(`/workflows/${w.id}/asides`, {
+                      question: submittedText,
+                      refs: submittedRefs,
+                    });
+                  } else {
+                    await send(
+                      `/workflows/${w.id}/${w.state === "HUMAN_PENDING" && detail.plan?.plan?.task_model === "native-v2" ? "functional-issues" : "feedback"}`,
+                      {
+                        request_id: crypto.randomUUID(),
+                        text: submittedText,
                         refs: submittedRefs,
-                      });
-                    } else {
-                      await send(
-                        `/workflows/${w.id}/${w.state === "HUMAN_PENDING" && detail.plan?.plan?.task_model === "native-v2" ? "functional-issues" : "feedback"}`,
-                        {
-                          request_id: crypto.randomUUID(),
-                          text: submittedText,
-                          refs: submittedRefs,
-                          scope: "within_plan",
-                        },
-                      );
-                    }
-                    setIsGuiding(false);
-                  },
-                  "已保存，正在继续这个任务。",
-                  true,
-                );
+                        scope: "within_plan",
+                      },
+                    );
+                  }
+                  setIsGuiding(false);
+                }, true);
               }}
             />
 
@@ -303,7 +287,6 @@ export function TaskInteraction({
           {error}
         </p>
       )}
-      {notice && <p role="status">{notice}</p>}
       <WorkflowActivity workflow={w} refresh={refresh} />
       {detail.queue?.owners?.length > 0 && (
         <p>
