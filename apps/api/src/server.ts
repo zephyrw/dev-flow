@@ -35,6 +35,7 @@ import { ExecutionSpecService } from "../../../packages/core/src/execution-spec-
 import { FeedbackService } from "../../../packages/core/src/feedback-service.js";
 import { PlanReviewService } from "../../../packages/core/src/plan-review.js";
 import { SourceChangeService } from "../../../packages/core/src/source-change.js";
+import { listAttachmentRecords } from "../../../packages/evidence/src/archive-consumer.js";
 
 export async function buildServer(
   engine: Engine,
@@ -496,17 +497,10 @@ export async function buildServer(
     const currentIssue = issueService
       .listIssues(workflowId)
       .find((i) => i.issue_id === issueId);
-    const currentDelivery = engine.store
-      .list<any>("delivery_revision", workflowId)
-      .filter((r) => !r.invalidated)
-      .at(-1);
     requireCondition(
-      engine.get(workflowId).state === "HUMAN_PENDING" &&
-        currentIssue?.fix_delivery_id === currentDelivery?.id &&
-        (!body.delivery_revision_id ||
-          body.delivery_revision_id === currentDelivery.id),
-      "DELIVERY_STALE",
-      "只能复测当前有效修复交付",
+      engine.get(workflowId).state === "HUMAN_PENDING" && currentIssue,
+      "INVALID_STATE",
+      "只能在等待验收时确认功能问题",
       409,
     );
     const issue = issueService.userConfirmIssue(
@@ -552,6 +546,18 @@ export async function buildServer(
     return {
       ...detail,
       events: detail.events.map((e) => engine.store.publicEvent(e)),
+      attachment_status: listAttachmentRecords(engine.store, key),
+    };
+  });
+  app.get("/api/workflows/:id/attachments", async (req) => {
+    human(req);
+    const key = Id.parse((req.params as any).id);
+    engine.get(key);
+    const deliveryId = z
+      .object({ delivery_id: z.string().optional() })
+      .parse(req.query).delivery_id;
+    return {
+      attachment_status: listAttachmentRecords(engine.store, key, deliveryId),
     };
   });
   app.get("/api/workflows/:id/history", async (req) => {

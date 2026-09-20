@@ -1,6 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { atomicWrite } from "../../../core/src/util.js";
+import { nativeLaunchInstruction } from "./handoff.js";
 import { agyArguments, observeAgy } from "./session.js";
 import type {
   ProcessManager,
@@ -54,18 +55,19 @@ export class AgyNativeAdapter {
     mode: "full" | "resume";
     planRevision: number;
     packageHash: string;
+    directory: string;
     conversationId?: string;
   }): string {
-    const isResume = options.mode === "resume";
     return JSON.stringify({
       workflow_id: options.workflowId,
       run_id: options.runId,
       mode: options.mode,
       plan_revision: options.planRevision,
       package_hash: options.packageHash,
-      instruction: isResume
-        ? "会话恢复：请完整查看 handoff.json 中的全部反馈与 delivery_issues，核清全部已知问题根因，完成整批修复与测试代码后统一测试，再提交交付清单。"
-        : "原生执行模式：请先阅读工作包 HANDOFF.md 与 handoff.json。使用原生工具完成批准范围内全部实现和测试代码，再统一运行测试。所有必需验收场景通过后，通过 devflow_deliver 或交付清单文件完成交接。",
+      instruction: nativeLaunchInstruction(
+        options.directory,
+        options.mode === "resume" ? "resume" : "full",
+      ),
       execution_order: batchExecutionInstructions,
     });
   }

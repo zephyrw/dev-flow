@@ -3,6 +3,7 @@ import type { Run, Workflow } from "../../contracts/src/index.js";
 import type {
   RunActivity,
   RunObservation,
+  QuotaBucket,
 } from "../../contracts/src/run-observation.js";
 import { now, publicEvent } from "../../core/src/util.js";
 import { AgentTelemetry } from "./agent-telemetry.js";
@@ -63,10 +64,19 @@ export class RunTelemetry {
     observedAt: string,
     source: "native_session" | "native_event",
   ) {
-    if (this.closed) return;
+    if (this.closed || (this.observation.quota && Date.parse(this.observation.quota.observed_at) > Date.parse(observedAt))) return;
     const buckets = quotaBuckets(raw);
     if (!buckets.length) return;
     this.observation.quota = { source, observed_at: observedAt, buckets };
+    this.schedule();
+  }
+  accountQuota(buckets: QuotaBucket[], observedAt: string) {
+    if (this.closed || !buckets.length || (this.observation.quota && Date.parse(this.observation.quota.observed_at) > Date.parse(observedAt))) return;
+    this.observation.quota = {
+      source: "account_api",
+      observed_at: observedAt,
+      buckets,
+    };
     this.schedule();
   }
   private activity(item: RunActivity, publish: boolean) {
@@ -195,28 +205,33 @@ export class RunTelemetry {
     if (!this.dirty && !this.pending.size) return;
     this.observation.updated_at = now();
     const snapshot = publicEvent(this.observation);
+    const publish = this.run.purpose !== "aside";
     this.store.transaction(() => {
-      for (const activity of this.pending.values())
-        this.store.event(
-          this.workflow.id,
-          this.workflow.project_id,
-          "NativeActivity",
-          activity,
-          this.run.id,
-        );
+      if (publish) {
+        for (const activity of this.pending.values())
+          this.store.event(
+            this.workflow.id,
+            this.workflow.project_id,
+            "NativeActivity",
+            activity,
+            this.run.id,
+          );
+      }
       this.store.put(
         "run_observation",
         this.run.id,
         this.workflow.id,
         snapshot,
       );
-      this.store.event(
-        this.workflow.id,
-        this.workflow.project_id,
-        "RunObserved",
-        snapshot,
-        this.run.id,
-      );
+      if (publish) {
+        this.store.event(
+          this.workflow.id,
+          this.workflow.project_id,
+          "RunObserved",
+          snapshot,
+          this.run.id,
+        );
+      }
     });
     this.pending.clear();
     this.dirty = false;

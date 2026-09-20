@@ -7,8 +7,17 @@ import { LocalRuntime } from "../../packages/runtime/src/runtime.js";
 import { objectHash, hash, atomicWrite } from "../../packages/core/src/util.js";
 import { git } from "../../packages/git/src/git.js";
 import { buildServer } from "../../apps/api/src/server.js";
-import type { Workflow, Run } from "../../packages/contracts/src/index.js";
+import type {
+  Workflow,
+  Run,
+  MergeConflictRequest,
+} from "../../packages/contracts/src/index.js";
 import { seedSourceChange } from "../fixtures/source-change.js";
+import {
+  attachmentArchiveKey,
+  createArchiveJobFromManifest,
+  drainArchiveOutbox,
+} from "../../packages/evidence/src/archive-consumer.js";
 const s = setup();
 s.config.server.port = 14811;
 s.config.server.human_origin = "http://localhost:14811";
@@ -74,11 +83,17 @@ s.store.put("tool_profile", "profile-codex", "global", {
   options: { prefixArgs: [resolve("tests/fixtures/native-cli.mjs")] },
 });
 const stopped = new Set<string>();
+const feedbackExecutions = new Map<string, () => void>();
 // Only this test entrypoint injects a deterministic adapter. The production server has no switch for it.
 engine.runtime = {
   plan: (w, r) => runtime.plan(w, r),
   aside: (w, r, q) => runtime.aside(w, r, q),
   async execute(flow: Workflow, run: Run, token: string) {
+    if (s.store.get("feedback_fixture", flow.id)) {
+      s.store.event(flow.id, flow.project_id, "FixtureExecutionDispatched", { purpose: run.purpose }, run.id);
+      await new Promise<void>((done) => feedbackExecutions.set(run.id, done));
+      return;
+    }
     if (engine.plan(flow.id).plan.task_model === "native-v2")
       return runtime.execute(flow, run, token);
     const principal = engine.auth.verify(token);
@@ -111,7 +126,16 @@ engine.runtime = {
     await engine.freeze(flow.id, principal);
     await runtime.check(engine.get(flow.id), "UT01", principal);
   },
+  async resolveMergeConflict(
+    flow: Workflow,
+    run: Run,
+    request: MergeConflictRequest,
+  ) {
+    return runtime.resolveMergeConflict(flow, run, request);
+  },
   async review(flow: Workflow, run: Run) {
+    if (s.store.get("feedback_fixture", flow.id))
+      throw new Error("功能反馈不应重新派发审查");
     if (engine.plan(flow.id).plan.task_model === "native-v2")
       return runtime.review(flow, run);
     return {
@@ -137,6 +161,8 @@ engine.runtime = {
   },
   async stop(run: string) {
     stopped.add(run);
+    feedbackExecutions.get(run)?.();
+    feedbackExecutions.delete(run);
     await runtime.stop(run);
   },
   check: (flow, test, principal) => runtime.check(flow, test, principal),
@@ -162,6 +188,76 @@ app.post("/__fixture/source-change", async (request, reply) => {
   if ((request.body as { token?: string })?.token !== shutdownToken)
     return reply.code(403).send({ ok: false });
   return seedSourceChange(engine, s.root);
+});
+app.post("/__fixture/attachments", async (request, reply) => {
+  if ((request.body as { token?: string })?.token !== shutdownToken)
+    return reply.code(403).send({ ok: false });
+  const suffix = crypto.randomUUID();
+  const isolated = await repository(s.root, "attachments-" + suffix);
+  const attachmentProject = { ...project(isolated.repo), id: "attachments-" + suffix, name: "附件异步归档回归" };
+  await engine.registerProject(attachmentProject);
+  const flow = engine.create({ project_id: attachmentProject.id, title: "附件异步状态刷新", request: "展示附件状态", complexity: "simple", workspace_mode: "existing_workspace" }, "attachments-" + suffix);
+  const attachmentPlan = plan(objectHash(attachmentProject), isolated.baseline);
+  attachmentPlan.task_model = "native-v2";
+  engine.submitPlan(flow.id, attachmentPlan, flow.version, "attachment-plan");
+  engine.transition(flow.id, [engine.get(flow.id).state], "HUMAN_PENDING", "manual_acceptance");
+  s.store.put("workspace", "ws-" + flow.id, flow.id, {
+    id: "ws-" + flow.id, workflow_id: flow.id, repo_id: "main", root: isolated.repo,
+    common_dir: join(isolated.repo, ".git"), branch: "task/fixture", baseline: isolated.baseline, owned: false,
+  });
+  mkdirSync(join(isolated.repo, ".reports"), { recursive: true });
+  writeFileSync(join(isolated.repo, ".reports", "async.json"), '{"owner":"' + flow.id + '"}');
+  const deliveryId = "attachment-del-" + suffix;
+  const manifest = { artifacts: [".reports/async.json", ".reports/missing.json", { path: { bad: true } }] };
+  s.store.put("delivery", deliveryId, flow.id, {
+    id: deliveryId, workflow_id: flow.id, run_id: "attachment-run-" + suffix,
+    plan_revision: 1, plan_hash: engine.get(flow.id).plan_hash, status: "passed", submitted_at: new Date().toISOString(), manifest,
+    attachment_status: [{ delivery_id: deliveryId, repo_id: "main", path: { bad: true }, state: "pending" }],
+  });
+  for (const path of [".reports/async.json", ".reports/missing.json"])
+    s.store.put("attachment_archive", attachmentArchiveKey(deliveryId, "main", path), flow.id,
+      { delivery_id: deliveryId, repo_id: "main", path, state: "pending" });
+  return { workflow_id: flow.id, delivery_id: deliveryId };
+});
+app.post("/__fixture/attachments/drain", async (request, reply) => {
+  const input = request.body as { token?: string; workflow_id: string; delivery_id: string };
+  if (input.token !== shutdownToken) return reply.code(403).send({ ok: false });
+  const delivery = s.store.get<any>("delivery", input.delivery_id);
+  if (!delivery || delivery.workflow_id !== input.workflow_id) return reply.code(404).send({ ok: false });
+  createArchiveJobFromManifest(s.store, { deliveryId: delivery.id, workflowId: delivery.workflow_id, runId: delivery.run_id, manifest: delivery.manifest });
+  void drainArchiveOutbox(s.store, { storageRoot: s.config.storage_root });
+  return { ok: true };
+});
+app.post("/__fixture/feedback", async (request, reply) => {
+  if ((request.body as { token?: string })?.token !== shutdownToken)
+    return reply.code(403).send({ ok: false });
+  const suffix = crypto.randomUUID();
+  const isolated = await repository(s.root, "feedback-" + suffix);
+  const feedbackProject = { ...project(isolated.repo), id: "feedback-" + suffix, name: "人工反馈回归" };
+  await engine.registerProject(feedbackProject);
+  const flow = engine.create({ project_id: feedbackProject.id, title: "完成审查后反馈功能问题", request: "根据人工反馈修复功能", complexity: "simple", workspace_mode: "existing_workspace" }, "feedback-" + suffix);
+  const approvedPlan = plan(objectHash(feedbackProject), isolated.baseline);
+  approvedPlan.task_model = "native-v2";
+  engine.submitPlan(flow.id, approvedPlan, flow.version, "feedback-plan");
+  const current = engine.get(flow.id);
+  s.store.put("approval", flow.id + "-1", flow.id, { plan_hash: current.plan_hash, revision: 1, approved_at: new Date().toISOString() });
+  const reviewId = "completed-review-" + suffix;
+  s.store.put("run", reviewId, flow.id, {
+    id: reviewId, workflow_id: flow.id, plan_revision: 1, adapter: "codex", protocol: "lightweight",
+    purpose: "quality_review", stage: "quality_before_human", status: "completed", exit_code: 0,
+    started_at: new Date().toISOString(), ended_at: new Date().toISOString(), package_hash: "fixture",
+  });
+  s.store.put("plan_check_review_intent", flow.id, flow.id, { phase: "before_human", review_run_id: reviewId });
+  s.store.put("feedback_fixture", flow.id, flow.id, { seeded_review_run_id: reviewId });
+  engine.transition(flow.id, [current.state], "HUMAN_PENDING", "manual_acceptance", { run_id: reviewId });
+  return { workflow_id: flow.id, review_run_id: reviewId };
+});
+app.post("/__fixture/feedback/stop", async (request, reply) => {
+  const input = request.body as { token?: string; workflow_id: string };
+  if (input.token !== shutdownToken) return reply.code(403).send({ ok: false });
+  if (!s.store.get("feedback_fixture", input.workflow_id)) return reply.code(404).send({ ok: false });
+  await engine.stop(input.workflow_id, "local_console");
+  return { ok: true };
 });
 app.post("/__fixture/shutdown", async (request, reply) => {
   if ((request.body as { token?: string })?.token !== shutdownToken)

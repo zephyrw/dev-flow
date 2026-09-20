@@ -175,7 +175,7 @@ export function quotaBuckets(raw: any): QuotaBucket[] {
       ];
     });
     return windows.length
-      ? [{ id, label: str(value.limit_name ?? value.limitName), windows }]
+      ? [{ id, label: str(value.limit_name ?? value.limitName), model: str(value.normalModelSlug), windows }]
       : [];
   });
 }

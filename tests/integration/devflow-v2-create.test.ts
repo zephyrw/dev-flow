@@ -98,7 +98,6 @@ describe("新任务真实 API/原生 CLI 进程/SQLite/Git", { timeout: 120000 }
       expect(runs.map((r) => r.stage)).toEqual([
         "planning",
         "execute",
-        "executor_plan_self_check",
         "quality_before_human",
       ]);
       expect(

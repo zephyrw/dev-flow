@@ -1,5 +1,10 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { WorkflowActivity } from "./components/WorkflowActivity.js";
+import {
+  AsideHistoryDialog,
+  readAsides,
+  upsertAside,
+} from "./components/AsideHistoryDialog.js";
 import {
   RequirementComposer,
   type ReferenceItem,
@@ -17,12 +22,52 @@ export function TaskInteraction({
   const [text, setText] = useState(""),
     [pending, setPending] = useState(false),
     [error, setError] = useState(""),
-    [isGuiding, setIsGuiding] = useState(false),
+    [isGuiding, setIsGuiding] = useState(() =>
+      waitingForUserInput(detail.workflow),
+    ),
+    [showAsideHistory, setShowAsideHistory] = useState(false),
+    [asides, setAsides] = useState<any[]>([]),
+    [asideTick, setAsideTick] = useState(0),
     [interactionMode, setInteractionMode] = useState<"feedback" | "aside">(
       "feedback",
     );
 
   const w = detail.workflow;
+  const watchingAsides = isGuiding || showAsideHistory;
+  useEffect(() => {
+    if (waitingForUserInput(w)) setIsGuiding(true);
+  }, [w.id, w.state, w.blocker?.code]);
+  useEffect(() => {
+    const open = () => setIsGuiding(true);
+    window.addEventListener("devflow-open-guidance", open);
+    return () => window.removeEventListener("devflow-open-guidance", open);
+  }, []);
+  useEffect(() => {
+    if (!watchingAsides) return;
+    const abort = new AbortController();
+    readAsides(w.id, abort.signal)
+      .then((list) => {
+        if (!abort.signal.aborted) {
+          setAsides(list);
+          setError("");
+        }
+      })
+      .catch((e) => {
+        if (!abort.signal.aborted)
+          setError(String(e instanceof Error ? e.message : e));
+      });
+    return () => abort.abort();
+  }, [w.id, w.version, watchingAsides, asideTick, interactionMode]);
+  useEffect(() => {
+    if (!watchingAsides) return;
+    if (
+      !showAsideHistory &&
+      !asides.some((a) => ["active", "queued"].includes(a.status))
+    )
+      return;
+    const timer = setTimeout(() => setAsideTick((t) => t + 1), 2000);
+    return () => clearTimeout(timer);
+  }, [watchingAsides, showAsideHistory, asides, asideTick]);
   const requests = (detail.operations ?? []).filter(
     (r: any) => r.status === "pending",
   );
@@ -59,7 +104,7 @@ export function TaskInteraction({
   if (!requests.length && !canGuide)
     return <WorkflowActivity workflow={w} refresh={refresh} />;
   return (
-    <section className="task-interaction" aria-label="指导执行模型">
+    <section className="task-interaction" aria-label="指导或提问">
       {w.state === "BLOCKED" &&
         w.blocker?.code === "MODEL_QUOTA" &&
         detail.attention?.category === "queue" && (
@@ -162,124 +207,47 @@ export function TaskInteraction({
               className="btn-guidance-trigger"
               onClick={() => setIsGuiding(true)}
             >
-              给执行模型补充指导
+              指导或提问
             </button>
           </div>
         ) : (
-          <div
-            className="guidance-form"
-            style={{ display: "flex", flexDirection: "column", gap: "8px" }}
-          >
-            <div
-              style={{
-                display: "flex",
-                gap: "12px",
-                fontSize: "12px",
-                borderBottom: "1px solid var(--color-border, #d0d7de)",
-                paddingBottom: "4px",
-              }}
-            >
-              <label
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "4px",
-                  cursor: "pointer",
-                  fontWeight: interactionMode === "feedback" ? 600 : 400,
-                }}
-              >
-                <input
-                  type="radio"
-                  name="interactionMode"
-                  value="feedback"
-                  checked={interactionMode === "feedback"}
-                  onChange={() => setInteractionMode("feedback")}
-                />
-                反馈并调整
-              </label>
-              <label
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "4px",
-                  cursor: "pointer",
-                  fontWeight: interactionMode === "aside" ? 600 : 400,
-                }}
-              >
-                <input
-                  type="radio"
-                  name="interactionMode"
-                  value="aside"
-                  checked={interactionMode === "aside"}
-                  onChange={() => setInteractionMode("aside")}
-                />
-                临时提问 (/btw 只读)
-              </label>
-            </div>
-
-            <RequirementComposer
-              fetchReferences={async (query) => {
-                const response = await fetch(
-                  "/api/workspaces/references?workflow_id=" +
-                    encodeURIComponent(w.id) +
-                    "&query=" +
-                    encodeURIComponent(query),
+          <GuidanceComposer
+            detail={detail}
+            pending={pending}
+            interactionMode={interactionMode}
+            setInteractionMode={setInteractionMode}
+            onClose={() => setIsGuiding(false)}
+            onOpenHistory={() => setShowAsideHistory(true)}
+            hasAsideHistory={asides.length > 0}
+            onSubmit={async (submittedText, submittedRefs) => {
+              await act(async () => {
+                if (interactionMode === "aside") {
+                  const created = await send(`/workflows/${w.id}/asides`, {
+                    question: submittedText,
+                    refs: submittedRefs,
+                  });
+                  setAsides((list) => upsertAside(list, created));
+                  setShowAsideHistory(true);
+                  return;
+                }
+                await send(
+                  `/workflows/${w.id}/${w.state === "HUMAN_PENDING" && detail.plan?.plan?.task_model === "native-v2" ? "functional-issues" : "feedback"}`,
+                  {
+                    request_id: crypto.randomUUID(),
+                    text: submittedText,
+                    refs: submittedRefs,
+                    scope: "within_plan",
+                    interrupt_requested: [
+                      "EXECUTING",
+                      "VERIFYING",
+                      "QUEUED",
+                    ].includes(w.state),
+                  },
                 );
-                if (!response.ok) throw new Error("无法读取工作区引用");
-                return (await response.json()).items;
-              }}
-              placeholder={
-                interactionMode === "feedback"
-                  ? "输入指导或调整内容... 输入 @ 引用文件或目录"
-                  : "向模型提出只读问题 (/btw)... 输入 @ 引用文件或目录"
-              }
-              disabled={pending}
-              submitLabel={
-                interactionMode === "feedback"
-                  ? pending
-                    ? "正在交接…"
-                    : "发送指导并继续"
-                  : pending
-                    ? "正在提问…"
-                    : "提交提问"
-              }
-              onSubmit={async (submittedText, submittedRefs) => {
-                await act(async () => {
-                  if (interactionMode === "aside") {
-                    await send(`/workflows/${w.id}/asides`, {
-                      question: submittedText,
-                      refs: submittedRefs,
-                    });
-                  } else {
-                    await send(
-                      `/workflows/${w.id}/${w.state === "HUMAN_PENDING" && detail.plan?.plan?.task_model === "native-v2" ? "functional-issues" : "feedback"}`,
-                      {
-                        request_id: crypto.randomUUID(),
-                        text: submittedText,
-                        refs: submittedRefs,
-                        scope: "within_plan",
-                      },
-                    );
-                  }
-                  setIsGuiding(false);
-                }, true);
-              }}
-            />
-
-            <div style={{ display: "flex", justifyContent: "flex-start" }}>
-              <button
-                type="button"
-                className="btn-secondary"
-                disabled={pending}
-                onClick={() => {
-                  setIsGuiding(false);
-                }}
-                style={{ fontSize: "11px", padding: "2px 8px" }}
-              >
-                收起指导
-              </button>
-            </div>
-          </div>
+                setIsGuiding(false);
+              }, true);
+            }}
+          />
         ))}
 
       {error && (
@@ -296,6 +264,120 @@ export function TaskInteraction({
             .join("、")}
         </p>
       )}
+      {showAsideHistory && asides.length > 0 && (
+        <AsideHistoryDialog
+          workflow={w}
+          asides={asides}
+          refresh={refresh}
+          onClose={() => setShowAsideHistory(false)}
+        />
+      )}
     </section>
+  );
+}
+
+function waitingForUserInput(workflow: any) {
+  return (
+    workflow.state === "WAITING_INPUT" &&
+    ["NEED_USER", "REVIEW_NEEDS_USER"].includes(workflow.blocker?.code)
+  );
+}
+
+function GuidanceComposer({
+  detail,
+  pending,
+  interactionMode,
+  setInteractionMode,
+  onClose,
+  onOpenHistory,
+  hasAsideHistory,
+  onSubmit,
+}: {
+  detail: any;
+  pending: boolean;
+  interactionMode: "feedback" | "aside";
+  setInteractionMode: (mode: "feedback" | "aside") => void;
+  onClose: () => void;
+  onOpenHistory: () => void;
+  hasAsideHistory: boolean;
+  onSubmit: (text: string, refs: ReferenceItem[]) => Promise<void>;
+}) {
+  const w = detail.workflow;
+  return (
+    <div className="guidance-form">
+      <div className="guidance-form-header">
+        <div className="guidance-mode-tabs" role="radiogroup" aria-label="输入方式">
+          <label className={interactionMode === "feedback" ? "active" : ""}>
+            <input
+              type="radio"
+              name="interactionMode"
+              value="feedback"
+              checked={interactionMode === "feedback"}
+              onChange={() => setInteractionMode("feedback")}
+            />
+            反馈并调整
+          </label>
+          <label className={interactionMode === "aside" ? "active" : ""}>
+            <input
+              type="radio"
+              name="interactionMode"
+              value="aside"
+              checked={interactionMode === "aside"}
+              onChange={() => setInteractionMode("aside")}
+            />
+            临时提问
+          </label>
+        </div>
+        <button
+          type="button"
+          className="btn-composer-close"
+          aria-label="关闭输入框"
+          disabled={pending}
+          onClick={onClose}
+        >
+          ×
+        </button>
+      </div>
+      <RequirementComposer
+        fetchReferences={async (query) => {
+          const response = await fetch(
+            "/api/workspaces/references?workflow_id=" +
+              encodeURIComponent(w.id) +
+              "&query=" +
+              encodeURIComponent(query),
+          );
+          if (!response.ok) throw new Error("无法读取工作区引用");
+          return (await response.json()).items;
+        }}
+        placeholder={
+          interactionMode === "feedback"
+            ? "输入指导或调整内容，Enter 发送，Shift+Enter 换行。输入 @ 引用文件或目录"
+            : "向模型提出只读问题，Enter 发送，Shift+Enter 换行。输入 @ 引用文件或目录"
+        }
+        disabled={pending}
+        submitLabel={
+          interactionMode === "feedback"
+            ? pending
+              ? "正在交接…"
+              : "发送指导并继续"
+            : pending
+              ? "正在提问…"
+              : "提交提问"
+        }
+        extraActions={
+          interactionMode === "aside" && hasAsideHistory ? (
+            <button
+              type="button"
+              className="btn-secondary"
+              disabled={pending}
+              onClick={onOpenHistory}
+            >
+              历史提问
+            </button>
+          ) : null
+        }
+        onSubmit={onSubmit}
+      />
+    </div>
   );
 }

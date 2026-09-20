@@ -16,6 +16,7 @@ export interface RequirementComposerProps {
   initialText?: string;
   submitLabel?: string;
   fetchReferences?: (query: string) => Promise<ReferenceItem[]>;
+  extraActions?: React.ReactNode;
 }
 
 export function RequirementComposer({
@@ -25,6 +26,7 @@ export function RequirementComposer({
   initialText = "",
   submitLabel = "提交",
   fetchReferences,
+  extraActions,
 }: RequirementComposerProps) {
   const [text, setText] = useState(initialText);
   const [refs, setRefs] = useState<ReferenceItem[]>([]);
@@ -146,7 +148,7 @@ export function RequirementComposer({
   );
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (isComposing) return; // 中文输入法组合期间不干扰键盘事件
+    if (isComposing || e.nativeEvent.isComposing) return;
 
     if (showPopup && candidates.length > 0) {
       if (e.key === "ArrowDown") {
@@ -175,7 +177,7 @@ export function RequirementComposer({
       }
     }
 
-    if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+    if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleFinalSubmit();
     }
@@ -350,26 +352,15 @@ export function RequirementComposer({
           )}
       </div>
 
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "flex-end",
-          marginTop: "6px",
-        }}
-      >
+      <div className="composer-actions">
+        {extraActions}
         <button
           type="button"
           onClick={handleFinalSubmit}
-          disabled={disabled || !text.trim()}
+          disabled={disabled || submitting || !text.trim()}
           className="btn btn-primary btn-sm"
-          style={{
-            padding: "4px 12px",
-            fontSize: "12px",
-            borderRadius: "4px",
-            cursor: disabled || !text.trim() ? "not-allowed" : "pointer",
-          }}
         >
-          {submitLabel} (Ctrl+Enter)
+          {submitLabel}
         </button>
       </div>
     </div>

@@ -1,6 +1,11 @@
 import type { Store } from "../../store/src/store.js";
 import type { Config } from "../../contracts/src/config.js";
-import { requireCondition, type Run } from "../../contracts/src/index.js";
+import {
+  requireCondition,
+  resolveTaskModel,
+  type Plan,
+  type Run,
+} from "../../contracts/src/index.js";
 import {
   ExecutionSpecSchema,
   SupportedAdapters,
@@ -93,4 +98,9 @@ export function profileForRun(store: Store, run: Run): ToolProfile {
     );
   }
   return ToolProfileSchema.parse(run.profile);
+}
+export function isLegacyProtocol(run?: Pick<Run, "protocol"> | null, plan?: Plan) {
+  if (run?.protocol === "lightweight") return false;
+  if (run?.protocol === "legacy") return true;
+  return plan ? resolveTaskModel(plan) !== "native-v2" : false;
 }

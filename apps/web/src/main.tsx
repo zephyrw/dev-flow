@@ -11,6 +11,7 @@ import { useNativeProgress } from "./native-progress.js";
 import { CreateWorkflowModal } from "./components/CreateWorkflowModal.js";
 import { ToolModelDrawer } from "./components/ToolModelDrawer.js";
 import { CurrentRuntime } from "./components/CurrentRuntime.js";
+import { useEventCatchup } from "./use-event-catchup.js";
 import { RequirementComposer } from "./components/RequirementComposer.js";
 import { SourceChangeDialog } from "./components/SourceChangeDialog.js";
 import {
@@ -39,10 +40,10 @@ const labels: Record<string, string> = {
   PLAN_PENDING: "等待计划批准",
   QUEUED: "排队中",
   EXECUTING: "实施中",
-  VERIFYING: "自动测试",
+  VERIFYING: "交接审查",
   HUMAN_PENDING: "等待你的验收",
-  REVIEW_QUEUED: "等待独立复核",
-  REVIEWING: "独立复核中",
+  REVIEW_QUEUED: "等待代码审查",
+  REVIEWING: "代码审查中",
   REPAIR_PLAN_PENDING: "等待修复计划批准",
   REPAIR_RESEARCH_REQUIRED: "需要补充调研",
   COMMITTING: "提交中",
@@ -1924,6 +1925,14 @@ function App() {
       ws?.close();
     };
   }, [selected]);
+  useEventCatchup(selected, !!detail && !Object.hasOwn(detail, "runtime"), api, (events) => {
+    setDetail((previous: any) => {
+      if (previous?.workflow.id !== selected) return previous;
+      const next = { ...previous, events: mergeEvents(selected, previous.events, events) };
+      detailCache.current.set(selected, next);
+      return next;
+    });
+  });
   const approve = async (action: "approve" | "accept") => {
     const viewed = detail?.workflow;
     if (!viewed || viewed.id !== selected)
@@ -1974,6 +1983,19 @@ function App() {
         action: "查看处理方法",
         at: w.updated_at,
       }
+    : w && ["STOPPED", "STOPPING"].includes(w.state)
+      ? {
+          category: "paused" as const,
+          message:
+            w.state === "STOPPING"
+              ? "正在暂停执行"
+              : w.blocker?.code === "MODEL_QUOTA" ||
+                  detail.attention?.category === "queue"
+                ? "已暂停，到点后不会自动继续。"
+                : "执行已暂停，等待处理",
+          action: "查看执行过程",
+          at: w.updated_at,
+        }
     : detail?.attention !== undefined
       ? detail.attention
       : !w
@@ -2464,7 +2486,7 @@ function App() {
                                           "REVIEW_COMPLETION_EXHAUSTED",
                                           "REVIEW_INCOMPLETE",
                                         ].includes(w.blocker?.code)
-                                      ? "继续生成整改计划"
+                                      ? "继续审查"
                                       : w.blocker?.code === "MODEL_QUOTA"
                                         ? "立即重试"
                                         : "继续这个任务"}
@@ -2626,7 +2648,12 @@ function App() {
                               });
                             else if (attention.category === "acceptance")
                               setTab("environment");
-                            else if (
+                            else if (attention.category === "guidance") {
+                              toggleSidebar(true);
+                              window.dispatchEvent(
+                                new Event("devflow-open-guidance"),
+                              );
+                            } else if (
                               document.getElementById(`runtime-failure-${w.id}`)
                             ) {
                               const card = document.getElementById(

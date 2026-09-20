@@ -157,11 +157,13 @@ test.describe("Run Deadline and Pause Display", () => {
     await expect(page.getByLabel("开发完成进度")).toHaveAttribute("value", "0");
     await expect(page.getByLabel("测试通过进度")).toHaveAttribute("value", "0");
 
-    await expect(page.locator("body")).toContainText("执行暂停");
-    await expect(page.locator("body")).toContainText("达到配置时限");
+    await expect(
+      page.getByRole("heading", { name: "运行达到时限" }),
+    ).toBeVisible();
+    await expect(page.locator("body")).toContainText("现有修改与日志已保留");
 
     await expect(
-      page.getByRole("button", { name: "继续这个任务", exact: true }),
+      page.getByRole("button", { name: "已处理，继续原任务", exact: true }),
     ).toBeVisible();
 
     expect(resumeCalled).toBe(false);

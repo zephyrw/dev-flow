@@ -391,7 +391,7 @@ test("guidance remains available in a recovered task and is sent without startin
   await page.goto("/?workflow=" + w.id);
   await page.getByRole("button", { name: "执行过程", exact: true }).click();
   await page
-    .getByRole("button", { name: "给执行模型补充指导", exact: true })
+    .getByRole("button", { name: "指导或提问", exact: true })
     .click();
   await page
     .locator(".guidance-form textarea")

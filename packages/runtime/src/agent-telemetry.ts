@@ -79,7 +79,7 @@ export class AgentTelemetry {
     this.timer = undefined;
     const events = [...this.events.values()];
     this.events.clear();
-    if (events.length)
+    if (events.length && !this.run.startsWith("aside-run"))
       this.store.transaction(() => {
         for (const event of events)
           this.store.event(

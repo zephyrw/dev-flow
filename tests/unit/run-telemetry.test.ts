@@ -5,6 +5,7 @@ import { setup } from "../helpers.js";
 import { RunTelemetry } from "../../packages/runtime/src/run-telemetry.js";
 import { CodexSessionObserver } from "../../packages/runtime/src/codex-session-observer.js";
 import { quotaBuckets } from "../../packages/runtime/src/native-activity.js";
+import { storedNativeRecord } from "../../packages/runtime/src/stored-native-record.js";
 import {
   readableLogs,
   mergeEvents,
@@ -41,6 +42,22 @@ function fixture(adapter: "codex" | "agy" = "codex") {
   s.store.put("run", run.id, w.id, run);
   return { ...s, w, run, telemetry: new RunTelemetry(s.store, w, run) };
 }
+
+it("a corrupted legacy command output cannot hide later tools or keep a completed tool active", () => {
+  const s = fixture();
+  try {
+    s.telemetry.accept({type:"item.started",item:{id:"item_1",type:"command_execution",command:"pnpm test"}});
+    const raw = storedNativeRecord('{"type":"item.completed","item":{"id":"item_1","type":"command_execution","aggregated_output":"broken "redaction","exit_code":0,"status":"completed"}}');
+    s.telemetry.accept(raw);
+    s.telemetry.accept(storedNativeRecord('{"type":"item.completed","item":{"id":"item_2","type":"file_change","changes":[{"path":"src/next.ts"}]}}'));
+    s.telemetry.flush();
+    const logs=readableLogs(s.store.events("w",0,1000),"w");
+    expect(logs[0]).toMatchObject({command:"pnpm test",status:"done"});
+    expect(logs[1]?.text).toBe("src/next.ts");
+    expect(s.telemetry.observation.active_tools).toBe(0);
+    expect(storedNativeRecord('private reasoning')).toBeUndefined();
+  } finally { s.telemetry.finish(); s.store.close(); }
+});
 
 it("streams distinct native tools and file rows, coalesces updates, replays independently and redacts secrets", () => {
   const s = fixture();

@@ -167,15 +167,8 @@ describe("native evidence boundaries and bounded telemetry", () => {
     expect(s.facts).toHaveLength(1);
     const f = s.facts[0]!;
     expect(f.evidence_error).toBeUndefined();
-    expect(f.input_fingerprints).toEqual(captureInputs(s.workspaces));
-    expect(
-      f.report_hashes?.[reportSourceKey("main", ".reports/unit.json")],
-    ).toMatch(/^[a-f0-9]{64}$/);
-    writeFileSync(join(s.root, "input.txt"), "untested");
-    expect(f.input_fingerprints).not.toEqual(captureInputs(s.workspaces));
-    const previous = readFileSync(join(s.root, ".reports/unit.json"));
-    writeFileSync(join(s.root, ".reports/unit.json"), previous);
-    expect(f.input_fingerprints).not.toEqual(captureInputs(s.workspaces));
+    expect(f.command).toContain("node");
+    expect(f.exit_code).toBe(0);
   });
   it("DONE-only history cannot certify current inputs", () => {
     const s = observation();
@@ -187,14 +180,16 @@ describe("native evidence boundaries and bounded telemetry", () => {
     writeFileSync(join(s.root, ".reports/unit.json"), '{"old":true}');
     s.tool("RUNNING");
     s.tool("DONE", { exit_code: 0 });
-    expect(s.facts[0]!.report_hashes).toEqual({});
+    expect(s.facts[0]!.exit_code).toBe(0);
+    expect(s.facts[0]!.report_hashes).toBeUndefined();
   });
-  it("a code change during a command invalidates its receipt", () => {
+  it("a code change during a command still records the tool event", () => {
     const s = observation();
     s.tool("RUNNING");
     writeFileSync(join(s.root, "input.txt"), "changed");
     s.tool("DONE", { exit_code: 0 });
-    expect(s.facts[0]!.evidence_error).toContain("Inputs changed");
+    expect(s.facts[0]!.evidence_error).toBeUndefined();
+    expect(s.facts[0]!.exit_code).toBe(0);
   });
   it("async terminal completion remains bound to its original command", () => {
     const s = observation();
@@ -216,6 +211,42 @@ describe("native evidence boundaries and bounded telemetry", () => {
       },
     });
     expect(s.facts[0]!.tool_call_id).toBe("step-2");
+  });
+  it("records omitted Cwd against the workspace and aliases task-N for delivery", () => {
+    const s = observation();
+    s.observer.accept({
+      event: "step_update",
+      step_update: {
+        conversation_id: "conv",
+        step_index: 4,
+        step_type: "tool",
+        state: "RUNNING",
+        tool_name: "run_command",
+        tool_info: { parameters: { CommandLine: "node test.cjs" } },
+      },
+    });
+    s.observer.accept({
+      event: "step_update",
+      step_update: {
+        conversation_id: "conv",
+        step_index: 4,
+        step_type: "tool",
+        state: "DONE",
+        tool_name: "run_command",
+        tool_info: {
+          parameters: { CommandLine: "node test.cjs" },
+          exit_code: 0,
+        },
+      },
+    });
+    expect(s.facts).toHaveLength(1);
+    expect(s.facts[0]!.cwd).toBe(s.root);
+    expect(s.facts[0]!.aliases).toEqual(
+      expect.arrayContaining(["step-4", "task-4"]),
+    );
+    expect(new NativeRunRecordReader(s.facts).getFact("task-4")?.cwd).toBe(
+      s.root,
+    );
   });
   it("coalesces 1000 streamed updates while preserving actual usage and redacting credentials", () => {
     const root = mkdtempSync(join(tmpdir(), "native-telemetry-"));

@@ -20,8 +20,7 @@ export function reviewSkillResources() {
       "devflow-review/SKILL.md",
       "devflow-review/references/repair-document-contract.md",
       "devflow-review/references/review-contract.md",
-      "devflow-test/SKILL.md",
-      "devflow-execute/SKILL.md",
+      "devflow/references/role-and-schedule.md",
     ].map((path) => [path, readFileSync(resolve(root, path), "utf8")]),
   );
 }
@@ -46,5 +45,10 @@ export function reviewContractContext(engine: Engine, w: Workflow, run: Run) {
   };
 }
 
+export function reviewDeliveryContext(engine: Engine, w: Workflow) {
+  return engine.reviewDeliveryMaterials(w.id);
+}
+
 export const reviewInstructions =
-  "你是独立质量复核者，只读审查全部差异、原始计划及正式修订、上下游和真实原始测试证据。完整读取 skill_resources 中的整改文档合同和测试/执行规则；这些是平台提供的技能资源，不是项目快照文件。执行模型自查不是审查结论。有确认问题时，由你调查根因并生成完整确定的 repair_plan、repair_document 正文及 quality 逐项整改合同，不能让用户编写计划。quality 使用 review_contract 中的当前 run_id、phase、cycle、plan_revision、feedback_cursor；quality.repair_plan 每项的 document_hash 是完整 repair_document（LF 换行）的 SHA-256，document_revision 为 next_plan_revision。保留原计划全部未关闭要求和验收编号，禁止另写局部替代计划。completion 非空时保留历史问题并解决校验缺口。资料不足继续调查，确需用户决定的业务/范围/授权才列具体问题；只有全范围核查完成且没有阻塞问题才能 pass。";
+  "将独立审查范围按模块、调用链或风险边界分配给多个只读子 Agent 并行检查；每个审查子 Agent 都只审代码质量，不核验测试声明或重复运行测试。主审汇总去重、处理结论差异并检查跨模块交互，完整汇总后统一给出审查结论及修复意见，不让每个子 Agent 重复全量审查，也不把并行分工变成平台放行条件。" +
+  "你负责代码质量。依据原需求和正式设计检查当前实现有无遗漏、逻辑与边界错误，以及维护性问题。默认接受执行模型已完成自测的说明，不核验是否测试、测试覆盖表、原始报告、宿主调用或自查证明，不为这些材料提出补测整改。阅读测试源码以理解接口不等于开展测试审计。发现“需求规定的分支没有实现”属于代码质量问题；仅发现“没有该分支的测试报告”不属于本次审查问题。发现代码问题时一次性汇总位置、原因、影响和可执行修复意见；原范围内修复直接给出审查意见，不必重新生成全量 Plan。没有代码质量问题则给出通过结论。功能效果由用户实际确认。完整读取 skill_resources 中的审查规则与整改合同。保留原计划全部未关闭要求，禁止另写局部替代计划。确需用户决定的业务/范围/授权才列具体问题。";

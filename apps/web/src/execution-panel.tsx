@@ -7,7 +7,7 @@ import { CommandPreview } from "./command-preview.js";
 /** 智能中间截断路径：优先完整显示文件名，有余量时尽量多显示前缀，极窄空间截取文件名后半段 */
 export function formatPathSummary(
   text: string,
-  maxLength: number = 42,
+  maxLength: number = 56,
 ): string {
   if (!text || text.length <= maxLength) return text;
   const lastSepIndex = Math.max(text.lastIndexOf("/"), text.lastIndexOf("\\"));
@@ -31,11 +31,29 @@ export function formatPathSummary(
   }
 
   let prefix = dirPath.slice(0, availableForPrefix);
-  // 保持形如 C:\Code\...ApplicationSaveService.java
+  // 保持形如 C:\Code\...ApplicationSaveService.java，且预留分隔符空间防止溢出
   if (!prefix.endsWith("\\") && !prefix.endsWith("/")) {
-    prefix = prefix + sep;
+    prefix = dirPath.slice(0, Math.max(0, availableForPrefix - 1)) + sep;
   }
   return `${prefix}...${fileName}`;
+}
+
+export function PathSummary({ text }: { text: string }) {
+  if (!text) return null;
+  const lastSepIndex = Math.max(text.lastIndexOf("/"), text.lastIndexOf("\\"));
+  if (lastSepIndex === -1) {
+    return <span>{text}</span>;
+  }
+  const dirPath = text.slice(0, lastSepIndex);
+  const sep = text[lastSepIndex];
+  const fileName = text.slice(lastSepIndex + 1);
+
+  return (
+    <span className="summary-path-wrapper">
+      <span className="summary-path-prefix">{dirPath}</span>
+      <span className="summary-path-file">{sep}{fileName}</span>
+    </span>
+  );
 }
 
 export function ExecutionPanel({
@@ -63,7 +81,8 @@ export function ExecutionPanel({
   const [follow, setFollow] = useState(true);
   const [loadingHistory, setLoadingHistory] = useState(false);
   const last = Math.max(0, ...entries.map((e) => e.sequence));
-  const maxSummaryChars = Math.max(24, Math.floor((width - 64) / 7.5));
+  // 侧栏有效宽度为总宽减去边距与指示器(约56px)，按单行平均字符宽度5.5px计算最大字符容量，确保文字铺满整行并与右侧时间对齐
+  const maxSummaryChars = Math.max(24, Math.floor((width - 56) / 5.5));
   useEffect(() => {
     if (follow && scroll.current) {
       scroll.current.scrollTop = scroll.current.scrollHeight;
@@ -198,7 +217,7 @@ export function ExecutionPanel({
                 </div>
               ) : e.kind !== "diagnostic" && e.text ? (
                 <p className="activity-summary" title={e.text}>
-                  {formatPathSummary(e.text, maxSummaryChars)}
+                  <PathSummary text={e.text} />
                 </p>
               ) : null}
               {e.kind === "tool" && e.resultText && (

@@ -139,13 +139,15 @@ test("submitting guidance clears the form without leaving an unexplained footer"
   const fixture = await screen(page, false);
   if (!(await page.locator(".execution-sidebar").isVisible()))
     await page.getByRole("button", { name: "执行过程", exact: true }).click();
-  await page.getByRole("button", { name: "给执行模型补充指导" }).click();
+  await page.getByRole("button", { name: "指导或提问" }).click();
   await page
-    .getByPlaceholder("输入指导或调整内容... 输入 @ 引用文件或目录")
+    .getByPlaceholder(
+      "输入指导或调整内容，Enter 发送，Shift+Enter 换行。输入 @ 引用文件或目录",
+    )
     .fill("继续核对原计划中的未完成项");
   await page.getByRole("button", { name: "发送指导并继续" }).click();
   await expect(
-    page.getByRole("button", { name: "给执行模型补充指导" }),
+    page.getByRole("button", { name: "指导或提问" }),
   ).toBeVisible();
   expect(fixture.submissions).toHaveLength(1);
   await expect(page.locator(".task-interaction [role=status]")).toHaveCount(0);

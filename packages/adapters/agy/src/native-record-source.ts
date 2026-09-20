@@ -79,14 +79,39 @@ export function decodeAgyToolMetadata(payload: Buffer) {
     throw new Error("Invalid AGY arguments");
   return { call_id: text(call, 1), name: text(call, 2), parameters };
 }
-/** This prefix is host-generated. Text after Stdout/Stderr is never parsed as
+/** This prefix is host-generated. Text after Stdout/Output/Stderr is never parsed as
  * an exit code, even if the tested program prints a fake success footer. */
 export function agyCommandExit(output: string): number | undefined {
   const match = output.match(
-    /^\s*The command exited with code (-?\d+)\.\r?\nStdout:\r?\n/,
+    /^\s*The command exited with code (-?\d+)\.\r?\n(?:Stdout|Output|Stderr):\r?\n/,
   );
   return match ? Number(match[1]) : undefined;
 }
+
+function readAgyStepOutput(
+  base: string,
+  conversation: string,
+  index: number,
+): { output: string; exit_code?: number } | undefined {
+  const output = join(
+    base,
+    "brain",
+    conversation,
+    ".system_generated",
+    "steps",
+    String(index),
+    "output.txt",
+  );
+  if (!existsSync(output)) return;
+  if (statSync(output).size > 8 * 1024 * 1024)
+    throw new Error("AGY output exceeds size limit");
+  const data = readFileSync(output);
+  if (data.length > 8 * 1024 * 1024)
+    throw new Error("AGY command output exceeds limit");
+  const text = data.toString("utf8");
+  return { output: text, exit_code: agyCommandExit(text) };
+}
+
 export class AgyNativeRecordSource {
   constructor(private profileRoot: string) {}
   read(conversation: string, index: number): AgyNativeStep | undefined {
@@ -97,8 +122,18 @@ export class AgyNativeRecordSource {
     )
       return;
     const base = join(this.profileRoot, ".gemini", "antigravity-cli");
+    const recorded = readAgyStepOutput(base, conversation, index);
     const path = join(base, "conversations", conversation + ".db");
-    if (!existsSync(path)) return;
+    if (!existsSync(path)) {
+      if (typeof recorded?.exit_code !== "number") return;
+      return {
+        call_id: "step-" + index,
+        name: "run_command",
+        parameters: {},
+        output: recorded.output,
+        exit_code: recorded.exit_code,
+      };
+    }
     let db: Database.Database | undefined;
     try {
       db = new Database(path, {
@@ -111,23 +146,9 @@ export class AgyNativeRecordSource {
         .get(index) as { step_payload: Buffer } | undefined;
       if (!row?.step_payload) return;
       const result: AgyNativeStep = decodeAgyToolMetadata(row.step_payload);
-      const output = join(
-        base,
-        "brain",
-        conversation,
-        ".system_generated",
-        "steps",
-        String(index),
-        "output.txt",
-      );
-      if (existsSync(output)) {
-        if (statSync(output).size > 8 * 1024 * 1024)
-          throw new Error("AGY output exceeds size limit");
-        const data = readFileSync(output);
-        if (data.length > 8 * 1024 * 1024)
-          throw new Error("AGY command output exceeds limit");
-        result.output = data.toString("utf8");
-        result.exit_code = agyCommandExit(result.output);
+      if (recorded) {
+        result.output = recorded.output;
+        result.exit_code = recorded.exit_code;
       }
       return result;
     } finally {

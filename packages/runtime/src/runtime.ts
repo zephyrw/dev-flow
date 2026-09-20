@@ -1,14 +1,13 @@
-import {
-  PLAN_SELF_CHECK_STAGE,
-  BEFORE_HUMAN_REVIEW_STAGE,
-} from "../../core/src/plan-self-check.js";
-import { PlanSelfCheckReportSchema } from "../../contracts/src/plan-self-check.js";
+import { BEFORE_HUMAN_REVIEW_STAGE } from "../../core/src/plan-self-check.js";
 import { AgyNativeRecordSource } from "../../adapters/agy/src/native-record-source.js";
 import { RunTelemetry } from "./run-telemetry.js";
+import { CodexSessionObserver } from "./codex-session-observer.js";
+import { observeCodexAccountQuota } from "./codex-account-quota.js";
 import { rejectedDeliveryFeedback } from "../../core/src/delivery-feedback.js";
 import { batchExecutionInstructions } from "../../core/src/execution-guidance.js";
 import { NativeExecutionObserver } from "../../evidence/src/native-execution-observer.js";
 import { reconcileImplementationProofs } from "../../core/src/progress.js";
+import { isLegacyProtocol } from "../../core/src/run-profile.js";
 import { assertMeaningfulTestFiles } from "../../core/src/test-quality.js";
 import type { OperationRequest } from "../../core/src/interactions.js";
 import {
@@ -42,6 +41,7 @@ import {
   type Evidence,
   type Snapshot,
   type Workspace,
+  type MergeConflictRequest,
 } from "../../contracts/src/index.js";
 import { ProcessManager } from "../../process/src/manager.js";
 import { executablePath } from "../../process/src/executable.js";
@@ -67,7 +67,10 @@ import {
   observeAgy,
 } from "../../adapters/agy/src/session.js";
 import { writeAgyNativeConfiguration } from "../../adapters/agy/src/native-adapter.js";
-import { HandoffBuilder } from "../../adapters/agy/src/handoff.js";
+import {
+  HandoffBuilder,
+  nativeLaunchInstruction,
+} from "../../adapters/agy/src/handoff.js";
 import { BufferedEventSink } from "../../core/src/buffered-sink.js";
 import { ProfileRuntime } from "./profile-runtime.js";
 import {
@@ -75,6 +78,11 @@ import {
   reviewContractContext,
   reviewInstructions,
 } from "./review-materials.js";
+import {
+  INTENT_CLARIFICATION_INSTRUCTION,
+  applyContinuationMaterials,
+  asRunContinuation,
+} from "../../core/src/round-intent.js";
 export class LocalRuntime implements Runtime {
   private get native() {
     return new ProfileRuntime(this.engine, this.processes);
@@ -88,6 +96,13 @@ export class LocalRuntime implements Runtime {
     question: { question: string; refs: unknown[] },
   ) {
     return this.native.aside(workflow, run, question);
+  }
+  async resolveMergeConflict(
+    workflow: Workflow,
+    run: Run,
+    request: MergeConflictRequest,
+  ) {
+    return this.native.resolveMergeConflict(workflow, run, request);
   }
   processes: ProcessManager;
   environments: Environments;
@@ -441,13 +456,15 @@ export class LocalRuntime implements Runtime {
     return current;
   }
   async execute(workflow: Workflow, run: Run, token: string) {
-    if (run.execution_spec_id || run.adapter !== "agy")
-      return this.native.execute(workflow, run, token);
-    reconcileImplementationProofs(this.engine, workflow.id);
-    this.assertRun(workflow.id, run.id, ["EXECUTING"]);
     if (run.deadline_at && Date.now() >= run.deadline_at) {
       throw new FlowError("TIMEOUT", "执行启动前已达到截止时间");
     }
+    const planRecord = this.engine.plan(workflow.id);
+    const plan = planRecord.plan;
+    if (!isLegacyProtocol(run, plan) || run.execution_spec_id || run.adapter !== "agy")
+      return this.native.execute(workflow, run, token);
+    reconcileImplementationProofs(this.engine, workflow.id);
+    this.assertRun(workflow.id, run.id, ["EXECUTING"]);
     const directory = join(
       this.engine.config.storage_root,
       "containers",
@@ -464,8 +481,6 @@ export class LocalRuntime implements Runtime {
       "BUILD_REQUIRED",
       "请先完成生产构建",
     );
-    const planRecord = this.engine.plan(workflow.id);
-    const plan = planRecord.plan;
     const isNativeV2 = resolveTaskModel(plan) === "native-v2";
 
     if (isNativeV2) {
@@ -500,6 +515,7 @@ export class LocalRuntime implements Runtime {
           plan,
           runId: run.id,
           packageHash: run.package_hash,
+          directory,
           workspaces,
         });
         HandoffBuilder.writeHandoffFiles(directory, fullPkg, plan.markdown);
@@ -516,6 +532,7 @@ export class LocalRuntime implements Runtime {
           runId: run.id,
           conversationId: conversation.id,
           packageHash: run.package_hash,
+          directory,
           workspaces,
           deliveryIssues: issues,
         });
@@ -552,36 +569,6 @@ export class LocalRuntime implements Runtime {
       );
     }
 
-    if (isNativeV2 && run.stage === PLAN_SELF_CHECK_STAGE) {
-      const request = this.engine.planSelfCheck.current(workflow.id)!;
-      const authorities = this.engine.planSelfCheck.authorities(workflow);
-      const authoritativePlan = authorities.find(
-        (p) => p.revision === workflow.plan_revision,
-      )!.plan;
-      const pkg = HandoffBuilder.buildPlanSelfCheckHandoff({
-        workflow: this.engine.get(workflow.id),
-        plan: authoritativePlan,
-        runId: run.id,
-        packageHash: run.package_hash,
-        workspaces: this.engine.store.list<Workspace>("workspace", workflow.id),
-        conversationId: conversation?.id,
-        request,
-      });
-      HandoffBuilder.writeHandoffFiles(
-        directory,
-        pkg,
-        authoritativePlan.markdown,
-      );
-      atomicWrite(
-        join(directory, "AUTHORITATIVE_PLANS.json"),
-        JSON.stringify(authorities, null, 2),
-      );
-      atomicWrite(
-        join(directory, "plan-self-check.schema.json"),
-        JSON.stringify(z.toJSONSchema(PlanSelfCheckReportSchema), null, 2),
-      );
-    }
-
     const prompt = isNativeV2
       ? JSON.stringify({
           workflow_id: workflow.id,
@@ -589,12 +576,9 @@ export class LocalRuntime implements Runtime {
           plan_revision: workflow.plan_revision,
           plan_hash: workflow.plan_hash,
           package_hash: run.package_hash,
-          instruction:
-            run.stage === PLAN_SELF_CHECK_STAGE
-              ? "程序强制发起的独立计划复核轮次：重新阅读 AUTHORITATIVE_PLANS.json 中原始计划和正式整改计划全文，以及 HANDOFF.md、handoff.json。先按 self_check.check_ids 完整核查实际代码与测试，汇总遗漏及根因，完成整批修复后统一测试。禁止另建或使用 implementation_plan.md 等替代计划。依据 plan-self-check.schema.json 在当前轮次交付清单中填写 plan_self_check，绑定 handoff.json 的请求和轮次。全部核对及测试通过后提交 devflow_deliver；这不是规划模型的独立代码审查，不可自行宣布跳过它。"
-              : conversation?.id
-                ? "会话恢复：请完整查看 handoff.json 中的全部反馈与核验 issues，核清全部已知问题根因后使用原生工具完成整批修复，统一测试后提交交付清单。"
-                : "原生开发模式：请先阅读工作包 HANDOFF.md 与 handoff.json。使用客户端原生工具完成批准范围内全部实现和测试代码，再统一运行测试。所有必需验收场景通过后，通过 devflow_deliver 或交付清单文件完成终局交付。",
+          instruction: conversation?.id
+            ? nativeLaunchInstruction(directory, "resume")
+            : nativeLaunchInstruction(directory, "full"),
           execution_order: batchExecutionInstructions,
         })
       : JSON.stringify({
@@ -1094,7 +1078,7 @@ export class LocalRuntime implements Runtime {
         if (!development) {
           this.engine.invalidate(
             workflow.id,
-            "检查失败，返回批准范围内修复；所有测试需重新运行",
+            "检查失败，在批准范围内修复后先重跑该测试，再由负责的子 Agent 并行运行独立的受影响回归目标",
           );
           this.engine.transition(
             workflow.id,
@@ -1204,90 +1188,90 @@ export class LocalRuntime implements Runtime {
     }
   }
   async review(workflow: Workflow, run: Run) {
-    if (run.execution_spec_id) return this.native.review(workflow, run);
+    const plan = this.engine.plan(workflow.id).plan;
+    if (!isLegacyProtocol(run, plan)) return this.native.review(workflow, run);
+    return this.legacyReview(workflow, run);
+  }
+  private async legacyReview(workflow: Workflow, run: Run) {
     this.assertRun(workflow.id, run.id, ["REVIEWING"]);
-    const snapshot = this.engine.store.must<Snapshot>(
-      "snapshot",
-      workflow.snapshot_id!,
-    );
+    const snapshot = workflow.snapshot_id
+      ? this.engine.store.get<Snapshot>("snapshot", workflow.snapshot_id)
+      : undefined;
     const root = join(this.engine.config.storage_root, "reviews", run.id);
     mkdirSync(root, { recursive: true });
     const schema = join(root, "schema.json"),
       output = join(root, "review.json");
     const manifest = join(root, "materials.json");
-    const materials = {
-      skill_resources: reviewSkillResources(),
-      review_contract: reviewContractContext(this.engine, workflow, run),
-      plan: this.engine.plan(workflow.id).plan,
-      plan_record: this.engine.plan(workflow.id),
-      plan_authorities: this.engine.planSelfCheck.authorities(workflow),
-      executor_plan_check:
-        this.engine.planSelfCheck.current(workflow.id) ?? null,
-      executor_plan_check_report: (() => {
-        const check = this.engine.planSelfCheck.current(workflow.id);
-        const rev =
-          check?.delivery_revision_id &&
-          this.engine.store.get<any>(
-            "delivery_revision",
-            check.delivery_revision_id,
-          );
-        return rev
-          ? this.engine.store.get<any>("delivery", rev.delivery_id)?.manifest
-              ?.plan_self_check
-          : null;
-      })(),
-      approval:
-        this.engine.store.get(
-          "approval",
-          workflow.id + "-" + workflow.plan_revision,
-        ) ?? null,
-      acceptance: this.engine.store.get("acceptance", workflow.id) ?? null,
-      project: this.engine.project(workflow.project_id),
-      claims: this.engine.taskStatus(workflow.id),
-      evidence: this.engine.getEvidence(workflow.id),
-      skill: readFileSync(
-        resolve("packages/skills/devflow-review/SKILL.md"),
-        "utf8",
-      ),
-      diff: await this.engine.git.diff(snapshot),
-      snapshot,
-      workspaces: this.engine.store.list<Workspace>("workspace", workflow.id),
-    };
+    const continuation =
+      asRunContinuation(run.continuation) ??
+      asRunContinuation(
+        this.engine.store.get("run_continuation", workflow.id),
+      ) ??
+      asRunContinuation(this.engine.store.get("run_continuation", run.id));
+    const materials = applyContinuationMaterials(
+      {
+        skill_resources: reviewSkillResources(),
+        review_contract: reviewContractContext(this.engine, workflow, run),
+        plan: this.engine.plan(workflow.id).plan,
+        plan_record: this.engine.plan(workflow.id),
+        plan_authorities: this.engine.planSelfCheck.authorities(workflow),
+        approval:
+          this.engine.store.get(
+            "approval",
+            workflow.id + "-" + workflow.plan_revision,
+          ) ?? null,
+        project: this.engine.project(workflow.project_id),
+        skill: readFileSync(
+          resolve("packages/skills/devflow-review/SKILL.md"),
+          "utf8",
+        ),
+        diff: snapshot ? await this.engine.git.diff(snapshot) : "",
+        snapshot,
+        workspaces: this.engine.store.list<Workspace>("workspace", workflow.id),
+      },
+      continuation,
+    );
     atomicWrite(manifest, JSON.stringify(materials));
     atomicWrite(
       schema,
       JSON.stringify(
-        reviewOutputSchema(snapshot.repositories.map((r) => r.repo_id)),
+        reviewOutputSchema(
+          snapshot?.repositories.map((r) => r.repo_id) ?? [],
+        ),
       ),
     );
-    const prompt = JSON.stringify({
-      instruction:
-        reviewInstructions +
-        "使用 devflow_review MCP 的 context/read_file/search/evidence/hash_document 工具，不使用 shell。先读取 section=skill_resources、review_contract 和 project，next_offset 非 null 时继续分页。完整正文确定后用 devflow_review_hash_document 计算 document_hash，不能猜测哈希。coverage.files 使用 repo_id:path。严格使用指定 JSON Schema。",
-      review_contract: materials.review_contract,
-      phase:
-        workflow.stage === BEFORE_HUMAN_REVIEW_STAGE
-          ? "before_human"
-          : "after_human",
-      plan_self_check_instruction:
-        "先读取 plan_authorities、executor_plan_check、executor_plan_check_report，依据原始计划及正式修订独立审查实际代码与原始测试证据；执行模型逐项自查报告只是待验证资料，不能代替你的审查。before_human 阶段尚未人工验收是正常流程，不得因此拒绝审查。禁止依据执行模型另写的替代计划缩减审查范围。",
-      review_request_id: workflow.review_request_id,
-      workflow_id: workflow.id,
-      plan_revision: workflow.plan_revision,
-      snapshot_id: snapshot.id,
-      plan: this.engine.plan(workflow.id).plan,
-      diff: await this.engine.git.diff(snapshot),
-      evidence: this.engine.getEvidence(workflow.id),
-      workspaces: this.engine.store
-        .list<Workspace>("workspace", workflow.id)
-        .map((w) => ({ repo_id: w.repo_id, path: w.root })),
-    });
+    const prompt = JSON.stringify(
+      continuation?.kind === "intent_clarification"
+        ? {
+            instruction: INTENT_CLARIFICATION_INSTRUCTION,
+            original_text: continuation.original_text,
+          }
+        : {
+            instruction: reviewInstructions,
+            review_contract: reviewContractContext(this.engine, workflow, run),
+            phase:
+              workflow.stage === BEFORE_HUMAN_REVIEW_STAGE
+                ? "before_human"
+                : "after_human",
+            review_request_id: workflow.review_request_id,
+            workflow_id: workflow.id,
+            plan_revision: workflow.plan_revision,
+            snapshot_id: snapshot?.id,
+            plan: this.engine.plan(workflow.id).plan,
+            diff: snapshot ? await this.engine.git.diff(snapshot) : "",
+            workspaces: this.engine.store
+              .list<Workspace>("workspace", workflow.id)
+              .map((item) => ({ repo_id: item.repo_id, path: item.root })),
+            questions: continuation?.questions,
+            answer: continuation?.answer,
+          },
+    );
     const args = [
       ...this.engine.config.models.codex_prefix_args,
       "exec",
       "--ignore-user-config",
       "--ignore-rules",
-      "--ephemeral",
+      "--json",
       "--model",
       this.engine.config.models.reviewer,
       "--sandbox",
@@ -1331,15 +1315,23 @@ export class LocalRuntime implements Runtime {
       stdin: prompt,
       timeout_ms: this.engine.config.timeouts.agent_minutes * 60000,
     });
-    proc.on("stdout", (b: Buffer) =>
-      this.engine.store.event(
-        workflow.id,
-        workflow.project_id,
-        "ReviewOutput",
-        { text: redact(b.toString("utf8")) },
-        run.id,
-      ),
-    );
+    const telemetry = new RunTelemetry(this.engine.store, workflow, run);
+    const stopQuota = observeCodexAccountQuota({ executable: codexBin, prefixArgs: this.engine.config.models.codex_prefix_args, cwd: root, home: process.env.CODEX_HOME ?? join(homedir(), ".codex") }, telemetry);
+    const observer = new CodexSessionObserver({
+      home: process.env.CODEX_HOME ?? join(homedir(), ".codex"),
+      cwd: root,
+      startedAt: run.started_at,
+      telemetry,
+    });
+    const lines = new JsonLines((event) => {
+      telemetry.accept(event);
+      if (typeof event.thread_id === "string") observer.bind(event.thread_id);
+    });
+    let streamError: unknown;
+    proc.on("stdout", (b: Buffer) => {
+      appendFileSync(join(root, "stdout.jsonl"), redact(b.toString("utf8")));
+      try { lines.push(b); } catch (error) { streamError ??= error; }
+    });
     proc.on("stderr", (b: Buffer) =>
       this.engine.store.event(
         workflow.id,
@@ -1358,8 +1350,17 @@ export class LocalRuntime implements Runtime {
         run.id,
       ),
     );
+    let exit: Awaited<typeof proc.completion> | undefined;
+    try {
+      exit = await proc.completion;
+      try { lines.finish(); } catch (error) { streamError ??= error; }
+    } finally {
+      stopQuota();
+      await observer.close();
+      telemetry.finish(!exit || exit.code !== 0 || !!streamError);
+    }
     requireCondition(
-      (await proc.completion).code === 0 && existsSync(output),
+      exit.code === 0 && !streamError && existsSync(output),
       "REVIEW_FAILED",
       "复核进程失败或未返回结构化报告",
     );

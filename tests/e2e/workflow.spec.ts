@@ -1,6 +1,8 @@
 import { test, expect } from "@playwright/test";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { readFileSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { createNative, fixtureState } from "./native-helper.js";
+import { git } from "../../packages/git/src/git.js";
 test.describe.configure({ mode: "serial" });
 test("empty console explains the natural-language entry without manual registration", async ({
   page,
@@ -72,7 +74,7 @@ test("E2E-01/05/06/08 local button approval, diagrams, evidence and accepted com
   if (!(await page.locator(".execution-sidebar").isVisible()))
     await page.getByRole("button", { name: "执行过程", exact: true }).click();
   await page
-    .getByRole("button", { name: "给执行模型补充指导", exact: true })
+    .getByRole("button", { name: "指导或提问", exact: true })
     .click();
   await page
     .locator(".guidance-form textarea")
@@ -100,7 +102,7 @@ test("E2E-01/05/06/08 local button approval, diagrams, evidence and accepted com
   await page.reload();
   if (!(await page.locator(".execution-sidebar").isVisible()))
     await page.getByRole("button", { name: "执行过程", exact: true }).click();
-  await expect(page.locator(".logs")).toContainText("进入开发实施");
+  await expect(page.locator(".logs")).toContainText("开始开发与自测");
   await page.getByRole("button", { name: "验收通过，启动复核" }).click();
   await expect(page.locator(".header-title-wrapper .badge")).toContainText(
     "已提交",
@@ -146,5 +148,63 @@ test("E2E-05 a fresh browser opens the console and restores a deep link without 
   expect((await page.request.get("/api/workflows")).status()).toBe(200);
   await expect(page.getByRole("button", { name: /登录|通行密钥/ })).toHaveCount(
     0,
+  );
+});
+test("冲突复测无功能影响沿承接且保留人工确认", async ({ page }) => {
+  test.setTimeout(900000);
+  const id = await createNative(page, "冲突复测：将文本改为 after");
+  const get = async () =>
+    (await page.request.get("/api/workflows/" + id)).json();
+  const nativeRepo = fixtureState().nativeRepo;
+  await page.getByRole("button", { name: "批准当前计划" }).click();
+  await expect(page.locator(".header-title-wrapper .badge")).toContainText(
+    "等待你的验收",
+    { timeout: 450000 },
+  );
+  writeFileSync(join(nativeRepo, "app.txt"), "upstream line\n");
+  await git(nativeRepo, ["add", "app.txt"]);
+  await git(nativeRepo, ["commit", "-m", "conflict upstream commit"]);
+  await page.getByRole("button", { name: "验收通过，启动复核" }).click();
+  await expect
+    .poll(
+      async () => {
+        const detail = await get();
+        if (
+          detail.workflow.state === "BLOCKED" ||
+          detail.workflow.state === "COMMIT_PARTIAL"
+        )
+          throw new Error(
+            JSON.stringify({
+              state: detail.workflow.state,
+              stage: detail.workflow.stage,
+              blocker: detail.workflow.blocker,
+              runs: detail.runs.map(
+                (run: {
+                  stage?: string;
+                  purpose?: string;
+                  status?: string;
+                  result?: { error?: string };
+                }) => ({
+                  stage: run.stage,
+                  purpose: run.purpose,
+                  status: run.status,
+                  error: run.result?.error,
+                }),
+              ),
+            }),
+          );
+        return detail.workflow.state;
+      },
+      { timeout: 450000 },
+    )
+    .toMatch(/COMPLETED|COMMITTED/);
+  const finalDetail = await get();
+  expect(
+    finalDetail.runs.some(
+      (run: { stage?: string }) => run.stage === "merge_conflict_resolution",
+    ),
+  ).toBe(true);
+  await expect(page.locator(".header-title-wrapper .badge")).toContainText(
+    /已提交|已完成/,
   );
 });

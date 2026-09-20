@@ -7,6 +7,19 @@ import type { OperationRequest } from "../../core/src/interactions.js";
 import type { ModelRetry } from "../../core/src/model-retry.js";
 import type { LocalRuntime } from "./runtime.js";
 import { prepareRepairResume } from "../../core/src/repair.js";
+import {
+  clearWaitingContext,
+  isCurrentPlanningSource,
+  isOpenPlanningHandoff,
+  isPlanningWaiting,
+  readPlanningHandoff,
+  readRunContinuation,
+  readWaitingContext,
+  savePlanningHandoff,
+  waitingBelongsToRun,
+} from "../../core/src/waiting-context.js";
+import type { WaitingContext } from "../../core/src/waiting-context.js";
+import type { Workflow } from "../../contracts/src/index.js";
 
 const resuming = new WeakMap<Engine, Set<string>>();
 export async function resumeModelWaits(engine: Engine, at = Date.now()) {
@@ -144,7 +157,6 @@ export function reconcileProcesses(engine: Engine, key: string) {
   return results;
 }
 export function resumeApproved(engine: Engine, key: string) {
-  engine.assertProjectConfiguration(key);
   reconcileProcesses(engine, key);
   const w = engine.get(key);
   requireCondition(
@@ -168,7 +180,13 @@ export function resumeApproved(engine: Engine, key: string) {
     "PLAN_NOT_APPROVED",
     "当前计划未获批准",
   );
+  const waiting = readWaitingContext(engine.store, key);
+  const current = resumeWaitingIfCurrent(engine, key, w, waiting);
+  if (current) return current;
+  const restored = engine.restoreFailedRole(key, "用户恢复执行");
+  if (restored) return restored;
   prepareRepairResume(engine, key);
+  engine.stageExecuteContinuation(key);
   engine.invalidate(key, "用户恢复执行，旧证据失效");
   engine.store.remove("model_retry", key);
   engine.transition(key, [w.state], "QUEUED", "execute", {
@@ -176,4 +194,61 @@ export function resumeApproved(engine: Engine, key: string) {
   });
   engine.scheduler.enqueue(key, w.project_id);
   return engine.get(key);
+}
+
+function resumeWaitingIfCurrent(
+  engine: Engine,
+  key: string,
+  w: Workflow,
+  waiting: WaitingContext | undefined,
+) {
+  if (!waiting) return;
+  const continuation = readRunContinuation(engine.store, key);
+  const currentRun = w.run_id
+    ? engine.store.get<{
+        continuation?: import("../../contracts/src/tr-handoff.js").RunContinuation;
+        stage?: string;
+        purpose?: string;
+      }>("run", w.run_id)
+    : undefined;
+  const belongs = waitingBelongsToRun(
+    waiting,
+    w.run_id,
+    currentRun?.continuation ?? continuation,
+  );
+  const planningSource = isCurrentPlanningSource({
+    handoff: readPlanningHandoff(engine.store, key),
+    waiting,
+    state: w.state,
+    blockerCode: w.blocker?.code,
+    runId: w.run_id,
+    run: currentRun,
+  });
+  if (isPlanningWaiting(waiting) && !planningSource) {
+    archiveStalePlanning(engine, key, waiting);
+    return;
+  }
+  if (!belongs && !planningSource) return;
+  engine.store.remove("model_retry", key);
+  return engine.resumeFromWaiting(key, "用户恢复执行", waiting);
+}
+
+function archiveStalePlanning(
+  engine: Engine,
+  key: string,
+  waiting: WaitingContext,
+) {
+  const handoff = readPlanningHandoff(engine.store, key);
+  if (isOpenPlanningHandoff(handoff)) {
+    const stale =
+      waiting.run_id === handoff.source_run_id ||
+      waiting.source_execution_run_id === handoff.source_run_id ||
+      !waiting.run_id;
+    if (stale)
+      savePlanningHandoff(engine.store, key, {
+        ...handoff,
+        status: "superseded",
+      });
+  }
+  if (isPlanningWaiting(waiting)) clearWaitingContext(engine.store, key);
 }
