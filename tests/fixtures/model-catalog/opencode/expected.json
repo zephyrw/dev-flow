@@ -1,0 +1,45 @@
+{
+  "adapterId": "opencode",
+  "visibleNativeIds": [
+    "openai/gpt-4.1",
+    "anthropic/claude-sonnet-4-5",
+    "google/gemini-3-flash",
+    "local/custom-model"
+  ],
+  "entries": {
+    "openai/gpt-4.1": {
+      "nativeId": "openai/gpt-4.1",
+      "hidden": false,
+      "effort": {
+        "status": "supported",
+        "transport": "variant-flag",
+        "values": ["high", "max"]
+      }
+    },
+    "anthropic/claude-sonnet-4-5": {
+      "nativeId": "anthropic/claude-sonnet-4-5",
+      "hidden": false,
+      "effort": {
+        "status": "unknown",
+        "transport": "none",
+        "values": []
+      }
+    },
+    "google/gemini-3-flash": {
+      "nativeId": "google/gemini-3-flash",
+      "hidden": false,
+      "effort": {
+        "status": "unknown",
+        "values": []
+      }
+    },
+    "local/custom-model": {
+      "nativeId": "local/custom-model",
+      "hidden": false,
+      "effort": {
+        "status": "unknown",
+        "values": []
+      }
+    }
+  }
+}

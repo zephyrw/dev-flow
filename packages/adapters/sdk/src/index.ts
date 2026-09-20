@@ -1,6 +1,28 @@
 export * from "./interface.js";
 export * from "./registry.js";
 export * from "./base-adapter.js";
+export * from "./model-selection.js";
+export {
+  capabilityFromAdapter,
+  clientInvocation,
+  readOnlyPurpose,
+} from "./invocation.js";
+export {
+  applyFrozenSelection,
+  buildFrozenInvocation,
+  capabilityForSelection,
+  resolveRunSelection,
+  selectionCapabilityFromCatalog,
+} from "./frozen-invocation.js";
+export {
+  parseProbeTerminal,
+  parseStructuredProbeTerminal,
+} from "./probe-terminal.js";
+export {
+  identityInputFromProfile,
+  readNativeIdentity,
+  readNativeIdentitySync,
+} from "./native-identity.js";
 
 import { AdapterRegistry } from "./registry.js";
 import { CodexNativeAdapter } from "../../codex/src/adapter.js";
@@ -11,6 +33,15 @@ import { KimiCodeNativeAdapter } from "../../kimi/src/adapter.js";
 import { QoderNativeAdapter } from "../../qoder/src/adapter.js";
 import { OpenCodeNativeAdapter } from "../../opencode/src/adapter.js";
 import { CursorAgentNativeAdapter } from "../../cursor/src/adapter.js";
+import { parseStructuredProbeTerminal } from "./probe-terminal.js";
+import type { ProbeTerminalInput } from "./interface.js";
+
+export function parseAdapterProbeTerminal(
+  adapterId: string,
+  input: ProbeTerminalInput,
+) {
+  return parseStructuredProbeTerminal({ ...input, adapterId });
+}
 
 export function createDefaultAdapterRegistry(): AdapterRegistry {
   const registry = new AdapterRegistry();

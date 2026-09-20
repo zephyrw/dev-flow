@@ -48,6 +48,16 @@ const resolutions: Record<string, Omit<RuntimeFailureResolution, "code">> = {
       "确认同一 CLI 的登录状态正常后继续原任务，无需重新规划。",
     ],
   },
+  MODEL_LOGIN_REQUIRED: {
+    title: "模型需要重新登录",
+    message: "当前模型账号的登录状态已失效，已保留任务现场。",
+    steps: ["使用当前系统用户在对应工具中重新登录。", "重新验证该账号的模型访问后继续原任务。"],
+  },
+  MODEL_FORBIDDEN: {
+    title: "当前账号无权使用模型",
+    message: "提供方明确拒绝当前账号访问本轮模型，已保留任务现场。",
+    steps: ["核对当前账号的模型访问权限。", "恢复权限并重新验证，或明确选择其他已验证模型后继续。"],
+  },
   MODEL_QUOTA: {
     title: "模型额度或速率受限",
     message: "模型提供方暂时拒绝调用，原因是额度不足或请求速率受限。",

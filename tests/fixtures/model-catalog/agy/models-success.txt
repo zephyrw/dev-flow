@@ -1,0 +1,16 @@
+[1m模型列表[0m
+╭──────────────────────────────┬────────────╮
+│ Model                        │ 说明       │
+├──────────────────────────────┼────────────┤
+│ [32mgemini-3.8-flash-high[0m        │ 高档       │
+│ gemini-3.8-flash-medium      │ 中档       │
+│ gemini-3.7-flash-high        │ 当前默认   │
+│ gemini-3.7-flash-medium      │ 中档       │
+│ gemini-3.6-flash-high        │ 高档       │
+│ gemini-3.6-flash-medium      │ 中档       │
+│ gemini-3.1-pro-high          │ 高档       │
+│ claude-sonnet-4-6            │ 原生默认   │
+│ Claude Opus 4.6 Thinking     │ 仅显示名   │
+│ GPT-OSS 120B                 │ 仅显示名   │
+╰──────────────────────────────┴────────────╯
+中文提示：以上显示名不能当作 CLI 参数。

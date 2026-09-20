@@ -47,9 +47,99 @@ export class AdapterRegistry {
   }
 }
 
+export const QODER_BINARY_CANDIDATES = ["qodercli", "qoder"] as const;
+export const QODER_PRODUCT_IDENTITY = "qodercli|\\bqoder\\b";
+
+export function binaryNamesForLookup(binaryName: string): string[] {
+  if (binaryName === "qoder" || binaryName === "qodercli") {
+    return [...QODER_BINARY_CANDIDATES];
+  }
+  return [binaryName];
+}
+
+export function isQoderProductIdentity(versionAndHelp: string): boolean {
+  return new RegExp(QODER_PRODUCT_IDENTITY, "i").test(versionAndHelp);
+}
+
+function namesWithPlatformExt(binaryName: string): string[] {
+  const isWindows = process.platform === "win32";
+  if (
+    isWindows &&
+    !binaryName.endsWith(".exe") &&
+    !binaryName.endsWith(".cmd")
+  ) {
+    return [
+      `${binaryName}.exe`,
+      `${binaryName}.cmd`,
+      `${binaryName}.ps1`,
+      binaryName,
+    ];
+  }
+  return [binaryName];
+}
+
+function findExecutableByName(
+  binaryName: string,
+  fallbackDirs: string[],
+): string | undefined {
+  const names = namesWithPlatformExt(binaryName);
+  for (const dir of fallbackDirs) {
+    for (const name of names) {
+      const full = `${dir}/${name}`;
+      if (existsSync(full)) return full;
+    }
+  }
+  const pathEnv = process.env.PATH ?? "";
+  const pathDirs = pathEnv.split(process.platform === "win32" ? ";" : ":");
+  for (const dir of pathDirs) {
+    for (const name of names) {
+      const full = `${dir.trim()}/${name}`;
+      if (existsSync(full)) return full;
+    }
+  }
+  return undefined;
+}
+
 /**
  * 统一在系统 PATH、受管目录与显式路径中查找可执行文件
  */
+export const ADAPTER_BINARY_NAMES: Record<SupportedAdapterId, string> = {
+  codex: "codex",
+  agy: "agy",
+  "grok-build": "grok",
+  "claude-code": "claude",
+  "kimi-code": "kimi",
+  qoder: "qodercli",
+  opencode: "opencode",
+  "cursor-agent": "agent",
+};
+
+export function defaultAdapterFallbackDirs(): string[] {
+  return [
+    ...(process.env.LOCALAPPDATA
+      ? [
+          process.env.LOCALAPPDATA + "/agy/bin",
+          process.env.LOCALAPPDATA + "/cursor-agent",
+        ]
+      : []),
+    ...(process.env.APPDATA ? [process.env.APPDATA + "/npm"] : []),
+    ...(process.env.HOME ? [process.env.HOME + "/.local/bin"] : []),
+    "/usr/local/bin",
+    "/opt/homebrew/bin",
+  ];
+}
+
+export function resolveAdapterExecutable(
+  adapterId: SupportedAdapterId,
+  customPath?: string,
+): string | undefined {
+  return resolveToolExecutable(
+    ADAPTER_BINARY_NAMES[adapterId],
+    customPath,
+    defaultAdapterFallbackDirs(),
+  );
+}
+
 export function resolveToolExecutable(
   binaryName: string,
   customPath?: string,
@@ -60,33 +150,9 @@ export function resolveToolExecutable(
     if (/[\\/\\\\:]/.test(customPath)) return undefined;
     binaryName = customPath;
   }
-  const isWindows = process.platform === "win32";
-  const nameWithExt =
-    isWindows && !binaryName.endsWith(".exe") && !binaryName.endsWith(".cmd")
-      ? [
-          `${binaryName}.exe`,
-          `${binaryName}.cmd`,
-          `${binaryName}.ps1`,
-          binaryName,
-        ]
-      : [binaryName];
-
-  for (const dir of fallbackDirs) {
-    for (const name of nameWithExt) {
-      const full = `${dir}/${name}`;
-      if (existsSync(full)) return full;
-    }
+  for (const name of binaryNamesForLookup(binaryName)) {
+    const found = findExecutableByName(name, fallbackDirs);
+    if (found) return found;
   }
-
-  // 从 PATH 查找
-  const pathEnv = process.env.PATH ?? "";
-  const pathDirs = pathEnv.split(isWindows ? ";" : ":");
-  for (const p of pathDirs) {
-    for (const name of nameWithExt) {
-      const full = `${p.trim()}/${name}`;
-      if (existsSync(full)) return full;
-    }
-  }
-
   return undefined;
 }

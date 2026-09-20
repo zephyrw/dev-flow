@@ -7,13 +7,16 @@ import {
 import { CommandPreview } from "../command-preview.js";
 import { formatPathSummary } from "../execution-panel.js";
 import "./current-runtime.css";
+import "./model-settings.css";
 
 export function CurrentRuntime({
   detail,
   connected,
+  onEdit,
 }: {
   detail: any;
   connected: boolean;
+  onEdit?: (role?: string) => void;
 }) {
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
@@ -70,11 +73,23 @@ export function CurrentRuntime({
           {runtime.actual_model ?? "实际模型未确认"}
           {runtime.effort ? ` · ${runtime.effort}` : ""}
         </span>
+        {onEdit && (
+          <button
+            type="button"
+            className="runtime-edit-link"
+            onClick={() => onEdit(runtime.purpose)}
+          >
+            修改
+          </button>
+        )}
       </div>
-      {(!runtime.actual_model || mismatch) && runtime.requested_model && (
+      {runtime.actual_model && (
+        <div className="ms-observed">实际观察：{runtime.actual_model}</div>
+      )}
+      {runtime.requested_model && (
         <div className={mismatch ? "runtime-mismatch" : "runtime-muted"}>
-          请求模型：{runtime.requested_model}
-          {mismatch ? "（与实际模型不同）" : ""}
+          请求配置：{runtime.requested_model}
+          {mismatch ? "（与实际观察不同，不是服务端确认）" : "（绑定请求，不是服务端确认）"}
         </div>
       )}
       {activity && (

@@ -1,0 +1,36 @@
+{
+  "adapterId": "grok-build",
+  "source": "native-cache",
+  "visibleNativeIds": ["grok-4.6", "grok-4.5", "kimi-k3-flash"],
+  "entries": {
+    "grok-4.6": {
+      "nativeId": "grok-4.6",
+      "hidden": false,
+      "effort": {
+        "status": "supported",
+        "transport": "flag",
+        "values": ["low", "medium", "high", "xhigh"],
+        "defaultValue": "high"
+      }
+    },
+    "grok-4.5": {
+      "nativeId": "grok-4.5",
+      "hidden": false,
+      "effort": {
+        "status": "supported",
+        "transport": "flag",
+        "values": ["low", "medium", "high"],
+        "defaultValue": "high"
+      }
+    },
+    "kimi-k3-flash": {
+      "nativeId": "kimi-k3-flash",
+      "hidden": false,
+      "effort": {
+        "status": "unknown",
+        "transport": "none",
+        "values": []
+      }
+    }
+  }
+}

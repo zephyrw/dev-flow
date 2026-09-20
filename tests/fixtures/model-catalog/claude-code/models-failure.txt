@@ -1,0 +1,2 @@
+claude: cannot read log directory
+Permission denied

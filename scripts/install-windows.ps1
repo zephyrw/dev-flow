@@ -1,5 +1,12 @@
 ﻿[CmdletBinding()]
-param()
+param(
+  [string]$PlannerTool,
+  [string]$PlannerModel,
+  [string]$PlannerEffort,
+  [string]$ExecutorTool,
+  [string]$ExecutorModel,
+  [string]$ExecutorEffort
+)
 $ErrorActionPreference = 'Stop'
 $devflowRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 Set-Location -LiteralPath $devflowRoot
@@ -46,7 +53,18 @@ try {
   & (Join-Path $PSScriptRoot 'stop-devflow.ps1')
   & pnpm.cmd install --frozen-lockfile
   if ($LASTEXITCODE -ne 0) { throw '依赖同步失败，未继续安装。' }
-  & node (Join-Path $devflowRoot 'scripts\setup.mjs')
+  $setupArgs = @()
+  if ($PlannerTool) { $setupArgs += @('--planner-tool', $PlannerTool) }
+  if ($PlannerModel) { $setupArgs += @('--planner-model', $PlannerModel) }
+  if ($PlannerEffort) { $setupArgs += @('--planner-effort', $PlannerEffort) }
+  if ($ExecutorTool) { $setupArgs += @('--executor-tool', $ExecutorTool) }
+  if ($ExecutorModel) { $setupArgs += @('--executor-model', $ExecutorModel) }
+  if ($ExecutorEffort) { $setupArgs += @('--executor-effort', $ExecutorEffort) }
+  & node (Join-Path $devflowRoot 'scripts\setup.mjs') @setupArgs
+  if ($LASTEXITCODE -eq 10) {
+    Write-Host '模型设置待完成'
+    exit 10
+  }
   if ($LASTEXITCODE -ne 0) { throw '安装失败。请根据上方具体错误处理后重试。' }
 } finally {
   if ($ownsStartup) { Remove-Item -LiteralPath $startupPath -ErrorAction SilentlyContinue }

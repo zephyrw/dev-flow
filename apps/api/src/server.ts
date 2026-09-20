@@ -10,6 +10,9 @@ import {
   requireCondition,
   Id,
   ProjectSchema,
+  RepairSelectionSchema,
+  type FunctionalIssue,
+  type RepairModelBatch,
 } from "../../../packages/contracts/src/index.js";
 import { makeMcp, workerNames } from "../../../packages/mcp/src/tools.js";
 import type { Engine } from "../../../packages/core/src/engine.js";
@@ -31,8 +34,17 @@ import { FunctionalIssueService } from "../../../packages/core/src/functional-is
 import { repositoryInfo } from "../../../packages/git/src/git.js";
 import { GitDeliveryCoordinator } from "../../../packages/git/src/delivery-coordinator.js";
 import { DocumentService } from "../../../packages/core/src/document-service.js";
-import { ExecutionSpecService } from "../../../packages/core/src/execution-spec-service.js";
 import { FeedbackService } from "../../../packages/core/src/feedback-service.js";
+import { ModelAccessService } from "../../../packages/core/src/model-access-service.js";
+import { ModelCatalogService } from "../../../packages/core/src/model-catalog-service.js";
+import {
+  assertResumeMode,
+  assertStopIdentity,
+  attachIssueRepairOptions,
+  listFunctionalIssueViews,
+  modelErrorRetryable,
+  registerModelRoutes,
+} from "./model-routes.js";
 import { PlanReviewService } from "../../../packages/core/src/plan-review.js";
 import { SourceChangeService } from "../../../packages/core/src/source-change.js";
 
@@ -116,22 +128,25 @@ export async function buildServer(
       (req.body as any)?.request_id ||
       (req.headers["x-request-id"] as string) ||
       null;
+    const code = known
+      ? error.code
+      : status === 422
+        ? "VALIDATION_ERROR"
+        : "INTERNAL_ERROR";
     reply.code(status).send({
       error: {
-        code: known
-          ? error.code
-          : status === 422
-            ? "VALIDATION_ERROR"
-            : "INTERNAL_ERROR",
+        code,
         message:
           known || error instanceof z.ZodError
             ? error.message
             : "操作失败，请检查本机服务日志",
+        retryable: known ? modelErrorRetryable(error.code) : false,
         details: known
           ? (error as any).details
           : error instanceof z.ZodError
             ? error.issues
             : undefined,
+        request_id: requestId,
       },
       request_id: requestId,
     });
@@ -151,15 +166,22 @@ export async function buildServer(
     human(req);
     return engine.registerProject(req.body);
   });
-  const createWorkflowService = new CreateWorkflowService(engine.store);
+  const accessService = new ModelAccessService(engine.store, {
+    catalog: new ModelCatalogService(engine.store),
+  });
+  const createWorkflowService = new CreateWorkflowService(
+    engine.store,
+    engine.config,
+    accessService,
+  );
   const asideService = new AsideSessionService(engine.store);
   const issueService = new FunctionalIssueService(engine.store);
   const documentService = new DocumentService(
     engine.store,
     engine.config.storage_root,
   );
-  const executionSpecService = new ExecutionSpecService(engine.store);
   const feedbackService = new FeedbackService(engine.store);
+  const modelServices = registerModelRoutes(app, engine, human);
 
   app.get("/api/workflows", async (req) => {
     human(req);
@@ -179,6 +201,10 @@ export async function buildServer(
         workspace_mode: body.workspace_mode,
         planner_profile_id: body.planner_profile_id,
         executor_profile_id: body.executor_profile_id,
+        planner_profile: body.planner_profile,
+        executor_profile: body.executor_profile,
+        role_overrides: body.role_overrides,
+        source_defaults_revision: body.source_defaults_revision,
       });
       void engine.dispatch().catch((e) => console.error("调度失败", String(e)));
       return { workflow: res.workflow, is_existing: res.is_existing };
@@ -447,6 +473,10 @@ export async function buildServer(
     const issue = engine.store.transaction(() => {
       const issue = issueService.createIssue(workflowId, text, body.refs ?? []);
       engine.store.put("functional_fix_intent", workflowId, workflowId, {
+        ...engine.store.get<Record<string, unknown>>(
+          "functional_fix_intent",
+          workflowId,
+        ),
         source_snapshot: engine.get(workflowId).snapshot_id,
       });
       const message = feedbackService.submitFeedback({
@@ -455,6 +485,14 @@ export async function buildServer(
         kind: "functional",
         text,
         refs: body.refs ?? [],
+      });
+      attachIssueRepairOptions(modelServices.repairs, {
+        workflow_id: workflowId,
+        request_id: body.request_id ?? issue.issue_id,
+        issue,
+        body,
+        store: engine.store,
+        specs: modelServices.specs,
       });
       engine.queueFormalFeedback(workflowId, message.message_id);
       return issue;
@@ -466,7 +504,16 @@ export async function buildServer(
   const handleListIssues = async (req: any) => {
     human(req);
     const workflowId = Id.parse((req.params as any).id);
-    return issueService.listIssues(workflowId);
+    const issues = issueService.listIssues(workflowId);
+    const views = listFunctionalIssueViews(
+      engine,
+      modelServices.specs,
+      workflowId,
+    );
+    return issues.map((issue) => {
+      const view = views.find((item) => item.issue.issue_id === issue.issue_id);
+      return view ? { ...issue, ...view } : issue;
+    });
   };
 
   const handleConfirmIssue = async (req: any) => {
@@ -475,61 +522,167 @@ export async function buildServer(
     const issueId = Id.parse((req.params as any).issueId);
     const body = z
       .object({
-        request_id: z.string().optional(),
-        expected_version: z.number().optional(),
+        request_id: z.string().uuid().optional(),
+        expected_version: z.number().int().optional(),
         delivery_revision_id: z.string().optional(),
         passed: z.boolean(),
         feedback: z.string().optional(),
+        repair_model: RepairSelectionSchema.optional(),
+        remember_for_task: z.boolean().optional(),
+        batch_id: z.string().optional(),
+        expected_assignment_revision: z.number().int().nonnegative().optional(),
+        expected_spec_revision: z.number().int().nonnegative().optional(),
       })
       .parse(req.body);
-
-    if (body.expected_version !== undefined) {
-      const w = engine.get(workflowId);
+    const requestId = body.request_id ?? crypto.randomUUID();
+    const operationId = objectHash({ workflowId, issueId, requestId });
+    const payloadHash = objectHash(body);
+    const result = engine.store.transaction(() => {
+      const prior = engine.store.get<{ hash: string; issue: FunctionalIssue }>(
+        "functional_confirmation",
+        operationId,
+      );
+      if (prior) {
+        requireCondition(
+          prior.hash === payloadHash,
+          "IDEMPOTENCY_CONFLICT",
+          "同一请求不能修改为不同内容",
+          409,
+        );
+        return { issue: prior.issue, replayed: true };
+      }
+      const workflow = engine.get(workflowId);
+      if (body.expected_version !== undefined) {
+        requireCondition(
+          workflow.version === body.expected_version,
+          "VERSION_CONFLICT",
+          "工作流版本已变化",
+          409,
+        );
+      }
+      const currentIssue = issueService
+        .listIssues(workflowId)
+        .find((issue) => issue.issue_id === issueId);
       requireCondition(
-        w.version === body.expected_version,
-        "VERSION_CONFLICT",
-        `工作流版本冲突: 期望 v${body.expected_version}, 当前 v${w.version}`,
+        workflow.state === "HUMAN_PENDING" &&
+          currentIssue?.status === "ready_for_retest",
+        "INVALID_STATE",
+        "只能在等待验收时复测已完成修复的问题",
         409,
       );
-    }
-
-    const currentIssue = issueService
-      .listIssues(workflowId)
-      .find((i) => i.issue_id === issueId);
-    const currentDelivery = engine.store
-      .list<any>("delivery_revision", workflowId)
-      .filter((r) => !r.invalidated)
-      .at(-1);
-    requireCondition(
-      engine.get(workflowId).state === "HUMAN_PENDING" &&
-        currentIssue?.fix_delivery_id === currentDelivery?.id &&
-        (!body.delivery_revision_id ||
-          body.delivery_revision_id === currentDelivery.id),
-      "DELIVERY_STALE",
-      "只能复测当前有效修复交付",
-      409,
-    );
-    const issue = issueService.userConfirmIssue(
-      workflowId,
-      issueId,
-      body.passed,
-      body.feedback,
-    );
-    if (!body.passed) {
-      engine.store.put("functional_fix_intent", workflowId, workflowId, {
-        source_snapshot: engine.get(workflowId).snapshot_id,
+      // main accepts lightweight completion records here; human retesting does
+      // not require a separate delivery-evidence entity.
+      requireCondition(
+        body.delivery_revision_id === undefined ||
+          body.delivery_revision_id === currentIssue!.fix_delivery_id,
+        "DELIVERY_STALE",
+        "问题已由后续轮次修复，请刷新后复测",
+        409,
+      );
+      const changingSelection =
+        body.repair_model !== undefined || body.remember_for_task === true;
+      requireCondition(
+        !body.passed || !changingSelection,
+        "INVALID_REQUEST",
+        "确认通过时不能同时修改修复处理者",
+        422,
+      );
+      if (changingSelection) {
+        const batch = engine.store
+          .list<RepairModelBatch>("repair_model_batch", workflowId)
+          .find(
+            (item) =>
+              item.id === body.batch_id &&
+              item.kind === "functional" &&
+              item.status === "open" &&
+              item.issue_ids.includes(issueId),
+          );
+        requireCondition(
+          Boolean(batch),
+          "REPAIR_BATCH_MISMATCH",
+          "修复批次与当前问题不一致",
+          409,
+        );
+        const expectedAssignment = z
+          .number()
+          .int()
+          .nonnegative()
+          .parse(body.expected_assignment_revision);
+        const expectedSpec = z
+          .number()
+          .int()
+          .nonnegative()
+          .parse(body.expected_spec_revision);
+        if (body.repair_model !== undefined) {
+          modelServices.repairs.assign({
+            workflow_id: workflowId,
+            request_id: requestId,
+            batch_id: batch!.id,
+            expected_assignment_revision: expectedAssignment,
+            expected_spec_revision: expectedSpec,
+            selection: body.repair_model,
+            remember_for_task: body.remember_for_task === true,
+          });
+        } else {
+          // This branch is inside the confirmation transaction. Remembering the
+          // existing handler must not clear or replace its one-time assignment.
+          const view = modelServices.repairs
+            .listOpenBatches(workflowId)
+            .find((item) => item.batch.id === batch!.id)!;
+          requireCondition(
+            (view.assignment?.revision ?? 0) === expectedAssignment,
+            "REPAIR_BATCH_MISMATCH",
+            "修复指派版本已变化",
+            409,
+          );
+          const spec = modelServices.specs.readView(workflowId).spec;
+          modelServices.specs.updateExecutionSpec({
+            workflow_id: workflowId,
+            request_id: requestId,
+            expected_spec_revision: expectedSpec,
+            planner_profile: spec.plannerProfile,
+            executor_profile: spec.executorProfile,
+            role_overrides: {
+              ...spec.roleOverrides,
+              functional_fixer: {
+                mode: "explicit",
+                profile: view.assignment?.profile ?? view.inherited_profile,
+              },
+            },
+          });
+        }
+      }
+      const issue = issueService.userConfirmIssue(
+        workflowId,
+        issueId,
+        body.passed,
+        body.feedback,
+      );
+      if (!body.passed) {
+        engine.store.put("functional_fix_intent", workflowId, workflowId, {
+          ...engine.store.get<Record<string, unknown>>(
+            "functional_fix_intent",
+            workflowId,
+          ),
+          source_snapshot: workflow.snapshot_id,
+        });
+        const message = feedbackService.submitFeedback({
+          request_id: requestId,
+          workflow_id: workflowId,
+          kind: "functional",
+          text: body.feedback ?? issue.description,
+          refs: issue.refs,
+        });
+        engine.queueFormalFeedback(workflowId, message.message_id);
+      }
+      engine.store.put("functional_confirmation", operationId, workflowId, {
+        hash: payloadHash,
+        issue,
       });
-      const message = feedbackService.submitFeedback({
-        request_id: body.request_id ?? crypto.randomUUID(),
-        workflow_id: workflowId,
-        kind: "functional",
-        text: body.feedback ?? issue.description,
-        refs: issue.refs,
-      });
-      engine.queueFormalFeedback(workflowId, message.message_id);
-      void engine.dispatch();
-    }
-    return issue;
+      return { issue, replayed: false };
+    });
+    if (!body.passed && !result.replayed) void engine.dispatch();
+    return result.issue;
   };
 
   app.post("/api/workflows/:id/functional-issues", handleCreateIssue);
@@ -741,46 +894,6 @@ export async function buildServer(
         workflow: engineResult,
       };
     });
-  });
-
-  // 执行规格修订与安全中断路由 (RQ-03 & 5.2 节)
-  app.post("/api/workflows/:id/execution-spec", async (req) => {
-    human(req);
-    const workflowId = Id.parse((req.params as any).id);
-    const body = (req.body || {}) as any;
-
-    const w = engine.get(workflowId);
-    if (body.expected_version !== undefined) {
-      requireCondition(
-        w.version === body.expected_version,
-        "VERSION_CONFLICT",
-        `工作流版本冲突: 期望 v${body.expected_version}, 当前 v${w.version}`,
-        409,
-      );
-    }
-
-    const result = executionSpecService.updateExecutionSpec({
-      request_id: body.request_id || `req_${Date.now()}`,
-      expected_version: body.expected_version ?? w.version,
-      workflow_id: workflowId,
-      planner_profile: body.planner_profile,
-      executor_profile: body.executor_profile,
-      template_id: body.template_id,
-      template_revision: body.template_revision,
-      interrupt_requested: body.interrupt_requested,
-    });
-
-    if (body.interrupt_requested) {
-      if (["EXECUTING", "VERIFYING", "QUEUED"].includes(w.state)) {
-        await engine.stop(workflowId, "local_console");
-      }
-    }
-
-    return {
-      ok: true,
-      spec: result.spec,
-      interrupt_required: result.interruptRequired,
-    };
   });
 
   app.get(
@@ -1014,11 +1127,18 @@ export async function buildServer(
   });
   app.post("/api/workflows/:id/stop", async (req) => {
     human(req);
-    return engine.stop(Id.parse((req.params as any).id), "local_console");
+    const key = Id.parse((req.params as any).id);
+    assertStopIdentity(
+      engine,
+      key,
+      (req.body || {}) as Record<string, unknown>,
+    );
+    return engine.stop(key, "local_console");
   });
   app.post("/api/workflows/:id/recover", async (req) => {
     human(req);
     const key = Id.parse((req.params as any).id);
+    assertResumeMode(engine, key, (req.body || {}) as Record<string, unknown>);
     await engine.waitForIdle(key);
     await (engine.runtime as LocalRuntime)?.browser?.reconcile(key);
     await (engine.runtime as LocalRuntime)?.environments
@@ -1072,6 +1192,11 @@ export async function buildServer(
   app.post("/api/workflows/:id/review/retry", async (req) => {
     human(req);
     const key = Id.parse((req.params as any).id);
+    assertStopIdentity(
+      engine,
+      key,
+      (req.body || {}) as Record<string, unknown>,
+    );
     return engine.retryReview(key);
   });
   app.post("/api/workflows/:id/environment/stop", async (req) => {

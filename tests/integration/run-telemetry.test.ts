@@ -39,7 +39,7 @@ it("the production planner-takeover runtime publishes native actions before proc
     executorProfile: profile,
     created_at: new Date().toISOString(),
   });
-  s.store.put("repair_assignment", s.w.id, s.w.id, { planner: true });
+  authorizePlannerTakeover(s);
   const runtime = new LocalRuntime(s.engine);
   s.engine.runtime = runtime;
   try {
@@ -79,3 +79,36 @@ it("the production planner-takeover runtime publishes native actions before proc
     await cleanup(s);
   }
 });
+
+function authorizePlannerTakeover(s: Awaited<ReturnType<typeof fixture>>) {
+  const w = s.engine.get(s.w.id);
+  const phase = "before_human" as const;
+  const reviewIds = ["review-a", "review-b", "review-c"];
+  s.store.put("quality_gate", s.engine.quality.getGateKey(w.id, phase), w.id, {
+    workflow_id: w.id,
+    phase,
+    cycle: 1,
+    executor_rejections: 3,
+    failed_repair_review_ids: reviewIds,
+    current_review_id: reviewIds[2],
+    takeover: true,
+    status: "rejected",
+    updated_at: new Date().toISOString(),
+  });
+  reviewIds.forEach((id, index) => {
+    s.store.put("quality_review", id, w.id, {
+      workflow_id: w.id,
+      phase,
+      verdict: "changes_required",
+      executor_repair_run_id: "repair-" + index,
+    });
+  });
+  s.store.put("repair_assignment", w.id, w.id, {
+    planner: true,
+    phase,
+    source: "quality_review",
+    source_review_id: reviewIds[2],
+    plan_revision: w.plan_revision,
+    plan_hash: w.plan_hash,
+  });
+}

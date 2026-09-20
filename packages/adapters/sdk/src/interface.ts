@@ -1,4 +1,16 @@
-import type { ToolProfile } from "../../../contracts/src/execution-spec.js";
+import type {
+  ReasoningSelection,
+  ToolProfile,
+} from "../../../contracts/src/execution-spec.js";
+import type {
+  EffortTransport,
+  ModelCatalog,
+  ModelEntry,
+} from "../../../contracts/src/model-catalog.js";
+import type {
+  NonSecretIdentity,
+  ProbeTerminal,
+} from "../../../contracts/src/model-access.js";
 
 export interface ProbeRequest {
   toolProfile: ToolProfile;
@@ -46,7 +58,11 @@ export interface RunContext {
     | "planner_takeover"
     | "functional_fix"
     | "aside"
-    | "merge_conflict";
+    | "merge_conflict"
+    | "diagnose";
+  frozenInvocation?: import("../../../contracts/src/model-routing.js").FrozenInvocation;
+  catalogEntry?: ModelEntry;
+  selectionCapability?: ModelSelectionCapability;
 }
 
 export interface PreparedInvocation {
@@ -123,4 +139,75 @@ export interface NativeAgentAdapter {
   readExecutionFacts(input: FactCursor): Promise<ExecutionFactPage>;
   resume(input: ResumeContext): Promise<PreparedInvocation>;
   stop(identity: ProcessIdentity): Promise<StopResult>;
+}
+
+export interface DiscoveryContext {
+  adapterId: string;
+  executablePath?: string;
+  cliVersion?: string;
+  nativeConfigScope?: string;
+  timeoutMs?: number;
+}
+
+export interface IdentityContext {
+  adapterId: string;
+  executablePath?: string;
+  nativeConfigScope?: string;
+}
+
+export interface ProbeContext {
+  workspaceRoot: string;
+  timeoutMs?: number;
+}
+
+export interface ProbeTerminalInput {
+  adapterId?: string;
+  cancelled?: boolean;
+  truncated?: boolean;
+  launchFailed?: boolean;
+  stdout: string;
+  stderr: string;
+  exitCode: number | null;
+  timedOut?: boolean;
+  selectedModel?: string | null;
+}
+
+export interface ModelSelectionCapability {
+  cliVersion?: string;
+  opencodeVariantEncoding?: "flag" | "hash";
+  kimiSupportEfforts?: string[];
+  kimiProvider?: string;
+}
+
+export interface ModelSelectionFingerprint {
+  adapterId: string;
+  executable?: string;
+  nativeConfigProfile?: string;
+  modelId: string | null;
+  effortTransport: EffortTransport;
+  effortValue: string | null;
+}
+
+export interface ResolvedSelection {
+  adapterId: string;
+  modelToken: string | null;
+  effortArgs: string[];
+  effortEnv: Record<string, string>;
+  reasoning: ReasoningSelection;
+  transport: EffortTransport;
+  fingerprint: ModelSelectionFingerprint;
+}
+
+export interface ModelConfigurationAdapter {
+  discoverModels(context: DiscoveryContext): Promise<ModelCatalog>;
+  readIdentity(context: IdentityContext): Promise<NonSecretIdentity>;
+  resolveSelection(
+    profile: ToolProfile,
+    catalog: ModelCatalog,
+  ): ResolvedSelection;
+  prepareAccessProbe(
+    selection: ResolvedSelection,
+    context: ProbeContext,
+  ): PreparedInvocation;
+  parseProbeTerminal(input: ProbeTerminalInput): ProbeTerminal;
 }

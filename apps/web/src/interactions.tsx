@@ -1,9 +1,18 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { WorkflowActivity } from "./components/WorkflowActivity.js";
 import {
   RequirementComposer,
   type ReferenceItem,
 } from "./components/RequirementComposer.js";
+import {
+  RepairModelPicker,
+  defaultRepairPicker,
+  type RepairPickerValue,
+} from "./components/RepairModelPicker.js";
+import {
+  getExecutionSpec,
+  type ExecutionSpecPayload,
+} from "./components/model-api.js";
 
 export function TaskInteraction({
   detail,
@@ -20,12 +29,22 @@ export function TaskInteraction({
     [isGuiding, setIsGuiding] = useState(false),
     [interactionMode, setInteractionMode] = useState<"feedback" | "aside">(
       "feedback",
-    );
+    ),
+    [repair, setRepair] = useState<RepairPickerValue>(defaultRepairPicker()),
+    [spec, setSpec] = useState<ExecutionSpecPayload | null>(null);
 
   const w = detail.workflow;
   const requests = (detail.operations ?? []).filter(
     (r: any) => r.status === "pending",
   );
+  useEffect(() => {
+    if (!isGuiding || interactionMode !== "feedback") return;
+    const controller = new AbortController();
+    getExecutionSpec(w.id, controller.signal)
+      .then(setSpec)
+      .catch(() => setSpec(null));
+    return () => controller.abort();
+  }, [isGuiding, interactionMode, w.id]);
   const act = async (fn: () => Promise<any>, propagateError = false) => {
     setPending(true);
     setError("");
@@ -57,7 +76,7 @@ export function TaskInteraction({
     "WAITING_AUTHORIZATION",
   ].includes(w.state);
   if (!requests.length && !canGuide)
-    return <WorkflowActivity workflow={w} refresh={refresh} />;
+    return <WorkflowActivity workflow={w} refresh={refresh} detail={detail} />;
   return (
     <section className="task-interaction" aria-label="指导执行模型">
       {w.state === "BLOCKED" &&
@@ -251,20 +270,48 @@ export function TaskInteraction({
                       refs: submittedRefs,
                     });
                   } else {
+                    const functional =
+                      w.state === "HUMAN_PENDING" &&
+                      detail.plan?.plan?.task_model === "native-v2";
+                    const body: Record<string, unknown> = {
+                      request_id: crypto.randomUUID(),
+                      text: submittedText,
+                      refs: submittedRefs,
+                      scope: "within_plan",
+                    };
+                    if (functional) {
+                      body.repair_model = repair.selection;
+                      body.remember_for_task = repair.rememberForTask;
+                      if (
+                        repair.rememberForTask ||
+                        repair.selection.mode === "planner" ||
+                        repair.selection.mode === "executor" ||
+                        repair.selection.mode === "custom"
+                      ) {
+                        body.expected_spec_revision = spec?.spec_revision ?? 0;
+                      }
+                    }
                     await send(
-                      `/workflows/${w.id}/${w.state === "HUMAN_PENDING" && detail.plan?.plan?.task_model === "native-v2" ? "functional-issues" : "feedback"}`,
-                      {
-                        request_id: crypto.randomUUID(),
-                        text: submittedText,
-                        refs: submittedRefs,
-                        scope: "within_plan",
-                      },
+                      `/workflows/${w.id}/${functional ? "functional-issues" : "feedback"}`,
+                      body,
                     );
                   }
                   setIsGuiding(false);
+                  setRepair(defaultRepairPicker());
                 }, true);
               }}
             />
+            {interactionMode === "feedback" &&
+              w.state === "HUMAN_PENDING" &&
+              detail.plan?.plan?.task_model === "native-v2" && (
+                <RepairModelPicker
+                  value={repair}
+                  onChange={setRepair}
+                  disabled={pending}
+                  plannerProfile={spec?.spec?.plannerProfile}
+                  executorProfile={spec?.spec?.executorProfile}
+                />
+              )}
 
             <div style={{ display: "flex", justifyContent: "flex-start" }}>
               <button
@@ -287,7 +334,7 @@ export function TaskInteraction({
           {error}
         </p>
       )}
-      <WorkflowActivity workflow={w} refresh={refresh} />
+      <WorkflowActivity workflow={w} refresh={refresh} detail={detail} />
       {detail.queue?.owners?.length > 0 && (
         <p>
           占用任务：

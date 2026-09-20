@@ -15,6 +15,28 @@ export interface ProcessSpec {
   deadline_at?: number;
   stdin?: string;
 }
+
+function feedChildStdin(
+  child: ChildProcessWithoutNullStreams,
+  payload: string | undefined,
+  closeAfterWrite: boolean,
+) {
+  let sent = false;
+  const send = () => {
+    if (sent || !child.stdin) return;
+    sent = true;
+    child.stdin.on("error", () => {});
+    if (!payload) {
+      if (closeAfterWrite) child.stdin.end();
+      return;
+    }
+    if (closeAfterWrite) child.stdin.end(payload);
+    else child.stdin.write(payload);
+  };
+  child.once("spawn", send);
+  if (child.pid) send();
+}
+
 export interface ManagedProcess extends EventEmitter {
   id: string;
   completion: Promise<{
@@ -89,13 +111,13 @@ export class ProcessManager {
         stdio: "pipe",
         env: inherited,
       });
-      child.stdin.on("error", () => {});
-      // All children use the current Windows user and its existing login profile.
-      child.stdin.write(
+      feedChildStdin(
+        child,
         JSON.stringify({
           ...spec,
           env: { ...inherited, ...spec.env },
         }) + "\n",
+        false,
       );
     } else {
       child = spawn(spec.executable, spec.args, {
@@ -105,9 +127,7 @@ export class ProcessManager {
         shell: false,
         stdio: "pipe",
       });
-      child.stdin.on("error", () => {});
-      if (spec.stdin) child.stdin.end(spec.stdin);
-      else child.stdin.end();
+      feedChildStdin(child, spec.stdin, true);
     }
     events.pauseOutput = () => {
       child.stdout.pause();

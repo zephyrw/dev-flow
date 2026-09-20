@@ -125,7 +125,7 @@ export abstract class BaseNativeAgentAdapter implements NativeAgentAdapter {
       throw new Error("不支持的工具配置项：" + unknown.join(", "));
     const path = resolveToolExecutable(
       this.defaultBinaryName,
-      input.toolProfile.executableRef,
+      input.frozenInvocation?.executable ?? input.toolProfile.executableRef,
       this.fallbackDirs,
     );
     if (!path)

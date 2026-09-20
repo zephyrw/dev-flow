@@ -1,0 +1,9 @@
+Codex CLI
+
+Usage: codex [OPTIONS] [PROMPT]
+
+  app-server          Start the JSON-RPC app server
+  --model <MODEL>     Select model token
+  -c <KEY=VALUE>      Config override, including model_reasoning_effort
+
+This help snapshot is for directory fixtures only.

@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { randomUUID } from "node:crypto";
 import {
   createIsolatedTestEnv,
   type IsolatedTestEnv,
@@ -6,6 +7,8 @@ import {
 import { createDefaultAdapterRegistry } from "../../packages/adapters/sdk/src/index.js";
 import { ExecutionSpecService } from "../../packages/core/src/execution-spec-service.js";
 import { now } from "../../packages/core/src/util.js";
+import { inheritRoleOverrides } from "../../packages/contracts/src/index.js";
+import { seedVerifiedAccess } from "../../packages/core/src/access-guard.js";
 
 describe("IT-ADAPTERS: 原生适配器协议、增量流式解码、Profile 快照与配置安全切换 (LF-20, LF-21, RQ-13, RQ-14, RQ-24)", () => {
   let env: IsolatedTestEnv;
@@ -50,6 +53,20 @@ describe("IT-ADAPTERS: 原生适配器协议、增量流式解码、Profile 快�
         options: {},
       },
       created_at: now(),
+    });
+    seedVerifiedAccess(env.store, {
+      id: "p_claude",
+      revision: 1,
+      adapterId: "claude-code",
+      modelSelection: "native-config",
+      options: {},
+    });
+    seedVerifiedAccess(env.store, {
+      id: "e_codex",
+      revision: 1,
+      adapterId: "codex",
+      modelSelection: "native-config",
+      options: {},
     });
   });
 
@@ -135,8 +152,8 @@ describe("IT-ADAPTERS: 原生适配器协议、增量流式解码、Profile 快�
 
     // 修订为复合工具（Planner 使用 claude-code，Executor 使用 codex）
     const updateRes = specService.updateExecutionSpec({
-      request_id: "req_spec_up_01",
-      expected_version: 1,
+      request_id: randomUUID(),
+      expected_spec_revision: 1,
       workflow_id: workflowId,
       planner_profile: {
         id: "p_claude",
@@ -152,12 +169,18 @@ describe("IT-ADAPTERS: 原生适配器协议、增量流式解码、Profile 快�
         modelSelection: "native-config",
         options: {},
       },
-      interrupt_requested: true,
+      role_overrides: inheritRoleOverrides(),
+      accessVerified: true,
     });
 
-    expect(updateRes.spec.revision).toBe(2);
-    expect(updateRes.spec.mode).toBe("composite");
-    expect(updateRes.interruptRequired).toBe(true);
+    expect(updateRes.status).toBe("committed");
+    expect(updateRes.changed).toBe(true);
+    expect(updateRes.entity_revision).toBe(2);
+    expect(updateRes.effective_from).toBe("next-run");
+
+    const latestAfter = specService.getLatestSpec(workflowId);
+    expect(latestAfter.revision).toBe(2);
+    expect(latestAfter.mode).toBe("composite");
 
     // 验证旧版本 r1 快照依然完整留存未被篡改
     const r1 = specService.getSpecByRevision(workflowId, 1);
@@ -174,8 +197,8 @@ describe("IT-ADAPTERS: 原生适配器协议、增量流式解码、Profile 快�
   it("TC-ADAPT-05: 未知 Profile 或未支持适配器拒绝隐式回退，必须保持 fail-closed 阻断", () => {
     expect(() => {
       specService.updateExecutionSpec({
-        request_id: "req_spec_fail",
-        expected_version: 1,
+        request_id: randomUUID(),
+        expected_spec_revision: 1,
         workflow_id: workflowId,
         planner_profile: {
           id: "p_unknown",
@@ -191,6 +214,8 @@ describe("IT-ADAPTERS: 原生适配器协议、增量流式解码、Profile 快�
           modelSelection: "native-config",
           options: {},
         },
+        role_overrides: inheritRoleOverrides(),
+        accessVerified: true,
       });
     }).toThrow();
   });

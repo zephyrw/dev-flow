@@ -1,0 +1,45 @@
+{
+  "adapterId": "qoder",
+  "visibleNativeIds": ["auto", "efficient", "qwen-3.8-max", "kimi-k3", "glm-5.2"],
+  "rejectedLabels": ["Qwen 3.8 Max", "Kimi K3", "GLM 5.2", "MiniMax M3"],
+  "entries": {
+    "auto": {
+      "nativeId": "auto",
+      "selectionKind": "native-router",
+      "hidden": false,
+      "effort": {
+        "status": "unknown",
+        "transport": "none",
+        "values": []
+      }
+    },
+    "efficient": {
+      "nativeId": "efficient",
+      "selectionKind": "native-router",
+      "hidden": false,
+      "effort": {
+        "status": "unknown",
+        "values": []
+      }
+    },
+    "qwen-3.8-max": {
+      "nativeId": "qwen-3.8-max",
+      "selectionKind": "fixed",
+      "hidden": false,
+      "effort": {
+        "status": "supported",
+        "transport": "flag",
+        "values": ["low", "medium", "xhigh"]
+      }
+    },
+    "kimi-k3": {
+      "nativeId": "kimi-k3",
+      "hidden": false,
+      "effort": {
+        "status": "supported",
+        "transport": "flag",
+        "values": ["low", "high", "max"]
+      }
+    }
+  }
+}

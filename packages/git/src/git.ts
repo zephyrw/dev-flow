@@ -27,29 +27,28 @@ export async function git(
   env: NodeJS.ProcessEnv = {},
   input?: string,
 ): Promise<string> {
+  const options = {
+    cwd,
+    env: { ...process.env, ...env, GIT_TERMINAL_PROMPT: "0" },
+    windowsHide: true,
+    maxBuffer: 32 * 1024 * 1024,
+  };
   if (input !== undefined)
     return new Promise((yes, no) => {
-      const p = execFile(
-        "git",
-        args,
-        {
-          cwd,
-          env: { ...process.env, ...env, GIT_TERMINAL_PROMPT: "0" },
-          windowsHide: true,
-          maxBuffer: 32 * 1024 * 1024,
-        },
-        (err, out) => (err ? no(err) : yes(out.trimEnd())),
+      const p = execFile("git", args, options, (err, out) =>
+        err ? no(err) : yes(out.trimEnd()),
       );
-      p.stdin!.end(input);
+      let sent = false;
+      const send = () => {
+        if (sent || !p.stdin) return;
+        sent = true;
+        p.stdin.on("error", () => {});
+        p.stdin.end(input);
+      };
+      p.once("spawn", send);
+      if (p.pid) send();
     });
-  return (
-    await run("git", args, {
-      cwd,
-      env: { ...process.env, ...env, GIT_TERMINAL_PROMPT: "0" },
-      windowsHide: true,
-      maxBuffer: 32 * 1024 * 1024,
-    })
-  ).stdout.trimEnd();
+  return (await run("git", args, options)).stdout.trimEnd();
 }
 export async function repositoryInfo(root: string) {
   const path = realpathSync(root);

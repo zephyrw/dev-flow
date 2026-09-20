@@ -1,0 +1,16 @@
+Qoder CLI
+
+Usage: qodercli [OPTIONS] [PROMPT]
+
+  --list-models
+  --model <native-id>
+  --reasoning-effort <value>
+  --thinking auto|adaptive|enabled|disabled
+  --print
+  --output-format stream-json
+  --permission-mode default|accept_edits|bypass_permissions|dont_ask|auto
+  --tools <tools>
+  --resume <id>
+  login
+
+This help snapshot is for directory fixtures only.

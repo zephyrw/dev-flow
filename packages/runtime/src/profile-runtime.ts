@@ -4,7 +4,9 @@ import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
 import { z } from "zod";
 import type { Engine } from "../../core/src/engine.js";
-import { profileForRun, bindProfile } from "../../core/src/run-profile.js";
+import { profileForRun, bindProfile, invocationFingerprintFromProfile, permissionCategoryForPurpose } from "../../core/src/run-profile.js";
+import { beginRunConversation, retainRunConversation } from "../../core/src/conversation-lineage.js";
+export { sessionFamily, conversationLineageKey } from "../../core/src/conversation-lineage.js";
 import {
   diagnosisOutputSchema,
   parseDiagnosisOutput,
@@ -65,7 +67,6 @@ import {
   reviewInstructions,
 } from "./review-materials.js";
 
-/** One native process per purpose. No model polling, scheduler or shadow execution plan. */
 export class ProfileRuntime {
   constructor(
     private engine: Engine,
@@ -133,7 +134,7 @@ export class ProfileRuntime {
       this.engine.store,
       this.engine.config,
       w.id,
-      "quality_review",
+      "diagnose",
     );
     const run: Run = {
       ...binding,
@@ -457,22 +458,14 @@ export class ProfileRuntime {
       (["planning", "aside"].includes(purpose)
         ? await this.planningWorkspaces(w)
         : this.workspaces(w));
-    // Read-only review/aside always starts a separate conversation; implementation resumes only the exact profile.
-    const sessionKey =
-      w.id +
-      ":" +
-      objectHash(profile) +
-      ":" +
-      (["implement", "plan_self_check", "functional_fix"].includes(purpose)
-        ? "execution"
-        : purpose);
-    const previous =
-      purpose === "planning" || !readOnlyPurpose(purpose)
-        ? this.engine.store.get<{ id: string }>(
-            "native_conversation",
-            sessionKey,
-          )
-        : undefined;
+    const fingerprint =
+      run.invocation_fingerprint ??
+      invocationFingerprintFromProfile(
+        profile,
+        w.id,
+        permissionCategoryForPurpose(purpose),
+      );
+    const resume = beginRunConversation(this.engine.store, run, fingerprint);
     const context = {
       workflowId: w.id,
       runId: run.id,
@@ -486,6 +479,7 @@ export class ProfileRuntime {
         ? this.engine.plan(w.id).plan.scope.allowed_paths
         : [],
       toolProfile: profile,
+      frozenInvocation: run.frozen_invocation,
       handoffDocPath: handoff,
       outputPath: output,
       schemaPath,
@@ -500,10 +494,10 @@ export class ProfileRuntime {
         schemaPath +
         " 返回一个 JSON 对象作为最终回答。禁止额外创建替代计划。",
     };
-    const invocation = previous
+    const invocation = resume
       ? await adapter.resume({
           ...context,
-          previousConversationId: previous.id,
+          previousConversationId: resume.id,
         })
       : await adapter.prepare(context);
     const baseline = readOnlyPurpose(purpose)
@@ -607,10 +601,15 @@ export class ProfileRuntime {
       : undefined;
     let final: unknown,
       text = "",
-      conversation = previous?.id,
+      conversation = resume?.id,
       failure: string | undefined,
       stderrTail = "";
     let permissionFailure: FlowError | undefined;
+    const retainConversation = (session?: string) => {
+      if (!session) return;
+      if (resume && resume.id !== session) return;
+      retainRunConversation(this.engine.store, run, session, fingerprint);
+    };
     const handle = (event: NormalizedEvent) => {
       const v = event.raw as any;
       if (v && typeof v === "object") {
@@ -639,9 +638,10 @@ export class ProfileRuntime {
           v.conversation_id ??
           v.init?.conversation_id;
         if (typeof session === "string") {
-          if (previous && session !== previous.id)
+          if (resume && session !== resume.id)
             failure = "会话 ID 与精确续接目标不一致";
           conversation = session;
+          retainConversation(session);
           sessionObserver?.bind(session);
         }
         if (
@@ -740,25 +740,7 @@ export class ProfileRuntime {
       conversation_id: conversation,
     });
     if (permissionFailure) {
-      // A denied operation still belongs to a real session. Preserve its exact
-      // identity for an explicitly authorized resume; never silently start over.
-      if (
-        !readOnlyPurpose(purpose) &&
-        conversation &&
-        !failure &&
-        (!previous || previous.id === conversation)
-      ) {
-        this.engine.store.put("native_conversation", sessionKey, w.id, {
-          id: conversation,
-          profile,
-          run_id: run.id,
-        });
-        this.engine.store.put("conversation", w.id, w.id, {
-          id: conversation,
-          profile,
-          run_id: run.id,
-        });
-      }
+      retainConversation(conversation);
       throw permissionFailure;
     }
     if (
@@ -779,23 +761,7 @@ export class ProfileRuntime {
             : classified.code === "EXECUTION_FAILED"
               ? "NATIVE_RUN_FAILED"
               : classified.code;
-      // A failed run is not a successful delivery, but its genuine conversation
-      // can still be continued once the runtime problem has been resolved.
-      if (
-        code !== "RUN_REVOKED" &&
-        !readOnlyPurpose(purpose) &&
-        conversation &&
-        (!previous || previous.id === conversation)
-      ) {
-        const retained = { id: conversation, profile, run_id: run.id };
-        this.engine.store.put(
-          "native_conversation",
-          sessionKey,
-          w.id,
-          retained,
-        );
-        this.engine.store.put("conversation", w.id, w.id, retained);
-      }
+      retainConversation(conversation);
       throw normalizeRuntimeFailure(
         new FlowError(code, diagnostic, 422, {
           diagnostic,
@@ -814,19 +780,7 @@ export class ProfileRuntime {
         "READ_ONLY_VIOLATION",
         "只读阶段修改了工作区，结论作废",
       );
-    if (conversation) {
-      this.engine.store.put("native_conversation", sessionKey, w.id, {
-        id: conversation,
-        profile,
-        run_id: run.id,
-      });
-      if (!readOnlyPurpose(purpose))
-        this.engine.store.put("conversation", w.id, w.id, {
-          id: conversation,
-          profile,
-          run_id: run.id,
-        });
-    }
+    retainConversation(conversation);
     if (existsSync(output)) final = JSON.parse(readFileSync(output, "utf8"));
     if (final === undefined) {
       const match = text.trim().match(/^```(?:json)?\s*([\s\S]*?)\s*```$/);

@@ -6,6 +6,7 @@ import { rejectedDeliveryFeedback } from "./delivery-feedback.js";
 import { batchExecutionInstructions } from "./execution-guidance.js";
 import { normalizeRuntimeFailure } from "../../runtime/src/errors.js";
 import { runtimeFailureResolution } from "../../contracts/src/runtime-failure.js";
+import { openRepairBatch } from "./repair-model-service.js";
 
 export function prepareRepairResume(engine: Engine, key: string) {
   if (resolveTaskModel(engine.plan(key).plan) !== "native-v2") return;
@@ -226,6 +227,9 @@ function repairNativeFailure(
     attempts: failures.length,
     executor_failures: executorFailures,
     planner_failures: plannerFailures,
+    repair_batch_id:
+      run?.repair_batch_id ??
+      openRepairBatch(engine.store, key, "quality")?.id,
     code,
     last_error: message,
     instructions,

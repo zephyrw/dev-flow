@@ -1,0 +1,5 @@
+[1mAvailable models[0m
+Using cached models (auth refresh failed)
+grok-4.6 (default)
+grok-4.5
+kimi-k3-flash (custom)

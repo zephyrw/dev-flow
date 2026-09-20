@@ -1,0 +1,36 @@
+[models."kimi-code/kimi-for-coding"]
+model = "kimi-for-coding"
+provider = "managed:kimi-code"
+always_thinking = true
+name = "K2.7 Coding"
+
+[models."kimi-code/kimi-for-coding-highspeed"]
+model = "kimi-for-coding-highspeed"
+provider = "managed:kimi-code"
+always_thinking = true
+name = "K2.7 Coding Highspeed"
+
+[models."kimi-code/k3"]
+model = "k3"
+provider = "managed:kimi-code"
+support_efforts = ["low", "high", "max"]
+default_effort = "high"
+name = "k3"
+
+[models."kimi-code/k3-256k"]
+model = "k3-256k"
+provider = "managed:kimi-code"
+support_efforts = ["low", "high", "max"]
+default_effort = "high"
+name = "k3-256k"
+
+[models."openai/gpt-4.1"]
+model = "gpt-4.1"
+provider = "openai"
+support_efforts = ["low", "high", "max"]
+name = "external gpt"
+
+[providers.kimi-code]
+type = "kimi"
+name = "kimi-code"
+base_url = "https://api.example.invalid"

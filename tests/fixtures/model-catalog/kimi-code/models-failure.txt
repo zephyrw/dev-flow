@@ -1,0 +1,3 @@
+Error: cannot read .kimi-code/config.toml
+Permission denied
+EACCES: directory unreadable

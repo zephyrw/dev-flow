@@ -12,6 +12,10 @@ import {
 import { CurrentDeliveryReader } from "../../evidence/src/current-delivery.js";
 import { PlanSelfCheckCoordinator } from "./plan-self-check.js";
 import { now, objectHash } from "./util.js";
+import {
+  closeQualityRepairBatch,
+  ensureQualityRepairBatch,
+} from "./repair-model-service.js";
 
 type Decision = {
   action:
@@ -238,6 +242,7 @@ export class QualityCoordinator {
             ?.phase === phase
         )
           this.store.remove("repair_assignment", workflowId);
+        closeQualityRepairBatch(this.store, workflowId, phase);
         decision = {
           action: "pass",
           rejectionCount: gate.executor_rejections,
@@ -252,6 +257,12 @@ export class QualityCoordinator {
         gate.status = "rejected";
         gate.cycle++;
         delete gate.passed_input_fingerprint;
+        ensureQualityRepairBatch(
+          this.store,
+          workflowId,
+          phase,
+          result.run_id,
+        );
         decision = {
           action: gate.takeover ? "takeover_by_planner" : "repair_by_executor",
           rejectionCount: gate.executor_rejections,

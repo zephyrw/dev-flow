@@ -1,0 +1,64 @@
+{
+  "adapterId": "agy",
+  "source": "native-live",
+  "visibleNativeIds": [
+    "gemini-3.8-flash-high",
+    "gemini-3.8-flash-medium",
+    "gemini-3.7-flash-high",
+    "gemini-3.7-flash-medium",
+    "gemini-3.6-flash-high",
+    "gemini-3.6-flash-medium",
+    "gemini-3.1-pro-high",
+    "claude-sonnet-4-6"
+  ],
+  "rejectedLabels": ["Claude Opus 4.6 Thinking", "GPT-OSS 120B"],
+  "entries": {
+    "gemini-3.7-flash-high": {
+      "nativeId": "gemini-3.7-flash-high",
+      "hidden": false,
+      "effort": {
+        "status": "supported",
+        "transport": "none",
+        "values": ["high", "medium"],
+        "fixedValue": "high",
+        "variants": {
+          "high": "gemini-3.7-flash-high",
+          "medium": "gemini-3.7-flash-medium"
+        }
+      }
+    },
+    "gemini-3.7-flash-medium": {
+      "nativeId": "gemini-3.7-flash-medium",
+      "hidden": false,
+      "effort": {
+        "status": "supported",
+        "transport": "none",
+        "values": ["high", "medium"],
+        "fixedValue": "medium",
+        "variants": {
+          "high": "gemini-3.7-flash-high",
+          "medium": "gemini-3.7-flash-medium"
+        }
+      }
+    },
+    "gemini-3.1-pro-high": {
+      "nativeId": "gemini-3.1-pro-high",
+      "hidden": false,
+      "effort": {
+        "status": "supported",
+        "transport": "none",
+        "values": ["high"],
+        "fixedValue": "high"
+      }
+    },
+    "claude-sonnet-4-6": {
+      "nativeId": "claude-sonnet-4-6",
+      "hidden": false,
+      "effort": {
+        "status": "unknown",
+        "transport": "none",
+        "values": []
+      }
+    }
+  }
+}

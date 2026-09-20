@@ -1,0 +1,68 @@
+{
+  "adapterId": "codex",
+  "source": "native-live",
+  "visibleNativeIds": [
+    "gpt-5.6-sol",
+    "gpt-6-astra",
+    "gpt-5.6-terra",
+    "gpt-5.6-luna",
+    "gpt-5.5",
+    "experimental-foo"
+  ],
+  "hiddenNativeIds": ["gpt-reserve", "codex-auto-review"],
+  "entries": {
+    "gpt-6-astra": {
+      "nativeId": "gpt-6-astra",
+      "label": "GPT-6 Astra",
+      "hidden": false,
+      "entryId": "codex/openai/gpt-6-astra-2026-09-18",
+      "effort": {
+        "status": "supported",
+        "transport": "config",
+        "values": ["low", "medium", "high", "xhigh", "max", "ultra"],
+        "defaultValue": "medium"
+      }
+    },
+    "gpt-5.6-sol": {
+      "nativeId": "gpt-5.6-sol",
+      "hidden": false,
+      "effort": {
+        "status": "supported",
+        "transport": "config",
+        "values": ["low", "medium", "high", "xhigh", "max", "ultra"],
+        "defaultValue": "low"
+      }
+    },
+    "gpt-5.6-luna": {
+      "nativeId": "gpt-5.6-luna",
+      "hidden": false,
+      "effort": {
+        "status": "supported",
+        "transport": "config",
+        "values": ["low", "medium", "high", "xhigh", "max"]
+      }
+    },
+    "experimental-foo": {
+      "nativeId": "experimental-foo",
+      "hidden": false,
+      "effort": {
+        "status": "unknown",
+        "transport": "config",
+        "values": []
+      }
+    },
+    "gpt-reserve": {
+      "nativeId": "gpt-reserve",
+      "hidden": true,
+      "effort": {
+        "status": "supported",
+        "transport": "config",
+        "values": ["low", "medium", "high"]
+      }
+    },
+    "codex-auto-review": {
+      "nativeId": "codex-auto-review",
+      "hidden": true
+    }
+  }
+}

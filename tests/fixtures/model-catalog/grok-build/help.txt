@@ -1,0 +1,13 @@
+Grok Build
+
+Usage: grok [OPTIONS] [PROMPT]
+
+  models                          List models
+  --model <id>
+  --reasoning-effort <value>
+  --effort <value>                Alias of --reasoning-effort
+  --output-format streaming-json
+  --no-plan
+  --no-subagents
+
+This help snapshot is for directory fixtures only.

@@ -1,0 +1,69 @@
+{
+  "officialSeed": [
+    {
+      "sourceUrl": "https://code.claude.com/docs/en/model-config",
+      "checkedAt": "2026-09-18",
+      "cliVersionConstraint": ">=2.1.270",
+      "nativeIdConfirmed": true,
+      "nativeId": "claude-fable-5-1",
+      "label": "Claude Fable 5.1",
+      "effortValues": ["low", "medium", "high", "xhigh", "max"],
+      "effortEvidence": "official model-config"
+    },
+    {
+      "sourceUrl": "https://code.claude.com/docs/en/model-config",
+      "checkedAt": "2026-09-18",
+      "nativeIdConfirmed": true,
+      "nativeId": "claude-opus-5",
+      "label": "Claude Opus 5",
+      "effortValues": ["low", "medium", "high", "xhigh", "max"],
+      "effortEvidence": "official model-config"
+    },
+    {
+      "sourceUrl": "https://code.claude.com/docs/en/model-config",
+      "checkedAt": "2026-09-18",
+      "nativeIdConfirmed": true,
+      "nativeId": "claude-opus-4-6",
+      "label": "Claude Opus 4.6",
+      "effortValues": ["low", "medium", "high", "max"],
+      "effortEvidence": "official model-config, no xhigh"
+    },
+    {
+      "sourceUrl": "https://code.claude.com/docs/en/model-config",
+      "checkedAt": "2026-09-18",
+      "nativeIdConfirmed": true,
+      "nativeId": "claude-sonnet-4-6",
+      "label": "Claude Sonnet 4.6",
+      "effortValues": ["low", "medium", "high", "max"],
+      "effortEvidence": "official model-config, no xhigh"
+    },
+    {
+      "sourceUrl": "https://code.claude.com/docs/en/model-config",
+      "checkedAt": "2026-09-18",
+      "nativeIdConfirmed": true,
+      "nativeId": "claude-haiku-4-5",
+      "label": "Claude Haiku 4.5",
+      "effortEvidence": "effort not verified"
+    },
+    {
+      "sourceUrl": "https://code.claude.com/docs/en/model-config",
+      "checkedAt": "2026-09-18",
+      "nativeIdConfirmed": false,
+      "label": "OpusPlan",
+      "effortEvidence": "composite behavior, not pure effort"
+    },
+    {
+      "sourceUrl": "https://code.claude.com/docs/en/model-config",
+      "checkedAt": "2026-09-18",
+      "nativeIdConfirmed": false,
+      "label": "Ultracode",
+      "effortEvidence": "not a pure effort value"
+    }
+  ],
+  "configuredModels": [
+    {
+      "nativeId": "claude-opus-4-6",
+      "label": "configured opus-4-6"
+    }
+  ]
+}

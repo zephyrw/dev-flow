@@ -5,6 +5,12 @@ source_dir=""
 install_dir="$HOME/.local/share/devflow"
 selected_tools="codex"
 version="latest"
+planner_tool=""
+planner_model=""
+planner_effort=""
+executor_tool=""
+executor_model=""
+executor_effort=""
 while [ "$#" -gt 0 ]; do
   [ "$#" -ge 2 ] || { echo "Missing argument: $1" >&2; exit 30; }
   case "$1" in
@@ -12,6 +18,12 @@ while [ "$#" -gt 0 ]; do
     --install-dir|-i) install_dir="$2";;
     --tool|--tools|-t) selected_tools="$2";;
     --version) version="$2";;
+    --planner-tool) planner_tool="$2";;
+    --planner-model) planner_model="$2";;
+    --planner-effort) planner_effort="$2";;
+    --executor-tool) executor_tool="$2";;
+    --executor-model) executor_model="$2";;
+    --executor-effort) executor_effort="$2";;
     *) echo "Unknown argument: $1" >&2; exit 30;;
   esac
   shift 2
@@ -47,4 +59,11 @@ source_dir="$(cd "$source_dir" && pwd)"
 node="$source_dir/runtime/node"
 if [ ! -x "$node" ]; then node="$(command -v node)" || exit 40; fi
 [ -f "$source_dir/dist/packages/installer/src/main.js" ] || { echo "Incomplete built bundle" >&2; exit 20; }
-"$node" "$source_dir/dist/packages/installer/src/main.js" --source "$source_dir" --install-dir "$install_dir" --tools "$selected_tools"
+set -- --source "$source_dir" --install-dir "$install_dir" --tools "$selected_tools"
+[ -n "$planner_tool" ] && set -- "$@" --planner-tool "$planner_tool"
+[ -n "$planner_model" ] && set -- "$@" --planner-model "$planner_model"
+[ -n "$planner_effort" ] && set -- "$@" --planner-effort "$planner_effort"
+[ -n "$executor_tool" ] && set -- "$@" --executor-tool "$executor_tool"
+[ -n "$executor_model" ] && set -- "$@" --executor-model "$executor_model"
+[ -n "$executor_effort" ] && set -- "$@" --executor-effort "$executor_effort"
+"$node" "$source_dir/dist/packages/installer/src/main.js" "$@"

@@ -2,12 +2,26 @@ import { InstallationStateManager, INSTALL_EXIT_CODES } from "./state.js";
 import { ClientInstaller } from "../../clients/src/installer.js";
 import {
   SupportedAdapters,
+  ToolProfileSchema,
   type SupportedAdapterId,
+  type ToolProfile,
 } from "../../contracts/src/execution-spec.js";
-import { ConfigSchema } from "../../contracts/src/config.js";
+import {
+  ConfigSchema,
+  loadConfig,
+  type Config,
+} from "../../contracts/src/config.js";
+import {
+  parseStoredToolProfile,
+  type ModelCatalog,
+  type ModelDefaults,
+} from "../../contracts/src/index.js";
 import { atomicWrite, hash } from "../../core/src/util.js";
+import { ModelDefaultsService } from "../../core/src/model-defaults-service.js";
+import { assertProfilesVerified } from "../../core/src/access-guard.js";
+import { Store } from "../../store/src/store.js";
 import { createDefaultAdapterRegistry } from "../../adapters/sdk/src/index.js";
-import { resolve, join, dirname } from "node:path";
+import { resolve, join } from "node:path";
 import {
   existsSync,
   mkdirSync,
@@ -19,13 +33,456 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { homedir } from "node:os";
+import { randomUUID } from "node:crypto";
 const exec = promisify(execFile);
+
+export interface InstallerRoleInputs {
+  plannerTool?: string;
+  plannerModel?: string;
+  plannerEffort?: string;
+  executorTool?: string;
+  executorModel?: string;
+  executorEffort?: string;
+}
+
 export interface InstallerRunOptions {
   sourceDir?: string;
   targetTools?: string[];
   installRoot?: string;
   clientHome?: string;
   port?: number;
+  roleInputs?: InstallerRoleInputs;
+}
+
+export class InstallerDefaultsError extends Error {
+  readonly code = "illegal" as const;
+}
+
+export type ApplyInstallerDefaultsResult = {
+  defaults: ModelDefaults;
+  saved: boolean;
+  pending: boolean;
+  message: string;
+};
+
+export function parseInstallerCliArgs(args: string[]): {
+  sourceDir?: string;
+  installRoot?: string;
+  targetTools?: string[];
+  roleInputs: InstallerRoleInputs;
+} {
+  const read = (name: string) => {
+    const i = args.indexOf(name);
+    if (i < 0) return undefined;
+    const value = args[i + 1];
+    if (!value || value.startsWith("--")) return undefined;
+    return value;
+  };
+  const tools = read("--tools");
+  return {
+    sourceDir: read("--source"),
+    installRoot: read("--install-dir"),
+    targetTools: tools?.split(","),
+    roleInputs: {
+      plannerTool: read("--planner-tool"),
+      plannerModel: read("--planner-model"),
+      plannerEffort: read("--planner-effort"),
+      executorTool: read("--executor-tool"),
+      executorModel: read("--executor-model"),
+      executorEffort: read("--executor-effort"),
+    },
+  };
+}
+
+export function roleInputsProvided(inputs: InstallerRoleInputs): boolean {
+  return Boolean(
+    inputs.plannerTool ||
+      inputs.plannerModel ||
+      inputs.plannerEffort ||
+      inputs.executorTool ||
+      inputs.executorModel ||
+      inputs.executorEffort,
+  );
+}
+
+function rolePatchProvided(tool?: string, model?: string, effort?: string) {
+  return Boolean(tool || model || effort);
+}
+
+function parseAdapterId(value: string): SupportedAdapterId {
+  if (SupportedAdapters.includes(value as SupportedAdapterId)) {
+    return value as SupportedAdapterId;
+  }
+  throw new InstallerDefaultsError("未知工具：" + value);
+}
+
+function executableRefFor(
+  adapterId: SupportedAdapterId,
+  config: Config,
+): string | undefined {
+  if (adapterId === "codex") return config.models.codex_executable ?? "codex";
+  if (adapterId === "agy") return config.models.agy_executable ?? "agy";
+  return undefined;
+}
+
+function catalogForAdapter(
+  store: Store,
+  adapterId: SupportedAdapterId,
+): ModelCatalog | undefined {
+  return store
+    .list<ModelCatalog>("model_catalog")
+    .find((item) => item.adapterId === adapterId);
+}
+
+function catalogEntryFor(
+  store: Store,
+  adapterId: SupportedAdapterId,
+  modelId?: string,
+) {
+  if (!modelId) return undefined;
+  const catalog = catalogForAdapter(store, adapterId);
+  return catalog?.entries.find(
+    (entry) => entry.nativeId === modelId || entry.entryId === modelId,
+  );
+}
+
+function catalogEffortDefault(
+  store: Store,
+  adapterId: SupportedAdapterId,
+  modelId?: string,
+): string | undefined {
+  const entry = catalogEntryFor(store, adapterId, modelId);
+  return entry?.effort.defaultValue ?? entry?.effort.fixedValue;
+}
+
+function assertCatalogEffortAllowed(
+  store: Store,
+  adapterId: SupportedAdapterId,
+  modelId: string | undefined,
+  effort: string,
+) {
+  const entry = catalogEntryFor(store, adapterId, modelId);
+  if (!entry) return;
+  if (entry.effort.status === "unsupported") {
+    throw new InstallerDefaultsError("当前模型不适用思考强度");
+  }
+  if (entry.effort.status === "unknown") {
+    throw new InstallerDefaultsError("当前客户端未提供该档位信息");
+  }
+  if (entry.effort.values.length && !entry.effort.values.includes(effort)) {
+    throw new InstallerDefaultsError("当前模型不支持该思考强度");
+  }
+}
+
+function resolveInstallerEffort(
+  store: Store,
+  adapterId: SupportedAdapterId,
+  modelId: string | undefined,
+  provided?: string,
+): ToolProfile["reasoning"] {
+  if (provided) {
+    assertCatalogEffortAllowed(store, adapterId, modelId, provided);
+    return { mode: "explicit", value: provided };
+  }
+  const catalogDefault = catalogEffortDefault(store, adapterId, modelId);
+  if (catalogDefault) return { mode: "explicit", value: catalogDefault };
+  return { mode: "native-default" };
+}
+
+function effortAllowed(
+  store: Store,
+  adapterId: SupportedAdapterId,
+  modelId: string | undefined,
+  effort: string,
+): boolean {
+  const entry = catalogEntryFor(store, adapterId, modelId);
+  if (!entry) return true;
+  if (entry.effort.status === "unsupported") return false;
+  if (entry.effort.status === "unknown") return effort.length === 0;
+  if (entry.effort.values.length && !entry.effort.values.includes(effort)) {
+    return false;
+  }
+  return true;
+}
+
+function explicitEffort(
+  store: Store,
+  adapterId: SupportedAdapterId,
+  modelId: string | undefined,
+  effort: string,
+): ToolProfile["reasoning"] {
+  assertCatalogEffortAllowed(store, adapterId, modelId, effort);
+  return { mode: "explicit", value: effort };
+}
+
+function catalogOrNativeDefault(
+  store: Store,
+  adapterId: SupportedAdapterId,
+  modelId?: string,
+): ToolProfile["reasoning"] {
+  const catalogDefault = catalogEffortDefault(store, adapterId, modelId);
+  if (catalogDefault) return { mode: "explicit", value: catalogDefault };
+  return { mode: "native-default" };
+}
+
+type OverlayResult =
+  | { ok: true; profile: ToolProfile }
+  | { ok: false; reason: "incomplete" | "illegal"; message: string };
+
+function overlayRoleProfile(
+  base: ToolProfile,
+  patch: { tool?: string; model?: string; effort?: string },
+  store: Store,
+  config: Config,
+): OverlayResult {
+  if (!rolePatchProvided(patch.tool, patch.model, patch.effort)) {
+    return { ok: true, profile: parseStoredToolProfile(base) };
+  }
+  const nextAdapter = patch.tool ? parseAdapterId(patch.tool) : base.adapterId;
+  const toolChanged = nextAdapter !== base.adapterId;
+  if (toolChanged && !patch.model) {
+    return {
+      ok: false,
+      reason: "incomplete",
+      message: "改工具时必须指定合法模型",
+    };
+  }
+  if (toolChanged) {
+    const modelId = patch.model!;
+    const reasoning = patch.effort
+      ? explicitEffort(store, nextAdapter, modelId, patch.effort)
+      : catalogOrNativeDefault(store, nextAdapter, modelId);
+    const next = {
+      ...base,
+      adapterId: nextAdapter,
+      modelSelection: "explicit" as const,
+      modelId,
+      selectionKind: "fixed" as const,
+      reasoning,
+    };
+    delete next.providerConfigRef;
+    delete next.toolsetRef;
+    delete next.nativeConfigProfile;
+    next.options = {};
+    const executable = executableRefFor(nextAdapter, config);
+    if (executable) next.executableRef = executable;
+    else delete next.executableRef;
+    return { ok: true, profile: ToolProfileSchema.parse(next) };
+  }
+  const modelId = patch.model ?? base.modelId;
+  const modelChanged = Boolean(patch.model && patch.model !== base.modelId);
+  let reasoning = base.reasoning;
+  if (patch.effort) {
+    reasoning = explicitEffort(store, nextAdapter, modelId, patch.effort);
+  } else if (modelChanged) {
+    const oldEffort =
+      base.reasoning?.mode === "explicit" ? base.reasoning.value : undefined;
+    if (oldEffort && !effortAllowed(store, nextAdapter, modelId, oldEffort)) {
+      throw new InstallerDefaultsError("当前模型不支持该思考强度");
+    }
+  }
+  const next: Record<string, unknown> = {
+    ...base,
+    adapterId: nextAdapter,
+    reasoning,
+  };
+  if (patch.model) {
+    next.modelSelection = "explicit";
+    next.modelId = patch.model;
+    next.selectionKind = "fixed";
+  }
+  return { ok: true, profile: ToolProfileSchema.parse(next) };
+}
+
+export function mergeInstallerDefaults(
+  store: Store,
+  current: ModelDefaults,
+  inputs: InstallerRoleInputs,
+  config: Config,
+): {
+  plannerProfile: ToolProfile;
+  executorProfile: ToolProfile;
+  complete: boolean;
+  message?: string;
+} {
+  const planner = overlayRoleProfile(
+    current.plannerProfile,
+    {
+      tool: inputs.plannerTool,
+      model: inputs.plannerModel,
+      effort: inputs.plannerEffort,
+    },
+    store,
+    config,
+  );
+  const executor = overlayRoleProfile(
+    current.executorProfile,
+    {
+      tool: inputs.executorTool,
+      model: inputs.executorModel,
+      effort: inputs.executorEffort,
+    },
+    store,
+    config,
+  );
+  if (!planner.ok) {
+    return {
+      plannerProfile: current.plannerProfile,
+      executorProfile: current.executorProfile,
+      complete: false,
+      message: planner.message,
+    };
+  }
+  if (!executor.ok) {
+    return {
+      plannerProfile: current.plannerProfile,
+      executorProfile: current.executorProfile,
+      complete: false,
+      message: executor.message,
+    };
+  }
+  return {
+    plannerProfile: planner.profile,
+    executorProfile: executor.profile,
+    complete: true,
+  };
+}
+
+function profilesVerified(store: Store, profiles: ToolProfile[]): boolean {
+  try {
+    assertProfilesVerified(store, profiles);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function selectedProfiles(
+  defaults: ModelDefaults,
+  inputs: InstallerRoleInputs,
+): ToolProfile[] {
+  const selected: ToolProfile[] = [];
+  if (
+    rolePatchProvided(
+      inputs.plannerTool,
+      inputs.plannerModel,
+      inputs.plannerEffort,
+    )
+  ) {
+    selected.push(defaults.plannerProfile);
+  }
+  if (
+    rolePatchProvided(
+      inputs.executorTool,
+      inputs.executorModel,
+      inputs.executorEffort,
+    )
+  ) {
+    selected.push(defaults.executorProfile);
+  }
+  return selected;
+}
+
+function defaultsPending(
+  store: Store,
+  defaults: ModelDefaults,
+  inputs: InstallerRoleInputs,
+): boolean {
+  const selected = selectedProfiles(defaults, inputs);
+  if (selected.length) return !profilesVerified(store, selected);
+  return !profilesVerified(store, [
+    defaults.plannerProfile,
+    defaults.executorProfile,
+  ]);
+}
+
+export function applyInstallerModelDefaults(options: {
+  store: Store;
+  config: Config;
+  roleInputs?: InstallerRoleInputs;
+  targetTools?: string[];
+}): ApplyInstallerDefaultsResult {
+  void options.targetTools;
+  const inputs = options.roleInputs ?? {};
+  const service = new ModelDefaultsService(options.store);
+  const current = service.getOrImport(options.config);
+  if (!roleInputsProvided(inputs)) {
+    const pending = defaultsPending(options.store, current, inputs);
+    return {
+      defaults: current,
+      saved: false,
+      pending,
+      message: pending ? "模型设置待完成" : "模型默认配置已就绪",
+    };
+  }
+  const merged = mergeInstallerDefaults(
+    options.store,
+    current,
+    inputs,
+    options.config,
+  );
+  if (!merged.complete) {
+    return {
+      defaults: current,
+      saved: false,
+      pending: true,
+      message: merged.message ?? "模型设置待完成",
+    };
+  }
+  try {
+    assertProfilesVerified(options.store, [
+      merged.plannerProfile,
+      merged.executorProfile,
+    ]);
+    service.save({
+      request_id: randomUUID(),
+      expected_defaults_revision: current.revision,
+      plannerProfile: merged.plannerProfile,
+      executorProfile: merged.executorProfile,
+    });
+  } catch (error) {
+    if (error instanceof InstallerDefaultsError) throw error;
+    options.store.put("model_defaults_draft", "global", "global", {
+      schema_version: 1,
+      expected_defaults_revision: current.revision,
+      plannerProfile: merged.plannerProfile,
+      executorProfile: merged.executorProfile,
+      updated_at: new Date().toISOString(),
+    });
+    return {
+      defaults: current,
+      saved: false,
+      pending: true,
+      message: "模型设置待完成",
+    };
+  }
+  const saved = service.getOrImport(options.config);
+  const pending = defaultsPending(options.store, saved, inputs);
+  return {
+    defaults: saved,
+    saved: true,
+    pending,
+    message: pending ? "模型设置待完成" : "模型默认配置已就绪",
+  };
+}
+
+export function applyInstallerModelDefaultsFromConfigFile(
+  configFile: string,
+  roleInputs: InstallerRoleInputs = {},
+  targetTools?: string[],
+): ApplyInstallerDefaultsResult {
+  const config = loadConfig(configFile);
+  const store = new Store(join(config.storage_root, "devflow.sqlite"));
+  try {
+    return applyInstallerModelDefaults({
+      store,
+      config,
+      roleInputs,
+      targetTools,
+    });
+  } finally {
+    store.close();
+  }
 }
 export async function runInstaller(
   options: InstallerRunOptions = {},
@@ -37,6 +494,7 @@ export async function runInstaller(
     version = "0.2.0";
   const state = new InstallationStateManager(join(root, "state.json"));
   const tools = options.targetTools ?? ["codex"];
+  const roleInputs = options.roleInputs ?? {};
   let code: number = INSTALL_EXIT_CODES.DOWNLOAD_VERIFICATION_FAILED;
   try {
     if (
@@ -184,6 +642,13 @@ export async function runInstaller(
       state.updateComponent("skills:" + client, version, "VERIFIED");
     }
     state.updateComponent("service", version, "CONFIGURED");
+    code = INSTALL_EXIT_CODES.CONFIGURATION_CONFLICT;
+    const loaded = loadConfig(config);
+    const defaultsResult = applyInstallerModelDefaultsFromConfigFile(
+      config,
+      roleInputs,
+      tools,
+    );
     code = INSTALL_EXIT_CODES.SERVICE_UNHEALTHY;
     // A subprocess loads the installed config without contaminating the installer's own module cache.
     const launcher = join(target, "dist/packages/service/src/launcher.js");
@@ -209,7 +674,16 @@ export async function runInstaller(
     state.updateComponent("service", version, "VERIFIED");
     code = INSTALL_EXIT_CODES.NEEDS_USER_ACTION;
     const registry = createDefaultAdapterRegistry();
-    for (const adapterId of tools as SupportedAdapterId[]) {
+    const selectedRoleAdapters = [
+      roleInputs.plannerTool,
+      roleInputs.executorTool,
+    ].filter((id): id is string => Boolean(id));
+    const probeIds = [
+      ...new Set([...tools, ...selectedRoleAdapters]),
+    ] as SupportedAdapterId[];
+    let toolsReady = true;
+    for (const adapterId of probeIds) {
+      if (!SupportedAdapters.includes(adapterId)) continue;
       const probe = await registry.mustGet(adapterId).probe({
         toolProfile: {
           id: adapterId,
@@ -225,15 +699,19 @@ export async function runInstaller(
         probe.available ? "VERIFIED" : "DISCOVERED",
         probe.unsupportedReason,
       );
-      if (!probe.available)
-        throw new Error(
-          "服务和 Skill 已安装；客户端尚未安装或未通过探测：" + adapterId,
-        );
+      if (!probe.available) toolsReady = false;
     }
+    console.log("首次设置页面：" + loaded.server.human_origin);
+    const pending = defaultsResult.pending || !toolsReady;
+    if (pending) console.log("模型设置待完成");
     const saved = state.load();
-    saved.last_exit_code = 0;
+    saved.last_exit_code = pending
+      ? INSTALL_EXIT_CODES.NEEDS_USER_ACTION
+      : INSTALL_EXIT_CODES.SUCCESS;
     state.save(saved);
-    return INSTALL_EXIT_CODES.SUCCESS;
+    return pending
+      ? INSTALL_EXIT_CODES.NEEDS_USER_ACTION
+      : INSTALL_EXIT_CODES.SUCCESS;
   } catch (e) {
     const saved = state.load();
     saved.last_exit_code = code;
@@ -246,15 +724,12 @@ if (
   process.argv[1] &&
   resolve(process.argv[1]) === fileURLToPath(import.meta.url)
 ) {
-  const args = process.argv.slice(2),
-    read = (name: string) => {
-      const i = args.indexOf(name);
-      return i < 0 ? undefined : args[i + 1];
-    };
+  const parsed = parseInstallerCliArgs(process.argv.slice(2));
   runInstaller({
-    sourceDir: read("--source"),
-    installRoot: read("--install-dir"),
-    targetTools: read("--tools")?.split(","),
+    sourceDir: parsed.sourceDir,
+    installRoot: parsed.installRoot,
+    targetTools: parsed.targetTools,
+    roleInputs: parsed.roleInputs,
   }).then((code) => {
     process.exitCode = code;
   });

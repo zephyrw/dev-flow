@@ -1,10 +1,16 @@
 import { resolveProfile } from "../../core/src/run-profile.js";
 import {
+  RoleOverridesSchema,
   SupportedAdapters,
+  ToolProfileSchema,
   type ToolProfile,
 } from "../../contracts/src/execution-spec.js";
 import { CreateWorkflowService } from "../../core/src/create-workflow.js";
 import { ExecutionSpecService } from "../../core/src/execution-spec-service.js";
+import { ModelAccessService } from "../../core/src/model-access-service.js";
+import { ModelCatalogService } from "../../core/src/model-catalog-service.js";
+import { ModelDefaultsService } from "../../core/src/model-defaults-service.js";
+import { buildExecutionSpecResponse } from "../../core/src/execution-spec-view.js";
 import { WorkspaceReferenceSchema } from "../../contracts/src/feedback.js";
 import { startTask } from "../../core/src/progress.js";
 import { repairFailure } from "../../core/src/repair.js";
@@ -54,6 +60,8 @@ export const workerNames = [
 ] as const;
 export function makeMcp(engine: Engine, principal: Principal) {
   const toolContracts: Record<string, unknown> = {};
+  const catalog = new ModelCatalogService(engine.store);
+  const access = new ModelAccessService(engine.store, { catalog });
   const server = new McpServer({
     name: principal.role === "worker" ? "devflow_worker" : "devflow",
     version: "0.1.0",
@@ -146,11 +154,19 @@ export function makeMcp(engine: Engine, principal: Principal) {
         workspace_mode: z
           .enum(["existing_workspace", "new_worktree"])
           .default("new_worktree"),
-        planner_profile_id: Id,
-        executor_profile_id: Id,
+        planner_profile_id: Id.optional(),
+        executor_profile_id: Id.optional(),
+        planner_profile: ToolProfileSchema.optional(),
+        executor_profile: ToolProfileSchema.optional(),
+        role_overrides: RoleOverridesSchema.optional(),
+        source_defaults_revision: z.number().int().nonnegative().optional(),
       }),
       (a) => {
-        const result = new CreateWorkflowService(engine.store).execute(a);
+        const result = new CreateWorkflowService(
+          engine.store,
+          engine.config,
+          access,
+        ).execute(a);
         void engine.dispatch();
         return {
           ...result,
@@ -163,17 +179,67 @@ export function makeMcp(engine: Engine, principal: Principal) {
     );
     register(
       "devflow_list_tool_profiles",
-      "列出已保存配置及使用客户端原生配置的内置配置 ID；列表不代表工具已安装或认证。",
+      "列出已保存配置及内置工具配置，并附带目录与 verified/unverified 摘要；列表不代表已安装或已授权。",
       z.object({}),
       () => {
+        const defaults = new ModelDefaultsService(engine.store).getOrImport(
+          engine.config,
+        );
         const saved = engine.store.list<ToolProfile>("tool_profile");
-        return [
+        const profiles = [
           ...saved,
           ...SupportedAdapters.filter(
             (a) => !saved.some((p) => p.id === "profile-" + a),
           ).map((a) => resolveProfile(engine.store, "profile-" + a)),
-        ];
+        ].map((profile) => ({
+          ...profile,
+          catalogStatus: catalog.getModels(profile.adapterId).status,
+          accessStatus: access.readiness(profile) === "verified" ? "verified" : "unverified",
+        }));
+        return {
+          profiles,
+          catalog_summary: catalog.listTools(),
+          defaults: {
+            revision: defaults.revision,
+            planner_adapter: defaults.plannerProfile.adapterId,
+            executor_adapter: defaults.executorProfile.adapterId,
+            source: defaults.source,
+          },
+          access_summary: profiles.map((profile) => ({
+            id: profile.id,
+            adapterId: profile.adapterId,
+            status: profile.accessStatus,
+          })),
+          note: "verified/unverified 只是访问缓存摘要，不等于授权完成或可调用该模型",
+        };
       },
+      true,
+    );
+    register(
+      "devflow_get_model_defaults",
+      "读取系统默认规划/执行配置；只读，不能由此修改全局默认。",
+      z.object({}),
+      () => new ModelDefaultsService(engine.store).getOrImport(engine.config),
+      true,
+    );
+    register(
+      "devflow_get_model_configuration",
+      "读取任务当前执行配置、解析角色与当前轮绑定；旧任务无持久化 spec 时返回兼容视图。后续规划/审查由平台配置执行。",
+      z.object({ workflow_id: Id }),
+      (a) => {
+        const specs = new ExecutionSpecService(engine.store, engine.config);
+        return buildExecutionSpecResponse(engine, a.workflow_id, specs);
+      },
+      true,
+    );
+    register(
+      "devflow_list_models",
+      "读取指定工具的已缓存模型目录；普通列表不调用 CLI。",
+      z.object({
+        adapter: z.enum(SupportedAdapters),
+        scope_id: z.string().min(1).optional(),
+      }),
+      (a) => new ModelCatalogService(engine.store).getModels(a.adapter, a.scope_id),
       true,
     );
     register(
@@ -217,39 +283,41 @@ export function makeMcp(engine: Engine, principal: Principal) {
     );
     register(
       "devflow_update_execution_spec",
-      "安全修订已有工作流的工具配置规格（Profile/模型），若有正在执行的活动 Run 先审计停止后再应用新规格。",
-      z.object({
-        workflow_id: Id,
-        expected_version: z.number().int().optional(),
-        planner_profile: z.any().optional(),
-        executor_profile: z.any().optional(),
-        template_id: z.string().optional(),
-        template_revision: z.number().int().optional(),
-        interrupt_requested: z.boolean().optional(),
-      }),
-      async (a) => {
-        const w = engine.get(a.workflow_id);
-        const specService = new ExecutionSpecService(engine.store);
-        const result = specService.updateExecutionSpec({
-          request_id: `req_${Date.now()}`,
-          expected_version: a.expected_version ?? w.version,
+      "按严格合同保存任务下一轮执行配置；必须提交 expected_spec_revision、稳定 request_id 以及完整两槽与三覆盖。不能修改系统默认，也不能用工作流 version 代替 spec revision。",
+      z
+        .object({
+          workflow_id: Id,
+          request_id: z.string().uuid(),
+          expected_spec_revision: z.number().int().nonnegative(),
+          planner_profile: ToolProfileSchema,
+          executor_profile: ToolProfileSchema,
+          role_overrides: RoleOverridesSchema,
+        })
+        .strict(),
+      (a) => {
+        const profiles = [
+          a.planner_profile,
+          a.executor_profile,
+          ...(a.role_overrides.reviewer.mode === "explicit"
+            ? [a.role_overrides.reviewer.profile]
+            : []),
+          ...(a.role_overrides.review_fixer.mode === "explicit"
+            ? [a.role_overrides.review_fixer.profile]
+            : []),
+          ...(a.role_overrides.functional_fixer.mode === "explicit"
+            ? [a.role_overrides.functional_fixer.profile]
+            : []),
+        ];
+        access.requireVerified(profiles);
+        const specService = new ExecutionSpecService(engine.store, engine.config);
+        return specService.updateExecutionSpec({
+          request_id: a.request_id,
+          expected_spec_revision: a.expected_spec_revision,
           workflow_id: a.workflow_id,
           planner_profile: a.planner_profile,
           executor_profile: a.executor_profile,
-          template_id: a.template_id,
-          template_revision: a.template_revision,
-          interrupt_requested: a.interrupt_requested,
+          role_overrides: a.role_overrides,
         });
-        if (a.interrupt_requested) {
-          if (["EXECUTING", "VERIFYING", "QUEUED"].includes(w.state)) {
-            await engine.stop(a.workflow_id, "local_console");
-          }
-        }
-        return {
-          ok: true,
-          spec: result.spec,
-          interrupt_required: result.interruptRequired,
-        };
       },
     );
     register(

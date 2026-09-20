@@ -56,12 +56,13 @@ export function agyArguments(
   conversation?: string,
   project?: string,
   mode?: "accept-edits" | "plan",
+  effortArgs?: string[],
 ) {
+  const effort = effortArgs ?? ["--effort", "high"];
   return [
     "--model",
     model,
-    "--effort",
-    "high",
+    ...effort,
     "--output-format",
     "stream-json",
     "--print-timeout",

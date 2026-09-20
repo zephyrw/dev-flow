@@ -1,0 +1,10 @@
+[1mAvailable models[0m
+auto (native router)
+efficient
+qwen-3.8-max
+kimi-k3
+glm-5.2
+Qwen 3.8 Max
+Kimi K3
+GLM 5.2
+MiniMax M3

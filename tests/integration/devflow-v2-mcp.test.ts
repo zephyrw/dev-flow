@@ -1,11 +1,23 @@
 import { it, expect } from "vitest";
 import { setup, repository } from "../helpers.js";
 import { buildServer } from "../../apps/api/src/server.js";
+import { seedVerifiedAccess } from "../../packages/core/src/access-guard.js";
 it("规划工具通过真实 MCP 入口创建原生任务并拒绝未知配置", async () => {
   const s = setup(),
     repo = await repository(s.root),
     app = await buildServer(s.engine),
     token = s.engine.auth.issue({ role: "planner" });
+  const profile = {
+    id: "profile-codex",
+    revision: 1,
+    adapterId: "codex" as const,
+    executableRef: process.execPath,
+    modelSelection: "explicit" as const,
+    modelId: "fixture-only",
+    options: {},
+  };
+  s.store.put("tool_profile", profile.id, "global", profile);
+  seedVerifiedAccess(s.store, profile);
   const headers = {
     authorization: "Bearer " + token,
     accept: "application/json, text/event-stream",
@@ -40,7 +52,7 @@ it("规划工具通过真实 MCP 入口创建原生任务并拒绝未知配置",
   };
   try {
     const profiles = await call({}, "devflow_list_tool_profiles");
-    expect(JSON.parse(profiles.content[0].text)).toHaveLength(8);
+    expect(JSON.parse(profiles.content[0].text).profiles).toHaveLength(8);
     const result = await call(args);
     expect(result.isError).not.toBe(true);
     const w = s.store.list<any>("workflow")[0];

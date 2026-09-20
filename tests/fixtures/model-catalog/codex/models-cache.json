@@ -1,0 +1,51 @@
+{
+  "models": [
+    {
+      "slug": "gpt-5.6-codex",
+      "display_name": "GPT-5.6 Codex",
+      "default_reasoning_level": "medium",
+      "supported_reasoning_levels": [
+        {
+          "effort": "low",
+          "description": "Native cached effort"
+        },
+        {
+          "effort": "medium",
+          "description": "Native cached effort"
+        },
+        {
+          "effort": "high",
+          "description": "Native cached effort"
+        },
+        {
+          "effort": "xhigh",
+          "description": "Native cached effort"
+        }
+      ],
+      "visibility": "list"
+    },
+    {
+      "slug": "gpt-hidden-cache",
+      "display_name": "Hidden Cache Model",
+      "default_reasoning_level": "low",
+      "supported_reasoning_levels": [
+        {
+          "effort": "low",
+          "description": "Native cached effort"
+        },
+        {
+          "effort": "medium",
+          "description": "Native cached effort"
+        }
+      ],
+      "visibility": "hide"
+    },
+    {
+      "display_name": "missing slug should skip"
+    },
+    "not-a-model",
+    {
+      "slug": "gpt-optional-fields"
+    }
+  ]
+}

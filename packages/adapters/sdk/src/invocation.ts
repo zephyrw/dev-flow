@@ -1,6 +1,54 @@
-import type { RunContext, PreparedInvocation } from "./interface.js";
+import type {
+  ModelSelectionCapability,
+  PreparedInvocation,
+  RunContext,
+} from "./interface.js";
+import { resolveRunSelection } from "./frozen-invocation.js";
+import { FlowError } from "../../../contracts/src/index.js";
+
 export const readOnlyPurpose = (p: string) =>
-  ["planning", "quality_review", "aside"].includes(p);
+  ["planning", "quality_review", "aside", "diagnose"].includes(p);
+
+export function capabilityFromAdapter(
+  _adapter: string,
+  _profile: unknown,
+  extras: ModelSelectionCapability = {},
+): ModelSelectionCapability {
+  return { ...extras };
+}
+
+function nativeProfileName(input: RunContext): string | undefined {
+  const name = input.frozenInvocation
+    ? input.frozenInvocation.nativeConfigProfile?.trim()
+    : input.toolProfile.nativeConfigProfile?.trim();
+  if (!name || name === "default") return undefined;
+  return name;
+}
+
+function pushNativeProfile(adapter: string, args: string[], input: RunContext) {
+  const name = nativeProfileName(input);
+  if (!name) return;
+  if (adapter !== "codex") {
+    throw new FlowError("CLI_PARAMETER_UNSUPPORTED", "当前工具不支持命名原生配置", 422);
+  }
+  args.push("--profile", name);
+}
+
+function pushFrozenSelection(
+  args: string[],
+  env: Record<string, string>,
+  input: RunContext,
+): void {
+  const selection = resolveRunSelection(input);
+  for (const [key, value] of Object.entries(selection.effortEnv)) {
+    env[key] = value;
+  }
+  if (selection.modelToken) {
+    args.push("--model", selection.modelToken);
+  }
+  args.push(...selection.effortArgs);
+}
+
 export function clientInvocation(
   adapter: string,
   input: RunContext,
@@ -21,14 +69,10 @@ export function clientInvocation(
     DEVFLOW_RUN_ID: input.runId,
     DEVFLOW_STAGE: input.stage,
   };
-  const model =
-    input.toolProfile.modelSelection === "explicit"
-      ? input.toolProfile.modelId
-      : undefined;
+  pushNativeProfile(adapter, args, input);
   switch (adapter) {
     case "codex":
       args.push("exec");
-      // exec resume has its own parser. Sandbox settings are global config overrides.
       args.push(
         "-c",
         "sandbox_mode=" +
@@ -38,7 +82,7 @@ export function clientInvocation(
       );
       if (resume) args.push("resume", resume);
       args.push("--json", "--skip-git-repo-check");
-      if (model) args.push("--model", model);
+      pushFrozenSelection(args, env, input);
       if (input.outputPath)
         args.push("--output-last-message", input.outputPath);
       if (input.schemaPath) args.push("--output-schema", input.schemaPath);
@@ -58,7 +102,7 @@ export function clientInvocation(
         "--print-timeout",
         Math.max(1, Math.ceil((input.timeoutMs ?? 300000) / 60000)) + "m",
       );
-      if (model) args.push("--model", model);
+      pushFrozenSelection(args, env, input);
       if (resume) args.push("--conversation", resume);
       else args.push("--new-project");
       args.push("--mode", readonly ? "plan" : "accept-edits");
@@ -80,12 +124,11 @@ export function clientInvocation(
         args.push(
           "--tools",
           "Read,Glob,Grep",
-          "--disallowedTools",
-          "Bash,Edit,Write,NotebookEdit,Agent",
+          "--disallowed-tools=Bash,Edit,Write,NotebookEdit,Agent",
         );
       if (resume) args.push("--resume", resume);
-      if (model) args.push("--model", model);
-      args.push(prompt);
+      pushFrozenSelection(args, env, input);
+      args.push("--", prompt);
       break;
     case "grok-build":
       args.push(
@@ -93,7 +136,6 @@ export function clientInvocation(
         "streaming-json",
         "--no-plan",
         "--no-subagents",
-        "--no-auto-update",
       );
       if (readonly)
         args.push(
@@ -107,14 +149,14 @@ export function clientInvocation(
           "MCPTool",
         );
       if (resume) args.push("--resume", resume);
-      if (model) args.push("--model", model);
+      pushFrozenSelection(args, env, input);
       args.push("-p", prompt);
       break;
     case "kimi-code":
       args.push("--output-format", "stream-json");
       if (resume) args.push("--session", resume);
       if (readonly) args.push("--plan");
-      if (model) args.push("--model", model);
+      pushFrozenSelection(args, env, input);
       args.push("-p", prompt);
       break;
     case "qoder":
@@ -123,17 +165,17 @@ export function clientInvocation(
         "--output-format",
         "stream-json",
         "--permission-mode",
-        readonly ? "plan" : "accept_edits",
+        readonly ? "dont_ask" : "accept_edits",
       );
       if (readonly) args.push("--tools", "Read,Glob,Grep");
       if (resume) args.push("--resume", resume);
-      if (model) args.push("--model", model);
+      pushFrozenSelection(args, env, input);
       args.push(prompt);
       break;
     case "opencode":
       args.push("run", "--format", "json");
       if (resume) args.push("--session", resume);
-      if (model) args.push("--model", model);
+      pushFrozenSelection(args, env, input);
       if (readonly) {
         args.push("--agent", "devflow-review");
         env.OPENCODE_CONFIG_CONTENT = JSON.stringify({
@@ -158,7 +200,7 @@ export function clientInvocation(
       args.push("--print", "--output-format", "stream-json");
       if (readonly) args.push("--mode", "ask");
       if (resume) args.push("--resume", resume);
-      if (model) args.push("--model", model);
+      pushFrozenSelection(args, env, input);
       args.push(prompt);
       break;
     default:

@@ -1,7 +1,8 @@
 import { BaseNativeAgentAdapter } from "../../sdk/src/base-adapter.js";
+import { QODER_PRODUCT_IDENTITY } from "../../sdk/src/registry.js";
 export class QoderNativeAdapter extends BaseNativeAgentAdapter {
   constructor() {
-    super("qoder", "qoder", [
+    super("qoder", "qodercli", [
       ...(process.env.LOCALAPPDATA
         ? [
             process.env.LOCALAPPDATA + "/agy/bin",
@@ -18,6 +19,6 @@ export class QoderNativeAdapter extends BaseNativeAgentAdapter {
     return ["--version"];
   }
   getProductFingerprint() {
-    return "qoder";
+    return QODER_PRODUCT_IDENTITY;
   }
 }

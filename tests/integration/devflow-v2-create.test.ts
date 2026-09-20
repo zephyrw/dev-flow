@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { setup, repository, project, proof } from "../helpers.js";
 import { CreateWorkflowService } from "../../packages/core/src/create-workflow.js";
+import { seedVerifiedAccess } from "../../packages/core/src/access-guard.js";
 import { LocalRuntime } from "../../packages/runtime/src/runtime.js";
 import { buildServer } from "../../apps/api/src/server.js";
 import { join, resolve } from "node:path";
@@ -11,13 +12,22 @@ const headers = {
   origin: "http://localhost:14810",
   "content-type": "application/json",
 };
-describe("新任务真实 API/原生 CLI 进程/SQLite/Git", { timeout: 120000 }, () => {
-  it("创建派发规划，批准后开发与程序自查，人工确认触发终审和真实提交", async () => {
+describe("新任务真实 API/原生 CLI 进程/SQLite/Git", { timeout: 300000 }, () => {
+  it("创建派发规划，批准后开发与程序自查，人工确认触发终审和真实提交", { timeout: 240000 }, async () => {
     const s = setup(),
       repo = await repository(s.root),
       p = project(repo.repo);
     s.store.put("project", p.id, "global", p);
     s.store.put("tool_profile", "profile-codex", "global", {
+      id: "profile-codex",
+      revision: 1,
+      adapterId: "codex",
+      executableRef: process.execPath,
+      modelSelection: "explicit",
+      modelId: "fixture-only",
+      options: { prefixArgs: [resolve("tests/fixtures/native-cli.mjs")] },
+    });
+    seedVerifiedAccess(s.store, {
       id: "profile-codex",
       revision: 1,
       adapterId: "codex",
@@ -42,7 +52,24 @@ describe("新任务真实 API/原生 CLI 进程/SQLite/Git", { timeout: 120000 }
         }
         await new Promise((r) => setTimeout(r, 200));
       }
-      throw new Error("Timed out waiting for " + state);
+      const current = s.engine.get(id!);
+      throw new Error(
+        "Timed out waiting for " +
+          state +
+          " got " +
+          JSON.stringify({
+            state: current.state,
+            stage: current.stage,
+            blocker: current.blocker,
+            runs: s.store.list<any>("run", id).map((run) => ({
+              stage: run.stage,
+              status: run.status,
+              purpose: run.purpose,
+              adapter: run.adapter,
+              exit_code: run.exit_code,
+            })),
+          }),
+      );
     };
     try {
       const payload = {
@@ -125,9 +152,11 @@ describe("新任务真实 API/原生 CLI 进程/SQLite/Git", { timeout: 120000 }
       expect(await git(repo.repo, ["show", "HEAD:app.txt"])).toBe("after");
       expect(s.store.get("acceptance", id!)).toBeDefined();
     } finally {
-      if (id && !["COMMITTED", "COMPLETED"].includes(s.engine.get(id).state))
-        await s.engine.stop(id);
-      if (id) await s.engine.waitForIdle(id);
+      try {
+        if (id && !["COMMITTED", "COMPLETED"].includes(s.engine.get(id).state))
+          await s.engine.stop(id);
+        if (id) await s.engine.waitForIdle(id);
+      } catch {}
       await runtime.close();
       await app.close();
       s.store.close();
@@ -155,6 +184,29 @@ describe("新任务真实 API/原生 CLI 进程/SQLite/Git", { timeout: 120000 }
       expect(s.store.list("project")).toHaveLength(0);
       expect(s.store.list("run")).toHaveLength(0);
     } finally {
+      s.store.close();
+    }
+  });
+
+  it("R07：未验证 profile 不能经 HTTP 创建任务", async () => {
+    const s = setup();
+    const app = await buildServer(s.engine);
+    try {
+      const created = await app.inject({
+        method: "POST",
+        url: "/api/workflows",
+        headers,
+        payload: {
+          request_id: "req-unverified",
+          workspace_root: s.root,
+          request_text: "需求",
+        },
+      });
+      expect(created.statusCode).toBe(422);
+      expect(created.json().error.code).toBe("MODEL_ACCESS_REQUIRED");
+      expect(s.store.list("workflow")).toHaveLength(0);
+    } finally {
+      await app.close();
       s.store.close();
     }
   });

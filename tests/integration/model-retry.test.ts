@@ -1,12 +1,14 @@
 import { it, expect, vi } from "vitest";
 import { prepared } from "../helpers.js";
-import { FlowError } from "../../packages/contracts/src/index.js";
+import { FlowError, type Run } from "../../packages/contracts/src/index.js";
+import { bindProfile } from "../../packages/core/src/run-profile.js";
+import { now } from "../../packages/core/src/util.js";
 import { quotaRetryAt } from "../../packages/core/src/model-retry.js";
 import { resumeModelWaits } from "../../packages/runtime/src/recovery.js";
 import { buildServer } from "../../apps/api/src/server.js";
 
 it("manual recovery after account switch clears the quota wait and dispatches immediately", async () => {
-  const s = await prepared();
+  const s = await preparedWithRun();
   const dispatch = vi.spyOn(s.engine, "dispatch").mockResolvedValue(undefined);
   s.engine.block(
     s.workflow.id,
@@ -39,7 +41,7 @@ it("uses the provider reset time plus grace and never invents a reset time", () 
   expect(quotaRetryAt("quota reached", 0)).toBeNull();
 });
 it("quota wait persists, does not run early, and resumes the same approved workflow when due", async () => {
-  const s = await prepared();
+  const s = await preparedWithRun();
   const dispatch = vi.spyOn(s.engine, "dispatch").mockResolvedValue(undefined);
   try {
     s.engine.block(
@@ -68,7 +70,7 @@ it("quota wait persists, does not run early, and resumes the same approved workf
   }
 });
 it("a user pause cancels deferred execution", async () => {
-  const s = await prepared();
+  const s = await preparedWithRun();
   try {
     s.engine.block(
       s.workflow.id,
@@ -84,3 +86,16 @@ it("a user pause cancels deferred execution", async () => {
     s.store.close();
   }
 });
+
+
+async function preparedWithRun() {
+  const s = await prepared();
+  const binding = bindProfile(s.store, s.config, s.workflow.id, "implement");
+  const run: Run = {
+    ...binding, id: s.workflow.run_id!, workflow_id: s.workflow.id,
+    plan_revision: s.workflow.plan_revision, adapter: binding.profile.adapterId,
+    stage: s.workflow.stage, status: "running", started_at: now(), package_hash: "fixture",
+  };
+  s.store.put("run", run.id, s.workflow.id, run);
+  return s;
+}

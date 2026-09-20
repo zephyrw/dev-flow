@@ -1,0 +1,8 @@
+[1mopencode models --verbose[0m
+openai/gpt-4.1
+  variants: high, max
+anthropic/claude-sonnet-4-5
+google/gemini-3-flash
+  variants:
+openai/gpt-4.1#high
+local/custom-model

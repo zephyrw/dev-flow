@@ -1,11 +1,15 @@
 import type { Store } from "../../store/src/store.js";
 import type {
   FunctionalIssue,
-  FunctionalIssueStatus,
   WorkspaceReference,
 } from "../../contracts/src/feedback.js";
 import { FlowError } from "../../contracts/src/index.js";
 import { id, now } from "./util.js";
+import {
+  ensureFunctionalBatchForIssue,
+  recordFunctionalFixIntent,
+  syncFunctionalAssignmentStatus,
+} from "./repair-model-service.js";
 
 export class FunctionalIssueService {
   constructor(private store: Store) {}
@@ -14,6 +18,7 @@ export class FunctionalIssueService {
     workflowId: string,
     description: string,
     refs: WorkspaceReference[] = [],
+    options: { skipAutoBatch?: boolean } = {},
   ): FunctionalIssue {
     const existing = this.listIssues(workflowId);
     const issue: FunctionalIssue = {
@@ -26,6 +31,14 @@ export class FunctionalIssueService {
       created_at: now(),
     };
     this.store.put("functional_issue", issue.issue_id, workflowId, issue);
+    if (!options.skipAutoBatch) {
+      const batch = ensureFunctionalBatchForIssue(
+        this.store,
+        workflowId,
+        issue.issue_id,
+      );
+      recordFunctionalFixIntent(this.store, workflowId, batch.id);
+    }
     return issue;
   }
 
@@ -33,9 +46,6 @@ export class FunctionalIssueService {
     return this.store.list<FunctionalIssue>("functional_issue", workflowId);
   }
 
-  /**
-   * 派发修复中
-   */
   markFixing(workflowId: string, issueId: string): FunctionalIssue {
     const issue = this.store.get<FunctionalIssue>("functional_issue", issueId);
     if (!issue || issue.workflow_id !== workflowId) {
@@ -46,9 +56,6 @@ export class FunctionalIssueService {
     return issue;
   }
 
-  /**
-   * 执行模型修复后标记待用户复测（模型只能标 ready_for_retest，严禁自确认）
-   */
   markReadyForRetest(
     workflowId: string,
     issueId: string,
@@ -64,9 +71,6 @@ export class FunctionalIssueService {
     return issue;
   }
 
-  /**
-   * 用户复测确认（唯一确认通道，RQ-08）
-   */
   userConfirmIssue(
     workflowId: string,
     issueId: string,
@@ -94,12 +98,28 @@ export class FunctionalIssueService {
     }
 
     this.store.put("functional_issue", issueId, workflowId, issue);
+    if (!passed) {
+      const batch = this.store
+        .list<{
+          id: string;
+          kind?: string;
+          status?: string;
+          issue_ids?: string[];
+        }>("repair_model_batch", workflowId)
+        .find(
+          (item) =>
+            item.kind === "functional" &&
+            item.status === "open" &&
+            item.issue_ids?.includes(issueId),
+        );
+      if (batch) {
+        recordFunctionalFixIntent(this.store, workflowId, batch.id);
+      }
+    }
+    syncFunctionalAssignmentStatus(this.store, workflowId);
     return issue;
   }
 
-  /**
-   * 检查是否所有功能问题均已解决并确认
-   */
   hasUnresolvedIssues(workflowId: string): boolean {
     const issues = this.listIssues(workflowId);
     return issues.some((i) => i.status !== "confirmed");

@@ -39,10 +39,19 @@ import {
   resolveTaskModel,
   type Workflow,
   type Run,
+  type ToolProfile,
   type Evidence,
   type Snapshot,
   type Workspace,
 } from "../../contracts/src/index.js";
+import type { RuntimeFlavor } from "../../contracts/src/model-routing.js";
+import {
+  bindProfile,
+  resolveRuntimeFlavor,
+  runLauncherSelection,
+  type RunPurpose,
+} from "../../core/src/run-profile.js";
+import { beginRunConversation, retainRunConversation } from "../../core/src/conversation-lineage.js";
 import { ProcessManager } from "../../process/src/manager.js";
 import { executablePath } from "../../process/src/executable.js";
 import { JsonLines, AgyProtocol } from "../../adapters/agy/src/protocol.js";
@@ -75,6 +84,52 @@ import {
   reviewContractContext,
   reviewInstructions,
 } from "./review-materials.js";
+
+export function selectRuntimePath(
+  engine: Engine,
+  workflow: Workflow,
+  run?: Run,
+): RuntimeFlavor {
+  if (run?.runtime_flavor) return run.runtime_flavor;
+  const current = workflow.run_id
+    ? engine.store.get<Run>("run", workflow.run_id)
+    : undefined;
+  if (current?.runtime_flavor) return current.runtime_flavor;
+  const adapter = (run?.adapter ??
+    current?.adapter ??
+    "agy") as ToolProfile["adapterId"];
+  const purpose = (run?.purpose ?? "implement") as RunPurpose;
+  return resolveRuntimeFlavor(engine.store, workflow.id, adapter, purpose);
+}
+
+function usesProfileRuntime(engine: Engine, workflow: Workflow, run?: Run) {
+  return selectRuntimePath(engine, workflow, run) === "profile-native";
+}
+
+function compatibleConversation(
+  engine: Engine,
+  run: Run,
+) {
+  return beginRunConversation(engine.store, run);
+}
+
+function diagnosisLauncher(engine: Engine, workflow: Workflow) {
+  const binding = bindProfile(engine.store, engine.config, workflow.id, "diagnose");
+  return {
+    prefix: binding.profile.options?.prefixArgs ?? [],
+    launcher: runLauncherSelection({
+      ...binding,
+      id: workflow.run_id ?? "diagnosis",
+      workflow_id: workflow.id,
+      plan_revision: workflow.plan_revision,
+      adapter: binding.profile.adapterId,
+      stage: "diagnosis",
+      status: "running",
+      started_at: now(),
+      package_hash: "diagnosis",
+    }),
+  };
+}
 export class LocalRuntime implements Runtime {
   private get native() {
     return new ProfileRuntime(this.engine, this.processes);
@@ -107,7 +162,7 @@ export class LocalRuntime implements Runtime {
     await this.environments.health(env);
   }
   async diagnose(workflow: Workflow, error: string) {
-    if (this.engine.store.list("execution_spec", workflow.id).length)
+    if (usesProfileRuntime(this.engine, workflow))
       return this.native.diagnose(workflow, error);
     const root = join(
       this.engine.config.storage_root,
@@ -175,28 +230,27 @@ export class LocalRuntime implements Runtime {
         );
         diagnosticOutput = "";
         if (existsSync(output)) unlinkSync(output);
+        const selected = diagnosisLauncher(this.engine, workflow);
         const proc = this.processes.start({
           id: currentProcess,
           workflow_id: workflow.id,
-          executable: executablePath(
-            this.engine.config.models.codex_executable,
-          ),
+          executable: executablePath(selected.launcher.executable),
           args: [
-            ...this.engine.config.models.codex_prefix_args,
+            ...selected.prefix,
             "exec",
             "--ignore-user-config",
             "--ignore-rules",
             "--ephemeral",
-            "--model",
-            this.engine.config.models.reviewer,
+            ...(selected.launcher.modelToken
+              ? ["--model", selected.launcher.modelToken]
+              : []),
             "--sandbox",
             "read-only",
             "--skip-git-repo-check",
             ...(attempt === 0 ? ["--output-schema", schema] : []),
             "--output-last-message",
             output,
-            "-c",
-            'model_reasoning_effort="high"',
+            ...selected.launcher.effortArgs,
             "-c",
             `mcp_servers.devflow_review.command=${JSON.stringify(process.execPath)}`,
             "-c",
@@ -208,7 +262,7 @@ export class LocalRuntime implements Runtime {
             "-",
           ],
           cwd: root,
-          env: {},
+          env: { ...selected.launcher.effortEnv },
           stdin: JSON.stringify({
             instruction:
               "先读取 section=skill，再读取 plan、project、相关源码；只读诊断，最后只返回 JSON 对象，字段为 diagnosis、instructions、requires_plan_change、repair_plan。不改变范围时 repair_plan=null；需要改变范围时提交完整 Plan 合同。",
@@ -441,7 +495,7 @@ export class LocalRuntime implements Runtime {
     return current;
   }
   async execute(workflow: Workflow, run: Run, token: string) {
-    if (run.execution_spec_id || run.adapter !== "agy")
+    if (usesProfileRuntime(this.engine, workflow, run))
       return this.native.execute(workflow, run, token);
     reconcileImplementationProofs(this.engine, workflow.id);
     this.assertRun(workflow.id, run.id, ["EXECUTING"]);
@@ -484,10 +538,8 @@ export class LocalRuntime implements Runtime {
       workflow.id,
       projectBinding,
     );
-    const conversation = this.engine.store.get<{ id: string }>(
-      "conversation",
-      workflow.id,
-    );
+    const launcher = runLauncherSelection(run);
+    const conversation = compatibleConversation(this.engine, run);
 
     if (isNativeV2) {
       const workspaces = this.engine.store.list<Workspace>(
@@ -617,15 +669,16 @@ export class LocalRuntime implements Runtime {
     const proc = this.processes.start({
       id: run.id,
       workflow_id: workflow.id,
-      executable: executablePath(this.engine.config.models.agy_executable),
+      executable: executablePath(launcher.executable),
       args: [
         ...agyArguments(
-          this.engine.config.models.executor,
+          launcher.modelToken ?? "",
           prompt,
           this.engine.config.timeouts.agent_minutes,
           conversation?.id,
           projectBinding.id,
           isNativeV2 ? "accept-edits" : undefined,
+          launcher.effortArgs,
         ),
         "--add-dir",
         directory,
@@ -635,6 +688,7 @@ export class LocalRuntime implements Runtime {
       ],
       cwd: directory,
       env: {
+        ...launcher.effortEnv,
         DEVFLOW_RUN_TOKEN: token,
         DEVFLOW_WORKFLOW_ID: workflow.id,
         DEVFLOW_RUN_ID: run.id,
@@ -667,7 +721,7 @@ export class LocalRuntime implements Runtime {
         })
       : undefined;
     const result = await observeAgy(proc, {
-      model: this.engine.config.models.executor,
+      model: launcher.modelToken ?? "",
       conversation: conversation?.id,
       cwd: directory,
       log: join(directory, run.id + ".jsonl"),
@@ -677,10 +731,8 @@ export class LocalRuntime implements Runtime {
         this.preparing.has(run.id) ||
         this.checking.has(workflow.id),
       onEvent: (event) => {
-        if (event.event === "init")
-          this.engine.store.put("conversation", workflow.id, workflow.id, {
-            id: event.conversation_id,
-          });
+        if (event.event === "init" && typeof event.conversation_id === "string")
+          retainRunConversation(this.engine.store, run, event.conversation_id);
         nativeObserver?.accept(event);
         telemetry.accept(event);
       },
@@ -706,9 +758,7 @@ export class LocalRuntime implements Runtime {
       ...this.engine.store.must<Run>("run", run.id),
       exit_code: result.exit,
     });
-    this.engine.store.put("conversation", workflow.id, workflow.id, {
-      id: result.conversation,
-    });
+    retainRunConversation(this.engine.store, run, result.conversation);
     if (isNativeV2)
       this.engine.store.put("handoff_cursor", workflow.id, workflow.id, {
         plan_hash: workflow.plan_hash,
@@ -1204,7 +1254,8 @@ export class LocalRuntime implements Runtime {
     }
   }
   async review(workflow: Workflow, run: Run) {
-    if (run.execution_spec_id) return this.native.review(workflow, run);
+    if (usesProfileRuntime(this.engine, workflow, run))
+      return this.native.review(workflow, run);
     this.assertRun(workflow.id, run.id, ["REVIEWING"]);
     const snapshot = this.engine.store.must<Snapshot>(
       "snapshot",
@@ -1282,14 +1333,15 @@ export class LocalRuntime implements Runtime {
         .list<Workspace>("workspace", workflow.id)
         .map((w) => ({ repo_id: w.repo_id, path: w.root })),
     });
+    const launcher = runLauncherSelection(run);
+    const prefix = run.profile?.options?.prefixArgs ?? [];
     const args = [
-      ...this.engine.config.models.codex_prefix_args,
+      ...prefix,
       "exec",
       "--ignore-user-config",
       "--ignore-rules",
       "--ephemeral",
-      "--model",
-      this.engine.config.models.reviewer,
+      ...(launcher.modelToken ? ["--model", launcher.modelToken] : []),
       "--sandbox",
       "read-only",
       "--skip-git-repo-check",
@@ -1297,8 +1349,7 @@ export class LocalRuntime implements Runtime {
       schema,
       "--output-last-message",
       output,
-      "-c",
-      'model_reasoning_effort="high"',
+      ...launcher.effortArgs,
       "-c",
       `mcp_servers.devflow_review.command=${JSON.stringify(process.execPath)}`,
       "-c",
@@ -1312,7 +1363,7 @@ export class LocalRuntime implements Runtime {
     this.assertRun(workflow.id, run.id, ["REVIEWING"]);
     let codexBin: string | undefined;
     try {
-      codexBin = executablePath(this.engine.config.models.codex_executable);
+      codexBin = executablePath(launcher.executable);
     } catch {
       codexBin = undefined;
     }
@@ -1327,7 +1378,7 @@ export class LocalRuntime implements Runtime {
       executable: codexBin,
       args,
       cwd: root,
-      env: {},
+      env: { ...launcher.effortEnv },
       stdin: prompt,
       timeout_ms: this.engine.config.timeouts.agent_minutes * 60000,
     });

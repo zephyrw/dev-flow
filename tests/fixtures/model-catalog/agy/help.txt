@@ -1,0 +1,9 @@
+Antigravity CLI
+
+Usage: agy [OPTIONS] [PROMPT]
+
+  models                 List available models
+  --model <slug>         Exact model slug
+  --effort low|medium|high
+
+This help snapshot is for directory fixtures only.

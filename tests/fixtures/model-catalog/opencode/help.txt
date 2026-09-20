@@ -1,0 +1,12 @@
+OpenCode
+
+Usage: opencode [OPTIONS]
+
+  models --verbose             List configured provider/model entries
+  run --model <provider/model> --variant <value>
+  run --format json
+  --session <id>
+
+This 1.x help snapshot uses --variant.
+It does not list provider/model#variant.
+This help snapshot is for directory fixtures only.

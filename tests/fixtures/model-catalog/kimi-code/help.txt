@@ -1,0 +1,11 @@
+Kimi Code
+
+Usage: kimi [OPTIONS] [PROMPT]
+
+  --model <alias>
+  --output-format stream-json
+  --plan
+  --session <id>
+  -p <prompt>
+
+This help snapshot is for directory fixtures only.

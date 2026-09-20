@@ -10,6 +10,7 @@ import { TaskTree, TestResults } from "./panels.js";
 import { useNativeProgress } from "./native-progress.js";
 import { CreateWorkflowModal } from "./components/CreateWorkflowModal.js";
 import { ToolModelDrawer } from "./components/ToolModelDrawer.js";
+import { ModelSettingsDrawer } from "./components/ModelSettingsDrawer.js";
 import { CurrentRuntime } from "./components/CurrentRuntime.js";
 import { RequirementComposer } from "./components/RequirementComposer.js";
 import { SourceChangeDialog } from "./components/SourceChangeDialog.js";
@@ -24,12 +25,17 @@ import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import mermaid from "mermaid";
 import "./style.css";
+import "./components/model-settings.css";
 import {
   readableLogs,
   userFacingLogs,
   mergeEvents,
   workflowProgress,
 } from "./logs.js";
+import {
+  getExecutionSpec,
+  resumeContinueLabel,
+} from "./components/model-api.js";
 const labels: Record<string, string> = {
   RESEARCHING: "调研中",
   PLANNING: "规划中",
@@ -1707,6 +1713,9 @@ function App() {
   const [connected, setConnected] = useState(false);
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [isToolDrawerOpen, setIsToolDrawerOpen] = useState(false);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [toolDrawerFocus, setToolDrawerFocus] = useState<string | undefined>();
+  const [resumeLabel, setResumeLabel] = useState<string | null>(null);
   const attempt = async (fn: () => Promise<unknown>) => {
     setError("");
     setNotice("");
@@ -1965,6 +1974,17 @@ function App() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
   const w = detail?.workflow.id === selected ? detail.workflow : undefined;
+  useEffect(() => {
+    if (!selected || w?.state !== "STOPPED") {
+      setResumeLabel(null);
+      return;
+    }
+    const controller = new AbortController();
+    getExecutionSpec(selected, controller.signal)
+      .then((data) => setResumeLabel(resumeContinueLabel(data.resume_target)))
+      .catch(() => setResumeLabel(null));
+    return () => controller.abort();
+  }, [selected, w?.state, w?.version]);
   const runtimeResolution = w ? runtimeFailureForTask(detail) : undefined;
   // Old controllers may still be finishing an active run while the new UI is served.
   const attention = runtimeResolution
@@ -2221,7 +2241,25 @@ function App() {
               )}
             </div>
           </div>
-          {w && !showGuide && <CurrentRuntime detail={detail} connected={connected} />}
+          <div className="header-aside">
+            <button
+              type="button"
+              className="header-settings-btn"
+              onClick={() => setIsSettingsOpen(true)}
+            >
+              设置
+            </button>
+            {w && !showGuide && (
+              <CurrentRuntime
+                detail={detail}
+                connected={connected}
+                onEdit={(role) => {
+                  setToolDrawerFocus(role);
+                  setIsToolDrawerOpen(true);
+                }}
+              />
+            )}
+          </div>
         </header>
         {updated && (
           <div className="update-banner">
@@ -2467,7 +2505,9 @@ function App() {
                                       ? "继续生成整改计划"
                                       : w.blocker?.code === "MODEL_QUOTA"
                                         ? "立即重试"
-                                        : "继续这个任务"}
+                                        : w.state === "STOPPED" && resumeLabel
+                                          ? resumeLabel
+                                          : "继续这个任务"}
                                 </button>
                               )}
                             {attention?.category === "source_change" && (
@@ -2564,6 +2604,7 @@ function App() {
                             <button
                               className="secondary"
                               onClick={() => setIsToolDrawerOpen(true)}
+                              aria-label="工具与模型"
                               title="查看或安全修改当前任务的工具与模型配置"
                               style={{
                                 padding: "6px 12px",
@@ -2885,10 +2926,18 @@ function App() {
       />
       <ToolModelDrawer
         isOpen={isToolDrawerOpen}
-        onClose={() => setIsToolDrawerOpen(false)}
+        onClose={() => {
+          setIsToolDrawerOpen(false);
+          setToolDrawerFocus(undefined);
+        }}
         workflowId={selected}
         workflowState={detail?.workflow?.state}
+        focusRole={toolDrawerFocus}
         onSpecUpdated={() => void refresh()}
+      />
+      <ModelSettingsDrawer
+        isOpen={isSettingsOpen}
+        onClose={() => setIsSettingsOpen(false)}
       />
     </div>
   );

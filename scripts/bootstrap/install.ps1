@@ -1,5 +1,15 @@
 [CmdletBinding()]
-param([string]$Source="",[string]$InstallDir="$env:LOCALAPPDATA\DevFlow",[string]$SelectedTool="codex")
+param(
+  [string]$Source="",
+  [string]$InstallDir="$env:LOCALAPPDATA\DevFlow",
+  [string]$SelectedTool="codex",
+  [string]$PlannerTool="",
+  [string]$PlannerModel="",
+  [string]$PlannerEffort="",
+  [string]$ExecutorTool="",
+  [string]$ExecutorModel="",
+  [string]$ExecutorEffort=""
+)
 $ErrorActionPreference="Stop"
 try {
   if (-not $Source) {
@@ -26,7 +36,14 @@ try {
   if (-not (Test-Path -LiteralPath $node)) {$node=(Get-Command node -ErrorAction Stop).Source}
   $entry=Join-Path $Source "dist\packages\installer\src\main.js"
   if (-not (Test-Path -LiteralPath $entry)) { throw "源码需要先执行 pnpm install --frozen-lockfile、pnpm build 和 pnpm build:host" }
-  & $node $entry --source $Source --install-dir $InstallDir --tools $SelectedTool
+  $nodeArgs = @($entry, '--source', $Source, '--install-dir', $InstallDir, '--tools', $SelectedTool)
+  if ($PlannerTool) { $nodeArgs += @('--planner-tool', $PlannerTool) }
+  if ($PlannerModel) { $nodeArgs += @('--planner-model', $PlannerModel) }
+  if ($PlannerEffort) { $nodeArgs += @('--planner-effort', $PlannerEffort) }
+  if ($ExecutorTool) { $nodeArgs += @('--executor-tool', $ExecutorTool) }
+  if ($ExecutorModel) { $nodeArgs += @('--executor-model', $ExecutorModel) }
+  if ($ExecutorEffort) { $nodeArgs += @('--executor-effort', $ExecutorEffort) }
+  & $node @nodeArgs
   exit $LASTEXITCODE
 } catch {
   Write-Error $_ -ErrorAction Continue

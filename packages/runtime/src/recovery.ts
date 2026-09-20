@@ -1,12 +1,132 @@
 import { execFileSync } from "node:child_process";
 import type { Engine } from "../../core/src/engine.js";
-import { requireCondition } from "../../contracts/src/index.js";
+import { FlowError, requireCondition } from "../../contracts/src/index.js";
 import type { Lease } from "../../scheduler/src/scheduler.js";
 import { now } from "../../core/src/util.js";
 import type { OperationRequest } from "../../core/src/interactions.js";
-import type { ModelRetry } from "../../core/src/model-retry.js";
+import { stageModelRunRetry, type ModelRetry } from "../../core/src/model-retry.js";
 import type { LocalRuntime } from "./runtime.js";
 import { prepareRepairResume } from "../../core/src/repair.js";
+import {
+  BEFORE_HUMAN_REVIEW_STAGE,
+  PLAN_SELF_CHECK_STAGE,
+} from "../../core/src/plan-self-check.js";
+
+type InterruptionRecord = {
+  prior_state?: string;
+  prior_stage?: string;
+  prior_purpose?: string;
+  prior_run_id?: string;
+  review_phase?: string;
+  repair_batch_id?: string;
+  logical_round_id?: string;
+  run_id?: string;
+};
+
+export function resolveResumeTarget(engine: Engine, key: string) {
+  const w = engine.get(key);
+  const interruption =
+    engine.store.get<InterruptionRecord>("interruption", key) ??
+    (w.run_id
+      ? engine.store.get<InterruptionRecord>("run_stop", w.run_id)
+      : undefined);
+  const run = interruption?.prior_run_id
+    ? engine.store.get<{ purpose?: string; stage?: string; repair_batch_id?: string }>(
+        "run",
+        interruption.prior_run_id,
+      )
+    : w.run_id
+      ? engine.store.get<{ purpose?: string; stage?: string; repair_batch_id?: string }>(
+          "run",
+          w.run_id,
+        )
+      : undefined;
+  const priorState = interruption?.prior_state;
+  const purpose = interruption?.prior_purpose ?? run?.purpose;
+  const stage = interruption?.prior_stage ?? run?.stage ?? w.stage;
+  const reviewPhase =
+    interruption?.review_phase ??
+    engine.store.get<{ phase?: string }>("plan_check_review_intent", key)
+      ?.phase;
+  if (priorState === "HUMAN_PENDING" || stage === "functional_retest" || stage === "accept") {
+    return {
+      state: "HUMAN_PENDING" as const,
+      stage: stage || "accept",
+      enqueue: false,
+    };
+  }
+  if (priorState === "PLANNING" || purpose === "planning" || stage === "planning") {
+    return { state: "PLANNING" as const, stage: "planning", enqueue: true };
+  }
+  if (purpose === "plan_self_check" || stage === PLAN_SELF_CHECK_STAGE) {
+    return {
+      state: "QUEUED" as const,
+      stage: PLAN_SELF_CHECK_STAGE,
+      enqueue: true,
+    };
+  }
+  if (
+    priorState === "REVIEWING" ||
+    priorState === "REVIEW_QUEUED" ||
+    purpose === "quality_review" ||
+    stage === "review" ||
+    stage === BEFORE_HUMAN_REVIEW_STAGE
+  ) {
+    const phase = reviewPhase === "after_human" ? "after_human" : "before_human";
+    engine.store.put("plan_check_review_intent", key, key, { phase });
+    return {
+      state: "REVIEW_QUEUED" as const,
+      stage: phase === "before_human" ? BEFORE_HUMAN_REVIEW_STAGE : "review",
+      enqueue: true,
+    };
+  }
+  if (
+    priorState === "EXECUTING" ||
+    priorState === "QUEUED" ||
+    priorState === "VERIFYING" ||
+    priorState === "BLOCKED" ||
+    purpose === "implement" ||
+    purpose === "functional_fix" ||
+    purpose === "planner_takeover"
+  ) {
+    return {
+      state: "QUEUED" as const,
+      stage:
+        purpose === "planner_takeover" || stage === "planner_takeover"
+          ? "planner_takeover"
+          : "execute",
+      enqueue: true,
+    };
+  }
+  if (["QUEUED", "REVIEW_QUEUED", "PLANNING"].includes(w.state)) {
+    return { state: w.state, stage: w.stage, enqueue: true };
+  }
+  if (w.state === "BLOCKED" || w.state === "STOPPED" || w.state === "RECOVERY_REQUIRED") {
+    if (stage === "review" || stage === BEFORE_HUMAN_REVIEW_STAGE) {
+      return {
+        state: "REVIEW_QUEUED" as const,
+        stage,
+        enqueue: true,
+      };
+    }
+    if (stage === "planning") {
+      return { state: "PLANNING" as const, stage: "planning", enqueue: true };
+    }
+    if (stage === PLAN_SELF_CHECK_STAGE) {
+      return {
+        state: "QUEUED" as const,
+        stage: PLAN_SELF_CHECK_STAGE,
+        enqueue: true,
+      };
+    }
+    return { state: "QUEUED" as const, stage: "execute", enqueue: true };
+  }
+  throw new FlowError(
+    "RESUME_TARGET_AMBIGUOUS",
+    "无法唯一判定继续开发还是继续审查，请选择后继续",
+    409,
+  );
+}
 
 const resuming = new WeakMap<Engine, Set<string>>();
 export async function resumeModelWaits(engine: Engine, at = Date.now()) {
@@ -36,7 +156,8 @@ export async function resumeModelWaits(engine: Engine, at = Date.now()) {
       await runtime?.browser?.reconcile(retry.id);
       await runtime?.environments?.stop(retry.id);
       if (!valid()) continue;
-      resumeApproved(engine, retry.id);
+      if (retry.run_id) stageModelRunRetry(engine.store, retry.id, retry.run_id);
+      resumeApproved(engine, retry.id, { autoRetry: true });
       engine.store.remove("model_retry", retry.id);
       engine.store.event(
         retry.id,
@@ -143,8 +264,11 @@ export function reconcileProcesses(engine: Engine, key: string) {
   });
   return results;
 }
-export function resumeApproved(engine: Engine, key: string) {
-  engine.assertProjectConfiguration(key);
+export function resumeApproved(
+  engine: Engine,
+  key: string,
+  options: { autoRetry?: boolean } = {},
+) {
   reconcileProcesses(engine, key);
   const w = engine.get(key);
   requireCondition(
@@ -159,6 +283,35 @@ export function resumeApproved(engine: Engine, key: string) {
     "COMMIT_RECOVERY_REQUIRED",
     "部分提交只能重试原提交，不能启动开发",
   );
+  const target = resolveResumeTarget(engine, key);
+  assertResumePreconditions(engine, key, target);
+  if (target.state !== "PLANNING") {
+    prepareRepairResume(engine, key);
+  }
+  if (!options.autoRetry) {
+    engine.store.remove("pending_model_retry", key);
+    engine.store.remove("transient_network_retry", key);
+  }
+  engine.store.remove("model_retry", key);
+  engine.transition(key, [w.state], target.state, target.stage, {
+    blocker: undefined,
+  });
+  if (target.enqueue) engine.scheduler.enqueue(key, w.project_id);
+  return engine.get(key);
+}
+
+function assertResumePreconditions(
+  engine: Engine,
+  key: string,
+  target: ReturnType<typeof resolveResumeTarget>,
+) {
+  if (target.state === "PLANNING") {
+    engine.project(engine.get(key).project_id);
+    return;
+  }
+  if (target.state === "HUMAN_PENDING") return;
+  engine.assertProjectConfiguration(key);
+  const w = engine.get(key);
   const approval = engine.store.get<{ plan_hash: string }>(
     "approval",
     `${key}-${w.plan_revision}`,
@@ -168,12 +321,4 @@ export function resumeApproved(engine: Engine, key: string) {
     "PLAN_NOT_APPROVED",
     "当前计划未获批准",
   );
-  prepareRepairResume(engine, key);
-  engine.invalidate(key, "用户恢复执行，旧证据失效");
-  engine.store.remove("model_retry", key);
-  engine.transition(key, [w.state], "QUEUED", "execute", {
-    blocker: undefined,
-  });
-  engine.scheduler.enqueue(key, w.project_id);
-  return engine.get(key);
 }

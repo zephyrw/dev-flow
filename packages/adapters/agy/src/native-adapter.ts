@@ -12,6 +12,8 @@ import type { Workflow, Run } from "../../../contracts/src/index.js";
 import { FlowError } from "../../../contracts/src/index.js";
 import { batchExecutionInstructions } from "../../../core/src/execution-guidance.js";
 import { executablePath } from "../../../process/src/executable.js";
+import { runLauncherSelection } from "../../../core/src/run-profile.js";
+import { beginRunConversation, retainRunConversation } from "../../../core/src/conversation-lineage.js";
 
 export function writeAgyNativeConfiguration(
   directory: string,
@@ -38,6 +40,7 @@ export function writeAgyNativeConfiguration(
 }
 
 export class AgyNativeAdapter {
+  private readonly resumedSessions = new Map<string, string | undefined>();
   constructor(
     private processes: ProcessManager,
     private config: Config,
@@ -85,30 +88,34 @@ export class AgyNativeAdapter {
       run,
       directory,
       token,
-      conversationId,
       projectBindingId,
       prompt,
       remainingMs,
     } = options;
 
+    const launcher = runLauncherSelection(run);
+    const conversationId = beginRunConversation(this.store, run)?.id;
+    this.resumedSessions.set(run.id, conversationId);
     return this.processes.start({
       id: run.id,
       workflow_id: workflow.id,
-      executable: executablePath(this.config.models.agy_executable),
+      executable: executablePath(launcher.executable),
       args: [
         ...agyArguments(
-          this.config.models.executor,
+          launcher.modelToken ?? "",
           prompt,
           this.config.timeouts.agent_minutes,
           conversationId,
           projectBindingId,
           "accept-edits",
+          launcher.effortArgs,
         ),
         "--add-dir",
         directory,
       ],
       cwd: directory,
       env: {
+        ...launcher.effortEnv,
         DEVFLOW_RUN_TOKEN: token,
         DEVFLOW_WORKFLOW_ID: workflow.id,
         DEVFLOW_RUN_ID: run.id,
@@ -131,23 +138,23 @@ export class AgyNativeAdapter {
       onDiagnostic?: (text: string) => void;
     },
   ) {
-    const { workflow, run, directory, conversationId } = options;
+    const { run, directory } = options;
+    const conversationId = this.resumedSessions.get(run.id);
+    const launcher = runLauncherSelection(run);
     return observeAgy(proc, {
-      model: this.config.models.executor,
+      model: launcher.modelToken ?? "",
       conversation: conversationId,
       cwd: directory,
       log: join(directory, run.id + ".jsonl"),
       idle_ms: this.config.timeouts.idle_minutes * 60000,
       isWaiting: options.isWaiting,
       onEvent: (event) => {
-        if (event.event === "init") {
-          this.store.put("conversation", workflow.id, workflow.id, {
-            id: event.conversation_id,
-          });
+        if (event.event === "init" && typeof event.conversation_id === "string") {
+          retainRunConversation(this.store, run, event.conversation_id);
         }
         if (options.onEvent) options.onEvent(event);
       },
       onDiagnostic: options.onDiagnostic ?? (() => {}),
-    });
+    }).finally(() => this.resumedSessions.delete(run.id));
   }
 }

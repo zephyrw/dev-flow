@@ -1,0 +1,49 @@
+{
+  "adapterId": "kimi-code",
+  "visibleNativeIds": [
+    "kimi-code/kimi-for-coding",
+    "kimi-code/kimi-for-coding-highspeed",
+    "kimi-code/k3",
+    "kimi-code/k3-256k",
+    "openai/gpt-4.1"
+  ],
+  "entries": {
+    "kimi-code/k3": {
+      "nativeId": "kimi-code/k3",
+      "label": "k3",
+      "hidden": false,
+      "effort": {
+        "status": "supported",
+        "transport": "env",
+        "values": ["low", "high", "max"],
+        "defaultValue": "high"
+      }
+    },
+    "kimi-code/kimi-for-coding": {
+      "nativeId": "kimi-code/kimi-for-coding",
+      "hidden": false,
+      "effort": {
+        "status": "unknown",
+        "transport": "none",
+        "values": []
+      }
+    },
+    "kimi-code/kimi-for-coding-highspeed": {
+      "nativeId": "kimi-code/kimi-for-coding-highspeed",
+      "hidden": false,
+      "effort": {
+        "status": "unknown",
+        "values": []
+      }
+    },
+    "openai/gpt-4.1": {
+      "nativeId": "openai/gpt-4.1",
+      "hidden": false,
+      "effort": {
+        "status": "unknown",
+        "transport": "none",
+        "values": []
+      }
+    }
+  }
+}

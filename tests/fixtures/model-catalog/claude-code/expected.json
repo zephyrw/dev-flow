@@ -1,0 +1,42 @@
+{
+  "adapterId": "claude-code",
+  "visibleNativeIds": [
+    "claude-fable-5-1",
+    "claude-opus-5",
+    "claude-opus-4-6",
+    "claude-sonnet-4-6",
+    "claude-haiku-4-5"
+  ],
+  "rejectedLabels": ["OpusPlan", "Ultracode"],
+  "entries": {
+    "claude-opus-4-6": {
+      "nativeId": "claude-opus-4-6",
+      "label": "configured opus-4-6",
+      "hidden": false,
+      "selectionKind": "fixed",
+      "effort": {
+        "status": "supported",
+        "transport": "flag",
+        "values": ["low", "medium", "high", "max"]
+      }
+    },
+    "claude-opus-5": {
+      "nativeId": "claude-opus-5",
+      "hidden": false,
+      "effort": {
+        "status": "supported",
+        "transport": "flag",
+        "values": ["low", "medium", "high", "xhigh", "max"]
+      }
+    },
+    "claude-haiku-4-5": {
+      "nativeId": "claude-haiku-4-5",
+      "hidden": false,
+      "effort": {
+        "status": "unknown",
+        "transport": "none",
+        "values": []
+      }
+    }
+  }
+}

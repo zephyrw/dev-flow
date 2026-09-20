@@ -1,11 +1,18 @@
 import { captureInitialState } from "../../git/src/initial-state.js";
 import { getDefaultTemplate } from "./templates/default-template.js";
 import type { Store } from "../../store/src/store.js";
+import type { Config } from "../../contracts/src/config.js";
 import {
   ProjectSchema,
   Id,
   FlowError,
   requireCondition,
+  RoleOverridesSchema,
+  ToolProfileSchema,
+  inheritRoleOverrides,
+  specMode,
+  type RoleOverrides,
+  type ToolProfile,
   type Workflow,
   type Workspace,
   type WorkspaceReference,
@@ -14,6 +21,12 @@ import {
 import { WorkspaceReferenceSchema } from "../../contracts/src/feedback.js";
 import { ExecutionSpecSchema } from "../../contracts/src/execution-spec.js";
 import { resolveProfile } from "./run-profile.js";
+import {
+  executorProfileFromConfig,
+  ModelDefaultsService,
+  plannerProfileFromConfig,
+} from "./model-defaults-service.js";
+import { assertProfilesVerified, collectExplicitProfiles } from "./access-guard.js";
 import { id, now, objectHash } from "./util.js";
 import { realpathSync, mkdirSync, existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
@@ -27,13 +40,78 @@ export interface CreateWorkflowRequest {
   workspace_mode?: "new_worktree" | "existing_workspace";
   planner_profile_id?: string;
   executor_profile_id?: string;
+  planner_profile?: ToolProfile;
+  executor_profile?: ToolProfile;
+  role_overrides?: RoleOverrides;
+  source_defaults_revision?: number;
+}
+
+type AccessGate = {
+  requireVerified(profiles: ToolProfile[]): void;
+};
+
+function parseOptionalProfile(value: unknown): ToolProfile | undefined {
+  if (value === undefined) return undefined;
+  return ToolProfileSchema.parse(value);
+}
+
+function loadCreateDefaults(store: Store, config?: Config) {
+  if (config) return new ModelDefaultsService(store).getOrImport(config);
+  return {
+    revision: 0,
+    plannerProfile: plannerProfileFromConfig(),
+    executorProfile: executorProfileFromConfig(),
+  };
+}
+
+function resolveCreateProfiles(
+  store: Store,
+  input: CreateWorkflowRequest,
+  config?: Config,
+) {
+  const defaults = loadCreateDefaults(store, config);
+  const plannerFromBody = parseOptionalProfile(input.planner_profile);
+  const executorFromBody = parseOptionalProfile(input.executor_profile);
+  const usedSavedIds = Boolean(
+    input.planner_profile_id || input.executor_profile_id,
+  );
+  const plannerProfile =
+    plannerFromBody ??
+    (input.planner_profile_id
+      ? resolveProfile(store, input.planner_profile_id)
+      : defaults.plannerProfile);
+  const executorProfile =
+    executorFromBody ??
+    (input.executor_profile_id
+      ? resolveProfile(store, input.executor_profile_id)
+      : usedSavedIds && input.planner_profile_id
+        ? resolveProfile(store, input.planner_profile_id)
+        : defaults.executorProfile);
+  const roleOverrides = input.role_overrides
+    ? RoleOverridesSchema.parse(input.role_overrides)
+    : inheritRoleOverrides();
+  const usedOnlySavedIds =
+    usedSavedIds && !plannerFromBody && !executorFromBody;
+  const sourceDefaultsRevision = usedOnlySavedIds
+    ? input.source_defaults_revision
+    : (input.source_defaults_revision ?? defaults.revision);
+  return {
+    plannerProfile,
+    executorProfile,
+    roleOverrides,
+    sourceDefaultsRevision,
+  };
 }
 export interface CreateWorkflowResult {
   workflow: Workflow;
   is_existing: boolean;
 }
 export class CreateWorkflowService {
-  constructor(private store: Store) {}
+  constructor(
+    private store: Store,
+    private config?: Config,
+    _access?: AccessGate,
+  ) {}
   execute(input: CreateWorkflowRequest): CreateWorkflowResult {
     Id.parse(input.request_id);
     requireCondition(
@@ -72,11 +150,22 @@ export class CreateWorkflowService {
     }
     const pending=this.store.get<{payload_hash:string;project:Project;workflow:Workflow;workspace:Workspace;spec:ReturnType<typeof ExecutionSpecSchema.parse>}>("workspace_creation",key);
     requireCondition(!pending || pending.payload_hash===payloadHash,"IDEMPOTENCY_CONFLICT","创建中断后只能重试原请求",409);
-    const plannerProfile = pending?.spec.plannerProfile ?? resolveProfile(this.store, input.planner_profile_id);
-    const executorProfile = pending?.spec.executorProfile ?? resolveProfile(
-      this.store,
-      input.executor_profile_id ?? input.planner_profile_id,
-    );
+    const resolved = resolveCreateProfiles(this.store, input, this.config);
+    const plannerProfile = pending?.spec.plannerProfile ?? resolved.plannerProfile;
+    const executorProfile = pending?.spec.executorProfile ?? resolved.executorProfile;
+    const roleOverrides = pending?.spec.roleOverrides ?? resolved.roleOverrides;
+    const sourceDefaultsRevision =
+      pending?.spec.source_defaults_revision ?? resolved.sourceDefaultsRevision;
+    if (!pending) {
+      assertProfilesVerified(
+        this.store,
+        collectExplicitProfiles(
+          plannerProfile,
+          executorProfile,
+          roleOverrides,
+        ),
+      );
+    }
     requireCondition(
       existsSync(input.workspace_root),
       "WORKSPACE_MISSING",
@@ -185,13 +274,14 @@ export class CreateWorkflowService {
       revision: 1,
       plannerProfile,
       executorProfile,
-      mode:
-        plannerProfile.adapterId === executorProfile.adapterId
-          ? "single_tool"
-          : "composite",
+      roleOverrides,
+      mode: specMode({ plannerProfile, executorProfile, roleOverrides }),
       template_id: "native-development",
       template_revision: getDefaultTemplate().revision,
       created_at: now(),
+      ...(sourceDefaultsRevision !== undefined
+        ? { source_defaults_revision: sourceDefaultsRevision }
+        : {}),
     });
     // Persist a recoverable creation intent before Git; never fall back to the source directory.
     if (workspace.owned) {

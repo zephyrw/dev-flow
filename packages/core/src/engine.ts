@@ -3,7 +3,8 @@ import {
   PLAN_SELF_CHECK_STAGE,
   BEFORE_HUMAN_REVIEW_STAGE,
 } from "./plan-self-check.js";
-import { bindProfile } from "./run-profile.js";
+import { bindProfile, buildDispatchContext } from "./run-profile.js";
+import { bindRepairAssignment, closeOpenRepairBatches } from "./repair-model-service.js";
 import { QualityCoordinator } from "./quality-coordinator.js";
 import {
   queueReviewCompletion,
@@ -17,10 +18,11 @@ import { FunctionalIssueService } from "./functional-issues.js";
 import { matchesCommand } from "../../evidence/src/command-match.js";
 import { workflowAttention } from "./attention.js";
 import { assertSelectedSource } from "./source-change.js";
-import { scheduleModelRetry } from "./model-retry.js";
+import { scheduleModelRetry, stageModelRunRetry } from "./model-retry.js";
 import { currentRunObservation } from "./run-observation.js";
 import { repairFailure, prepareRepairResume } from "./repair.js";
 import { normalizeRuntimeFailure } from "../../runtime/src/errors.js";
+import { ModelAccessService } from "./model-access-service.js";
 import { runtimeFailureResolution } from "../../contracts/src/runtime-failure.js";
 import {
   latestEvidence,
@@ -430,6 +432,9 @@ export class Engine {
         updated_at: now(),
       };
       this.store.put("workflow", key, w.project_id, next);
+      if (state === "COMMITTED" || state === "COMPLETED") {
+        closeOpenRepairBatches(this.store, key);
+      }
       this.store.event(key, w.project_id, "StateChanged", {
         from: w.state,
         to: state,
@@ -1849,8 +1854,10 @@ export class Engine {
         const issues = new FunctionalIssueService(this.store);
         for (const issue of issues
           .listIssues(key)
-          .filter((i) => i.status === "fixing"))
+          .filter((i) => i.status === "fixing")) {
+          if (!issueInRepairBatch(this, key, run, issue.issue_id)) continue;
           issues.markReadyForRetest(key, issue.issue_id, rev.id);
+        }
         if (this.store.get("functional_fix_intent", key)) {
           this.store.put(
             "functional_retest_ready",
@@ -1954,6 +1961,7 @@ export class Engine {
   async stop(
     key: string,
     source: "local_console" | "controller" = "controller",
+    expectedRunId?: string | null,
   ) {
     const w = this.get(key);
     requireCondition(
@@ -1968,12 +1976,30 @@ export class Engine {
       "INVALID_STATE",
       "该阶段不能暂停执行",
     );
+    if (expectedRunId !== undefined && (w.run_id ?? null) !== expectedRunId) {
+      throw new FlowError(
+        "ACTIVE_RUN_CHANGED",
+        "当前执行轮次已变化，不能停止接替的新轮次",
+        409,
+      );
+    }
+    const run = w.run_id ? this.store.get<Run>("run", w.run_id) : undefined;
+    const reviewPhase = this.store.get<{ phase?: string }>(
+      "plan_check_review_intent",
+      key,
+    )?.phase;
     const interruption = {
       category: "pause",
       source,
       at: now(),
+      prior_state: w.state,
       prior_stage: w.stage,
+      prior_purpose: run?.purpose,
+      prior_run_id: w.run_id,
       run_id: w.run_id,
+      review_phase: reviewPhase,
+      repair_batch_id: run?.repair_batch_id,
+      logical_round_id: run?.logical_round_id,
       message:
         source === "local_console"
           ? "你在控制台暂停了执行"
@@ -1985,6 +2011,8 @@ export class Engine {
     if (w.run_id) this.auth.revokeRun(w.run_id);
     this.store.remove("queue", key);
     this.store.remove("model_retry", key);
+    this.store.remove("pending_model_retry", key);
+    this.store.remove("transient_network_retry", key);
     this.transition(key, [w.state], "STOPPING", "stop");
     if (w.run_id) await this.runtime?.stop(w.run_id);
     const next = this.transition(key, ["STOPPING"], "STOPPED", "stopped");
@@ -2106,7 +2134,13 @@ export class Engine {
           continue;
         const w = this.get(job.workflow_id),
           runId = id("aside-run");
-        const binding = bindProfile(this.store, this.config, w.id, "aside");
+        const binding = bindProfile(
+          this.store,
+          this.config,
+          w.id,
+          "aside",
+          buildDispatchContext(this.store, w.id, "aside"),
+        );
         const run: Run = {
           id: runId,
           workflow_id: w.id,
@@ -2157,7 +2191,45 @@ export class Engine {
           });
         continue;
       }
-      if (purpose === "spec_switch" || purpose === "feedback_interrupt") {
+      if (purpose === "spec_switch") {
+        const w = this.get(job.workflow_id);
+        const expectedRunId = payload.expected_run_id;
+        if (!expectedRunId) {
+          this.store.event(
+            job.workflow_id,
+            w.project_id,
+            "SpecSwitchRecorded",
+            {
+              message: "配置已记录，需用户按当前状态继续",
+            },
+          );
+          this.store.jobStatus(job.id, "delivered");
+          continue;
+        }
+        if (w.run_id && w.run_id !== expectedRunId) {
+          this.store.event(job.workflow_id, w.project_id, "DispatchRejected", {
+            code: "ACTIVE_RUN_CHANGED",
+            expected_run_id: expectedRunId,
+            current_run_id: w.run_id,
+          });
+          this.store.jobStatus(job.id, "delivered");
+          continue;
+        }
+        if (
+          [
+            "EXECUTING",
+            "REVIEWING",
+            "PLANNING",
+            "QUEUED",
+            "VERIFYING",
+          ].includes(w.state)
+        ) {
+          await this.stop(w.id, "local_console", expectedRunId);
+        }
+        this.store.jobStatus(job.id, "delivered");
+        continue;
+      }
+      if (purpose === "feedback_interrupt") {
         const w = this.get(job.workflow_id);
         if (
           [
@@ -2280,7 +2352,13 @@ export class Engine {
       "PLANNER_UNAVAILABLE",
       "当前运行时不支持规划",
     );
-    const binding = bindProfile(this.store, this.config, w.id, "planning");
+    const binding = bindProfile(
+      this.store,
+      this.config,
+      w.id,
+      "planning",
+      buildDispatchContext(this.store, w.id, "planning"),
+    );
     const run: Run = {
       id: runId,
       workflow_id: w.id,
@@ -2571,6 +2649,25 @@ export class Engine {
         );
         leases.push(...keys);
       }
+      const takeover = this.store.get<{ planner: boolean }>(
+        "repair_assignment",
+        key,
+      )?.planner;
+      const purpose = review
+        ? "quality_review"
+        : selfCheck
+          ? "plan_self_check"
+          : takeover
+            ? "planner_takeover"
+            : "implement";
+      const dispatchContext = buildDispatchContext(this.store, key, purpose);
+      const profileBinding = bindProfile(
+        this.store,
+        this.config,
+        key,
+        purpose,
+        dispatchContext,
+      );
       w = this.transition(
         key,
         [review ? "REVIEW_QUEUED" : "QUEUED"],
@@ -2582,8 +2679,7 @@ export class Engine {
             : "review"
           : selfCheck
             ? PLAN_SELF_CHECK_STAGE
-            : this.store.get<{ planner: boolean }>("repair_assignment", key)
-                  ?.planner
+            : takeover
               ? "planner_takeover"
               : "execute",
         {
@@ -2595,18 +2691,6 @@ export class Engine {
       activated = true;
       this.store.remove("queue_wait", key);
       const deadline = Date.now() + this.config.timeouts.agent_minutes * 60000;
-      const profileBinding = bindProfile(
-        this.store,
-        this.config,
-        key,
-        review
-          ? "quality_review"
-          : selfCheck
-            ? "plan_self_check"
-            : w.stage === "planner_takeover"
-              ? "planner_takeover"
-              : "implement",
-      );
       const run: Run = {
         ...profileBinding,
         id: runId,
@@ -2623,7 +2707,13 @@ export class Engine {
           snapshot: w.snapshot_id,
         }),
       };
-      this.store.put("run", runId, key, run);
+      this.store.transaction(() => {
+        this.store.put("run", runId, key, run);
+        if (profileBinding.assignment_id) {
+          bindRepairAssignment(this.store, key, profileBinding.assignment_id);
+        }
+        this.store.remove("pending_model_retry", key);
+      });
       for (const msg of this.store
         .list<any>("feedback_message", key)
         .filter((m) => m.status === "pending"))
@@ -2633,11 +2723,7 @@ export class Engine {
           ack_run: runId,
         });
       if (!review && !selfCheck) {
-        const issues = new FunctionalIssueService(this.store);
-        for (const issue of issues
-          .listIssues(key)
-          .filter((i) => i.status === "open"))
-          issues.markFixing(key, issue.issue_id);
+        markOpenIssuesFixing(this, key, profileBinding.repair_batch_id);
       }
       if (selfCheck) this.planSelfCheck.start(w, run);
       const timer = setInterval(
@@ -2647,11 +2733,14 @@ export class Engine {
       try {
         if (review) {
           const result = await runtime.review(w, run);
-          requireCondition(
-            !this.store.get("run_stop", runId),
-            "RUN_REVOKED",
-            "审查轮次已停止",
-          );
+          if (this.store.get("run_stop", runId) || this.get(key).run_id !== runId) {
+            this.store.put("run", runId, key, {
+              ...this.store.must<Run>("run", runId),
+              status: "stopped",
+              ended_at: now(),
+            });
+            return;
+          }
           this.store.put("run", runId, key, {
             ...this.store.must<Run>("run", runId),
             status: "completed",
@@ -2818,6 +2907,7 @@ export class Engine {
           retryState.count += 1;
           retryState.last_at = Date.now();
           this.store.put("transient_network_retry", key, key, retryState);
+          stageModelRunRetry(this.store, key, runId);
           const current = this.get(key);
           this.store.event(
             key,
@@ -2852,17 +2942,21 @@ export class Engine {
         } else {
           const repair = await repairFailure(this, key, e, runId);
           if (repair?.retry) {
+            stageModelRunRetry(this.store, key, runId);
             const current = this.get(key);
-            this.invalidate(key, "异常修复，交付证据需重验");
+            const failedPurpose = this.store.get<Run>("run", runId)?.purpose;
+            const retrySelfCheck = failedPurpose === "plan_self_check";
+            if (!retrySelfCheck)
+              this.invalidate(key, "异常修复，交付证据需重验");
             this.transition(
               key,
               [current.state],
               "QUEUED",
-              this.store.get<any>("repair_assignment", key)?.planner
-                ? "planner_takeover"
-                : "auto_repair",
+              this.repairRetryStage(key, failedPurpose),
               {
-                feedback: [...current.feedback, repair.instructions],
+                feedback: retrySelfCheck
+                  ? current.feedback
+                  : [...current.feedback, repair.instructions],
                 blocker: undefined,
               },
             );
@@ -3099,6 +3193,8 @@ export class Engine {
     }
     const review = ReviewSchema.parse(sanitized),
       w = this.get(key);
+    const stoppedRun = w.run_id && this.store.get("run_stop", w.run_id);
+    if (stoppedRun) return this.get(key);
     requireCondition(
       w.state === "REVIEWING" &&
         review.workflow_id === key &&
@@ -3599,6 +3695,12 @@ export class Engine {
       this.scheduler.release(key, run, keys, true);
     }
   }
+  private repairRetryStage(key: string, purpose?: string) {
+    if (purpose === "plan_self_check") return PLAN_SELF_CHECK_STAGE;
+    if (this.store.get<{ planner?: boolean }>("repair_assignment", key)?.planner)
+      return "planner_takeover";
+    return "auto_repair";
+  }
   block(key: string, error: unknown) {
     error = normalizeRuntimeFailure(error);
     const w = this.get(key);
@@ -3615,12 +3717,25 @@ export class Engine {
       return;
     const code = error instanceof FlowError ? error.code : "INTERNAL_FAILURE";
     const message = error instanceof Error ? error.message : String(error);
+    const run = w.run_id ? this.store.get<Run>("run", w.run_id) : undefined;
+    const frozen = run?.frozen_invocation ?? run?.model_binding?.frozen_invocation;
+    if (frozen && (code === "MODEL_AUTH" || code === "MODEL_LOGIN_REQUIRED" || code === "MODEL_FORBIDDEN")) {
+      new ModelAccessService(this.store).invalidate(
+        frozen,
+        code === "MODEL_FORBIDDEN" ? "MODEL_FORBIDDEN" : "MODEL_LOGIN_REQUIRED",
+      );
+    }
     this.store.put("interruption", key, key, {
       category: "error",
       source: "runtime",
       at: now(),
+      prior_state: w.state,
       prior_stage: w.stage,
+      prior_purpose: run?.purpose,
+      prior_run_id: w.run_id,
       run_id: w.run_id,
+      repair_batch_id: run?.repair_batch_id,
+      logical_round_id: run?.logical_round_id,
       message,
       next_action: "处理错误后继续这个任务",
       ...(error instanceof FlowError ? { details: error.details } : {}),
@@ -3889,4 +4004,34 @@ export class Engine {
     }
     return [];
   }
+}
+
+function markOpenIssuesFixing(engine: Engine, key: string, batchId?: string) {
+  const issues = new FunctionalIssueService(engine.store);
+  const allowed = batchIssueIds(engine, key, batchId);
+  for (const issue of issues.listIssues(key).filter((item) => item.status === "open")) {
+    if (allowed && !allowed.has(issue.issue_id)) continue;
+    issues.markFixing(key, issue.issue_id);
+  }
+}
+
+function issueInRepairBatch(
+  engine: Engine,
+  key: string,
+  run: Run,
+  issueId: string,
+) {
+  const allowed = batchIssueIds(engine, key, run.repair_batch_id);
+  if (!allowed) return true;
+  return allowed.has(issueId);
+}
+
+function batchIssueIds(engine: Engine, key: string, batchId?: string) {
+  if (!batchId) return undefined;
+  const batch = engine.store.get<{ issue_ids?: string[]; workflow_id?: string }>(
+    "repair_model_batch",
+    batchId,
+  );
+  if (!batch || batch.workflow_id !== key) return new Set<string>();
+  return new Set(batch.issue_ids ?? []);
 }

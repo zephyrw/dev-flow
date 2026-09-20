@@ -1,0 +1,9 @@
+Cursor Agent
+
+Usage: agent [OPTIONS] [PROMPT]
+
+  models                 List available models
+  --list-models          Compatible alias
+  --model <id>           Exact variant id
+
+This help snapshot is for directory fixtures only.
