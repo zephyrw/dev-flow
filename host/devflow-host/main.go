@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -34,7 +35,11 @@ type OutputMessage struct {
 	Locked  *bool  `json:"locked,omitempty"`
 }
 
-func emit(msg OutputMessage) {
+var emitMu sync.Mutex
+
+func emit(msg interface{}) {
+	emitMu.Lock()
+	defer emitMu.Unlock()
 	bytes, err := json.Marshal(msg)
 	if err == nil {
 		fmt.Println(string(bytes))
@@ -46,9 +51,54 @@ func isVersionFlag(arg string) bool {
 	return clean == "v" || clean == "version"
 }
 
+type HostCapabilities struct {
+	Version        int    `json:"version"`
+	OS             string `json:"os"`
+	SuspendedSpawn bool   `json:"suspended_spawn"`
+	KillOnClose    bool   `json:"kill_on_close"`
+	Reason         string `json:"reason,omitempty"`
+}
+type JobStatus struct {
+	Id              string `json:"id"`
+	Alive           bool   `json:"alive"`
+	ActiveProcesses uint32 `json:"active_processes"`
+}
+
+var validJobID = regexp.MustCompile(`^[A-Za-z0-9_-]{1,150}$`)
+
+func jobObjectName(id string) (string, error) {
+	if !validJobID.MatchString(id) {
+		return "", fmt.Errorf("invalid job identifier")
+	}
+	return `Local\DevFlow.` + id, nil
+}
 func main() {
 	if len(os.Args) > 1 {
 		cmdName := os.Args[1]
+		if cmdName == "doctor" {
+			caps, err := platformDoctor()
+			if err != nil {
+				caps.Reason = err.Error()
+			}
+			emit(caps)
+			if err != nil {
+				os.Exit(1)
+			}
+			return
+		}
+		if cmdName == "job-status" {
+			if len(os.Args) != 3 {
+				emit(OutputMessage{Type: "error", Message: "job-status requires an identifier"})
+				os.Exit(1)
+			}
+			status, err := platformJobStatus(os.Args[2])
+			if err != nil {
+				emit(OutputMessage{Type: "error", Message: err.Error()})
+				os.Exit(1)
+			}
+			emit(status)
+			return
+		}
 		if isVersionFlag(cmdName) {
 			fmt.Println("devflow-host v1.0.0 (Go)")
 			return
@@ -58,6 +108,7 @@ func main() {
 			fmt.Println("Usage:")
 			fmt.Println("  devflow-host [version|-v|--version]")
 			fmt.Println("  devflow-host controller-lock <lock-name>")
+			fmt.Println("  devflow-host doctor | job-status <job-id>")
 			fmt.Println("  devflow-host [run] < (stdin ProcessSpec JSON)")
 			return
 		}
@@ -116,175 +167,134 @@ func main() {
 		os.Exit(1)
 	}
 
-	job, err := setupJobObject()
-	if err != nil {
-		emit(OutputMessage{Type: "error", Message: fmt.Sprintf("failed to initialize host job: %v", err)})
+	if err := runProcess(reader, spec); err != nil {
+		emit(OutputMessage{Type: "error", Message: err.Error()})
 		os.Exit(1)
 	}
+}
 
+func runProcess(reader *bufio.Reader, spec ProcessSpec) error {
+	job, err := setupJobObject(spec.Id)
+	if err != nil {
+		return fmt.Errorf("initialize job: %w", err)
+	}
+	defer job.close()
 	cmd := exec.Command(spec.Executable, spec.Args...)
-	if spec.Cwd != "" {
-		cmd.Dir = spec.Cwd
-	}
-
+	cmd.Dir = spec.Cwd
 	if len(spec.Env) > 0 {
-		envList := os.Environ()
+		cmd.Env = os.Environ()
 		for k, v := range spec.Env {
-			envList = append(envList, fmt.Sprintf("%s=%s", k, v))
+			cmd.Env = append(cmd.Env, k+"="+v)
 		}
-		cmd.Env = envList
 	}
-
 	prepareCmdAttrs(cmd)
-
-	var childStdin io.WriteCloser
+	// Own read ends so Cmd.Wait cannot close pipes before descendants are killed.
+	stdout, stdoutWrite, err := os.Pipe()
+	if err != nil {
+		return err
+	}
+	defer stdout.Close()
+	defer stdoutWrite.Close()
+	stderr, stderrWrite, err := os.Pipe()
+	if err != nil {
+		return err
+	}
+	defer stderr.Close()
+	defer stderrWrite.Close()
+	cmd.Stdout, cmd.Stderr = stdoutWrite, stderrWrite
+	var input io.WriteCloser
 	if spec.Stdin != "" {
-		stdinPipe, err := cmd.StdinPipe()
-		if err == nil {
-			childStdin = stdinPipe
+		input, err = cmd.StdinPipe()
+		if err != nil {
+			return err
 		}
+		defer input.Close()
 	}
-
-	stdoutPipe, err := cmd.StdoutPipe()
-	if err != nil {
-		emit(OutputMessage{Type: "error", Message: fmt.Sprintf("failed to create stdout pipe: %v", err)})
-		os.Exit(1)
-	}
-
-	stderrPipe, err := cmd.StderrPipe()
-	if err != nil {
-		emit(OutputMessage{Type: "error", Message: fmt.Sprintf("failed to create stderr pipe: %v", err)})
-		os.Exit(1)
-	}
-
 	if err := cmd.Start(); err != nil {
-		emit(OutputMessage{Type: "error", Message: fmt.Sprintf("failed to start process: %v", err)})
-		os.Exit(1)
+		return fmt.Errorf("start process: %w", err)
 	}
-
+	stdoutWrite.Close()
+	stderrWrite.Close()
 	if err := job.assignProcess(cmd); err != nil {
-        _ = cmd.Process.Kill()
-        _ = cmd.Wait()
-        emit(OutputMessage{Type: "error", Message: "cannot attach process containment: " + err.Error()})
-        os.Exit(1)
-    }
-
-	emit(OutputMessage{
-		Type:  "started",
-		Pid:   cmd.Process.Pid,
-		JobId: spec.Id,
-	})
-
-	// 精确超时调度 (RQ-19 & H02)
-	var timeoutTimer *time.Timer
-	if spec.TimeoutMs > 0 {
-		timeoutTimer = time.AfterFunc(time.Duration(spec.TimeoutMs)*time.Millisecond, func() {
-			_ = job.terminate(1)
-			if cmd.Process != nil {
-				_ = cmd.Process.Kill()
-			}
-			_ = stdoutPipe.Close()
-			_ = stderrPipe.Close()
-		})
+		cmd.Process.Kill()
+		cmd.Wait()
+		return fmt.Errorf("attach containment: %w", err)
 	}
-
-	if childStdin != nil {
-		go func() {
-			_, _ = io.WriteString(childStdin, spec.Stdin)
-			_ = childStdin.Close()
-		}()
+	if err := resumeProcess(cmd); err != nil {
+		job.terminate(1)
+		cmd.Process.Kill()
+		cmd.Wait()
+		return fmt.Errorf("resume contained process: %w", err)
 	}
-
+	emit(OutputMessage{Type: "started", Pid: cmd.Process.Pid, JobId: spec.Id})
 	var wg sync.WaitGroup
+	stream := func(kind string, pipe *os.File) {
+		defer wg.Done()
+		buf := make([]byte, 32*1024)
+		for {
+			n, err := pipe.Read(buf)
+			if n > 0 {
+				emit(OutputMessage{Type: kind, Data: base64.StdEncoding.EncodeToString(buf[:n])})
+			}
+			if err != nil {
+				return
+			}
+		}
+	}
 	wg.Add(2)
-
-	// 流式读取 stdout
-	go func() {
-		defer wg.Done()
-		buf := make([]byte, 32*1024)
-		for {
-			n, err := stdoutPipe.Read(buf)
-			if n > 0 {
-				emit(OutputMessage{
-					Type: "stdout",
-					Data: base64.StdEncoding.EncodeToString(buf[:n]),
-				})
-			}
-			if err != nil {
-				break
-			}
+	go stream("stdout", stdout)
+	go stream("stderr", stderr)
+	if input != nil {
+		go func() { io.WriteString(input, spec.Stdin); input.Close() }()
+	}
+	stop := func() {
+		if err := job.terminate(1); err != nil {
+			emit(OutputMessage{Type: "error", Message: err.Error()})
+			cmd.Process.Kill()
 		}
-	}()
-
-	// 流式读取 stderr
-	go func() {
-		defer wg.Done()
-		buf := make([]byte, 32*1024)
-		for {
-			n, err := stderrPipe.Read(buf)
-			if n > 0 {
-				emit(OutputMessage{
-					Type: "stderr",
-					Data: base64.StdEncoding.EncodeToString(buf[:n]),
-				})
-			}
-			if err != nil {
-				break
-			}
-		}
-	}()
-
-	// 监听后续 stdin 指令（如 stop）
+	}
+	var timer *time.Timer
+	if spec.TimeoutMs > 0 {
+		timer = time.AfterFunc(time.Duration(spec.TimeoutMs)*time.Millisecond, stop)
+		defer timer.Stop()
+	}
 	go func() {
 		for {
 			line, err := reader.ReadString('\n')
-            if err != nil {
-                // The controller disappeared: terminate this job, never orphan its children.
-                _ = job.terminate(1)
-                _ = cmd.Process.Kill()
-                _ = stdoutPipe.Close()
-                _ = stderrPipe.Close()
-                return
-            }
-			line = strings.TrimSpace(line)
-			if line == "" {
-				continue
+			if err != nil {
+				stop()
+				return
 			}
-			var cmdMap map[string]interface{}
-			if err := json.Unmarshal([]byte(line), &cmdMap); err == nil {
-				if act, ok := cmdMap["action"].(string); ok && act == "stop" {
-					if timeoutTimer != nil {
-						timeoutTimer.Stop()
-					}
-					_ = job.terminate(1)
-					if cmd.Process != nil {
-						_ = cmd.Process.Kill()
-					}
-					return
-				}
+			var command struct {
+				Action string `json:"action"`
+			}
+			if json.Unmarshal([]byte(line), &command) == nil && command.Action == "stop" {
+				stop()
+				return
 			}
 		}
 	}()
-
-	wg.Wait()
-	err = cmd.Wait()
-	if timeoutTimer != nil {
-		timeoutTimer.Stop()
+	// Root can exit while a grandchild holds stdout open. Kill all descendants
+	// before draining inherited pipes, and confirm containment before emitting exit.
+	waitErr := cmd.Wait()
+	if timer != nil {
+		timer.Stop()
 	}
-
-	exitCode := 0
-	if err != nil {
-		if exitError, ok := err.(*exec.ExitError); ok {
-			exitCode = exitError.ExitCode()
+	if err := job.terminate(0); err != nil {
+		return err
+	}
+	if err := job.waitStopped(); err != nil {
+		return err
+	}
+	wg.Wait()
+	code := 0
+	if waitErr != nil {
+		if e, ok := waitErr.(*exec.ExitError); ok {
+			code = e.ExitCode()
 		} else {
-			exitCode = -1
+			code = -1
 		}
 	}
-
-	// 显式序列化退出码 code: 0 (RQ-19 & H01)
-	emit(OutputMessage{
-		Type: "exit",
-		Code: &exitCode,
-	})
-	_ = job.terminate(0)
+	emit(OutputMessage{Type: "exit", Code: &code})
+	return nil
 }

@@ -15,10 +15,23 @@ const unlock = await acquireControllerLock(
   config.host.executable,
   config.storage_root,
 );
+import { bootstrapAccountService } from "./account-service-bootstrap.js";
+
 const store = new Store(join(config.storage_root, "devflow.sqlite"));
 const engine = new Engine(store, config);
-engine.runtime = new LocalRuntime(engine);
-const app = await buildServer(engine);
+const runtime = new LocalRuntime(engine);
+engine.runtime = runtime;
+
+const accountService = bootstrapAccountService(store, {
+  authHostExecutable: config.agy_accounts.auth_host_executable,
+  agyCliPath: config.models.agy_executable,
+  hostExecutable: config.host.executable,
+  processManager: runtime.processes,
+  settings: config.agy_accounts,
+});
+const bridge = runtime.attachAccountService(accountService);
+
+const app = await buildServer(engine, { accountService });
 try {
   await app.listen({ host: config.server.host, port: config.server.port });
 } catch (e) {
@@ -26,16 +39,20 @@ try {
   await unlock();
   throw e;
 }
+await accountService.reconcileStartup();
 // Bind first: a duplicate controller must fail before mutating persisted runs.
 engine.recover();
 const workspaceObserver = new WorkspaceObserver(engine);
-recordController(config.storage_root, fileURLToPath(import.meta.url));
+recordController(config.storage_root, fileURLToPath(import.meta.url), "full");
 console.log(`DevFlow ${config.server.human_origin}`);
 const tick = setInterval(() => {
   void engine.dispatch().catch((e) => console.error("调度失败", String(e)));
   void resumeModelWaits(engine).catch((e) =>
     console.error("额度恢复调度失败", String(e)),
   );
+  void accountService
+    .tick(Date.now())
+    .catch((e) => console.error("账号调度tick失败", String(e)));
 }, 5000);
 const maintenance = setInterval(() => {
   try {
@@ -44,11 +61,17 @@ const maintenance = setInterval(() => {
     console.error("日志归档失败", String(e));
   }
 }, 86400000);
+let closing = false;
 const close = async () => {
+  if (closing) return;
+  closing = true;
+  accountService.beginShutdown();
   workspaceObserver.close();
   clearInterval(tick);
   clearInterval(maintenance);
   await engine.runtime!.close();
+  bridge.dispose();
+  await accountService.close();
   for (const socket of app.websocketServer.clients) socket.terminate();
   await app.close();
   store.close();

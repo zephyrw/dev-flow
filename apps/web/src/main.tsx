@@ -18,6 +18,8 @@ import {
   PlanReviewDialog,
   type PlanReviewTarget,
 } from "./components/PlanReviewDialog.js";
+import { AgyAccountsDrawer } from "./components/AgyAccountsDrawer.js";
+import { AgyAccountsPage } from "./components/AgyAccountsPage.js";
 import React, { useEffect, useRef, useState } from "react";
 
 import { createRoot } from "react-dom/client";
@@ -1708,6 +1710,7 @@ function App() {
   const [connected, setConnected] = useState(false);
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [isToolDrawerOpen, setIsToolDrawerOpen] = useState(false);
+  const [isAgyAccountsDrawerOpen, setIsAgyAccountsDrawerOpen] = useState(false);
   const attempt = async (fn: () => Promise<unknown>) => {
     setError("");
     setNotice("");
@@ -2181,6 +2184,16 @@ function App() {
           ))}
         </div>
         <div className="sidebar-bottom">
+          <button
+            className="nav"
+            aria-label="AGY 账号管理"
+            onClick={() => setIsAgyAccountsDrawerOpen(true)}
+          >
+            <span className="nav-icon" aria-hidden="true">
+              👥
+            </span>{" "}
+            AGY 账号
+          </button>
           <button
             className={"nav " + (showGuide ? "active" : "")}
             aria-label="使用指南"
@@ -2917,8 +2930,27 @@ function App() {
         workflowState={detail?.workflow?.state}
         onSpecUpdated={() => void refresh()}
       />
+      <AgyAccountsDrawer
+        isOpen={isAgyAccountsDrawerOpen}
+        onClose={() => setIsAgyAccountsDrawerOpen(false)}
+      />
     </div>
   );
 }
 
-createRoot(document.getElementById("root")!).render(<App />);
+const root = createRoot(document.getElementById("root")!);
+async function mountApplication() {
+  if (window.location.pathname.replace(/\/$/, "") === "/accounts") {
+    root.render(<AgyAccountsPage />);
+    return;
+  }
+  try {
+    const response = await fetch("/api/health");
+    if (!response.ok) throw new Error("无法读取服务模式");
+    const health = await response.json();
+    root.render(health.mode === "accounts" ? <AgyAccountsPage /> : <App />);
+  } catch (error) {
+    root.render(<div role="alert">{error instanceof Error ? error.message : "服务暂不可用"}</div>);
+  }
+}
+void mountApplication();

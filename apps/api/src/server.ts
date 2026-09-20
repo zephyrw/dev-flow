@@ -1,4 +1,4 @@
-import Fastify from "fastify";
+import { createBaseServer } from "./base-server.js";
 import websocket from "@fastify/websocket";
 import staticPlugin from "@fastify/static";
 import { existsSync, readFileSync } from "node:fs";
@@ -36,114 +36,20 @@ import { FeedbackService } from "../../../packages/core/src/feedback-service.js"
 import { PlanReviewService } from "../../../packages/core/src/plan-review.js";
 import { SourceChangeService } from "../../../packages/core/src/source-change.js";
 import { listAttachmentRecords } from "../../../packages/evidence/src/archive-consumer.js";
+import { registerAgyAccountRoutes } from "./agy-account-routes.js";
+import { registerAgyAccountPolicyRoutes } from "./agy-account-policy-routes.js";
+import { bootstrapAccountService } from "./account-service-bootstrap.js";
+import type { AgyAccountService } from "../../../packages/agy-accounts/src/service.js";
 
 export async function buildServer(
   engine: Engine,
-  options: { webRoot?: string } = {},
+  options: { webRoot?: string; accountService?: AgyAccountService } = {},
 ) {
-  const app = Fastify({ logger: false, bodyLimit: 8 * 1024 * 1024 });
+  const { app, humanCheck: human } = createBaseServer({
+    port: engine.config.server.port, humanOrigin: engine.config.server.human_origin,
+    mode: "full", storageInstance: engine.config.storage_root, registerStatic: false,
+  });
   await app.register(websocket, { options: { maxPayload: 65536 } });
-  const origin = new URL(engine.config.server.human_origin);
-  // The console trusts the current local user. Model bearer tokens only belong
-  // to MCP/worker routes; they must never authorize a console action.
-  const human = (request: any) =>
-    requireCondition(
-      !request.headers.authorization,
-      "FORBIDDEN",
-      "模型令牌不能调用控制台操作",
-      403,
-    );
-  app.addHook("onRequest", async (req, reply) => {
-    const host = req.headers.host;
-    requireCondition(
-      host === origin.host || host === `127.0.0.1:${engine.config.server.port}`,
-      "HOST_DENIED",
-      "Host 不匹配",
-      403,
-    );
-    if (req.headers.origin)
-      requireCondition(
-        req.headers.origin === origin.origin,
-        "ORIGIN_DENIED",
-        "Origin 不匹配",
-        403,
-      );
-    if (req.url.startsWith("/api/")) {
-      const site = req.headers["sec-fetch-site"];
-      requireCondition(
-        !site || site === "same-origin" || site === "none",
-        "FETCH_SITE_DENIED",
-        "控制台接口只接受本机同源访问",
-        403,
-      );
-    }
-    if (req.headers.upgrade?.toLowerCase() === "websocket")
-      requireCondition(
-        req.headers.origin === origin.origin,
-        "ORIGIN_DENIED",
-        "事件流需要同源连接",
-        403,
-      );
-    if (
-      ["POST", "PUT", "PATCH", "DELETE"].includes(req.method) &&
-      req.url !== "/mcp" &&
-      !req.url.startsWith("/api/worker/")
-    )
-      requireCondition(
-        req.headers.origin === origin.origin &&
-          req.headers["content-type"]?.startsWith("application/json"),
-        "CSRF_DENIED",
-        "需要同源 JSON 请求",
-        403,
-      );
-    reply
-      .header("X-Content-Type-Options", "nosniff")
-      .header("Referrer-Policy", "no-referrer")
-      .header("Cross-Origin-Resource-Policy", "same-origin")
-      .header("Cache-Control", "no-store")
-      .header(
-        "Content-Security-Policy",
-        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'",
-      );
-  });
-  app.setErrorHandler((error, req, reply) => {
-    const known = error instanceof FlowError;
-    const status = known
-      ? error.status
-      : error instanceof z.ZodError
-        ? 422
-        : 500;
-    const requestId =
-      (req.body as any)?.request_id ||
-      (req.headers["x-request-id"] as string) ||
-      null;
-    reply.code(status).send({
-      error: {
-        code: known
-          ? error.code
-          : status === 422
-            ? "VALIDATION_ERROR"
-            : "INTERNAL_ERROR",
-        message:
-          known || error instanceof z.ZodError
-            ? error.message
-            : "操作失败，请检查本机服务日志",
-        details: known
-          ? (error as any).details
-          : error instanceof z.ZodError
-            ? error.issues
-            : undefined,
-      },
-      request_id: requestId,
-    });
-    if (status === 500) console.error(error);
-  });
-  app.get("/api/health", async () => ({
-    ok: true,
-    version: "0.2.0",
-    service: "devflow",
-    instance: hash(resolve(engine.config.storage_root).toLowerCase()),
-  }));
   app.get("/api/projects", async (req) => {
     human(req);
     return engine.store.list("project");
@@ -1232,6 +1138,19 @@ export async function buildServer(
       if (batch.length < 200) break;
     }
   });
+
+  const accountService =
+    options.accountService ||
+    bootstrapAccountService(engine.store, {
+      authHostExecutable: engine.config.agy_accounts.auth_host_executable,
+      agyCliPath: engine.config.models.agy_executable,
+      hostExecutable: engine.config.host.executable,
+      settings: engine.config.agy_accounts,
+    });
+  if (!options.accountService) app.addHook("onClose", () => accountService.close());
+  registerAgyAccountRoutes(app, accountService, human);
+  registerAgyAccountPolicyRoutes(app, accountService, human, id => { engine.get(id); });
+
   const webRoot = resolve(options.webRoot ?? "dist/web");
   if (existsSync(webRoot)) {
     await app.register(staticPlugin, { root: webRoot });

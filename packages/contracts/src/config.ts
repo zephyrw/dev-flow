@@ -2,6 +2,7 @@ import { z } from "zod";
 import { readFileSync, existsSync } from "node:fs";
 import { resolve, dirname } from "node:path";
 import { parse } from "yaml";
+import { AgyAccountSettingsSchema } from "./agy-account.js";
 const positive = z.number().int().positive();
 export const ConfigSchema = z
   .object({
@@ -16,6 +17,8 @@ export const ConfigSchema = z
       .prefault({}),
     retain_services_on_stop: z.boolean().default(false),
     storage_root: z.string().default(".devflow"),
+    agy_accounts: AgyAccountSettingsSchema.omit({ realm_id: true, revision: true, updated_at: true })
+      .extend({ enabled: z.boolean().default(false) }).strict().prefault({}),
     workspace_root: z.string().default(".devflow/worktrees"),
     models: z
       .object({
@@ -91,6 +94,7 @@ export function loadConfig(file?: string): Config {
   const base = file ? dirname(resolve(file)) : process.cwd();
   c.storage_root = resolve(base, c.storage_root);
   c.workspace_root = resolve(base, c.workspace_root);
+  c.agy_accounts.auth_host_executable = resolve(base, c.agy_accounts.auth_host_executable);
   for (const [a, b] of [c.ports.frontend, c.ports.backend])
     if (a > b) throw new Error("端口池起点大于终点");
   if (

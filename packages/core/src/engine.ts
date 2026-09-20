@@ -2997,7 +2997,9 @@ export class Engine {
           "COMMITTING",
           "HUMAN_PENDING",
         ].includes(w.state);
-      if (ownsRun && !review) {
+      if (ownsRun && e instanceof FlowError && e.code.startsWith("AGY_ACCOUNT_")) {
+        this.block(key, e);
+      } else if (ownsRun && !review) {
         const normalized = normalizeRuntimeFailure(e);
         const errorCode =
           normalized instanceof FlowError

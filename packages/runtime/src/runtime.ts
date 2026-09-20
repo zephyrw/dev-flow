@@ -73,6 +73,14 @@ import {
 } from "../../adapters/agy/src/handoff.js";
 import { BufferedEventSink } from "../../core/src/buffered-sink.js";
 import { ProfileRuntime } from "./profile-runtime.js";
+import { AgyWorkflowBridge } from "./agy-workflow-bridge.js";
+import { AgyAccountProcessHost } from "../../process/src/agy-account-processes.js";
+import type { AgyAccountService } from "../../agy-accounts/src/service.js";
+import { CurrentTurn } from "../../adapters/agy/src/current-turn.js";
+import {
+  classifyAgyFailure,
+  type AgyFailureFact,
+} from "../../adapters/agy/src/failure-fact.js";
 import {
   reviewSkillResources,
   reviewContractContext,
@@ -84,8 +92,54 @@ import {
   asRunContinuation,
 } from "../../core/src/round-intent.js";
 export class LocalRuntime implements Runtime {
+  private accountBridge?: AgyWorkflowBridge;
+  attachAccountService(service: AgyAccountService): AgyWorkflowBridge {
+    if (this.accountBridge)
+      throw new Error("AGY_ACCOUNT_SERVICE_ALREADY_ATTACHED");
+    const processHost = new AgyAccountProcessHost({
+      store: this.engine.store,
+      hostExecutable: this.engine.config.host.executable,
+      agyExecutable: executablePath(this.engine.config.models.agy_executable),
+      processManager: this.processes,
+    });
+    const bridge = new AgyWorkflowBridge(
+      service,
+      this.processes,
+      undefined,
+      this.engine,
+      processHost,
+    );
+    this.processes.setAdmissionGuard((spec) => {
+      if (!bridge.isManaged()) return;
+      const isAgy =
+        this.engine.store.get<Run>("run", spec.id)?.adapter === "agy" ||
+        resolve(spec.executable).toLowerCase() ===
+          resolve(
+            executablePath(this.engine.config.models.agy_executable),
+          ).toLowerCase() ||
+        /(?:^|[\\/])agy(?:\.exe|\.cmd)?$/i.test(spec.executable);
+      if (!isAgy && !spec.agy_account) return;
+      if (!spec.agy_account)
+        throw new FlowError(
+          "AGY_ACCOUNT_PERMIT_REQUIRED",
+          "受管 AGY 启动缺少账号许可",
+          409,
+        );
+      try {
+        service.markUsageStarted(spec.agy_account.permit_id);
+      } catch {
+        throw new FlowError(
+          "AGY_ACCOUNT_PERMIT_REVOKED",
+          "账号许可已失效，本轮未启动",
+          409,
+        );
+      }
+    });
+    this.accountBridge = bridge;
+    return bridge;
+  }
   private get native() {
-    return new ProfileRuntime(this.engine, this.processes);
+    return new ProfileRuntime(this.engine, this.processes, this.accountBridge);
   }
   async plan(workflow: Workflow, run: Run) {
     return this.native.plan(workflow, run);
@@ -431,6 +485,7 @@ export class LocalRuntime implements Runtime {
             workflow_id: spec.workflow_id,
             executable: spec.executable,
             cwd: spec.cwd,
+            ...(spec.agy_account ? { agy_account: spec.agy_account } : {}),
             ...event,
             updated_at: now(),
           },
@@ -461,7 +516,11 @@ export class LocalRuntime implements Runtime {
     }
     const planRecord = this.engine.plan(workflow.id);
     const plan = planRecord.plan;
-    if (!isLegacyProtocol(run, plan) || run.execution_spec_id || run.adapter !== "agy")
+    if (
+      !isLegacyProtocol(run, plan) ||
+      run.execution_spec_id ||
+      run.adapter !== "agy"
+    )
       return this.native.execute(workflow, run, token);
     reconcileImplementationProofs(this.engine, workflow.id);
     this.assertRun(workflow.id, run.id, ["EXECUTING"]);
@@ -598,35 +657,59 @@ export class LocalRuntime implements Runtime {
     if (remainingMs <= 0) {
       throw new FlowError("TIMEOUT", "执行启动前已达到截止时间");
     }
-    const proc = this.processes.start({
-      id: run.id,
-      workflow_id: workflow.id,
-      executable: executablePath(this.engine.config.models.agy_executable),
-      args: [
-        ...agyArguments(
-          this.engine.config.models.executor,
-          prompt,
-          this.engine.config.timeouts.agent_minutes,
-          conversation?.id,
-          projectBinding.id,
-          isNativeV2 ? "accept-edits" : undefined,
-        ),
-        "--add-dir",
-        directory,
-        ...this.engine.store
-          .list<Workspace>("workspace", workflow.id)
-          .flatMap((ws) => ["--add-dir", ws.root]),
-      ],
-      cwd: directory,
-      env: {
-        DEVFLOW_RUN_TOKEN: token,
-        DEVFLOW_WORKFLOW_ID: workflow.id,
-        DEVFLOW_RUN_ID: run.id,
-        DEVFLOW_BASE_URL: "http://127.0.0.1:" + this.engine.config.server.port,
-      },
-      timeout_ms: remainingMs,
-      deadline_at: run.deadline_at,
-    });
+    const accountBinding = await this.accountBridge?.prepareProfileRun(
+      workflow.id,
+      run,
+      this.engine.config.models.executor,
+      run.profile?.id,
+    );
+    let proc;
+    try {
+      proc = this.processes.start({
+        id: run.id,
+        workflow_id: workflow.id,
+        ...(accountBinding ? { agy_account: accountBinding } : {}),
+        executable: executablePath(this.engine.config.models.agy_executable),
+        args: [
+          ...agyArguments(
+            this.engine.config.models.executor,
+            prompt,
+            this.engine.config.timeouts.agent_minutes,
+            conversation?.id,
+            projectBinding.id,
+            isNativeV2 ? "accept-edits" : undefined,
+          ),
+          "--add-dir",
+          directory,
+          ...this.engine.store
+            .list<Workspace>("workspace", workflow.id)
+            .flatMap((ws) => ["--add-dir", ws.root]),
+        ],
+        cwd: directory,
+        env: {
+          DEVFLOW_RUN_TOKEN: token,
+          DEVFLOW_WORKFLOW_ID: workflow.id,
+          DEVFLOW_RUN_ID: run.id,
+          DEVFLOW_BASE_URL:
+            "http://127.0.0.1:" + this.engine.config.server.port,
+        },
+        timeout_ms: remainingMs,
+        deadline_at: run.deadline_at,
+      });
+    } catch (error) {
+      if (accountBinding)
+        await this.accountBridge?.releaseRun(run.id, false, "spawn_failed");
+      throw error;
+    }
+    if (accountBinding)
+      proc.on("host", (event) => {
+        if (event.type === "started" && Number.isSafeInteger(event.pid))
+          this.accountBridge?.attachProcess(accountBinding, event.pid);
+      });
+    const accountTurn = new CurrentTurn();
+    let accountFailure: AgyFailureFact | undefined;
+    let accountEventOffset = 0;
+    let accountRunSucceeded = false;
     const telemetry = new RunTelemetry(this.engine.store, workflow, run);
     const nativeRecords = new AgyNativeRecordSource(homedir());
     const nativeObserver = isNativeV2
@@ -661,6 +744,27 @@ export class LocalRuntime implements Runtime {
         this.preparing.has(run.id) ||
         this.checking.has(workflow.id),
       onEvent: (event) => {
+        if (accountBinding) {
+          this.accountBridge?.observeNativeEvent(run.id, event);
+          accountTurn.accept(event);
+          const result = event.result as Record<string, unknown> | undefined;
+          const candidate = classifyAgyFailure({
+            realmId: accountBinding.realm_id,
+            accountId: accountBinding.account_id,
+            authEpoch: accountBinding.auth_epoch,
+            runId: run.id,
+            conversationId: conversation?.id,
+            event: {
+              ...event,
+              type: event.event ?? event.type,
+              error: event.error ?? result?.error,
+            },
+            eventOffset: accountEventOffset++,
+            currentTurn:
+              !conversation || accountTurn.canAttributeFailureToCurrentTurn(),
+          });
+          if (candidate.can_switch_account) accountFailure = candidate;
+        }
         if (event.event === "init")
           this.engine.store.put("conversation", workflow.id, workflow.id, {
             id: event.conversation_id,
@@ -676,16 +780,51 @@ export class LocalRuntime implements Runtime {
           { text },
           run.id,
         ),
-    }).then(
-      (result) => {
-        telemetry.finish(false);
-        return result;
-      },
-      (error) => {
-        telemetry.finish(true);
-        throw error;
-      },
-    );
+    })
+      .then(
+        (result) => {
+          telemetry.finish(false);
+          accountRunSucceeded = result.exit === 0;
+          return result;
+        },
+        async (error) => {
+          telemetry.finish(true);
+          if (
+            proc.termination_reason === "account_switch" &&
+            !this.engine.store.get("run_stop", run.id)
+          )
+            throw new FlowError(
+              "AGY_ACCOUNT_WAIT",
+              "账号切换暂停，等待继续原任务",
+              409,
+            );
+          if (
+            accountBinding &&
+            accountFailure &&
+            !this.engine.store.get("run_stop", run.id) &&
+            !proc.termination_reason &&
+            (!conversation || accountTurn.canAttributeFailureToCurrentTurn()) &&
+            (await this.accountBridge!.observeFailure(
+              accountBinding,
+              accountFailure,
+            ))
+          )
+            throw new FlowError(
+              "AGY_ACCOUNT_WAIT",
+              "账号额度或授权不可用，等待切换后继续原任务",
+              409,
+            );
+          throw error;
+        },
+      )
+      .finally(async () => {
+        if (accountBinding)
+          await this.accountBridge?.releaseRun(
+            run.id,
+            accountRunSucceeded,
+            proc.termination_reason,
+          );
+      });
     this.engine.store.put("run", run.id, workflow.id, {
       ...this.engine.store.must<Run>("run", run.id),
       exit_code: result.exit,
@@ -1235,9 +1374,7 @@ export class LocalRuntime implements Runtime {
     atomicWrite(
       schema,
       JSON.stringify(
-        reviewOutputSchema(
-          snapshot?.repositories.map((r) => r.repo_id) ?? [],
-        ),
+        reviewOutputSchema(snapshot?.repositories.map((r) => r.repo_id) ?? []),
       ),
     );
     const prompt = JSON.stringify(
@@ -1316,7 +1453,15 @@ export class LocalRuntime implements Runtime {
       timeout_ms: this.engine.config.timeouts.agent_minutes * 60000,
     });
     const telemetry = new RunTelemetry(this.engine.store, workflow, run);
-    const stopQuota = observeCodexAccountQuota({ executable: codexBin, prefixArgs: this.engine.config.models.codex_prefix_args, cwd: root, home: process.env.CODEX_HOME ?? join(homedir(), ".codex") }, telemetry);
+    const stopQuota = observeCodexAccountQuota(
+      {
+        executable: codexBin,
+        prefixArgs: this.engine.config.models.codex_prefix_args,
+        cwd: root,
+        home: process.env.CODEX_HOME ?? join(homedir(), ".codex"),
+      },
+      telemetry,
+    );
     const observer = new CodexSessionObserver({
       home: process.env.CODEX_HOME ?? join(homedir(), ".codex"),
       cwd: root,
@@ -1330,7 +1475,11 @@ export class LocalRuntime implements Runtime {
     let streamError: unknown;
     proc.on("stdout", (b: Buffer) => {
       appendFileSync(join(root, "stdout.jsonl"), redact(b.toString("utf8")));
-      try { lines.push(b); } catch (error) { streamError ??= error; }
+      try {
+        lines.push(b);
+      } catch (error) {
+        streamError ??= error;
+      }
     });
     proc.on("stderr", (b: Buffer) =>
       this.engine.store.event(
@@ -1353,7 +1502,11 @@ export class LocalRuntime implements Runtime {
     let exit: Awaited<typeof proc.completion> | undefined;
     try {
       exit = await proc.completion;
-      try { lines.finish(); } catch (error) { streamError ??= error; }
+      try {
+        lines.finish();
+      } catch (error) {
+        streamError ??= error;
+      }
     } finally {
       stopQuota();
       await observer.close();

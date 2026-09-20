@@ -332,6 +332,7 @@ export interface Run {
   result?: unknown;
   exit_code?: number | null;
   package_hash: string;
+  agy_account?: import("./agy-account.js").AgyRunBinding;
 }
 export interface Evidence {
   phase?: "development" | "delivery";
@@ -667,3 +668,4 @@ export * from "./feedback.js";
 export * from "./execution-spec.js";
 export * from "./merge-conflict.js";
 export * from "./tr-handoff.js";
+export * from "./agy-account.js";

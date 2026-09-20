@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from "react";
+import { AgyWorkflowPolicy } from "./AgyWorkflowPolicy.js";
 
 export interface ToolModelDrawerProps {
   isOpen: boolean;
@@ -275,6 +276,8 @@ export function ToolModelDrawer({
                 </label>
               </div>
             )}
+
+            {workflowId && <AgyWorkflowPolicy workflowId={workflowId} />}
 
             <div style={{ marginTop: "auto", display: "flex", justifyContent: "flex-end", gap: "10px" }}>
               <button

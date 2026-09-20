@@ -12,7 +12,24 @@ import { createHash } from "node:crypto";
 import { resolve, join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
+export function requiredAccountReleaseInputs(platform = process.platform) {
+  return [
+    "dist/apps/api/src/accounts-main.js",
+    "dist/packages/service/src/open.js",
+    "dist/packages/agy-accounts/src/service.js",
+    ...(platform === "win32" ? ["dist/host/devflow-auth-host.exe"] : []),
+  ];
+}
+export function validateAccountReleaseInputs(
+  root = process.cwd(),
+  platform = process.platform,
+) {
+  for (const file of requiredAccountReleaseInputs(platform))
+    if (!existsSync(join(root, file)))
+      throw new Error("Missing account release input: " + file);
+}
 export function generateReleaseBundle() {
+  validateAccountReleaseInputs();
   const pkg = JSON.parse(readFileSync("package.json", "utf8")),
     version = pkg.version;
   const platform = process.platform + "-" + process.arch,

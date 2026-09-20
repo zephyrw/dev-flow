@@ -7,18 +7,26 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 	"syscall"
 )
 
 type PlatformJob struct {
-	pgid int
+	mu         sync.Mutex
+	pgid       int
+	terminated bool
 }
 
-func setupJobObject() (*PlatformJob, error) {
+func setupJobObject(id string) (*PlatformJob, error) {
+	if _, err := jobObjectName(id); err != nil {
+		return nil, err
+	}
 	return &PlatformJob{}, nil
 }
 
 func (pj *PlatformJob) assignProcess(cmd *exec.Cmd) error {
+	pj.mu.Lock()
+	defer pj.mu.Unlock()
 	if cmd.Process != nil {
 		pj.pgid = cmd.Process.Pid
 	}
@@ -26,6 +34,12 @@ func (pj *PlatformJob) assignProcess(cmd *exec.Cmd) error {
 }
 
 func (pj *PlatformJob) terminate(exitCode uint) error {
+	pj.mu.Lock()
+	defer pj.mu.Unlock()
+	if pj.terminated {
+		return nil
+	}
+	pj.terminated = true
 	if pj.pgid > 0 {
 		_ = syscall.Kill(-pj.pgid, syscall.SIGTERM)
 		_ = syscall.Kill(-pj.pgid, syscall.SIGKILL)
@@ -55,4 +69,14 @@ func acquireHostControllerLock(lockName string) (func(), error) {
 		_ = f.Close()
 	}
 	return release, nil
+}
+
+func (pj *PlatformJob) close() error       { return nil }
+func (pj *PlatformJob) waitStopped() error { return nil }
+func resumeProcess(cmd *exec.Cmd) error    { return nil }
+func platformDoctor() (HostCapabilities, error) {
+	return HostCapabilities{Version: 1, OS: "posix", Reason: "windows_job_containment_required"}, nil
+}
+func platformJobStatus(id string) (JobStatus, error) {
+	return JobStatus{}, fmt.Errorf("named job status unsupported on this platform")
 }
