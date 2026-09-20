@@ -1,6 +1,42 @@
 import type { Engine } from "./engine.js";
 import type { Store } from "../../store/src/store.js";
-import { requireCondition, type Run } from "../../contracts/src/index.js";
+import { FrozenInvocationSchema, requireCondition, type FrozenInvocation, type Run } from "../../contracts/src/index.js";
+import { ModelAccessService } from "./model-access-service.js";
+
+export interface PendingModelRetry {
+  retry_run_id: string;
+  logical_round_id: string;
+  account_recovery?: { frozen_invocation: FrozenInvocation };
+}
+
+/** Account recovery changes identity only; the original run remains immutable. */
+export function stageAccountModelRunRetry(store: Store, workflowId: string, runId: string) {
+  const failed = store.must<Run>("run", runId);
+  requireCondition(failed.workflow_id === workflowId, "RUN_BINDING_INVALID", "重试轮次不属于当前任务");
+  const original = failed.frozen_invocation ?? failed.model_binding?.frozen_invocation;
+  requireCondition(failed.profile && original?.adapterId === "agy", "RUN_BINDING_INVALID", "账号恢复缺少原轮冻结模型配置");
+  const native = new ModelAccessService(store).resolveNativeConfig(failed.profile);
+  const frozen = FrozenInvocationSchema.parse({
+    ...original,
+    accountScope: native.accountFingerprint,
+    providerScope: native.providerEndpointFingerprint,
+    identityConfidence: native.identityConfidence,
+  });
+  store.put("pending_model_retry", workflowId, workflowId, {
+    retry_run_id: failed.id,
+    logical_round_id: failed.logical_round_id ?? failed.model_binding?.logical_round_id ?? failed.id,
+    account_recovery: { frozen_invocation: frozen },
+  } satisfies PendingModelRetry);
+}
+
+export function assertAccountModelRetryAccess(store: Store, workflowId: string, sourceRunId?: string): boolean {
+  const pending = store.get<PendingModelRetry>("pending_model_retry", workflowId);
+  if (!pending?.account_recovery || (sourceRunId !== undefined && pending.retry_run_id !== sourceRunId)) return false;
+  const source = store.must<Run>("run", pending.retry_run_id);
+  requireCondition(source.workflow_id === workflowId && source.profile, "RUN_BINDING_INVALID", "账号恢复缺少原轮工具配置");
+  new ModelAccessService(store).assertFrozenAccess(source.profile, pending.account_recovery.frozen_invocation);
+  return true;
+}
 
 export function stageModelRunRetry(store: Store, workflowId: string, runId: string) {
   const failed = store.must<Run>("run", runId);

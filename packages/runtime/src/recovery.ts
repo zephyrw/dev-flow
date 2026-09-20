@@ -4,7 +4,7 @@ import { FlowError, requireCondition } from "../../contracts/src/index.js";
 import type { Lease } from "../../scheduler/src/scheduler.js";
 import { now } from "../../core/src/util.js";
 import type { OperationRequest } from "../../core/src/interactions.js";
-import { stageModelRunRetry, type ModelRetry } from "../../core/src/model-retry.js";
+import { assertAccountModelRetryAccess, stageModelRunRetry, type ModelRetry } from "../../core/src/model-retry.js";
 import type { LocalRuntime } from "./runtime.js";
 import { prepareRepairResume } from "../../core/src/repair.js";
 import {
@@ -301,7 +301,10 @@ export function resumeApproved(
     "部分提交只能重试原提交，不能启动开发",
   );
   if (!options.autoRetry) {
-    engine.store.remove("pending_model_retry", key);
+    // A missing authorization pauses account recovery without changing its model.
+    // Explicit user stop/model-switch already removes this pending retry.
+    if (!w.run_id || !assertAccountModelRetryAccess(engine.store, key, w.run_id))
+      engine.store.remove("pending_model_retry", key);
     engine.store.remove("transient_network_retry", key);
   }
   engine.store.remove("model_retry", key);

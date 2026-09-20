@@ -7,6 +7,10 @@ import {
   type ToolProfile,
 } from "../../contracts/src/execution-spec.js";
 import {
+  migrateAccountConfiguration,
+  writeAccountsLauncher,
+} from "./upgrade.js";
+import {
   ConfigSchema,
   loadConfig,
   type Config,
@@ -458,6 +462,12 @@ export async function runInstaller(
       process.platform === "win32" ? "devflow-host.exe" : "devflow-host";
     const required = [
       "dist/apps/api/src/main.js",
+      "dist/apps/api/src/accounts-main.js",
+      "dist/packages/agy-accounts/src/service.js",
+      "dist/packages/service/src/open.js",
+      ...(process.platform === "win32"
+        ? ["dist/host/devflow-auth-host.exe"]
+        : []),
       "dist/web/index.html",
       "dist/packages/bridge/src/planner.js",
       "dist/packages/service/src/launcher.js",
@@ -557,6 +567,17 @@ export async function runInstaller(
     state.updateComponent("service", version, "INSTALLED");
     code = INSTALL_EXIT_CODES.CONFIGURATION_CONFLICT;
     const config = join(root, "devflow.yaml");
+    const authHost = join(target, "dist/host/devflow-auth-host.exe");
+    const currentPointer = join(root, "current.json");
+    let previousAuthHost: string | undefined;
+    if (existsSync(currentPointer)) {
+      const previous = JSON.parse(readFileSync(currentPointer, "utf8"));
+      if (typeof previous.root === "string")
+        previousAuthHost = join(
+          previous.root,
+          "dist/host/devflow-auth-host.exe",
+        );
+    }
     if (!existsSync(config))
       atomicWrite(
         config,
@@ -565,6 +586,7 @@ export async function runInstaller(
             storage_root: join(root, "state"),
             workspace_root: join(root, "worktrees"),
             host: { executable: host, required: true },
+            agy_accounts: { enabled: false, auth_host_executable: authHost },
             server: {
               port: options.port ?? 4810,
               human_origin: "http://localhost:" + (options.port ?? 4810),
@@ -574,6 +596,73 @@ export async function runInstaller(
           2,
         ),
       );
+    else migrateAccountConfiguration(config, authHost, previousAuthHost);
+    const configured = loadConfig(config);
+    // Pure version/doctor queries only; never inspect, import or switch user credentials.
+    let accountPrerequisite = "unsupported_platform";
+    let authVersion = "unsupported";
+    if (process.platform === "win32") {
+      accountPrerequisite = "auth_host_unavailable";
+      try {
+        authVersion = (
+          await exec(
+            configured.agy_accounts.auth_host_executable,
+            ["--version"],
+            { windowsHide: true, timeout: 5000, maxBuffer: 4096 },
+          )
+        ).stdout.trim();
+        if (!/^devflow-auth-host v[0-9]+\.[0-9]+\.[0-9]+$/.test(authVersion)) authVersion = "unrecognized_helper";
+        accountPrerequisite = "auth_host_protocol_unavailable";
+        if (authVersion === "devflow-auth-host v2.0.0") {
+          accountPrerequisite = "process_host_capability_unavailable";
+          const doctor = JSON.parse(
+            (
+              await exec(configured.host.executable, ["doctor"], {
+                windowsHide: true,
+                timeout: 5000,
+                maxBuffer: 4096,
+              })
+            ).stdout,
+          );
+          const id = "account-install-" + crypto.randomUUID();
+          const status = JSON.parse(
+            (
+              await exec(configured.host.executable, ["job-status", id], {
+                windowsHide: true,
+                timeout: 5000,
+                maxBuffer: 4096,
+              })
+            ).stdout,
+          );
+          if (
+            doctor.suspended_spawn === true &&
+            doctor.kill_on_close === true &&
+            status.id === id &&
+            status.alive === false
+          )
+            accountPrerequisite = "official_cli_capability_unverified";
+        }
+      } catch {
+        /* Optional accounts remain unavailable; full DevFlow can still install. */
+      }
+    }
+    state.updateComponent(
+      "auth-host",
+      authVersion,
+      "INSTALLED",
+      accountPrerequisite,
+    );
+    state.updateComponent(
+      "agy-accounts",
+      version,
+      "DISCOVERED",
+      accountPrerequisite,
+    );
+    console.log(
+      "AGY 账号功能未获就绪认证：" +
+        accountPrerequisite +
+        "。安装不会登录或更改账号。",
+    );
     const clients = new ClientInstaller(join(target, "packages", "skills"), {
       home: options.clientHome,
       node,
@@ -623,6 +712,7 @@ export async function runInstaller(
       join(root, "current.json"),
       JSON.stringify({ version, root: target, config, node }, null, 2),
     );
+    writeAccountsLauncher(root);
     state.updateComponent("service", version, "VERIFIED");
     code = INSTALL_EXIT_CODES.NEEDS_USER_ACTION;
     const registry = createDefaultAdapterRegistry();

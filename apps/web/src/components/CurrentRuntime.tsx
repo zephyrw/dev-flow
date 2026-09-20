@@ -5,6 +5,7 @@ import {
 } from "../../../../packages/presentation/src/run-observation.js";
 import "./current-runtime.css";
 import "./model-settings.css";
+import { AgyRuntimeAccount } from "./AgyRuntimeAccount.js";
 
 export function CurrentRuntime({
   detail,
@@ -107,6 +108,7 @@ export function CurrentRuntime({
       title={[tool, modelDetails, quotaDetails].filter(Boolean).join("；")}
     >
       <span>{tool}</span>
+      {runtime.adapter === "agy" && <AgyRuntimeAccount modelId={model} />}
       {model && (
         <>
           <span className="runtime-separator" aria-hidden="true">

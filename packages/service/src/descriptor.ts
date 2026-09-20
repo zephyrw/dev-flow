@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { atomicWrite } from "../../core/src/util.js";
-export function recordController(storage: string, entry: string) {
+export function recordController(storage: string, entry: string, mode: "full" | "accounts" = "full") {
   if (process.platform !== "win32") return;
   const started = execFileSync(
     "powershell.exe",
@@ -25,6 +25,7 @@ export function recordController(storage: string, entry: string) {
       started,
       executable: process.execPath,
       entry,
+      mode,
     }),
   );
 }

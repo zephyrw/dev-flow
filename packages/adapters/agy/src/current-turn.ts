@@ -10,6 +10,9 @@ export class CurrentTurn {
   private toolStep = -1;
   private runtimeFailed = false;
   private toolFailures: { code: string; message: string }[] = [];
+  canAttributeFailureToCurrentTurn() {
+    return this.userStep !== undefined && !(this.modelState === "DONE" && this.modelStep > this.toolStep && !this.runtimeFailed);
+  }
   accept(event: Record<string, any>) {
     const step = event.event === "step_update" ? event.step_update : undefined;
     if (!step) return;

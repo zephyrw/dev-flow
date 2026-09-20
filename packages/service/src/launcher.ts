@@ -1,3 +1,5 @@
+import { assertServiceMode } from "./service-mode.js";
+export { assertServiceMode } from "./service-mode.js";
 import {
   closeSync,
   existsSync,
@@ -42,7 +44,7 @@ function assertNotUpdating() {
   }
 }
 
-async function running() {
+async function running(mode: "full" | "accounts") {
   let response: Response;
   try {
     response = await fetch(endpoint + "/api/health", {
@@ -66,10 +68,11 @@ async function running() {
     throw new Error(
       "DevFlow 端口已被其他程序或旧版本服务占用。请先关闭本安装的旧服务；不会终止无关进程。",
     );
+  assertServiceMode(status, mode);
   return true;
 }
 
-export async function ensureService() {
+export async function ensureService(mode: "full" | "accounts" = "full") {
   assertNotUpdating();
   mkdirSync(configuration.storage_root, { recursive: true });
   const lockFile = join(configuration.storage_root, "startup-lock.json");
@@ -77,7 +80,7 @@ export async function ensureService() {
   let acquired = false;
   for (let i = 0; i < 45; i++) {
     assertNotUpdating();
-    if (await running())
+    if (await running(mode))
       return { endpoint, origin: configuration.server.human_origin };
     try {
       const fd = openSync(lockFile, "wx");
@@ -111,9 +114,14 @@ export async function ensureService() {
       "DevFlow 正在启动，稍后重新打开即可。启动日志在 .devflow/controller.stderr.log。",
     );
   try {
-    if (await running())
+    if (await running(mode))
       return { endpoint, origin: configuration.server.human_origin };
-    const entry = join(installation, "dist/apps/api/src/main.js");
+    const entry = join(
+      installation,
+      mode === "accounts"
+        ? "dist/apps/api/src/accounts-main.js"
+        : "dist/apps/api/src/main.js",
+    );
     if (!existsSync(entry) || !existsSync(configuration.host.executable))
       throw new Error("安装尚未完成，请双击“安装或更新 DevFlow.cmd”。");
     const output = openSync(
@@ -143,7 +151,7 @@ export async function ensureService() {
       closeSync(errors);
     }
     for (let i = 0; i < 90; i++) {
-      if (await running())
+      if (await running(mode))
         return { endpoint, origin: configuration.server.human_origin };
       await pause(1000);
     }
@@ -184,9 +192,10 @@ export function browserUrl() {
   return configuration.server.human_origin;
 }
 
-export async function openBrowser() {
-  await ensureService();
-  const url = browserUrl();
+export async function openBrowser(mode: "full" | "accounts" = "full") {
+  await ensureService(mode);
+  const baseUrl = browserUrl();
+  const url = mode === "accounts" ? `${baseUrl}/accounts` : baseUrl;
   const command =
     process.platform === "win32"
       ? "powershell.exe"

@@ -106,7 +106,7 @@ test("E2E-U15 设置抽屉可键盘操作并显示错误重试", async ({ page }
   let catalogueAvailable = false;
   let catalogRequests = 0;
   await page.route(
-    (url) => url.pathname === "/api/adapters/codex/models",
+    (url) => url.pathname === "/api/model-tools/codex/models",
     async (route) => {
       catalogRequests += 1;
       if (!catalogueAvailable) {
@@ -253,12 +253,25 @@ test("E2E-R23 编辑后刷新目录草稿保持", async ({ page }) => {
   const drawer = page.getByRole("dialog", { name: "工具与模型" });
   await expect(drawer).toBeVisible();
   await pickListedModel(drawer, "规划工具", "gpt-5.6-sol");
+  await fixturePost(page, "/__fixture/probe-control", {
+    adapterId: "agy",
+    behavior: "ok",
+    catalog: true,
+  });
   await drawer.locator("summary", { hasText: "已检测工具与授权状态" }).click();
+  // The drawer rereads defaults only after the catalog operation commits.
+  const reloaded = page.waitForResponse(
+    (response) =>
+      response.url().endsWith("/api/settings/model-defaults") &&
+      response.request().method() === "GET",
+  );
   await drawer
     .locator(".ms-tool-row")
     .filter({ hasText: "Antigravity CLI" })
     .getByRole("button", { name: "刷新" })
     .click();
+  const reloadedResponse = await reloaded;
+  expect(reloadedResponse.ok(), await reloadedResponse.text()).toBeTruthy();
   await expect(exactLabel(drawer, "规划工具模型搜索")).toHaveValue(
     /gpt-5\.6-sol/,
   );
@@ -305,13 +318,26 @@ test("E2E-R23 其他页面改了默认时提示冲突不覆盖草稿", async ({ 
       },
     },
   });
-  expect(put.ok() || put.status() === 409, await put.text()).toBeTruthy();
+  expect(put.ok(), await put.text()).toBeTruthy();
+  await fixturePost(page, "/__fixture/probe-control", {
+    adapterId: "agy",
+    behavior: "ok",
+    catalog: true,
+  });
   await drawer.locator("summary", { hasText: "已检测工具与授权状态" }).click();
+  // The drawer rereads defaults only after the catalog operation commits.
+  const reloaded = page.waitForResponse(
+    (response) =>
+      response.url().endsWith("/api/settings/model-defaults") &&
+      response.request().method() === "GET",
+  );
   await drawer
     .locator(".ms-tool-row")
     .filter({ hasText: "Antigravity CLI" })
     .getByRole("button", { name: "刷新" })
     .click();
+  const reloadedResponse = await reloaded;
+  expect(reloadedResponse.ok(), await reloadedResponse.text()).toBeTruthy();
   await expect(drawer.getByRole("alert")).toContainText("当前草稿已保留", {
     timeout: 15000,
   });

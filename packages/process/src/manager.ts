@@ -14,6 +14,12 @@ export interface ProcessSpec {
   timeout_ms: number;
   deadline_at?: number;
   stdin?: string;
+  agy_account?: {
+    realm_id: string;
+    account_id: string;
+    auth_epoch: number;
+    permit_id: string;
+  };
 }
 
 function feedChildStdin(
@@ -37,20 +43,26 @@ function feedChildStdin(
   if (child.pid) send();
 }
 
+export type ProcessStopReason = "timeout" | "manual" | "account_switch";
 export interface ManagedProcess extends EventEmitter {
   id: string;
   completion: Promise<{
     code: number | null;
     signal?: string;
-    termination_reason?: "timeout" | "manual";
+    termination_reason?: ProcessStopReason;
   }>;
-  stop: () => Promise<void>;
+  stop: (reason?: ProcessStopReason) => Promise<void>;
+  pid?: number;
   pauseOutput?: () => void;
   resumeOutput?: () => void;
-  termination_reason?: "timeout" | "manual";
+  termination_reason?: ProcessStopReason;
 }
 export class ProcessManager {
   private active = new Map<string, ManagedProcess>();
+  private admission?: (spec: ProcessSpec) => void;
+  setAdmissionGuard(guard?: (spec: ProcessSpec) => void) {
+    this.admission = guard;
+  }
   constructor(
     private hostExecutable: string,
     private requireHost = true,
@@ -70,6 +82,7 @@ export class ProcessManager {
       503,
     );
     const useHost = existsSync(this.hostExecutable);
+    this.admission?.(spec);
     this.lifecycle?.(spec, { status: "starting", job_id: spec.id });
     const events = new EventEmitter() as ManagedProcess;
     events.id = spec.id;
@@ -136,14 +149,18 @@ export class ProcessManager {
       child.stdout.resume();
     };
     let settled = false;
-    let termination_reason: "timeout" | "manual" | undefined;
+    let termination_reason: ProcessStopReason | undefined;
     let timer: NodeJS.Timeout | undefined;
     const done = new Promise<{
       code: number | null;
       signal?: string;
-      termination_reason?: "timeout" | "manual";
+      termination_reason?: ProcessStopReason;
     }>((resolve, reject) => {
-      const settle = (code: number | null, signal?: string) => {
+      const settle = (
+        code: number | null,
+        signal?: string,
+        confirmed = false,
+      ) => {
         if (settled) return;
         settled = true;
         if (timer) {
@@ -154,7 +171,7 @@ export class ProcessManager {
         this.lifecycle?.(spec, {
           status: "exited",
           code,
-          confirmed: useHost,
+          confirmed,
           ...(termination_reason ? { termination_reason } : {}),
         });
         resolve({
@@ -177,11 +194,13 @@ export class ProcessManager {
         const lines = new JsonLines((e) => {
           if (e.type === "stdout" || e.type === "stderr")
             events.emit(e.type, Buffer.from(String(e.data), "base64"));
-          else if (e.type === "exit") settle(Number(e.code));
+          else if (e.type === "exit") settle(Number(e.code), undefined, true);
           else if (e.type === "error") {
             events.emit("diagnostic", String(e.message));
             settle(-1);
           } else {
+            if (e.type === "started" && Number.isSafeInteger(e.pid))
+              events.pid = Number(e.pid);
             this.lifecycle?.(spec, { ...e, status: "running" });
             events.emit("host", e);
           }
@@ -208,11 +227,11 @@ export class ProcessManager {
       }
     });
     events.completion = done;
-    events.stop = async () => {
+    events.stop = async (reason = "manual") => {
       if (settled) return;
-      if (!termination_reason) {
-        termination_reason = "manual";
-        events.termination_reason = "manual";
+      if (!termination_reason || reason === "manual") {
+        termination_reason = reason;
+        events.termination_reason = reason;
       }
       if (useHost) {
         try {
@@ -240,7 +259,7 @@ export class ProcessManager {
           termination_reason = "timeout";
           events.termination_reason = "timeout";
         }
-        void events.stop();
+        void events.stop("timeout");
       }, timeoutDuration);
     }
     this.active.set(spec.id, events);
@@ -249,9 +268,9 @@ export class ProcessManager {
   get(key: string) {
     return this.active.get(key);
   }
-  async stop(key: string) {
+  async stop(key: string, reason: ProcessStopReason = "manual") {
     const p = this.active.get(key);
-    if (p) await p.stop();
+    if (p) await p.stop(reason);
   }
   list() {
     return [...this.active.keys()];

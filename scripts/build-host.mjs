@@ -34,5 +34,19 @@ const toolchainsLock = {
 };
 writeFileSync("dist/host/build.json", JSON.stringify(toolchainsLock, null, 2));
 
+// Packaging both binaries does not certify credential or process isolation capabilities.
+if (isWin) {
+  const auth = spawnSync(
+    process.execPath,
+    [resolve("scripts/build-auth-host.mjs")],
+    {
+      cwd: resolve("."),
+      stdio: "inherit",
+      windowsHide: true,
+    },
+  );
+  if (auth.error || auth.status !== 0)
+    throw auth.error ?? new Error("Auth Host build failed");
+}
 console.log("[build-host] Go Host successfully built at:", targetPath);
 process.exit(0);

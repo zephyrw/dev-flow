@@ -39,6 +39,8 @@ import {
 } from "../../packages/core/src/repair-model-service.js";
 import { FunctionalIssueService } from "../../packages/core/src/functional-issues.js";
 import { seedSourceChange } from "../fixtures/source-change.js";
+import { accountFixture } from "../fixtures/agy-accounts/service-fixture.js";
+import { AgyAccountSettingsSchema } from "../../packages/contracts/src/agy-account.js";
 import {
   attachmentArchiveKey,
   createArchiveJobFromManifest,
@@ -519,9 +521,27 @@ atomicWrite(
     probeLogDir,
   }),
 );
+// Account routes share this full server, but must never reach the host's
+// credential helper or AGY client from a model-configuration browser test.
+const accountEnvironment = accountFixture(engine.store);
+accountEnvironment.repository.saveSettings(
+  AgyAccountSettingsSchema.parse({
+    ...engine.config.agy_accounts,
+    realm_id: "default-agy-realm",
+    revision: 1,
+    updated_at: now(),
+  }),
+);
+if (
+  engine.config.agy_accounts.enabled ||
+  accountEnvironment.service.isManaged()
+)
+  throw new Error("Model E2E fixture must keep account management disabled");
 const app = await buildServer(engine, {
   webRoot: process.env.DEVFLOW_E2E_WEB_ROOT,
+  accountService: accountEnvironment.service,
 });
+app.addHook("onClose", () => accountEnvironment.service.close());
 let holdFixtureDispatch = false;
 const dispatchTimer = setInterval(() => {
   if (!holdFixtureDispatch) void engine.dispatch();
@@ -547,6 +567,13 @@ app.post("/__fixture/probe-control", async (request, reply) => {
     behavior: typeof body.behavior === "string" ? body.behavior : "ok",
     adapterId: typeof body.adapterId === "string" ? body.adapterId : "codex",
     delayMs: typeof body.delayMs === "number" ? body.delayMs : 0,
+    catalogStdout:
+      body.catalog === true
+        ? readFileSync(
+            resolve("tests/fixtures/model-catalog/agy/models-success.txt"),
+            "utf8",
+          )
+        : "",
   });
   return { ok: true };
 });

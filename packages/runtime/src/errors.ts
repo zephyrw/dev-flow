@@ -4,6 +4,7 @@ import { redact } from "../../core/src/util.js";
 
 export function normalizeRuntimeFailure(error: unknown) {
   const code = error instanceof FlowError ? error.code : "INTERNAL_FAILURE";
+  if (code.startsWith("AGY_ACCOUNT_")) return error;
   const diagnostic = redact(
     error instanceof Error ? error.message : String(error),
   );

@@ -25,50 +25,128 @@
     "codex": {
       "status": "adapter_implemented",
       "live_workflow_verified": false,
-      "roles": ["planner", "executor", "tester", "reviewer"],
-      "modes": ["single", "composite"]
+      "roles": [
+        "planner",
+        "executor",
+        "tester",
+        "reviewer"
+      ],
+      "modes": [
+        "single",
+        "composite"
+      ]
     },
     "agy": {
       "status": "adapter_implemented",
       "live_workflow_verified": false,
-      "roles": ["planner", "executor", "tester", "reviewer"],
-      "modes": ["single", "composite"]
+      "roles": [
+        "planner",
+        "executor",
+        "tester",
+        "reviewer"
+      ],
+      "modes": [
+        "single",
+        "composite"
+      ]
     },
     "grok-build": {
       "status": "adapter_implemented",
       "live_workflow_verified": false,
-      "roles": ["planner", "executor", "tester", "reviewer"],
-      "modes": ["single", "composite"]
+      "roles": [
+        "planner",
+        "executor",
+        "tester",
+        "reviewer"
+      ],
+      "modes": [
+        "single",
+        "composite"
+      ]
     },
     "claude-code": {
       "status": "adapter_implemented",
       "live_workflow_verified": false,
-      "roles": ["planner", "executor", "tester", "reviewer"],
-      "modes": ["single", "composite"]
+      "roles": [
+        "planner",
+        "executor",
+        "tester",
+        "reviewer"
+      ],
+      "modes": [
+        "single",
+        "composite"
+      ]
     },
     "kimi-code": {
       "status": "adapter_implemented",
       "live_workflow_verified": false,
-      "roles": ["planner", "executor", "tester", "reviewer"],
-      "modes": ["single", "composite"]
+      "roles": [
+        "planner",
+        "executor",
+        "tester",
+        "reviewer"
+      ],
+      "modes": [
+        "single",
+        "composite"
+      ]
     },
     "qoder": {
       "status": "adapter_implemented",
       "live_workflow_verified": false,
-      "roles": ["planner", "executor", "tester", "reviewer"],
-      "modes": ["single", "composite"]
+      "roles": [
+        "planner",
+        "executor",
+        "tester",
+        "reviewer"
+      ],
+      "modes": [
+        "single",
+        "composite"
+      ]
     },
     "opencode": {
       "status": "adapter_implemented",
       "live_workflow_verified": false,
-      "roles": ["planner", "executor", "tester", "reviewer"],
-      "modes": ["single", "composite"]
+      "roles": [
+        "planner",
+        "executor",
+        "tester",
+        "reviewer"
+      ],
+      "modes": [
+        "single",
+        "composite"
+      ]
     },
     "cursor-agent": {
       "status": "adapter_implemented",
       "live_workflow_verified": false,
-      "roles": ["planner", "executor", "tester", "reviewer"],
-      "modes": ["single", "composite"]
+      "roles": [
+        "planner",
+        "executor",
+        "tester",
+        "reviewer"
+      ],
+      "modes": [
+        "single",
+        "composite"
+      ]
     }
+  },
+  "agy_accounts": {
+    "platform": "win32",
+    "status": "disabled_until_runtime_capabilities_verified",
+    "auth_host_protocol": "2.0.0",
+    "required_process_capabilities": [
+      "doctor",
+      "suspended_spawn",
+      "kill_on_close",
+      "job-status"
+    ],
+    "official_cli_dual_window_verified": false,
+    "cross_account_resume_verified": false,
+    "notes": "Binary build and installation are not account switching certification. Unsupported hosts fail closed without affecting other adapters."
   }
 }

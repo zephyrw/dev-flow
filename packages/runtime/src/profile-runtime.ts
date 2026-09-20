@@ -47,15 +47,19 @@ import type {
   NormalizedEvent,
 } from "../../adapters/sdk/src/interface.js";
 import { AgyNativeRecordSource } from "../../adapters/agy/src/native-record-source.js";
-import {
-  NativeExecutionObserver,
-} from "../../evidence/src/native-execution-observer.js";
+import { NativeExecutionObserver } from "../../evidence/src/native-execution-observer.js";
 import type { HostToolExecutionFact } from "../../evidence/src/native-run-records.js";
 import type { ProcessManager } from "../../process/src/manager.js";
 import { classifyFailure, normalizeRuntimeFailure } from "./errors.js";
 import { RunTelemetry } from "./run-telemetry.js";
 import { CodexSessionObserver } from "./codex-session-observer.js";
 import { observeCodexAccountQuota } from "./codex-account-quota.js";
+import type { AgyWorkflowBridge } from "./agy-workflow-bridge.js";
+import {
+  classifyAgyFailure,
+  type AgyFailureFact,
+} from "../../adapters/agy/src/failure-fact.js";
+import { CurrentTurn } from "../../adapters/agy/src/current-turn.js";
 import { readPlanMaterial } from "../../core/src/plan-review.js";
 import type { SourceInput } from "../../core/src/source-change.js";
 import { batchExecutionInstructions } from "../../core/src/execution-guidance.js";
@@ -78,6 +82,7 @@ export class ProfileRuntime {
   constructor(
     private engine: Engine,
     private processes: ProcessManager,
+    private accountBridge?: AgyWorkflowBridge,
   ) {}
   async plan(w: Workflow, run: Run) {
     const workspaces = await this.planningWorkspaces(w);
@@ -463,7 +468,10 @@ export class ProfileRuntime {
     return boundConversationContinuation(this.engine.store, run);
   }
   private readPlanningHandoff(workflowId: string) {
-    return this.engine.store.get<PlanningHandoff>("planning_handoff", workflowId);
+    return this.engine.store.get<PlanningHandoff>(
+      "planning_handoff",
+      workflowId,
+    );
   }
   private continuationMaterials(materials: Record<string, unknown>, run: Run) {
     const continuation = this.readContinuation(run);
@@ -588,19 +596,47 @@ export class ProfileRuntime {
         ? join(root, "codex-home")
         : undefined;
     if (asideCodexHome) mkdirSync(asideCodexHome, { recursive: true });
-    const proc = this.processes.start({
-      ...invocation,
-      id: run.id,
-      workflow_id: w.id,
-      timeout_ms: context.timeoutMs,
-      deadline_at: run.deadline_at,
-      env: {
-        ...invocation.env,
-        ...(token ? { DEVFLOW_RUN_TOKEN: token } : {}),
-        DEVFLOW_BASE_URL: "http://127.0.0.1:" + this.engine.config.server.port,
-        ...(asideCodexHome ? { CODEX_HOME: asideCodexHome } : {}),
-      },
-    });
+    const accountBinding =
+      profile.adapterId === "agy"
+        ? await this.accountBridge?.prepareProfileRun(
+            w.id,
+            run,
+            run.frozen_invocation
+              ? run.frozen_invocation.modelToken ?? undefined
+              : profile.modelId,
+            profile.id,
+          )
+        : undefined;
+    let proc;
+    try {
+      proc = this.processes.start({
+        ...invocation,
+        id: run.id,
+        workflow_id: w.id,
+        timeout_ms: context.timeoutMs,
+        deadline_at: run.deadline_at,
+        ...(accountBinding ? { agy_account: accountBinding } : {}),
+        env: {
+          ...invocation.env,
+          ...(token ? { DEVFLOW_RUN_TOKEN: token } : {}),
+          DEVFLOW_BASE_URL:
+            "http://127.0.0.1:" + this.engine.config.server.port,
+          ...(asideCodexHome ? { CODEX_HOME: asideCodexHome } : {}),
+        },
+      });
+    } catch (error) {
+      if (accountBinding)
+        await this.accountBridge?.releaseRun(run.id, false, "spawn_failed");
+      throw error;
+    }
+    if (accountBinding)
+      proc.on("host", (event) => {
+        if (event.type === "started" && Number.isSafeInteger(event.pid))
+          this.accountBridge?.attachProcess(accountBinding, event.pid);
+      });
+    let accountFailure: AgyFailureFact | undefined;
+    let accountEventOffset = 0;
+    const accountTurn = new CurrentTurn();
     const telemetry = new RunTelemetry(this.engine.store, w, run);
     const codexHome =
       asideCodexHome ??
@@ -644,6 +680,23 @@ export class ProfileRuntime {
     const handle = (event: NormalizedEvent) => {
       const v = event.raw as any;
       if (v && typeof v === "object") {
+        if (accountBinding) {
+          this.accountBridge?.observeNativeEvent(run.id, v);
+          accountTurn.accept(v);
+          const eventType = v.event ?? v.type;
+          const candidate = classifyAgyFailure({
+            realmId: accountBinding.realm_id,
+            accountId: accountBinding.account_id,
+            authEpoch: accountBinding.auth_epoch,
+            runId: run.id,
+            conversationId: conversation,
+            event: { ...v, type: eventType, error: v.error ?? v.result?.error },
+            eventOffset: accountEventOffset++,
+            currentTurn:
+              !resume || accountTurn.canAttributeFailureToCurrentTurn(),
+          });
+          if (candidate.can_switch_account) accountFailure = candidate;
+        }
         telemetry.accept(v);
         if (
           profile.adapterId === "agy" &&
@@ -763,8 +816,14 @@ export class ProfileRuntime {
       stopQuota?.();
       await sessionObserver?.close();
       telemetry.finish(
-        !exit || exit.code !== 0 || !!exit.termination_reason || !!failure || !!permissionFailure,
+        !exit ||
+          exit.code !== 0 ||
+          !!exit.termination_reason ||
+          !!failure ||
+          !!permissionFailure,
       );
+      if (!exit && accountBinding)
+        await this.accountBridge?.releaseRun(run.id, false, "process_failed");
     }
     // Native session scanning may discover the ID without a stdout init event.
     conversation ??= this.engine.store.get<Run>("run", run.id)?.conversation_id;
@@ -774,6 +833,29 @@ export class ProfileRuntime {
       exit_code: exit.code,
       conversation_id: conversation,
     });
+    let accountWaiting = exit.termination_reason === "account_switch";
+    try {
+      if (
+        accountBinding &&
+        accountFailure &&
+        !permissionFailure &&
+        !this.engine.store.get("run_stop", run.id) &&
+        !exit.termination_reason &&
+        (!resume || accountTurn.canAttributeFailureToCurrentTurn()) &&
+        (exit.code !== 0 || failure)
+      )
+        accountWaiting = await this.accountBridge!.observeFailure(
+          accountBinding,
+          accountFailure,
+        );
+    } finally {
+      if (accountBinding)
+        await this.accountBridge?.releaseRun(
+          run.id,
+          exit.code === 0 && !failure,
+          accountWaiting ? "account_switch" : undefined,
+        );
+    }
     if (permissionFailure) {
       retainConversation(conversation);
       throw permissionFailure;
@@ -785,7 +867,9 @@ export class ProfileRuntime {
       this.engine.store.get("run_stop", run.id)
     ) {
       const recovered =
-        purpose === "aside" ? recoverAsideAnswer(final, text) : undefined;
+        purpose === "aside" && !exit.termination_reason
+          ? recoverAsideAnswer(final, text)
+          : undefined;
       if (recovered) return { answer: recovered };
       const diagnostic =
         failure ?? (redact(stderrTail).trim() || "CLI 未正常完成");
@@ -794,11 +878,13 @@ export class ProfileRuntime {
         this.engine.store.get("run_stop", run.id) ||
         exit.termination_reason === "manual"
           ? "RUN_REVOKED"
-          : exit.termination_reason === "timeout"
-            ? "TIMEOUT"
-            : classified.code === "EXECUTION_FAILED"
-              ? "NATIVE_RUN_FAILED"
-              : classified.code;
+          : accountWaiting
+            ? "AGY_ACCOUNT_WAIT"
+            : exit.termination_reason === "timeout"
+              ? "TIMEOUT"
+              : classified.code === "EXECUTION_FAILED"
+                ? "NATIVE_RUN_FAILED"
+                : classified.code;
       retainConversation(conversation);
       throw normalizeRuntimeFailure(
         new FlowError(code, diagnostic, 422, {
@@ -951,9 +1037,7 @@ function asidePreviousAnswers(
   if (!planRevision) return [];
   return engine.store
     .list<any>("aside_session", w.id)
-    .filter(
-      (q) => q.plan_revision === planRevision && q.status === "completed",
-    )
+    .filter((q) => q.plan_revision === planRevision && q.status === "completed")
     .sort((a, b) => a.created_at.localeCompare(b.created_at))
     .slice(-10)
     .map((q) => ({ question: q.question, answer: q.answer }));

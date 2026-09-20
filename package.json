@@ -25,7 +25,10 @@
     "test:live:opentabs": "tsx tests/live/browser-gateway.ts",
     "schemas": "tsx scripts/export-schemas.ts",
     "check": "pnpm run typecheck && pnpm test && pnpm run build",
-    "open": "node dist/packages/service/src/open.js"
+    "start:accounts": "node dist/apps/api/src/accounts-main.js",
+    "open:accounts": "node dist/packages/service/src/open.js --accounts",
+    "open": "node dist/packages/service/src/open.js",
+    "build:auth-host": "node scripts/build-auth-host.mjs"
   },
   "dependencies": {
     "@fastify/static": "10.1.3",

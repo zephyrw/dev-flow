@@ -23,8 +23,14 @@ async function seedRetest(page: import("@playwright/test").Page) {
 }
 
 test("E2E 旁路提问不出现修复指派，正式反馈默认按任务配置", async ({ page }) => {
-  await seedRetest(page);
-  await openFixtureWorkflow(page);
+  const seeded = await fixturePost(page, "/__fixture/feedback");
+  const detail = await workflowDetail(page, String(seeded.workflow_id));
+  expect(detail.workflow.state).toBe("HUMAN_PENDING");
+  expect(detail.plan.plan.task_model).toBe("native-v2");
+  await page.goto(`/?workflow=${seeded.workflow_id}`);
+  await expect(page.locator(".header-title-wrapper .badge")).toContainText(
+    "等待你的验收",
+  );
   await showExecutionSidebar(page);
   const trigger = page.getByRole("button", {
     name: "指导或提问",

@@ -1,0 +1,13 @@
+{
+  "weekly_quota": {
+    "remaining_fraction": null,
+    "reset_at": null,
+    "status": "missing"
+  },
+  "five_hour_quota": {
+    "remaining_fraction": null,
+    "reset_at": null,
+    "status": "missing"
+  },
+  "pools": []
+}

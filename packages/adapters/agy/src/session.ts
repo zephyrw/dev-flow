@@ -183,6 +183,7 @@ export async function observeAgy(
   await logSink.close();
   if (failure) throw failure;
   const reason = exit.termination_reason ?? proc.termination_reason;
+  if (reason === "account_switch") throw new FlowError("AGY_ACCOUNT_WAIT", "账号切换暂停，等待继续原任务", 409);
   if (reason === "timeout") {
     throw new FlowError(
       "TIMEOUT",

@@ -176,11 +176,12 @@ export function registerModelRoutes(
   app: FastifyInstance,
   engine: Engine,
   human: (request: unknown) => void,
+  modelAccess?: ModelAccessService,
 ) {
   const specs = new ExecutionSpecService(engine.store, engine.config);
   const defaults = new ModelDefaultsService(engine.store);
   const catalog = new ModelCatalogService(engine.store);
-  const access = new ModelAccessService(engine.store, { catalog });
+  const access = modelAccess ?? new ModelAccessService(engine.store, { catalog });
   const switches = new ModelSwitchService(engine.store, specs);
   const repairs = new RepairModelService(engine.store, specs);
 

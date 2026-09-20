@@ -7,12 +7,15 @@ import { fileURLToPath } from "node:url";
 import { setup } from "../helpers.js";
 import { ModelCatalogService } from "../../packages/core/src/model-catalog-service.js";
 import * as registry from "../../packages/adapters/sdk/src/registry.js";
-import { fingerprintModelIdentity, modelIdentityKey, resolveModelIdentity } from "../../packages/core/src/model-identity.js";
+import { fingerprintModelIdentity, modelIdentityKey, resolveModelIdentity, managedAgyAccountIdentityId, readManagedAgyModelIdentity } from "../../packages/core/src/model-identity.js";
+import { parseAgyModelCatalog } from "../../packages/adapters/agy/src/model-configuration.js";
+import { buildFrozenInvocation } from "../../packages/adapters/sdk/src/frozen-invocation.js";
 import {
   ACCESS_PROBE_PROMPT,
   ModelAccessService,
   parseProbeTerminal,
   type AccessIdentityInput,
+  type ModelAccessServiceOptions,
 } from "../../packages/core/src/model-access-service.js";
 import { FlowError, type ToolProfile } from "../../packages/contracts/src/index.js";
 import type { ModelCatalog } from "../../packages/contracts/src/model-catalog.js";
@@ -969,4 +972,133 @@ it("changing Codex home cannot reuse profile-scope authorization and never chang
   expect(native.nativeConfigProfile).toBe("work");
   expect(native.nativeConfigScope).toBe(second.nativeConfigScope);
   expect(native.nativeConfigScope).not.toBe("work");
+});
+
+function managedAccount(
+  env: ReturnType<typeof openAccess>,
+  accountId = "account-a",
+  epoch = 1,
+  credentialRevision = 1,
+) {
+  const realmId = "default-agy-realm";
+  env.store.put("agy_account", accountId, realmId, {
+    id: accountId, realm_id: realmId, alias: accountId,
+    identity: { email: `${accountId}@fixture.invalid`, verified_at: "2026-09-20T00:00:00Z" },
+    secret_ref: "fixture-reference-only", credential_revision: credentialRevision,
+    state: "ready", enrolled_at: "2026-09-20T00:00:00Z",
+    auth: { has_refresh_credential: false, refresh_expiry_source: "not_provided" },
+  });
+  env.store.put("agy_realm", realmId, realmId, {
+    realm_id: realmId, owner: "devflow", active_account_id: accountId,
+    auth_epoch: epoch, revision: epoch, phase: "idle", service_state: "running",
+    desired_enabled: true,
+  });
+}
+
+function managedAccessFixture(
+  delegate?: ModelAccessServiceOptions["withManagedAccountVerification"],
+) {
+  const env = openAccess({ adapterId: "agy", behavior: "ok" });
+  managedAccount(env);
+  const access = new ModelAccessService(env.store, {
+    catalog: env.catalog, extraEnv: env.extraEnv, probeRoot: env.probeRoot,
+    verifyTimeoutMs: 4000, withManagedAccountVerification: delegate,
+  });
+  const catalog = parseAgyModelCatalog({
+    stdout: readCatalogStdout("agy", "models-success.txt"), cliPath: FIXTURE,
+    nativeConfigScope: "agy-managed:default-agy-realm",
+  });
+  const chosen = profile("agy", "gemini-3.7-flash-high", "high");
+  const originalClose = closeEnv!;
+  closeEnv = async () => { await access.close(); await originalClose(); };
+  return { env, access, catalog, chosen };
+}
+
+it("managed AGY isolates stable accounts while epoch and credential refresh preserve the same authorization", () => {
+  const { env, access, chosen, catalog } = managedAccessFixture();
+  const first = resolveModelIdentity(env.store, chosen);
+  expect(first.accountId).toBe(managedAgyAccountIdentityId("default-agy-realm", "account-a"));
+  const verified = access.seedVerified(chosen, undefined, catalog);
+  managedAccount(env, "account-a", 2, 9);
+  const refreshed = resolveModelIdentity(env.store, chosen);
+  expect(refreshed.accountFingerprint).toBe(first.accountFingerprint);
+  expect(refreshed.nativeConfigScope).toBe(first.nativeConfigScope);
+  expect(access.assertCachedAccess(chosen, access.identityFromProfile(chosen), catalog).key).toBe(verified.key);
+  managedAccount(env, "account-b", 3);
+  const second = resolveModelIdentity(env.store, chosen, { nativeConfigScope: "default", accountId: first.accountId });
+  expect(second.accountFingerprint).not.toBe(first.accountFingerprint);
+  expectCode(() => access.assertCachedAccess(chosen, { nativeConfigScope: first.nativeConfigScope, accountId: first.accountId }, catalog), "MODEL_ACCESS_REQUIRED");
+  expect(access.getAccess(verified.key)?.status).toBe("verified");
+});
+
+it("assertFrozenAccess uses the frozen access key after catalog changes and rejects a different managed account", () => {
+  const { env, access, chosen, catalog } = managedAccessFixture();
+  const native = resolveModelIdentity(env.store, chosen);
+  const frozen = buildFrozenInvocation(chosen, catalog.entries.find(entry => entry.nativeId === chosen.modelId), {}, native, "profile-native");
+  const record = access.seedVerified(chosen, undefined, catalog);
+  expect(record.accessModelKey).toBe("gemini-3.7-flash");
+  // No catalog was installed in the service cache: re-translating profile.modelId
+  // here would incorrectly seek the variant token instead of this frozen family.
+  expect(access.assertFrozenAccess(chosen, frozen).key).toBe(record.key);
+  managedAccount(env, "account-b", 2);
+  expectCode(() => access.assertFrozenAccess(chosen, frozen), "MODEL_IDENTITY_CHANGED");
+});
+
+it("managed AGY verification fails closed without account coordination and launches no native probe", async () => {
+  const { env, access, chosen, catalog } = managedAccessFixture();
+  const result = await verifyNow(access, chosen, access.identityFromProfile(chosen), catalog);
+  expect(result.job).toMatchObject({ status: "failed", error_code: "VERIFICATION_ENVIRONMENT_UNAVAILABLE" });
+  expect(probeCount(env.logDir)).toBe(0);
+});
+
+it("managed verification delegates the existing exact model probe and retains account-scoped results", async () => {
+  const delegated: unknown[] = [];
+  const { env, access, chosen, catalog } = managedAccessFixture(async (identity, verify) => {
+    delegated.push(identity);
+    return verify();
+  });
+  const result = await verifyNow(access, chosen, access.identityFromProfile(chosen), catalog);
+  expect(result.job?.status).toBe("verified");
+  expect(delegated).toEqual([readManagedAgyModelIdentity(env.store)]);
+  const probes = readInvocations(env.logDir).filter(item => item.kind === "probe");
+  expect(probes).toHaveLength(1);
+  expect(probes[0]?.argv).toContain("gemini-3.7-flash-high");
+  expect(probes[0]?.argv).toContain(ACCESS_PROBE_PROMPT);
+  expect((await verifyNow(access, chosen, access.identityFromProfile(chosen), catalog)).outcome.statusCode).toBe(200);
+  expect(delegated).toHaveLength(1);
+  managedAccount(env, "account-b", 2);
+  expectCode(() => access.assertCachedAccess(chosen, access.identityFromProfile(chosen), catalog), "MODEL_ACCESS_REQUIRED");
+});
+
+it("a successful managed probe cannot publish after the account epoch changes", async () => {
+  let changeAccount!: () => void;
+  const { env, access, chosen, catalog } = managedAccessFixture(async (_identity, verify) => {
+    const result = await verify();
+    changeAccount();
+    return result;
+  });
+  changeAccount = () => managedAccount(env, "account-a", 2);
+  const result = await verifyNow(access, chosen, access.identityFromProfile(chosen), catalog);
+  expect(result.job).toMatchObject({ status: "failed", error_code: "MODEL_IDENTITY_CHANGED" });
+  expect(env.store.list<{status: string}>("model_access").some(record => record.status === "verified")).toBe(false);
+});
+
+it.each(["cancel", "close"] as const)("%s prevents an already queued managed verification from starting later", async (action) => {
+  let release!: () => void;
+  let finished!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const done = new Promise<void>(resolve => { finished = resolve; });
+  const { env, access, chosen, catalog } = managedAccessFixture(async (_identity, verify) => {
+    await gate;
+    try { return await verify(); } finally { finished(); }
+  });
+  const started = await access.verify({ request_id: randomUUID(), profile: chosen, catalog });
+  expect(started.statusCode).toBe(202);
+  if (started.statusCode !== 202) return;
+  if (action === "cancel") await access.cancel(started.job.id);
+  else await access.close();
+  release();
+  await done;
+  expect(access.getVerification(started.job.id).status).toBe("cancelled");
+  expect(probeCount(env.logDir)).toBe(0);
 });

@@ -53,6 +53,16 @@ const resolutions: Record<string, Omit<RuntimeFailureResolution, "code">> = {
     message: "当前模型账号的登录状态已失效，已保留任务现场。",
     steps: ["使用当前系统用户在对应工具中重新登录。", "重新验证该账号的模型访问后继续原任务。"],
   },
+  MODEL_ACCESS_REQUIRED: {
+    title: "当前账号的模型尚未验证",
+    message: "已保留本轮模型和任务现场，需要验证当前账号对此模型的访问权限。",
+    steps: ["在“工具与模型”中验证本轮所选模型。", "验证成功后继续原任务，无需重新规划或修改业务代码。"],
+  },
+  MODEL_IDENTITY_CHANGED: {
+    title: "模型账号身份已变化",
+    message: "当前账号与本轮冻结的授权身份不一致，工具未启动。",
+    steps: ["确认当前账号及本轮模型，在“工具与模型”中完成访问验证。", "确认后继续原任务。"],
+  },
   MODEL_FORBIDDEN: {
     title: "当前账号无权使用模型",
     message: "提供方明确拒绝当前账号访问本轮模型，已保留任务现场。",

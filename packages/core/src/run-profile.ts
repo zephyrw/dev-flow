@@ -35,6 +35,7 @@ import type { ModelCatalog, ModelEntry } from "../../contracts/src/model-catalog
 import { buildFrozenInvocation, selectionCapabilityFromCatalog } from "../../adapters/sdk/src/frozen-invocation.js";
 import { ModelCatalogService } from "./model-catalog-service.js";
 import { ModelAccessService } from "./model-access-service.js";
+import { assertAccountModelRetryAccess, type PendingModelRetry } from "./model-retry.js";
 import { id, objectHash } from "./util.js";
 
 export type RunPurpose =
@@ -130,6 +131,7 @@ export function bindProfile(
   const frozen = preview.frozen_invocation
     ? { ...preview.frozen_invocation, runtimeFlavor: flavor }
     : freezeDispatchInvocation(store, preview.profile, flavor);
+  if (context.retry_run_id) assertAccountModelRetryAccess(store, workflowId, context.retry_run_id);
   const fingerprint = invocationFingerprintFromFrozen(
     frozen,
     workflowWorkspaceIdentity(store, workflowId),
@@ -411,7 +413,12 @@ function retryPreview(
     "RUN_PROFILE_MISSING",
     "执行轮次缺少固定工具配置",
   );
-  return previewFromFrozenRun(run, context, "retry", fallbackRevision);
+  const preview = previewFromFrozenRun(run, context, "retry", fallbackRevision);
+  const pending = store.get<PendingModelRetry>("pending_model_retry", workflowId);
+  if (pending?.retry_run_id === run.id && pending.account_recovery) {
+    preview.frozen_invocation = pending.account_recovery.frozen_invocation;
+  }
+  return preview;
 }
 
 function mergeConflictPreview(
@@ -730,7 +737,7 @@ export function buildDispatchContext(
   workflowId: string,
   purpose: RunPurpose,
 ): Partial<DispatchContext> {
-  const retry = store.get<{ retry_run_id?: string; logical_round_id?: string }>(
+  const retry = store.get<PendingModelRetry>(
     "pending_model_retry",
     workflowId,
   );

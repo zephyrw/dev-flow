@@ -34,6 +34,7 @@ import {
   verifyModelAccess,
 } from "./model-api.js";
 import "./model-settings.css";
+import { AgyWorkflowPolicy } from "./AgyWorkflowPolicy.js";
 
 export interface ToolModelDrawerProps {
   isOpen: boolean;
@@ -571,6 +572,8 @@ export function ToolModelDrawer({
                 {resumeContinueLabel(payload?.resume_target ?? null)}
               </p>
             )}
+
+            {workflowId && <AgyWorkflowPolicy workflowId={workflowId} />}
 
             <div className="ms-actions">
               {readonly ? (

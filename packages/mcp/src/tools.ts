@@ -61,10 +61,10 @@ export const workerNames = [
   "devflow_environment",
   "devflow_diagnose",
 ] as const;
-export function makeMcp(engine: Engine, principal: Principal) {
+export function makeMcp(engine: Engine, principal: Principal, modelAccess?: ModelAccessService) {
   const toolContracts: Record<string, unknown> = {};
   const catalog = new ModelCatalogService(engine.store);
-  const access = new ModelAccessService(engine.store, { catalog });
+  const access = modelAccess ?? new ModelAccessService(engine.store, { catalog });
   const server = new McpServer({
     name: principal.role === "worker" ? "devflow_worker" : "devflow",
     version: "0.1.0",

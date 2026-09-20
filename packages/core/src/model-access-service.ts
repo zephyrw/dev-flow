@@ -11,6 +11,7 @@ import {
   ToolProfileSchema,
   VERIFY_JOB_TIMEOUT_MS,
   type IdentityConfidence,
+  type FrozenInvocation,
   type ModelAccessRecord,
   type ModelAccessStatus,
   type ModelCatalog,
@@ -24,8 +25,8 @@ import {
 import { resolveModelSelection } from "../../adapters/sdk/src/model-selection.js";
 import { selectionCapabilityFromCatalog } from "../../adapters/sdk/src/frozen-invocation.js";
 import { parseStructuredProbeTerminal } from "../../adapters/sdk/src/probe-terminal.js";
-import { identityInputFromProfile, nativeProfileSupported } from "../../adapters/sdk/src/native-identity.js";
-import { fingerprintModelIdentity, modelIdentityKey, resolveModelIdentity, resolveModelExecutable, type AccessIdentityInput } from "./model-identity.js";
+import { nativeProfileSupported } from "../../adapters/sdk/src/native-identity.js";
+import { fingerprintModelIdentity, modelIdentityKey, resolveModelIdentity, resolveModelIdentityInput, readManagedAgyModelIdentity, resolveModelExecutable, type AccessIdentityInput, type ManagedAgyModelIdentity } from "./model-identity.js";
 export type { AccessIdentityInput } from "./model-identity.js";
 import type {
   PreparedInvocation,
@@ -87,6 +88,10 @@ export type ModelAccessServiceOptions = {
   probeRoot?: string;
   verifyTimeoutMs?: number;
   probeAdapter?: ProbeAdapter;
+  withManagedAccountVerification?: <T>(
+    identity: ManagedAgyModelIdentity,
+    verify: () => Promise<T>,
+  ) => Promise<T>;
 };
 
 type FingerprintedIdentity = {
@@ -493,6 +498,8 @@ function safeErrorText(text: string): string {
 export class ModelAccessService {
   private readonly inflight = new Map<string, string>();
   private readonly live = new Map<string, LiveProbe>();
+  private readonly cancelledJobs = new Set<string>();
+  private closed = false;
   private readonly verifyTimeoutMs: number;
   private readonly hmacKey: Buffer;
   private readonly probeRoot: string;
@@ -643,7 +650,24 @@ export class ModelAccessService {
   }
 
   identityFromProfile(profile: ToolProfile): AccessIdentityInput {
-    return identityInputFromProfile(profile);
+    return resolveModelIdentityInput(this.store, profile);
+  }
+
+  assertFrozenAccess(profile: ToolProfile, frozen: FrozenInvocation): ModelAccessRecord {
+    this.assertProfileSupported(profile);
+    const native = this.resolveNativeConfig(profile);
+    if (frozen.adapterId !== profile.adapterId ||
+        frozen.accountScope !== native.accountFingerprint ||
+        frozen.providerScope !== native.providerEndpointFingerprint) {
+      throw new FlowError("MODEL_IDENTITY_CHANGED", "冻结模型对应的账号身份已变化", 409);
+    }
+    return this.requireVerifiedRecord(accessRecordId({
+      adapterId: frozen.adapterId,
+      nativeConfigScope: native.nativeConfigScope,
+      accountFingerprint: frozen.accountScope,
+      providerEndpointFingerprint: frozen.providerScope,
+      accessModelKey: frozen.accessModelKey,
+    }));
   }
 
   assertProfileSupported(profile: ToolProfile): void {
@@ -682,9 +706,10 @@ export class ModelAccessService {
   ): ModelAccessRecord {
     const parsedProfile = ToolProfileSchema.parse(profile);
     this.assertProfileSupported(parsedProfile);
-    const identity = this.fingerprintIdentity(
+    const identity = this.fingerprintIdentity(this.identityFromNative(
+      this.resolveNativeConfig(parsedProfile, identityInput),
       identityInput ?? this.identityFromProfile(parsedProfile),
-    );
+    ));
     const resolvedCatalog =
       catalog ?? this.cachedCatalogFromFingerprints(parsedProfile, identity);
     const accessModelKey = this.resolvePublishAccessModelKey(
@@ -722,6 +747,7 @@ export class ModelAccessService {
   async cancel(jobId: string): Promise<ModelVerificationJob> {
     const job = this.getVerification(jobId);
     if (this.isTerminal(job.status)) return job;
+    this.cancelledJobs.add(jobId);
     const live = this.live.get(jobId);
     if (live) {
       await live.handle.cancel();
@@ -730,6 +756,7 @@ export class ModelAccessService {
         this.inflight.delete(live.accessKey);
       }
     }
+    if (this.inflight.get(job.access_key) === jobId) this.inflight.delete(job.access_key);
     const cancelled = ModelVerificationJobSchema.parse({
       ...job,
       status: "cancelled",
@@ -751,10 +778,11 @@ export class ModelAccessService {
   }
 
   async close(): Promise<void> {
-    const jobs = [...this.live.keys()];
+    const jobs = [...new Set([...this.live.keys(), ...this.inflight.values()])];
     for (const jobId of jobs) {
       await this.cancel(jobId);
     }
+    this.closed = true;
   }
 
   private requireVerifiedRecord(accessKey: string): ModelAccessRecord {
@@ -800,15 +828,14 @@ export class ModelAccessService {
   ): AccessIdentityInput {
     return {
       nativeConfigScope: native.nativeConfigScope,
-      accountId: identityInput.accountId ?? native.accountId,
-      credentialSecret: identityInput.credentialSecret,
-      providerEndpoint: identityInput.providerEndpoint ?? native.providerEndpoint,
+      accountId: native.accountId ?? identityInput.accountId,
+      credentialSecret: native.accountId ? undefined : identityInput.credentialSecret,
+      providerEndpoint: native.providerEndpoint ?? identityInput.providerEndpoint,
       accountFingerprint:
-        identityInput.accountFingerprint ?? native.accountFingerprint,
+        native.accountFingerprint ?? identityInput.accountFingerprint,
       providerEndpointFingerprint:
-        identityInput.providerEndpointFingerprint ??
-        native.providerEndpointFingerprint,
-      identityConfidence: identityInput.identityConfidence ?? native.identityConfidence,
+        native.providerEndpointFingerprint ?? identityInput.providerEndpointFingerprint,
+      identityConfidence: native.identityConfidence,
       displayLabel: identityInput.displayLabel ?? native.displayLabel,
     };
   }
@@ -959,7 +986,8 @@ export class ModelAccessService {
       ),
     );
     this.inflight.set(accessKey, job.id);
-    void this.executeProbe(job, parsed.profile, selection).catch((error) => {
+    const managed = parsed.profile.adapterId === "agy" ? readManagedAgyModelIdentity(this.store) : undefined;
+    void this.executeProbe(job, parsed.profile, selection, managed).catch((error) => {
       this.failProbeLaunch(job, error);
     });
     return { statusCode: 202, job };
@@ -995,6 +1023,7 @@ export class ModelAccessService {
     job: ModelVerificationJob,
     profile: ToolProfile,
     selection: ResolvedSelection,
+    managed?: ManagedAgyModelIdentity,
   ): Promise<void> {
     const cwd = join(this.probeRoot, job.id);
     mkdirSync(cwd, { recursive: true });
@@ -1010,35 +1039,65 @@ export class ModelAccessService {
       return;
     }
     try {
-      const prepared = prepareAccessProbe(
-        selection,
-        executable,
-        cwd,
-        this.options.probeAdapter,
-      );
-      const invocation = applyNativeProfileArgs(prepared, profile);
-      assertProbeSafe(invocation, this.probeRoot);
-      const handle = startLimitedCli({
-        adapterId: profile.adapterId,
-        executable: invocation.executable,
-        args: invocation.args,
-        cwd: invocation.cwd,
-        env: { ...invocation.env, ...(this.options.extraEnv ?? {}) },
-        stdin: invocation.stdin,
-        timeoutMs: this.verifyTimeoutMs,
-        outputLimit: CATALOG_OUTPUT_LIMIT,
-      });
-      this.live.set(job.id, {
-        jobId: job.id,
-        accessKey: job.access_key,
-        handle,
-      });
-      const result = await handle.result;
+      const probe = async (): Promise<LimitedCliResult> => {
+        if (this.closed || this.cancelledJobs.has(job.id) || this.isTerminal(this.getVerification(job.id).status)) {
+          throw new FlowError("CANCELLED", "验证已取消", 409);
+        }
+        const remainingMs = Date.parse(job.deadline_at) - Date.now();
+        if (remainingMs <= 0) throw new FlowError("MODEL_PROBE_TIMEOUT", "等待账号验证超时", 503);
+        const prepared = prepareAccessProbe(
+          selection,
+          executable,
+          cwd,
+          this.options.probeAdapter,
+        );
+        const invocation = applyNativeProfileArgs(prepared, profile);
+        assertProbeSafe(invocation, this.probeRoot);
+        const handle = startLimitedCli({
+          adapterId: profile.adapterId,
+          executable: invocation.executable,
+          args: invocation.args,
+          cwd: invocation.cwd,
+          env: { ...invocation.env, ...(this.options.extraEnv ?? {}) },
+          stdin: invocation.stdin,
+          timeoutMs: remainingMs,
+          outputLimit: CATALOG_OUTPUT_LIMIT,
+        });
+        this.live.set(job.id, {
+          jobId: job.id,
+          accessKey: job.access_key,
+          handle,
+        });
+        return handle.result;
+      };
+      let result: LimitedCliResult;
+      if (managed) {
+        if (!this.options.withManagedAccountVerification) {
+          throw new FlowError("VERIFICATION_ENVIRONMENT_UNAVAILABLE", "受管 AGY 验证需要账号服务协调", 503);
+        }
+        result = await this.options.withManagedAccountVerification(managed, probe);
+        if (this.closed || this.cancelledJobs.has(job.id)) return;
+        const current = readManagedAgyModelIdentity(this.store);
+        if (!current || current.realmId !== managed.realmId || current.accountId !== managed.accountId ||
+            current.authEpoch !== managed.authEpoch || current.credentialRevision !== managed.credentialRevision) {
+          throw new FlowError("MODEL_IDENTITY_CHANGED", "验证期间 AGY 账号身份已变化，请重新验证", 409);
+        }
+      } else {
+        // An unmanaged probe may not outlive enabling managed ownership either.
+        if (profile.adapterId === "agy" && readManagedAgyModelIdentity(this.store)) {
+          throw new FlowError("MODEL_IDENTITY_CHANGED", "AGY 账号管理状态已变化，请重新验证", 409);
+        }
+        result = await probe();
+        if (profile.adapterId === "agy" && readManagedAgyModelIdentity(this.store)) {
+          throw new FlowError("MODEL_IDENTITY_CHANGED", "验证期间 AGY 账号管理状态已变化，请重新验证", 409);
+        }
+      }
       this.applyProbeResult(job, selection, result);
     } catch (error) {
       this.failProbeLaunch(job, error);
     } finally {
       this.live.delete(job.id);
+      this.cancelledJobs.delete(job.id);
       if (this.inflight.get(job.access_key) === job.id) {
         this.inflight.delete(job.access_key);
       }
@@ -1046,6 +1105,7 @@ export class ModelAccessService {
   }
 
   private failProbeLaunch(job: ModelVerificationJob, error: unknown) {
+    if (this.closed || this.cancelledJobs.has(job.id) || this.isTerminal(this.getVerification(job.id).status)) return;
     const flow = error instanceof FlowError ? error : null;
     this.finishFailure(job, {
       status: "environment_error",

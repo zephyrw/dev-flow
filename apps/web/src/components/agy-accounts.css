@@ -1,0 +1,201 @@
+.agy-accounts-container {
+  padding: 20px;
+  background: var(--bg-primary, #1e1e2e);
+  color: var(--text-primary, #cdd6f4);
+  font-family: system-ui, -apple-system, sans-serif;
+  height: 100%;
+  box-sizing: border-box;
+  overflow-y: auto;
+}
+
+.agy-accounts-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  padding-bottom: 16px;
+  margin-bottom: 20px;
+}
+
+.agy-header-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.agy-btn {
+  padding: 6px 14px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.05);
+  color: inherit;
+  cursor: pointer;
+  font-size: 13px;
+  transition: background 0.2s;
+}
+
+.agy-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.agy-btn-primary {
+  background: #3b82f6;
+  border-color: #2563eb;
+  color: white;
+}
+
+.agy-btn-primary:hover:not(:disabled) {
+  background: #2563eb;
+}
+
+.agy-btn-danger {
+  background: #ef4444;
+  border-color: #dc2626;
+  color: white;
+}
+
+.agy-notice {
+  background: rgba(59, 130, 246, 0.1);
+  border-left: 3px solid #3b82f6;
+  padding: 10px 14px;
+  margin-bottom: 16px;
+  font-size: 13px;
+  border-radius: 0 6px 6px 0;
+}
+
+.agy-notice-warning {
+  background: rgba(245, 158, 11, 0.1);
+  border-left-color: #f59e0b;
+}
+
+.agy-notice-danger {
+  background: rgba(239, 68, 68, 0.1);
+  border-left-color: #ef4444;
+}
+
+.agy-accounts-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-bottom: 20px;
+}
+
+.agy-accounts-table th,
+.agy-accounts-table td {
+  padding: 12px 14px;
+  text-align: left;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.agy-accounts-table th {
+  background: rgba(255, 255, 255, 0.03);
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.agy-progress-bar-wrap {
+  width: 140px;
+  height: 8px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+  overflow: hidden;
+  margin-bottom: 4px;
+}
+
+.agy-progress-bar-fill {
+  height: 100%;
+  transition: width 0.3s ease;
+}
+
+.agy-progress-bar-fill.normal {
+  background: #10b981;
+}
+
+.agy-progress-bar-fill.warning {
+  background: #f59e0b;
+}
+
+.agy-progress-bar-fill.danger {
+  background: #ef4444;
+}
+
+.agy-progress-bar-fill.unknown {
+  background: #6b7280;
+}
+
+.agy-progress-subtext {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.agy-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.agy-badge-active {
+  background: rgba(16, 185, 129, 0.2);
+  color: #34d399;
+  border: 1px solid rgba(16, 185, 129, 0.4);
+}
+
+.agy-badge-waiting {
+  background: rgba(245, 158, 11, 0.2);
+  color: #fbbf24;
+}
+
+.agy-badge-disabled {
+  background: rgba(107, 114, 128, 0.2);
+  color: #9ca3af;
+}
+
+.agy-modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+}
+
+.agy-modal {
+  background: #181825;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 8px;
+  padding: 24px;
+  width: 460px;
+  max-width: 90vw;
+}
+
+.agy-form-group {
+  margin-bottom: 16px;
+}
+
+.agy-form-label {
+  display: block;
+  font-size: 13px;
+  margin-bottom: 6px;
+  font-weight: 500;
+}
+
+.agy-form-input {
+  width: 100%;
+  padding: 8px 12px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.05);
+  color: inherit;
+  font-size: 14px;
+  box-sizing: border-box;
+}
+
+.agy-header-actions { flex-wrap: wrap; }
+.agy-modal { max-height: 88vh; overflow-y: auto; }
+.agy-accounts-container section { margin: 20px 0; }
+.agy-accounts-header { flex-wrap: wrap; gap: 16px; }
+.agy-accounts-table small { display: block; padding: 8px 0; }

@@ -40,6 +40,7 @@ export async function repairFailure(
     return null;
   error = normalizeRuntimeFailure(error);
   const code = error instanceof FlowError ? error.code : "INTERNAL_FAILURE";
+  if (code.startsWith("AGY_ACCOUNT_")) return null;
   // Infrastructure failures do not consume either model's repair budget.
   if (runtimeFailureResolution(code)) return null;
   if (

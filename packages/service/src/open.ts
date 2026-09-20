@@ -1,2 +1,3 @@
 import { openBrowser } from "./launcher.js";
-await openBrowser();
+const isAccounts = process.argv.includes("--accounts");
+await openBrowser(isAccounts ? "accounts" : "full");
