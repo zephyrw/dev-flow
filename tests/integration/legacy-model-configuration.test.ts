@@ -34,7 +34,7 @@ function agyProfile(): ToolProfile {
   };
 }
 
-it("IT-R22：旧 native-v2 任务补存 spec 后仍走原轻量协议", () => {
+it("IT-R22：旧 native-v2 任务补存 spec 后继续轻量 ProfileRuntime", () => {
   const env = setup();
   closeStore = () => env.store.close();
   const workflowId = "wf-legacy-native";
@@ -95,7 +95,7 @@ it("IT-R22：旧 native-v2 任务补存 spec 后仍走原轻量协议", () => {
     "agy",
     "implement",
   );
-  expect(flavor).toBe("legacy-agy-native");
+  expect(flavor).toBe("profile-native");
   expect(protocolForFlavor(flavor)).toBe("lightweight");
   const nextRun: Run = {
     ...historic,
@@ -105,14 +105,14 @@ it("IT-R22：旧 native-v2 任务补存 spec 后仍走原轻量协议", () => {
     protocol: protocolForFlavor(flavor),
   };
   expect(nextRun.execution_spec_id).toBe("spec-r1");
-  expect(nextRun.runtime_flavor).toBe("legacy-agy-native");
+  expect(nextRun.runtime_flavor).toBe("profile-native");
   expect(nextRun.protocol).toBe("lightweight");
   expect(
     resolveRuntimeFlavor(env.store, workflowId, "agy", "implement"),
-  ).toBe("legacy-agy-native");
+  ).toBe("profile-native");
 });
 
-it("IT-R22：旧 leaf-v1 补 spec 后仍走原协议，不因 spec 存在改走 ProfileRuntime", () => {
+it("IT-R22：旧 leaf-v1 补 spec 后新轮次使用主分支的轻量协议", () => {
   const env = setup();
   closeStore = () => env.store.close();
   const workflowId = "wf-legacy-leaf";
@@ -169,14 +169,14 @@ it("IT-R22：旧 leaf-v1 补 spec 后仍走原协议，不因 spec 存在改走 
     "agy",
     "implement",
   );
-  expect(flavor).toBe("legacy-managed");
-  expect(protocolForFlavor(flavor)).toBe("legacy");
+  expect(flavor).toBe("profile-native");
+  expect(protocolForFlavor(flavor)).toBe("lightweight");
   expect(
     resolveRuntimeFlavor(env.store, workflowId, "agy", "implement"),
-  ).toBe("legacy-managed");
+  ).toBe("profile-native");
 });
 
-it("leaf-v1 不改配置允许 Codex 审查，不支持的执行组合仍拒绝", () => {
+it("leaf-v1 的新轻量轮次支持按选择派发审查和执行工具", () => {
   const env = setup();
   closeStore = () => env.store.close();
   const workflowId = "wf-leaf-review";
@@ -218,13 +218,13 @@ it("leaf-v1 不改配置允许 Codex 审查，不支持的执行组合仍拒绝"
   } satisfies Run);
   expect(
     resolveRuntimeFlavor(env.store, workflowId, "codex", "quality_review"),
-  ).toBe("legacy-managed");
+  ).toBe("profile-native");
   expect(
     resolveRuntimeFlavor(env.store, workflowId, "agy", "implement"),
-  ).toBe("legacy-managed");
-  expect(() =>
+  ).toBe("profile-native");
+  expect(
     resolveRuntimeFlavor(env.store, workflowId, "cursor-agent", "implement"),
-  ).toThrow(/LEGACY_RUNTIME_UNSUPPORTED|当前旧任务协议/);
+  ).toBe("profile-native");
 });
 
 it("旧 agy 换模型或强度时 launcher 使用冻结配置而不是 YAML", () => {
@@ -261,7 +261,7 @@ it("旧 agy 换模型或强度时 launcher 使用冻结配置而不是 YAML", ()
   expect(launcher.modelToken).not.toBe(env.config.models.executor);
 });
 
-it("leaf-v1 审查暂停后仍按 Codex 审查协议继续", () => {
+it("leaf-v1 审查暂停后按 Codex 轻量审查继续", () => {
   const env = setup();
   closeStore = () => env.store.close();
   const workflowId = "wf-leaf-review-resume";
@@ -318,5 +318,5 @@ it("leaf-v1 审查暂停后仍按 Codex 审查协议继续", () => {
   });
   expect(
     resolveRuntimeFlavor(env.store, workflowId, "codex", "quality_review"),
-  ).toBe("legacy-managed");
+  ).toBe("profile-native");
 });

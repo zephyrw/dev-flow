@@ -66,7 +66,7 @@ const page = (text: string, offset: number) => {
 };
 register(
   "devflow_review_context",
-  "分页读取 plan/plan_record/plan_authorities/executor_plan_check/executor_plan_check_report/approval/acceptance/project/claims/evidence/skill/skill_resources/review_contract/diff/snapshot/workspaces；skill_resources 含整改、测试及执行合同，review_contract 含当前审查绑定及待补全材料。读取直到 next_offset 为 null。",
+  "分页读取 plan、skill_resources、review_contract 等审查材料。skill_resources 含代码质量审查与职责说明。读取直到 next_offset 为 null。",
   z.object({
     section: z.enum([
       "plan",
@@ -79,6 +79,7 @@ register(
       "project",
       "claims",
       "evidence",
+      "delivery_materials",
       "skill",
       "skill_resources",
       "review_contract",
@@ -104,19 +105,16 @@ const read = (repo: string, path: string) => {
       (r) => r.repo_id === repo,
     );
   requireCondition(workspace && snapshot, "REPO_DENIED", "仓库不在复核清单");
-  const file = snapshot.files.find((f) => f.path === path);
-  requireCondition(file, "FILE_DENIED", "文件不在冻结快照");
   const data = readFileSync(safePath(workspace.root, path));
-  requireCondition(
-    hash(data) === file.hash,
-    "SNAPSHOT_CHANGED",
-    "实际文件与冻结快照不符",
-  );
-  return { file, text: data.toString("utf8") };
+  const file = snapshot.files.find((f) => f.path === path);
+  return {
+    file: file ?? { path, hash: hash(data) },
+    text: data.toString("utf8"),
+  };
 };
 register(
   "devflow_review_read_file",
-  "只读冻结快照中登记的仓库文件，控制器验证真实内容哈希。",
+  "只读当前仓库工作区内的文件，受客户端路径边界保护。",
   z.object({
     repo_id: Id,
     path: RelativePath,
@@ -167,12 +165,7 @@ register(
       file = evidence?.files[a.index];
     requireCondition(file, "EVIDENCE_DENIED", "证据不在本次复核范围");
     const raw = readFileSync(file.path);
-    requireCondition(
-      hash(raw) === file.hash,
-      "EVIDENCE_CHANGED",
-      "证据内容已变化",
-    );
-    return { hash: file.hash, ...page(raw.toString("utf8"), a.offset) };
+    return { hash: hash(raw), ...page(raw.toString("utf8"), a.offset) };
   },
 );
 await server.connect(new StdioServerTransport());

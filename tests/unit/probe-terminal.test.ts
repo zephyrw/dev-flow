@@ -11,7 +11,7 @@ function parse(records: unknown[], patch: Partial<ProbeTerminalInput> = {}) {
   const terminal = parseStructuredProbeTerminal(input);
   expect(parseCoreTerminal({ ...input, timedOut: input.timedOut ?? false,
     cancelled: input.cancelled ?? false, truncated: input.truncated ?? false,
-  }, input.selectedModel ?? null, input.adapterId)).toEqual(terminal);
+  }, input.selectedModel ?? null, input.adapterId, input.selectionKind)).toEqual(terminal);
   return terminal;
 }
 
@@ -88,4 +88,18 @@ describe("访问验证的整轮终态", () => {
     expect(parse([{ type: "turn.completed" }], { timedOut: true }).errorCode).toBe("MODEL_PROBE_TIMEOUT");
     expect(parseStructuredProbeTerminal({ stdout: "OK", stderr: "", exitCode: 0, launchFailed: true }).success).toBe(false);
   });
+
+  it("目录确认的原生路由可报告实际模型，错误仍不能被路由豁免", () => {
+    const routed = { selectedModel: "auto", selectionKind: "native-router" as const };
+    expect(parse([{ type: "result", model: "chosen-by-client" }], routed))
+      .toMatchObject({ success: true, observedModel: "chosen-by-client", observedModelStatus: "unknown" });
+    expect(parse([{ type: "result", model: "chosen-by-client" }], {
+      ...routed, stderr: "switched to model chosen-by-client",
+    }).success).toBe(true);
+    expect(parse([{ type: "error", error: "unauthorized" }, { type: "result", model: "chosen-by-client" }], routed).success)
+      .toBe(false);
+    expect(parse([{ type: "result", model: "chosen-by-client" }], { selectedModel: "fixed-model" }).observedModelStatus)
+      .toBe("mismatch");
+  });
+
 });

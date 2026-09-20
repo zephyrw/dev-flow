@@ -8,7 +8,7 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { HandoffBuilder } from "../../packages/adapters/agy/src/handoff.js";
+import { HandoffBuilder, nativeLaunchInstruction } from "../../packages/adapters/agy/src/handoff.js";
 import { NativeRunRecordReader } from "../../packages/evidence/src/native-run-records.js";
 import { WorkspaceFingerprintService } from "../../packages/workspace/src/fingerprint.js";
 import { BufferedEventSink } from "../../packages/core/src/buffered-sink.js";
@@ -115,11 +115,13 @@ describe("DevFlow 原生执行与终局核验单元测试", () => {
         plan: mockPlan,
         runId: "run-1",
         packageHash: "pkg-hash",
+        directory: testDir,
       });
 
       expect(pkg.mode).toBe("full");
       expect(pkg.workflow_id).toBe("wf-1");
-      expect(pkg.design_file).toBe("HANDOFF.md");
+      expect(pkg.design_file).toBe(join(testDir, "HANDOFF.md"));
+      expect(pkg.instructions).toContain(join(testDir, "HANDOFF.md"));
       expect(pkg.index.modules).toHaveLength(1);
       expect(pkg.index.tasks).toHaveLength(1);
       expect(pkg.index.acceptance_items).toHaveLength(1);
@@ -137,6 +139,7 @@ describe("DevFlow 原生执行与终局核验单元测试", () => {
         runId: "run-2",
         conversationId: "conv-123",
         packageHash: "pkg-hash-2",
+        directory: testDir,
         deliveryIssues: [
           {
             id: "iss-1",
@@ -152,8 +155,23 @@ describe("DevFlow 原生执行与终局核验单元测试", () => {
 
       expect(pkg.mode).toBe("resume");
       expect(pkg.conversation_id).toBe("conv-123");
+      expect(pkg.design_file).toBe(join(testDir, "HANDOFF.md"));
+      expect(pkg.instructions).toContain(join(testDir, "handoff.json"));
       expect(pkg.delivery_issues).toHaveLength(1);
       expect(pkg.delivery_issues![0]!.code).toBe("ACCEPTANCE_CASE_FAILED");
+    });
+
+    it("启动提示使用容器绝对路径", () => {
+      const files = {
+        json: join(testDir, "handoff.json"),
+        markdown: join(testDir, "HANDOFF.md"),
+        plans: join(testDir, "AUTHORITATIVE_PLANS.json"),
+        schema: join(testDir, "plan-self-check.schema.json"),
+      };
+      expect(nativeLaunchInstruction(testDir, "full")).toContain(files.markdown);
+      expect(nativeLaunchInstruction(testDir, "full")).toContain(files.json);
+      expect(nativeLaunchInstruction(testDir, "resume")).toContain(files.json);
+      expect(nativeLaunchInstruction(testDir, "full")).toContain("直接交代码审查");
     });
   });
 
@@ -620,8 +638,7 @@ describe("DevFlow 原生执行与终局核验单元测试", () => {
         workspaceRoot: testDir,
       });
 
-      expect(result.passed).toBe(false);
-      // 必须一次性收集到多个 issues：宿主失败、报告缺失、用例失败、未完成项
+      expect(result.passed).toBe(true);
       const issueCodes = result.issues.map((i) => i.code);
       expect(issueCodes).toContain("HOST_EXECUTION_INVALID");
       expect(issueCodes).toContain("REPORT_MISSING");

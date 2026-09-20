@@ -1,4 +1,5 @@
 import { it, expect } from "vitest";
+import { join } from "node:path";
 import { setup, project, plan } from "../helpers.js";
 import { objectHash } from "../../packages/core/src/util.js";
 import { HandoffBuilder } from "../../packages/adapters/agy/src/handoff.js";
@@ -26,7 +27,13 @@ it("native plan submission and both handoffs preserve new and regression E2E cas
     expect(s.engine.get(w.id).state).toBe("PLAN_PENDING");
     expect(proj.browser_scenes).toEqual([]);
     const stored = s.engine.plan(w.id).plan;
-    const args = { workflow: s.engine.get(w.id), plan: stored, runId: "run-test", packageHash: "pkg-test" };
+    const args = {
+      workflow: s.engine.get(w.id),
+      plan: stored,
+      runId: "run-test",
+      packageHash: "pkg-test",
+      directory: join(s.root, "container"),
+    };
     for (const pkg of [HandoffBuilder.buildFullHandoff(args), HandoffBuilder.buildResumeHandoff({ ...args, conversationId: "conv-test" })]) {
       expect(pkg.index.acceptance_items.find((t) => t.layer === "e2e")?.expected_case_ids).toEqual(["NEW-01", "REG-01"]);
       expect(pkg.test_exemptions).toEqual([]);

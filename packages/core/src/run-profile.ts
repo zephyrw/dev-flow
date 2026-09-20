@@ -5,6 +5,7 @@ import {
   requireCondition,
   resolveTaskModel,
   type Run,
+  type Plan,
 } from "../../contracts/src/index.js";
 import {
   inheritRoleOverrides,
@@ -19,6 +20,7 @@ import {
   type RoleOverrides,
   type ToolProfile,
 } from "../../contracts/src/execution-spec.js";
+import { RunModelBindingSchema } from "../../contracts/src/model-routing.js";
 import type {
   DispatchContext,
   FrozenInvocation,
@@ -78,17 +80,6 @@ const EXECUTOR_RUN_PURPOSES = new Set([
   "plan_self_check",
   "merge_conflict",
 ]);
-const LEGACY_REVIEW_PURPOSES = new Set<RunPurpose>([
-  "quality_review",
-  "diagnose",
-]);
-const LEGACY_EXECUTION_PURPOSES = new Set<RunPurpose>([
-  "implement",
-  "functional_fix",
-  "plan_self_check",
-  "planner_takeover",
-  "merge_conflict",
-]);
 
 export function resolveProfile(
   store: Store,
@@ -136,9 +127,35 @@ export function bindProfile(
     preview.profile.adapterId,
     purpose,
   );
-  const frozen =
-    preview.frozen_invocation ??
-    freezeDispatchInvocation(store, preview.profile, flavor);
+  const frozen = preview.frozen_invocation
+    ? { ...preview.frozen_invocation, runtimeFlavor: flavor }
+    : freezeDispatchInvocation(store, preview.profile, flavor);
+  const fingerprint = invocationFingerprintFromFrozen(
+    frozen,
+    workflowWorkspaceIdentity(store, workflowId),
+    permissionCategoryForPurpose(purpose),
+  );
+  const modelBinding = RunModelBindingSchema.parse({
+    routing_role: preview.routing_role,
+    routing_source: preview.routing_source,
+    execution_spec_revision: preview.execution_spec_revision,
+    logical_round_id: preview.logical_round_id,
+    ...(preview.repair_batch_id ? { repair_batch_id: preview.repair_batch_id } : {}),
+    ...(preview.assignment_id ? { assignment_id: preview.assignment_id } : {}),
+    effective_invocation: {
+      adapterId: frozen.adapterId,
+      executable: frozen.executable,
+      modelId: frozen.modelToken,
+      reasoning: frozen.reasoning,
+      ...(frozen.nativeConfigProfile ? { nativeConfigProfile: frozen.nativeConfigProfile } : {}),
+      providerScope: frozen.providerScope,
+      accountScope: frozen.accountScope,
+      capabilityRevision: frozen.capabilityRevision,
+      runtimeFlavor: frozen.runtimeFlavor,
+    },
+    frozen_invocation: frozen,
+    invocation_fingerprint: fingerprint,
+  });
   return {
     purpose,
     execution_spec_id: preview.execution_spec_id,
@@ -147,11 +164,8 @@ export function bindProfile(
     routing_source: preview.routing_source,
     execution_spec_revision: preview.execution_spec_revision,
     logical_round_id: preview.logical_round_id,
-    invocation_fingerprint: invocationFingerprintFromFrozen(
-      frozen,
-      workflowWorkspaceIdentity(store, workflowId),
-      permissionCategoryForPurpose(purpose),
-    ),
+    invocation_fingerprint: fingerprint,
+    model_binding: modelBinding,
     runtime_flavor: flavor,
     protocol: protocolForFlavor(flavor),
     frozen_invocation: frozen,
@@ -703,64 +717,12 @@ export function protocolForFlavor(
 }
 
 export function resolveRuntimeFlavor(
-  store: Store,
-  workflowId: string,
-  adapterId: ToolProfile["adapterId"],
-  purpose: RunPurpose,
+  _store: Store,
+  _workflowId: string,
+  _adapterId: ToolProfile["adapterId"],
+  _purpose: RunPurpose,
 ): RuntimeFlavor {
-  if (purpose === "planning" || purpose === "aside") return "profile-native";
-  const origin = inferLegacyOrigin(store, workflowId);
-  if (!origin) return "profile-native";
-  if (origin === "native-v2") {
-    if (adapterId === "agy" && LEGACY_EXECUTION_PURPOSES.has(purpose)) {
-      return "legacy-agy-native";
-    }
-    return "profile-native";
-  }
-  if (LEGACY_REVIEW_PURPOSES.has(purpose) && adapterId === "codex") {
-    return "legacy-managed";
-  }
-  if (LEGACY_EXECUTION_PURPOSES.has(purpose) && adapterId === "agy") {
-    return "legacy-managed";
-  }
-  throw new FlowError(
-    "LEGACY_RUNTIME_UNSUPPORTED",
-    "当前旧任务协议不能切换到该工具，已保持暂停",
-    422,
-  );
-}
-
-function inferLegacyOrigin(
-  store: Store,
-  workflowId: string,
-): "native-v2" | "legacy" | undefined {
-  const runs = store.list<Run>("run", workflowId);
-  if (runs.some((run) => run.runtime_flavor === "legacy-agy-native")) {
-    return "native-v2";
-  }
-  if (runs.some((run) => run.runtime_flavor === "legacy-managed")) {
-    return "legacy";
-  }
-  const historic = runs.filter((run) => run.stage !== "diagnosis");
-  if (historic.some((run) => !run.runtime_flavor && !run.execution_spec_id)) {
-    return taskModelOf(store, workflowId) === "native-v2"
-      ? "native-v2"
-      : "legacy";
-  }
-  return undefined;
-}
-
-function taskModelOf(store: Store, workflowId: string) {
-  const plans = store.list<{ plan?: { task_model?: string } }>(
-    "plan",
-    workflowId,
-  );
-  const latest = plans.sort((a, b) => {
-    const left = (a as { revision?: number }).revision ?? 0;
-    const right = (b as { revision?: number }).revision ?? 0;
-    return right - left;
-  })[0];
-  return resolveTaskModel(latest?.plan);
+  return "profile-native";
 }
 
 export function buildDispatchContext(
@@ -772,7 +734,7 @@ export function buildDispatchContext(
     "pending_model_retry",
     workflowId,
   );
-  if (retry?.retry_run_id) {
+  if (retry?.retry_run_id && !["aside", "diagnose", "merge_conflict"].includes(purpose)) {
     return {
       retry_run_id: retry.retry_run_id,
       logical_round_id: retry.logical_round_id,
@@ -1079,4 +1041,9 @@ export function conversationMatchesRun(
     return storedFingerprint === runFingerprint;
   }
   return true;
+}
+export function isLegacyProtocol(run?: Pick<Run, "protocol"> | null, plan?: Plan) {
+  if (run?.protocol === "lightweight") return false;
+  if (run?.protocol === "legacy") return true;
+  return plan ? resolveTaskModel(plan) !== "native-v2" : false;
 }

@@ -125,7 +125,6 @@ describe("新任务真实 API/原生 CLI 进程/SQLite/Git", { timeout: 300000 }
       expect(runs.map((r) => r.stage)).toEqual([
         "planning",
         "execute",
-        "executor_plan_self_check",
         "quality_before_human",
       ]);
       expect(
@@ -137,6 +136,21 @@ describe("新任务真实 API/原生 CLI 进程/SQLite/Git", { timeout: 300000 }
         s.store.list("native_execution", runs[1].id).length,
       ).toBeGreaterThan(0);
       const w = s.engine.get(id!);
+      expect(w.snapshot_id).toBeUndefined();
+      for (const stale of [
+        { request_id: "stale-version", expected_version: w.version - 1 },
+        { request_id: "stale-snapshot", expected_version: w.version, snapshot_id: "other-snapshot" },
+      ]) {
+        const rejected = await app.inject({
+          method: "POST",
+          url: "/api/workflows/" + id + "/confirm-function",
+          headers,
+          payload: stale,
+        });
+        expect(rejected.statusCode, rejected.body).toBe(409);
+        expect(rejected.json().error.code).toBe("VERSION_CONFLICT");
+        expect(s.engine.get(id!)).toMatchObject({ state: "HUMAN_PENDING", version: w.version });
+      }
       const confirm = await app.inject({
         method: "POST",
         url: "/api/workflows/" + id + "/confirm-function",
@@ -151,6 +165,20 @@ describe("新任务真实 API/原生 CLI 进程/SQLite/Git", { timeout: 300000 }
       await wait("COMMITTED");
       expect(await git(repo.repo, ["show", "HEAD:app.txt"])).toBe("after");
       expect(s.store.get("acceptance", id!)).toBeDefined();
+      expect(s.engine.displayHumanAccepted(id!)).toBe(true);
+      const committed = s.engine.get(id!);
+      const confirmed = s.store.must<any>("acceptance", id!);
+      expect(confirmed.snapshot_id).toBeUndefined();
+      expect(confirmed.commit_snapshot_id).toBe(committed.snapshot_id);
+      expect(committed.snapshot_id).toBeTruthy();
+      s.store.put("workflow", id!, committed.project_id, { ...committed, snapshot_id: "later-snapshot" });
+      expect(s.engine.displayHumanAccepted(id!)).toBe(false);
+      s.store.put("workflow", id!, committed.project_id, committed);
+      expect(s.engine.displayHumanAccepted(id!)).toBe(true);
+      const acceptance = s.store.must("acceptance", id!);
+      s.store.remove("acceptance", id!);
+      expect(s.engine.displayHumanAccepted(id!)).toBe(false);
+      s.store.put("acceptance", id!, id!, acceptance);
     } finally {
       try {
         if (id && !["COMMITTED", "COMPLETED"].includes(s.engine.get(id).state))

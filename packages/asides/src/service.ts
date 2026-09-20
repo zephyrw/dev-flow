@@ -6,11 +6,11 @@ import type {
 } from "../../contracts/src/feedback.js";
 import { id, now } from "../../core/src/util.js";
 import { FeedbackService } from "../../core/src/feedback-service.js";
-import { requireCondition } from "../../contracts/src/index.js";
+import { FlowError, requireCondition } from "../../contracts/src/index.js";
 
-const MAX_ACTIVE_ASIDES_GLOBAL = 1; // 全局严格只允许 1 个活跃 aside 槽位
+const MAX_ACTIVE_ASIDES_GLOBAL = 1;
 const MAX_QUEUED_ASIDES = 3;
-const ASIDE_TIMEOUT_MS = 120 * 1000;
+export const ASIDE_TIMEOUT_MS = 10 * 60 * 1000;
 
 export class AsideSessionService {
   constructor(private store: Store) {}
@@ -96,11 +96,46 @@ export class AsideSessionService {
       const wasActive = session.status === "active";
       session.status = "cancelled";
       this.store.put("aside_session", sessionId, workflowId, session);
-      // 仅当原本处于 active 状态被取消时，才唤醒下一个排队项
       if (wasActive) {
         this.promoteNextQueued();
       }
     }
+  }
+
+  failSession(
+    workflowId: string,
+    sessionId: string,
+    message: string,
+  ): AsideSession {
+    const session = this.store.get<AsideSession>("aside_session", sessionId);
+    if (!session || session.workflow_id !== workflowId) {
+      throw new Error(`提问会话 ${sessionId} 不存在`);
+    }
+    if (!["active", "queued"].includes(session.status)) return session;
+    const wasActive = session.status === "active";
+    session.status = "expired";
+    session.answer = message;
+    session.completed_at = now();
+    this.store.put("aside_session", sessionId, workflowId, session);
+    if (wasActive) this.promoteNextQueued();
+    return session;
+  }
+
+  settleRun(
+    workflowId: string,
+    sessionId: string,
+    result: { answer?: string; error?: unknown },
+  ): AsideSession | undefined {
+    const session = this.store.get<AsideSession>("aside_session", sessionId);
+    if (!session || session.workflow_id !== workflowId) return;
+    if (!["active", "queued"].includes(session.status)) return session;
+    const answer = result.answer?.trim();
+    if (answer) return this.completeSession(workflowId, sessionId, answer);
+    const timedOut = isAsideTimeout(result.error);
+    const message = timedOut
+      ? "提问超时，规划模型未在时限内给出回答。"
+      : "这次提问未能完成：" + asideErrorText(result.error);
+    return this.failSession(workflowId, sessionId, message);
   }
 
   /**
@@ -165,4 +200,15 @@ export class AsideSessionService {
       });
     }
   }
+}
+
+function isAsideTimeout(error: unknown) {
+  if (error instanceof FlowError) return error.code === "TIMEOUT";
+  return /timeout|超时/i.test(asideErrorText(error));
+}
+
+function asideErrorText(error: unknown) {
+  if (error instanceof Error && error.message.trim()) return error.message;
+  const text = String(error ?? "").trim();
+  return text || "未知错误";
 }

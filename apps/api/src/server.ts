@@ -47,6 +47,7 @@ import {
 } from "./model-routes.js";
 import { PlanReviewService } from "../../../packages/core/src/plan-review.js";
 import { SourceChangeService } from "../../../packages/core/src/source-change.js";
+import { listAttachmentRecords } from "../../../packages/evidence/src/archive-consumer.js";
 
 export async function buildServer(
   engine: Engine,
@@ -378,7 +379,7 @@ export async function buildServer(
       .object({
         request_id: Id,
         expected_version: z.number().int(),
-        snapshot_id: z.string().min(1),
+        snapshot_id: z.string().min(1).nullable().optional(),
       })
       .strict()
       .parse(req.body);
@@ -396,7 +397,7 @@ export async function buildServer(
     const wf = engine.get(workflowId);
     requireCondition(
       wf.version === body.expected_version &&
-        wf.snapshot_id === body.snapshot_id,
+        (wf.snapshot_id ?? null) === (body.snapshot_id ?? null),
       "VERSION_CONFLICT",
       "核验对象已变化",
       409,
@@ -705,6 +706,18 @@ export async function buildServer(
     return {
       ...detail,
       events: detail.events.map((e) => engine.store.publicEvent(e)),
+      attachment_status: listAttachmentRecords(engine.store, key),
+    };
+  });
+  app.get("/api/workflows/:id/attachments", async (req) => {
+    human(req);
+    const key = Id.parse((req.params as any).id);
+    engine.get(key);
+    const deliveryId = z
+      .object({ delivery_id: z.string().optional() })
+      .parse(req.query).delivery_id;
+    return {
+      attachment_status: listAttachmentRecords(engine.store, key, deliveryId),
     };
   });
   app.get("/api/workflows/:id/history", async (req) => {

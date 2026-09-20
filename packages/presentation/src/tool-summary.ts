@@ -52,6 +52,11 @@ export function toolSummary(name: string | undefined, args: any) {
     read_url_content: "读取网页",
     devflow_environment: "准备验证环境",
     devflow_deliver: "提交交付核验",
+    devflow_review_read_file: "读取文件",
+    devflow_review_context: "读取审查材料",
+    devflow_review_search: "搜索源码",
+    devflow_review_evidence: "读取测试证据",
+    devflow_review_hash_document: "核对文档哈希",
   };
   const target = first(
     path,

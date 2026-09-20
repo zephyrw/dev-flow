@@ -134,12 +134,13 @@ export function parseStructuredProbeTerminal(input: ProbeTerminalInput): ProbeTe
   const records = [...stdoutRecords, ...collectProbeJsonRecords(stderr)];
   const models = [...records.flatMap(observedModels), ...plainObservedModels(combined)];
   const selected = input.selectedModel?.trim();
-  const mismatch = selected ? models.find((model) =>
+  const nativeRouter = input.selectionKind === "native-router";
+  const mismatch = selected && !nativeRouter ? models.find((model) =>
     normalizedModel(model, input.adapterId) !== normalizedModel(selected, input.adapterId)) : undefined;
-  const fallback = /\b(?:falling back|fallback to|switched to model)\b/i.test(combined);
+  const fallback = !nativeRouter && /\b(?:falling back|fallback to|switched to model)\b/i.test(combined);
   const observedModel = mismatch ?? models.at(-1);
   const observedModelStatus: ProbeTerminal["observedModelStatus"] = mismatch || fallback
-    ? "mismatch" : observedModel && selected ? "matched" : "unknown";
+    ? "mismatch" : observedModel && selected && !nativeRouter ? "matched" : "unknown";
   const failed = (message: string): ProbeTerminal => ({
     success: false, observedModel, observedModelStatus, errorCode: "MODEL_UNAVAILABLE", message,
   });

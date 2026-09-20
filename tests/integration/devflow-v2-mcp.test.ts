@@ -1,4 +1,6 @@
 import { it, expect } from "vitest";
+import { randomUUID } from "node:crypto";
+import { inheritRoleOverrides } from "../../packages/contracts/src/index.js";
 import { setup, repository } from "../helpers.js";
 import { buildServer } from "../../apps/api/src/server.js";
 import { seedVerifiedAccess } from "../../packages/core/src/access-guard.js";
@@ -69,6 +71,33 @@ it("规划工具通过真实 MCP 入口创建原生任务并拒绝未知配置",
     });
     expect(invalid.isError).toBe(true);
     expect(s.store.list("workflow")).toHaveLength(1);
+    const change = {
+      workflow_id: w.id,
+      request_id: randomUUID(),
+      expected_spec_revision: 1,
+      planner_profile: profile,
+      executor_profile: profile,
+      role_overrides: inheritRoleOverrides(),
+    };
+    const saved = await call(change, "devflow_update_execution_spec");
+    expect(saved.isError).not.toBe(true);
+    for (const record of s.store.list<{ key: string }>("model_access")) {
+      s.store.remove("model_access", record.key);
+    }
+    expect(s.store.list("model_access")).toHaveLength(0);
+    const replayed = await call(change, "devflow_update_execution_spec");
+    expect(replayed.isError).not.toBe(true);
+    expect(replayed.content).toEqual(saved.content);
+    const fresh = await call(
+      {
+        ...change,
+        request_id: randomUUID(),
+        expected_spec_revision: JSON.parse(saved.content[0].text).entity_revision,
+      },
+      "devflow_update_execution_spec",
+    );
+    expect(fresh.isError).toBe(true);
+    expect(JSON.parse(fresh.content[0].text).code).toBe("MODEL_ACCESS_REQUIRED");
   } finally {
     await app.close();
     s.store.close();

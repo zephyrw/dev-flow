@@ -22,7 +22,8 @@ import {
 import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
+import { containerHandoffFiles } from "../../adapters/agy/src/handoff.js";
 import type { Engine } from "../../core/src/engine.js";
 import type { Principal } from "../../core/src/auth.js";
 import {
@@ -39,7 +40,9 @@ import {
   FlowError,
   requireCondition,
   resolveTaskModel,
+  type Run,
 } from "../../contracts/src/index.js";
+import { isLegacyProtocol } from "../../core/src/run-profile.js";
 export const workerNames = [
   "devflow_execute_context",
   "devflow_list_files",
@@ -194,7 +197,10 @@ export function makeMcp(engine: Engine, principal: Principal) {
         ].map((profile) => ({
           ...profile,
           catalogStatus: catalog.getModels(profile.adapterId).status,
-          accessStatus: access.readiness(profile) === "verified" ? "verified" : "unverified",
+          accessStatus:
+            access.readiness(profile) === "verified"
+              ? "verified"
+              : "unverified",
         }));
         return {
           profiles,
@@ -239,7 +245,8 @@ export function makeMcp(engine: Engine, principal: Principal) {
         adapter: z.enum(SupportedAdapters),
         scope_id: z.string().min(1).optional(),
       }),
-      (a) => new ModelCatalogService(engine.store).getModels(a.adapter, a.scope_id),
+      (a) =>
+        new ModelCatalogService(engine.store).getModels(a.adapter, a.scope_id),
       true,
     );
     register(
@@ -295,21 +302,12 @@ export function makeMcp(engine: Engine, principal: Principal) {
         })
         .strict(),
       (a) => {
-        const profiles = [
-          a.planner_profile,
-          a.executor_profile,
-          ...(a.role_overrides.reviewer.mode === "explicit"
-            ? [a.role_overrides.reviewer.profile]
-            : []),
-          ...(a.role_overrides.review_fixer.mode === "explicit"
-            ? [a.role_overrides.review_fixer.profile]
-            : []),
-          ...(a.role_overrides.functional_fixer.mode === "explicit"
-            ? [a.role_overrides.functional_fixer.profile]
-            : []),
-        ];
-        access.requireVerified(profiles);
-        const specService = new ExecutionSpecService(engine.store, engine.config);
+        // updateExecutionSpec enforces access on all new writes and replays
+        // already committed requests without re-publishing their profiles.
+        const specService = new ExecutionSpecService(
+          engine.store,
+          engine.config,
+        );
         return specService.updateExecutionSpec({
           request_id: a.request_id,
           expected_spec_revision: a.expected_spec_revision,
@@ -347,10 +345,23 @@ export function makeMcp(engine: Engine, principal: Principal) {
       taskModel = "legacy";
     }
     const isNativeV2 = taskModel === "native-v2";
+    const legacyRound = () => {
+      const run = principal.run_id
+        ? engine.store.get<Run>("run", principal.run_id)
+        : undefined;
+      try {
+        return isLegacyProtocol(run, engine.plan(workflow).plan);
+      } catch {
+        return !isNativeV2;
+      }
+    };
+    const usesLegacyTools = legacyRound();
     const repo = z.object({ repo_id: Id });
     register(
       "devflow_execute_context",
-      "分段读取批准上下文。先 overview，再 plan、skill、tasks、tests；tool + id 查询单个工具参数。按 next_offset 继续，禁止使用原生文件工具。",
+      usesLegacyTools
+        ? "分段读取批准上下文。先 overview，再 plan、skill、tasks、tests；tool + id 查询单个工具参数。按 next_offset 继续，禁止使用原生文件工具。"
+        : "读取批准上下文和工具参数；允许使用原生文件与终端工具完成开发和测试，完成后调用 devflow_deliver。",
       z.object({
         section: z
           .enum([
@@ -376,7 +387,10 @@ export function makeMcp(engine: Engine, principal: Principal) {
         const w = engine.get(workflow),
           record = engine.plan(workflow),
           plan = record.plan;
-        if (a.section === "overview")
+        if (a.section === "overview") {
+          const files = containerHandoffFiles(
+            join(engine.config.storage_root, "containers", workflow),
+          );
           return {
             workflow_id: w.id,
             run_id: w.run_id,
@@ -392,10 +406,16 @@ export function makeMcp(engine: Engine, principal: Principal) {
             active_task: engine.store.get("task_activity", workflow),
             task_count: plan.tasks.length,
             test_count: plan.tests.length,
-            instructions: isNativeV2
-              ? "原生开发模式：请使用原生文件查看工具阅读 HANDOFF.md 完整设计与验收要求，完成全部实现和测试代码后统一运行测试，通过后使用 devflow_deliver 交付。" + batchExecutionInstructions
+            instructions: !legacyRound()
+              ? "原生开发模式：请使用原生文件查看工具阅读 " +
+                files.markdown +
+                " 与 " +
+                files.json +
+                " 完整设计与验收要求，完成全部实现和测试代码后由多个子 Agent 并行运行各自明确的独立测试目标，通过后使用 devflow_deliver 交付。" +
+                batchExecutionInstructions
               : "使用本工具 section=plan/skill/tasks/tests/scope/feedback/environment 读取批准信息；每次响应 text 是内容分段，next_offset 非 null 时继续相同 section 和 id。section=tool,id=完整工具名 可读取准确参数 Schema。先完整读取计划、任务及测试再修改。禁止原生工具。",
           };
+        }
         let value: unknown;
         if (a.section === "plan") value = plan.markdown;
         else if (a.section === "skill")
@@ -465,16 +485,16 @@ export function makeMcp(engine: Engine, principal: Principal) {
       },
       true,
     );
-    if (!isNativeV2) {
+    if (usesLegacyTools) {
       register(
         "devflow_list_files",
         "列出已绑定仓库内目录。",
         repo.extend({ path: RelativePath.optional() }),
         (a) => {
           requireCondition(
-            !isNativeV2,
+            legacyRound(),
             "INVALID_MODE",
-            "native-v2 模式下不能调用旧模式工具",
+            "新轮次请说明本轮结果后直接交代码审查，不能调用旧完成工具",
           );
           const f = engine.files(principal, workflow, a.repo_id);
           return f.broker.list(f.root, a.path);
@@ -491,9 +511,9 @@ export function makeMcp(engine: Engine, principal: Principal) {
         }),
         (a) => {
           requireCondition(
-            !isNativeV2,
+            legacyRound(),
             "INVALID_MODE",
-            "native-v2 模式下不能调用旧模式工具",
+            "新轮次请说明本轮结果后直接交代码审查，不能调用旧完成工具",
           );
           const f = engine.files(principal, workflow, a.repo_id);
           return f.broker.read(f.root, a.path, a.start, a.limit);
@@ -506,9 +526,9 @@ export function makeMcp(engine: Engine, principal: Principal) {
         repo.extend({ query: z.string().min(1).max(500) }),
         (a) => {
           requireCondition(
-            !isNativeV2,
+            legacyRound(),
             "INVALID_MODE",
-            "native-v2 模式下不能调用旧模式工具",
+            "新轮次请说明本轮结果后直接交代码审查，不能调用旧完成工具",
           );
           const f = engine.files(principal, workflow, a.repo_id);
           return f.broker.search(f.root, a.query);
@@ -534,9 +554,9 @@ export function makeMcp(engine: Engine, principal: Principal) {
         }),
         (a) => {
           requireCondition(
-            !isNativeV2,
+            legacyRound(),
             "INVALID_MODE",
-            "native-v2 模式下不能调用旧模式工具",
+            "新轮次请说明本轮结果后直接交代码审查，不能调用旧完成工具",
           );
           const f = engine.files(principal, workflow, a.repo_id, true);
           const plan = engine.plan(workflow).plan,
@@ -577,9 +597,9 @@ export function makeMcp(engine: Engine, principal: Principal) {
         }),
         (a) => {
           requireCondition(
-            !isNativeV2,
+            legacyRound(),
             "INVALID_MODE",
-            "native-v2 模式下不能调用旧模式工具",
+            "新轮次请说明本轮结果后直接交代码审查，不能调用旧完成工具",
           );
           return startTask(engine, principal, workflow, a.task_id, a.summary);
         },
@@ -590,9 +610,9 @@ export function makeMcp(engine: Engine, principal: Principal) {
         z.object({ task_id: Id, summary: z.string().min(10) }),
         (a) => {
           requireCondition(
-            !isNativeV2,
+            legacyRound(),
             "INVALID_MODE",
-            "native-v2 模式下不能调用旧模式工具",
+            "新轮次请说明本轮结果后直接交代码审查，不能调用旧完成工具",
           );
           return engine.claimTask(principal, workflow, a.task_id, a.summary);
         },
@@ -603,22 +623,22 @@ export function makeMcp(engine: Engine, principal: Principal) {
         z.object({}),
         () => {
           requireCondition(
-            !isNativeV2,
+            legacyRound(),
             "INVALID_MODE",
-            "native-v2 模式下不能调用旧模式工具",
+            "新轮次请说明本轮结果后直接交代码审查，不能调用旧完成工具",
           );
           return engine.freeze(workflow, principal);
         },
       );
       register(
         "devflow_run_check",
-        "运行批准的测试编号，返回真实报告。失败会使旧证据失效并回到 EXECUTING：修复后重新 freeze 并重跑全部检查。",
+        "运行批准的测试编号，返回真实报告。失败会使旧证据失效并回到 EXECUTING：修复后先重跑该目标，再由负责的子 Agent 并行运行独立的受影响回归目标。",
         z.object({ test_id: Id }),
         (a) => {
           requireCondition(
-            !isNativeV2,
+            legacyRound(),
             "INVALID_MODE",
-            "native-v2 模式下不能调用旧模式工具",
+            "新轮次请说明本轮结果后直接交代码审查，不能调用旧完成工具",
           );
           return engine.runtime!.check(
             engine.get(workflow),
@@ -729,55 +749,53 @@ export function makeMcp(engine: Engine, principal: Principal) {
         return result;
       },
     );
-    if (!isNativeV2) {
+    if (usesLegacyTools) {
       register(
         "devflow_finish",
         "核验本轮所有任务和证据；成功后结束模型进程，等待人工验收。",
         z.object({}),
         () => {
           requireCondition(
-            !isNativeV2,
+            legacyRound(),
             "INVALID_MODE",
-            "native-v2 模式下不能调用 devflow_finish 工具",
+            "新轮次请说明本轮结果后直接交代码审查，不能调用旧完成工具",
           );
           return engine.finish(workflow, principal);
         },
       );
     }
-    if (isNativeV2) {
-      register(
-        "devflow_deliver",
-        "原生终局交付工具：在原生环境下完成全部实现、统一测试通过后，提交交付清单进行终局批量核验。证据通过且执行器成功结束后，程序另调执行模型完整复核正式计划、汇总问题并整批修复后统一测试；复核轮次必须提交 plan_self_check，全部修复及测试完成后才交规划模型审查。",
-        NativeDeliveryManifestSchema,
-        async (a) => {
-          requireCondition(
-            isNativeV2,
-            "INVALID_MODE",
-            "非 native-v2 模式下不能调用终局交付工具",
-          );
-          engine.worker(principal, workflow);
-          return engine.deliver(workflow, a);
-        },
-      );
-      register(
-        "devflow_report_conflict",
-        "当架构、数据结构、外部接口或核心业务规则与规划设计存在真实冲突时上报具体证据，由规划模型修订原方案。",
-        z.object({
-          description: z.string().min(10),
-          conflict_evidence: z.string().min(10),
-          affected_modules: z.array(z.string()).default([]),
-        }),
-        async (a) => {
-          requireCondition(
-            isNativeV2,
-            "INVALID_MODE",
-            "非 native-v2 模式下不能调用冲突上报工具",
-          );
-          engine.worker(principal, workflow);
-          return engine.reportConflict(workflow, a);
-        },
-      );
-    }
+    register(
+      "devflow_deliver",
+      "说明本轮执行结果。status 为 completed 时交接代码质量审查；need_planner 进入规划澄清；need_user 等待用户。",
+      NativeDeliveryManifestSchema,
+      async (a) => {
+        requireCondition(
+          !legacyRound(),
+          "INVALID_MODE",
+          "当前轮次仍使用旧完成协议",
+        );
+        engine.worker(principal, workflow);
+        return engine.receiveRoundResult(workflow, principal.run_id!, a);
+      },
+    );
+    register(
+      "devflow_report_conflict",
+      "当架构、数据结构、外部接口或核心业务规则与规划设计存在真实冲突时上报具体证据，由规划模型修订原方案。",
+      z.object({
+        description: z.string().min(10),
+        conflict_evidence: z.string().min(10),
+        affected_modules: z.array(z.string()).default([]),
+      }),
+      async (a) => {
+        requireCondition(
+          !legacyRound(),
+          "INVALID_MODE",
+          "当前轮次仍使用旧完成协议",
+        );
+        engine.worker(principal, workflow);
+        return engine.reportConflict(workflow, a);
+      },
+    );
   }
   return server;
 }

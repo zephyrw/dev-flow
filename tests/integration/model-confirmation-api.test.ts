@@ -61,7 +61,7 @@ async function fixture() {
   const p = project(env.root);
   env.store.put("project", p.id, p.id, p);
   env.store.put("plan", `${workflowId}-1`, workflowId, {
-    plan: plan(objectHash(p), "baseline"),
+    plan: plan(objectHash(p), "a".repeat(40)),
     revision: 1,
   });
   const workflow: Workflow = {
@@ -337,6 +337,7 @@ it("HTTP 独立质量指派记入 review_fixer 且重放不增加版本", async 
     env.store,
     env.workflowId,
     "before_human",
+    "review-fixture",
   );
   const payload = {
     request_id: randomUUID(),
@@ -424,8 +425,8 @@ it("HTTP 安装草稿只在版本仍有效时展示，保存默认后原子删�
 });
 
 function clearVerifiedAccess(env: Fixture) {
-  for (const record of env.store.list<{ id: string }>("model_access"))
-    env.store.remove("model_access", record.id);
+  for (const record of env.store.list<{ key: string }>("model_access"))
+    env.store.remove("model_access", record.key);
   expect(env.store.list("model_access")).toHaveLength(0);
 }
 
@@ -485,19 +486,46 @@ it("HTTP 任务配置成功后授权失效仍可重放同收据，新请求仍�
   expect(replay.statusCode, replay.body).toBe(200);
   expect(replay.json()).toEqual(first.json());
   expect(snapshot(env)).toEqual(before);
+  const freshPayload = {
+    ...payload,
+    request_id: randomUUID(),
+    expected_spec_revision: first.json().entity_revision,
+  };
   const fresh = await env.app.inject({
     method: "POST",
     url,
     headers,
-    payload: {
-      ...payload,
-      request_id: randomUUID(),
-      expected_spec_revision: first.json().entity_revision,
-    },
+    payload: freshPayload,
   });
   expect(fresh.statusCode, fresh.body).toBe(422);
   expect(fresh.json().error.code).toBe("MODEL_ACCESS_REQUIRED");
-  expect(snapshot(env)).toEqual(before);
+  const operationId =
+    "op-" +
+    objectHash({
+      type: "save_spec",
+      entity: env.workflowId,
+      requestId: freshPayload.request_id,
+    });
+  expect(env.store.get("model_config_operation", operationId)).toMatchObject({
+    id: operationId,
+    operation_type: "save_spec",
+    entity_id: env.workflowId,
+    request_id: freshPayload.request_id,
+    request_hash: objectHash({
+      expected_spec_revision: freshPayload.expected_spec_revision,
+      planner_profile: freshPayload.planner_profile,
+      executor_profile: freshPayload.executor_profile,
+      role_overrides: freshPayload.role_overrides,
+    }),
+    status: "awaiting_access",
+  });
+  const after = snapshot(env);
+  expect(after.entities).toHaveLength(before.entities.length + 1);
+  after.entities = after.entities.filter((raw) => {
+    const row = raw as { kind: string; id: string };
+    return !(row.kind === "model_config_operation" && row.id === operationId);
+  });
+  expect(after).toEqual(before);
 });
 
 it("HTTP 修复指派成功后授权失效仍可重放同收据，新请求仍需授权", async () => {

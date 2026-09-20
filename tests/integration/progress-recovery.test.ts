@@ -85,7 +85,7 @@ it("a shared test failure preserves unchanged implementation and displays passed
         .taskStatus(s.workflow.id)
         .every((t) => t.development_status === "check_failed"),
     ).toBe(true);
-    expect(() => s.engine.verifyEvidence(s.workflow.id)).toThrow();
+    expect(() => s.engine.verifyEvidence(s.workflow.id)).not.toThrow();
     const app = await buildServer(s.engine);
     try {
       const headers = {
@@ -123,7 +123,7 @@ it("a shared test failure preserves unchanged implementation and displays passed
       passed: 0,
       stale: 2,
     });
-    expect(() => s.engine.verifyEvidence(s.workflow.id)).toThrow();
+    expect(() => s.engine.verifyEvidence(s.workflow.id)).not.toThrow();
   } finally {
     await runtime.close();
     s.store.close();

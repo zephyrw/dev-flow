@@ -39,7 +39,7 @@ export function assertProfilesVerified(
   const access = accessForStore(store);
   for (const raw of profiles) {
     const profile = ToolProfileSchema.parse(raw);
-    access.assertNativeProfileAllowed(profile);
+    access.assertProfileSupported(profile);
     const resolvedIdentity = identity ?? access.identityFromProfile(profile);
     access.assertCachedAccess(profile, resolvedIdentity);
   }

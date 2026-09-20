@@ -19,6 +19,8 @@ import {
 import { atomicWrite, hash } from "../../core/src/util.js";
 import { ModelDefaultsService } from "../../core/src/model-defaults-service.js";
 import { assertProfilesVerified } from "../../core/src/access-guard.js";
+import { ModelCatalogService } from "../../core/src/model-catalog-service.js";
+import { resolveModelIdentity } from "../../core/src/model-identity.js";
 import { Store } from "../../store/src/store.js";
 import { createDefaultAdapterRegistry } from "../../adapters/sdk/src/index.js";
 import { resolve, join } from "node:path";
@@ -125,43 +127,32 @@ function executableRefFor(
   return undefined;
 }
 
-function catalogForAdapter(
-  store: Store,
-  adapterId: SupportedAdapterId,
-): ModelCatalog | undefined {
-  return store
-    .list<ModelCatalog>("model_catalog")
-    .find((item) => item.adapterId === adapterId);
+function catalogForProfile(store: Store, profile: ToolProfile): ModelCatalog | undefined {
+  const native = resolveModelIdentity(store, profile);
+  return new ModelCatalogService(store).readCached({
+    adapterId: profile.adapterId,
+    executablePath: native.executablePath,
+    nativeConfigProfile: native.nativeConfigProfile,
+    nativeConfigScope: native.nativeConfigScope,
+    accountFingerprint: native.accountFingerprint,
+    providerFingerprint: native.providerEndpointFingerprint,
+  });
 }
 
-function catalogEntryFor(
-  store: Store,
-  adapterId: SupportedAdapterId,
-  modelId?: string,
-) {
-  if (!modelId) return undefined;
-  const catalog = catalogForAdapter(store, adapterId);
-  return catalog?.entries.find(
-    (entry) => entry.nativeId === modelId || entry.entryId === modelId,
+function catalogEntryFor(store: Store, profile: ToolProfile) {
+  if (!profile.modelId) return undefined;
+  return catalogForProfile(store, profile)?.entries.find(
+    (entry) => entry.nativeId === profile.modelId || entry.entryId === profile.modelId,
   );
 }
 
-function catalogEffortDefault(
-  store: Store,
-  adapterId: SupportedAdapterId,
-  modelId?: string,
-): string | undefined {
-  const entry = catalogEntryFor(store, adapterId, modelId);
+function catalogEffortDefault(store: Store, profile: ToolProfile): string | undefined {
+  const entry = catalogEntryFor(store, profile);
   return entry?.effort.defaultValue ?? entry?.effort.fixedValue;
 }
 
-function assertCatalogEffortAllowed(
-  store: Store,
-  adapterId: SupportedAdapterId,
-  modelId: string | undefined,
-  effort: string,
-) {
-  const entry = catalogEntryFor(store, adapterId, modelId);
+function assertCatalogEffortAllowed(store: Store, profile: ToolProfile, effort: string) {
+  const entry = catalogEntryFor(store, profile);
   if (!entry) return;
   if (entry.effort.status === "unsupported") {
     throw new InstallerDefaultsError("当前模型不适用思考强度");
@@ -174,28 +165,8 @@ function assertCatalogEffortAllowed(
   }
 }
 
-function resolveInstallerEffort(
-  store: Store,
-  adapterId: SupportedAdapterId,
-  modelId: string | undefined,
-  provided?: string,
-): ToolProfile["reasoning"] {
-  if (provided) {
-    assertCatalogEffortAllowed(store, adapterId, modelId, provided);
-    return { mode: "explicit", value: provided };
-  }
-  const catalogDefault = catalogEffortDefault(store, adapterId, modelId);
-  if (catalogDefault) return { mode: "explicit", value: catalogDefault };
-  return { mode: "native-default" };
-}
-
-function effortAllowed(
-  store: Store,
-  adapterId: SupportedAdapterId,
-  modelId: string | undefined,
-  effort: string,
-): boolean {
-  const entry = catalogEntryFor(store, adapterId, modelId);
+function effortAllowed(store: Store, profile: ToolProfile, effort: string): boolean {
+  const entry = catalogEntryFor(store, profile);
   if (!entry) return true;
   if (entry.effort.status === "unsupported") return false;
   if (entry.effort.status === "unknown") return effort.length === 0;
@@ -205,22 +176,13 @@ function effortAllowed(
   return true;
 }
 
-function explicitEffort(
-  store: Store,
-  adapterId: SupportedAdapterId,
-  modelId: string | undefined,
-  effort: string,
-): ToolProfile["reasoning"] {
-  assertCatalogEffortAllowed(store, adapterId, modelId, effort);
+function explicitEffort(store: Store, profile: ToolProfile, effort: string): ToolProfile["reasoning"] {
+  assertCatalogEffortAllowed(store, profile, effort);
   return { mode: "explicit", value: effort };
 }
 
-function catalogOrNativeDefault(
-  store: Store,
-  adapterId: SupportedAdapterId,
-  modelId?: string,
-): ToolProfile["reasoning"] {
-  const catalogDefault = catalogEffortDefault(store, adapterId, modelId);
+function catalogOrNativeDefault(store: Store, profile: ToolProfile): ToolProfile["reasoning"] {
+  const catalogDefault = catalogEffortDefault(store, profile);
   if (catalogDefault) return { mode: "explicit", value: catalogDefault };
   return { mode: "native-default" };
 }
@@ -241,24 +203,16 @@ function overlayRoleProfile(
   const nextAdapter = patch.tool ? parseAdapterId(patch.tool) : base.adapterId;
   const toolChanged = nextAdapter !== base.adapterId;
   if (toolChanged && !patch.model) {
-    return {
-      ok: false,
-      reason: "incomplete",
-      message: "改工具时必须指定合法模型",
-    };
+    return { ok: false, reason: "incomplete", message: "改工具时必须指定合法模型" };
   }
   if (toolChanged) {
-    const modelId = patch.model!;
-    const reasoning = patch.effort
-      ? explicitEffort(store, nextAdapter, modelId, patch.effort)
-      : catalogOrNativeDefault(store, nextAdapter, modelId);
-    const next = {
+    const next: ToolProfile = {
       ...base,
       adapterId: nextAdapter,
-      modelSelection: "explicit" as const,
-      modelId,
-      selectionKind: "fixed" as const,
-      reasoning,
+      modelSelection: "explicit",
+      modelId: patch.model!,
+      selectionKind: "fixed",
+      reasoning: { mode: "native-default" },
     };
     delete next.providerConfigRef;
     delete next.toolsetRef;
@@ -267,29 +221,27 @@ function overlayRoleProfile(
     const executable = executableRefFor(nextAdapter, config);
     if (executable) next.executableRef = executable;
     else delete next.executableRef;
+    next.reasoning = patch.effort
+      ? explicitEffort(store, next, patch.effort)
+      : catalogOrNativeDefault(store, next);
     return { ok: true, profile: ToolProfileSchema.parse(next) };
   }
-  const modelId = patch.model ?? base.modelId;
   const modelChanged = Boolean(patch.model && patch.model !== base.modelId);
-  let reasoning = base.reasoning;
+  const next: ToolProfile = {
+    ...base,
+    ...(patch.model ? {
+      modelSelection: "explicit" as const,
+      modelId: patch.model,
+      selectionKind: "fixed" as const,
+    } : {}),
+  };
   if (patch.effort) {
-    reasoning = explicitEffort(store, nextAdapter, modelId, patch.effort);
+    next.reasoning = explicitEffort(store, next, patch.effort);
   } else if (modelChanged) {
-    const oldEffort =
-      base.reasoning?.mode === "explicit" ? base.reasoning.value : undefined;
-    if (oldEffort && !effortAllowed(store, nextAdapter, modelId, oldEffort)) {
+    const oldEffort = base.reasoning?.mode === "explicit" ? base.reasoning.value : undefined;
+    if (oldEffort && !effortAllowed(store, next, oldEffort)) {
       throw new InstallerDefaultsError("当前模型不支持该思考强度");
     }
-  }
-  const next: Record<string, unknown> = {
-    ...base,
-    adapterId: nextAdapter,
-    reasoning,
-  };
-  if (patch.model) {
-    next.modelSelection = "explicit";
-    next.modelId = patch.model;
-    next.selectionKind = "fixed";
   }
   return { ok: true, profile: ToolProfileSchema.parse(next) };
 }

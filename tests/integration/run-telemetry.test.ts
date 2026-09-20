@@ -1,9 +1,14 @@
 import { it, expect } from "vitest";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { fixture, cleanup } from "../fixtures/native-flow.js";
+import {
+  fixture,
+  cleanup,
+  seedPlannerTakeover,
+} from "../fixtures/native-flow.js";
 import { LocalRuntime } from "../../packages/runtime/src/runtime.js";
 import { readableLogs } from "../../packages/presentation/src/activity.js";
+import { RunModelBindingSchema, type Run } from "../../packages/contracts/src/index.js";
 
 it("the production planner-takeover runtime publishes native actions before process exit and retains them in HTTP detail", async () => {
   const s = await fixture();
@@ -39,7 +44,7 @@ it("the production planner-takeover runtime publishes native actions before proc
     executorProfile: profile,
     created_at: new Date().toISOString(),
   });
-  authorizePlannerTakeover(s);
+  seedPlannerTakeover(s);
   const runtime = new LocalRuntime(s.engine);
   s.engine.runtime = runtime;
   try {
@@ -54,6 +59,41 @@ it("the production planner-takeover runtime publishes native actions before proc
       )
       .toBe("active");
     expect(s.engine.get(s.w.id).state).toBe("EXECUTING");
+    const activeRun = s.store.get<Run>("run", s.engine.get(s.w.id).run_id!)!;
+    expect(activeRun.protocol).toBe("lightweight");
+    expect(activeRun.execution_spec_revision).toBe(1);
+    expect(activeRun.model_binding?.effective_invocation).toMatchObject({
+      adapterId: "codex",
+      executable: process.execPath,
+      modelId: "fixture-model",
+    });
+    expect(activeRun.frozen_invocation).toMatchObject({
+      adapterId: "codex",
+      executable: process.execPath,
+      modelToken: "fixture-model",
+    });
+    const frozen = activeRun.frozen_invocation!;
+    expect(RunModelBindingSchema.parse(activeRun.model_binding)).toEqual({
+      routing_role: activeRun.routing_role,
+      routing_source: activeRun.routing_source,
+      execution_spec_revision: activeRun.execution_spec_revision,
+      logical_round_id: activeRun.logical_round_id,
+      ...(activeRun.repair_batch_id ? { repair_batch_id: activeRun.repair_batch_id } : {}),
+      ...(activeRun.assignment_id ? { assignment_id: activeRun.assignment_id } : {}),
+      effective_invocation: {
+        adapterId: frozen.adapterId,
+        executable: frozen.executable,
+        modelId: frozen.modelToken,
+        reasoning: frozen.reasoning,
+        ...(frozen.nativeConfigProfile ? { nativeConfigProfile: frozen.nativeConfigProfile } : {}),
+        providerScope: frozen.providerScope,
+        accountScope: frozen.accountScope,
+        capabilityRevision: frozen.capabilityRevision,
+        runtimeFlavor: frozen.runtimeFlavor,
+      },
+      frozen_invocation: frozen,
+      invocation_fingerprint: activeRun.invocation_fingerprint,
+    });
     expect(s.engine.summary(s.w.id).runtime).toMatchObject({
       adapter: "codex",
       purpose: "planner_takeover",
@@ -79,36 +119,3 @@ it("the production planner-takeover runtime publishes native actions before proc
     await cleanup(s);
   }
 });
-
-function authorizePlannerTakeover(s: Awaited<ReturnType<typeof fixture>>) {
-  const w = s.engine.get(s.w.id);
-  const phase = "before_human" as const;
-  const reviewIds = ["review-a", "review-b", "review-c"];
-  s.store.put("quality_gate", s.engine.quality.getGateKey(w.id, phase), w.id, {
-    workflow_id: w.id,
-    phase,
-    cycle: 1,
-    executor_rejections: 3,
-    failed_repair_review_ids: reviewIds,
-    current_review_id: reviewIds[2],
-    takeover: true,
-    status: "rejected",
-    updated_at: new Date().toISOString(),
-  });
-  reviewIds.forEach((id, index) => {
-    s.store.put("quality_review", id, w.id, {
-      workflow_id: w.id,
-      phase,
-      verdict: "changes_required",
-      executor_repair_run_id: "repair-" + index,
-    });
-  });
-  s.store.put("repair_assignment", w.id, w.id, {
-    planner: true,
-    phase,
-    source: "quality_review",
-    source_review_id: reviewIds[2],
-    plan_revision: w.plan_revision,
-    plan_hash: w.plan_hash,
-  });
-}

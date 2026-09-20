@@ -541,9 +541,14 @@ export class RepairModelService {
         },
       );
     }
+    // Clearing an override hides the active assignment, but must not let a
+    // later assignment reuse a revision accepted by an older open editor.
+    const latestRevision = listAssignments(this.store, batch.workflow_id)
+      .filter((item) => item.batch_id === batch.id)
+      .reduce((latest, item) => Math.max(latest, item.revision), 0);
     const assignment = RepairModelAssignmentSchema.parse({
       id: previous?.id ?? id("assignment"),
-      revision: (previous?.revision ?? 0) + 1,
+      revision: latestRevision + 1,
       workflow_id: batch.workflow_id,
       batch_id: batch.id,
       kind: batch.kind,

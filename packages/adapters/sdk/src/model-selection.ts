@@ -40,6 +40,7 @@ export function resolveModelSelection(
   const effortValue = requested ?? null;
   return {
     adapterId: profile.adapterId,
+    selectionKind: catalogEntry?.selectionKind ?? "fixed",
     modelToken: built.modelToken,
     effortArgs: built.effortArgs,
     effortEnv: built.effortEnv,

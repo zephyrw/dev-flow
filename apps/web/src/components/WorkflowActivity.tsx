@@ -35,7 +35,6 @@ export function WorkflowActivity({
   detail?: any;
 }) {
   const [issues, setIssues] = useState<any[]>([]),
-    [asides, setAsides] = useState<any[]>([]),
     [viewsById, setViewsById] = useState<Record<string, FunctionalIssueView>>(
       {},
     ),
@@ -51,11 +50,9 @@ export function WorkflowActivity({
     panelAbort.current = controller;
     return () => controller.abort();
   }, [workflow.id]);
-  const pending = asides.some((a) => ["active", "queued"].includes(a.status));
   const runs = Array.isArray(detail?.runs) ? detail.runs : [];
   useEffect(() => {
     setIssues([]);
-    setAsides([]);
     setViewsById({});
     setSpec(null);
     setError("");
@@ -73,25 +70,15 @@ export function WorkflowActivity({
           throw new Error("任务反馈响应格式无效，请刷新重试");
         return value;
       }),
-      fetch("/api/workflows/" + workflow.id + "/asides", {
-        signal: abort.signal,
-      }).then(async (r) => {
-        if (!r.ok) throw new Error("无法读取任务反馈");
-        const value = await r.json();
-        if (!Array.isArray(value))
-          throw new Error("任务反馈响应格式无效，请刷新重试");
-        return value;
-      }),
       getFunctionalIssueViews(workflow.id, abort.signal).catch((err) => {
         if (isRouteMissing(err as ApiError)) return [];
         throw err;
       }),
       getExecutionSpec(workflow.id, abort.signal).catch(() => null),
     ])
-      .then(([nextIssues, nextAsides, views, nextSpec]) => {
+      .then(([nextIssues, views, nextSpec]) => {
         if (abort.signal.aborted) return;
         setIssues(nextIssues ?? []);
-        setAsides(nextAsides ?? []);
         setViewsById(indexIssueViews(views));
         setSpec(nextSpec);
         setError("");
@@ -101,11 +88,6 @@ export function WorkflowActivity({
       });
     return () => abort.abort();
   }, [workflow.id, workflow.version, tick]);
-  useEffect(() => {
-    if (!pending) return;
-    const timer = setTimeout(() => setTick((t) => t + 1), 2000);
-    return () => clearTimeout(timer);
-  }, [pending, tick]);
   useEffect(() => {
     const refreshActivity = () => setTick((t) => t + 1);
     window.addEventListener("devflow-activity", refreshActivity);
@@ -200,7 +182,7 @@ export function WorkflowActivity({
               repair_model: picker.selection,
               remember_for_task: picker.rememberForTask,
               batch_id: view!.batch_id!,
-              expected_assignment_revision: view!.assignment_revision,
+              expected_assignment_revision: view!.assignment_revision ?? 0,
               expected_spec_revision: spec!.spec_revision,
             }
           : {}),
@@ -242,7 +224,7 @@ export function WorkflowActivity({
       setError(formatApiError(e));
     }
   }
-  if (!issues.length && !asides.length && !runs.length && !error) return null;
+  if (!issues.length && !runs.length && !error) return null;
   return (
     <div aria-label="任务反馈记录">
       {runs.length > 0 && (
@@ -337,46 +319,6 @@ export function WorkflowActivity({
               </article>
             );
           })}
-        </details>
-      )}
-      {asides.length > 0 && (
-        <details open>
-          <summary>临时提问</summary>
-          {asides.map((a) => (
-            <article key={a.id}>
-              <p>{a.question}</p>
-              <p>
-                {a.answer ??
-                  (
-                    {
-                      active: "正在回答…",
-                      queued: "等待回答",
-                      cancelled: "已取消",
-                      expired: "已超时",
-                    } as any
-                  )[a.status]}
-              </p>
-              {["active", "queued"].includes(a.status) && (
-                <button
-                  onClick={() => void act("/asides/" + a.id + "/cancel", {})}
-                >
-                  取消提问
-                </button>
-              )}
-              {a.status === "completed" && (
-                <button
-                  onClick={() =>
-                    void act("/asides/" + a.id + "/promote", {
-                      text: a.question + "\n" + a.answer,
-                      target_revision: workflow.plan_revision,
-                    })
-                  }
-                >
-                  转为正式反馈
-                </button>
-              )}
-            </article>
-          ))}
         </details>
       )}
       {error && <p role="alert">{error}</p>}

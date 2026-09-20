@@ -1,6 +1,13 @@
 import { startTask } from "../../packages/core/src/progress.js";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { isAbsolute, join, resolve } from "node:path";
 import { setup, repository, project, plan } from "../helpers.js";
 import { Engine, type Runtime } from "../../packages/core/src/engine.js";
 import { LocalRuntime } from "../../packages/runtime/src/runtime.js";
@@ -8,6 +15,7 @@ import { now, objectHash, atomicWrite } from "../../packages/core/src/util.js";
 import { git } from "../../packages/git/src/git.js";
 import { buildServer } from "../../apps/api/src/server.js";
 import type {
+  MergeConflictRequest,
   ModelCatalog,
   ModelEntry,
   Run,
@@ -18,6 +26,12 @@ import type {
 import { inheritRoleOverrides } from "../../packages/contracts/src/index.js";
 import { CATALOG_FRESH_MS } from "../../packages/contracts/src/model-catalog.js";
 import { ModelAccessService } from "../../packages/core/src/model-access-service.js";
+import {
+  ModelCatalogService,
+  type CatalogScopeInput,
+} from "../../packages/core/src/model-catalog-service.js";
+import { resolveModelIdentity } from "../../packages/core/src/model-identity.js";
+import { setAdapterExecutableResolver } from "../../packages/adapters/sdk/src/registry.js";
 import { ExecutionSpecService } from "../../packages/core/src/execution-spec-service.js";
 import {
   ensureQualityRepairBatch,
@@ -25,8 +39,34 @@ import {
 } from "../../packages/core/src/repair-model-service.js";
 import { FunctionalIssueService } from "../../packages/core/src/functional-issues.js";
 import { seedSourceChange } from "../fixtures/source-change.js";
+import {
+  attachmentArchiveKey,
+  createArchiveJobFromManifest,
+  drainArchiveOutbox,
+} from "../../packages/evidence/src/archive-consumer.js";
 
 const PROBE_CLI = resolve("tests/fixtures/model-probe/cli.mjs");
+// Install before setup creates any store, engine or model service. This resolver
+// is authoritative in this fixture process: no discovery can reach host CLIs.
+setAdapterExecutableResolver((_adapterId, customPath) => {
+  const requested = customPath?.trim();
+  if (!requested || !/[\\/:]/.test(requested)) return PROBE_CLI;
+  if (isAbsolute(requested)) {
+    const normalized = resolve(requested);
+    const equalPath = (allowed: string) =>
+      process.platform === "win32"
+        ? normalized.toLowerCase() === allowed.toLowerCase()
+        : normalized === allowed;
+    if (equalPath(PROBE_CLI)) return PROBE_CLI;
+    if (equalPath(process.execPath)) return process.execPath;
+  }
+  throw new Error(
+    "E2E fixture refuses executable paths outside its controlled probe and Node runtime",
+  );
+});
+// Only this fixture child process sees this empty configuration root.
+// Model identity/catalog resolution must never depend on a real Codex account.
+process.env.CODEX_HOME = mkdtempSync(join(tmpdir(), "devflow-e2e-codex-"));
 const SKIP_VERIFY = new Set(["codex-login-required-model"]);
 
 type CatalogModel = {
@@ -158,15 +198,36 @@ function catalogEntry(
   };
 }
 
+function fixtureCatalogScope(
+  store: ReturnType<typeof setup>["store"],
+  adapterId: SupportedAdapterId,
+): CatalogScopeInput {
+  const native = resolveModelIdentity(store, {
+    adapterId,
+    executableRef: PROBE_CLI,
+  });
+  return {
+    adapterId,
+    executablePath: native.executablePath,
+    nativeConfigScope: native.nativeConfigScope,
+    nativeConfigProfile: native.nativeConfigProfile,
+    accountFingerprint: native.accountFingerprint,
+    providerFingerprint: native.providerEndpointFingerprint,
+  };
+}
+
 function seedCatalogs(store: ReturnType<typeof setup>["store"]) {
+  const catalogs = new ModelCatalogService(store);
   const discoveredAt = now();
   const staleAfter = new Date(Date.now() + CATALOG_FRESH_MS).toISOString();
   for (const group of CATALOG_MODELS) {
+    const scope = fixtureCatalogScope(store, group.adapterId);
+    // Let the public service create its scoped entity and pointer, then enrich
+    // that fixture entry with deterministic listed-model capabilities.
+    catalogs.ensureManualCandidate(scope, group.models[0]!.id);
+    const seeded = catalogs.loadForSelector(scope);
     const catalog: ModelCatalog = {
-      adapterId: group.adapterId,
-      scopeHash: "default",
-      nativeConfigScope: "default",
-      cliPath: PROBE_CLI,
+      ...seeded,
       cliVersion: "fixture-1.0",
       status: "fresh",
       discoveredAt,
@@ -177,7 +238,7 @@ function seedCatalogs(store: ReturnType<typeof setup>["store"]) {
     };
     store.put(
       "model_catalog",
-      "catalog-" + group.adapterId,
+      "catalog:" + seeded.scopeHash,
       group.adapterId,
       catalog,
     );
@@ -238,7 +299,9 @@ async function waitVerified(
 }
 
 async function preVerifyCatalogs(store: ReturnType<typeof setup>["store"]) {
+  const catalogs = new ModelCatalogService(store);
   const access = new ModelAccessService(store, {
+    catalog: catalogs,
     extraEnv: { MODEL_PROBE_LOG_DIR: process.env.MODEL_PROBE_LOG_DIR ?? "" },
     probeRoot: join(dirnameOfStore(store), "model-probe"),
     verifyTimeoutMs: 30000,
@@ -252,10 +315,11 @@ async function preVerifyCatalogs(store: ReturnType<typeof setup>["store"]) {
     for (const model of group.models) {
       if (SKIP_VERIFY.has(model.id)) continue;
       const effort = model.defaultValue ?? model.values[0] ?? "high";
-      const catalog = store.get<ModelCatalog>(
-        "model_catalog",
-        "catalog-" + group.adapterId,
+      const catalog = catalogs.loadForSelector(
+        fixtureCatalogScope(store, group.adapterId),
       );
+      if (catalog.status !== "fresh" || !catalog.entries.length)
+        throw new Error("Fixture catalog missing for " + group.adapterId);
       await waitVerified(
         access,
         verifyProfile(group.adapterId, model.id, effort),
@@ -363,10 +427,23 @@ const passReview = (flow: Workflow) => ({
   repair_plan: null,
   commit_message: "test: 验证确定性交付闭环",
 });
+const feedbackExecutions = new Map<string, () => void>();
+// Only this test entrypoint injects a deterministic adapter. The production server has no switch for it.
 engine.runtime = {
   plan: (flow, run) => runtime.plan(flow, run),
   aside: (flow, run, q) => runtime.aside(flow, run, q),
   async execute(flow: Workflow, run: Run, token: string) {
+    if (s.store.get("feedback_fixture", flow.id)) {
+      s.store.event(
+        flow.id,
+        flow.project_id,
+        "FixtureExecutionDispatched",
+        { purpose: run.purpose },
+        run.id,
+      );
+      await new Promise<void>((done) => feedbackExecutions.set(run.id, done));
+      return;
+    }
     if (engine.plan(flow.id).plan.task_model === "native-v2")
       return runtime.execute(flow, run, token);
     const principal = engine.auth.verify(token);
@@ -399,7 +476,16 @@ engine.runtime = {
     await engine.freeze(flow.id, principal);
     await runtime.check(engine.get(flow.id), "UT01", principal);
   },
+  async resolveMergeConflict(
+    flow: Workflow,
+    run: Run,
+    request: MergeConflictRequest,
+  ) {
+    return runtime.resolveMergeConflict(flow, run, request);
+  },
   async review(flow: Workflow, run: Run) {
+    if (s.store.get("feedback_fixture", flow.id))
+      throw new Error("功能反馈不应重新派发审查");
     if (engine.plan(flow.id).plan.task_model === "native-v2")
       return runtime.review(flow, run);
     while (holdFixtureReviews && !stopped.has(run.id)) {
@@ -409,6 +495,8 @@ engine.runtime = {
   },
   async stop(run: string) {
     stopped.add(run);
+    feedbackExecutions.get(run)?.();
+    feedbackExecutions.delete(run);
     await runtime.stop(run);
   },
   check: (flow, test, principal) => runtime.check(flow, test, principal),
@@ -440,7 +528,9 @@ const dispatchTimer = setInterval(() => {
 }, 1000);
 dispatchTimer.unref();
 function assertFixtureToken(request: { body?: unknown }) {
-  return (request.body as { token?: string } | undefined)?.token === shutdownToken;
+  return (
+    (request.body as { token?: string } | undefined)?.token === shutdownToken
+  );
 }
 app.post("/__fixture/source-change", async (request, reply) => {
   if (!assertFixtureToken(request)) return reply.code(403).send({ ok: false });
@@ -515,10 +605,7 @@ function ensureFixturePlanApproved(flow: Workflow) {
 async function stopLiveFixtureRun() {
   const current = engine.get(w.id);
   try {
-    if (
-      LIVE_REVIEW_STATES.has(current.state) ||
-      current.state === "BLOCKED"
-    ) {
+    if (LIVE_REVIEW_STATES.has(current.state) || current.state === "BLOCKED") {
       await engine.stop(w.id);
     }
     await engine.waitForIdle(w.id);
@@ -554,8 +641,7 @@ function putFixtureHumanPending(stage = "functional_retest") {
 function putFixtureReviewing(phase: "before_human" | "after_human") {
   const latest = engine.get(w.id);
   ensureFixturePlanApproved(latest);
-  const stage =
-    phase === "before_human" ? "quality_before_human" : "review";
+  const stage = phase === "before_human" ? "quality_before_human" : "review";
   const runId = `run-review-${phase}`;
   engine.store.put("plan_check_review_intent", w.id, w.id, { phase });
   engine.store.remove("interruption", w.id);
@@ -698,13 +784,15 @@ app.post("/__fixture/seed-retest", async (request, reply) => {
     const created = repairs.submitFunctionalRepair({
       workflow_id: w.id,
       request_id: crypto.randomUUID(),
-      descriptions: [
-        { description: firstDesc },
-        { description: secondDesc },
-      ],
+      descriptions: [{ description: firstDesc }, { description: secondDesc }],
       selection: {
         mode: "custom",
-        profile: fixtureProfile("functional_fixer", "codex", "gpt-6-astra", "xhigh"),
+        profile: fixtureProfile(
+          "functional_fixer",
+          "codex",
+          "gpt-6-astra",
+          "xhigh",
+        ),
       },
       expected_spec_revision: specs.readView(w.id).spec.revision,
     });
@@ -756,96 +844,96 @@ app.post("/__fixture/seed-repair-batches", async (request, reply) => {
     await stopLiveFixtureRun();
     drainFixtureDispatch();
     ensureFixtureSpec();
-  const latest = engine.get(w.id);
-  const qualityOpen = ensureQualityRepairBatch(
-    engine.store,
-    w.id,
-    "before_human",
-    "rev-quality-open",
-  );
-  const qualityCovered = ensureQualityRepairBatch(
-    engine.store,
-    w.id,
-    "after_human",
-    "rev-quality-covered",
-  );
-  const { specs, repairs } = fixtureRepairServices();
-  const coveredRevision = currentAssignmentRevision(
-    engine.store,
-    w.id,
-    qualityCovered.id,
-  );
-  repairs.assign({
-    workflow_id: w.id,
-    request_id: crypto.randomUUID(),
-    batch_id: qualityCovered.id,
-    expected_assignment_revision: coveredRevision,
-    expected_spec_revision: specs.readView(w.id).spec.revision,
-    selection: {
-      mode: "custom",
-      profile: fixtureProfile("review_fixer", "codex", "gpt-6-astra", "high"),
-    },
-  });
-  const functional = repairs.submitFunctionalRepair({
-    workflow_id: w.id,
-    request_id: crypto.randomUUID(),
-    descriptions: [{ description: "开放功能批次" }],
-    selection: {
-      mode: "custom",
+    const latest = engine.get(w.id);
+    const qualityOpen = ensureQualityRepairBatch(
+      engine.store,
+      w.id,
+      "before_human",
+      "rev-quality-open",
+    );
+    const qualityCovered = ensureQualityRepairBatch(
+      engine.store,
+      w.id,
+      "after_human",
+      "rev-quality-covered",
+    );
+    const { specs, repairs } = fixtureRepairServices();
+    const coveredRevision = currentAssignmentRevision(
+      engine.store,
+      w.id,
+      qualityCovered.id,
+    );
+    repairs.assign({
+      workflow_id: w.id,
+      request_id: crypto.randomUUID(),
+      batch_id: qualityCovered.id,
+      expected_assignment_revision: coveredRevision,
+      expected_spec_revision: specs.readView(w.id).spec.revision,
+      selection: {
+        mode: "custom",
+        profile: fixtureProfile("review_fixer", "codex", "gpt-6-astra", "high"),
+      },
+    });
+    const functional = repairs.submitFunctionalRepair({
+      workflow_id: w.id,
+      request_id: crypto.randomUUID(),
+      descriptions: [{ description: "开放功能批次" }],
+      selection: {
+        mode: "custom",
+        profile: fixtureProfile(
+          "functional_fixer",
+          "codex",
+          "gpt-5.6-sol",
+          "high",
+        ),
+      },
+      expected_spec_revision: specs.readView(w.id).spec.revision,
+    });
+    const runId = "run-active-repair";
+    engine.store.put("run", runId, w.id, {
+      id: runId,
+      workflow_id: w.id,
+      plan_revision: latest.plan_revision,
+      adapter: "codex",
+      purpose: "functional_fix",
+      routing_role: "functional_fixer",
+      execution_spec_revision: specs.readView(w.id).spec.revision,
       profile: fixtureProfile(
         "functional_fixer",
         "codex",
         "gpt-5.6-sol",
         "high",
       ),
-    },
-    expected_spec_revision: specs.readView(w.id).spec.revision,
-  });
-  const runId = "run-active-repair";
-  engine.store.put("run", runId, w.id, {
-    id: runId,
-    workflow_id: w.id,
-    plan_revision: latest.plan_revision,
-    adapter: "codex",
-    purpose: "functional_fix",
-    routing_role: "functional_fixer",
-    execution_spec_revision: specs.readView(w.id).spec.revision,
-    profile: fixtureProfile(
-      "functional_fixer",
-      "codex",
-      "gpt-5.6-sol",
-      "high",
-    ),
-    repair_batch_id: functional.batch.id,
-    assignment_id: functional.assignment?.id,
-    stage: "functional_fix",
-    status: "running",
-    started_at: now(),
-    deadline_at: Date.now() + 600000,
-    package_hash: "fixture-active-repair",
-  } satisfies Run);
-  engine.store.put("workflow", w.id, latest.project_id, {
-    ...latest,
-    state: "EXECUTING",
-    stage: "functional_fix",
-    run_id: runId,
-    version: latest.version + 1,
-    updated_at: now(),
-  });
-  engine.store.remove("queue", w.id);
-  for (const job of engine.store.jobs()) {
-    if (job.workflow_id === w.id) {
-      engine.store.jobStatus(job.id, "delivered");
+      repair_batch_id: functional.batch.id,
+      assignment_id: functional.assignment?.id,
+      stage: "functional_fix",
+      status: "running",
+      started_at: now(),
+      deadline_at: Date.now() + 600000,
+      package_hash: "fixture-active-repair",
+    } satisfies Run);
+    engine.store.put("workflow", w.id, latest.project_id, {
+      ...latest,
+      state: "EXECUTING",
+      stage: "functional_fix",
+      run_id: runId,
+      version: latest.version + 1,
+      updated_at: now(),
+    });
+    engine.store.remove("queue", w.id);
+    for (const job of engine.store.jobs()) {
+      if (job.workflow_id === w.id) {
+        engine.store.jobStatus(job.id, "delivered");
+      }
     }
-  }
-  return {
-    ok: true,
-    quality_open_id: qualityOpen.id,
-    quality_covered_id: qualityCovered.id,
-    functional_batch_id: functional.batch.id,
-    run_id: runId,
-    run_model: "gpt-5.6-sol",
-  };
+    return {
+      ok: true,
+      quality_open_id: qualityOpen.id,
+      quality_covered_id: qualityCovered.id,
+      functional_batch_id: functional.batch.id,
+      run_id: runId,
+      run_model: "gpt-5.6-sol",
+    };
   } finally {
     holdFixtureDispatch = false;
   }
@@ -857,10 +945,11 @@ function currentAssignmentRevision(
   batchId: string,
 ): number {
   const matched = store
-    .list<{ batch_id: string; status: string; revision: number }>(
-      "repair_model_assignment",
-      workflowId,
-    )
+    .list<{
+      batch_id: string;
+      status: string;
+      revision: number;
+    }>("repair_model_assignment", workflowId)
     .filter(
       (item) =>
         item.batch_id === batchId &&
@@ -877,6 +966,174 @@ function zString(value: unknown): string {
   return value;
 }
 
+app.post("/__fixture/attachments", async (request, reply) => {
+  if ((request.body as { token?: string })?.token !== shutdownToken)
+    return reply.code(403).send({ ok: false });
+  const suffix = crypto.randomUUID();
+  const isolated = await repository(s.root, "attachments-" + suffix);
+  const attachmentProject = {
+    ...project(isolated.repo),
+    id: "attachments-" + suffix,
+    name: "附件异步归档回归",
+  };
+  await engine.registerProject(attachmentProject);
+  const flow = engine.create(
+    {
+      project_id: attachmentProject.id,
+      title: "附件异步状态刷新",
+      request: "展示附件状态",
+      complexity: "simple",
+      workspace_mode: "existing_workspace",
+    },
+    "attachments-" + suffix,
+  );
+  const attachmentPlan = plan(objectHash(attachmentProject), isolated.baseline);
+  attachmentPlan.task_model = "native-v2";
+  engine.submitPlan(flow.id, attachmentPlan, flow.version, "attachment-plan");
+  engine.transition(
+    flow.id,
+    [engine.get(flow.id).state],
+    "HUMAN_PENDING",
+    "manual_acceptance",
+  );
+  s.store.put("workspace", "ws-" + flow.id, flow.id, {
+    id: "ws-" + flow.id,
+    workflow_id: flow.id,
+    repo_id: "main",
+    root: isolated.repo,
+    common_dir: join(isolated.repo, ".git"),
+    branch: "task/fixture",
+    baseline: isolated.baseline,
+    owned: false,
+  });
+  mkdirSync(join(isolated.repo, ".reports"), { recursive: true });
+  writeFileSync(
+    join(isolated.repo, ".reports", "async.json"),
+    '{"owner":"' + flow.id + '"}',
+  );
+  const deliveryId = "attachment-del-" + suffix;
+  const manifest = {
+    artifacts: [
+      ".reports/async.json",
+      ".reports/missing.json",
+      { path: { bad: true } },
+    ],
+  };
+  s.store.put("delivery", deliveryId, flow.id, {
+    id: deliveryId,
+    workflow_id: flow.id,
+    run_id: "attachment-run-" + suffix,
+    plan_revision: 1,
+    plan_hash: engine.get(flow.id).plan_hash,
+    status: "passed",
+    submitted_at: new Date().toISOString(),
+    manifest,
+    attachment_status: [
+      {
+        delivery_id: deliveryId,
+        repo_id: "main",
+        path: { bad: true },
+        state: "pending",
+      },
+    ],
+  });
+  for (const path of [".reports/async.json", ".reports/missing.json"])
+    s.store.put(
+      "attachment_archive",
+      attachmentArchiveKey(deliveryId, "main", path),
+      flow.id,
+      { delivery_id: deliveryId, repo_id: "main", path, state: "pending" },
+    );
+  return { workflow_id: flow.id, delivery_id: deliveryId };
+});
+app.post("/__fixture/attachments/drain", async (request, reply) => {
+  const input = request.body as {
+    token?: string;
+    workflow_id: string;
+    delivery_id: string;
+  };
+  if (input.token !== shutdownToken) return reply.code(403).send({ ok: false });
+  const delivery = s.store.get<any>("delivery", input.delivery_id);
+  if (!delivery || delivery.workflow_id !== input.workflow_id)
+    return reply.code(404).send({ ok: false });
+  createArchiveJobFromManifest(s.store, {
+    deliveryId: delivery.id,
+    workflowId: delivery.workflow_id,
+    runId: delivery.run_id,
+    manifest: delivery.manifest,
+  });
+  void drainArchiveOutbox(s.store, { storageRoot: s.config.storage_root });
+  return { ok: true };
+});
+app.post("/__fixture/feedback", async (request, reply) => {
+  if ((request.body as { token?: string })?.token !== shutdownToken)
+    return reply.code(403).send({ ok: false });
+  const suffix = crypto.randomUUID();
+  const isolated = await repository(s.root, "feedback-" + suffix);
+  const feedbackProject = {
+    ...project(isolated.repo),
+    id: "feedback-" + suffix,
+    name: "人工反馈回归",
+  };
+  await engine.registerProject(feedbackProject);
+  const flow = engine.create(
+    {
+      project_id: feedbackProject.id,
+      title: "完成审查后反馈功能问题",
+      request: "根据人工反馈修复功能",
+      complexity: "simple",
+      workspace_mode: "existing_workspace",
+    },
+    "feedback-" + suffix,
+  );
+  const approvedPlan = plan(objectHash(feedbackProject), isolated.baseline);
+  approvedPlan.task_model = "native-v2";
+  engine.submitPlan(flow.id, approvedPlan, flow.version, "feedback-plan");
+  const current = engine.get(flow.id);
+  s.store.put("approval", flow.id + "-1", flow.id, {
+    plan_hash: current.plan_hash,
+    revision: 1,
+    approved_at: new Date().toISOString(),
+  });
+  const reviewId = "completed-review-" + suffix;
+  s.store.put("run", reviewId, flow.id, {
+    id: reviewId,
+    workflow_id: flow.id,
+    plan_revision: 1,
+    adapter: "codex",
+    protocol: "lightweight",
+    purpose: "quality_review",
+    stage: "quality_before_human",
+    status: "completed",
+    exit_code: 0,
+    started_at: new Date().toISOString(),
+    ended_at: new Date().toISOString(),
+    package_hash: "fixture",
+  });
+  s.store.put("plan_check_review_intent", flow.id, flow.id, {
+    phase: "before_human",
+    review_run_id: reviewId,
+  });
+  s.store.put("feedback_fixture", flow.id, flow.id, {
+    seeded_review_run_id: reviewId,
+  });
+  engine.transition(
+    flow.id,
+    [current.state],
+    "HUMAN_PENDING",
+    "manual_acceptance",
+    { run_id: reviewId },
+  );
+  return { workflow_id: flow.id, review_run_id: reviewId };
+});
+app.post("/__fixture/feedback/stop", async (request, reply) => {
+  const input = request.body as { token?: string; workflow_id: string };
+  if (input.token !== shutdownToken) return reply.code(403).send({ ok: false });
+  if (!s.store.get("feedback_fixture", input.workflow_id))
+    return reply.code(404).send({ ok: false });
+  await engine.stop(input.workflow_id, "local_console");
+  return { ok: true };
+});
 app.post("/__fixture/shutdown", async (request, reply) => {
   if (!assertFixtureToken(request)) return reply.code(403).send({ ok: false });
   setTimeout(

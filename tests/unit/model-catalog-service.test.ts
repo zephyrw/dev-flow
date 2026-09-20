@@ -12,6 +12,7 @@ import {
 import { FlowError } from "../../packages/contracts/src/index.js";
 import { selectionCapabilityFromCatalog } from "../../packages/adapters/sdk/src/frozen-invocation.js";
 import { resolveModelSelection } from "../../packages/adapters/sdk/src/model-selection.js";
+import * as modelIdentity from "../../packages/core/src/model-identity.js";
 
 // Catalog tests exercise only the fixture CLI and a deterministic non-secret scope.
 vi.mock("../../packages/core/src/model-identity.js", () => ({
@@ -45,6 +46,7 @@ async function waitDone(catalog: ModelCatalogService, id: string) {
 let closeEnv: (() => Promise<void>) | undefined;
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   if (closeEnv) await closeEnv();
   closeEnv = undefined;
 });
@@ -268,4 +270,35 @@ describe("model catalog operations", { timeout: 30000 }, () => {
       .toEqual([{ includeHidden: false, limit: 20 }, { includeHidden: false, limit: 20, cursor: "page-2" }]);
   });
 
+});
+
+
+it.each([undefined, "work"])("opaque native scope never becomes the Codex profile argument (%s)", (profileName) => {
+  const env = openCatalog({ adapterId: "codex" });
+  const opaqueScope = "codex-config:fixture-scope";
+  const resolver = vi.spyOn(modelIdentity, "resolveModelIdentity").mockImplementation((_store, profile) => ({
+    adapterId: profile.adapterId,
+    executablePath: profile.executableRef!,
+    nativeConfigProfile: profile.nativeConfigProfile,
+    nativeConfigScope: opaqueScope,
+    accountFingerprint: "test-account",
+    providerEndpointFingerprint: "test-endpoint",
+    identityConfidence: "profile-scope",
+    profileSelectionSupported: true,
+  }));
+  const scope = {
+    adapterId: "codex" as const,
+    executablePath: FIXTURE,
+    nativeConfigProfile: profileName,
+    nativeConfigScope: opaqueScope,
+    accountFingerprint: "test-account",
+    providerFingerprint: "test-endpoint",
+  };
+  env.catalog.ensureManualCandidate(scope, "gpt-fixture");
+  const cached = env.catalog.readCached(scope)!;
+  expect(env.catalog.getModels("codex", cached.scopeHash).scopeHash).toBe(cached.scopeHash);
+  expect(resolver.mock.calls[0]?.[1].nativeConfigProfile).toBe(profileName);
+  resolver.mockClear();
+  expect(env.catalog.getModels("codex", "codex-config:unknown").status).toBe("missing");
+  expect(resolver).not.toHaveBeenCalled();
 });

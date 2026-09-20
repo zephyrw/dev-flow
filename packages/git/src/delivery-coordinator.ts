@@ -8,6 +8,10 @@ import {
   type Run,
   type MergeConflictRequest,
   type MergeConflictReceipt,
+  type Delivery,
+  type AcceptanceCarry,
+  conflictImpactNeedsConfirmation,
+  retainConflictFunctionImpact,
 } from "../../contracts/src/index.js";
 import { git, repositoryInfo, GitManager } from "./git.js";
 import { CurrentDeliveryReader } from "../../evidence/src/current-delivery.js";
@@ -15,6 +19,23 @@ import { QualityCoordinator } from "../../core/src/quality-coordinator.js";
 import { now, hash, id } from "../../core/src/util.js";
 import { resolve, relative, isAbsolute, join } from "node:path";
 import { existsSync, realpathSync } from "node:fs";
+
+const gitWriteEnv = {
+  GIT_EDITOR: ":",
+  GIT_MERGE_AUTOEDIT: "no",
+  GIT_PAGER: "cat",
+  GIT_TERMINAL_PROMPT: "0",
+};
+
+export function mergeConflictResolutionInstructions() {
+  return (
+    "合并发生代码冲突。严格在原批准计划和正式整改范围内解决冲突，同时保留双方有效需求。" +
+    "禁止统一使用 ours/theirs、reset、stash 或删除历史。" +
+    "完成后返回结构化回执，不得自行提交 Git 或删除工作树。" +
+    "回执必须包含 function_impact，取值 none、changed 或 uncertain，必要时附 function_impact_explanation。" +
+    "none 表示冲突解决未改变用户可感知功能；changed 表示功能行为已变；uncertain 表示无法确定功能影响。"
+  );
+}
 
 export interface IntegrationReceipt {
   workflow_id: string;
@@ -56,6 +77,38 @@ export class GitDeliveryCoordinator {
   private workflow(id: string) {
     return this.store.must<Workflow>("workflow", id);
   }
+  private conflictAllowedPaths(
+    snapshot: Snapshot,
+    planRecord?: { plan?: { scope?: { allowed_paths?: string[] } } },
+  ) {
+    const allowed = new Set<string>();
+    for (const repo of snapshot.repositories)
+      for (const item of repo.changed_paths ?? []) allowed.add(item);
+    for (const item of planRecord?.plan?.scope?.allowed_paths ?? [])
+      allowed.add(item);
+    return allowed;
+  }
+  private conflictRunBinding(workflowId: string, w: Workflow) {
+    const takeover =
+      this.store.get<{ planner: boolean }>("repair_assignment", workflowId)
+        ?.planner === true;
+    const spec = this.store
+      .list<{ id: string; revision: number; plannerProfile?: Run["profile"]; executorProfile?: Run["profile"] }>(
+        "execution_spec",
+        workflowId,
+      )
+      .sort((a, b) => b.revision - a.revision)[0];
+    const profile = takeover ? spec?.plannerProfile : spec?.executorProfile;
+    const source = w.run_id ? this.store.get<Run>("run", w.run_id) : undefined;
+    return {
+      adapter: profile?.adapterId ??
+        source?.adapter ??
+        "codex",
+      profile: profile ?? source?.profile,
+      execution_spec_id: spec?.id ?? source?.execution_spec_id,
+      protocol: source?.protocol ?? "lightweight",
+    };
+  }
   private update(w: Workflow, state: Workflow["state"], stage: string) {
     this.store.transaction(() => {
       const before = this.workflow(w.id);
@@ -73,6 +126,52 @@ export class GitDeliveryCoordinator {
         stage,
       });
     });
+  }
+  private async ensureCommitSnapshot(
+    workflowId: string,
+    manager: GitManager,
+  ): Promise<Snapshot> {
+    const intent = this.store.get<{ snapshot?: string }>(
+      "commit_intent",
+      workflowId,
+    );
+    if (intent?.snapshot) {
+      const existing = this.store.get<Snapshot>("snapshot", intent.snapshot);
+      if (existing) return existing;
+    }
+    const w = this.workflow(workflowId);
+    const env = this.store.get<{ revision: number }>("environment", workflowId);
+    const snapshot = await manager.snapshot(
+      workflowId,
+      env?.revision ?? w.environment_revision ?? 0,
+    );
+    this.store.transaction(() => {
+      const current = this.workflow(workflowId);
+      const acceptance = this.store.get<any>("acceptance", workflowId);
+      this.store.put("snapshot", snapshot.id, workflowId, snapshot);
+      this.store.put("workflow", current.id, current.project_id, {
+        ...current,
+        snapshot_id: snapshot.id,
+      });
+      // This is a display association for the snapshot created at commit time.
+      // Preserve the human's original confirmation and its proof binding.
+      const matchesPreviousSnapshot = acceptance && (
+        (acceptance.snapshot_id ?? null) === (current.snapshot_id ?? null) ||
+        (!!current.snapshot_id && acceptance.commit_snapshot_id === current.snapshot_id)
+      );
+      if (acceptance && matchesPreviousSnapshot &&
+          current.version === w.version &&
+          current.plan_revision === w.plan_revision &&
+          current.environment_revision === w.environment_revision &&
+          acceptance.plan_revision === current.plan_revision &&
+          acceptance.environment_revision === current.environment_revision) {
+        this.store.put("acceptance", workflowId, workflowId, {
+          ...acceptance,
+          commit_snapshot_id: snapshot.id,
+        });
+      }
+    });
+    return snapshot;
   }
   private source(w: Workflow, ws: Workspace) {
     const project = this.store.must<Project>("project", w.project_id);
@@ -100,19 +199,15 @@ export class GitDeliveryCoordinator {
       409,
     );
     const delivery =
-      this.currentDeliveryReader.requireValidDelivery(workflowId);
+      this.currentDeliveryReader.getLatestRevision(workflowId);
+    const deliveryRecord = delivery
+      ? this.store.get<Delivery>("delivery", delivery.delivery_id)
+      : undefined;
     new QualityCoordinator(this.store).assertPassed(workflowId, "after_human");
     const acceptance = this.store.get<any>("acceptance", workflowId);
-    requireCondition(
-      acceptance?.snapshot_id === w.snapshot_id &&
-        acceptance.plan_revision === w.plan_revision &&
-        acceptance.environment_revision === w.environment_revision,
-      "ACCEPTANCE_STALE",
-      "人工确认已失效",
-    );
+    requireCondition(acceptance, "ACCEPTANCE_STALE", "尚未人工确认");
     const workspaces = this.store.list<Workspace>("workspace", workflowId);
     requireCondition(workspaces.length, "WORKSPACE_MISSING", "缺少工作区");
-    const snapshot = this.store.must<Snapshot>("snapshot", w.snapshot_id!);
     const manager =
       this.manager ??
       new GitManager(
@@ -120,8 +215,8 @@ export class GitDeliveryCoordinator {
         this.workspaceRoot,
         join(this.workspaceRoot, ".delivery-state"),
       );
+    const snapshot = await this.ensureCommitSnapshot(workflowId, manager);
     const project = this.store.must<Project>("project", w.project_id);
-    // Freeze and commit only the already verified snapshot; no git add -A and no swallowed commit errors.
     const committed = await manager.commit(
       snapshot,
       project,
@@ -190,7 +285,7 @@ export class GitDeliveryCoordinator {
       );
       const candidate = committed.find((c) => c.repo_id === ws.repo_id)!;
       let head = candidate.commit;
-      const contains =
+      let contains =
         (await git(ws.root, ["merge-base", head, info.head])) === info.head;
       if (!contains) {
         // Persist the exact target before merging, so a conflict or restart cannot publish anything.
@@ -205,18 +300,22 @@ export class GitDeliveryCoordinator {
             source_branch: info.branch,
             source_commit: info.head,
             candidate_commit: head,
-            source_delivery_revision: delivery.revision!.id,
+            source_delivery_revision: delivery?.id ?? "",
             awaiting_verification: true,
           },
         );
         try {
-          await git(ws.root, ["merge", "--no-edit", info.head]);
+          await git(
+            ws.root,
+            ["merge", "--no-edit", "--no-stat", info.head],
+            gitWriteEnv,
+          );
           head = await git(ws.root, ["rev-parse", "HEAD"]);
           this.store.put("workspace", ws.id, workflowId, {
             ...ws,
             execution_base: head,
           });
-          needsVerification = true;
+          contains = true;
         } catch (mergeError: any) {
           let hasMergeHead = false;
           try {
@@ -241,20 +340,15 @@ export class GitDeliveryCoordinator {
             "未读取到真实冲突路径",
           );
 
-          const planRecord = this.store.get<any>("plan", workflowId);
+          const planRecord = this.store.get<any>(
+            "plan",
+            `${workflowId}-${w.plan_revision}`,
+          );
           const planHash =
             w.plan_hash ??
             hash(JSON.stringify(planRecord?.plan ?? {}));
 
-          const allowedPaths = new Set<string>();
-          for (const item of snapshot.repositories.flatMap(
-            (r) => r.changed_paths,
-          )) {
-            allowedPaths.add(item);
-          }
-          for (const item of planRecord?.plan?.scope?.allowed_paths ?? []) {
-            allowedPaths.add(item);
-          }
+          const allowedPaths = this.conflictAllowedPaths(snapshot, planRecord);
           const outOfBounds = conflictPaths.some((p) => !allowedPaths.has(p));
 
           const conflictRequestId = hash(
@@ -292,6 +386,14 @@ export class GitDeliveryCoordinator {
             common_dir: ws.common_dir,
             conflict_paths: conflictPaths,
             run_id: runId,
+            source_stage: w.stage,
+            source_state: w.state,
+            quality_phase:
+              this.store.get<{ phase?: "before_human" | "after_human" }>(
+                "plan_check_review_intent",
+                workflowId,
+              )?.phase ?? "after_human",
+            resolution_instructions: mergeConflictResolutionInstructions(),
             status: outOfBounds ? "blocked" : "running",
             created_at: now(),
             updated_at: now(),
@@ -308,17 +410,21 @@ export class GitDeliveryCoordinator {
               this.update(w, "BLOCKED", "merge_conflict_blocked");
               return;
             }
+            const binding = this.conflictRunBinding(workflowId, w);
             const run: Run = {
               id: runId,
               workflow_id: workflowId,
               plan_revision: w.plan_revision,
-              adapter: "codex",
+              adapter: binding.adapter,
+              profile: binding.profile,
+              execution_spec_id: binding.execution_spec_id,
               stage: "merge_conflict_resolution",
               purpose: "merge_conflict" as any,
               status: "running",
               started_at: now(),
               deadline_at: Date.now() + 300000,
               package_hash: conflictRequestId,
+              protocol: binding.protocol,
             };
             this.store.put("run", runId, workflowId, run);
             this.store.enqueue(workflowId, "dispatch_run", {
@@ -339,7 +445,7 @@ export class GitDeliveryCoordinator {
       const awaiting =
         !contains ||
         (!!previous?.awaiting_verification &&
-          previous.source_delivery_revision === delivery.revision!.id);
+          previous.source_delivery_revision === (delivery?.id ?? ""));
       const record: Candidate = {
         workflow_id: workflowId,
         repo_id: ws.repo_id,
@@ -348,8 +454,8 @@ export class GitDeliveryCoordinator {
         source_commit: info.head,
         candidate_commit: head,
         source_delivery_revision: awaiting
-          ? (previous?.source_delivery_revision ?? delivery.revision!.id)
-          : delivery.revision!.id,
+          ? (previous?.source_delivery_revision ?? delivery?.id ?? "")
+          : delivery?.id ?? "",
         awaiting_verification: awaiting,
       };
       this.store.put(
@@ -409,7 +515,7 @@ export class GitDeliveryCoordinator {
         "SOURCE_BUSY",
         "目标分支发生并发推进",
       );
-      await git(c.source_root, ["merge", "--ff-only", c.candidate_commit]);
+      await git(c.source_root, ["merge", "--ff-only", c.candidate_commit], gitWriteEnv);
       requireCondition(
         (await git(c.source_root, ["rev-parse", "HEAD"])) ===
           c.candidate_commit,
@@ -583,13 +689,21 @@ export class GitDeliveryCoordinator {
     workflowId: string,
     requestId: string,
     receipt: MergeConflictReceipt,
-  ): Promise<{ newHead?: string; blocked?: boolean }> {
+    assertCurrent: () => void = () => {},
+  ): Promise<{
+    newHead?: string;
+    blocked?: boolean;
+    acceptance?: unknown;
+    carried?: boolean;
+  }> {
+    assertCurrent();
     const request = this.store.must<MergeConflictRequest>(
       "merge_conflict_request",
       requestId,
     );
     requireCondition(
-      receipt.request_id === request.id &&
+      workflowId === request.workflow_id &&
+        receipt.request_id === request.id &&
         receipt.workflow_id === request.workflow_id &&
         receipt.run_id === request.run_id &&
         receipt.candidate_commit === request.candidate_commit &&
@@ -597,6 +711,16 @@ export class GitDeliveryCoordinator {
       "RECEIPT_IDENTITY_MISMATCH",
       "冲突解决回执身份与请求不符",
     );
+
+    if (request.status === "resolved") {
+      const carry = this.store.transaction(() =>
+        this.persistResolvedConflictCarry(workflowId, requestId, request, receipt),
+      );
+      return {
+        newHead: this.resolvedCandidateHead(workflowId, request.repo_id),
+        ...carry,
+      };
+    }
 
     const w = this.workflow(workflowId);
     const ws = this.store
@@ -635,8 +759,58 @@ export class GitDeliveryCoordinator {
       "当前 HEAD 与候选提交不符",
     );
 
+    // Every repository is committed before integration starts. Retire that
+    // shared intent only after retaining the other repositories' known heads
+    // and index trees; never adopt an arbitrary HEAD as the next baseline.
+    const intent = this.store.get<{
+      snapshot: string;
+      repos: Record<string, string>;
+    }>("commit_intent", workflowId);
+    const retainedWorkspaces: Workspace[] = [];
+    if (intent) {
+      const committedSnapshot = this.store.get<Snapshot>("snapshot", intent.snapshot);
+      for (const other of this.store.list<Workspace>("workspace", workflowId)) {
+        if (other.id === ws.id) continue;
+        const committed = intent.repos[other.repo_id];
+        if (!committed) continue;
+        const candidate = this.store.get<Candidate>(
+          "integration_candidate", this.key(workflowId, other.repo_id),
+        );
+        const originalBase = committedSnapshot?.repositories.find(
+          (repo) => repo.workspace_id === other.id,
+        )?.baseline;
+        const integrated = originalBase && other.execution_base !== originalBase &&
+          candidate && candidate.candidate_commit === other.execution_base
+          ? candidate.candidate_commit : undefined;
+        const expectedHead = integrated ?? committed;
+        if (integrated)
+          requireCondition(
+            (await git(other.root, ["merge-base", committed, integrated])) === committed,
+            "BASELINE_CHANGED", "其他仓库候选不包含本次提交，保留冲突现场",
+          );
+        requireCondition(
+          (await git(other.root, ["rev-parse", "HEAD"])) === expectedHead,
+          "BASELINE_CHANGED", "其他仓库 HEAD 已变化，保留冲突现场",
+        );
+        const expectedIndex = integrated
+          ? await git(other.root, ["rev-parse", integrated + "^{tree}"])
+          : this.store.get<{ tree: string }>(
+              "commit_index", workflowId + "-" + other.repo_id,
+            )?.tree ?? await git(other.root, ["rev-parse", committed + "^{tree}"]);
+        requireCondition(
+          (await git(other.root, ["write-tree"])) === expectedIndex,
+          "INDEX_CHANGED", "其他仓库暂存区已变化，保留冲突现场",
+        );
+        retainedWorkspaces.push({
+          ...other, execution_base: expectedHead,
+          initial_index_tree: other.initial_index_tree === undefined ? undefined : expectedIndex,
+        });
+      }
+    }
+
     // 将已解决的冲突路径暂存
     for (const p of request.conflict_paths) {
+      assertCurrent();
       await git(ws.root, ["add", p]);
     }
 
@@ -652,21 +826,52 @@ export class GitDeliveryCoordinator {
       "工作树仍有未解决的冲突",
     );
 
-    // 完成合并提交
-    await git(ws.root, ["commit", "--no-edit"]);
+    assertCurrent();
+    await git(
+      ws.root,
+      ["commit", "-m", "devflow: 保留双方需求并完成合并冲突修复"],
+      gitWriteEnv,
+    );
     const newHead = (await git(ws.root, ["rev-parse", "HEAD"])).trim();
+    const newIndex = await git(ws.root, ["rev-parse", newHead + "^{tree}"]);
+    requireCondition(
+      (await git(ws.root, ["rev-parse", newHead + "^1"])) === request.candidate_commit &&
+        (await git(ws.root, ["rev-parse", newHead + "^2"])) === request.source_commit,
+      "CANDIDATE_COMMIT_MISMATCH", "冲突提交的父提交与请求不符，保留现场",
+    );
+    // Stopping cannot cancel a Git commit that already started. Record its
+    // exact result without advancing a stopped or replacement workflow.
+    if (!this.store.get("merge_conflict_commit", requestId))
+      this.store.put("merge_conflict_commit", requestId, workflowId, {
+        request_id: requestId,
+        run_id: request.run_id,
+        plan_revision: request.plan_revision,
+        plan_hash: request.plan_hash,
+        candidate_commit: request.candidate_commit,
+        source_commit: request.source_commit,
+        new_head: newHead,
+        index_tree: newIndex,
+        retained_workspaces: retainedWorkspaces,
+        commit_intent: intent,
+        completed_at: now(),
+      });
+    const current = this.workflow(workflowId);
+    requireCondition(
+      current.run_id === request.run_id &&
+        current.plan_revision === request.plan_revision &&
+        current.plan_hash === request.plan_hash,
+      "RUN_REVOKED", "冲突运行已由新运行接替，已保留 Git 提交记录",
+    );
 
     // 更新状态、候选与基线
-    this.store.transaction(() => {
-      this.store.put("merge_conflict_request", requestId, workflowId, {
-        ...request,
-        status: "resolved",
-        updated_at: now(),
-      });
+    const carry = this.store.transaction(() => {
       this.store.put("workspace", ws.id, workflowId, {
         ...ws,
         execution_base: newHead,
+        initial_index_tree: ws.initial_index_tree === undefined ? undefined : newIndex,
       });
+      for (const retained of retainedWorkspaces)
+        this.store.put("workspace", retained.id, workflowId, retained);
       this.store.put(
         "integration_candidate",
         this.key(workflowId, ws.repo_id),
@@ -682,13 +887,80 @@ export class GitDeliveryCoordinator {
           awaiting_verification: true,
         },
       );
+      if (intent)
+        this.store.put("candidate_commit_history", intent.snapshot, workflowId, {
+          snapshot_id: intent.snapshot,
+          committed: this.store.list("commit_result", workflowId),
+        });
       this.store.remove("commit_intent", workflowId);
-      this.store.remove("commit_result", workflowId + "-" + ws.repo_id);
-      this.store.remove("commit_index", workflowId + "-" + ws.repo_id);
-      this.store.remove("acceptance", workflowId);
+      for (const repoId of new Set([ws.repo_id, ...Object.keys(intent?.repos ?? {})])) {
+        this.store.remove("commit_result", workflowId + "-" + repoId);
+        this.store.remove("commit_index", workflowId + "-" + repoId);
+      }
+      return this.persistResolvedConflictCarry(
+        workflowId,
+        requestId,
+        { ...request, status: "resolved", updated_at: now() },
+        receipt,
+      );
     });
 
-    return { newHead };
+    assertCurrent();
+    return { newHead, ...carry };
+  }
+  conflictReviewBackground(workflowId: string) {
+    return this.store.get<AcceptanceCarry>("acceptance_carry", workflowId);
+  }
+  private resolvedCandidateHead(workflowId: string, repoId: string) {
+    return this.store.get<Candidate>(
+      "integration_candidate",
+      this.key(workflowId, repoId),
+    )?.candidate_commit;
+  }
+  private persistResolvedConflictCarry(
+    workflowId: string,
+    requestId: string,
+    request: MergeConflictRequest,
+    receipt: MergeConflictReceipt,
+  ) {
+    const incomingImpact = receipt.function_impact;
+    const incomingExplanation = receipt.function_impact_explanation;
+    const existingCarry = this.store.get<AcceptanceCarry>(
+      "acceptance_carry",
+      workflowId,
+    );
+    const reportedImpact = retainConflictFunctionImpact(
+      existingCarry?.reported_function_impact ?? request.reported_function_impact,
+      incomingImpact,
+    );
+    const explanation =
+      incomingExplanation ??
+      existingCarry?.function_impact_explanation ??
+      request.function_impact_explanation;
+    this.store.put("merge_conflict_request", requestId, workflowId, {
+      ...request,
+      status: "resolved",
+      reported_function_impact: reportedImpact,
+      function_impact_explanation: explanation,
+      updated_at: now(),
+    });
+    const acceptance = this.store.get("acceptance", workflowId);
+    const original = acceptance ?? existingCarry?.original;
+    if (original || existingCarry) {
+      this.store.put("acceptance_carry", workflowId, workflowId, {
+        original,
+        requires_confirmation:
+          existingCarry?.requires_confirmation === true ||
+          conflictImpactNeedsConfirmation(reportedImpact),
+        integration: true,
+        reported_function_impact: reportedImpact,
+        function_impact_explanation: explanation,
+      });
+    }
+    this.store.remove("acceptance", workflowId);
+    return {
+      acceptance: original,
+      carried: Boolean(original || existingCarry),
+    };
   }
 }
-

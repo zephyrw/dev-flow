@@ -12,6 +12,21 @@ import {
   PLAN_SELF_CHECK_STAGE,
 } from "../../core/src/plan-self-check.js";
 
+import {
+  clearWaitingContext,
+  isCurrentPlanningSource,
+  isOpenPlanningHandoff,
+  isPlanningWaiting,
+  readPlanningHandoff,
+  readRunContinuation,
+  readWaitingContext,
+  savePlanningHandoff,
+  waitingBelongsToRun,
+} from "../../core/src/waiting-context.js";
+import type { WaitingContext } from "../../core/src/waiting-context.js";
+import type { Workflow } from "../../contracts/src/index.js";
+
+
 type InterruptionRecord = {
   prior_state?: string;
   prior_stage?: string;
@@ -73,7 +88,9 @@ export function resolveResumeTarget(engine: Engine, key: string) {
     stage === BEFORE_HUMAN_REVIEW_STAGE
   ) {
     const phase = reviewPhase === "after_human" ? "after_human" : "before_human";
-    engine.store.put("plan_check_review_intent", key, key, { phase });
+    engine.store.put("plan_check_review_intent", key, key, {
+      ...engine.store.get<Record<string, unknown>>("plan_check_review_intent", key), phase,
+    });
     return {
       state: "REVIEW_QUEUED" as const,
       stage: phase === "before_human" ? BEFORE_HUMAN_REVIEW_STAGE : "review",
@@ -283,18 +300,25 @@ export function resumeApproved(
     "COMMIT_RECOVERY_REQUIRED",
     "部分提交只能重试原提交，不能启动开发",
   );
-  const target = resolveResumeTarget(engine, key);
-  assertResumePreconditions(engine, key, target);
-  if (target.state !== "PLANNING") {
-    prepareRepairResume(engine, key);
-  }
   if (!options.autoRetry) {
     engine.store.remove("pending_model_retry", key);
     engine.store.remove("transient_network_retry", key);
   }
   engine.store.remove("model_retry", key);
+  const waiting = readWaitingContext(engine.store, key);
+  const resumedWaiting = resumeWaitingIfCurrent(engine, key, w, waiting);
+  if (resumedWaiting) return resumedWaiting;
+  const target = resolveResumeTarget(engine, key);
+  assertResumePreconditions(engine, key, target);
+  const restored = engine.restoreFailedRole(key, "用户恢复执行");
+  if (restored) return restored;
+  if (target.state === "QUEUED") {
+    prepareRepairResume(engine, key);
+    engine.stageExecuteContinuation(key);
+  }
   engine.transition(key, [w.state], target.state, target.stage, {
     blocker: undefined,
+    ...(target.state === "PLANNING" ? { run_id: undefined } : {}),
   });
   if (target.enqueue) engine.scheduler.enqueue(key, w.project_id);
   return engine.get(key);
@@ -321,4 +345,66 @@ function assertResumePreconditions(
     "PLAN_NOT_APPROVED",
     "当前计划未获批准",
   );
+}
+
+function resumeWaitingIfCurrent(
+  engine: Engine,
+  key: string,
+  w: Workflow,
+  waiting: WaitingContext | undefined,
+) {
+  if (!waiting) return;
+  const continuation = readRunContinuation(engine.store, key);
+  const currentRun = w.run_id
+    ? engine.store.get<{
+        continuation?: import("../../contracts/src/tr-handoff.js").RunContinuation;
+        stage?: string;
+        purpose?: string;
+      }>("run", w.run_id)
+    : undefined;
+  const belongs = waitingBelongsToRun(
+    waiting,
+    w.run_id,
+    currentRun?.continuation ?? continuation,
+  );
+  const planningSource = isCurrentPlanningSource({
+    handoff: readPlanningHandoff(engine.store, key),
+    waiting,
+    state: w.state,
+    blockerCode: w.blocker?.code,
+    runId: w.run_id,
+    run: currentRun,
+  });
+  if (isPlanningWaiting(waiting) && !planningSource) {
+    archiveStalePlanning(engine, key, waiting);
+    return;
+  }
+  if (!belongs && !planningSource) return;
+  assertResumePreconditions(engine, key, {
+    state: isPlanningWaiting(waiting) ? "PLANNING" : waiting.purpose === "review" ? "REVIEW_QUEUED" : "QUEUED",
+    stage: waiting.purpose,
+    enqueue: true,
+  });
+  engine.store.remove("model_retry", key);
+  return engine.resumeFromWaiting(key, "用户恢复执行", waiting);
+}
+
+function archiveStalePlanning(
+  engine: Engine,
+  key: string,
+  waiting: WaitingContext,
+) {
+  const handoff = readPlanningHandoff(engine.store, key);
+  if (isOpenPlanningHandoff(handoff)) {
+    const stale =
+      waiting.run_id === handoff.source_run_id ||
+      waiting.source_execution_run_id === handoff.source_run_id ||
+      !waiting.run_id;
+    if (stale)
+      savePlanningHandoff(engine.store, key, {
+        ...handoff,
+        status: "superseded",
+      });
+  }
+  if (isPlanningWaiting(waiting)) clearWaitingContext(engine.store, key);
 }

@@ -7,7 +7,7 @@ import {
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 test(
-  "原生真实 UI 到规划、自查、问题复测、终审及工作树交付",
+  "原生真实 UI 到规划、质量审查、问题复测、终审及工作树交付",
   { tag: "@native" },
   async ({ page }) => {
     test.setTimeout(900000);
@@ -25,7 +25,6 @@ test(
     expect((await get()).runs.map((r: any) => r.stage)).toEqual([
       "planning",
       "execute",
-      "executor_plan_self_check",
       "quality_before_human",
     ]);
     await showInteraction(page);

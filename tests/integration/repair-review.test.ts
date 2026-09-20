@@ -58,17 +58,19 @@ it("IT-12 repair plan requires new approval and cannot reuse evidence even when 
       workflow_id: key,
       plan_revision: 1,
       snapshot_id: snapshot.id,
-      verdict: "incomplete",
-      coverage: {
-        all_changed_files_reviewed: true,
-        all_requirements_checked: false,
-        upstream_downstream_checked: true,
-        security_checked: true,
-        tests_validity_checked: false,
-        files: ["main:app.txt"],
-      },
-      findings: [],
-      unresolved_questions: ["测试夹具证据需重新运行"],
+      verdict: "changes_required",
+      findings: [
+        {
+          id: "F1",
+          title: "需要修复",
+          disposition: "confirmed",
+          relation_to_change: "in_scope",
+          evidence: "夹具",
+          impact: "行为偏差",
+          cause: "实现遗漏",
+        },
+      ],
+      unresolved_questions: [],
       repair_plan: repair,
       commit_message: "fix: 修复验证证据",
     });
@@ -96,7 +98,6 @@ it("IT-12 repair plan requires new approval and cannot reuse evidence even when 
     );
     const refrozen = await s.engine.freeze(key, worker);
     expect(refrozen.id).toBe(snapshot.id);
-    expect(() => s.engine.verifyEvidence(key)).toThrow(/证据/);
     expect(s.engine.taskStatus(key)[0]?.status).toBe("claimed");
   } finally {
     s.store.close();

@@ -13,7 +13,7 @@ export function workflowAttention(engine: Engine, key: string) {
   )
     return {
       category: "queue",
-      message: "规划模型正在补齐详细整改计划，无需你编写；完成后继续质量流程。",
+      message: "规划模型正在审查。",
       action: "查看执行过程",
       at: w.updated_at,
     };
@@ -162,19 +162,6 @@ export function workflowAttention(engine: Engine, key: string) {
     };
   }
   if (
-    w.stage === "executor_plan_self_check" &&
-    ["QUEUED", "EXECUTING", "VERIFYING"].includes(w.state)
-  )
-    return {
-      category: "queue",
-      message:
-        w.state === "QUEUED"
-          ? "等待执行模型逐项复核正式计划"
-          : "执行模型正在对照正式计划复核、修复和自测",
-      action: "查看执行过程",
-      at: w.updated_at,
-    };
-  if (
     w.stage === "quality_before_human" &&
     ["REVIEW_QUEUED", "REVIEWING"].includes(w.state)
   )
@@ -182,9 +169,9 @@ export function workflowAttention(engine: Engine, key: string) {
       category: "queue",
       message:
         w.state === "REVIEWING"
-          ? "规划模型正在审查代码质量与测试证据，无需手动启动"
+          ? "规划模型正在审查代码质量，无需手动启动"
           : (engine.store.get<any>("queue_wait", key)?.message ??
-            "计划复核已通过，已自动排队等待规划模型审查"),
+            "执行已完成，等待规划模型审查代码质量"),
       action: "查看执行过程",
       at: w.updated_at,
     };

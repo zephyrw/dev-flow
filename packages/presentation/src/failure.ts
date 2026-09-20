@@ -6,7 +6,7 @@ export function failureSummary(code = "", detail = "") {
     code === "REPAIR_PLAN_INCOMPLETE" ||
     code === "REVIEW_COMPLETION_EXHAUSTED"
   )
-    return "规划模型尚未完成详细整改计划。应由规划模型继续补齐，无需你编写计划。";
+    return "规划模型尚未给出可路由的审查结论，可由规划模型继续审查。";
   const resolution = runtimeFailureResolution(code, detail);
   if (resolution)
     return `${resolution.title}：${resolution.message}处理方法：${resolution.steps.join(" ")}`;

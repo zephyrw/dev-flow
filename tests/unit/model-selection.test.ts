@@ -563,6 +563,7 @@ describe("resolveModelSelection 边界规则", () => {
       ),
     );
     expect(result.modelToken).toBe("auto");
+    expect(result.selectionKind).toBe("native-router");
     expect(result.effortArgs).toEqual([]);
     expect(result.fingerprint.modelId).toBe("auto");
   });
@@ -730,4 +731,12 @@ describe("resolveModelSelection 边界规则", () => {
     expect(kept.modelToken).toBe("codex-auto-review");
     expect(kept.effortArgs).toEqual(["-c", 'model_reasoning_effort="high"']);
   });
+
+  it("profile 伪造 native-router 标记不能覆盖目录 fixed，也不能让手工 ID 变路由", () => {
+    const forged = profile("cursor-agent", "fixed-model", "native-default", { selectionKind: "native-router" });
+    const fixed = entry("cursor-agent", "fixed-model", { status: "unknown", transport: "none", values: [] });
+    expect(resolveModelSelection(forged, fixed).selectionKind).toBe("fixed");
+    expect(resolveModelSelection(forged, undefined).selectionKind).toBe("fixed");
+  });
+
 });

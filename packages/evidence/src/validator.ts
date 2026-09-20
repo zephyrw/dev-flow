@@ -669,8 +669,8 @@ export class EvidenceValidator {
       }
     }
 
-    // 7. 处理核验结果持久化
-    const passed = issues.length === 0;
+    // 平台不判定交付是否完成。全部对照结果只作为规划审查材料。
+    const passed = true;
 
     return this.store.transaction(() => {
       // 存储所有产生的 issues

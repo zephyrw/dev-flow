@@ -17,7 +17,6 @@ import {
   type RepairKind,
   type RepairModelAssignment,
   type RepairModelBatch,
-  type RoleOverrides,
   type Run,
   type ToolProfile,
 } from "../../../packages/contracts/src/index.js";
@@ -29,10 +28,7 @@ import { ModelCatalogService } from "../../../packages/core/src/model-catalog-se
 import { ModelAccessService } from "../../../packages/core/src/model-access-service.js";
 import { ModelSwitchService } from "../../../packages/core/src/model-switch-service.js";
 import { RepairModelService } from "../../../packages/core/src/repair-model-service.js";
-import {
-  assertProfilesVerified,
-  collectExplicitProfiles,
-} from "../../../packages/core/src/access-guard.js";
+import { assertProfilesVerified } from "../../../packages/core/src/access-guard.js";
 import {
   buildExecutionSpecResponse,
   HttpExecutionSpecGetResponseSchema,
@@ -76,23 +72,6 @@ function parseAdapterIds(
   if (value === undefined) return [...SupportedAdapters];
   const items = z.array(z.enum(SupportedAdapters)).parse(value);
   return [...new Set(items)];
-}
-
-function collectProfiles(
-  planner: ToolProfile,
-  executor: ToolProfile,
-  overrides: RoleOverrides,
-): ToolProfile[] {
-  const profiles = [planner, executor];
-  for (const role of [
-    "reviewer",
-    "review_fixer",
-    "functional_fixer",
-  ] as const) {
-    const binding = overrides[role];
-    if (binding.mode === "explicit") profiles.push(binding.profile);
-  }
-  return profiles;
 }
 
 export function assertStopIdentity(
@@ -270,7 +249,8 @@ export function registerModelRoutes(
     human(req);
     const body = (req.body || {}) as Record<string, unknown>;
     const parsed = parseDefaultsWriteBody(body);
-    access.requireVerified([parsed.plannerProfile, parsed.executorProfile]);
+    // save() checks a committed receipt first, then validates access for every
+    // new write inside its transaction. A receipt replay publishes nothing.
     const receipt = defaults.save(parsed);
     const created = parsed.expected_defaults_revision === 0 && receipt.changed;
     const result = replyReceipt(receipt, created);
@@ -312,13 +292,7 @@ export function registerModelRoutes(
     const workflowId = Id.parse((req.params as { id: string }).id);
     const body = (req.body || {}) as Record<string, unknown>;
     const parsed = parseSpecWriteBody(body);
-    access.requireVerified(
-      collectExplicitProfiles(
-        parsed.planner_profile,
-        parsed.executor_profile,
-        parsed.role_overrides,
-      ),
-    );
+    // The service replays committed requests before its mandatory access guard.
     return specs.updateExecutionSpec({
       ...parsed,
       workflow_id: workflowId,
@@ -330,13 +304,8 @@ export function registerModelRoutes(
     const workflowId = Id.parse((req.params as { id: string }).id);
     const body = (req.body || {}) as Record<string, unknown>;
     const parsed = switches.parseRequest(body, workflowId);
-    access.requireVerified(
-      collectExplicitProfiles(
-        parsed.planner_profile,
-        parsed.executor_profile,
-        parsed.role_overrides,
-      ),
-    );
+    // continueSwitch validates every profile before stopping a new target;
+    // applyAfterPause may return an already committed receipt without mutation.
     return switches.applyAfterPause(engine, workflowId, parsed);
   });
 
@@ -345,9 +314,8 @@ export function registerModelRoutes(
     const workflowId = Id.parse((req.params as { id: string }).id);
     const body = (req.body || {}) as Record<string, unknown>;
     const selection = RepairSelectionSchema.parse(body.selection);
-    if (selection.mode !== "task-default") {
-      assertRepairSelectionVerified(engine.store, specs, workflowId, selection);
-    }
+    // assignOnce checks access for all selections (including task-default)
+    // inside the transaction, after assign has handled committed receipts.
     return repairs.assign({
       workflow_id: workflowId,
       request_id: parseUuid(body.request_id),

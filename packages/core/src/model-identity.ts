@@ -96,7 +96,7 @@ export function resolveModelIdentity(
   >,
   suppliedIdentity?: AccessIdentityInput,
 ): NativeResolvedConfig {
-  const identity = suppliedIdentity ?? identityInputFromProfile(profile);
+  const identity: AccessIdentityInput = suppliedIdentity ?? identityInputFromProfile(profile);
   const fingerprint = fingerprintModelIdentity(store, identity);
   return NativeResolvedConfigSchema.parse({
     adapterId: profile.adapterId,

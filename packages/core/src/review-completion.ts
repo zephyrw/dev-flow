@@ -88,7 +88,7 @@ export function queueReviewCompletion(
   if (value.automatic_attempts > 2)
     throw new FlowError(
       "REVIEW_COMPLETION_EXHAUSTED",
-      "规划模型两次补全后仍未形成可执行的整改计划；已保存问题及校验详情。可重试规划复核，无需你编写计划。",
+      "规划模型两次补全后仍未形成可执行的整改计划；已保存问题及校验详情。可重试规划复核。",
       422,
       { reason, attempts: value.automatic_attempts },
     );
@@ -101,8 +101,7 @@ export function queueReviewCompletion(
     w.project_id,
     "ReviewCompletionQueued",
     {
-      message:
-        "规划模型正在补齐详细整改计划，无需你编写；补全完成后继续质量流程。",
+      message: "规划模型正在审查。",
       attempt: value.automatic_attempts,
       reason,
     },

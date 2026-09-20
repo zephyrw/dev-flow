@@ -214,53 +214,67 @@ export const ProjectSchema = z
   })
   .strict();
 export type Project = z.infer<typeof ProjectSchema>;
+export const ReviewCoverageSchema = z
+  .object({
+    all_changed_files_reviewed: z.boolean().optional(),
+    all_requirements_checked: z.boolean().optional(),
+    upstream_downstream_checked: z.boolean().optional(),
+    security_checked: z.boolean().optional(),
+    tests_validity_checked: z.boolean().optional(),
+    files: z.array(z.string()).optional().default([]),
+  })
+  .passthrough();
+export const ReviewFindingSchema = z
+  .object({
+    id: Id.optional(),
+    severity: z.enum(["P0", "P1", "P2", "P3"]).optional(),
+    repo_id: Id.optional(),
+    path: RelativePath.optional(),
+    line: z.number().int().positive().optional(),
+    trigger: z.string().optional(),
+    evidence: z.string().optional(),
+    consequence: z.string().optional(),
+    relation_to_change: z
+      .enum(["introduced", "in_scope", "historical", "suggestion"])
+      .optional(),
+    disposition: z
+      .enum(["confirmed", "false_positive", "out_of_scope"])
+      .optional(),
+    reason: z.string().optional(),
+  })
+  .passthrough();
 export const ReviewSchema = z
   .object({
-    schema_version: z.literal(1),
-    review_request_id: Id,
-    workflow_id: Id,
-    plan_revision: z.number().int().positive(),
-    snapshot_id: z.string(),
-    verdict: z.enum(["pass", "findings", "incomplete"]),
-    coverage: z
-      .object({
-        all_changed_files_reviewed: z.boolean(),
-        all_requirements_checked: z.boolean(),
-        upstream_downstream_checked: z.boolean(),
-        security_checked: z.boolean(),
-        tests_validity_checked: z.boolean(),
-        files: z.array(z.string()),
-      })
-      .strict(),
-    findings: z.array(
-      z
-        .object({
-          id: Id,
-          severity: z.enum(["P0", "P1", "P2", "P3"]),
-          repo_id: Id,
-          path: RelativePath,
-          line: z.number().int().positive(),
-          trigger: z.string().min(1),
-          evidence: z.string().min(1),
-          consequence: z.string().min(1),
-          relation_to_change: z.enum([
-            "introduced",
-            "in_scope",
-            "historical",
-            "suggestion",
-          ]),
-          disposition: z.enum(["confirmed", "false_positive", "out_of_scope"]),
-          reason: z.string().min(1),
-        })
-        .strict(),
-    ),
-    unresolved_questions: z.array(z.string()),
-    repair_plan: PlanSchema.nullable(),
-    commit_message: z.string().min(1).max(500),
+    schema_version: z.number().int().optional(),
+    review_request_id: Id.optional(),
+    workflow_id: Id.optional(),
+    plan_revision: z.number().int().optional(),
+    snapshot_id: z.string().optional(),
+    verdict: z
+      .enum([
+        "pass",
+        "findings",
+        "incomplete",
+        "passed",
+        "changes_required",
+        "need_user",
+        "quality_pass",
+      ])
+      .optional(),
+    coverage: ReviewCoverageSchema.optional(),
+    findings: z.array(ReviewFindingSchema).optional().default([]),
+    unresolved_questions: z.array(z.string()).optional().default([]),
+    repair_plan: PlanSchema.nullable().optional(),
+    commit_message: z.string().max(500).optional(),
     quality: QualityReviewResultSchema.nullish(),
-    repair_document: z.string().min(1).nullish(),
+    repair_document: z.string().nullish(),
+    summary: z.string().optional(),
+    notes: z.string().optional(),
+    status: z
+      .enum(["completed", "passed", "changes_required", "need_user", "incomplete"])
+      .optional(),
   })
-  .strict();
+  .passthrough();
 export type Review = z.infer<typeof ReviewSchema>;
 export interface Workflow {
   id: string;
@@ -320,6 +334,8 @@ export interface Run {
   stage: string;
   status: string;
   conversation_id?: string;
+  continuation_conversation_id?: string;
+  continuation?: import("./tr-handoff.js").RunContinuation;
   started_at: string;
   deadline_at?: number;
   ended_at?: string;
@@ -456,8 +472,9 @@ export const DeliveryManifestSchema = z
             id: z.string().min(1),
             reason: z.string().min(1),
           })
-          .strict(),
+          .passthrough(),
       )
+      .optional()
       .default([]),
     plan_conflicts: z
       .array(
@@ -467,21 +484,84 @@ export const DeliveryManifestSchema = z
             description: z.string().min(1),
             proposed_change: z.string().optional(),
           })
-          .strict(),
+          .passthrough(),
       )
+      .optional()
       .default([]),
+    status: z
+      .enum(["completed", "need_planner", "need_user", "unclear"])
+      .optional(),
+    summary: z.string().optional(),
+    notes: z.string().optional(),
+    artifacts: z.array(z.any()).optional(),
   })
-  .strict();
-export const NativeDeliveryManifestSchema = DeliveryManifestSchema.extend({
-  schema_version: z.literal("v2"),
-  submission_id: Id,
-  workflow_id: Id,
-  run_id: Id,
-  conversation_id: Id,
-  plan_revision: z.number().int().positive(),
-  plan_hash: z.string().min(1),
-});
+  .passthrough();
+// Guide structured-output providers with typed fields, without applying this
+// generation contract as a validation gate to received results.
+export const ExecutorRoundOutputSchema = z
+  .object({
+    status: z.enum(["completed", "need_planner", "need_user", "unclear"]).optional(),
+    summary: z.string().optional(),
+    notes: z.string().optional(),
+    artifacts: z.array(z.any()).optional(),
+    delivery: DeliveryManifestSchema.optional(),
+  })
+  .passthrough();
+// The result envelope accepts optional display material independently of intent.
+// Historical evidence imports still use the strict DeliveryManifestSchema.
+export const ExecutorRoundResultSchema = z
+  .object({
+    status: z.unknown().optional().describe("completed, need_planner, need_user or unclear"),
+    summary: z.unknown().optional(),
+    notes: z.unknown().optional(),
+    artifacts: z.unknown().optional(),
+    delivery: z.unknown().optional(),
+  })
+  .passthrough();
+export const NativeDeliveryManifestSchema = ExecutorRoundResultSchema;
 export type DeliveryManifest = z.infer<typeof DeliveryManifestSchema>;
+export type ExecutorRoundResult = z.infer<typeof ExecutorRoundResultSchema>;
+
+/** Keep independently valid optional material; malformed metadata cannot reject a round. */
+export function normalizeOptionalDeliveryManifest(value: unknown): DeliveryManifest {
+  const outer = value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+  const nested = outer.delivery && typeof outer.delivery === "object" && !Array.isArray(outer.delivery)
+    ? outer.delivery as Record<string, unknown>
+    : {};
+  const raw = { ...nested, ...outer };
+  const fields: Record<string, unknown> = {};
+  for (const [key, schema] of Object.entries(DeliveryManifestSchema.shape)) {
+    const parsed = schema.safeParse(raw[key]);
+    if (parsed.success) fields[key] = parsed.data;
+  }
+  for (const key of ["implementations", "test_executions", "acceptance_mappings", "unfinished_items", "plan_conflicts"] as const) {
+    const values = raw[key];
+    if (!Array.isArray(values)) continue;
+    const valid: unknown[] = [];
+    for (const item of values) {
+      const parsed = DeliveryManifestSchema.shape[key].safeParse([item]);
+      if (parsed.success) valid.push(...parsed.data);
+    }
+    fields[key] = valid;
+  }
+  // A report path remains useful even when legacy host-call metadata is absent.
+  const artifacts: unknown[] = Array.isArray(raw.artifacts) ? [...raw.artifacts] : [];
+  if (Array.isArray(raw.test_executions)) {
+    for (const item of raw.test_executions) {
+      if (!item || typeof item !== "object" || !Array.isArray(item.report_paths)) continue;
+      const parsed = DeliveryManifestSchema.shape.test_executions.safeParse([item]);
+      if (parsed.success) continue;
+      for (const path of item.report_paths) {
+        if (typeof path !== "string" || !path.trim()) continue;
+        artifacts.push({ path, ...(typeof item.repo_id === "string" ? { repo_id: item.repo_id } : {}) });
+      }
+    }
+  }
+  fields.artifacts = artifacts;
+  return DeliveryManifestSchema.parse(fields);
+}
 
 export interface Delivery {
   id: string;
@@ -497,6 +577,7 @@ export interface Delivery {
   report_hashes?: Record<string, string>;
   manifest: DeliveryManifest;
   submitted_at: string;
+  attachment_status?: import("./tr-handoff.js").AttachmentArchiveRecord[];
 }
 
 export interface DeliveryRevision {
@@ -598,3 +679,4 @@ export * from "./model-catalog.js";
 export * from "./model-access.js";
 export * from "./model-routing.js";
 export * from "./merge-conflict.js";
+export * from "./tr-handoff.js";

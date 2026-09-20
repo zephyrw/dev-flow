@@ -192,3 +192,19 @@ it("validated save clears the installation draft and replays its receipt", () =>
   expect(service.save(request)).toEqual(receipt);
   expect(service.getOrImport(config).revision).toBe(imported.revision + 1);
 });
+
+
+it.each(["providerConfigRef", "toolsetRef"] as const)("unsupported %s cannot be added to previously verified defaults", (field) => {
+  const { service, config, store } = openDefaults();
+  const imported = service.getOrImport(config);
+  seedVerifiedAccess(store, imported.plannerProfile);
+  seedVerifiedAccess(store, imported.executorProfile);
+  expect(() => service.save({
+    request_id: randomUUID(),
+    expected_defaults_revision: imported.revision,
+    plannerProfile: { ...imported.plannerProfile, [field]: "unsupported-reference" },
+    executorProfile: imported.executorProfile,
+  })).toThrow("当前工具不支持");
+  expect(service.getOrImport(config)).toEqual(imported);
+  expect(store.list("run")).toHaveLength(0);
+});

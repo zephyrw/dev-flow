@@ -23,42 +23,27 @@ async function seedRetest(page: import("@playwright/test").Page) {
 }
 
 test("E2E 旁路提问不出现修复指派，正式反馈默认按任务配置", async ({ page }) => {
-  await page.goto("/");
-  await page
-    .getByRole("button")
-    .filter({ has: page.getByRole("heading", { name: "验证审批与交付闭环" }) })
-    .click();
-  if (!(await page.locator(".execution-sidebar").isVisible())) {
-    await page.getByRole("button", { name: "执行过程", exact: true }).click();
-  }
+  await seedRetest(page);
+  await openFixtureWorkflow(page);
+  await showExecutionSidebar(page);
   const trigger = page.getByRole("button", {
-    name: "给执行模型补充指导",
+    name: "指导或提问",
     exact: true,
   });
-  if (!(await trigger.count())) {
-    test.info().annotations.push({
-      type: "note",
-      description: "当前夹具任务不在可指导状态，已确认设置入口仍可用",
-    });
-    await expect(
-      page.getByRole("button", { name: "设置", exact: true }),
-    ).toBeVisible();
-    return;
-  }
+  await expect(trigger).toBeVisible();
   await trigger.click();
   const form = page.locator(".guidance-form");
   await expect(form).toBeVisible();
-  await form.getByLabel("临时提问 (/btw 只读)").check();
+  await form.getByLabel("临时提问", { exact: true }).check();
   await expect(form.getByText("本次修复由谁处理")).toHaveCount(0);
   await form.getByLabel("反馈并调整").check();
   const picker = form.getByText("本次修复由谁处理");
-  if (await picker.count()) {
-    await picker.click();
-    await expect(form.getByLabel("按任务配置")).toBeChecked();
-    await expect(
-      form.getByLabel("同时设为该任务后续人工问题修复默认值"),
-    ).not.toBeChecked();
-  }
+  await expect(picker).toBeVisible();
+  await picker.click();
+  await expect(form.getByLabel("按任务配置")).toBeChecked();
+  await expect(
+    form.getByLabel("同时设为该任务后续人工问题修复默认值"),
+  ).not.toBeChecked();
 });
 
 test("E2E-U08 人工问题自定义处理者显示在复测卡且复测仍人工", async ({

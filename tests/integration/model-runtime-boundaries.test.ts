@@ -5,6 +5,8 @@ import { now } from "../../packages/core/src/util.js";
 import { beginRunConversation, retainRunConversation, conversationLineageKey } from "../../packages/core/src/conversation-lineage.js";
 import { bindProfile, buildDispatchContext, frozenInvocationFromProfile, invocationFingerprintFromFrozen, workflowWorkspaceIdentity } from "../../packages/core/src/run-profile.js";
 import { AgyNativeAdapter } from "../../packages/adapters/agy/src/native-adapter.js";
+import { selectRuntimePath } from "../../packages/runtime/src/runtime.js";
+import { ProfileRuntime } from "../../packages/runtime/src/profile-runtime.js";
 import type { ProcessManager } from "../../packages/process/src/manager.js";
 
 const stores: Array<ReturnType<typeof setup>["store"]> = [];
@@ -87,7 +89,7 @@ it("普通执行故障自动恢复固定到失败轮次，不读取执行中更�
   s.engine.runtime = {
     execute: async () => {
       saveSpec(2, profile("agy", "new-model"));
-      throw new FlowError("NATIVE_RUN_FAILED", "fixture execution failed");
+      throw new FlowError("BUILD_FAILED", "fixture compilation failed");
     }, stop: async () => {}, review: async () => ({}),
     check: async () => { throw new Error("unused"); }, close: async () => {},
   };
@@ -134,3 +136,35 @@ it.each(["MODEL_AUTH", "MODEL_LOGIN_REQUIRED", "MODEL_FORBIDDEN", "MODEL_CONNECT
     expect(s.store.get<any>("model_access", "other-provider")?.status).toBe("verified");
   },
 );
+
+
+it("历史任务首轮继续使用轻量入口，历史已冻结 legacy Run 仍可按原协议读取", async () => {
+  const s = await prepared(); stores.push(s.store);
+  const binding = bindProfile(s.store, s.config, s.workflow.id, "implement");
+  expect(binding.protocol).toBe("lightweight");
+  expect(binding.runtime_flavor).toBe("profile-native");
+  const dispatched = { ...run("new-lightweight", binding.profile), ...binding, workflow_id: s.workflow.id };
+  expect(selectRuntimePath(s.engine, s.workflow, dispatched)).toBe("profile-native");
+  const historical = { ...dispatched, protocol: "legacy" as const, runtime_flavor: "legacy-managed" as const };
+  expect(selectRuntimePath(s.engine, s.workflow, historical)).toBe("legacy-managed");
+});
+
+it("审查追问同绑定续原会话，换模型完整交接且 A-B-A 不复活旧会话", () => {
+  const s = setup(); stores.push(s.store);
+  const source = { ...run("review-a", profile("codex", "review-model-a")), purpose: "quality_review" as const };
+  s.store.put("run", source.id, source.workflow_id, source);
+  beginRunConversation(s.store, source); retainRunConversation(s.store, source, "review-session-a");
+  const continuation = { kind: "user_answer" as const, purpose: "review" as const, role: "planner" as const,
+    source_run_id: source.id, conversation_id: "review-session-a", questions: ["确认范围"], answer: "仅当前变更" };
+  const same = { ...source, id: "review-a2", continuation };
+  expect(beginRunConversation(s.store, same)?.id).toBe("review-session-a");
+  const changed = { ...run("review-b", profile("agy", "review-model-b")), purpose: "quality_review" as const, continuation };
+  const runtime = new ProfileRuntime(s.engine, {} as ProcessManager) as unknown as {
+    continuationMaterials(materials: Record<string, unknown>, run: Run): Record<string, unknown>;
+  };
+  const materials = runtime.continuationMaterials({ plan: { markdown: "approved plan" }, instructions: "review" }, changed);
+  expect(materials).toMatchObject({ plan: { markdown: "approved plan" }, questions: ["确认范围"], answer: "仅当前变更" });
+  expect(beginRunConversation(s.store, changed)).toBeUndefined();
+  retainRunConversation(s.store, changed, "review-session-b");
+  expect(beginRunConversation(s.store, { ...source, id: "review-a3", continuation })).toBeUndefined();
+});

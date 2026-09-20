@@ -326,6 +326,8 @@ it("IT-R21：无法停止时保持暂停且不宣称切换成功", async () => {
   const s = await prepared();
   closeStore = () => s.store.close();
   putSpec(s.store, s.workflow.id, 1);
+  seedVerifiedAccess(s.store, planner());
+  seedVerifiedAccess(s.store, executor("switched"));
   const switches = new ModelSwitchService(
     s.store,
     new ExecutionSpecService(s.store, s.config),

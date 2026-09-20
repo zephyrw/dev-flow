@@ -1949,13 +1949,34 @@ select:focus {
 }
 
 .activity-summary {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  width: 100%;
+  min-width: 0;
   font-size: 12.5px;
   color: var(--text-muted);
   line-height: 1.6;
   margin: 4px 0 8px;
+  overflow: hidden;
+}
+
+.summary-path-wrapper {
+  display: flex;
+  align-items: baseline;
+  width: 100%;
+  min-width: 0;
+}
+
+.summary-path-prefix {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.summary-path-file {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  max-width: 100%;
 }
 
 .activity-markdown {
@@ -3392,6 +3413,89 @@ select:focus {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  position: relative;
+}
+
+.guidance-form-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.guidance-mode-tabs {
+  display: flex;
+  flex: 1;
+  gap: 2px;
+  padding: 3px;
+  background: #f1f5f9;
+  border-radius: 8px;
+}
+
+.guidance-mode-tabs label {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  padding: 6px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  color: #475569;
+  cursor: pointer;
+}
+
+.guidance-mode-tabs label.active {
+  background: #fff;
+  color: #0f172a;
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+}
+
+.guidance-mode-tabs input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  opacity: 0;
+}
+
+.btn-composer-close {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: #64748b;
+  font-size: 20px;
+  line-height: 1;
+  border-radius: 6px;
+}
+
+.btn-composer-close:hover {
+  background: #f1f5f9;
+  color: #0f172a;
+}
+
+.composer-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.composer-actions .btn-secondary {
+  margin-right: auto;
+  font-size: 12px;
+  padding: 4px 10px;
+}
+
+.composer-actions .btn-primary,
+.composer-actions .btn-sm {
+  padding: 5px 12px;
+  font-size: 12px;
+  border-radius: 6px;
 }
 
 .guidance-form textarea {

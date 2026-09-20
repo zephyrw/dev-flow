@@ -30,23 +30,42 @@ test("E2E-U01 无任务也可打开全局设置并编辑两套默认", async ({ 
 });
 
 test("E2E-U02 修改全局默认后新建任务预填新值", async ({ page }) => {
+  const initial = await page.request.get("/api/settings/model-defaults");
+  expect(initial.ok(), await initial.text()).toBeTruthy();
+  const before = (await initial.json()).defaults;
   await page.goto("/");
   await page.getByRole("button", { name: "设置", exact: true }).click();
   const drawer = page.getByRole("dialog", { name: "工具与模型" });
   await exactLabel(drawer, "规划工具").selectOption("codex");
+  await pickListedModel(drawer, "规划工具", "gpt-5.6-sol");
   await exactLabel(drawer, "执行工具").selectOption("agy");
+  await pickListedModel(drawer, "执行工具", "gemini-3.7-flash-high");
+  await waitAccessStatus(drawer.locator(".ms-editor").first(), "已验证可访问");
+  await waitAccessStatus(drawer.locator(".ms-editor").nth(1), "已验证可访问");
+  expect(before.plannerProfile.modelId).not.toBe("gpt-5.6-sol");
   await drawer.getByRole("button", { name: /保存默认配置/ }).click();
-  const saved = drawer.locator(".ms-success, .ms-error");
-  await expect(saved).toBeVisible({ timeout: 15000 });
-  if (await drawer.locator(".ms-error").count()) {
-    await expect(drawer.locator(".ms-error")).not.toContainText("草稿已丢失");
-  }
+  await expect(drawer.locator(".ms-success")).toContainText("默认配置已保存", {
+    timeout: 15000,
+  });
+  await expect(drawer.locator(".ms-error")).toHaveCount(0);
+  const response = await page.request.get("/api/settings/model-defaults");
+  expect(response.ok(), await response.text()).toBeTruthy();
+  const saved = (await response.json()).defaults;
+  expect(saved.revision).toBe(before.revision + 1);
+  expect(saved.plannerProfile.modelId).toBe("gpt-5.6-sol");
+  expect(saved.executorProfile.modelId).toBe("gemini-3.7-flash-high");
   await drawer.getByRole("button", { name: "关闭设置" }).click();
   await page.getByRole("button", { name: "+ 新建", exact: true }).click();
   const modal = page.locator(".modal-backdrop").last();
   await expect(modal).toContainText("来自系统默认");
   await expect(exactLabel(modal, "规划工具")).toHaveValue("codex");
+  await expect(exactLabel(modal, "规划工具模型搜索")).toHaveValue(
+    /gpt-5\.6-sol/,
+  );
   await expect(exactLabel(modal, "执行工具")).toHaveValue("agy");
+  await expect(exactLabel(modal, "执行工具模型搜索")).toHaveValue(
+    /gemini-3\.7-flash-high/,
+  );
 });
 
 test("E2E-U04 高级项只改 reviewer 时其余保持继承", async ({ page }) => {
@@ -84,6 +103,25 @@ test("E2E-U13 历史模型不在目录时保留并标注", async ({ page }) => {
 });
 
 test("E2E-U15 设置抽屉可键盘操作并显示错误重试", async ({ page }) => {
+  let catalogueAvailable = false;
+  let catalogRequests = 0;
+  await page.route(
+    (url) => url.pathname === "/api/adapters/codex/models",
+    async (route) => {
+      catalogRequests += 1;
+      if (!catalogueAvailable) {
+        await route.fulfill({
+          status: 503,
+          json: {
+            code: "FIXTURE_CATALOG_UNAVAILABLE",
+            message: "夹具目录暂不可用",
+          },
+        });
+        return;
+      }
+      await route.continue();
+    },
+  );
   await page.goto("/");
   await page.getByRole("button", { name: "设置", exact: true }).focus();
   await page.keyboard.press("Enter");
@@ -92,12 +130,17 @@ test("E2E-U15 设置抽屉可键盘操作并显示错误重试", async ({ page }
   await exactLabel(drawer, "规划工具").focus();
   await expect(exactLabel(drawer, "规划工具")).toBeFocused();
   await page.keyboard.press("Tab");
-  const retry = drawer.getByRole("button", { name: "重试" });
-  if (await retry.count()) {
-    await expect(retry.first()).toBeVisible();
-    await retry.first().click();
-  }
-  await expect(exactLabel(drawer, "规划工具")).toBeVisible();
+  const planner = drawer.locator(".ms-editor").first();
+  await expect(planner.locator(".ms-error")).toContainText("夹具目录暂不可用");
+  const failures = catalogRequests;
+  catalogueAvailable = true;
+  await planner.getByRole("button", { name: "重试", exact: true }).click();
+  await expect(planner.locator(".ms-error")).toHaveCount(0);
+  await pickListedModel(planner, "规划工具", "gpt-6-astra");
+  expect(catalogRequests).toBeGreaterThan(failures);
+  await expect(exactLabel(planner, "规划工具模型搜索")).toHaveValue(
+    /gpt-6-astra/,
+  );
 });
 
 test("E2E-U03 新建当场改工具/模型/强度且后台 Run 参数一致", async ({
@@ -338,9 +381,10 @@ test("E2E-R24 verified 后重新验证 force=true，普通再保存不重复探�
   expect(await fixtureProbeCount(page)).toBeGreaterThan(before);
   const afterForce = await fixtureProbeCount(page);
   await drawer.getByRole("button", { name: /保存默认配置/ }).click();
-  await expect(drawer.locator(".ms-success, .ms-error")).toBeVisible({
+  await expect(drawer.locator(".ms-success")).toContainText("默认配置已保存", {
     timeout: 15000,
   });
+  await expect(drawer.locator(".ms-error")).toHaveCount(0);
   expect(await fixtureProbeCount(page)).toBe(afterForce);
 });
 

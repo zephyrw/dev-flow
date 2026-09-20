@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { ToolProfile } from "../../../contracts/src/execution-spec.js";
 import type { NonSecretIdentity } from "../../../contracts/src/model-access.js";
 import type { IdentityContext } from "./interface.js";
@@ -36,6 +36,15 @@ export function nativeProfileSupported(adapterId: string): boolean {
   return adapterId === "codex";
 }
 
+function nativeScope(adapterId: string, profileName = "default"): string {
+  if (adapterId !== "codex") return profileName;
+  // The same profile name in separate Codex homes is a separate native scope.
+  // Hash only the already-used configuration path and name, never credentials.
+  const root = resolve(process.env.CODEX_HOME?.trim() || join(homedir(), ".codex"));
+  const normalizedRoot = process.platform === "win32" ? root.toLowerCase() : root;
+  return "codex-config:" + hashIdentity(JSON.stringify([normalizedRoot, profileName]));
+}
+
 export function identityInputFromProfile(
   profile: Pick<
     ToolProfile,
@@ -47,7 +56,10 @@ export function identityInputFromProfile(
   accountId?: string;
   identityConfidence?: NonSecretIdentity["identityConfidence"];
 } {
-  const nativeConfigScope = profile.nativeConfigProfile?.trim() || "default";
+  const nativeConfigScope = nativeScope(
+    profile.adapterId,
+    profile.nativeConfigProfile?.trim() || "default",
+  );
   const accountId = readAccountId(profile.adapterId, nativeConfigScope);
   const providerEndpoint =
     profile.providerConfigRef ?? readCodexProviderScope(profile);
@@ -63,8 +75,8 @@ export function identityInputFromProfile(
 export function readNativeIdentitySync(
   context: IdentityContext,
 ): NonSecretIdentity {
-  const nativeConfigScope = context.nativeConfigScope?.trim() || "default";
   const adapterId = context.adapterId as NonSecretIdentity["adapterId"];
+  const nativeConfigScope = context.nativeConfigScope?.trim() || nativeScope(adapterId);
   const accountId = readAccountId(adapterId, nativeConfigScope);
   return {
     adapterId,

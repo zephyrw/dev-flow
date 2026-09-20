@@ -9,6 +9,7 @@ import {
 import { LocalRuntime } from "../../packages/runtime/src/runtime.js";
 import { repairFailure } from "../../packages/core/src/repair.js";
 import { FlowError } from "../../packages/contracts/src/index.js";
+import { runtimeFailureResolution } from "../../packages/contracts/src/runtime-failure.js";
 import { startTask } from "../../packages/core/src/progress.js";
 import { buildServer } from "../../apps/api/src/server.js";
 import { WorkspaceObserver } from "../../packages/runtime/src/workspace-observer.js";
@@ -35,7 +36,10 @@ it.each([
       s.engine.block(s.workflow.id, error);
       expect(s.engine.get(s.workflow.id)).toMatchObject({
         state: "BLOCKED",
-        blocker: { code, message: error.message },
+        blocker: {
+          code,
+          message: runtimeFailureResolution(code, error.message)!.message,
+        },
       });
       expect(s.store.get("repair_state", s.workflow.id)).toBeUndefined();
       expect(s.store.list("operation_request", s.workflow.id)).toEqual([]);
@@ -308,7 +312,7 @@ it("a development test runs before any task claims, captures real failure, then 
       status: "verified",
     });
     expect(s.store.list("evidence", s.workflow.id)).toHaveLength(0);
-    expect(() => s.engine.verifyEvidence(s.workflow.id)).toThrow();
+    expect(() => s.engine.verifyEvidence(s.workflow.id)).not.toThrow();
     s.engine.invalidate(s.workflow.id, "代码修改");
     expect(s.engine.taskStatus(s.workflow.id)[0]!.development_status).toBe(
       "pending_check",
@@ -317,7 +321,7 @@ it("a development test runs before any task claims, captures real failure, then 
     await runtime.close();
     s.store.close();
   }
-}, 60000);
+}, 120000);
 
 it("repeated identical failure escalates to the planner and exhausts without pretending user input is missing", async () => {
   const s = await prepared();

@@ -70,7 +70,7 @@ describe("native model identity", () => {
         nativeConfigProfile: "work",
       }),
     ).toEqual({
-      nativeConfigScope: "work",
+      nativeConfigScope: expect.stringMatching(/^codex-config:/),
       accountId: "custom-account",
       identityConfidence: "account",
       providerEndpoint: "https://fixture.invalid/api",
@@ -89,6 +89,20 @@ describe("native model identity", () => {
       nativeConfigScope: "default",
       identityConfidence: "profile-scope",
     });
+  });
+
+  it("isolates configuration homes without account ids and normalizes the same root", () => {
+    vi.stubEnv("CODEX_HOME", "C:/fixture-codex-a");
+    const first = identityInputFromProfile({ adapterId: "codex" });
+    vi.stubEnv("CODEX_HOME", "C:/fixture-codex-a/child/..");
+    expect(identityInputFromProfile({ adapterId: "codex" })).toEqual(first);
+    vi.stubEnv("CODEX_HOME", "C:/fixture-codex-b");
+    const second = identityInputFromProfile({ adapterId: "codex" });
+    expect(second.identityConfidence).toBe("profile-scope");
+    expect(second.nativeConfigScope).not.toBe(first.nativeConfigScope);
+    expect(second.nativeConfigScope).not.toContain("fixture-codex-b");
+    const named = identityInputFromProfile({ adapterId: "codex", nativeConfigProfile: "work" });
+    expect(named.nativeConfigScope).not.toBe(second.nativeConfigScope);
   });
 
   it("does not advertise unsupported native profile selectors", () => {

@@ -630,3 +630,48 @@ it("重新指定批次中的部分问题不会移除其余问题，最后处理�
     model_binding: { repair_batch_id: created.batch.id }, profile: cursorGrok(), started_at: now() });
   expect(env.repairs.issueViews(env.workflow.id).every((view) => view.last_fixer_profile?.modelId === cursorGrok().modelId)).toBe(true);
 });
+
+
+it("cleared repair assignments never reuse a batch revision", () => {
+  const env = openRepair("wf-assignment-clear-cas");
+  const created = env.repairs.submitFunctionalRepair({
+    workflow_id: env.workflow.id,
+    request_id: randomUUID(),
+    descriptions: [{ description: "修复处理者并发编辑" }],
+    selection: { mode: "planner" },
+    expected_spec_revision: 1,
+  });
+  expect(created.assignment?.revision).toBe(1);
+  const request = {
+    workflow_id: env.workflow.id,
+    batch_id: created.batch.id,
+    expected_spec_revision: 1,
+  };
+  env.repairs.assign({
+    ...request,
+    request_id: randomUUID(),
+    expected_assignment_revision: 1,
+    selection: { mode: "task-default" },
+  });
+  expect(env.repairs.listOpenBatches(env.workflow.id)[0]?.assignment).toBeNull();
+  expect(env.repairs.issueViews(env.workflow.id)[0]?.assignment_revision).toBeNull();
+  const replacement = env.repairs.assign({
+    ...request,
+    request_id: randomUUID(),
+    expected_assignment_revision: 0,
+    selection: { mode: "custom", profile: cursorGrok() },
+  });
+  expect(replacement.entity_revision).toBe(2);
+  const current = env.repairs.listOpenBatches(env.workflow.id)[0]?.assignment;
+  expect(current).toMatchObject({ revision: 2, profile: cursorGrok() });
+  expect(current?.id).not.toBe(created.assignment?.id);
+  expectCode(() => env.repairs.assign({
+    ...request,
+    request_id: randomUUID(),
+    expected_assignment_revision: 1,
+    selection: { mode: "executor" },
+  }), "REPAIR_BATCH_MISMATCH");
+  expect(env.repairs.listOpenBatches(env.workflow.id)[0]?.assignment).toEqual(current);
+  expect(env.store.list("repair_model_assignment", env.workflow.id)).toHaveLength(2);
+  expect(env.specs.getLatestSpec(env.workflow.id).revision).toBe(1);
+});

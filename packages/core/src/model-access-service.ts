@@ -63,6 +63,7 @@ type ProbeAdapter = {
   parseProbeTerminal?: (
     result: LimitedCliResult,
     selectedModel: string | null,
+    context?: { adapterId: string; selectionKind?: "fixed" | "native-router" },
   ) => ProbeTerminal;
 };
 
@@ -141,6 +142,7 @@ export function parseProbeTerminal(
   result: LimitedCliResult,
   selectedModel: string | null,
   adapterId?: string,
+  selectionKind?: "fixed" | "native-router",
 ): ProbeTerminal {
   return ProbeTerminalSchema.parse(parseStructuredProbeTerminal({
     stdout: result.stdout,
@@ -152,6 +154,7 @@ export function parseProbeTerminal(
     launchFailed: Boolean(result.spawnError),
     selectedModel,
     adapterId,
+    selectionKind,
   }));
 }
 
@@ -533,7 +536,7 @@ export class ModelAccessService {
 
   requireVerified(profiles: ToolProfile[]): void {
     for (const profile of profiles) {
-      this.assertNativeProfileAllowed(profile);
+      this.assertProfileSupported(profile);
       this.assertCachedAccess(profile, this.identityFromProfile(profile));
     }
   }
@@ -618,7 +621,7 @@ export class ModelAccessService {
     catalog?: ModelCatalog,
   ): ModelAccessRecord {
     const parsedProfile = ToolProfileSchema.parse(profile);
-    this.assertNativeProfileAllowed(parsedProfile);
+    this.assertProfileSupported(parsedProfile);
     const native = this.resolveNativeConfig(parsedProfile, identityInput);
     const identity = this.fingerprintIdentity(
       this.identityFromNative(native, identityInput),
@@ -641,6 +644,17 @@ export class ModelAccessService {
 
   identityFromProfile(profile: ToolProfile): AccessIdentityInput {
     return identityInputFromProfile(profile);
+  }
+
+  assertProfileSupported(profile: ToolProfile): void {
+    if (profile.providerConfigRef || profile.toolsetRef) {
+      throw new FlowError(
+        "CLI_PARAMETER_UNSUPPORTED",
+        "当前工具不支持 providerConfigRef/toolsetRef 注入，请在原生客户端配置",
+        422,
+      );
+    }
+    this.assertNativeProfileAllowed(profile);
   }
 
   assertNativeProfileAllowed(profile: ToolProfile): void {
@@ -667,7 +681,7 @@ export class ModelAccessService {
     catalog?: ModelCatalog,
   ): ModelAccessRecord {
     const parsedProfile = ToolProfileSchema.parse(profile);
-    this.assertNativeProfileAllowed(parsedProfile);
+    this.assertProfileSupported(parsedProfile);
     const identity = this.fingerprintIdentity(
       identityInput ?? this.identityFromProfile(parsedProfile),
     );
@@ -771,7 +785,7 @@ export class ModelAccessService {
 
   private parseRequest(req: VerifyAccessRequest) {
     const profile = ToolProfileSchema.parse(req.profile);
-    this.assertNativeProfileAllowed(profile);
+    this.assertProfileSupported(profile);
     return {
       request_id: z.string().uuid().parse(req.request_id),
       profile,
@@ -1051,9 +1065,9 @@ export class ModelAccessService {
     const current = this.store.get<ModelVerificationJob>(JOB_KIND, job.id);
     if (current && this.isTerminal(current.status)) return;
     if (result.cancelled) return;
-    const commonTerminal = parseProbeTerminal(result, selection.modelToken, selection.adapterId);
+    const commonTerminal = parseProbeTerminal(result, selection.modelToken, selection.adapterId, selection.selectionKind);
     const terminal = commonTerminal.success && this.options.probeAdapter?.parseProbeTerminal
-      ? this.options.probeAdapter.parseProbeTerminal(result, selection.modelToken)
+      ? this.options.probeAdapter.parseProbeTerminal(result, selection.modelToken, { adapterId: selection.adapterId, selectionKind: selection.selectionKind })
       : commonTerminal;
     if (terminal.success) {
       this.finishSuccess(job);

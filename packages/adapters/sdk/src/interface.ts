@@ -162,6 +162,7 @@ export interface ProbeContext {
 
 export interface ProbeTerminalInput {
   adapterId?: string;
+  selectionKind?: "fixed" | "native-router";
   cancelled?: boolean;
   truncated?: boolean;
   launchFailed?: boolean;
@@ -190,6 +191,8 @@ export interface ModelSelectionFingerprint {
 
 export interface ResolvedSelection {
   adapterId: string;
+  /** Derived from the matched native catalog, never the caller profile flag. */
+  selectionKind?: "fixed" | "native-router";
   modelToken: string | null;
   effortArgs: string[];
   effortEnv: Record<string, string>;

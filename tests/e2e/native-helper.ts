@@ -146,6 +146,6 @@ export async function showInteraction(page: Page) {
   await page.getByRole("button", { name: "执行过程", exact: true }).click();
   await expect(page.locator(".execution-sidebar")).toBeVisible();
   await page
-    .getByRole("button", { name: "给执行模型补充指导", exact: true })
+    .getByRole("button", { name: "指导或提问", exact: true })
     .click();
 }

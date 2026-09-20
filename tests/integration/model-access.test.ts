@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { setup } from "../helpers.js";
 import { ModelCatalogService } from "../../packages/core/src/model-catalog-service.js";
 import * as registry from "../../packages/adapters/sdk/src/registry.js";
-import { fingerprintModelIdentity, modelIdentityKey } from "../../packages/core/src/model-identity.js";
+import { fingerprintModelIdentity, modelIdentityKey, resolveModelIdentity } from "../../packages/core/src/model-identity.js";
 import {
   ACCESS_PROBE_PROMPT,
   ModelAccessService,
@@ -41,6 +41,7 @@ let closeEnv: (() => Promise<void>) | undefined;
 
 afterEach(async () => {
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   if (!closeEnv) return;
   await closeEnv();
   closeEnv = undefined;
@@ -914,4 +915,58 @@ it("运行时401仅失效相同账号和provider，403只失效指定模型", ()
   expect(env.access.getAccess(second.key)?.status).toBe("login_required");
   expect(env.access.getAccess(third.key)?.status).toBe("verified");
   expect(env.access.getAccess(fourth.key)?.status).toBe("verified");
+});
+
+
+it("native-router auto 可验证实际路由结果，伪造profile路由标记不能绕过固定模型检查", async () => {
+  const env = openAccess({
+    adapterId: "cursor-agent",
+    catalogStdout: readCatalogStdout("cursor-agent", "models-success.txt"),
+    probeStdout: JSON.stringify({ type: "result", model: "gpt-6-astra", result: "OK" }) + "\n",
+  });
+  const idn = identity();
+  const catalog = await discoverAdapter(env, "cursor-agent", idn);
+  const routed: ToolProfile = {
+    ...profile("cursor-agent", "auto", "high"),
+    reasoning: { mode: "native-default" }, selectionKind: "native-router",
+  };
+  expect(catalog.entries.find((entry) => entry.nativeId === "auto")?.selectionKind).toBe("native-router");
+  expect((await verifyNow(env.access, routed, idn, catalog)).job?.status).toBe("verified");
+  expect(env.access.assertCachedAccess(routed, idn, catalog).accessModelKey).toBe("auto");
+  const forged: ToolProfile = { ...routed, modelId: "cursor-grok-4.6-high" };
+  expect(catalog.entries.find((entry) => entry.nativeId === forged.modelId)?.selectionKind).toBe("fixed");
+  expect((await verifyNow(env.access, forged, idn, catalog)).job?.status).toBe("failed");
+  expectCode(() => env.access.assertCachedAccess(forged, idn, catalog), "MODEL_UNAVAILABLE");
+});
+
+
+it.each(["providerConfigRef", "toolsetRef"] as const)("unsupported %s is rejected before verification and cached publication", async (field) => {
+  const env = openAccess({});
+  const chosen = profile("codex", "gpt-6-astra", "high");
+  const idn = identity();
+  env.access.seedVerified(chosen, idn);
+  const unsupported = { ...chosen, [field]: "unsupported-reference" };
+  await expect(env.access.verify({ request_id: randomUUID(), profile: unsupported, identity: idn }))
+    .rejects.toMatchObject({ code: "CLI_PARAMETER_UNSUPPORTED" });
+  expectCode(() => env.access.assertCachedAccess(unsupported, idn), "CLI_PARAMETER_UNSUPPORTED");
+  expect(env.access.assertCachedAccess(chosen, idn).status).toBe("verified");
+  expect(probeCount(env.logDir)).toBe(0);
+});
+
+it("changing Codex home cannot reuse profile-scope authorization and never changes the CLI profile name", () => {
+  const env = openAccess({});
+  const chosen = { ...profile("codex", "gpt-6-astra", "high"), nativeConfigProfile: "work" };
+  vi.stubEnv("CODEX_HOME", join(env.root, "empty-codex-home-a"));
+  const first = env.access.identityFromProfile(chosen);
+  expect(first.identityConfidence).toBe("profile-scope");
+  env.access.seedVerified(chosen, first);
+  vi.stubEnv("CODEX_HOME", join(env.root, "empty-codex-home-b"));
+  const second = env.access.identityFromProfile(chosen);
+  expect(second.nativeConfigScope).not.toBe(first.nativeConfigScope);
+  expectCode(() => env.access.assertCachedAccess(chosen, second), "MODEL_ACCESS_REQUIRED");
+  expect(env.access.assertCachedAccess(chosen, first).status).toBe("verified");
+  const native = resolveModelIdentity(env.store, chosen);
+  expect(native.nativeConfigProfile).toBe("work");
+  expect(native.nativeConfigScope).toBe(second.nativeConfigScope);
+  expect(native.nativeConfigScope).not.toBe("work");
 });

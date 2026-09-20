@@ -7,6 +7,7 @@ import { ClientInstaller } from "../../packages/clients/src/installer.js";
 import { UpgradeManager } from "../../packages/installer/src/upgrade.js";
 import {
   applyInstallerModelDefaults,
+  mergeInstallerDefaults,
   InstallerDefaultsError,
   parseInstallerCliArgs,
 } from "../../packages/installer/src/main.js";
@@ -20,6 +21,8 @@ import {
   type Workflow,
 } from "../../packages/contracts/src/index.js";
 import { ModelDefaultsService } from "../../packages/core/src/model-defaults-service.js";
+import { ModelCatalogService, type CatalogScopeInput } from "../../packages/core/src/model-catalog-service.js";
+import { resolveModelIdentity } from "../../packages/core/src/model-identity.js";
 import { seedVerifiedAccess } from "../../packages/core/src/access-guard.js";
 import type { Store } from "../../packages/store/src/store.js";
 import Database from "better-sqlite3";
@@ -219,29 +222,31 @@ describe("IT-S01～S03: 安装默认合同与升级保留", () => {
       values: string[];
       defaultValue?: string;
     },
+    scopePatch: Partial<CatalogScopeInput> = {},
   ) {
-    const at = now();
-    store.put("model_catalog", "catalog-" + adapterId, "global", {
+    const defaults = new ModelDefaultsService(store).getOrImport(env.config);
+    const base = adapterId === "codex" ? defaults.plannerProfile : defaults.executorProfile;
+    const native = resolveModelIdentity(store, { ...base, modelId: nativeId });
+    const scope: CatalogScopeInput = {
       adapterId,
-      scopeHash: "scope-" + adapterId,
-      status: "fresh",
-      discoveredAt: at,
-      staleAfter: at,
-      entries: [
-        {
-          entryId: adapterId + "/" + nativeId,
-          adapterId,
-          nativeId,
-          label: nativeId,
-          selectionKind: "fixed",
-          effort,
-          source: "native-cache",
-          discoveredAt: at,
-          hidden: false,
-          availability: "listed",
-          capabilityRevision: "1",
-        },
-      ],
+      executablePath: native.executablePath,
+      nativeConfigProfile: native.nativeConfigProfile,
+      nativeConfigScope: native.nativeConfigScope,
+      accountFingerprint: native.accountFingerprint,
+      providerFingerprint: native.providerEndpointFingerprint,
+      ...scopePatch,
+    };
+    const service = new ModelCatalogService(store);
+    service.ensureManualCandidate(scope, nativeId);
+    const catalog = service.readCached(scope)!;
+    store.put("model_catalog", "catalog:" + catalog.scopeHash, adapterId, {
+      ...catalog,
+      entries: catalog.entries.map((entry) => entry.nativeId === nativeId ? {
+        ...entry,
+        effort,
+        availability: "listed",
+        source: "native-cache",
+      } : entry),
     });
   }
 
@@ -314,6 +319,54 @@ describe("IT-S01～S03: 安装默认合同与升级保留", () => {
     store.put("execution_spec", spec.id, workflowId, spec);
     return { workflow, spec };
   }
+
+  it.each([
+    { label: "account", scopePatch: { accountFingerprint: "another-account" } },
+    { label: "provider", scopePatch: { providerFingerprint: "another-provider" } },
+    { label: "CLI path", scopePatch: { executablePath: "another-client" } },
+    { label: "native config", scopePatch: { nativeConfigScope: "another-config" } },
+  ])("installer effort validation uses only the current scope, excluding another $label", ({ scopePatch }) => {
+    const current = new ModelDefaultsService(env.store).getOrImport(env.config);
+    const modelId = current.plannerProfile.modelId!;
+    putCatalog(env.store, "codex", modelId, {
+      status: "unknown", transport: "config", values: [],
+    }, scopePatch);
+    putCatalog(env.store, "codex", modelId, {
+      status: "supported", transport: "config", values: ["high"], defaultValue: "high",
+    });
+    const merged = mergeInstallerDefaults(env.store, current, { plannerEffort: "high" }, env.config);
+    expect(merged.complete).toBe(true);
+    expect(merged.plannerProfile.reasoning).toEqual({ mode: "explicit", value: "high" });
+    expect(() => mergeInstallerDefaults(env.store, current, { plannerEffort: "low" }, env.config))
+      .toThrow(InstallerDefaultsError);
+  });
+
+  it("changing tools takes the current scope default and never another account default", () => {
+    const current = new ModelDefaultsService(env.store).getOrImport(env.config);
+    const modelId = current.executorProfile.modelId!;
+    putCatalog(env.store, "agy", modelId, {
+      status: "supported", transport: "config", values: ["low"], defaultValue: "low",
+    }, { accountFingerprint: "another-account" });
+    putCatalog(env.store, "agy", modelId, {
+      status: "supported", transport: "config", values: ["high"], defaultValue: "high",
+    });
+    const merged = mergeInstallerDefaults(env.store, current, {
+      plannerTool: "agy", plannerModel: modelId,
+    }, env.config);
+    expect(merged.plannerProfile.reasoning).toEqual({ mode: "explicit", value: "high" });
+  });
+
+  it("an unmatched catalog cannot supply an installation draft default", () => {
+    const current = new ModelDefaultsService(env.store).getOrImport(env.config);
+    const modelId = current.executorProfile.modelId!;
+    putCatalog(env.store, "agy", modelId, {
+      status: "supported", transport: "config", values: ["low"], defaultValue: "low",
+    }, { accountFingerprint: "another-account" });
+    const merged = mergeInstallerDefaults(env.store, current, {
+      plannerTool: "agy", plannerModel: modelId,
+    }, env.config);
+    expect(merged.plannerProfile.reasoning).toEqual({ mode: "native-default" });
+  });
 
   it("IT-S01：源码与发布安装同一默认合同，--tools 不替代角色", () => {
     const parsed = parseInstallerCliArgs([

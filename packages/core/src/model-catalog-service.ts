@@ -1094,14 +1094,15 @@ export class ModelCatalogService {
   ): CatalogScopeInput | undefined {
     const wanted = scopeId?.trim() ? scopeId.trim() : "default";
     const cached = this.latestMatching(adapterId, wanted);
+    if (!cached && wanted.startsWith("codex-config:")) return undefined;
     const executablePath = cached?.cliPath ?? this.lookupExecutable(adapterId);
     if (!executablePath) return undefined;
     return this.resolveScope(
       adapterId,
       executablePath,
-      cached?.nativeConfigProfile ?? (cached
-        ? (cached.nativeConfigScope === "default" ? undefined : cached.nativeConfigScope)
-        : wanted === "default" ? undefined : wanted),
+      cached
+        ? cached.nativeConfigProfile
+        : wanted === "default" ? undefined : wanted,
     );
   }
 

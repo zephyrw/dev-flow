@@ -114,6 +114,26 @@ export const ADAPTER_BINARY_NAMES: Record<SupportedAdapterId, string> = {
   "cursor-agent": "agent",
 };
 
+export type AdapterExecutableResolver = (
+  adapterId: SupportedAdapterId,
+  customPath?: string,
+) => string | undefined;
+
+let executableResolver: AdapterExecutableResolver | undefined;
+
+/** Bootstrap-time dependency injection for embedding hosts and isolated fixtures.
+ * An installed resolver is authoritative, including a not-found result.
+ */
+export function setAdapterExecutableResolver(
+  resolver: AdapterExecutableResolver,
+): () => void {
+  const previous = executableResolver;
+  executableResolver = resolver;
+  return () => {
+    if (executableResolver === resolver) executableResolver = previous;
+  };
+}
+
 export function defaultAdapterFallbackDirs(): string[] {
   return [
     ...(process.env.LOCALAPPDATA
@@ -133,6 +153,7 @@ export function resolveAdapterExecutable(
   adapterId: SupportedAdapterId,
   customPath?: string,
 ): string | undefined {
+  if (executableResolver) return executableResolver(adapterId, customPath);
   return resolveToolExecutable(
     ADAPTER_BINARY_NAMES[adapterId],
     customPath,

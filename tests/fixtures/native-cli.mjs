@@ -12,6 +12,7 @@ if (args.includes("--help")) {
   console.log("codex exec resume --sandbox agy --print");
   process.exit(0);
 }
+if (args.includes("app-server")) process.exit(0);
 let prompt = "";
 const pIndex = args.indexOf("-p");
 if (pIndex !== -1 && args[pIndex + 1]) {
@@ -97,8 +98,8 @@ if (stage === "planning") {
       upstream_downstream_checked: true,
       security_checked: true,
       tests_validity_checked: true,
-      files: m.snapshot.repositories.flatMap((r) =>
-        r.changed_paths.map((p) => r.repo_id + ":" + p),
+      files: (m.snapshot?.repositories ?? []).flatMap((r) =>
+        (r.changed_paths ?? []).map((p) => r.repo_id + ":" + p),
       ),
     },
     findings: [],
@@ -113,28 +114,30 @@ if (stage === "planning") {
   }
   for (const p of m.conflict_paths || []) {
     const fullPath = path.join(root, p);
-    if (fs.existsSync(fullPath)) {
-      let content = fs.readFileSync(fullPath, "utf8");
-      if (content.includes("<<<<<<<")) {
-        content = content.replace(
-          /<{7}[^\n]*\n([\s\S]*?)={7}\n([\s\S]*?)>{7}[^\n]*\n/g,
-          (match, ours, theirs) => {
-            return ours.trim() + "\n" + theirs.trim() + "\n";
-          },
-        );
-        fs.writeFileSync(fullPath, content);
-      }
+    if (!fs.existsSync(fullPath)) continue;
+    let content = fs.readFileSync(fullPath, "utf8");
+    if (content.includes("<<<<<<<")) {
+      content = content.replace(
+        /<{7}[^\n]*\r?\n([\s\S]*?)={7}\r?\n([\s\S]*?)>{7}[^\n]*(?:\r?\n|$)/g,
+        (_match, ours, theirs) => ours.trim() + "\n" + theirs.trim() + "\n",
+      );
     }
+    if (content.includes("<<<<<<<") || /(^|[\\/])app\.txt$/.test(p)) {
+      content = "after\nupstream line\n";
+    }
+    fs.writeFileSync(fullPath, content);
   }
   result = {
     receipt: {
       request_id: m.request_id || m.request?.id || "req-fixture",
       workflow_id: process.env.DEVFLOW_WORKFLOW_ID,
       run_id: process.env.DEVFLOW_RUN_ID,
-      candidate_commit: m.candidate_commit,
-      source_commit: m.source_commit,
+      candidate_commit: m.candidate_commit || m.request?.candidate_commit,
+      source_commit: m.source_commit || m.request?.source_commit,
       status: process.env.FIXTURE_CONFLICT_STATUS || "resolved",
       resolved_paths: m.conflict_paths || [],
+      function_impact: "none",
+      function_impact_explanation: "冲突双方文本均保留，无外部行为变更",
       blockers: process.env.FIXTURE_CONFLICT_BLOCKERS
         ? JSON.parse(process.env.FIXTURE_CONFLICT_BLOCKERS)
         : undefined,
@@ -177,6 +180,8 @@ if (stage === "planning") {
   await new Promise((r) => setTimeout(r, 100));
   if (code !== 0) process.exit(1);
   result = {
+    status: "completed",
+    summary: "已修改 app.txt 并完成本轮自测",
     delivery: {
       submission_id: "sub-" + process.env.DEVFLOW_RUN_ID,
       implementations: [{ task_id: "T01", repo_id: "main", path: "app.txt" }],
