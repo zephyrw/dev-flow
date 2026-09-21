@@ -98,6 +98,11 @@ export function accountFixture(store: Store) {
     },
   ];
   const probe: AccountProbePort = {
+    probeIdentity: async () => ({
+      email: `${active}@example.com`,
+      cli_version: "2.0.0",
+      raw_output: "agy whoami",
+    }),
     probeUsage: async () => {
       calls++;
       const observed = windows(active === "b" ? 0.9 : 0.5);

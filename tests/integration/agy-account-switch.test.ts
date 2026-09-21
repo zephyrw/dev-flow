@@ -61,6 +61,11 @@ describe("AGY Account Switch Concurrency & CAS Integrity (AC-I04 & AC-I25)", () 
     };
 
     const mockProbe: AccountProbePort = {
+      probeIdentity: async () => ({
+        email: "target@example.com",
+        cli_version: "1.2.7",
+        raw_output: "agy whoami",
+      }),
       probeUsage: async () => ({
         email: "target@example.com",
         cli_version: "1.2.7",
@@ -124,7 +129,7 @@ describe("AGY Account Switch Concurrency & CAS Integrity (AC-I04 & AC-I25)", () 
       credential_revision: 1,
       state: "ready",
       enrolled_at: new Date().toISOString(),
-      auth: { has_refresh_credential: true, refresh_expiry_source: "not_provided" },
+      auth: { has_refresh_credential: true, metadata_status: "verified", refresh_expiry_source: "not_provided" },
     };
     const a2: AgyAccount = {
       id: "acc-2",
@@ -136,7 +141,7 @@ describe("AGY Account Switch Concurrency & CAS Integrity (AC-I04 & AC-I25)", () 
       credential_revision: 1,
       state: "ready",
       enrolled_at: new Date().toISOString(),
-      auth: { has_refresh_credential: true, refresh_expiry_source: "not_provided" },
+      auth: { has_refresh_credential: true, metadata_status: "verified", refresh_expiry_source: "not_provided" },
     };
     repo.saveAccount(a1);
     repo.saveAccount(a2);
@@ -189,7 +194,7 @@ describe("AGY Account Switch Concurrency & CAS Integrity (AC-I04 & AC-I25)", () 
       credential_revision: 1,
       state: "ready",
       enrolled_at: new Date().toISOString(),
-      auth: { has_refresh_credential: true, refresh_expiry_source: "not_provided" },
+      auth: { has_refresh_credential: true, metadata_status: "verified", refresh_expiry_source: "not_provided" },
     };
     const a2: AgyAccount = {
       id: "acc-2",
@@ -201,7 +206,7 @@ describe("AGY Account Switch Concurrency & CAS Integrity (AC-I04 & AC-I25)", () 
       credential_revision: 1,
       state: "ready",
       enrolled_at: new Date().toISOString(),
-      auth: { has_refresh_credential: true, refresh_expiry_source: "not_provided" },
+      auth: { has_refresh_credential: true, metadata_status: "verified", refresh_expiry_source: "not_provided" },
     };
     repo.saveAccount(a1);
     repo.saveAccount(a2);

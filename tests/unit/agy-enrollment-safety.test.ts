@@ -46,7 +46,7 @@ describe("enrollment safety under a durable operation", () => {
     const { service, repository } = setup();
     const result = await service.enrollCurrentAccount("realm", "alias", context);
     expect(result.account).toMatchObject({ state: "pending_quota", credential_revision: 3,
-      auth: { has_refresh_credential: false, refresh_expiry_source: "not_provided" } });
+      auth: { has_refresh_credential: null, refresh_expiry_source: "not_provided" } });
     expect(result.account?.enrollment_completed_at).toBeUndefined();
     expect(result.account?.auth.last_refresh_verified_at).toBeUndefined();
     expect(repository.saveQuotaSnapshot).not.toHaveBeenCalled();

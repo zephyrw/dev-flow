@@ -32,6 +32,10 @@ async function fixture() {
     deleteSaved: async () => {},
   };
   const probe: AccountProbePort = {
+    probeIdentity: async () => {
+      const id = state.active.replace("saved_", "");
+      return { email: `${id}@example.test`, cli_version: "fixture", raw_output: "agy whoami" };
+    },
     probeUsage: async () => {
       const id = state.active.replace("saved_", ""); state.probes.push(id);
       const quota = windows(state.actual[id]);
@@ -45,7 +49,7 @@ async function fixture() {
   service.initializeSettings(realmId, { standalone_model_id: model, switch_gap_seconds: 1 });
   repo.saveRealm({ realm_id: realmId, owner: "fixture", active_account_id: "A", active_secret_ref: "saved_A", auth_epoch: 1, phase: "idle", revision: 1, service_state: "stopped", desired_enabled: false, control_generation: 0 });
   for (const [id, balance] of Object.entries(state.actual)) {
-    repo.saveAccount({ id, realm_id: realmId, alias: id, revision: 1, identity: { email: `${id}@example.test`, verified_at: timestamp }, secret_ref: `saved_${id}`, credential_revision: 1, state: "ready", enrolled_at: timestamp, enrollment_completed_at: timestamp, auth: { has_refresh_credential: true, refresh_expiry_source: "not_provided" } });
+    repo.saveAccount({ id, realm_id: realmId, alias: id, revision: 1, identity: { email: `${id}@example.test`, verified_at: timestamp }, secret_ref: `saved_${id}`, credential_revision: 1, state: "ready", enrolled_at: timestamp, enrollment_completed_at: timestamp, auth: { has_refresh_credential: true, metadata_status: "verified", refresh_expiry_source: "not_provided" } });
     repo.saveQuotaSnapshot({ id: `quota_${id}`, realm_id: realmId, account_id: id, auth_epoch: 1, pool_id: pool, model_ids: [model], source: "official_cli_usage", cli_version: "fixture", parser_revision: 1, observed_at: timestamp, executable_fingerprint: "isolated-fixture", capability_verified: true, windows: windows(balance) });
   }
   cleanup.push(async () => { await service.close(); store.close(); rmSync(dir, { recursive: true, force: true }); });

@@ -3,6 +3,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { z } from "zod";
 import type { Store } from "../../store/src/store.js";
+import { AgyAccountRepository } from "../../agy-accounts/src/repository.js";
 import {
   FlowError,
   ModelAccessRecordSchema,
@@ -26,8 +27,8 @@ import { resolveModelSelection } from "../../adapters/sdk/src/model-selection.js
 import { selectionCapabilityFromCatalog } from "../../adapters/sdk/src/frozen-invocation.js";
 import { parseStructuredProbeTerminal } from "../../adapters/sdk/src/probe-terminal.js";
 import { nativeProfileSupported } from "../../adapters/sdk/src/native-identity.js";
-import { fingerprintModelIdentity, modelIdentityKey, resolveModelIdentity, resolveModelIdentityInput, readManagedAgyModelIdentity, resolveModelExecutable, type AccessIdentityInput, type ManagedAgyModelIdentity } from "./model-identity.js";
-export type { AccessIdentityInput } from "./model-identity.js";
+import { fingerprintModelIdentity, modelIdentityKey, resolveModelIdentity, resolveModelIdentityInput, readManagedAgyModelIdentity, resolveModelExecutable, managedAgyAccountIdentityId, type AccessIdentityInput, type ManagedAgyModelIdentity, type VerifiedCandidateIdentity } from "./model-identity.js";
+export type { AccessIdentityInput, VerifiedCandidateIdentity } from "./model-identity.js";
 import type {
   PreparedInvocation,
   ResolvedSelection,
@@ -92,6 +93,11 @@ export type ModelAccessServiceOptions = {
     identity: ManagedAgyModelIdentity,
     verify: () => Promise<T>,
   ) => Promise<T>;
+  candidateVerifier?: (
+    lease: VerifiedCandidateIdentity,
+    frozen: FrozenInvocation,
+    profile: ToolProfile,
+  ) => Promise<boolean | { success: boolean; errorCode?: string; message?: string }>;
 };
 
 type FingerprintedIdentity = {
@@ -653,6 +659,62 @@ export class ModelAccessService {
     return resolveModelIdentityInput(this.store, profile);
   }
 
+  recordAccountRecoveryAccess(profile: ToolProfile, frozen: FrozenInvocation, operationId: string): ModelAccessRecord {
+    this.assertProfileSupported(profile);
+    const native = this.resolveNativeConfig(profile);
+    const repository = new AgyAccountRepository(this.store);
+    const operation = repository.getOperation(operationId);
+    const commit = repository.getFinalAccountCommit(operationId);
+    const identity = readManagedAgyModelIdentity(this.store);
+    if (frozen.adapterId !== "agy" || profile.adapterId !== "agy" ||
+        frozen.accountScope !== native.accountFingerprint ||
+        frozen.providerScope !== native.providerEndpointFingerprint ||
+        !operation || !commit || !identity || operation.cancel_requested ||
+        !["committed", "recovering", "completed"].includes(operation.phase) ||
+        commit.realm_id !== operation.realm_id || commit.realm_id !== identity.realmId ||
+        commit.account_id !== identity.accountId || commit.auth_epoch !== identity.authEpoch ||
+        (commit.credential_revision !== undefined && commit.credential_revision !== identity.credentialRevision)) {
+      throw new FlowError("MODEL_IDENTITY_CHANGED", "账号恢复的已提交身份或验证记录已变化", 409);
+    }
+    const proof = operation.candidate_results.find((candidate) =>
+      candidate.account_id === commit.account_id &&
+      candidate.credential_revision === identity.credentialRevision &&
+      frozen.modelToken !== null && candidate.verified_model_ids.includes(frozen.modelToken));
+    // Restoring the old account or a legacy operation does not prove access.
+    if (!proof || commit.outcome !== "switched" || !Number.isFinite(Date.parse(proof.verified_at)))
+      return this.assertFrozenAccess(profile, frozen);
+    const accessKey = accessRecordId({
+      adapterId: frozen.adapterId,
+      nativeConfigScope: native.nativeConfigScope,
+      accountFingerprint: native.accountFingerprint,
+      providerEndpointFingerprint: native.providerEndpointFingerprint ?? "",
+      accessModelKey: frozen.accessModelKey,
+    });
+    const cached = this.getAccess(accessKey);
+    // A failure observed after this probe must never be replaced by its success.
+    if (cached && Date.parse(cached.checked_at) >= Date.parse(proof.verified_at))
+      return this.assertFrozenAccess(profile, frozen);
+    const checked = proof.verified_at;
+    const record = ModelAccessRecordSchema.parse({
+      key: accessKey,
+      status: "verified",
+      checked_at: checked,
+      adapterId: frozen.adapterId,
+      cliFingerprint: objectHash({
+        executable: frozen.executable,
+        capabilityRevision: frozen.capabilityRevision,
+      }),
+      accountScope: native.accountFingerprint,
+      providerScope: native.providerEndpointFingerprint ?? "",
+      accessModelKey: frozen.accessModelKey,
+      verification_method: "native-probe",
+      last_success_at: checked,
+      identityConfidence: "verified",
+    });
+    this.putAccess(record);
+    return record;
+  }
+
   assertFrozenAccess(profile: ToolProfile, frozen: FrozenInvocation): ModelAccessRecord {
     this.assertProfileSupported(profile);
     const native = this.resolveNativeConfig(profile);
@@ -668,6 +730,141 @@ export class ModelAccessService {
       providerEndpointFingerprint: frozen.providerScope,
       accessModelKey: frozen.accessModelKey,
     }));
+  }
+
+  async verifyFrozenForAccountRecovery(
+    frozen: FrozenInvocation,
+    profile: ToolProfile,
+    auxiliaryLease: VerifiedCandidateIdentity,
+    _recoveryRef?: string,
+  ): Promise<ModelAccessRecord> {
+    this.assertProfileSupported(profile);
+
+    // 1. 验证辅助许可持有与有效性 (消除 N07: 必须查询独立 AuxiliaryLease 并校验对应 operation)
+    if (!auxiliaryLease.lease_id || !auxiliaryLease.realm_id || !auxiliaryLease.account_id) {
+      throw new FlowError("INVALID_REQUEST", "候选账号验证缺少辅助许可参数", 422);
+    }
+    const lease = this.store.get<{
+      lease_id: string;
+      operation_id: string;
+      realm_id: string;
+      account_id: string;
+      status?: string;
+    }>("agy_auxiliary_lease", auxiliaryLease.lease_id);
+    if (!lease || lease.account_id !== auxiliaryLease.account_id || lease.realm_id !== auxiliaryLease.realm_id) {
+      throw new FlowError("LEASE_INVALID", "候选账号验证缺少有效的独立辅助租约", 403);
+    }
+    const operation = this.store.get<{
+      operation_id?: string;
+      realm_id?: string;
+      phase?: string;
+      cancel_requested?: boolean;
+    }>("agy_account_operation", lease.operation_id);
+    if (!operation) {
+      throw new FlowError("OPERATION_NOT_FOUND", "辅助租约关联的账号操作不存在", 404);
+    }
+    if (operation.cancel_requested || operation.phase === "cancelled" || operation.phase === "failed") {
+      throw new FlowError("OPERATION_CANCELLED", "当前账号切换操作已取消或失败", 409);
+    }
+
+    // 2. 候选身份计算 - 显式绕开 committed realm A，使用候选账号 B 计算 native
+    const native = this.resolveNativeConfig(profile, undefined, auxiliaryLease);
+    const accessKey = accessRecordId({
+      adapterId: frozen.adapterId,
+      nativeConfigScope: native.nativeConfigScope,
+      accountFingerprint: native.accountFingerprint,
+      providerEndpointFingerprint: native.providerEndpointFingerprint ?? "",
+      accessModelKey: frozen.accessModelKey,
+    });
+
+    const cached = this.getAccess(accessKey);
+    if (cached && cached.status === "verified") {
+      return cached;
+    }
+
+    // 3. 执行真实内部受控验证 (消除 N07: 彻底删除 --version 假验证分支，无真实验证器保持 waiting_access)
+    let verifySuccess = false;
+    let verifyError: { code?: string; message?: string } | undefined;
+
+    if (this.options.candidateVerifier) {
+      const outcome = await this.options.candidateVerifier(auxiliaryLease, frozen, profile);
+      if (typeof outcome === "boolean") {
+        verifySuccess = outcome;
+      } else {
+        verifySuccess = outcome.success;
+        if (!outcome.success) {
+          verifyError = { code: outcome.errorCode, message: outcome.message };
+        }
+      }
+    } else {
+      throw new FlowError(
+        "CAPABILITY_UNVERIFIED",
+        "未配置真实受控候选验证器，候选模型保持 waiting_access 状态",
+        422,
+      );
+    }
+
+    // 4. 结束核验：再次核查操作状态与 lease 是否有效
+    const postLease = this.store.get<{
+      lease_id: string;
+      status?: string;
+    }>("agy_auxiliary_lease", auxiliaryLease.lease_id);
+    if (!postLease || postLease.status === "revoked") {
+      throw new FlowError("LEASE_REVOKED", "候选账号验证完成时辅助租约已被撤销", 409);
+    }
+    const postOp = this.store.get<{
+      operation_id?: string;
+      phase?: string;
+      cancel_requested?: boolean;
+    }>("agy_account_operation", lease.operation_id);
+    if (postOp && (postOp.cancel_requested || postOp.phase === "cancelled" || postOp.phase === "failed")) {
+      throw new FlowError("OPERATION_CANCELLED", "候选账号验证完成时操作已被取消", 409);
+    }
+
+    // 5. 真实成功后写 B 的既有缓存键，否则写失败状态并抛错
+    const checked = now();
+    if (verifySuccess) {
+      const record = ModelAccessRecordSchema.parse({
+        key: accessKey,
+        status: "verified",
+        checked_at: checked,
+        adapterId: frozen.adapterId,
+        cliFingerprint: objectHash({
+          executable: frozen.executable,
+          capabilityRevision: frozen.capabilityRevision,
+        }),
+        accountScope: native.accountFingerprint,
+        providerScope: native.providerEndpointFingerprint ?? "",
+        accessModelKey: frozen.accessModelKey,
+        verification_method: "native-probe",
+        last_success_at: checked,
+        identityConfidence: "verified",
+      });
+      this.putAccess(record);
+      return record;
+    } else {
+      const failureRecord = ModelAccessRecordSchema.parse({
+        key: accessKey,
+        status: "unavailable",
+        checked_at: checked,
+        adapterId: frozen.adapterId,
+        cliFingerprint: objectHash({
+          executable: frozen.executable,
+          capabilityRevision: frozen.capabilityRevision,
+        }),
+        accountScope: native.accountFingerprint,
+        providerScope: native.providerEndpointFingerprint ?? "",
+        accessModelKey: frozen.accessModelKey,
+        verification_method: "native-probe",
+        identityConfidence: native.identityConfidence,
+      });
+      this.putAccess(failureRecord);
+      throw new FlowError(
+        verifyError?.code ?? "MODEL_UNAVAILABLE",
+        verifyError?.message ?? "候选账号未能通过冻结模型访问核验",
+        422,
+      );
+    }
   }
 
   assertProfileSupported(profile: ToolProfile): void {
@@ -695,8 +892,9 @@ export class ModelAccessService {
   resolveNativeConfig(
     profile: ToolProfile,
     identityInput?: AccessIdentityInput,
+    candidateIdentity?: VerifiedCandidateIdentity,
   ): NativeResolvedConfig {
-    return resolveModelIdentity(this.store, profile, identityInput);
+    return resolveModelIdentity(this.store, profile, identityInput, candidateIdentity);
   }
 
   seedVerified(

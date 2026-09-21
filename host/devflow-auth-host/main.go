@@ -57,9 +57,10 @@ type VaultEnvelope struct {
 	Credential CredentialRecord
 }
 type CredentialInfo struct {
-	Exists    bool   `json:"exists"`
-	SecretRef string `json:"secret_ref,omitempty"`
-	AccountID string `json:"account_id,omitempty"`
+	Exists    bool              `json:"exists"`
+	SecretRef string            `json:"secret_ref,omitempty"`
+	AccountID string            `json:"account_id,omitempty"`
+	Auth      *SafeAuthMetadata `json:"auth,omitempty"`
 }
 
 var referencePattern = regexp.MustCompile(`^(sec|bak)_[a-f0-9]{32}$`)
@@ -112,7 +113,12 @@ func capture(a CommonArgs, prefix string) (map[string]interface{}, error) {
 	}
 	activeRef = ref
 	activeRealm = a.RealmId
-	return map[string]interface{}{"secret_ref": ref, "credential_revision": rev}, nil
+	meta := ExtractSafeMetadata(c.Secret)
+	return map[string]interface{}{
+		"secret_ref":          ref,
+		"credential_revision": rev,
+		"auth":                meta,
+	}, nil
 }
 func compare(realm, ref string) (bool, error) {
 	if !referencePattern.MatchString(ref) {
@@ -203,6 +209,10 @@ func handleAction(action string, raw json.RawMessage) (interface{}, error) {
 			return nil, e
 		}
 		info := CredentialInfo{Exists: c.Exists}
+		if c.Exists {
+			meta := ExtractSafeMetadata(c.Secret)
+			info.Auth = &meta
+		}
 		if activeRef != "" && activeRealm == a.RealmId {
 			ok, e := compare(a.RealmId, activeRef)
 			if e != nil {

@@ -17,6 +17,7 @@ import type {
   AgyAccountSettingsPatch,
   AgyAccount,
   AgyQuotaSnapshot,
+  AgyPendingDemand,
 } from "../../contracts/src/agy-account.js";
 import type { AgyAccountRepository } from "./repository.js";
 import type {
@@ -35,9 +36,10 @@ import { AgyReconciler } from "./reconcile.js";
 import { AgyEnrollmentService } from "./enrollment.js";
 import { AgyManualSwitchService } from "./manual-switch.js";
 import { AgyMaintenanceService } from "./maintenance.js";
-import { selectCandidates } from "./selector.js";
+import { selectCandidates, evaluateAccountForDemand } from "./selector.js";
 import { computeDomainWait } from "./wait-policy.js";
 import { AgyDomainCoordinator } from "./coordinator.js";
+import { AgyLoginLauncher } from "./login.js";
 
 export class AccountServiceError extends Error {
   constructor(
@@ -103,6 +105,9 @@ export interface AccountOperationRequest {
   expected_identity?: string;
   selected_account_ids?: string[];
   operation_id?: string;
+  workflow_id?: string;
+  source_run_id?: string;
+  original_operation_id?: string;
 }
 
 export interface WorkflowAccountOperationRequest
@@ -113,6 +118,12 @@ export interface WorkflowAccountOperationRequest
   allowed_account_ids?: string[] | null;
   night_pool?: "normal" | "strict";
   required_model_ids?: string[];
+}
+
+export interface WorkflowWaitReference {
+  original_operation_id: string;
+  workflow_id?: string;
+  source_run_id?: string;
 }
 
 export class DefaultClockPort implements ClockPort {
@@ -139,6 +150,17 @@ export class AgyAccountService {
   private coordinator = new AgyDomainCoordinator();
   private consumerIds = new Map<AccountConsumerPort, string>();
   private activeAbort?: AbortController;
+  private capabilitySnapshot?: any;
+  private workflowWaitValidator?: (ref: WorkflowWaitReference) => boolean;
+  private workflowWaitDiscarded?: (ref: WorkflowWaitReference) => void;
+
+  setWorkflowWaitValidator(
+    validator: ((ref: WorkflowWaitReference) => boolean) | undefined,
+    onDiscard?: (ref: WorkflowWaitReference) => void,
+  ): void {
+    this.workflowWaitValidator = validator;
+    this.workflowWaitDiscarded = onDiscard;
+  }
 
   constructor(
     private repository: AgyAccountRepository,
@@ -147,7 +169,10 @@ export class AgyAccountService {
     private processHost: ProcessHostPort,
     private clock: ClockPort = new DefaultClockPort(),
     private audit?: AuditPort,
+    loginLauncher?: AgyLoginLauncher,
+    capabilitySnapshot?: any,
   ) {
+    this.capabilitySnapshot = capabilitySnapshot;
     this.switchExecutor = new SwitchOperationExecutor(
       this.repository,
       this.authHost,
@@ -167,6 +192,7 @@ export class AgyAccountService {
       this.repository,
       this.authHost,
       this.probe,
+      loginLauncher,
     );
     this.manualSwitchService = new AgyManualSwitchService(
       this.repository,
@@ -232,23 +258,10 @@ export class AgyAccountService {
     );
   }
 
-  resolveModelPools(modelId: string, realmId = "default-agy-realm"): string[] {
-    const pools = [
-      ...new Set(
-        this.repository
-          .listQuotaSnapshots(realmId)
-          .filter(
-            (s) =>
-              s.capability_verified &&
-              s.executable_fingerprint &&
-              s.model_ids.includes(modelId),
-          )
-          .map((s) => s.pool_id),
-      ),
-    ];
-    if (!pools.length)
-      throw new AccountServiceError("model_quota_capability_unavailable");
-    return pools;
+  resolveModelPools(_modelId: string, _realmId = "default-agy-realm"): string[] {
+    // Compatibility entry point: quota admission always checks the two account windows.
+    // Selecting this key grants no usage permit; observed quota is checked separately.
+    return ["global"];
   }
 
   private deduplicate<T>(
@@ -396,28 +409,10 @@ export class AgyAccountService {
       realm = this.repository.getRealm(realmId);
     const accounts = this.repository.listAccounts(realmId),
       snapshots = this.repository.listQuotaSnapshots(realmId);
-    let pools: string[] = [],
-      reason: string | undefined;
-    try {
-      if (!settings.standalone_model_id)
-        throw new AccountServiceError("target_model_required");
-      pools = this.resolveModelPools(settings.standalone_model_id, realmId);
-    } catch (error) {
-      reason = (error as Error).message;
-    }
-    const selection = pools.length
-      ? selectCandidates(accounts, snapshots, pools, this.clock.now(), {
-          reset_clock_skew_seconds: settings.reset_clock_skew_seconds,
-        })
-      : {
-          ranked_candidates: [],
-          excluded_accounts: accounts.map((a) => ({
-            account_id: a.id,
-            alias: a.alias,
-            reason: reason!,
-          })),
-          next_eligible_at: null,
-        };
+    const pools = ["global"];
+    const selection = selectCandidates(accounts, snapshots, pools, this.clock.now(), {
+      reset_clock_skew_seconds: settings.reset_clock_skew_seconds,
+    });
     const { active_secret_ref: _secret, ...publicRealm } = realm ?? {};
     return {
       accounts: accounts.map((a) => AgyAccountDtoSchema.parse(a)),
@@ -429,8 +424,35 @@ export class AgyAccountService {
       next_eligible_at: selection.next_eligible_at,
       required_pool_ids: pools,
       model_id: settings.standalone_model_id,
-      capability: { supported: !reason, reason },
+      capability: {
+        supported: this.capabilitySnapshot?.supported ?? true,
+        reason: this.capabilitySnapshot?.reason,
+        snapshot: this.getCapabilitySnapshot(),
+      },
     };
+  }
+
+  getCapabilitySnapshot(): any {
+    if (this.capabilitySnapshot) return this.capabilitySnapshot;
+    return {
+      host_platform: process.platform,
+      host_version: "2.0.0",
+      dpapi_available: process.platform === "win32",
+      cred_manager_available: process.platform === "win32",
+      named_mutex_available: process.platform === "win32",
+      capabilities: {
+        identity: { status: "unverified", reason: "未执行能力核验" },
+        dual_quota: { status: "unverified", reason: "未执行能力核验" },
+        interactive_login: { status: "unverified", reason: "未执行能力核验" },
+        model_access: { status: "unverified", reason: "未执行能力核验" },
+      },
+      supported: false,
+      reason: "能力快照未就绪",
+    };
+  }
+
+  setCapabilitySnapshot(snapshot: any): void {
+    this.capabilitySnapshot = snapshot;
   }
 
   // 模块启动
@@ -643,8 +665,14 @@ export class AgyAccountService {
     realm.revision += 1;
     this.repository.saveRealm(realm);
 
-    // 释放域等待
+    // 释放域等待并废止旧 waiting/deferred demand (R04)
     this.repository.clearDomainWait(input.realmId);
+    const pendingDemands = this.repository.listDemands(input.realmId).filter(
+      (d) => d.status === "waiting" || d.status === "deferred" || d.status === "selected",
+    );
+    for (const d of pendingDemands) {
+      this.cancelWaitingDemand(input.realmId, d, "service_stopped");
+    }
 
     this.activeAbort?.abort();
     if (realm.pending_operation_id) {
@@ -655,6 +683,7 @@ export class AgyAccountService {
         operation.cancel_requested = true;
         operation.revision++;
         this.repository.saveOperation(operation);
+        this.discardOperationWait(operation);
       }
     }
     if (
@@ -738,7 +767,7 @@ export class AgyAccountService {
     await this.processHost.listManagedProcesses(input.realm_id);
     if ((await this.processHost.findExternalAgyProcesses()).length)
       throw new AccountServiceError("external_owner");
-    const realm = this.repository.getRealm(input.realm_id);
+    let realm = this.repository.getRealm(input.realm_id);
     if (
       !realm ||
       realm.service_state !== "running" ||
@@ -754,25 +783,94 @@ export class AgyAccountService {
         `No active AGY account selected for realm ${input.realm_id}`,
       );
     }
-    if (!input.required_pool_ids.length)
-      throw new AccountServiceError("target_pool_required");
-    const selection = selectCandidates(
-      this.repository.listAccounts(input.realm_id),
-      this.repository.listQuotaSnapshots(input.realm_id),
-      input.required_pool_ids,
-      this.clock.now(),
-      {
-        allowed_account_ids: input.allowed_account_ids,
-        reset_clock_skew_seconds: this.initializeSettings(input.realm_id)
-          .reset_clock_skew_seconds,
-      },
+    let activeAccount = this.repository.getAccount(
+      input.realm_id,
+      realm.active_account_id,
     );
-    if (
-      !selection.ranked_candidates.some(
-        (c) => c.account_id === realm.active_account_id,
-      )
-    )
+    if (!activeAccount) {
       throw new AccountServiceError("active_account_unavailable");
+    }
+
+    const poolsToEvaluate = input.required_pool_ids.length > 0 ? input.required_pool_ids : ["global"];
+    let evalOutput = evaluateAccountForDemand({
+      account: activeAccount,
+      snapshots: this.repository.listQuotaSnapshots(input.realm_id),
+      policy: {
+        required_pool_ids: poolsToEvaluate,
+        required_model_ids: input.required_model_ids,
+        allowed_account_ids: input.allowed_account_ids,
+        reset_clock_skew_seconds: this.initializeSettings(input.realm_id).reset_clock_skew_seconds,
+      },
+      evaluationTime: this.clock.now(),
+    });
+
+    // Q01/R05 修复：区分 candidate 与 permit。核对返回身份及凭据上下文，再保存快照
+    if (!evalOutput.eligible_for_permit && evalOutput.eligible_for_candidate) {
+      try {
+        const fresh = await this.probe.probeUsage({
+          account_id: activeAccount.id,
+          credential_revision: activeAccount.credential_revision,
+          timeoutMs: this.initializeSettings(input.realm_id).probe_timeout_seconds * 1000,
+        });
+        if (
+          fresh.capability_verified &&
+          fresh.email &&
+          fresh.email.trim().toLowerCase() === activeAccount.identity.email.trim().toLowerCase()
+        ) {
+          // 同账号真实刷新：捕获最新凭据引用，更新账号与 realm，避免后置 compareActive 误判 external_change (R05)
+          try {
+            const capture = await this.authHost.captureActive(input.realm_id, activeAccount.id);
+            this.saveCapture(input.realm_id, activeAccount.id, capture);
+            const currentRealm = this.repository.getRealm(input.realm_id);
+            if (currentRealm) {
+              currentRealm.active_secret_ref = capture.secret_ref;
+              currentRealm.last_capture_at = this.clock.toISOString();
+              currentRealm.revision++;
+              this.repository.saveRealm(currentRealm);
+              realm = currentRealm;
+            }
+            activeAccount = this.repository.getAccount(input.realm_id, activeAccount.id)!;
+          } catch {}
+
+          for (const p of fresh.pools) {
+            this.repository.saveQuotaSnapshot({
+              id: `snp_refresh_${activeAccount.id}_${Date.now()}`,
+              realm_id: input.realm_id,
+              account_id: activeAccount.id,
+              auth_epoch: realm.auth_epoch,
+              pool_id: p.pool_id,
+              model_ids: p.model_ids,
+              source: "official_cli_usage",
+              cli_version: fresh.cli_version,
+              parser_revision: 1,
+              executable_fingerprint: fresh.executable_fingerprint,
+              capability_verified: fresh.capability_verified,
+              observed_at: this.clock.toISOString(),
+              windows: p.windows,
+            });
+          }
+        }
+      } catch (err: any) {
+        if (err?.code === "PROCESS_STOP_UNCONFIRMED" || err?.name === "ProcessStopUnconfirmedError") {
+          throw err;
+        }
+      }
+      evalOutput = evaluateAccountForDemand({
+        account: activeAccount,
+        snapshots: this.repository.listQuotaSnapshots(input.realm_id),
+        policy: {
+          required_pool_ids: poolsToEvaluate,
+          required_model_ids: input.required_model_ids,
+          allowed_account_ids: input.allowed_account_ids,
+          reset_clock_skew_seconds: this.initializeSettings(input.realm_id).reset_clock_skew_seconds,
+        },
+        evaluationTime: this.clock.now(),
+      });
+    }
+
+    if (!evalOutput.eligible_for_permit) {
+      throw new AccountServiceError("active_account_unavailable");
+    }
     if (
       !realm.active_secret_ref ||
       !(await this.authHost.compareActive(
@@ -781,10 +879,6 @@ export class AgyAccountService {
       ))
     )
       throw new AccountServiceError("external_change");
-    const activeAccount = this.repository.getAccount(
-      input.realm_id,
-      realm.active_account_id,
-    )!;
     for (const modelId of input.required_model_ids ?? [])
       if (
         !(await this.probe.probeModelAccess(modelId, {
@@ -993,6 +1087,75 @@ export class AgyAccountService {
     return this.acceptOperation(input, input);
   }
 
+  private demandWaitReference(demand: AgyPendingDemand): WorkflowWaitReference {
+    const saved = demand.opaque_recovery_ref as Partial<WorkflowWaitReference> | undefined;
+    const originalId = saved?.original_operation_id ?? demand.fairness_key;
+    const original = this.repository.getOperation(originalId);
+    return {
+      original_operation_id: originalId,
+      workflow_id: saved?.workflow_id ?? original?.workflow_id,
+      source_run_id: saved?.source_run_id ?? original?.source_run_id,
+    };
+  }
+
+  private discardOperationWait(operation: AgyAccountOperation): void {
+    this.workflowWaitDiscarded?.({
+      original_operation_id: operation.original_operation_id ?? operation.operation_id,
+      workflow_id: operation.workflow_id,
+      source_run_id: operation.source_run_id,
+    });
+  }
+
+  private waitInvalidReason(
+    realmId: string,
+    generation: number,
+    ref: WorkflowWaitReference,
+  ): string | undefined {
+    const original = this.repository.getOperation(ref.original_operation_id);
+    if (!original || original.realm_id !== realmId) return "original_operation_missing";
+    if (original.cancel_requested || ["completed", "failed", "cancelled"].includes(original.phase))
+      return "original_operation_cancelled_or_finished";
+    if (original.control_generation !== generation) return "control_generation_stale";
+    if (ref.workflow_id || ref.source_run_id) {
+      // Wait until its consumer is attached after startup; absence is not permission to switch.
+      if (!this.workflowWaitValidator) return "workflow_validator_unavailable";
+      try {
+        if (!this.workflowWaitValidator(ref)) return "workflow_source_invalid";
+      } catch {
+        return "workflow_validator_unavailable";
+      }
+    }
+    return undefined;
+  }
+
+  private cancelWaitingDemand(realmId: string, demand: AgyPendingDemand, reason: string): void {
+    demand.status = "cancelled";
+    demand.wake_at = null;
+    demand.last_reason = reason;
+    demand.revision++;
+    this.repository.saveDemand(demand, realmId);
+    const originalId = this.demandWaitReference(demand).original_operation_id;
+    const realm = this.repository.getRealm(realmId);
+    for (const related of this.repository.listOperations(realmId)) {
+      if (
+        (related.original_operation_id ?? related.operation_id) === originalId &&
+        related.phase === "waiting" && realm?.pending_operation_id !== related.operation_id
+      ) {
+        related.cancel_requested = true;
+        related.phase = "cancelled";
+        related.completed_at = this.clock.toISOString();
+        related.revision++;
+        this.repository.saveOperation(related);
+      }
+    }
+    const wait = this.repository.getDomainWait(realmId);
+    const operation = wait?.operation_id ? this.repository.getOperation(wait.operation_id) : undefined;
+    if (operation && (operation.original_operation_id ?? operation.operation_id) ===
+      originalId)
+      this.repository.clearDomainWait(realmId);
+    this.workflowWaitDiscarded?.(this.demandWaitReference(demand));
+  }
+
   private acceptOperation(
     input: AccountOperationRequest,
     trusted?: WorkflowAccountOperationRequest,
@@ -1016,16 +1179,34 @@ export class AgyAccountService {
             input.expected_revision !== op.revision
           )
             throw new AccountServiceError("operation_revision_conflict");
-          if (!["completed", "failed", "cancelled"].includes(op.phase)) {
-            op.cancel_requested = true;
-            op.revision++;
-            this.repository.saveOperation(op);
-            this.activeAbort?.abort();
+          const originalId = op.original_operation_id ?? op.operation_id;
+          for (const demand of this.repository.listDemands(input.realm_id)) {
+            if (
+              this.demandWaitReference(demand).original_operation_id === originalId &&
+              ["waiting", "deferred", "selected"].includes(demand.status)
+            ) this.cancelWaitingDemand(input.realm_id, demand, "operation_cancelled");
           }
+          for (const related of this.repository.listOperations(input.realm_id)) {
+            if (
+              (related.original_operation_id ?? related.operation_id) !== originalId ||
+              ["completed", "failed", "cancelled"].includes(related.phase)
+            ) continue;
+            related.cancel_requested = true;
+            // A detached wait has already restored its identity; no job cleanup remains.
+            if (related.phase === "waiting" && realm.pending_operation_id !== related.operation_id) {
+              related.phase = "cancelled";
+              related.completed_at = this.clock.toISOString();
+            }
+            related.revision++;
+            this.repository.saveOperation(related);
+            if (realm.pending_operation_id === related.operation_id) this.activeAbort?.abort();
+          }
+          const cancelled = this.repository.getOperation(op.operation_id)!;
+          this.discardOperationWait(cancelled);
           return {
-            operation_id: op.operation_id,
-            revision: op.revision,
-            phase: op.phase,
+            operation_id: cancelled.operation_id,
+            revision: cancelled.revision,
+            phase: cancelled.phase,
           };
         }
         if (
@@ -1092,15 +1273,9 @@ export class AgyAccountService {
           if (input.kind === "delete" && account.id === realm.active_account_id)
             throw new AccountServiceError("account_in_use");
         }
-        const model =
-          input.model_id ?? settings.standalone_model_id ?? undefined;
-        if (input.kind === "switch" && !model)
-          throw new AccountServiceError("target_model_required", 400);
-        const pools =
-          input.kind === "switch"
-            ? (trusted?.required_pool_ids ??
-              this.resolveModelPools(model!, input.realm_id))
-            : [];
+        const model = input.model_id ??
+          (trusted ? undefined : settings.standalone_model_id ?? undefined);
+        const pools = input.kind === "switch" ? ["global"] : [];
         const op = AgyAccountOperationSchema.parse({
           operation_id: randomUUID(),
           realm_id: input.realm_id,
@@ -1154,6 +1329,9 @@ export class AgyAccountService {
           allowed_account_ids: trusted?.allowed_account_ids ?? null,
           night_pool: trusted?.night_pool ?? "normal",
           source_event_key: trusted?.source_event_key,
+          workflow_id: input.workflow_id ?? (trusted as any)?.workflow_id,
+          source_run_id: input.source_run_id ?? (trusted as any)?.source_run_id,
+          original_operation_id: input.original_operation_id ?? (trusted as any)?.original_operation_id,
         });
         this.repository.saveOperation(op);
         realm.pending_operation_id = op.operation_id;
@@ -1172,13 +1350,34 @@ export class AgyAccountService {
   // 启动收敛
   async reconcileStartup(): Promise<void> {
     for (const realm of this.repository.listRealms()) {
-      if (!realm.desired_enabled) continue;
       try {
-        await this.start({
-          realmId: realm.realm_id,
-          requestId: `restart_${randomUUID()}`,
-        });
-        await this.reconciler.reconcileStartup(realm.realm_id);
+        if (realm.desired_enabled) {
+          await this.start({
+            realmId: realm.realm_id,
+            requestId: `restart_${randomUUID()}`,
+          });
+          await this.reconciler.reconcileStartup(realm.realm_id);
+        } else {
+          // N04 修复：desired_enabled = false 的域保持 stopped，不改 desired=true
+          // 仅当存在残留未收尾操作时才进入专用 cleanup 周期
+          const hasResidual = this.repository
+            .listOperations(realm.realm_id)
+            .some((op) => op.phase !== "completed" && op.phase !== "failed" && op.phase !== "cancelled");
+          if (hasResidual) {
+            const lock = await this.authHost.acquireDomainLock(realm.realm_id);
+            try {
+              await this.reconciler.reconcileStartup(realm.realm_id);
+            } finally {
+              await lock.release();
+            }
+          }
+          const current = this.repository.getRealm(realm.realm_id)!;
+          if (current.service_state !== "blocked") {
+            current.service_state = "stopped";
+            current.phase = "idle";
+            this.repository.saveRealm(current);
+          }
+        }
       } catch (error) {
         const current = this.repository.getRealm(realm.realm_id)!;
         current.service_state = "blocked";
@@ -1245,6 +1444,20 @@ export class AgyAccountService {
           const operation = this.repository.getOperation(
             realm.pending_operation_id,
           );
+          if (operation?.phase === "waiting" && !operation.cancel_requested) {
+            const reason = this.waitInvalidReason(realm.realm_id, realm.control_generation, {
+              original_operation_id: operation.original_operation_id ?? operation.operation_id,
+              workflow_id: operation.workflow_id,
+              source_run_id: operation.source_run_id,
+            });
+            if (reason === "workflow_validator_unavailable") continue;
+            if (reason) {
+              operation.cancel_requested = true;
+              operation.revision++;
+              this.repository.saveOperation(operation);
+              this.discardOperationWait(operation);
+            }
+          }
           if (
             operation &&
             operation.phase !== "blocked" &&
@@ -1259,6 +1472,76 @@ export class AgyAccountService {
             await this.coordinator.enqueue(() =>
               this.driveOperation(operation),
             );
+        } else if (realm.service_state === "running" && !this.coordinator.isBusy()) {
+          // N03 / Q05 / R04 修复：当 pending_operation_id 为空时，扫描到期且同代次的有效 demand
+          const dueDemands = this.repository.listDemands(realm.realm_id).filter((d) => {
+            if ((d.status !== "waiting" && d.status !== "deferred") || !d.wake_at || now < Date.parse(d.wake_at)) {
+              return false;
+            }
+            if (d.control_generation !== realm.control_generation) {
+              this.cancelWaitingDemand(realm.realm_id, d, "control_generation_stale");
+              return false;
+            }
+            const reason = this.waitInvalidReason(
+              realm.realm_id, realm.control_generation, this.demandWaitReference(d),
+            );
+            if (reason) {
+              if (reason !== "workflow_validator_unavailable")
+                this.cancelWaitingDemand(realm.realm_id, d, reason);
+              return false;
+            }
+            return true;
+          });
+          if (dueDemands.length > 0) {
+            const dueDemand = dueDemands[0]!;
+            const prevWake = dueDemand.wake_at;
+            dueDemand.consumed_wake_key = dueDemand.wake_at!;
+            dueDemand.wake_at = null;
+            dueDemand.status = "selected";
+            dueDemand.revision++;
+            this.repository.saveDemand(dueDemand, realm.realm_id);
+
+            const ref = this.demandWaitReference(dueDemand);
+
+            await this.coordinator.enqueue(async () => {
+              try {
+                const current = this.repository.getRealm(realm.realm_id);
+                const demand = this.repository.getDemand(dueDemand.demand_id);
+                if (!current || !demand || demand.status !== "selected") return;
+                const reason = current.control_generation !== demand.control_generation
+                  ? "control_generation_stale"
+                  : this.waitInvalidReason(current.realm_id, current.control_generation, ref);
+                if (reason && reason !== "workflow_validator_unavailable") {
+                  this.cancelWaitingDemand(current.realm_id, demand, reason);
+                  return;
+                }
+                if (reason || current.service_state !== "running" || !current.desired_enabled)
+                  throw new AccountServiceError(reason ?? "account_service_not_running");
+                await this.requestWorkflowOperation({
+                  realm_id: realm.realm_id,
+                  request_id: randomUUID(),
+                  kind: "switch",
+                  trigger: "workflow_quota",
+                  ...ref,
+                  source_event_key: `wake_${dueDemand.demand_id}_${Date.now()}`,
+                  required_pool_ids: dueDemand.required_pool_ids.length > 0 ? dueDemand.required_pool_ids : ["global"],
+                  allowed_account_ids: dueDemand.allowed_account_ids,
+                  night_pool: dueDemand.night_pool,
+                  required_model_ids: dueDemand.required_model_keys,
+                  expected_epoch: current.auth_epoch,
+                });
+              } catch (err) {
+                // Q05: 失败时不吞掉，恢复 waiting 状态，防止永久丢失唤醒
+                const d = this.repository.getDemand(dueDemand.demand_id);
+                if (d && d.status === "selected") {
+                  d.status = "waiting";
+                  d.wake_at = prevWake;
+                  d.revision++;
+                  this.repository.saveDemand(d, realm.realm_id);
+                }
+              }
+            });
+          }
         }
         const current = this.repository.getRealm(realm.realm_id)!;
         if (
@@ -1337,6 +1620,21 @@ export class AgyAccountService {
       );
     try {
       if (!["committed", "recovering"].includes(op.phase)) {
+        if (op.original_operation_id && !op.cancel_requested) {
+          const reason = this.waitInvalidReason(op.realm_id, op.control_generation, {
+            original_operation_id: op.original_operation_id,
+            workflow_id: op.workflow_id,
+            source_run_id: op.source_run_id,
+          });
+          if (reason === "workflow_validator_unavailable") return;
+          if (reason) {
+            op.cancel_requested = true;
+            op.revision++;
+            this.repository.saveOperation(op);
+            this.discardOperationWait(op);
+            throw new AccountServiceError("operation_cancelled");
+          }
+        }
         this.assertOperation(op, signal);
         const external = await this.processHost.findExternalAgyProcesses();
         if (external.length) {
@@ -1368,6 +1666,7 @@ export class AgyAccountService {
               op.trigger.startsWith("workflow")
             ) {
               op.retry_at = result.next_eligible_at ?? undefined;
+              op.deadline_at = undefined; // Q05 修复：清除切号单次300秒超时，避免长等待提前超时
               this.repository.saveDomainWait({
                 realm_id: op.realm_id,
                 operation_id: op.operation_id,
@@ -1388,7 +1687,9 @@ export class AgyAccountService {
           op = this.repository.getOperation(op.operation_id)!;
         }
       }
-      if (await this.deliverConsumers(op))
+      const currentRealm = this.repository.getRealm(op.realm_id);
+      const delivered = await this.deliverConsumers(op);
+      if (delivered || op.cancel_requested || currentRealm?.service_state === "stopping")
         this.finishOperation(
           op,
           op.cancel_requested ? "cancelled" : op.error ? "failed" : "completed",
@@ -1398,26 +1699,41 @@ export class AgyAccountService {
       op.error =
         error instanceof Error ? error.message : "account_operation_failed";
       try {
+        const isProcessStopUnconfirmed =
+          (error as any)?.code === "PROCESS_STOP_UNCONFIRMED" ||
+          (error as any)?.name === "ProcessStopUnconfirmedError";
         if (
+          isProcessStopUnconfirmed ||
           [
             "external_change",
             "identity_mismatch",
             "domain_lock_lost",
             "managed_processes_not_stopped",
           ].includes(op.error)
-        )
+        ) {
+          if (isProcessStopUnconfirmed) {
+            op.phase = "blocked";
+            this.repository.saveOperation(op);
+            const realm = this.repository.getRealm(op.realm_id);
+            if (realm) {
+              realm.phase = "blocked";
+              realm.service_state = "blocked";
+              realm.last_error = "process_stop_unconfirmed";
+              realm.revision++;
+              this.repository.saveRealm(realm);
+            }
+          }
           throw error;
+        }
         await this.rollbackOperation(op);
-        if (op.error === "network_wait" && !op.cancel_requested) {
-          op.retry_at = new Date(this.clock.now() + 60_000).toISOString();
-          op.before_auth_epoch = this.repository.getRealm(
-            op.realm_id,
-          )!.auth_epoch;
-          op.attempted_account_ids = [];
-          op.candidate_results = [];
-          op.installed_secret_ref = undefined;
-          op.install_target_ref = undefined;
-          this.saveStep(op, "waiting");
+        if (
+          op.error === "network_wait" &&
+          op.trigger.startsWith("workflow") &&
+          !op.cancel_requested
+        ) {
+          await this.enterDomainWait(op.realm_id, op, "network_wait", {
+            next_eligible_at: new Date(this.clock.now() + 60_000).toISOString(),
+          });
           return;
         }
         if (
@@ -1425,45 +1741,27 @@ export class AgyAccountService {
           op.error === "no_eligible_account" &&
           !op.cancel_requested
         ) {
-          const current = this.repository.getRealm(op.realm_id)!;
           const wait = computeDomainWait(
             this.repository
               .listAccounts(op.realm_id)
               .filter(
                 (a) =>
-                  op.allowed_account_ids === null ||
+                  !op.allowed_account_ids ||
                   op.allowed_account_ids.includes(a.id),
               ),
             this.repository.listQuotaSnapshots(op.realm_id),
             op.required_pool_ids,
             this.clock.now(),
+            {
+              allowedAccountIds: op.allowed_account_ids,
+            },
           );
-          op.retry_at = wait.next_eligible_at ?? undefined;
-          op.before_auth_epoch = current.auth_epoch;
-          op.before_secret_ref = current.active_secret_ref;
-          op.attempted_account_ids = [];
-          op.candidate_results = [];
-          op.installed_secret_ref = undefined;
-          op.install_target_ref = undefined;
-          if (op.retry_at)
-            op.deadline_at = new Date(
-              Date.parse(op.retry_at) +
-                this.initializeSettings(op.realm_id).switch_timeout_seconds *
-                  1000,
-            ).toISOString();
-          this.repository.saveDomainWait({
-            realm_id: op.realm_id,
-            operation_id: op.operation_id,
-            source_epoch: current.auth_epoch,
-            control_generation: op.control_generation,
-            next_eligible_at: wait.next_eligible_at,
-            reason: "no_eligible_account",
-            created_at: this.clock.toISOString(),
-          });
-          this.saveStep(op, "waiting");
+          await this.enterDomainWait(op.realm_id, op, "no_eligible_account", wait);
           return;
         }
-        if (await this.deliverConsumers(op))
+        const currentRealm = this.repository.getRealm(op.realm_id);
+        const delivered = await this.deliverConsumers(op);
+        if (delivered || op.cancel_requested || currentRealm?.service_state === "stopping")
           this.finishOperation(
             op,
             op.cancel_requested || op.error === "operation_cancelled"
@@ -1482,9 +1780,114 @@ export class AgyAccountService {
     }
   }
 
+  private async enterDomainWait(
+    realmId: string,
+    op: AgyAccountOperation,
+    reason: string,
+    waitResult: { next_eligible_at: string | null },
+  ): Promise<void> {
+    const current = this.repository.getRealm(realmId)!;
+    op.retry_at = waitResult.next_eligible_at ?? undefined;
+    op.deadline_at = undefined; // Q05 修复：清除切号单次300秒超时
+    op.before_auth_epoch = current.auth_epoch;
+    op.before_secret_ref = current.active_secret_ref;
+    op.installed_secret_ref = undefined;
+    op.install_target_ref = undefined;
+
+    // 持久化待处理需求 AgyPendingDemand (N03 修复)
+    const existingDemand = op.workflow_id
+      ? this.repository.listDemands(realmId).find((d) => d.consumer_id === op.workflow_id)
+      : undefined;
+
+    const origOpId = op.original_operation_id ?? op.operation_id;
+    const demand: AgyPendingDemand = {
+      demand_id: existingDemand?.demand_id ?? `demand_${randomUUID()}`,
+      revision: (existingDemand?.revision ?? 0) + 1,
+      demand_generation: (existingDemand?.demand_generation ?? 0) + 1,
+      consumer_id: op.workflow_id ?? op.operation_id,
+      opaque_recovery_ref: {
+        original_operation_id: origOpId,
+        workflow_id: op.workflow_id,
+        source_run_id: op.source_run_id,
+      },
+      first_wait_at: existingDemand?.first_wait_at ?? this.clock.toISOString(),
+      fairness_key: existingDemand?.fairness_key ?? origOpId,
+      source_revision: 1,
+      policy_revision: 1,
+      settings_revision: 1,
+      control_generation: op.control_generation,
+      required_model_keys: op.required_model_ids,
+      required_pool_ids: op.required_pool_ids,
+      allowed_account_ids: op.allowed_account_ids,
+      night_pool: op.night_pool,
+      status: "waiting",
+      wake_at: waitResult.next_eligible_at,
+      last_reason: reason,
+    };
+    this.repository.saveDemand(demand, realmId);
+
+    this.repository.saveDomainWait({
+      realm_id: realmId,
+      operation_id: op.operation_id,
+      source_epoch: current.auth_epoch,
+      control_generation: op.control_generation,
+      next_eligible_at: waitResult.next_eligible_at,
+      reason,
+      created_at: this.clock.toISOString(),
+    });
+
+    this.saveStep(op, "waiting");
+    current.pending_operation_id = null;
+    this.repository.saveRealm(current);
+  }
+
   private async deliverConsumers(op: AgyAccountOperation): Promise<boolean> {
+    if (op.phase === "waiting") return true; // waiting 分支立即结束本次投递
+    if (!this.authHost.isDomainLockHeld(op.realm_id)) {
+      op.phase = "blocked";
+      op.error = "domain_lock_lost";
+      this.saveStep(op, "blocked");
+      return false;
+    }
+
+    // N05 修复：优先使用不可变 FinalAccountCommit 进行 guard 校验
+    const finalCommit = this.repository.getFinalAccountCommit(op.operation_id);
+    const targetRef =
+      finalCommit?.secret_ref ??
+      (op.result?.outcome === "restored"
+        ? op.before_secret_ref
+        : (op.installed_secret_ref ?? op.install_target_ref));
+
+    if (targetRef && !(await this.authHost.compareActive(op.realm_id, targetRef))) {
+      op.phase = "blocked";
+      op.error = "external_change";
+      this.saveStep(op, "blocked");
+      return false;
+    }
+
+    const realm = this.repository.getRealm(op.realm_id)!;
+    const committedAccountId: string | null =
+      finalCommit?.account_id ??
+      (op.result?.outcome === "restored"
+        ? op.before_account_id ?? null
+        : (op.target_account_id ?? realm.active_account_id));
+    const committedAuthEpoch: number =
+      finalCommit?.auth_epoch ??
+      (typeof op.result?.auth_epoch === "number" ? (op.result.auth_epoch as number) : realm.auth_epoch);
+    const outcome = finalCommit?.outcome ?? (op.result?.outcome === "restored" ? "restored" : "switched");
+
     for (const ref of op.consumer_refs) {
       if (ref.delivered) continue;
+      // 每次异步投递前执行 guard：核查 realm 状态与代次
+      const currentRealm = this.repository.getRealm(op.realm_id);
+      if (
+        !currentRealm ||
+        currentRealm.service_state !== "running" ||
+        currentRealm.control_generation !== op.control_generation ||
+        op.cancel_requested
+      ) {
+        return false;
+      }
       const consumer = this.consumers.find(
         (c) => this.consumerIds.get(c) === ref.consumer_id,
       );
@@ -1493,17 +1896,17 @@ export class AgyAccountService {
         this.saveStep(op, "recovering");
         return false;
       }
-      const realm = this.repository.getRealm(op.realm_id)!;
-      if (realm.active_account_id) {
+      if (committedAccountId) {
         try {
           await consumer.onAccountCommitted({
             realm_id: op.realm_id,
             operation_id: op.operation_id,
-            account_id: realm.active_account_id,
-            auth_epoch: realm.auth_epoch,
+            account_id: committedAccountId,
+            auth_epoch: committedAuthEpoch,
             saved_ref: ref.saved_ref,
-            outcome:
-              op.result?.outcome === "restored" ? "restored" : "switched",
+            outcome,
+            original_operation_id: op.original_operation_id,
+            workflow_id: op.workflow_id,
           });
         } catch {
           this.saveStep(op, "recovering");
@@ -1528,7 +1931,13 @@ export class AgyAccountService {
       const realm = this.repository.getRealm(op.realm_id)!;
       if (realm.pending_operation_id === op.operation_id) {
         realm.pending_operation_id = null;
-        realm.phase = "idle";
+        if (realm.service_state === "stopping" || realm.service_state === "stopped") {
+          realm.phase = "stopped";
+        } else if (realm.service_state === "blocked" || realm.phase === "blocked") {
+          realm.phase = "blocked";
+        } else {
+          realm.phase = "idle";
+        }
         realm.revision++;
         this.repository.saveRealm(realm);
       }
@@ -1650,6 +2059,18 @@ export class AgyAccountService {
       epochRealm.auth_epoch = context.auth_epoch;
       epochRealm.revision++;
       this.repository.saveRealm(epochRealm);
+      const enrollmentContext = {
+        ...context,
+        onCaptured: (capturedData: { account: any; secret_ref: string; credential_revision: number }) => {
+          op.installed_secret_ref = capturedData.secret_ref;
+          op.install_target_account_id = capturedData.account.id;
+          op.result = {
+            account_id: capturedData.account.id,
+            state: capturedData.account.state,
+          };
+          this.saveStep(op, "captured_pending");
+        },
+      };
       const result =
         op.kind === "reauth"
           ? await this.enrollmentService.reauthAccount(
@@ -1657,18 +2078,18 @@ export class AgyAccountService {
               op.account_id!,
               this.repository.getAccount(op.realm_id, op.account_id!)!.identity
                 .email,
-              context,
+              enrollmentContext,
             )
           : op.mode === "capture_current"
             ? await this.enrollmentService.enrollCurrentAccount(
                 op.realm_id,
                 op.alias ?? "",
-                context,
+                enrollmentContext,
               )
             : await this.enrollmentService.enrollNewAccount(
                 op.realm_id,
                 op.alias ?? "",
-                context,
+                enrollmentContext,
               );
       if (result.blocked)
         throw new AccountServiceError("managed_processes_not_stopped");
@@ -1798,8 +2219,10 @@ export class AgyAccountService {
           });
         } catch (error) {
           if (
-            error instanceof AccountServiceError &&
-            error.code === "identity_mismatch"
+            (error as any)?.code === "PROCESS_STOP_UNCONFIRMED" ||
+            (error as any)?.name === "ProcessStopUnconfirmedError" ||
+            (error instanceof AccountServiceError &&
+              error.code === "identity_mismatch")
           )
             throw error;
           results.push({ id, ok: false, error: "probe_failed" });
@@ -1810,6 +2233,20 @@ export class AgyAccountService {
         this.saveStep(op, "maintenance_checking");
       }
       op.result = { checked_accounts: results };
+    } else if (op.kind === "capability_check") {
+      const hostCaps = await this.authHost.capabilities();
+      const snapshot = {
+        ...this.getCapabilitySnapshot(),
+        host_platform: hostCaps.platform,
+        host_version: hostCaps.version,
+        dpapi_available: hostCaps.dpapi_available,
+        cred_manager_available: hostCaps.cred_manager_available,
+        named_mutex_available: hostCaps.named_mutex_available,
+      };
+      this.capabilitySnapshot = snapshot;
+      op.result = {
+        capabilities: snapshot,
+      };
     } else throw new AccountServiceError("unsupported_operation", 400);
     await this.rollbackOperation(op);
   }
@@ -1875,7 +2312,23 @@ export class AgyAccountService {
       active_account_id: realm.active_account_id,
       auth_epoch: realm.auth_epoch,
     };
-    this.saveStep(op, "committed");
+
+    // CR17: 维护后安全恢复凭据后，核查原账号资格
+    let beforeEligible = true;
+    if (op.before_account_id) {
+      const beforeAcc = this.repository.getAccount(op.realm_id, op.before_account_id);
+      if (!beforeAcc || beforeAcc.state !== "ready") {
+        beforeEligible = false;
+      }
+    }
+    if (beforeEligible) {
+      this.saveStep(op, "committed");
+    } else {
+      if (!op.error) op.error = "before_account_not_eligible";
+      this.saveStep(op, "waiting");
+      realm.pending_operation_id = null;
+      this.repository.saveRealm(realm);
+    }
   }
 
   beginShutdown(): void {
@@ -1913,6 +2366,9 @@ export class AgyAccountService {
   }
   getEnrollmentService(): AgyEnrollmentService {
     return this.enrollmentService;
+  }
+  getAuthHost(): AuthHostPort {
+    return this.authHost;
   }
   getMaintenanceService(): AgyMaintenanceService {
     return this.maintenanceService;

@@ -38,8 +38,16 @@ export const AgyAccountIdentitySchema = z.object({
 });
 export type AgyAccountIdentity = z.infer<typeof AgyAccountIdentitySchema>;
 
+export const MetadataStatusSchema = z.enum([
+  "verified",
+  "unverified",
+  "unrecognized",
+]);
+export type MetadataStatus = z.infer<typeof MetadataStatusSchema>;
+
 export const AgyAccountAuthSchema = z.object({
-  has_refresh_credential: z.boolean(),
+  has_refresh_credential: z.boolean().nullable().default(null),
+  metadata_status: MetadataStatusSchema.default("unverified"),
   access_expires_at: z.string().optional(),
   refresh_expires_at: z.string().optional(),
   refresh_expiry_source: z.enum(["not_provided", "provider_reported"]),
@@ -224,6 +232,7 @@ export const OperationKindSchema = z.enum([
   "delete",
   "start",
   "stop",
+  "capability_check",
 ]);
 export type OperationKind = z.infer<typeof OperationKindSchema>;
 
@@ -262,6 +271,8 @@ export const AgyAccountOperationSchema = z.object({
   error: z.string().optional(),
   workflow_id: Id.optional(),
   run_id: Id.optional(),
+  source_run_id: Id.optional(),
+  original_operation_id: Id.optional(),
   created_at: z.string().min(1),
   completed_at: z.string().optional(),
   deadline_at: z.string().optional(),
@@ -284,7 +295,13 @@ export const AgyAccountOperationSchema = z.object({
   candidate_ids: z.array(Id).default([]),
   candidate_results: z
     .array(
-      z.object({ account_id: Id, weekly: z.number(), verified_at: z.string() }),
+      z.object({
+        account_id: Id,
+        weekly: z.number(),
+        verified_at: z.string(),
+        verified_model_ids: z.array(z.string()).default([]),
+        credential_revision: z.number().int().nonnegative().optional(),
+      }),
     )
     .default([]),
   consumer_refs: z
@@ -350,3 +367,156 @@ export const AgyAccountDtoSchema = AgyAccountSchema.omit({
   secret_ref: true,
 });
 export type AgyAccountDto = z.infer<typeof AgyAccountDtoSchema>;
+
+// 能力状态与投影 (AGF-D01)
+export const CapabilityStatusSchema = z.enum(["verified", "unverified", "unsupported"]);
+export type CapabilityStatus = z.infer<typeof CapabilityStatusSchema>;
+
+export const CapabilityItemSchema = z.object({
+  status: CapabilityStatusSchema,
+  reason: z.string().optional(),
+  cli_version: z.string().optional(),
+  cli_sha256: z.string().optional(),
+  host_version: z.string().optional(),
+  parser_revision: z.number().int().nonnegative().optional(),
+  verified_at: z.string().optional(),
+});
+export type CapabilityItem = z.infer<typeof CapabilityItemSchema>;
+
+export const AgyAccountCapabilitiesSchema = z.object({
+  identity: CapabilityItemSchema,
+  dual_quota: CapabilityItemSchema,
+  interactive_login: CapabilityItemSchema,
+  noninteractive_auth: CapabilityItemSchema,
+  auth_metadata: CapabilityItemSchema,
+  owned_aux_job: CapabilityItemSchema,
+  exact_resume: CapabilityItemSchema,
+  confirmed_session_unavailable: CapabilityItemSchema,
+  subagent_observation: CapabilityItemSchema,
+  workspace_preservation: CapabilityItemSchema,
+});
+export type AgyAccountCapabilities = z.infer<typeof AgyAccountCapabilitiesSchema>;
+
+// 辅助执行租约 (AGF-D02)
+export const AgyAuxiliaryLeaseSchema = z.object({
+  lease_id: Id,
+  realm_id: z.string().min(1),
+  operation_id: Id,
+  control_generation: z.number().int().nonnegative(),
+  auth_epoch: z.number().int().nonnegative(),
+  usage_kind: UsageKindSchema,
+  expected_credential_ref: z.string().optional(),
+  job_id: z.string().optional(),
+  issued_at: z.string().min(1),
+  released_at: z.string().optional(),
+});
+export type AgyAuxiliaryLease = z.infer<typeof AgyAuxiliaryLeaseSchema>;
+
+// 刷新事实观测 (AGF-D04)
+export const AgyRefreshObservationSchema = z.object({
+  observation_id: Id,
+  account_id: Id,
+  auth_epoch: z.number().int().positive(),
+  lease_id: Id.optional(),
+  permit_id: Id.optional(),
+  cli_version: z.string().min(1),
+  parser_revision: z.number().int().positive().default(1),
+  before_access_expires_at: z.string().optional(),
+  after_access_expires_at: z.string().optional(),
+  success: z.boolean(),
+  observed_at: z.string().min(1),
+});
+export type AgyRefreshObservation = z.infer<typeof AgyRefreshObservationSchema>;
+
+// 持久待处理需求 (AGF-D05 FIFO批次调度)
+export const DemandStatusSchema = z.enum([
+  "waiting",
+  "selected",
+  "deferred",
+  "completed",
+  "cancelled",
+  "superseded",
+]);
+export type DemandStatus = z.infer<typeof DemandStatusSchema>;
+
+export const AgyPendingDemandSchema = z.object({
+  demand_id: Id,
+  revision: z.number().int().positive().default(1),
+  demand_generation: z.number().int().positive().default(1),
+  consumed_wake_key: z.string().optional(),
+  consumer_id: z.string().min(1),
+  opaque_recovery_ref: z.unknown().optional(),
+  first_wait_at: z.string().min(1),
+  fairness_key: z.string().min(1),
+  source_revision: z.number().int().nonnegative().default(1),
+  policy_revision: z.number().int().nonnegative().default(1),
+  settings_revision: z.number().int().nonnegative().default(1),
+  control_generation: z.number().int().nonnegative().default(0),
+  required_model_keys: z.array(z.string()).default([]),
+  required_pool_ids: z.array(z.string()).default([]),
+  allowed_account_ids: z.array(Id).nullable().default(null),
+  night_pool: z.enum(["normal", "strict"]).default("normal"),
+  status: DemandStatusSchema.default("waiting"),
+  wake_at: z.string().nullable().default(null),
+  last_reason: z.string().optional(),
+});
+export type AgyPendingDemand = z.infer<typeof AgyPendingDemandSchema>;
+
+// 恢复批次 (AGF-D05)
+export const RecoveryBatchStatusSchema = z.enum([
+  "planned",
+  "quiescing",
+  "activating",
+  "committed",
+  "failed",
+  "cancelled",
+]);
+export type RecoveryBatchStatus = z.infer<typeof RecoveryBatchStatusSchema>;
+
+export const AgyRecoveryBatchSchema = z.object({
+  batch_id: Id,
+  operation_id: Id,
+  revision: z.number().int().positive().default(1),
+  anchor_demand_id: Id,
+  selected_demand_ids: z.array(Id),
+  deferred_demand_ids: z.array(Id),
+  candidate_account_ids: z.array(Id),
+  committed_account_id: Id.optional(),
+  status: RecoveryBatchStatusSchema.default("planned"),
+  created_at: z.string().min(1),
+  completed_at: z.string().optional(),
+});
+export type AgyRecoveryBatch = z.infer<typeof AgyRecoveryBatchSchema>;
+
+export const FinalAccountCommitSchema = z.object({
+  commit_id: Id,
+  operation_id: Id,
+  realm_id: z.string().min(1),
+  outcome: z.enum(["switched", "restored"]),
+  account_id: Id,
+  secret_ref: z.string().min(1),
+  credential_revision: z.number().int().nonnegative().optional(),
+  auth_epoch: z.number().int().nonnegative(),
+  control_generation: z.number().int().nonnegative(),
+  committed_at: z.string().min(1),
+  selected_batch_id: Id.optional(),
+  stopped_job_ids: z.array(z.string()).default([]),
+});
+export type FinalAccountCommit = z.infer<typeof FinalAccountCommitSchema>;
+export const RefreshEvidenceSchema = z.object({
+  evidence_id: Id,
+  realm_id: z.string().min(1),
+  account_id: Id,
+  auth_epoch: z.number().int().nonnegative(),
+  credential_revision: z.number().int().nonnegative().optional(),
+  permit_id: z.string().optional(),
+  lease_id: z.string().optional(),
+  observed_at: z.string().min(1),
+  previous_expiry: z.string().nullable().optional(),
+  new_expiry: z.string().nullable().optional(),
+  protocol_verified: z.boolean().default(true),
+  non_interactive: z.boolean().default(true),
+  secret_ref: z.string().min(1),
+  evidence_version: z.number().int().positive().default(1),
+});
+export type RefreshEvidence = z.infer<typeof RefreshEvidenceSchema>;

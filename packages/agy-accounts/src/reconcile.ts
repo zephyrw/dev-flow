@@ -19,6 +19,109 @@ export class AgyReconciler {
 
     if (!this.authHost.isDomainLockHeld(realmId))
       throw new Error("domain_lock_lost");
+
+    // desired_enabled=false 现场处理 (AGF-D06, CR11)
+    if (!realm.desired_enabled) {
+      if (!realm.pending_operation_id) {
+        realm.phase = "stopped";
+        realm.revision++;
+        this.repository.saveRealm(realm);
+        return;
+      }
+      // cleanup_only 模式：只收尾回滚或结算取消，不准入、不选号
+      const op = this.repository.getOperation(realm.pending_operation_id);
+      if (op && !["completed", "cancelled", "failed"].includes(op.phase)) {
+        // 先确认受管进程与外部进程已停止，未停止时不得动凭据 (Q08)
+        const managed = await this.processHost.listManagedProcesses(realmId);
+        if (
+          (await this.processHost.findExternalAgyProcesses()).length ||
+          (managed.length &&
+            !(await this.processHost.confirmProcessesStopped(
+              managed.map((p) => p.pid),
+              30_000,
+            )))
+        ) {
+          op.phase = "blocked";
+          op.error = "process_state_unconfirmed";
+          op.revision++;
+          this.repository.saveOperation(op);
+          realm.phase = "blocked";
+          realm.service_state = "blocked";
+          realm.revision++;
+          this.repository.saveRealm(realm);
+          return;
+        }
+
+        if (op.before_secret_ref) {
+          // 检查凭据归属：必须匹配当前操作相关的凭据引用，外部已改动时禁止覆盖 (Q08)
+          let matched = false;
+          for (const ref of [
+            op.before_secret_ref,
+            op.installed_secret_ref,
+            op.install_target_ref,
+          ]) {
+            if (ref && (await this.authHost.compareActive(realmId, ref))) {
+              matched = true;
+              break;
+            }
+          }
+          if (!matched) {
+            op.phase = "blocked";
+            op.error = "external_change";
+            op.revision++;
+            this.repository.saveOperation(op);
+            realm.phase = "blocked";
+            realm.service_state = "blocked";
+            realm.revision++;
+            this.repository.saveRealm(realm);
+            return;
+          }
+
+          const alreadyBefore = await this.authHost.compareActive(realmId, op.before_secret_ref);
+          if (!alreadyBefore) {
+            try {
+              await this.authHost.restoreBackup(realmId, op.before_secret_ref);
+              const matches = await this.authHost.compareActive(realmId, op.before_secret_ref);
+              if (!matches) {
+                op.phase = "blocked";
+                op.error = "rollback_verification_failed";
+                op.revision++;
+                this.repository.saveOperation(op);
+                realm.phase = "blocked";
+                realm.service_state = "blocked";
+                realm.revision++;
+                this.repository.saveRealm(realm);
+                return;
+              }
+              // 实际备份恢复成功后再更新活动账号/epoch (Q08)
+              realm.auth_epoch = Math.max(realm.auth_epoch, op.install_epoch ?? 0) + 1;
+              realm.active_account_id = op.before_account_id ?? null;
+              realm.active_secret_ref = op.before_secret_ref;
+            } catch {
+              op.phase = "blocked";
+              op.error = "cleanup_rollback_failed";
+              op.revision++;
+              this.repository.saveOperation(op);
+              realm.phase = "blocked";
+              realm.service_state = "blocked";
+              realm.revision++;
+              this.repository.saveRealm(realm);
+              return;
+            }
+          }
+        }
+        op.phase = "cancelled";
+        op.error = "cleaned_up_on_shutdown";
+        op.revision++;
+        this.repository.saveOperation(op);
+      }
+      realm.pending_operation_id = null;
+      realm.phase = "stopped";
+      realm.revision++;
+      this.repository.saveRealm(realm);
+      return;
+    }
+
     if (!realm.pending_operation_id) return;
     const op = this.repository.getOperation(realm.pending_operation_id);
     if (!op) throw new Error("operation_journal_missing");
@@ -29,7 +132,32 @@ export class AgyReconciler {
       this.repository.saveRealm(realm);
       return;
     }
-    if (["committed", "recovering"].includes(op.phase)) return; // Delivery is durable and must not switch again.
+
+    // committed/recovering 对账：核验活动项与旧进程 (AGF-D06 / R10)
+    if (["committed", "recovering"].includes(op.phase)) {
+      const finalCommit = this.repository.getFinalAccountCommit(op.operation_id);
+      const targetRef =
+        finalCommit?.secret_ref ??
+        (op.result?.outcome === "restored"
+          ? op.before_secret_ref
+          : (op.installed_secret_ref ?? op.install_target_ref));
+      if (targetRef) {
+        const matchesTarget = await this.authHost.compareActive(realmId, targetRef);
+        if (!matchesTarget) {
+          op.phase = "blocked";
+          op.error = "external_change";
+          op.revision++;
+          this.repository.saveOperation(op);
+          realm.phase = "blocked";
+          realm.service_state = "blocked";
+          realm.revision++;
+          this.repository.saveRealm(realm);
+          return;
+        }
+      }
+      // 保持 committed/recovering，供后续补投递
+      return;
+    }
     const managed = await this.processHost.listManagedProcesses(realmId);
     if (
       (await this.processHost.findExternalAgyProcesses()).length ||
@@ -44,6 +172,7 @@ export class AgyReconciler {
       op.revision++;
       this.repository.saveOperation(op);
       realm.phase = "blocked";
+      realm.service_state = "blocked";
       realm.revision++;
       this.repository.saveRealm(realm);
       return;
@@ -77,6 +206,7 @@ export class AgyReconciler {
       op.revision++;
       this.repository.saveOperation(op);
       realm.phase = "blocked";
+      realm.service_state = "blocked";
       realm.revision++;
       this.repository.saveRealm(realm);
       return;

@@ -15,14 +15,15 @@ import (
 )
 
 type ProcessSpec struct {
-	Id         string            `json:"id"`
-	WorkflowId string            `json:"workflow_id,omitempty"`
-	Executable string            `json:"executable"`
-	Args       []string          `json:"args"`
-	Cwd        string            `json:"cwd"`
-	Env        map[string]string `json:"env"`
-	TimeoutMs  int64             `json:"timeout_ms"`
-	Stdin      string            `json:"stdin,omitempty"`
+	Id          string            `json:"id"`
+	WorkflowId  string            `json:"workflow_id,omitempty"`
+	Executable  string            `json:"executable"`
+	Args        []string          `json:"args"`
+	Cwd         string            `json:"cwd"`
+	Env         map[string]string `json:"env"`
+	TimeoutMs   int64             `json:"timeout_ms"`
+	Stdin       string            `json:"stdin,omitempty"`
+	Interactive bool              `json:"interactive,omitempty"`
 }
 
 type OutputMessage struct {
@@ -174,6 +175,9 @@ func main() {
 }
 
 func runProcess(reader *bufio.Reader, spec ProcessSpec) error {
+	if spec.Interactive {
+		return runInteractiveProcess(reader, spec)
+	}
 	job, err := setupJobObject(spec.Id)
 	if err != nil {
 		return fmt.Errorf("initialize job: %w", err)
@@ -187,34 +191,42 @@ func runProcess(reader *bufio.Reader, spec ProcessSpec) error {
 			cmd.Env = append(cmd.Env, k+"="+v)
 		}
 	}
-	prepareCmdAttrs(cmd)
-	// Own read ends so Cmd.Wait cannot close pipes before descendants are killed.
-	stdout, stdoutWrite, err := os.Pipe()
-	if err != nil {
-		return err
-	}
-	defer stdout.Close()
-	defer stdoutWrite.Close()
-	stderr, stderrWrite, err := os.Pipe()
-	if err != nil {
-		return err
-	}
-	defer stderr.Close()
-	defer stderrWrite.Close()
-	cmd.Stdout, cmd.Stderr = stdoutWrite, stderrWrite
+	prepareCmdAttrs(cmd, spec.Interactive)
+	var stdout, stdoutWrite, stderr, stderrWrite *os.File
 	var input io.WriteCloser
-	if spec.Stdin != "" {
-		input, err = cmd.StdinPipe()
+	if !spec.Interactive {
+		// Own read ends so Cmd.Wait cannot close pipes before descendants are killed.
+		var err error
+		stdout, stdoutWrite, err = os.Pipe()
 		if err != nil {
 			return err
 		}
-		defer input.Close()
+		defer stdout.Close()
+		defer stdoutWrite.Close()
+		stderr, stderrWrite, err = os.Pipe()
+		if err != nil {
+			return err
+		}
+		defer stderr.Close()
+		defer stderrWrite.Close()
+		cmd.Stdout, cmd.Stderr = stdoutWrite, stderrWrite
+		if spec.Stdin != "" {
+			input, err = cmd.StdinPipe()
+			if err != nil {
+				return err
+			}
+			defer input.Close()
+		}
 	}
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start process: %w", err)
 	}
-	stdoutWrite.Close()
-	stderrWrite.Close()
+	if stdoutWrite != nil {
+		stdoutWrite.Close()
+	}
+	if stderrWrite != nil {
+		stderrWrite.Close()
+	}
 	if err := job.assignProcess(cmd); err != nil {
 		cmd.Process.Kill()
 		cmd.Wait()
@@ -228,24 +240,26 @@ func runProcess(reader *bufio.Reader, spec ProcessSpec) error {
 	}
 	emit(OutputMessage{Type: "started", Pid: cmd.Process.Pid, JobId: spec.Id})
 	var wg sync.WaitGroup
-	stream := func(kind string, pipe *os.File) {
-		defer wg.Done()
-		buf := make([]byte, 32*1024)
-		for {
-			n, err := pipe.Read(buf)
-			if n > 0 {
-				emit(OutputMessage{Type: kind, Data: base64.StdEncoding.EncodeToString(buf[:n])})
-			}
-			if err != nil {
-				return
+	if !spec.Interactive && stdout != nil && stderr != nil {
+		stream := func(kind string, pipe *os.File) {
+			defer wg.Done()
+			buf := make([]byte, 32*1024)
+			for {
+				n, err := pipe.Read(buf)
+				if n > 0 {
+					emit(OutputMessage{Type: kind, Data: base64.StdEncoding.EncodeToString(buf[:n])})
+				}
+				if err != nil {
+					return
+				}
 			}
 		}
-	}
-	wg.Add(2)
-	go stream("stdout", stdout)
-	go stream("stderr", stderr)
-	if input != nil {
-		go func() { io.WriteString(input, spec.Stdin); input.Close() }()
+		wg.Add(2)
+		go stream("stdout", stdout)
+		go stream("stderr", stderr)
+		if input != nil {
+			go func() { io.WriteString(input, spec.Stdin); input.Close() }()
+		}
 	}
 	stop := func() {
 		if err := job.terminate(1); err != nil {

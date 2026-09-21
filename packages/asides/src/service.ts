@@ -24,7 +24,7 @@ export class AsideSessionService {
   ): AsideSession {
     const allGlobal = this.store.list<AsideSession>("aside_session");
     const globalActiveCount = allGlobal.filter(
-      (s) => s.status === "active",
+      (s) => s.status === "active" || s.status === "waiting_account",
     ).length;
 
     const wfSessions = allGlobal.filter((s) => s.workflow_id === workflowId);
@@ -78,13 +78,14 @@ export class AsideSessionService {
     if (!session || session.workflow_id !== workflowId) {
       throw new Error(`提问会话 ${sessionId} 不存在`);
     }
-    const wasActive = session.status === "active";
+    const wasOccupyingSlot =
+      session.status === "active" || session.status === "waiting_account";
     session.status = "completed";
     session.answer = answer;
     session.completed_at = now();
     this.store.put("aside_session", sessionId, workflowId, session);
 
-    if (wasActive) {
+    if (wasOccupyingSlot) {
       this.promoteNextQueued();
     }
     return session;
@@ -93,13 +94,35 @@ export class AsideSessionService {
   cancelSession(workflowId: string, sessionId: string): void {
     const session = this.store.get<AsideSession>("aside_session", sessionId);
     if (session && session.workflow_id === workflowId) {
-      const wasActive = session.status === "active";
+      const wasOccupyingSlot =
+        session.status === "active" || session.status === "waiting_account";
       session.status = "cancelled";
       this.store.put("aside_session", sessionId, workflowId, session);
-      if (wasActive) {
+      if (wasOccupyingSlot) {
         this.promoteNextQueued();
       }
     }
+  }
+
+  pauseForAccountWait(workflowId: string, sessionId: string): AsideSession {
+    const session = this.store.get<AsideSession>("aside_session", sessionId);
+    if (!session || session.workflow_id !== workflowId) {
+      throw new Error(`提问会话 ${sessionId} 不存在`);
+    }
+    session.status = "waiting_account";
+    this.store.put("aside_session", sessionId, workflowId, session);
+    // 不调用 promoteNextQueued，仍占全局 aside 槽
+    return session;
+  }
+
+  resumeFromAccountWait(workflowId: string, sessionId: string): AsideSession {
+    const session = this.store.get<AsideSession>("aside_session", sessionId);
+    if (!session || session.workflow_id !== workflowId) {
+      throw new Error(`提问会话 ${sessionId} 不存在`);
+    }
+    session.status = "active";
+    this.store.put("aside_session", sessionId, workflowId, session);
+    return session;
   }
 
   failSession(
@@ -111,13 +134,14 @@ export class AsideSessionService {
     if (!session || session.workflow_id !== workflowId) {
       throw new Error(`提问会话 ${sessionId} 不存在`);
     }
-    if (!["active", "queued"].includes(session.status)) return session;
-    const wasActive = session.status === "active";
+    if (!["active", "queued", "waiting_account"].includes(session.status)) return session;
+    const wasOccupyingSlot =
+      session.status === "active" || session.status === "waiting_account";
     session.status = "expired";
     session.answer = message;
     session.completed_at = now();
     this.store.put("aside_session", sessionId, workflowId, session);
-    if (wasActive) this.promoteNextQueued();
+    if (wasOccupyingSlot) this.promoteNextQueued();
     return session;
   }
 
@@ -128,7 +152,16 @@ export class AsideSessionService {
   ): AsideSession | undefined {
     const session = this.store.get<AsideSession>("aside_session", sessionId);
     if (!session || session.workflow_id !== workflowId) return;
-    if (!["active", "queued"].includes(session.status)) return session;
+    if (
+      !["active", "queued", "waiting_account"].includes(session.status)
+    )
+      return session;
+
+    // 账号中断检查：不转 expired
+    if (isAccountWaitError(result.error)) {
+      return this.pauseForAccountWait(workflowId, sessionId);
+    }
+
     const answer = result.answer?.trim();
     if (answer) return this.completeSession(workflowId, sessionId, answer);
     const timedOut = isAsideTimeout(result.error);
@@ -181,7 +214,9 @@ export class AsideSessionService {
 
   private promoteNextQueued(): void {
     const allGlobal = this.store.list<AsideSession>("aside_session");
-    const hasActive = allGlobal.some((s) => s.status === "active");
+    const hasActive = allGlobal.some(
+      (s) => s.status === "active" || s.status === "waiting_account",
+    );
     if (hasActive) return;
 
     // 优先按创建时间唤醒最早排队的 session
@@ -200,6 +235,13 @@ export class AsideSessionService {
       });
     }
   }
+}
+
+function isAccountWaitError(error: unknown): boolean {
+  if (error instanceof FlowError) {
+    return error.code === "AGY_ACCOUNT_WAIT";
+  }
+  return false;
 }
 
 function isAsideTimeout(error: unknown) {

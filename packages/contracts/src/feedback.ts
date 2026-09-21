@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { Id } from "./base.js";
+import { AccountRecoveryRetrySchema } from "./agy-recovery.js";
 
 export type FeedbackKind = "planning" | "execution" | "functional";
 export type RefKind = "file" | "directory";
@@ -79,6 +80,8 @@ export const AsideSessionSchema = z
   .object({
     id: Id,
     workflow_id: Id,
+    run_id: Id.optional(),
+    account_recovery: AccountRecoveryRetrySchema.optional(),
     profile_revision: z.string().min(1),
     context_ref: z.string().min(1),
     plan_revision: z.number().int().positive().optional(),
@@ -86,7 +89,14 @@ export const AsideSessionSchema = z
     question: z.string().min(1),
     refs: z.array(WorkspaceReferenceSchema).default([]),
     status: z
-      .enum(["active", "queued", "completed", "expired", "cancelled"])
+      .enum([
+        "active",
+        "queued",
+        "waiting_account",
+        "completed",
+        "expired",
+        "cancelled",
+      ])
       .default("queued"),
     answer: z.string().optional(),
     created_at: z.string().min(1),

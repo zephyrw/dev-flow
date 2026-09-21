@@ -48,7 +48,7 @@ import {
 import { PlanReviewService } from "../../../packages/core/src/plan-review.js";
 import { SourceChangeService } from "../../../packages/core/src/source-change.js";
 import { listAttachmentRecords } from "../../../packages/evidence/src/archive-consumer.js";
-import { registerAgyAccountRoutes } from "./agy-account-routes.js";
+import { registerAgyAccountRoutes, registerAgyWorkflowRecoveryRoutes } from "./agy-account-routes.js";
 import { registerAgyAccountPolicyRoutes } from "./agy-account-policy-routes.js";
 import { bootstrapAccountService } from "./account-service-bootstrap.js";
 import type { AgyAccountService } from "../../../packages/agy-accounts/src/service.js";
@@ -1286,6 +1286,7 @@ export async function buildServer(
   });
 
   registerAgyAccountRoutes(app, accountService, human);
+  registerAgyWorkflowRecoveryRoutes(app, engine.store, engine, human);
   registerAgyAccountPolicyRoutes(app, accountService, human, id => { engine.get(id); });
 
   const webRoot = resolve(options.webRoot ?? "dist/web");

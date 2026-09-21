@@ -117,11 +117,12 @@ export function bindProfile(
   workflowId: string,
   purpose: RunPurpose,
   context: Partial<DispatchContext> = {},
+  retryOverride?: PendingModelRetry,
 ) {
   const preview = resolveRoutingPreview(store, config, workflowId, {
     ...context,
     purpose,
-  });
+  }, retryOverride);
   const flavor = resolveRuntimeFlavor(
     store,
     workflowId,
@@ -131,7 +132,11 @@ export function bindProfile(
   const frozen = preview.frozen_invocation
     ? { ...preview.frozen_invocation, runtimeFlavor: flavor }
     : freezeDispatchInvocation(store, preview.profile, flavor);
-  if (context.retry_run_id) assertAccountModelRetryAccess(store, workflowId, context.retry_run_id);
+  if (retryOverride?.account_recovery) {
+    new ModelAccessService(store).assertFrozenAccess(preview.profile, frozen);
+  } else if (context.retry_run_id) {
+    assertAccountModelRetryAccess(store, workflowId, context.retry_run_id);
+  }
   const fingerprint = invocationFingerprintFromFrozen(
     frozen,
     workflowWorkspaceIdentity(store, workflowId),
@@ -249,9 +254,10 @@ export function resolveRoutingPreview(
   config: Config,
   workflowId: string,
   context: DispatchContext,
+  retryOverride?: PendingModelRetry,
 ): RoutingPreview {
   const view = readEffectiveSpec(store, config, workflowId);
-  const retry = retryPreview(store, workflowId, context, view.spec.revision);
+  const retry = retryPreview(store, workflowId, context, view.spec.revision, retryOverride);
   if (retry) return withPreviewHash(retry);
   const continuation = sourceContinuationPreview(
     store,
@@ -399,6 +405,7 @@ function retryPreview(
   workflowId: string,
   context: DispatchContext,
   fallbackRevision: number,
+  retryOverride?: PendingModelRetry,
 ): Omit<RoutingPreview, "semanticHash"> | undefined {
   if (!context.retry_run_id) return undefined;
   const run = store.get<Run>("run", context.retry_run_id);
@@ -414,7 +421,7 @@ function retryPreview(
     "执行轮次缺少固定工具配置",
   );
   const preview = previewFromFrozenRun(run, context, "retry", fallbackRevision);
-  const pending = store.get<PendingModelRetry>("pending_model_retry", workflowId);
+  const pending = retryOverride ?? store.get<PendingModelRetry>("pending_model_retry", workflowId);
   if (pending?.retry_run_id === run.id && pending.account_recovery) {
     preview.frozen_invocation = pending.account_recovery.frozen_invocation;
   }

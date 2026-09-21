@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"os"
 	"os/exec"
@@ -10,6 +11,10 @@ import (
 	"sync"
 	"syscall"
 )
+
+func runInteractiveProcess(_ *bufio.Reader, _ ProcessSpec) error {
+	return fmt.Errorf("interactive console requires Windows")
+}
 
 type PlatformJob struct {
 	mu         sync.Mutex
@@ -47,7 +52,7 @@ func (pj *PlatformJob) terminate(exitCode uint) error {
 	return nil
 }
 
-func prepareCmdAttrs(cmd *exec.Cmd) {
+func prepareCmdAttrs(cmd *exec.Cmd, _ ...bool) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Setpgid: true,
 	}

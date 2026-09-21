@@ -12,6 +12,7 @@ import type {
   AuthHostCapabilities,
   ActiveCredentialInspection,
 } from "./ports.js";
+import type { AgyAccountAuth } from "../../contracts/src/agy-account.js";
 const execFileAsync = promisify(execFile);
 type Pending = {
   resolve: (data: unknown) => void;
@@ -178,7 +179,8 @@ export class DevFlowAuthHost implements AuthHostPort {
     args: Record<string, unknown>,
   ): Promise<T> {
     const acquiring = action === "acquire-domain-lock";
-    if (acquiring) await this.ensureDaemon();
+    const jobAction = action.endsWith("-job");
+    if (acquiring || jobAction) await this.ensureDaemon();
     else if (!this.isDomainLockHeld(String(args.realm_id)))
       throw new Error("domain_lock_not_held");
     const child = this.child;
@@ -251,10 +253,11 @@ export class DevFlowAuthHost implements AuthHostPort {
     );
   }
   captureActive(realmId: string, accountId: string) {
-    return this.call<{ secret_ref: string; credential_revision: number }>(
-      "capture-active",
-      { realm_id: realmId, account_id: accountId },
-    );
+    return this.call<{
+      secret_ref: string;
+      credential_revision: number;
+      auth?: Partial<AgyAccountAuth>;
+    }>("capture-active", { realm_id: realmId, account_id: accountId });
   }
   activateSaved(realmId: string, accountId: string, secretRef: string) {
     return this.call<{ credential_revision: number }>("activate-saved", {

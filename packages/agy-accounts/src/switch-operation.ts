@@ -169,12 +169,7 @@ export class SwitchOperationExecutor {
         occupancy.length)
     )
       throw new Error("managed_busy");
-    options.requiredPoolIds = [
-      ...new Set([
-        ...options.requiredPoolIds,
-        ...occupancy.flatMap((o) => o.required_pool_ids),
-      ]),
-    ];
+    options.requiredPoolIds = ["global"];
     for (const item of occupancy)
       if (item.allowed_account_ids !== null)
         operation.allowed_account_ids =
@@ -401,6 +396,7 @@ export class SwitchOperationExecutor {
           now,
           {
             clockSkewSeconds: settings.reset_clock_skew_seconds,
+            allowedAccountIds: operation.allowed_account_ids,
           },
         );
         if (options.trigger.startsWith("workflow") && waitEval.should_wait) {
@@ -534,6 +530,9 @@ export class SwitchOperationExecutor {
           });
           break;
         } catch (error) {
+          if ((error as any)?.code === "PROCESS_STOP_UNCONFIRMED" || (error as any)?.name === "ProcessStopUnconfirmedError") {
+            throw error;
+          }
           const code =
             (error as { code?: string }).code ?? (error as Error).message;
           if (
@@ -637,7 +636,8 @@ export class SwitchOperationExecutor {
       targetAcc.state = zero ? "waiting_quota" : "ready";
       targetAcc.revision++;
       this.repository.saveAccount(targetAcc);
-      let accessible = !zero && !!options.modelId;
+      let accessible = !zero;
+      const verifiedModelIds: string[] = [];
       if (accessible)
         for (const modelId of operation.required_model_ids) {
           guard();
@@ -653,6 +653,7 @@ export class SwitchOperationExecutor {
             accessible = false;
             break;
           }
+          verifiedModelIds.push(modelId);
         }
       if (zero || !accessible) {
         if (options.selection.mode === "explicit")
@@ -690,6 +691,8 @@ export class SwitchOperationExecutor {
         account_id: targetAcc.id,
         weekly,
         verified_at: this.clock.toISOString(),
+        verified_model_ids: verifiedModelIds,
+        credential_revision: targetAcc.credential_revision,
       });
       operation.revision++;
       this.repository.saveOperation(operation);
@@ -738,6 +741,21 @@ export class SwitchOperationExecutor {
 
       // 清理旧的域等待
       this.repository.clearDomainWait(options.realmId);
+
+      // 持久化不可变 FinalAccountCommit
+      this.repository.saveFinalAccountCommit({
+        commit_id: `commit_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        operation_id: options.operationId,
+        realm_id: options.realmId,
+        outcome: "switched",
+        account_id: targetAcc.id,
+        secret_ref: targetAcc.secret_ref,
+        credential_revision: targetAcc.credential_revision,
+        auth_epoch: newAuthEpoch,
+        control_generation: operation.control_generation,
+        committed_at: this.clock.toISOString(),
+        stopped_job_ids: [],
+      });
 
       operation.phase = "committed";
       operation.result = {

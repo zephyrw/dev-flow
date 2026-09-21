@@ -16,7 +16,7 @@ describe("AGY Account Selector (AC-U04 & AC-U05)", () => {
     state,
     enrolled_at: "2026-09-01T00:00:00.000Z",
     last_used_at: lastUsed,
-    auth: { has_refresh_credential: true, refresh_expiry_source: "not_provided" },
+    auth: { has_refresh_credential: true, metadata_status: "verified", refresh_expiry_source: "not_provided" },
   });
 
   const buildSnapshot = (

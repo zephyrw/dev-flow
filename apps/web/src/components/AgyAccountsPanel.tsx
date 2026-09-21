@@ -3,6 +3,7 @@ import "./agy-accounts.css";
 import {
   formatQuotaWindow,
   formatAccountStateLabel,
+  formatAuthHealthDisplay,
 } from "../../../../packages/presentation/src/agy-accounts.js";
 import type {
   AgyAccountDto,
@@ -28,6 +29,22 @@ interface Realm {
   service_state: string;
   desired_enabled: boolean;
 }
+interface DetailedCapabilities {
+  host_platform?: string;
+  host_version?: string;
+  dpapi_available?: boolean;
+  cred_manager_available?: boolean;
+  named_mutex_available?: boolean;
+  native_login_supported?: boolean;
+  quota_inspection_supported?: boolean;
+  cli_version?: string;
+  capabilities?: {
+    identity?: { status: string; reason?: string };
+    dual_quota?: { status: string; reason?: string };
+    interactive_login?: { status: string; reason?: string };
+    model_access?: { status: string; reason?: string };
+  };
+}
 interface AccountView {
   accounts: AgyAccountDto[];
   snapshots: AgyQuotaSnapshot[];
@@ -41,7 +58,19 @@ interface AccountView {
     is_projected_reset: boolean;
   }>;
   excluded_accounts: Array<{ account_id: string; reason: string }>;
-  capability: { supported: boolean; reason?: string };
+  capability: {
+    supported: boolean;
+    reason?: string;
+    host_platform?: string;
+    host_version?: string;
+    dpapi_available?: boolean;
+    cred_manager_available?: boolean;
+    named_mutex_available?: boolean;
+    native_login_supported?: boolean;
+    quota_inspection_supported?: boolean;
+    cli_version?: string;
+    capabilities?: any;
+  };
   next_eligible_at?: string | null;
 }
 interface ServiceView extends Realm {
@@ -94,10 +123,17 @@ export function AgyAccountsPanel() {
   const [history, setHistory] = useState<AgyQuotaSnapshot[] | null>(null);
   const [historyCursor, setHistoryCursor] = useState<string | null>(null);
   const refresh = useCallback(async () => {
-    const [next, srv] = await Promise.all([
+    const [next, srv, caps] = await Promise.all([
       agyApi<AccountView>(""),
       agyApi<ServiceView>("/service"),
+      agyApi<DetailedCapabilities & { supported?: boolean; reason?: string }>("/capabilities").catch(() => null),
     ]);
+    if (caps) {
+      next.capability = {
+        ...next.capability,
+        ...caps,
+      };
+    }
     setView(next);
     setService(srv);
     setSelectedId((previous) =>
@@ -293,6 +329,16 @@ export function AgyAccountsPanel() {
           能力暂不可用：{view.capability.reason ?? "当前官方 CLI 能力尚未确认"}
         </p>
       )}
+      {view?.capability && (
+        <div style={{ margin: "8px 0", padding: "8px 12px", background: "var(--bg-subtle, #f5f5f5)", borderRadius: "4px", fontSize: "12px", display: "flex", gap: "12px", flexWrap: "wrap" }}>
+          <span>宿主平台：<strong>{view.capability.host_platform || "Windows"} (v{view.capability.host_version || "1.0"})</strong></span>
+          <span>DPAPI：<strong>{view.capability.dpapi_available ? "可用" : "不可用"}</strong></span>
+          <span>凭据管理器：<strong>{view.capability.cred_manager_available ? "可用" : "不可用"}</strong></span>
+          <span>跨进程互斥锁：<strong>{view.capability.named_mutex_available ? "可用" : "不可用"}</strong></span>
+          <span>原生登录：<strong>{view.capability.native_login_supported ? "支持" : "不支持"}</strong></span>
+          <span>全局双额度：<strong>{view.capability.quota_inspection_supported ? "支持" : "不支持"}</strong></span>
+        </div>
+      )}
       {error && (
         <div className="agy-notice agy-notice-danger" role="alert">
           {error}
@@ -439,27 +485,24 @@ export function AgyAccountsPanel() {
           。手动操作不会在到时后自行切换。
         </p>
       )}
-      {selected && (
-        <section aria-label="账号详情">
-          <h3>账号详情：{selected.alias}</h3>
-          <p>
-            访问令牌到期：{date(selected.auth.access_expires_at)}，激活后由官方
-            CLI 按需刷新。
-          </p>
-          <p>
-            刷新授权到期：
-            {selected.auth.refresh_expires_at
-              ? date(selected.auth.refresh_expires_at)
-              : "未提供固定到期，不能保证永久有效"}
-          </p>
-          <p>
-            最近访问成功：{date(selected.auth.last_authenticated_request_at)}
-            ；最近刷新证实：
-            {selected.auth.last_refresh_verified_at
-              ? date(selected.auth.last_refresh_verified_at)
-              : "尚未验证"}
-          </p>
-          <div className="agy-header-actions">
+      {selected && (() => {
+        const health = formatAuthHealthDisplay(selected.auth);
+        return (
+          <section aria-label="账号详情">
+            <h3>账号详情：{selected.alias}</h3>
+            <p>
+              认证元数据：<strong>{selected.auth?.metadata_status === "verified" ? "官方已核验" : "未核验"}</strong> · 刷新凭据：<strong>{health.refreshPresenceText}</strong>
+            </p>
+            <p>
+              访问令牌到期：{health.accessExpiryText}，激活后由官方 CLI 按需刷新。
+            </p>
+            <p>
+              刷新授权到期：{health.refreshExpiryText}
+            </p>
+            <p>
+              最近访问成功：{health.lastAuthText}；最近刷新证实：{health.lastRefreshVerifiedText}
+            </p>
+            <div className="agy-header-actions">
             <button
               className="agy-btn"
               disabled={!canOperate}
@@ -558,7 +601,8 @@ export function AgyAccountsPanel() {
             </div>
           )}
         </section>
-      )}
+        );
+      })()}
       {!!operations.length && (
         <section aria-label="操作历史">
           <h3>操作历史</h3>

@@ -13,11 +13,15 @@ import {
 import { FunctionalIssueService } from "./functional-issues.js";
 import { workflowAttention } from "./attention.js";
 import { assertSelectedSource } from "./source-change.js";
-import { scheduleModelRetry, stageModelRunRetry } from "./model-retry.js";
+import { scheduleModelRetry, stageModelRunRetry, type PendingModelRetry } from "./model-retry.js";
 import { currentRunObservation } from "./run-observation.js";
 import { repairFailure, prepareRepairResume } from "./repair.js";
 import { normalizeRuntimeFailure } from "../../runtime/src/errors.js";
 import { ModelAccessService } from "./model-access-service.js";
+import type {
+  AgyRecoveryProgress,
+  AccountRecoveryContinuation,
+} from "../../contracts/src/agy-recovery.js";
 import { runtimeFailureResolution } from "../../contracts/src/runtime-failure.js";
 import {
   latestEvidence,
@@ -2263,58 +2267,93 @@ export class Engine {
           continue;
         const w = this.get(job.workflow_id),
           runId = id("aside-run");
-        const binding = bindProfile(
-          this.store,
-          this.config,
-          w.id,
-          "aside",
-          buildDispatchContext(this.store, w.id, "aside"),
-        );
-        const run: Run = {
-          id: runId,
-          workflow_id: w.id,
-          plan_revision: aside.plan_revision ?? w.plan_revision,
-          adapter: binding.profile.adapterId,
-          ...binding,
-          stage: "aside",
-          status: "running",
-          started_at: now(),
-          deadline_at: Date.now() + ASIDE_TIMEOUT_MS,
-          package_hash: objectHash(aside),
-          protocol: "lightweight",
-        };
-        this.store.transaction(() => {
-          this.store.put("run", runId, w.id, run);
-          this.store.jobStatus(job.id, "delivered");
-          this.store.put("aside_session", aside.id, w.id, {
-            ...aside,
-            run_id: runId,
-          });
-        });
-        void this.runtime
-          .aside(w, run, aside)
-          .then((answer) => {
-            new AsideSessionService(this.store).settleRun(w.id, aside.id, {
-              answer,
-            });
-            this.store.put("run", runId, w.id, {
-              ...run,
-              status: "completed",
-              exit_code: 0,
-              ended_at: now(),
-            });
-          })
-          .catch((error) => {
-            new AsideSessionService(this.store).settleRun(w.id, aside.id, {
-              error,
-            });
-            this.store.put("run", runId, w.id, {
-              ...run,
-              status: "failed",
-              ended_at: now(),
-              result: { error: String(error) },
+        const accountRetry = aside.account_recovery as PendingModelRetry | undefined;
+        try {
+          const binding = bindProfile(
+            this.store,
+            this.config,
+            w.id,
+            "aside",
+            accountRetry ? {
+              retry_run_id: accountRetry.retry_run_id,
+              logical_round_id: accountRetry.logical_round_id,
+            } : buildDispatchContext(this.store, w.id, "aside"),
+            accountRetry,
+          );
+          const run: Run = {
+            id: runId,
+            workflow_id: w.id,
+            plan_revision: aside.plan_revision ?? w.plan_revision,
+            adapter: binding.profile.adapterId,
+            ...binding,
+            stage: "aside",
+            status: "running",
+            started_at: now(),
+            deadline_at: this.accountRecoveryDeadline(accountRetry, ASIDE_TIMEOUT_MS),
+            aside_id: aside.id,
+            package_hash: objectHash(aside),
+            protocol: "lightweight",
+          } as Run;
+          this.store.transaction(() => {
+            this.store.put("run", runId, w.id, run);
+            this.bindAccountRecoveryRun(run, accountRetry);
+            this.store.jobStatus(job.id, "delivered");
+            this.store.put("aside_session", aside.id, w.id, {
+              ...aside,
+              run_id: runId,
+              account_recovery: undefined,
             });
           });
+          void this.runtime
+            .aside(w, run, aside)
+            .then((answer) => {
+              if (this.store.get("run_stop", runId)) return;
+              new AsideSessionService(this.store).settleRun(w.id, aside.id, {
+                answer,
+              });
+              this.store.put("run", runId, w.id, {
+                ...this.store.must<Run>("run", runId),
+                status: "completed",
+                exit_code: 0,
+                ended_at: now(),
+              });
+            })
+            .catch((error) => {
+              if (this.store.get("run_stop", runId)) return;
+              new AsideSessionService(this.store).settleRun(w.id, aside.id, {
+                error,
+              });
+              this.store.put("run", runId, w.id, {
+                ...this.store.must<Run>("run", runId),
+                status: "failed",
+                ended_at: now(),
+                result: { error: String(error) },
+              });
+            })
+            .finally(() => this.settleAccountRecoveryRun(runId));
+        } catch (error) {
+          // A queued recovery may lose access before dispatch. Release its aside slot.
+          this.store.transaction(() => {
+            this.store.jobStatus(job.id, "rejected");
+            new AsideSessionService(this.store).failSession(w.id, aside.id, String(error));
+            const current = this.store.must<Record<string, unknown>>("aside_session", aside.id);
+            this.store.put("aside_session", aside.id, w.id, { ...current, account_recovery: undefined });
+            const started = this.store.get<Run>("run", runId);
+            if (started) this.store.put("run", runId, w.id, {
+              ...started, status: "failed", ended_at: now(), result: { error: String(error) },
+            });
+            const recoveryId = accountRetry?.account_recovery?.recovery_id;
+            const progress = recoveryId ? this.store.get<AgyRecoveryProgress>("agy_recovery_progress", recoveryId) : undefined;
+            if (progress && progress.source_run_id === accountRetry?.retry_run_id &&
+                (!progress.target_run_id || progress.target_run_id === runId) &&
+                !["completed", "superseded"].includes(progress.state)) {
+              this.store.put("agy_recovery_progress", progress.recovery_id, progress.operation_id, {
+                ...progress, state: "manual_required", reason: "dispatch_failed",
+                revision: progress.revision + 1, completed_at: now(),
+              } satisfies AgyRecoveryProgress);
+            }
+          });
+        }
         continue;
       }
       if (purpose === "spec_switch") {
@@ -2561,6 +2600,7 @@ export class Engine {
       "PLANNER_UNAVAILABLE",
       "当前运行时不支持规划",
     );
+    const pendingRetry = this.store.get<PendingModelRetry>("pending_model_retry", w.id);
     const binding = bindProfile(
       this.store,
       this.config,
@@ -2577,7 +2617,7 @@ export class Engine {
       stage: "planning",
       status: "running",
       started_at: now(),
-      deadline_at: Date.now() + this.config.timeouts.agent_minutes * 60000,
+      deadline_at: this.accountRecoveryDeadline(pendingRetry, this.config.timeouts.agent_minutes * 60000),
       package_hash: objectHash({
         request: w.request,
         messages: this.store.list("feedback_message", w.id),
@@ -2585,12 +2625,16 @@ export class Engine {
       }),
       protocol: "lightweight",
     };
-    w = this.transition(w.id, ["PLANNING"], "PLANNING", "planning", {
-      run_id: runId,
-      blocker: undefined,
+    const bound = this.store.transaction(() => {
+      w = this.transition(w.id, ["PLANNING"], "PLANNING", "planning", {
+        run_id: runId,
+        blocker: undefined,
+      });
+      const bound = this.assignPlanningRun(w, run);
+      this.bindAccountRecoveryRun(bound, pendingRetry);
+      this.store.remove("pending_model_retry", w.id);
+      return bound;
     });
-    const bound = this.assignPlanningRun(w, run);
-    this.store.remove("pending_model_retry", w.id);
     for (const msg of this.store
       .list<any>("feedback_message", w.id)
       .filter((m) => m.status === "pending"))
@@ -2789,6 +2833,7 @@ export class Engine {
       let w = queued;
       if (w.state === "PLANNING") {
         await assertSelectedSource(this, w);
+        if (!ownsPreparation()) return;
         await this.runPlanning(w, runId);
         return;
       }
@@ -2886,7 +2931,8 @@ export class Engine {
       );
       activated = true;
       this.store.remove("queue_wait", key);
-      const deadline = Date.now() + this.config.timeouts.agent_minutes * 60000;
+      const pendingRetry = this.store.get<PendingModelRetry>("pending_model_retry", key);
+      const deadline = this.accountRecoveryDeadline(pendingRetry, this.config.timeouts.agent_minutes * 60000);
       const continuationPurpose = review ? "review" : "execute";
       const role = review
         ? "planner"
@@ -2916,6 +2962,9 @@ export class Engine {
         if (continuation)
           run = this.persistBoundContinuation(key, runId, run, continuation);
         else this.store.put("run", runId, key, run);
+
+        this.bindAccountRecoveryRun(run, pendingRetry);
+
         if (!review) {
           const assignment = this.store.get<QualityRepairAssignment>(
             "repair_assignment",
@@ -3193,6 +3242,7 @@ export class Engine {
             : { error: String(e) },
         });
     } finally {
+      this.settleAccountRecoveryRun(runId);
       this.scheduler.release(key, runId, leases, true);
       if (
         !["QUEUED", "REVIEW_QUEUED", "PLANNING"].includes(this.get(key).state)
@@ -4562,6 +4612,221 @@ export class Engine {
       files,
       created_at: delivery.submitted_at,
     };
+  }
+
+  private accountRecoveryDeadline(pending: PendingModelRetry | undefined, defaultBudget: number): number {
+    const recovery = pending?.account_recovery;
+    const remaining = recovery?.remaining_budget_ms ?? recovery?.continuation?.remaining_budget_ms;
+    if (!recovery?.recovery_id && remaining === undefined) return Date.now() + defaultBudget;
+    requireCondition(
+      typeof remaining === "number" && Number.isFinite(remaining) && remaining > 0,
+      "RECOVERY_BUDGET_EXHAUSTED",
+      "原任务的剩余执行时间已耗尽，不能重置超时后继续",
+      422,
+    );
+    return Date.now() + remaining;
+  }
+
+  /** Called inside the normal Run creation transaction for every launch purpose. */
+  private bindAccountRecoveryRun(run: Run, pending?: PendingModelRetry): void {
+    const recovery = pending?.account_recovery;
+    if (!pending || !recovery?.recovery_id) return;
+    const source = this.store.must<Run>("run", pending.retry_run_id);
+    const progress = this.store.must<AgyRecoveryProgress>("agy_recovery_progress", recovery.recovery_id);
+    const continuation = recovery.continuation;
+    requireCondition(
+      source.workflow_id === run.workflow_id && progress.source_run_id === source.id &&
+        continuation?.recovery_id === recovery.recovery_id &&
+        !["superseded", "completed", "manual_required"].includes(progress.state) &&
+        (!progress.target_run_id || progress.target_run_id === run.id) &&
+        !this.store.get("run_stop", source.id),
+      "AGY_ACCOUNT_RECOVERY_STALE",
+      "账号恢复已取消或被新的运行接替",
+      409,
+    );
+    this.store.put("account_recovery_continuation", run.id, run.workflow_id, {
+      ...continuation,
+      target_run_id: run.id,
+    });
+    this.store.put("agy_recovery_progress", progress.recovery_id, progress.operation_id, {
+      ...progress,
+      target_run_id: run.id,
+      state: "running_observed",
+      revision: progress.revision + 1,
+    } satisfies AgyRecoveryProgress);
+  }
+
+  private settleAccountRecoveryRun(runId: string): void {
+    const continuation = this.store.get<AccountRecoveryContinuation>("account_recovery_continuation", runId);
+    if (!continuation) return;
+    const progress = this.store.get<AgyRecoveryProgress>("agy_recovery_progress", continuation.recovery_id);
+    const run = this.store.get<Run>("run", runId);
+    if (!progress || progress.target_run_id !== runId || !run ||
+        ["superseded", "completed"].includes(progress.state) ||
+        progress.reason === "cancel_requested" ||
+        !["completed", "failed", "stopped", "cancelled"].includes(run.status)) return;
+    const cancelled = !!this.store.get("run_stop", runId) || ["stopped", "cancelled"].includes(run.status);
+    this.store.put("agy_recovery_progress", progress.recovery_id, progress.operation_id, {
+      ...progress,
+      state: cancelled ? "superseded" : run.status === "completed" ? "completed" : "manual_required",
+      reason: cancelled ? "user_cancelled" : run.status === "completed" ? "run_completed" : "run_failed",
+      revision: progress.revision + 1,
+      completed_at: run.ended_at ?? now(),
+    } satisfies AgyRecoveryProgress);
+  }
+
+  cancelQueuedAccountRecovery(workflowId: string, recoveryId: string, sourceRunId: string): void {
+    this.store.transaction(() => {
+      const source = this.store.must<Run>("run", sourceRunId);
+      const progress = this.store.must<AgyRecoveryProgress>("agy_recovery_progress", recoveryId);
+      requireCondition(source.workflow_id === workflowId && progress.source_run_id === sourceRunId &&
+        !progress.target_run_id, "AGY_ACCOUNT_RECOVERY_STALE", "恢复目标已变化", 409);
+
+      const pending = this.store.get<PendingModelRetry>("pending_model_retry", workflowId);
+      const ownsPending = pending?.retry_run_id === sourceRunId && pending.account_recovery?.recovery_id === recoveryId;
+      const aside = this.store.list<{ id: string; run_id?: string; status: string; account_recovery?: PendingModelRetry }>(
+        "aside_session", workflowId,
+      ).find((s) => s.account_recovery?.retry_run_id === sourceRunId &&
+        s.account_recovery.account_recovery?.recovery_id === recoveryId);
+      requireCondition(ownsPending || aside, "AGY_ACCOUNT_RECOVERY_STALE", "原恢复已被新的请求接替", 409);
+
+      if (aside) {
+        requireCondition(aside.run_id === sourceRunId && ["active", "queued", "waiting_account"].includes(aside.status),
+          "AGY_ACCOUNT_RECOVERY_STALE", "提问已被新的运行接替", 409);
+        new AsideSessionService(this.store).cancelSession(workflowId, aside.id);
+        const cancelled = this.store.must<Record<string, unknown>>("aside_session", aside.id);
+        this.store.put("aside_session", aside.id, workflowId, { ...cancelled, account_recovery: undefined });
+      } else {
+        const w = this.get(workflowId);
+        requireCondition((!w.run_id || w.run_id === sourceRunId) &&
+          ["QUEUED", "REVIEW_QUEUED", "PLANNING", "BLOCKED"].includes(w.state),
+          "AGY_ACCOUNT_RECOVERY_STALE", "任务已被新的运行接替", 409);
+        this.store.put("interruption", workflowId, workflowId, {
+          category: "pause", source: "local_console", at: now(),
+          prior_state: w.state, prior_stage: w.stage, prior_purpose: source.purpose,
+          prior_run_id: sourceRunId, run_id: sourceRunId,
+          message: "你取消了账号切换后的任务恢复", next_action: "核实后继续这个任务",
+        });
+        this.store.remove("queue", workflowId);
+        this.store.remove("queue_wait", workflowId);
+        this.store.remove("model_retry", workflowId);
+        this.store.remove("pending_model_retry", workflowId);
+        this.store.remove("transient_network_retry", workflowId);
+        this.clearNetworkRetryTimer(workflowId);
+        this.transition(workflowId, [w.state], "STOPPED", "stopped", { blocker: undefined });
+      }
+      for (const job of this.store.jobs()) {
+        if (job.workflow_id !== workflowId || !["dispatch", "dispatch_run"].includes(job.kind)) continue;
+        let payload: { purpose?: string; aside_id?: string; run_id?: string };
+        try { payload = JSON.parse(job.data); } catch { continue; }
+        if (aside ? payload.aside_id === aside.id :
+            !payload.aside_id && [undefined, "planning", "implement", "quality_review", "plan_self_check", "functional_fix", "planner_takeover"].includes(payload.purpose) &&
+              (!payload.run_id || payload.run_id === sourceRunId)) {
+          this.store.jobStatus(job.id, "cancelled");
+        }
+      }
+    });
+  }
+
+  async cancelAccountRecoveryTarget(
+    recoveryId: string,
+    targetRunId: string,
+    expectedGeneration?: number,
+  ): Promise<{ cancelled: boolean; state: string; stopped: boolean }> {
+    const progress = this.store.get<AgyRecoveryProgress>(
+      "agy_recovery_progress",
+      recoveryId,
+    );
+    if (!progress) {
+      throw new FlowError("NOT_FOUND", `恢复记录 ${recoveryId} 不存在`, 404);
+    }
+    if (
+      expectedGeneration !== undefined &&
+      progress.revision !== expectedGeneration
+    ) {
+      throw new FlowError("REVISION_CONFLICT", "恢复进度版本冲突", 409);
+    }
+    if (progress.state === "completed") {
+      return { cancelled: false, state: "completed", stopped: true };
+    }
+    if (progress.state === "superseded") {
+      return { cancelled: true, state: "superseded", stopped: true };
+    }
+    const run = this.store.must<Run>("run", targetRunId);
+    requireCondition(progress.target_run_id === targetRunId, "AGY_ACCOUNT_RECOVERY_STALE", "恢复目标已变化", 409);
+    if (run.status === "completed" && progress.reason !== "cancel_requested") {
+      this.settleAccountRecoveryRun(targetRunId);
+      return { cancelled: false, state: "completed", stopped: true };
+    }
+    const needsStop = ["running", "dispatched"].includes(run.status) || progress.reason === "cancel_requested";
+    const w = this.get(run.workflow_id);
+    const isMainTarget = run.purpose !== "aside" && w.run_id === targetRunId;
+    this.store.transaction(() => {
+      const interruption = {
+        category: "pause", source: "local_console", at: now(),
+        prior_state: w.state, prior_stage: w.stage, prior_purpose: run.purpose,
+        prior_run_id: targetRunId, run_id: targetRunId,
+        message: "你取消了账号切换后的任务恢复", next_action: "核实后继续这个任务",
+      };
+      this.store.put("run_stop", targetRunId, run.workflow_id, interruption);
+      this.auth.revokeRun(targetRunId);
+      if (needsStop) this.store.put("agy_recovery_progress", recoveryId, progress.operation_id, {
+          ...progress, state: "delivery_pending", reason: "cancel_requested", revision: progress.revision + 1,
+        } satisfies AgyRecoveryProgress);
+      if (isMainTarget) {
+        this.store.put("interruption", w.id, w.id, interruption);
+        this.store.remove("queue", w.id);
+        this.store.remove("queue_wait", w.id);
+        this.store.remove("model_retry", w.id);
+        const pending = this.store.get<PendingModelRetry>("pending_model_retry", w.id);
+        if (pending?.retry_run_id === targetRunId) this.store.remove("pending_model_retry", w.id);
+        this.store.remove("transient_network_retry", w.id);
+        this.clearNetworkRetryTimer(w.id);
+        if (w.state !== "STOPPED")
+          this.transition(w.id, [w.state], needsStop ? "STOPPING" : "STOPPED", needsStop ? "stop" : "stopped");
+      }
+    });
+    if (needsStop) {
+      try {
+        if (!this.runtime?.stop) return { cancelled: false, state: "stopping", stopped: false };
+        await (this.runtime as any).stop(targetRunId, { stopEnvironment: false });
+      } catch {
+        return { cancelled: false, state: "stopping", stopped: false };
+      }
+    }
+    this.store.transaction(() => {
+      const latest = this.store.must<Run>("run", targetRunId);
+      this.store.put("run", targetRunId, run.workflow_id, { ...latest, status: "cancelled", ended_at: now() });
+      if (run.purpose === "aside") {
+        const aside = this.store.list<{ id: string; run_id?: string }>("aside_session", run.workflow_id)
+          .find((s) => s.run_id === targetRunId);
+        if (aside) new AsideSessionService(this.store).cancelSession(run.workflow_id, aside.id);
+      } else if (isMainTarget) {
+        const current = this.get(run.workflow_id);
+        if (current.run_id === targetRunId && current.state === "STOPPING")
+          this.transition(current.id, ["STOPPING"], "STOPPED", "stopped");
+      }
+      const latestProgress = this.store.must<AgyRecoveryProgress>("agy_recovery_progress", recoveryId);
+      this.store.put("agy_recovery_progress", recoveryId, latestProgress.operation_id, {
+        ...latestProgress, state: "superseded", reason: "user_cancelled",
+        revision: latestProgress.revision + 1, completed_at: now(),
+      } satisfies AgyRecoveryProgress);
+    });
+    return { cancelled: true, state: "superseded", stopped: true };
+  }
+
+  async stopRun(runId: string, _reason = "stopped"): Promise<void> {
+    const run = this.store.get<Run>("run", runId);
+    if (run) {
+      this.store.put("run", runId, run.workflow_id, {
+        ...run,
+        status: "cancelled",
+        ended_at: now(),
+      });
+    }
+    if (this.runtime?.stop) {
+      await this.runtime.stop(runId);
+    }
   }
 }
 

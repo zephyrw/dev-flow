@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { WorkflowActivity } from "./components/WorkflowActivity.js";
+import { AgyRecoveryPanel } from "./components/AgyRecoveryPanel.js";
 import {
   AsideHistoryDialog,
   readAsides,
@@ -121,9 +122,15 @@ export function TaskInteraction({
     "WAITING_AUTHORIZATION",
   ].includes(w.state);
   if (!requests.length && !canGuide)
-    return <WorkflowActivity workflow={w} refresh={refresh} detail={detail} />;
+    return (
+      <>
+        <AgyRecoveryPanel workflowId={w.id} onRefresh={refresh} />
+        <WorkflowActivity workflow={w} refresh={refresh} detail={detail} />
+      </>
+    );
   return (
     <section className="task-interaction" aria-label="指导或提问">
+      <AgyRecoveryPanel workflowId={w.id} onRefresh={refresh} />
       {w.state === "BLOCKED" &&
         w.blocker?.code === "MODEL_QUOTA" &&
         detail.attention?.category === "queue" && (

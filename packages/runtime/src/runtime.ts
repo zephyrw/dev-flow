@@ -1570,7 +1570,7 @@ export class LocalRuntime implements Runtime {
     );
     return normalizeModelOutput(JSON.parse(readFileSync(output, "utf8")));
   }
-  async stop(run: string) {
+  async stop(run: string, options?: { stopEnvironment?: boolean }) {
     this.cancelledRuns.add(run);
     for (const processId of this.preparationProcesses.get(run) ?? [])
       await this.processes.stop(processId);
@@ -1578,7 +1578,9 @@ export class LocalRuntime implements Runtime {
     await this.browser.stop(run);
     await this.processes.stop(run);
     const record = this.engine.store.get<Run>("run", run);
+    const isSingleRunStop = options?.stopEnvironment === false || record?.purpose === "aside";
     if (
+      !isSingleRunStop &&
       record &&
       record.plan_revision > 0 &&
       !this.engine.config.retain_services_on_stop &&

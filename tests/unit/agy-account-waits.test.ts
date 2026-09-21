@@ -15,7 +15,7 @@ describe("AGY Domain Wait Policy (AC-U06)", () => {
     credential_revision: 1,
     state,
     enrolled_at: "2026-09-01T00:00:00.000Z",
-    auth: { has_refresh_credential: true, refresh_expiry_source: "not_provided" },
+    auth: { has_refresh_credential: true, metadata_status: "verified", refresh_expiry_source: "not_provided" },
   });
 
   const buildSnapshotWithWindows = (

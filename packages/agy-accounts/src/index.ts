@@ -11,3 +11,4 @@ export * from "./reconcile.js";
 export * from "./maintenance.js";
 export * from "./manual-switch.js";
 export * from "./service.js";
+export * from "./recovery-batch.js";

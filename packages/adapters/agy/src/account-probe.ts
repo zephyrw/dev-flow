@@ -1,9 +1,6 @@
-import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFile, mkdtemp, rm } from "node:fs/promises";
-import { join, resolve } from "node:path";
-import { tmpdir } from "node:os";
-import { StringDecoder } from "node:string_decoder";
+import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import type {
   AccountProbePort,
   AccountProbeResult,
@@ -16,6 +13,87 @@ export interface VerifiedUsageAdapter {
   cli_version: string;
   parse(text: string): ParsedQuotaResult;
 }
+
+export function createVerifiedUsageAdapter(
+  executableFingerprint: string,
+  cliVersion: string = "1.2.7",
+): VerifiedUsageAdapter {
+  return {
+    executable_fingerprint: executableFingerprint,
+    cli_version: cliVersion,
+    parse: (text: string) => parseAgyUsageOutput(text, { cliVersion }),
+  };
+}
+
+export interface AuxiliaryProbeRunner {
+  runAuxiliaryProbe(options: {
+    executable: string;
+    args: string[];
+    lease: any;
+    timeoutMs?: number;
+    signal?: AbortSignal;
+  }): Promise<{ code: number | null; stdout: string; stderr: string }>;
+}
+
+export function parseModelAccessOutput(
+  stdout: string,
+  expected: { modelId: string; accountId?: string; cwd?: string },
+): { success: boolean; reason?: string } {
+  const lines = stdout.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  if (lines.length === 0) return { success: false, reason: "empty_output" };
+
+  const events: Record<string, unknown>[] = [];
+  for (const line of lines) {
+    try {
+      events.push(JSON.parse(line));
+    } catch {
+      return { success: false, reason: "malformed_json_event" };
+    }
+  }
+
+  // 检查是否有错误事件
+  const hasError = events.some(
+    (event) =>
+      event.event === "error" ||
+      event.type === "error" ||
+      (event.result as any)?.status === "ERROR" ||
+      event.is_error === true,
+  );
+  if (hasError) return { success: false, reason: "error_event_present" };
+
+  // 必须有本次匹配的初始化事件
+  const initEvent = events.find(
+    (e) =>
+      e.event === "init" ||
+      e.type === "init" ||
+      e.event === "session_start" ||
+      e.event === "session_init" ||
+      e.type === "turn_start" ||
+      (e.model && typeof e.model === "string") ||
+      (e.session && typeof (e.session as any).model === "string"),
+  );
+  if (!initEvent) {
+    return { success: false, reason: "missing_init_event" };
+  }
+
+  const eventModel = (initEvent.model as string) ?? (initEvent.session as any)?.model;
+  if (eventModel && eventModel !== expected.modelId) {
+    return { success: false, reason: "model_mismatch" };
+  }
+
+  // 必须有明确成功终态
+  const hasSuccessResult = events.some(
+    (event) =>
+      (event.event === "result" && (event.result as any)?.status === "SUCCESS") ||
+      (event.type === "result" && ((event as any).status === "success" || event.is_error === false)),
+  );
+  if (!hasSuccessResult) {
+    return { success: false, reason: "missing_success_result" };
+  }
+
+  return { success: true };
+}
+
 type ProbeOptions = {
   cwd?: string;
   timeoutMs?: number;
@@ -27,10 +105,17 @@ type ProbeOptions = {
 export class AgyAccountProbe implements AccountProbePort {
   private inFlight?: { key: string; promise: Promise<AccountProbeResult> };
   private modelAccessCache = new Map<string, number>();
+  private activeAdapter?: VerifiedUsageAdapter;
+  private runner?: AuxiliaryProbeRunner;
+
   constructor(
     private readonly cliPath?: string,
-    private readonly adapter?: VerifiedUsageAdapter,
-  ) {}
+    adapter?: VerifiedUsageAdapter,
+    runner?: AuxiliaryProbeRunner,
+  ) {
+    this.activeAdapter = adapter;
+    this.runner = runner;
+  }
   private async fingerprint(): Promise<string> {
     const executable = this.cliPath ?? process.env.AGY_CLI_PATH;
     if (!executable) return "";
@@ -42,9 +127,19 @@ export class AgyAccountProbe implements AccountProbePort {
       return "";
     }
   }
+  private getAdapter(fingerprint: string): VerifiedUsageAdapter | undefined {
+    if (
+      this.activeAdapter &&
+      (!this.activeAdapter.executable_fingerprint ||
+        this.activeAdapter.executable_fingerprint === fingerprint)
+    ) {
+      return this.activeAdapter;
+    }
+    return undefined;
+  }
   private unknown(fingerprint: string): AccountProbeResult {
     return {
-      cli_version: this.adapter?.cli_version ?? "unknown",
+      cli_version: this.activeAdapter?.cli_version ?? "unknown",
       windows: parseAgyUsageOutput("").windows,
       pools: [],
       executable_fingerprint: fingerprint,
@@ -52,15 +147,42 @@ export class AgyAccountProbe implements AccountProbePort {
       raw_output: "",
     };
   }
+
+  async probeIdentity(options: ProbeOptions = {}): Promise<{
+    email: string;
+    subject?: string;
+    cli_version: string;
+    raw_output: string;
+  }> {
+    options.signal?.throwIfAborted();
+    const fingerprint = await this.fingerprint();
+    const adapter = this.getAdapter(fingerprint);
+    if (!fingerprint || !adapter) {
+      throw new Error("identity_unverified: cli_adapter_or_fingerprint_unverified");
+    }
+    const result = await this.execute(
+      ["-p", "/usage", "--output-format", "text", "--print-timeout", "15s"],
+      options,
+    );
+    if (result.code !== 0) {
+      throw new Error(`identity_unverified: official cli exited with code ${result.code}`);
+    }
+    const parsed = adapter.parse(result.stdout);
+    if (!parsed.email) {
+      throw new Error("identity_unverified: unable to extract email from official cli output");
+    }
+    return {
+      email: parsed.email,
+      cli_version: parsed.cli_version,
+      raw_output: result.stdout,
+    };
+  }
+
   async probeUsage(options: ProbeOptions = {}): Promise<AccountProbeResult> {
     options.signal?.throwIfAborted();
     const fingerprint = await this.fingerprint();
-    if (
-      !fingerprint ||
-      !this.adapter ||
-      this.adapter.executable_fingerprint !== fingerprint
-    )
-      return this.unknown(fingerprint);
+    const adapter = this.getAdapter(fingerprint);
+    if (!fingerprint || !adapter) return this.unknown(fingerprint);
     const key = JSON.stringify([
       options.account_id,
       options.credential_revision,
@@ -78,38 +200,37 @@ export class AgyAccountProbe implements AccountProbePort {
     )
       .then((result) => {
         if (result.code !== 0) throw new Error("official_usage_probe_failed");
-        const parsed = this.adapter!.parse(result.stdout);
-        const pools = parsed.pools.map((pool) => ({
-          pool_id: pool.pool_id,
-          model_ids: pool.models,
-          windows: pool.windows,
-        }));
-        const valid =
-          !!parsed.email &&
-          pools.length > 0 &&
-          pools.every(
-            (pool) =>
-              pool.model_ids.length > 0 &&
-              ["weekly", "five_hour"].every((kind) => {
-                const windows = pool.windows.filter(
-                  (window) => window.kind === kind,
-                );
-                const window = windows[0];
-                return (
-                  windows.length === 1 &&
-                  window?.status === "observed" &&
-                  typeof window.remaining_fraction === "number" &&
-                  window.remaining_fraction >= 0 &&
-                  window.remaining_fraction <= 1 &&
-                  !!window.reset_at &&
-                  Number.isFinite(Date.parse(window.reset_at))
-                );
-              }),
+        const parsed = adapter.parse(result.stdout);
+        // 直接以账号级全局两个 windows 判定有效性 (Q01)
+        const hasWindows = ["weekly", "five_hour"].every((kind) => {
+          const windows = parsed.windows.filter((window) => window.kind === kind);
+          const window = windows[0];
+          return (
+            windows.length === 1 &&
+            window?.status === "observed" &&
+            typeof window.remaining_fraction === "number" &&
+            window.remaining_fraction >= 0 &&
+            window.remaining_fraction <= 1
           );
+        });
+        const pools = parsed.pools.length > 0
+          ? parsed.pools.map((pool) => ({
+              pool_id: pool.pool_id,
+              model_ids: pool.models,
+              windows: pool.windows,
+            }))
+          : [
+              {
+                pool_id: "global",
+                model_ids: ["*"],
+                windows: parsed.windows,
+              },
+            ];
+        const valid = !!parsed.email && hasWindows;
         return {
           email: parsed.email,
           plan_tier: parsed.plan_tier,
-          cli_version: this.adapter!.cli_version,
+          cli_version: adapter.cli_version,
           windows: parsed.windows,
           pools,
           executable_fingerprint: fingerprint,
@@ -128,9 +249,9 @@ export class AgyAccountProbe implements AccountProbePort {
     options: ProbeOptions = {},
   ): Promise<boolean> {
     const fingerprint = await this.fingerprint();
+    const adapter = this.getAdapter(fingerprint);
     if (
-      !this.adapter ||
-      this.adapter.executable_fingerprint !== fingerprint ||
+      !adapter ||
       !options.account_id ||
       options.credential_revision === undefined ||
       !modelId
@@ -160,22 +281,12 @@ export class AgyAccountProbe implements AccountProbePort {
       { ...options, timeoutMs: options.timeoutMs ?? 15000 },
     );
     if (result.code !== 0) return false;
-    const events = result.stdout.split(/\r?\n/).flatMap((line) => {
-      try {
-        return [JSON.parse(line) as Record<string, unknown>];
-      } catch {
-        return [];
-      }
+    const parsed = parseModelAccessOutput(result.stdout, {
+      modelId,
+      accountId: options.account_id,
+      cwd: options.cwd,
     });
-    const success =
-      events.some(
-        (event) => event.type === "result" && event.is_error === false,
-      ) &&
-      !events.some(
-        (event) => event.type === "error" || event.is_error === true,
-      );
-    if (success) this.modelAccessCache.set(key, Date.now());
-    return success;
+    return parsed.success;
   }
   private async execute(
     args: string[],
@@ -183,45 +294,26 @@ export class AgyAccountProbe implements AccountProbePort {
   ): Promise<{ code: number | null; stdout: string }> {
     const executable = this.cliPath ?? process.env.AGY_CLI_PATH;
     if (!executable) throw new Error("agy_cli_not_configured");
-    const cwd = await mkdtemp(join(tmpdir(), "devflow-agy-probe-"));
-    try {
-      options.signal?.throwIfAborted();
-      return await new Promise((resolvePromise, reject) => {
-        const child = spawn(resolve(executable), args, {
-          cwd,
-          windowsHide: true,
-          stdio: ["ignore", "pipe", "pipe"],
-        });
-        const decoder = new StringDecoder("utf8");
-        let stdout = "";
-        let failure: Error | undefined;
-        const stop = (reason: string) => {
-          failure ??= new Error(reason);
-          child.kill();
-        };
-        const abort = () => stop("probe_cancelled");
-        const timer = setTimeout(
-          () => stop("probe_timeout"),
-          options.timeoutMs ?? 35000,
-        );
-        options.signal?.addEventListener("abort", abort, { once: true });
-        child.stdout.on("data", (data: Buffer) => {
-          stdout += decoder.write(data);
-          if (stdout.length > 1024 * 1024) stop("probe_output_limit");
-        });
-        child.stderr.resume();
-        child.once("error", () => {
-          failure ??= new Error("probe_spawn_failed");
-        });
-        child.once("close", (code) => {
-          clearTimeout(timer);
-          options.signal?.removeEventListener("abort", abort);
-          if (failure) reject(failure);
-          else resolvePromise({ code, stdout: stdout + decoder.end() });
-        });
-      });
-    } finally {
-      await rm(cwd, { recursive: true, force: true });
+
+    if (!this.runner) {
+      throw new Error("auxiliary_runner_required: all auxiliary probe executions must be managed by Process Host runner");
     }
+
+    const lease = {
+      lease_id: `aux_${Date.now()}`,
+      operation_id: `probe_${Date.now()}`,
+      realm_id: "default-agy-realm",
+      job_id: `probe_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      created_at: Date.now(),
+      expires_at: Date.now() + (options.timeoutMs ?? 15000),
+    };
+    const res = await this.runner.runAuxiliaryProbe({
+      executable: resolve(executable),
+      args,
+      lease,
+      timeoutMs: options.timeoutMs ?? 15000,
+      signal: options.signal,
+    });
+    return { code: res.code, stdout: res.stdout };
   }
 }

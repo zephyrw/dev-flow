@@ -7,7 +7,10 @@ import {
   type AgyAccountOperation,
   type AgyAccountSettings,
 } from "../../../packages/contracts/src/agy-account.js";
-import { requireCondition } from "../../../packages/contracts/src/index.js";
+import { requireCondition, FlowError } from "../../../packages/contracts/src/index.js";
+import type { Store } from "../../../packages/store/src/store.js";
+import { AgyRecoveryCheckpointManager } from "../../../packages/runtime/src/agy-recovery-checkpoint.js";
+import { AgyWorkflowRecoveryCoordinator } from "../../../packages/runtime/src/agy-workflow-recovery.js";
 const realmId = "default-agy-realm";
 const requestId = z.string().min(1).max(200);
 const revision = z.number().int().nonnegative();
@@ -334,4 +337,29 @@ export function registerAgyAccountRoutes(
         }),
       );
   });
+
+  // 只读能力投影 (R2-D10 / CR29: 仅读取本地快照，不每次调用Host，不硬编码quota=true)
+  app.get("/api/agy-accounts/capabilities", async (req) => {
+    human(req);
+    const snapshot = service.getCapabilitySnapshot();
+    const loginAvailable = service.getEnrollmentService().isLoginAvailable();
+    return {
+      supported: snapshot.supported,
+      reason: snapshot.reason,
+      cli_version: snapshot.cli_version ?? "unknown",
+      cli_sha256: snapshot.cli_sha256 ?? null,
+      adapter_revision: snapshot.adapter_revision ?? null,
+      host_platform: snapshot.host_platform,
+      host_version: snapshot.host_version,
+      dpapi_available: snapshot.dpapi_available,
+      cred_manager_available: snapshot.cred_manager_available,
+      named_mutex_available: snapshot.named_mutex_available,
+      capabilities: snapshot.capabilities,
+      // 兼容事实
+      native_login_supported: loginAvailable,
+      quota_inspection_supported: snapshot.capabilities.dual_quota.status === "verified",
+    };
+  });
 }
+
+export { registerAgyWorkflowRecoveryRoutes } from "./agy-workflow-recovery-routes.js";

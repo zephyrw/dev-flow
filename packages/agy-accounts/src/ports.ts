@@ -80,12 +80,33 @@ export interface AccountProbeOptions {
   model_id?: string;
 }
 
+export interface AccountIdentityResult {
+  email: string;
+  subject?: string;
+  cli_version: string;
+  raw_output: string;
+}
+
 export interface AccountProbePort {
+  probeIdentity(options?: AccountProbeOptions): Promise<AccountIdentityResult>;
   probeUsage(options?: AccountProbeOptions): Promise<AccountProbeResult>;
   probeModelAccess(
     modelId: string,
     options?: AccountProbeOptions,
   ): Promise<boolean>;
+}
+
+export interface OwnedLoginJobPort {
+  startLoginJob(options: {
+    realmId: string;
+    operationId: string;
+    timeoutMs?: number;
+    signal?: AbortSignal;
+  }): Promise<{
+    jobId: string;
+    waitForCompletion: () => Promise<{ success: boolean; error?: string }>;
+    cancel: () => Promise<void>;
+  }>;
 }
 
 export interface ManagedProcessInfo {
@@ -126,6 +147,8 @@ export interface AccountCommittedEvent {
   auth_epoch: number;
   saved_ref?: unknown;
   outcome?: "switched" | "restored";
+  original_operation_id?: string;
+  workflow_id?: string;
 }
 
 export interface AccountConsumerPort {

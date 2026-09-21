@@ -1,4 +1,4 @@
-export interface OwnedLoginJobPort {
+export interface InteractiveLoginJobPort {
   /** The implementation must create the official CLI suspended, assign its Job, then show/resume it.
    * Resolves only after the Job (including descendants) is confirmed idle. */
   start(input: {
@@ -23,15 +23,15 @@ export interface InteractiveLoginResult {
   completed: boolean;
   cancelled: boolean;
   timed_out: boolean;
-  error?: string;
-  exit_code?: number | null;
   fully_stopped: boolean;
+  exit_code?: number | null;
+  error?: string;
 }
 /** Credential writes/rollback belong to the durable account operation, never this launcher. */
 export class AgyLoginLauncher {
   private active?: AbortController;
   constructor(
-    private readonly job?: OwnedLoginJobPort,
+    private readonly job?: InteractiveLoginJobPort,
     private readonly command?: VerifiedLoginCommand,
   ) {}
   get available(): boolean {

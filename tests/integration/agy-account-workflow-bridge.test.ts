@@ -166,6 +166,7 @@ describe("AGY workflow account boundary", () => {
         workflow_id: "wf-1",
         purpose: "implement",
         profile,
+        conversation_id: "conv-1",
         frozen_invocation: {
           ...frozenInvocationFromProfile(profile, "profile-native"),
           accountScope: native.accountFingerprint,
@@ -180,6 +181,7 @@ describe("AGY workflow account boundary", () => {
         waitForIdle: async () => {},
         restoreFailedRole: restore,
         dispatch: async () => {},
+        block: vi.fn(),
       } as unknown as Engine;
       bridge = new AgyWorkflowBridge(
         fixture.service,

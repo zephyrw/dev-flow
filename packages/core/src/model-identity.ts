@@ -126,6 +126,14 @@ export function fingerprintModelIdentity(
   };
 }
 
+export interface VerifiedCandidateIdentity {
+  lease_id: string;
+  realm_id: string;
+  account_id: string;
+  auth_epoch: number;
+  credential_revision?: number;
+}
+
 export function resolveModelIdentity(
   store: Store,
   profile: Pick<
@@ -137,12 +145,30 @@ export function resolveModelIdentity(
     | "providerConfigRef"
   >,
   suppliedIdentity?: AccessIdentityInput,
+  candidateIdentity?: VerifiedCandidateIdentity,
 ): NativeResolvedConfig {
   // Managed account identity comes from the same repository that grants permits.
-  // Caller-supplied native metadata must not override its selected account.
-  const managed = profile.adapterId === "agy" ? readManagedAgyModelIdentity(store) : undefined;
+  // Caller-supplied native metadata must not override its selected account,
+  // EXCEPT when an internal verified auxiliary candidate lease is explicitly provided.
+  let managed: ManagedAgyModelIdentity | undefined;
+  if (profile.adapterId === "agy") {
+    if (candidateIdentity) {
+      managed = {
+        realmId: candidateIdentity.realm_id,
+        accountId: candidateIdentity.account_id,
+        authEpoch: candidateIdentity.auth_epoch,
+        credentialRevision: candidateIdentity.credential_revision ?? 0,
+      };
+    } else {
+      managed = readManagedAgyModelIdentity(store);
+    }
+  }
   const identity: AccessIdentityInput = managed
-    ? resolveModelIdentityInput(store, profile)
+    ? {
+        nativeConfigScope: `agy-managed:${managed.realmId}`,
+        accountId: managedAgyAccountIdentityId(managed.realmId, managed.accountId),
+        identityConfidence: "account",
+      }
     : suppliedIdentity ?? resolveModelIdentityInput(store, profile);
   const fingerprint = fingerprintModelIdentity(store, identity);
   return NativeResolvedConfigSchema.parse({

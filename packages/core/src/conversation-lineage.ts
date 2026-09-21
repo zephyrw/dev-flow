@@ -73,6 +73,38 @@ export function beginRunConversation(store: Store, run: Run, fingerprint = run.i
   const key = conversationLineageKey(run.workflow_id, family);
   const previous = previousConversation(store, run, family);
   const continuation = boundConversationContinuation(store, run);
+
+  // 显式账号恢复续接 (AGF-F08 / AGF-D09)
+  const accountRecovery =
+    store.get<{
+      recovery_id: string;
+      decision: string;
+      original_conversation_id?: string;
+    }>("account_recovery_continuation", run.id) ??
+    (run as any).pending_model_retry?.account_recovery;
+
+  if (accountRecovery) {
+    if (accountRecovery.decision === "exact_resume") {
+      if (!accountRecovery.original_conversation_id) {
+        throw new Error("EXACT_RESUME_ORIGINAL_CONVERSATION_MISSING");
+      }
+      const resume = { id: accountRecovery.original_conversation_id };
+      const current = { ...resume, fingerprint, family, profile: run.profile, run_id: run.id };
+      store.put("run_conversation_lineage", run.id, run.workflow_id, { family });
+      store.put("native_conversation", key, run.workflow_id, current);
+      if (family === "execution") store.put("conversation", run.workflow_id, run.workflow_id, current);
+      return resume;
+    } else if (accountRecovery.decision === "recreate_root") {
+      const current = { fingerprint, family, profile: run.profile, run_id: run.id };
+      store.put("run_conversation_lineage", run.id, run.workflow_id, { family });
+      store.put("native_conversation", key, run.workflow_id, current);
+      if (family === "execution") store.put("conversation", run.workflow_id, run.workflow_id, current);
+      return undefined;
+    } else if (accountRecovery.decision === "manual_required") {
+      throw new Error("ACCOUNT_RECOVERY_MANUAL_REQUIRED");
+    }
+  }
+
   const compatible = !!fingerprint && previous?.fingerprint === fingerprint && (!previous.family || previous.family === family);
   const resume = continuation
     ? continuationSessionToResume(store, run, fingerprint)

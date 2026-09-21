@@ -26,6 +26,8 @@ function parseTimeMs(isoOrStr: string | null | undefined): number | null {
   return Number.isNaN(t) ? null : t;
 }
 
+import { evaluateAccountForDemand } from "./selector.js";
+
 export function computeDomainWait(
   accounts: AgyAccount[],
   snapshots: AgyQuotaSnapshot[],
@@ -35,104 +37,70 @@ export function computeDomainWait(
     clockSkewSeconds?: number;
     realmId?: string;
     sourceEpoch?: number;
+    allowedAccountIds?: string[] | Set<string> | null;
+    requiredModelIds?: string[];
+    nightPool?: "normal" | "strict";
+    isNight?: boolean;
+    nightEndAt?: number;
+    refreshVerifiedMaxAgeHours?: number;
   } = {},
 ): DomainWaitEvaluation {
-  const clockSkewMs = (options.clockSkewSeconds ?? 60) * 1000;
-  const snapMap = new Map<string, Map<string, AgyQuotaSnapshot>>();
-  for (const s of snapshots) {
-    if (!snapMap.has(s.account_id)) {
-      snapMap.set(s.account_id, new Map());
-    }
-    snapMap.get(s.account_id)!.set(s.pool_id, s);
-  }
+  const allowedList = options.allowedAccountIds
+    ? options.allowedAccountIds instanceof Set
+      ? Array.from(options.allowedAccountIds)
+      : options.allowedAccountIds
+    : null;
 
   const blockedAccounts: AccountBlockDetails[] = [];
   const candidateAvailableTimestamps: number[] = [];
 
   for (const acc of accounts) {
-    if (acc.state === "disabled" || acc.state === "incompatible") {
-      blockedAccounts.push({
-        account_id: acc.id,
-        blocked_reason: acc.state,
-        reset_timestamps: [],
-        has_unknown_block: true,
-      });
+    if (allowedList && !allowedList.includes(acc.id)) {
       continue;
     }
 
-    if (acc.state === "reauth_required") {
-      blockedAccounts.push({
-        account_id: acc.id,
-        blocked_reason: "reauth_required",
-        reset_timestamps: [],
-        has_unknown_block: true,
-      });
-      continue;
-    }
+    const evalRes = evaluateAccountForDemand({
+      account: acc,
+      snapshots,
+      policy: {
+        required_pool_ids: requiredPoolIds,
+        required_model_ids: options.requiredModelIds,
+        allowed_account_ids: allowedList,
+        night_pool: options.nightPool,
+        is_night: options.isNight,
+        night_end_at: options.nightEndAt,
+        refresh_verified_max_age_hours: options.refreshVerifiedMaxAgeHours,
+        reset_clock_skew_seconds: options.clockSkewSeconds,
+      },
+      evaluationTime: now,
+    });
 
-    if (acc.state === "pending_quota") {
-      blockedAccounts.push({
-        account_id: acc.id,
-        blocked_reason: "pending_quota",
-        reset_timestamps: [],
-        has_unknown_block: true,
-      });
-      continue;
-    }
-
-    const poolSnaps = snapMap.get(acc.id);
-    let accHasUnknownBlock = false;
-    const accResetTimes: number[] = [];
-
-    for (const poolId of requiredPoolIds) {
-      const snap = poolSnaps?.get(poolId);
-      if (!snap) {
-        accHasUnknownBlock = true;
-        break;
-      }
-
-      if (snap.exhausted && snap.exhausted.window === "unknown") {
-        accHasUnknownBlock = true;
-        break;
-      }
-
-      if (
-        !["weekly", "five_hour"].every((kind) =>
-          snap.windows.some(
-            (w) =>
-              w.kind === kind &&
-              w.status === "observed" &&
-              w.remaining_fraction !== null,
-          ),
-        )
-      ) {
-        accHasUnknownBlock = true;
-        break;
-      }
-      for (const win of snap.windows) {
-        if (win.remaining_fraction !== null && win.remaining_fraction <= 0) {
-          const resetMs = parseTimeMs(win.reset_at);
-          if (!resetMs) {
-            accHasUnknownBlock = true;
-          } else {
-            accResetTimes.push(resetMs + clockSkewMs);
-          }
-        }
-      }
-    }
+    const hasUnknownBlock = evalRes.excluded_reasons.some((r) =>
+      [
+        "account_disabled",
+        "account_incompatible",
+        "reauth_required",
+        "pending_quota_initialization",
+        "missing_required_quota_pools",
+        "model_not_supported_in_pool",
+        "quota_exhausted_unknown_window",
+        "quota_window_unobserved",
+        "five_hour_exhausted_unknown_reset",
+        "weekly_exhausted_unknown_reset",
+        "night_pool_strict_unverified_refresh",
+      ].includes(r),
+    );
 
     blockedAccounts.push({
       account_id: acc.id,
-      blocked_reason: "quota_exhausted",
-      reset_timestamps: accResetTimes,
-      has_unknown_block: accHasUnknownBlock,
+      blocked_reason: evalRes.excluded_reasons[0] ?? "quota_exhausted",
+      reset_timestamps: evalRes.earliest_wake_time ? [evalRes.earliest_wake_time] : [],
+      has_unknown_block: hasUnknownBlock,
     });
 
-    if (!accHasUnknownBlock && accResetTimes.length > 0) {
-      const accEarliest = Math.max(...accResetTimes);
-      if (accEarliest > now) {
-        candidateAvailableTimestamps.push(accEarliest);
-      }
+    // 仅无未知/永久阻塞且有可信时间的账号参与跨账号 min
+    if (!hasUnknownBlock && evalRes.earliest_wake_time && evalRes.earliest_wake_time > now) {
+      candidateAvailableTimestamps.push(evalRes.earliest_wake_time);
     }
   }
 

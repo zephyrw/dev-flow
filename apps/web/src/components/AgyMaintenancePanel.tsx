@@ -10,9 +10,13 @@ interface Entry {
 }
 interface Report {
   generated_at: string;
+  evaluation_time?: string;
+  evaluated_night_start?: string;
+  evaluated_night_end?: string;
   reauth_required_accounts: Entry[];
   expiring_refresh_accounts: Entry[];
   unverified_refresh_accounts: Entry[];
+  unknown_refresh_expiry_accounts: Entry[];
   pending_quota_accounts: Entry[];
   night_candidates: Entry[];
   excluded_from_night: Entry[];
@@ -67,9 +71,10 @@ export function AgyMaintenancePanel({
       setBusy(false);
     }
   }
-  const groups: Array<[string, keyof Omit<Report, "generated_at">]> = [
+  const groups: Array<[string, keyof Omit<Report, "generated_at" | "evaluation_time" | "evaluated_night_start" | "evaluated_night_end">]> = [
     ["需重新认证", "reauth_required_accounts"],
     ["授权将在夜间结束前到期", "expiring_refresh_accounts"],
+    ["刷新授权无固定到期（官方未提供）", "unknown_refresh_expiry_accounts"],
     ["刷新能力未验证", "unverified_refresh_accounts"],
     ["双额度待补测", "pending_quota_accounts"],
     ["今晚可用候选", "night_candidates"],
@@ -78,7 +83,7 @@ export function AgyMaintenancePanel({
   const all = report
     ? Array.from(
         new Map(
-          groups.flatMap(([, key]) => report[key]).map((e) => [e.id, e]),
+          groups.flatMap(([, key]) => report[key] ?? []).map((e) => [e.id, e]),
         ).values(),
       )
     : [];
@@ -92,7 +97,10 @@ export function AgyMaintenancePanel({
         </p>
         {report && (
           <>
-            <p>报告时间：{new Date(report.generated_at).toLocaleString()}</p>
+            <p>
+              报告生成时间：{new Date(report.generated_at).toLocaleString()}
+              {report.evaluation_time && ` · 评价基准时刻：${new Date(report.evaluation_time).toLocaleString()}`}
+            </p>
             {groups.map(([label, key]) => (
               <section key={key}>
                 <h4>{label}</h4>

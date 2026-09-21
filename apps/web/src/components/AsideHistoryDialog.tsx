@@ -32,7 +32,9 @@ export function AsideHistoryDialog({
   const [asides, setAsides] = useState(initialAsides);
   const [error, setError] = useState("");
   const [tick, setTick] = useState(0);
-  const pending = asides.some((a) => ["active", "queued"].includes(a.status));
+  const pending = asides.some((a) =>
+    ["active", "queued", "waiting_account"].includes(a.status),
+  );
 
   useEffect(() => {
     setAsides(initialAsides);
@@ -135,7 +137,7 @@ function AsideHistoryItem({
   workflow: any;
   onAct: (path: string, body: unknown) => Promise<void>;
 }) {
-  const waiting = ["active", "queued"].includes(aside.status);
+  const waiting = ["active", "queued", "waiting_account"].includes(aside.status);
   const failed = aside.status === "expired";
   return (
     <article className={"aside-history-item" + (failed ? " failed" : "")}>
@@ -187,6 +189,7 @@ function asideStatusLabel(aside: any) {
     {
       active: "正在回答…",
       queued: "等待回答",
+      waiting_account: "等待可用账号…",
       completed: "已回答",
       cancelled: "已取消",
       expired: "未完成",

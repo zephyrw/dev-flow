@@ -230,8 +230,13 @@ func platformDoctor() (HostCapabilities, error) {
 	caps.SuspendedSpawn, caps.KillOnClose = true, true
 	return caps, nil
 }
-func prepareCmdAttrs(cmd *exec.Cmd) {
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x00000004}
+func prepareCmdAttrs(cmd *exec.Cmd, interactive ...bool) {
+	isInteractive := len(interactive) > 0 && interactive[0]
+	if isInteractive {
+		cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: false, CreationFlags: 0x00000004 | 0x00000010} // CREATE_SUSPENDED | CREATE_NEW_CONSOLE
+	} else {
+		cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x00000004}
+	}
 }
 
 type threadEntry32 struct {

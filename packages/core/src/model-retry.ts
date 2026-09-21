@@ -1,16 +1,28 @@
 import type { Engine } from "./engine.js";
 import type { Store } from "../../store/src/store.js";
-import { FrozenInvocationSchema, requireCondition, type FrozenInvocation, type Run } from "../../contracts/src/index.js";
+import { FrozenInvocationSchema, requireCondition, type Run } from "../../contracts/src/index.js";
 import { ModelAccessService } from "./model-access-service.js";
+import type { AccountRecoveryContinuation, AccountRecoveryRetry } from "../../contracts/src/agy-recovery.js";
+
+export type AccountRecoveryContinuationData = AccountRecoveryContinuation;
 
 export interface PendingModelRetry {
   retry_run_id: string;
   logical_round_id: string;
-  account_recovery?: { frozen_invocation: FrozenInvocation };
+  account_recovery?: AccountRecoveryRetry["account_recovery"];
 }
 
-/** Account recovery changes identity only; the original run remains immutable. */
-export function stageAccountModelRunRetry(store: Store, workflowId: string, runId: string) {
+/** Build an identity-only retry without occupying the workflow's main queue. */
+export function buildAccountModelRunRetry(
+  store: Store,
+  workflowId: string,
+  runId: string,
+  recoveryInfo?: {
+    recovery_id?: string;
+    continuation?: AccountRecoveryContinuationData;
+    remaining_budget_ms?: number;
+  },
+): AccountRecoveryRetry {
   const failed = store.must<Run>("run", runId);
   requireCondition(failed.workflow_id === workflowId, "RUN_BINDING_INVALID", "重试轮次不属于当前任务");
   const original = failed.frozen_invocation ?? failed.model_binding?.frozen_invocation;
@@ -22,11 +34,28 @@ export function stageAccountModelRunRetry(store: Store, workflowId: string, runI
     providerScope: native.providerEndpointFingerprint,
     identityConfidence: native.identityConfidence,
   });
-  store.put("pending_model_retry", workflowId, workflowId, {
+  return {
     retry_run_id: failed.id,
     logical_round_id: failed.logical_round_id ?? failed.model_binding?.logical_round_id ?? failed.id,
-    account_recovery: { frozen_invocation: frozen },
-  } satisfies PendingModelRetry);
+    account_recovery: {
+      recovery_id: recoveryInfo?.recovery_id,
+      frozen_invocation: frozen,
+      continuation: recoveryInfo?.continuation,
+      remaining_budget_ms: recoveryInfo?.remaining_budget_ms,
+    },
+  };
+}
+
+/** Account recovery changes identity only; the original run remains immutable. */
+export function stageAccountModelRunRetry(
+  store: Store,
+  workflowId: string,
+  runId: string,
+  recoveryInfo?: Parameters<typeof buildAccountModelRunRetry>[3],
+): AccountRecoveryRetry {
+  const pending = buildAccountModelRunRetry(store, workflowId, runId, recoveryInfo);
+  store.put("pending_model_retry", workflowId, workflowId, pending);
+  return pending;
 }
 
 export function assertAccountModelRetryAccess(store: Store, workflowId: string, sourceRunId?: string): boolean {
@@ -34,7 +63,8 @@ export function assertAccountModelRetryAccess(store: Store, workflowId: string, 
   if (!pending?.account_recovery || (sourceRunId !== undefined && pending.retry_run_id !== sourceRunId)) return false;
   const source = store.must<Run>("run", pending.retry_run_id);
   requireCondition(source.workflow_id === workflowId && source.profile, "RUN_BINDING_INVALID", "账号恢复缺少原轮工具配置");
-  new ModelAccessService(store).assertFrozenAccess(source.profile, pending.account_recovery.frozen_invocation);
+  const mas = new ModelAccessService(store);
+  mas.assertFrozenAccess(source.profile, pending.account_recovery.frozen_invocation);
   return true;
 }
 

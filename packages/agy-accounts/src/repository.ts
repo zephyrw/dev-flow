@@ -8,6 +8,10 @@ import {
   type AgyDomainWait,
   type AgyAccountAudit,
   type AgyAccountPolicy,
+  type AgyRecoveryBatch,
+  type FinalAccountCommit,
+  type AgyPendingDemand,
+  type RefreshEvidence,
   AgyAccountSchema,
   AgyQuotaSnapshotSchema,
   AgyRealmSchema,
@@ -17,6 +21,10 @@ import {
   AgyDomainWaitSchema,
   AgyAccountAuditSchema,
   AgyAccountPolicySchema,
+  AgyPendingDemandSchema,
+  AgyRecoveryBatchSchema,
+  FinalAccountCommitSchema,
+  RefreshEvidenceSchema,
 } from "../../contracts/src/agy-account.js";
 import type { Store } from "../../store/src/store.js";
 import type { z } from "zod";
@@ -296,5 +304,71 @@ export class AgyAccountRepository {
         validated,
       );
     });
+  }
+
+  getDemand(demandId: string): AgyPendingDemand | undefined {
+    const raw = this.store.get<unknown>("agy_pending_demand", demandId);
+    if (!raw) return undefined;
+    return AgyPendingDemandSchema.parse(raw);
+  }
+
+  listDemands(owner = "default"): AgyPendingDemand[] {
+    const rows = this.store.list<unknown>("agy_pending_demand", owner);
+    return rows.map((r) => AgyPendingDemandSchema.parse(r));
+  }
+
+  saveDemand(demand: AgyPendingDemand, owner = "default"): void {
+    const validated = AgyPendingDemandSchema.parse(demand);
+    this.store.put("agy_pending_demand", validated.demand_id, owner, validated);
+  }
+
+  deleteDemand(demandId: string): void {
+    this.store.remove("agy_pending_demand", demandId);
+  }
+
+  getRecoveryBatch(batchId: string): AgyRecoveryBatch | undefined {
+    const raw = this.store.get<unknown>("agy_recovery_batch", batchId);
+    if (!raw) return undefined;
+    return AgyRecoveryBatchSchema.parse(raw);
+  }
+
+  listRecoveryBatches(owner = "default"): AgyRecoveryBatch[] {
+    const rows = this.store.list<unknown>("agy_recovery_batch", owner);
+    return rows.map((r) => AgyRecoveryBatchSchema.parse(r));
+  }
+
+  saveRecoveryBatch(batch: AgyRecoveryBatch, owner = "default"): void {
+    const validated = AgyRecoveryBatchSchema.parse(batch);
+    this.store.put("agy_recovery_batch", validated.batch_id, owner, validated);
+  }
+
+  getFinalAccountCommit(operationId: string): FinalAccountCommit | undefined {
+    const raw = this.store.get<unknown>("agy_final_account_commit", operationId);
+    if (!raw) return undefined;
+    return FinalAccountCommitSchema.parse(raw);
+  }
+
+  saveFinalAccountCommit(commit: FinalAccountCommit): void {
+    const validated = FinalAccountCommitSchema.parse(commit);
+    this.store.put("agy_final_account_commit", validated.operation_id, validated.realm_id, validated);
+  }
+
+  saveRefreshEvidence(evidence: RefreshEvidence): void {
+    const validated = RefreshEvidenceSchema.parse(evidence);
+    this.store.put("agy_refresh_evidence", validated.evidence_id, validated.realm_id, validated);
+  }
+
+  listRefreshEvidences(realmId: string, accountId?: string): RefreshEvidence[] {
+    const rows = this.store.list<unknown>("agy_refresh_evidence", realmId);
+    const list = rows.map((r) => RefreshEvidenceSchema.parse(r));
+    if (!accountId) return list;
+    return list.filter((e) => e.account_id === accountId);
+  }
+
+  getLatestRefreshEvidence(realmId: string, accountId: string): RefreshEvidence | undefined {
+    const list = this.listRefreshEvidences(realmId, accountId);
+    if (!list.length) return undefined;
+    list.sort((a, b) => Date.parse(b.observed_at) - Date.parse(a.observed_at));
+    return list[0];
   }
 }
