@@ -1166,8 +1166,31 @@ export class AgyAccountService {
       input.request_id,
       input,
       () => {
-        const realm = this.repository.getRealm(input.realm_id);
-        if (!realm) throw new AccountServiceError("realm_not_found", 404);
+        const isManualOneShot =
+          input.kind === "enroll" ||
+          input.kind === "delete" ||
+          input.kind === "probe" ||
+          input.kind === "reauth" ||
+          (input.kind === "switch" && input.selection?.mode === "explicit");
+        let realm = this.repository.getRealm(input.realm_id);
+        if (!realm) {
+          if (isManualOneShot) {
+            realm = {
+              realm_id: input.realm_id,
+              owner: "devflow",
+              active_account_id: null,
+              auth_epoch: 0,
+              phase: "idle",
+              revision: 1,
+              service_state: "stopped",
+              desired_enabled: false,
+              control_generation: 0,
+            };
+            this.repository.saveRealm(realm);
+          } else {
+            throw new AccountServiceError("realm_not_found", 404);
+          }
+        }
         if (input.kind === "cancel") {
           const op = input.operation_id
             ? this.repository.getOperation(input.operation_id)
@@ -1217,12 +1240,6 @@ export class AgyAccountService {
           throw new AccountServiceError(
             "interactive_login_capability_unverified",
           );
-        const isManualOneShot =
-          input.kind === "enroll" ||
-          input.kind === "delete" ||
-          input.kind === "probe" ||
-          input.kind === "reauth" ||
-          (input.kind === "switch" && input.selection?.mode === "explicit");
         if (
           !isManualOneShot &&
           (realm.service_state !== "running" ||
@@ -1637,9 +1654,19 @@ export class AgyAccountService {
       (op.kind === "switch" && op.selection?.mode === "explicit");
 
     if (isManualOneShot && !this.authHost.isDomainLockHeld(op.realm_id)) {
-      const lockRes = await this.authHost.acquireDomainLock(op.realm_id);
-      if (lockRes.acquired && lockRes.release) {
-        temporaryLockRelease = lockRes.release;
+      try {
+        const lockRes = await this.authHost.acquireDomainLock(op.realm_id);
+        if (lockRes.acquired && lockRes.release) {
+          temporaryLockRelease = lockRes.release;
+        } else {
+          op.error = "domain_lock_acquire_failed";
+          this.finishOperation(op, "failed");
+          return;
+        }
+      } catch (err) {
+        op.error = err instanceof Error ? err.message : "domain_lock_acquire_failed";
+        this.finishOperation(op, "failed");
+        return;
       }
     }
 
@@ -1808,7 +1835,15 @@ export class AgyAccountService {
       if (timer) clearTimeout(timer);
       this.activeAbort = undefined;
       if (temporaryLockRelease) {
-        await temporaryLockRelease().catch(() => {});
+        const latestOp = this.repository.getOperation(op.operation_id);
+        const latestRealm = this.repository.getRealm(op.realm_id);
+        const isBlocked =
+          latestOp?.phase === "blocked" ||
+          latestRealm?.phase === "blocked" ||
+          latestRealm?.service_state === "blocked";
+        if (!isBlocked) {
+          await temporaryLockRelease().catch(() => {});
+        }
       }
     }
   }

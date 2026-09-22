@@ -49,6 +49,8 @@ export type SwitchOperation = {
   request: SwitchRequest;
   spec_receipt?: MutationReceipt;
   receipt?: MutationReceipt;
+  resume_status?: "completed" | "failed";
+  resume_error?: string;
 };
 
 function hasOwn(body: object, key: string): boolean {
@@ -244,20 +246,48 @@ export class ModelSwitchService {
         500,
       );
     }
-    const receipt = this.complete(current, {
-      ...specReceipt,
-      effective_from: "stopped-awaiting-resume",
-    });
+    let resumeStatus: "completed" | "failed" | undefined;
+    let resumeErrorMsg: string | undefined;
 
     if (req.resume_after_switch) {
-      try {
-        const { resumeApproved } = await import("../../runtime/src/recovery.js");
-        resumeApproved(engine, current.entity_id, "user_resume");
-        void engine.dispatch();
-      } catch (resumeError) {
-        // 保存成功但续行失败保留已保存配置和原恢复点
-        return receipt;
+      if (current.resume_status !== "completed") {
+        try {
+          const { resumeApproved } = await import("../../runtime/src/recovery.js");
+          resumeApproved(engine, current.entity_id, "user_resume");
+          try {
+            await engine.dispatch();
+          } catch {
+            // dispatch 调度异步异常
+          }
+          resumeStatus = "completed";
+        } catch (resumeError) {
+          resumeStatus = "failed";
+          resumeErrorMsg =
+            resumeError instanceof Error ? resumeError.message : "恢复执行失败";
+        }
+      } else {
+        resumeStatus = "completed";
       }
+    }
+
+    const receipt: MutationReceipt = {
+      ...specReceipt,
+      effective_from: "stopped-awaiting-resume",
+      resume_status: resumeStatus,
+      resume_error: resumeErrorMsg,
+    };
+
+    if (req.resume_after_switch && resumeStatus === "failed") {
+      // 续行失败保留在 spec_saved 可恢复状态，重试只补做未完成的恢复
+      current = this.writeOperation({
+        ...current,
+        status: "spec_saved",
+        resume_status: "failed",
+        resume_error: resumeErrorMsg,
+        receipt,
+      });
+    } else {
+      this.complete(current, receipt);
     }
 
     return receipt;
@@ -326,5 +356,6 @@ function switchPayloadHash(req: SwitchRequest) {
     role_overrides: req.role_overrides,
     expected_workflow_version: req.expected_workflow_version,
     expected_run_id: req.expected_run_id,
+    resume_after_switch: Boolean(req.resume_after_switch),
   });
 }

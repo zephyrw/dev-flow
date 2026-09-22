@@ -146,6 +146,8 @@ export const MutationReceiptSchema = z
     effective_from: EffectiveFromSchema,
     current_run_id: z.string().nullable(),
     pending_roles: z.array(z.string()),
+    resume_status: z.enum(["completed", "failed"]).optional(),
+    resume_error: z.string().optional(),
   })
   .strict();
 export type MutationReceipt = z.infer<typeof MutationReceiptSchema>;

@@ -30,15 +30,21 @@ export function CurrentRuntime({
   );
 
   const quota = runtime.quota;
-  const buckets =
-    runtime.adapter === "codex"
-      ? quota?.buckets.filter(
-          (bucket: any) => bucket.model === model || bucket.id === model,
-        )
-      : quota?.buckets;
-  const relevantBuckets = buckets?.length
-    ? buckets
-    : quota?.buckets?.filter((bucket: any) => bucket.id === "codex");
+
+  // 确定当前运行对应的模型/账号额度来源，避免多桶覆盖或顺序影响
+  let matchedBucket: any = null;
+  if (quota?.buckets && quota.buckets.length > 0) {
+    matchedBucket =
+      quota.buckets.find((b: any) => (model && (b.model === model || b.id === model))) ??
+      quota.buckets.find((b: any) => b.is_shared === true || b.id === runtime.adapter || (runtime.adapter === "codex" && b.id === "codex")) ??
+      null;
+  }
+
+  const isBucketShared = Boolean(
+    matchedBucket?.is_shared === true ||
+    matchedBucket?.id === "codex" ||
+    (matchedBucket && model && matchedBucket.model !== model && matchedBucket.id !== model)
+  );
 
   const stale =
     !quota ||
@@ -53,36 +59,28 @@ export function CurrentRuntime({
       "PLANNER_TAKEOVER",
     ].includes(detail?.workflow?.state);
 
-  // 解析周额度与5小时额度
+  // 解析周额度（严格 10080 分钟）与 5 小时额度（严格 300 分钟），缺失不展示其他周期
   let weeklyData: QuotaWindowData | null = null;
   let fiveHourData: QuotaWindowData | null = null;
 
-  if (relevantBuckets) {
-    for (const bucket of relevantBuckets) {
-      for (const window of bucket.windows ?? []) {
-        const remainingPercent =
-          typeof window.used_percent === "number" &&
-          !Number.isNaN(window.used_percent)
-            ? Math.max(0, Math.min(100, 100 - window.used_percent))
-            : null;
-        const data: QuotaWindowData = {
-          windowMinutes: window.window_minutes,
-          remainingPercent,
-          resetsAt: window.resets_at,
-          isShared: runtime.adapter === "codex",
-        };
-        if (window.window_minutes === 10080 || window.window_minutes > 1440) {
-          if (!weeklyData || window.window_minutes === 10080) {
-            weeklyData = data;
-          }
-        } else if (
-          window.window_minutes === 300 ||
-          window.window_minutes <= 360
-        ) {
-          if (!fiveHourData || window.window_minutes === 300) {
-            fiveHourData = data;
-          }
-        }
+  if (matchedBucket?.windows) {
+    for (const window of matchedBucket.windows) {
+      const winMins = window.window_minutes ?? window.duration_minutes;
+      const remainingPercent =
+        typeof window.used_percent === "number" &&
+        !Number.isNaN(window.used_percent)
+          ? Math.max(0, Math.min(100, 100 - window.used_percent))
+          : null;
+      const data: QuotaWindowData = {
+        windowMinutes: winMins,
+        remainingPercent,
+        resetsAt: window.resets_at,
+        isShared: isBucketShared,
+      };
+      if (winMins === 10080) {
+        weeklyData = data;
+      } else if (winMins === 300) {
+        fiveHourData = data;
       }
     }
   }

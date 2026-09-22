@@ -126,9 +126,19 @@ export function buildModelChoices(entries: ModelEntry[]): ModelChoice[] {
   for (const entry of entries) {
     if (entry.hidden) continue;
 
-    const familyKey =
+    // 只有在具备可信变体结构元数据时才进行归组：
+    // 1. entry 显式声明了 familyId
+    // 2. entry 显式声明了非空的 effort.variants
+    // 3. entry 的 effort.transport === "variant-id" 且声明了 effort.fixedValue
+    const hasTrustedVariants = Boolean(
       entry.familyId ||
-      (entry.adapterId === "agy" ? detectAgyFamily(entry.nativeId) : undefined);
+      (entry.effort.variants && Object.keys(entry.effort.variants).length > 0) ||
+      (entry.effort.transport === "variant-id" && entry.effort.fixedValue)
+    );
+
+    const familyKey = hasTrustedVariants
+      ? (entry.familyId || (entry.adapterId === "agy" ? detectAgyFamily(entry.nativeId) : undefined))
+      : undefined;
 
     if (familyKey) {
       const existing = choicesMap.get(familyKey);
@@ -153,6 +163,7 @@ export function buildModelChoices(entries: ModelEntry[]): ModelChoice[] {
       const defaultNative =
         variants["high"] ||
         variants["medium"] ||
+        variants["low"] ||
         entry.nativeId;
 
       choicesMap.set(familyKey, {
@@ -160,7 +171,10 @@ export function buildModelChoices(entries: ModelEntry[]): ModelChoice[] {
         label,
         entryIds: [...(existing?.entryIds ?? []), entry.entryId],
         effortValues,
-        defaultEffort: existing?.defaultEffort ?? entry.effort.defaultValue ?? (effortValues.includes("high") ? "high" : effortValues[0]),
+        defaultEffort:
+          existing?.defaultEffort ??
+          entry.effort.defaultValue ??
+          (effortValues.includes("high") ? "high" : effortValues[0]),
         variantByEffort: variants,
         nativeId: defaultNative,
         providerId: entry.providerId,

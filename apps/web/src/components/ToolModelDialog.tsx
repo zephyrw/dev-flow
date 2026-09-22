@@ -108,33 +108,32 @@ export function ToolModelDialog({
       { id: "executor", label: "执行" },
     ];
 
-    // 老任务如果存在显式的 roleOverrides，增加附加 Tab
     const currentOverrides = payload?.spec.roleOverrides;
-    if (currentOverrides) {
-      if (currentOverrides.reviewer?.mode === "explicit") {
-        baseTabs.push({
-          id: "reviewer",
-          label: "代码审查",
-          inheritable: true,
-          defaultInheritSource: "planner",
-        });
-      }
-      if (currentOverrides.review_fixer?.mode === "explicit") {
-        baseTabs.push({
-          id: "review_fixer",
-          label: "审查修复",
-          inheritable: true,
-          defaultInheritSource: "executor",
-        });
-      }
-      if (currentOverrides.functional_fixer?.mode === "explicit") {
-        baseTabs.push({
-          id: "functional_fixer",
-          label: "功能修复",
-          inheritable: true,
-          defaultInheritSource: "executor",
-        });
-      }
+    const activeRole = payload?.active_run?.role;
+
+    if (activeRole === "reviewer" || currentOverrides?.reviewer?.mode === "explicit") {
+      baseTabs.push({
+        id: "reviewer",
+        label: "代码审查",
+        inheritable: true,
+        defaultInheritSource: "planner",
+      });
+    }
+    if (activeRole === "review_fixer" || currentOverrides?.review_fixer?.mode === "explicit") {
+      baseTabs.push({
+        id: "review_fixer",
+        label: "审查修复",
+        inheritable: true,
+        defaultInheritSource: "executor",
+      });
+    }
+    if (activeRole === "functional_fixer" || currentOverrides?.functional_fixer?.mode === "explicit") {
+      baseTabs.push({
+        id: "functional_fixer",
+        label: "功能修复",
+        inheritable: true,
+        defaultInheritSource: "executor",
+      });
     }
 
     return baseTabs;
@@ -236,11 +235,18 @@ export function ToolModelDialog({
     try {
       await verifyDraft();
       if (resumeAfterSwitch) {
-        await postModelSwitch(workflowId, {
+        const receipt = await postModelSwitch(workflowId, {
           ...writeBody(),
           expected_workflow_version: workflowVersion,
           expected_run_id: payload?.active_run?.run_id ?? null,
+          resume_after_switch: true,
         });
+        if (receipt.resume_status === "failed") {
+          setError(`已保存新配置，但恢复执行未完成：${receipt.resume_error ?? "未知错误"}。原恢复点已保留，请核实后继续。`);
+          setIsDirty(false);
+          onSpecUpdated?.();
+          return;
+        }
       } else {
         await postExecutionSpec(workflowId, writeBody());
       }
@@ -292,13 +298,52 @@ export function ToolModelDialog({
     });
   };
 
-  // 判断是否正在运行，且修改了当前运行角色的配置
+  // 根据当前运行角色解析修改前后的有效 Profile，精确比较实质变更
   const hasActiveRun = Boolean(payload?.active_run);
   const activeRole = payload?.active_run?.role;
-  const isEditingActiveRole =
-    hasActiveRun &&
-    ((activeRole === "planner" && isDirty) ||
-      (activeRole === "executor" && isDirty));
+
+  const resolveEffective = (
+    role: string | undefined,
+    p: ToolProfile,
+    e: ToolProfile,
+    ov: RoleOverrides,
+  ): ToolProfile | null => {
+    if (!role) return null;
+    if (role === "planner") return p;
+    if (role === "executor") return e;
+    if (role === "reviewer") {
+      return ov.reviewer?.mode === "explicit" ? ov.reviewer.profile : p;
+    }
+    if (role === "review_fixer") {
+      return ov.review_fixer?.mode === "explicit" ? ov.review_fixer.profile : e;
+    }
+    if (role === "functional_fixer") {
+      return ov.functional_fixer?.mode === "explicit" ? ov.functional_fixer.profile : e;
+    }
+    return e;
+  };
+
+  const isProfileChanged = (a: ToolProfile | null, b: ToolProfile | null): boolean => {
+    if (!a || !b) return a !== b;
+    return (
+      a.adapterId !== b.adapterId ||
+      a.modelId !== b.modelId ||
+      JSON.stringify(a.reasoning) !== JSON.stringify(b.reasoning) ||
+      a.executableRef !== b.executableRef ||
+      a.nativeConfigProfile !== b.nativeConfigProfile
+    );
+  };
+
+  const initialEffective = initialProfilesRef.current
+    ? resolveEffective(
+        activeRole,
+        initialProfilesRef.current.planner,
+        initialProfilesRef.current.executor,
+        initialProfilesRef.current.overrides,
+      )
+    : null;
+  const currentEffective = resolveEffective(activeRole, planner, executor, overrides);
+  const isEditingActiveRole = hasActiveRun && isProfileChanged(initialEffective, currentEffective);
 
   const footer = (
     <>

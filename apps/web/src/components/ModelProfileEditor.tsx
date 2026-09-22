@@ -198,11 +198,7 @@ export function ModelProfileEditor({
     setQuery("");
     setOpenList(false);
     onAccessChange?.(null);
-    onChange({
-      ...blankKeepId(profile.id, next),
-      executableRef: profile.executableRef,
-      nativeConfigProfile: profile.nativeConfigProfile,
-    });
+    onChange(blankKeepId(profile.id, next));
   };
 
   const selectChoice = (choice: ModelChoice) => {
@@ -224,7 +220,7 @@ export function ModelProfileEditor({
 
     const reasoning = nextEffort
       ? { mode: "explicit" as const, value: nextEffort }
-      : choice.effortValues.length === 0
+      : profile.reasoning?.mode === "not-applicable"
         ? { mode: "not-applicable" as const }
         : undefined;
 

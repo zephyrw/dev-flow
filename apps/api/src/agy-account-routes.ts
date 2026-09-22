@@ -130,26 +130,40 @@ export function registerAgyAccountRoutes(
     const view = service.getPresentation(realmId);
     const realm = view.realm && "realm_id" in view.realm ? view.realm : null;
     const currentlyRunning = realm?.service_state === "running";
+    const currentSettings = service.initializeSettings(realmId);
+    const expectedSettingsRev = body.expected_revision ?? currentSettings.revision;
 
     if (body.enabled) {
-      service.updateSettings(
+      const updatedSettings = service.updateSettings(
         realmId,
         { workflow_auto_switch: true },
-        body.expected_revision ?? view.settings?.revision ?? 0,
+        expectedSettingsRev,
         body.request_id,
       );
       if (!currentlyRunning) {
-        await service.start({
-          realmId,
-          requestId: body.request_id,
-          expectedRevision: realm?.revision,
-        });
+        try {
+          await service.start({
+            realmId,
+            requestId: body.request_id,
+            expectedRevision: updatedSettings.revision,
+          });
+        } catch (startErr) {
+          try {
+            service.updateSettings(
+              realmId,
+              { workflow_auto_switch: false },
+              updatedSettings.revision,
+              body.request_id + "-rollback",
+            );
+          } catch {}
+          throw startErr;
+        }
       }
     } else {
       service.updateSettings(
         realmId,
         { workflow_auto_switch: false },
-        body.expected_revision ?? view.settings?.revision ?? 0,
+        expectedSettingsRev,
         body.request_id,
       );
       if (currentlyRunning) {
@@ -297,7 +311,7 @@ export function registerAgyAccountRoutes(
     human(req);
     const { id } = z.object({ id: ref }).parse(req.params);
     const body = z
-      .object({ request_id: requestId, expected_revision: revision })
+      .object({ request_id: requestId, expected_revision: revision.optional() })
       .strict()
       .parse(req.body);
     return reply

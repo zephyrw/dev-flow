@@ -31,6 +31,7 @@ interface AccountView {
   accounts: AgyAccountDto[];
   snapshots: AgyQuotaSnapshot[];
   realm: Realm | null;
+  settings?: { revision: number };
   automation?: {
     enabled: boolean;
     service_state: string;
@@ -116,7 +117,7 @@ export function AgyAccountsPanel({ onDismiss }: { onDismiss?: () => void }) {
     setError("");
     try {
       const next = !isAutomationOn;
-      await setAutomationEnabled(next, view?.realm?.revision);
+      await setAutomationEnabled(next, view?.settings?.revision);
       await refresh();
       setNotice(next ? "已开启自动切号" : "已关闭自动切号");
       setTimeout(() => setNotice(""), 3000);
@@ -130,31 +131,27 @@ export function AgyAccountsPanel({ onDismiss }: { onDismiss?: () => void }) {
   const handleSwitchTo = async (accountId: string) => {
     setError("");
     try {
-      const op = await agyApi<AccountOperationView>("/switch", {
+      await agyApi<AccountOperationView>("/switch", {
         method: "POST",
         body: requestBody({
-          selection: { mode: "explicit", account_id: accountId },
-          expected_epoch: service?.auth_epoch ?? 0,
+          account_id: accountId,
         }),
       });
-      setActiveOperation(op);
       await refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : "切换账号失败");
     }
   };
 
-  const handleReauth = async (account: AgyAccountDto) => {
+  const handleReauth = async (accountId: string) => {
     setError("");
     try {
-      const op = await agyApi<AccountOperationView>(`/${encodeURIComponent(account.id)}/reauth`, {
+      await agyApi<AccountOperationView>("/reauth", {
         method: "POST",
         body: requestBody({
-          expected_account_revision: account.revision,
-          expected_identity: account.identity.email,
+          account_id: accountId,
         }),
       });
-      setActiveOperation(op);
       await refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : "重新认证失败");
@@ -179,14 +176,17 @@ export function AgyAccountsPanel({ onDismiss }: { onDismiss?: () => void }) {
     }
   };
 
-  const handleCancelOperation = async (opId: string) => {
+  const handleCancelOperation = async (op: AccountOperationView) => {
     try {
-      await agyApi<AccountOperationView>(`/operations/${encodeURIComponent(opId)}/cancel`, {
+      await agyApi<AccountOperationView>(`/operations/${encodeURIComponent(op.operation_id)}/cancel`, {
         method: "POST",
-        body: requestBody({}),
+        body: requestBody({
+          expected_revision: op.revision,
+        }),
       });
       await refresh();
     } catch (e) {
+      await refresh();
       setError(e instanceof Error ? e.message : "取消操作失败");
     }
   };
@@ -241,7 +241,7 @@ export function AgyAccountsPanel({ onDismiss }: { onDismiss?: () => void }) {
           <button
             type="button"
             className="agy-text-btn danger"
-            onClick={() => handleCancelOperation(activeOperation.operation_id)}
+            onClick={() => handleCancelOperation(activeOperation)}
           >
             取消操作
           </button>
@@ -340,7 +340,7 @@ export function AgyAccountsPanel({ onDismiss }: { onDismiss?: () => void }) {
                     <button
                       type="button"
                       className="agy-icon-btn"
-                      onClick={() => handleReauth(account)}
+                      onClick={() => handleReauth(account.id)}
                       title="重新登录验证"
                     >
                       重新登录

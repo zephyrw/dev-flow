@@ -101,4 +101,47 @@ describe("model-display 展示格式化与变体聚合", () => {
     expect(choice.variantByEffort["high"]).toBe("gemini-3.8-flash-high");
     expect(choice.variantByEffort["medium"]).toBe("gemini-3.8-flash-medium");
   });
+
+  it("U07: 未知变体元数据的 model-high 与 model-low 保持独立条目，不丢失任何候选 (R07)", () => {
+    const entries: ModelEntry[] = [
+      {
+        entryId: "ent-unk-1",
+        adapterId: "agy",
+        nativeId: "custom-model-high",
+        label: "custom-model-high",
+        source: "native-live",
+        selectionKind: "fixed",
+        discoveredAt: "2026-09-22T00:00:00.000Z",
+        hidden: false,
+        availability: "listed",
+        capabilityRevision: "1",
+        effort: {
+          status: "unknown",
+          transport: "none",
+          values: [],
+        },
+      },
+      {
+        entryId: "ent-unk-2",
+        adapterId: "agy",
+        nativeId: "custom-model-low",
+        label: "custom-model-low",
+        source: "native-live",
+        selectionKind: "fixed",
+        discoveredAt: "2026-09-22T00:00:00.000Z",
+        hidden: false,
+        availability: "listed",
+        capabilityRevision: "1",
+        effort: {
+          status: "unknown",
+          transport: "none",
+          values: [],
+        },
+      },
+    ];
+
+    const choices = buildModelChoices(entries);
+    expect(choices).toHaveLength(2);
+    expect(choices.map((c) => c.nativeId)).toEqual(["custom-model-high", "custom-model-low"]);
+  });
 });
