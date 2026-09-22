@@ -357,7 +357,7 @@ function createInlineCredentialNative(): CredentialNative {
     // The actual SID is at offset 4 in TOKEN_USER (after the pointer)
     const sidStart = 4; // SID_AND_ATTRIBUTES.Sid starts at offset 4 after the TOKEN_USER
     const sidByte = tokenUserBuf[sidStart];
-    const subAuthorityCount = tokenUserBuf[sidStart + 1];
+    const subAuthorityCount = tokenUserBuf[sidStart + 1] ?? 0;
     const identifierAuthority = tokenUserBuf.subarray(sidStart + 2, sidStart + 8);
 
     // Build SID string: S-1-<authority>-<sub1>-<sub2>-...

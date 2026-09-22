@@ -239,12 +239,13 @@ export function createCredentialWindows() {
         // koffi.decode with str16 reads a null-terminated UTF-16LE string
         const strPtr = cred.UserName;
         const chars: number[] = [];
-        let offset = 0;
+        let byteOffset = 0;
         while (true) {
-          const ch = koffi.decode(strPtr, 'uint16', 1, offset)[0];
+          const decoded = (koffi.decode as (ptr: unknown, type: string, count: number, offset?: number) => number[])(strPtr, 'uint16', 1, byteOffset);
+          const ch = decoded[0] ?? 0;
           if (ch === 0) break;
           chars.push(ch);
-          offset += 2;
+          byteOffset += 2;
           // Safety limit
           if (chars.length > 1024) break;
         }
@@ -399,12 +400,13 @@ export function createCredentialWindows() {
       if (stringPtr !== null && stringPtr !== 0) {
         // Read null-terminated UTF-16LE string
         const chars: number[] = [];
-        let offset = 0;
+        let byteOffset = 0;
         while (true) {
-          const ch = koffi.decode(stringPtr, 'uint16', 1, offset)[0];
+          const decoded = (koffi.decode as (ptr: unknown, type: string, count: number, offset?: number) => number[])(stringPtr, 'uint16', 1, byteOffset);
+          const ch = decoded[0] ?? 0;
           if (ch === 0) break;
           chars.push(ch);
-          offset += 2;
+          byteOffset += 2;
           if (chars.length > 256) break;
         }
         sidString = String.fromCharCode(...chars);

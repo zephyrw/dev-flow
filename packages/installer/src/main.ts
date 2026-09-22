@@ -555,27 +555,15 @@ export async function runInstaller(
     )
       throw new Error("Node 版本不满足要求");
     state.updateComponent("node", nodeVersion, "VERIFIED");
-    const host = join(target, "dist", "host", hostName);
-    const hostVersion = (
-      await exec(host, ["--version"], { windowsHide: true, timeout: 10000 })
-    ).stdout.trim();
-    if (!hostVersion.startsWith("devflow-host "))
-      throw new Error("Host 身份校验失败");
-    state.updateComponent("host", hostVersion, "VERIFIED");
+    // Verify credential worker exists (replaces old C# host binary)
+    const credentialWorker = join(target, "dist", "packages", "agy-accounts", "src", "credential-worker.js");
+    if (!existsSync(credentialWorker))
+      throw new Error("凭据 Worker 不存在");
+    state.updateComponent("credential-worker", "node-module", "VERIFIED");
     state.updateComponent("service", version, "INSTALLED");
     code = INSTALL_EXIT_CODES.CONFIGURATION_CONFLICT;
     const config = join(root, "devflow.yaml");
-    const authHost = join(target, "dist/host/devflow-auth-host.exe");
     const currentPointer = join(root, "current.json");
-    let previousAuthHost: string | undefined;
-    if (existsSync(currentPointer)) {
-      const previous = JSON.parse(readFileSync(currentPointer, "utf8"));
-      if (typeof previous.root === "string")
-        previousAuthHost = join(
-          previous.root,
-          "dist/host/devflow-auth-host.exe",
-        );
-    }
     if (!existsSync(config))
       atomicWrite(
         config,
@@ -583,8 +571,7 @@ export async function runInstaller(
           ConfigSchema.parse({
             storage_root: join(root, "state"),
             workspace_root: join(root, "worktrees"),
-            host: { executable: host, required: true },
-            agy_accounts: { enabled: false, auth_host_executable: authHost },
+            agy_accounts: { enabled: false },
             server: {
               port: options.port ?? 4810,
               human_origin: "http://localhost:" + (options.port ?? 4810),
@@ -594,59 +581,16 @@ export async function runInstaller(
           2,
         ),
       );
-    else migrateAccountConfiguration(config, authHost, previousAuthHost);
+    else migrateAccountConfiguration(config);
     const configured = loadConfig(config);
-    // Pure version/doctor queries only; never inspect, import or switch user credentials.
+    // Node credential worker is always available on supported platforms
     let accountPrerequisite = "unsupported_platform";
-    let authVersion = "unsupported";
     if (process.platform === "win32") {
-      accountPrerequisite = "auth_host_unavailable";
-      try {
-        authVersion = (
-          await exec(
-            configured.agy_accounts.auth_host_executable,
-            ["--version"],
-            { windowsHide: true, timeout: 5000, maxBuffer: 4096 },
-          )
-        ).stdout.trim();
-        if (!/^devflow-auth-host v[0-9]+\.[0-9]+\.[0-9]+$/.test(authVersion)) authVersion = "unrecognized_helper";
-        accountPrerequisite = "auth_host_protocol_unavailable";
-        if (authVersion === "devflow-auth-host v2.0.0") {
-          accountPrerequisite = "process_host_capability_unavailable";
-          const doctor = JSON.parse(
-            (
-              await exec(configured.host.executable, ["doctor"], {
-                windowsHide: true,
-                timeout: 5000,
-                maxBuffer: 4096,
-              })
-            ).stdout,
-          );
-          const id = "account-install-" + crypto.randomUUID();
-          const status = JSON.parse(
-            (
-              await exec(configured.host.executable, ["job-status", id], {
-                windowsHide: true,
-                timeout: 5000,
-                maxBuffer: 4096,
-              })
-            ).stdout,
-          );
-          if (
-            doctor.suspended_spawn === true &&
-            doctor.kill_on_close === true &&
-            status.id === id &&
-            status.alive === false
-          )
-            accountPrerequisite = "official_cli_capability_unverified";
-        }
-      } catch {
-        /* Optional accounts remain unavailable; full DevFlow can still install. */
-      }
+      accountPrerequisite = "node_credential_worker_ready";
     }
     state.updateComponent(
-      "auth-host",
-      authVersion,
+      "credential-worker",
+      "3.0.0-node",
       "INSTALLED",
       accountPrerequisite,
     );
@@ -657,7 +601,7 @@ export async function runInstaller(
       accountPrerequisite,
     );
     console.log(
-      "AGY 账号功能未获就绪认证：" +
+      "AGY 账号功能就绪状态：" +
         accountPrerequisite +
         "。安装不会登录或更改账号。",
     );

@@ -130,7 +130,6 @@ export async function buildServer(
     bootstrapAccountService(engine.store, {
       authHostExecutable: engine.config.agy_accounts.auth_host_executable,
       agyCliPath: engine.config.models.agy_executable,
-      hostExecutable: engine.config.host.executable,
       settings: engine.config.agy_accounts,
     });
   const accessService = new ModelAccessService(engine.store, {
