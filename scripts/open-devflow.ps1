@@ -1,5 +1,5 @@
-param([switch]$Accounts)
-﻿$ErrorActionPreference = 'Stop'
+﻿param([switch]$Accounts)
+$ErrorActionPreference = 'Stop'
 $devflowRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 try {
   $entry = Join-Path $devflowRoot 'dist\packages\service\src\open.js'

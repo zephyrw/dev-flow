@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { createHash } from "node:crypto";
+import nodeCrypto from "node:crypto";
 import { Id } from "./base.js";
 
 export const SessionBindingStateSchema = z.enum([
@@ -40,7 +40,7 @@ export function computeSessionBindingKey(key: SessionBindingKey): string {
     key.canonical_model_id,
     key.workspace_identity,
   ]);
-  return createHash("sha256").update(payload).digest("hex");
+  return nodeCrypto.createHash("sha256").update(payload).digest("hex");
 }
 
 export interface SessionOwnerKeyInput {
@@ -64,7 +64,7 @@ export function computeSessionOwnerKey(input: SessionOwnerKeyInput): string {
     input.provider_account_scope,
     input.conversation_id,
   ]);
-  return createHash("sha256").update(payload).digest("hex");
+  return nodeCrypto.createHash("sha256").update(payload).digest("hex");
 }
 
 export const SessionBindingSchema = z
