@@ -14,6 +14,7 @@ export class FunctionalIssueService {
     workflowId: string,
     description: string,
     refs: WorkspaceReference[] = [],
+    attachment_ids: string[] = [],
   ): FunctionalIssue {
     const existing = this.listIssues(workflowId);
     const issue: FunctionalIssue = {
@@ -22,6 +23,7 @@ export class FunctionalIssueService {
       created_seq: existing.length + 1,
       description,
       refs,
+      attachment_ids: attachment_ids.slice(),
       status: "open",
       created_at: now(),
     };

@@ -1,4 +1,5 @@
 import { captureInitialState } from "./initial-state.js";
+import { resolveWorktreePath, ensureWorktreeGitExcluded } from "./workspace-paths.js";
 import { safePath } from "../../workspace/src/files.js";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -95,7 +96,12 @@ export class GitManager {
       let root = repo.path,
         branch = info.branch;
       if (mode === "new_worktree") {
-        root = join(this.workspaceRoot, project.id, workflow, repo.id);
+        root = resolveWorktreePath({
+          sourceRoot: repo.path,
+          workflowId: workflow,
+          repoId: repo.id,
+        });
+        ensureWorktreeGitExcluded(repo.path);
         branch = `devflow/${workflow}/${repo.id}`;
         const intentKey = workflow + "-" + repo.id;
         const previous = this.store.get<{
@@ -700,3 +706,5 @@ export class GitManager {
     return result;
   }
 }
+
+export * from "./workspace-paths.js";

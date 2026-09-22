@@ -13,7 +13,14 @@ export class AgentTelemetry {
   ) {}
   accept(event: Record<string, any>) {
     const step = event.step_update;
-    const key = step ? "step:" + step.step_index : "event:" + event.event;
+    const conversation =
+      (typeof step?.conversation_id === "string" && step.conversation_id) ||
+      (typeof event.conversation_id === "string" && event.conversation_id) ||
+      (typeof event.session_id === "string" && event.session_id) ||
+      "root";
+    const key = step
+      ? `step:${conversation}:${this.run}:${step.step_index}`
+      : `event:${conversation}:${this.run}:${event.event}`;
     const previous = this.events.get(key)?.step_update;
     if (step && previous)
       event = {
@@ -79,7 +86,7 @@ export class AgentTelemetry {
     this.timer = undefined;
     const events = [...this.events.values()];
     this.events.clear();
-    if (events.length)
+    if (events.length && !this.run.startsWith("aside-run"))
       this.store.transaction(() => {
         for (const event of events)
           this.store.event(

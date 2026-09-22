@@ -1,6 +1,9 @@
 import { failureSummary } from "./failure.js";
+import { ReviewActivityStream } from "./review-activity.js";
 import { runtimeFailureResolution } from "../../contracts/src/runtime-failure.js";
 import { toolSummary, toolOutputSummary } from "./tool-summary.js";
+import { conversationActivityLogEntry } from "./conversation-activity.js";
+import { CONVERSATION_EVENT } from "../../contracts/src/conversation.js";
 export interface LogEntry {
   key: string;
   sequence: number;
@@ -20,7 +23,8 @@ export function mergeEvents(workflow: string, ...batches: any[][]): any[] {
   const events = new Map<number, any>();
   for (const batch of batches)
     for (const event of batch)
-      if (event.workflow_id === workflow) events.set(event.event_seq, event);
+      if (event.workflow_id === workflow && !isAsideRun(event.run_id))
+        events.set(event.event_seq, event);
   const all = [...events.values()].sort((a, b) => a.event_seq - b.event_seq);
   const important = all
     .filter(
@@ -29,6 +33,11 @@ export function mergeEvents(workflow: string, ...batches: any[][]): any[] {
           "AgentEvent",
           "NativeActivity",
           "RunObserved",
+          "ConversationActivity",
+          "ConversationDiscovered",
+          "ConversationUpdated",
+          "ConversationControlUpdated",
+          "AsideUpdated",
           "ServiceOutput",
           "FixtureOutput",
           "CheckOutput",
@@ -41,6 +50,10 @@ export function mergeEvents(workflow: string, ...batches: any[][]): any[] {
   );
   return all.filter((e) => keep.has(e.event_seq));
 }
+export function isAsideRun(runId?: string | null) {
+  return typeof runId === "string" && runId.startsWith("aside-run");
+}
+
 const pretty = (value: unknown): string => {
   if (typeof value === "string") {
     try {
@@ -156,11 +169,11 @@ export function workflowProgress(
     PLAN_PENDING: "阅读计划，可批准、驳回修正或向规划模型提问",
     REPAIR_PLAN_PENDING: "阅读修复计划，可批准、驳回修正或向规划模型提问",
     QUEUED: "等待可用执行资源",
-    EXECUTING: "执行模型正在自主开发与自测，完成后统一核验交付",
-    VERIFYING: "核验交付后进行原计划自查及质量审查",
-    HUMAN_PENDING: "打开测试环境，实际操作后确认验收或反馈问题",
-    REVIEW_QUEUED: "等待独立复核启动",
-    REVIEWING: "复核通过后自动提交；发现问题会生成修复计划",
+    EXECUTING: "执行模型正在自主开发与自测，完成后进入代码质量审查",
+    VERIFYING: "本轮执行已结束，正在交接规划模型审查",
+    HUMAN_PENDING: "打开测试环境，实际操作后确认功能或反馈问题",
+    REVIEW_QUEUED: "等待代码质量审查启动",
+    REVIEWING: "规划模型正在审查代码质量；通过后进入下一阶段",
     COMMITTING: "等待本地提交完成",
     COMMITTED: "本次工作已提交，发布由你另行通知",
   };
@@ -189,7 +202,7 @@ export function readableLogs(events: any[], workflow: string): LogEntry[] {
   const rows: LogEntry[] = [],
     steps = new Map<string, LogEntry>();
   let repairPending = false;
-  const reviewStreams = new Map<string, { text: string; row?: LogEntry }>();
+  const reviewStreams = new Map<string, ReviewActivityStream>();
   const unique = new Map<number, any>();
   for (const e of events)
     if (e.workflow_id === workflow && !unique.has(e.event_seq))
@@ -200,6 +213,7 @@ export function readableLogs(events: any[], workflow: string): LogEntry[] {
     const p = e.payload ?? {},
       step = p.step_update;
     if (e.type === "RunObserved") continue;
+    if (isAsideRun(e.run_id)) continue;
     if (e.type === "NativeActivity") {
       if (!p.id || !["tool", "message", "event"].includes(p.kind)) continue;
       const key = `${workflow}:${e.run_id}:native:${p.id}`;
@@ -213,50 +227,41 @@ export function readableLogs(events: any[], workflow: string): LogEntry[] {
         text: p.text ?? "", kind: p.kind, status: p.status, command: p.command, cwd: p.cwd, resultText: p.resultText, raw: [e] });
       continue;
     }
+    if (e.type === CONVERSATION_EVENT.activity) {
+      if (isAsideRun(e.run_id)) continue;
+      if (p.root_id && p.conversation_id && p.conversation_id !== p.root_id)
+        continue;
+      const mapped = conversationActivityLogEntry(e);
+      if (!mapped) continue;
+      let row = steps.get(mapped.key);
+      if (!row) {
+        rows.push(mapped);
+        steps.set(mapped.key, mapped);
+      } else {
+        Object.assign(row, mapped);
+      }
+      continue;
+    }
+    if (
+      e.type === CONVERSATION_EVENT.discovered ||
+      e.type === CONVERSATION_EVENT.updated ||
+      e.type === CONVERSATION_EVENT.controlUpdated ||
+      e.type === CONVERSATION_EVENT.asideUpdated
+    )
+      continue;
     if (e.type === "ReviewDiagnostic") {
       const run = String(e.run_id ?? "unknown");
-      const stream = reviewStreams.get(run) ?? { text: "" };
-      stream.text += String(p.text ?? "");
+      const stream = reviewStreams.get(run) ?? new ReviewActivityStream();
       reviewStreams.set(run, stream);
-      const labels: Record<string, string> = {
-        context: "审查要求",
-        read_file: "源码读取",
-        search: "源码检索",
-        evidence: "测试证据",
-      };
-      const counts = new Map<string, number>();
-      // Only known tool completion metadata is suitable for the public timeline.
-      // Never show CLI diagnostics, prompts, tool output, or internal reasoning.
-      for (const match of stream.text.matchAll(
-        /(?:^|\n)mcp:\s*devflow_review\/devflow_review_(context|read_file|search|evidence)\s*\(completed\)/g,
-      ))
-        counts.set(match[1]!, (counts.get(match[1]!) ?? 0) + 1);
-      if (counts.size) {
-        const text =
-          "已完成" +
-          [...counts]
-            .map(([kind, count]) => `${labels[kind]} ${count} 次`)
-            .join("、") +
-          "；最终审查结论尚未提交。";
-        if (!stream.row) {
-          stream.row = {
-            key: `${workflow}:review:${run}`,
-            sequence: e.event_seq,
-            created_at: e.created_at,
-            title: "规划模型审查进展",
-            text,
-            raw: [e],
-            kind: "event",
-          };
-          rows.push(stream.row);
-        } else if (stream.row.text !== text) {
-          Object.assign(stream.row, {
-            text,
-            sequence: e.event_seq,
-            created_at: e.created_at,
-            raw: [e],
-          });
+      for (const item of stream.push(String(p.text ?? ""))) {
+        const key = `${workflow}:${run}:legacy:${item.id}`;
+        let row = steps.get(key);
+        if (!row) {
+          row = { key, sequence: e.event_seq, created_at: e.created_at, title: item.title, text: "", raw: [] };
+          rows.push(row);
+          steps.set(key, row);
         }
+        Object.assign(row, item, { key, sequence: e.event_seq, created_at: e.created_at, raw: [e] });
       }
       continue;
     }
@@ -520,24 +525,26 @@ export function readableLogs(events: any[], workflow: string): LogEntry[] {
         title =
           p.stage === "planner_takeover"
             ? "规划模型开始修复"
-            : p.stage === "executor_plan_self_check"
-              ? "开始计划逐项复核"
-              : repairPending
-                ? "继续开发与自测"
-                : "开始开发与自测";
+            : repairPending
+              ? "继续开发与自测"
+              : "开始开发与自测";
         repairPending = false;
         text =
           p.stage === "planner_takeover"
-            ? "正在启动规划模型；收到真实工具事件后展示修改、自测与交付过程。"
-            : p.stage === "executor_plan_self_check"
-              ? "执行模型正在对照正式计划检查实现和测试。"
-              : "执行模型自主安排本轮开发与自测，完成后提交交付核验。";
+            ? "正在启动规划模型；收到真实工具事件后展示修改、自测与完成说明。"
+            : "执行模型自主安排本轮开发与自测，完成后交代码质量审查。";
+      } else if (p.to === "REVIEW_QUEUED") {
+        title = "等待规划模型审查";
+        text =
+          p.stage === "quality_before_human"
+            ? "本轮执行已完成，由规划模型审查代码质量。"
+            : "等待规划模型进行人工后代码质量审查。";
       } else if (p.to === "REVIEWING") {
         title = "规划模型开始审查";
         text =
           p.stage === "quality_before_human"
-            ? "正在自动审查代码质量、调用关系和测试证据，通过后进入人工验收。"
-            : "正在自动进行独立复核，通过后进入本地提交。";
+            ? "正在审查代码质量，通过后进入人工功能确认。"
+            : "正在进行人工后代码质量审查，通过后进入本地提交。";
       } else if (p.to === "BLOCKED") {
         title =
           runtimeFailureResolution(p.blocker?.code, p.blocker?.message)
@@ -676,7 +683,7 @@ export function readableLogs(events: any[], workflow: string): LogEntry[] {
       row.status = "interrupted";
   return rows
     .filter((r) => r.kind !== "message" || r.text.trim())
-    .filter((r) => r.kind !== "tool" || r.text.trim() || r.resultText?.trim())
+    .filter((r) => r.kind !== "tool" || r.text.trim() || r.resultText?.trim() || r.raw.some((e: any) => e.type === "ReviewDiagnostic"))
     .sort((a, b) => a.sequence - b.sequence);
 }
 
@@ -685,7 +692,9 @@ export function userFacingLogs(entries: LogEntry[], currentRun?: string) {
   return entries.filter(
     (entry) =>
       entry.kind !== "diagnostic" &&
-      !entry.raw.some((e: any) => e.type === "AgentDiagnostic") &&
+      !entry.raw.some(
+        (e: any) => e.type === "AgentDiagnostic" || isAsideRun(e.run_id),
+      ) &&
       !(
         entry.kind === "message" &&
         entry.status !== "done" &&

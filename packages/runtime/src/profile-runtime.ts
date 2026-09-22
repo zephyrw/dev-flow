@@ -9,7 +9,6 @@ import {
   diagnosisOutputSchema,
   parseDiagnosisOutput,
 } from "../../contracts/src/diagnosis-output.js";
-import { PLAN_SELF_CHECK_STAGE } from "../../core/src/plan-self-check.js";
 import {
   atomicWrite,
   hash,
@@ -19,12 +18,17 @@ import {
   id,
 } from "../../core/src/util.js";
 import {
+  ATTACHMENT_HANDOFF_NOTICE,
+  CONVERSATION_ENTITY,
+  type ConversationFile,
+  type RecoveryManifest,
+  type ToolProfile,
   type Workflow,
   type Run,
   type Workspace,
   type Snapshot,
   ReviewSchema,
-  DeliveryManifestSchema,
+  ExecutorRoundResultSchema,
   requireCondition,
   FlowError,
   MergeConflictReceiptSchema,
@@ -33,44 +37,102 @@ import {
 } from "../../contracts/src/index.js";
 import { git, repositoryInfo } from "../../git/src/git.js";
 import { NativePlanSchema } from "../../contracts/src/native-plan.js";
-import { PlanSelfCheckReportSchema } from "../../contracts/src/plan-self-check.js";
 import {
   modelOutputSchema,
   normalizeModelOutput,
 } from "../../contracts/src/review-output.js";
-import { createDefaultAdapterRegistry } from "../../adapters/sdk/src/index.js";
+import { createDefaultAdapterRegistry, resolveSessionIdentity } from "../../adapters/sdk/src/index.js";
+import { ExecutionSessionStore } from "../../core/src/execution-session-store.js";
+import { CliDispatchManager, type CliDispatchRecord } from "./cli-dispatch.js";
+import { computeSessionBindingKey } from "../../contracts/src/session-binding.js";
 import { readOnlyPurpose } from "../../adapters/sdk/src/invocation.js";
 import type {
+  HostChunk,
   NativeAgentAdapter,
+  NativeConversationEvent,
   NormalizedEvent,
+  PreparedInvocation,
 } from "../../adapters/sdk/src/interface.js";
+import {
+  ConversationService,
+  type ConversationApplyContext,
+} from "../../core/src/conversation-service.js";
+import type { Store } from "../../store/src/store.js";
+import {
+  RunTelemetry,
+  shouldApplyRootSessionIdentity,
+  type ConversationTelemetryRoute,
+} from "./run-telemetry.js";
+import { ConversationObserver } from "./conversation-observer.js";
+import type { ConversationRecordSource } from "../../adapters/sdk/src/conversation-source.js";
+import {
+  unknownSubagentCapabilities,
+  type ConversationNode,
+} from "../../contracts/src/conversation.js";
+import { resolveConversationInputAttachments } from "./conversation-inputs.js";
 import { AgyNativeRecordSource } from "../../adapters/agy/src/native-record-source.js";
 import {
   NativeExecutionObserver,
-  captureInputs,
-  captureReports,
 } from "../../evidence/src/native-execution-observer.js";
 import type { HostToolExecutionFact } from "../../evidence/src/native-run-records.js";
 import type { ProcessManager } from "../../process/src/manager.js";
 import { classifyFailure, normalizeRuntimeFailure } from "./errors.js";
-import { RunTelemetry } from "./run-telemetry.js";
 import { CodexSessionObserver } from "./codex-session-observer.js";
-import { rejectedDeliveryFeedback } from "../../core/src/delivery-feedback.js";
+import { observeCodexAccountQuota } from "./codex-account-quota.js";
 import { readPlanMaterial } from "../../core/src/plan-review.js";
 import type { SourceInput } from "../../core/src/source-change.js";
-import { batchExecutionInstructions } from "../../core/src/execution-guidance.js";
+import {
+  asideRecoveryGuidance,
+  batchExecutionInstructions,
+  executeRecoveryGuidance,
+  planningRecoveryGuidance,
+  repairRecoveryGuidance,
+  reviewRecoveryGuidance,
+  type RecoveryGuidanceAttachment,
+  type RecoveryGuidanceOptions,
+} from "../../core/src/execution-guidance.js";
+import { ConversationControlService } from "../../core/src/conversation-control.js";
+import { saveRunContinuation } from "../../core/src/waiting-context.js";
+import {
+  ConversationRecovery,
+  storeRecoveryRunPort,
+  type RecoveryRunPort,
+} from "./conversation-recovery.js";
 import {
   reviewSkillResources,
   reviewContractContext,
   reviewInstructions,
 } from "./review-materials.js";
+import type {
+  PlanningHandoff,
+  RunContinuation,
+} from "../../contracts/src/tr-handoff.js";
+import {
+  INTENT_CLARIFICATION_INSTRUCTION,
+  applyContinuationMaterials,
+  applyPlanningHandoffMaterials,
+  asRunContinuation,
+  continuationSessionRequired,
+  selectConversationToResume,
+} from "../../core/src/round-intent.js";
+
+async function adapterForToolProfile(
+  profile: ToolProfile,
+): Promise<NativeAgentAdapter> {
+  const adapter = createDefaultAdapterRegistry().mustGet(profile.adapterId);
+  await adapter.probe({ toolProfile: profile });
+  return adapter;
+}
 
 /** One native process per purpose. No model polling, scheduler or shadow execution plan. */
 export class ProfileRuntime {
+  private executionSessionStore: ExecutionSessionStore;
   constructor(
     private engine: Engine,
     private processes: ProcessManager,
-  ) {}
+  ) {
+    this.executionSessionStore = new ExecutionSessionStore(this.engine.store);
+  }
   async plan(w: Workflow, run: Run) {
     const workspaces = await this.planningWorkspaces(w);
     const selectedSource = this.engine.store.get<SourceInput>(
@@ -84,23 +146,7 @@ export class ProfileRuntime {
     const response = await this.invoke(
       w,
       run,
-      {
-        instructions:
-          "你是规划模型。读取需求及引用的真实工作区文件，返回唯一正式计划。包含完整需求、确定实施步骤、单元/集成/E2E场景及受影响旧功能回归；等待用户批准后才实施。只读，不修改代码。如果提供 current_plan，须在同一任务中按用户的规划反馈修正该计划，逐条回应修改意见并提交完整新版，不能自行批准或启动实施。",
-        current_plan: w.plan_revision
-          ? readPlanMaterial(this.engine.store, w.id, w.plan_revision)
-          : null,
-        selected_source:
-          selectedSource?.plan_hash === w.plan_hash ? selectedSource : null,
-        requirements: this.engine.store.list("requirement_message", w.id),
-        request: w.request,
-        project: this.engine.project(w.project_id),
-        feedback: this.engine.store.list("feedback_message", w.id),
-        baselines: Object.fromEntries(
-          workspaces.map((ws) => [ws.repo_id, ws.baseline]),
-        ),
-        project_config_hash: objectHash(this.engine.project(w.project_id)),
-      },
+      this.planMaterials(w, workspaces, selectedSource),
       modelOutputSchema(
         schema,
         workspaces.map((ws) => ws.repo_id),
@@ -203,67 +249,19 @@ export class ProfileRuntime {
     const value = await this.invoke(
       w,
       run,
-      {
-        instructions:
-          "你是本任务的规划模型。只读回答当前问题，结合所附计划完整正文解释细节，尽量指出对应章节。提问不表示驳回或批准，不修改计划或代码，不接管主任务，不形成正式反馈。需要改变计划时只说明建议，由用户决定是否驳回修正。",
-        question,
-        request: w.request,
-        current_state: w.state,
-        plan,
-        previous_questions: question.plan_revision
-          ? this.engine.store
-              .list<any>("aside_session", w.id)
-              .filter(
-                (q) =>
-                  q.plan_revision === question.plan_revision &&
-                  q.status === "completed",
-              )
-              .sort((a, b) => a.created_at.localeCompare(b.created_at))
-              .slice(-10)
-              .map((q) => ({ question: q.question, answer: q.answer }))
-          : [],
-      },
+      asideQuestionMaterials(this.engine, w, question, plan),
       modelOutputSchema(z.object({ answer: z.string().min(1) }), []),
     );
-    return z.object({ answer: z.string().min(1) }).parse(value).answer;
+    return requireAsideAnswer(value);
   }
   async execute(w: Workflow, run: Run, token: string) {
-    const plan = this.engine.plan(w.id);
-    const check =
-      run.stage === PLAN_SELF_CHECK_STAGE
-        ? this.engine.planSelfCheck.current(w.id)
-        : null;
-    const materials = {
-      instructions: check
-        ? "程序强制计划自查：先完整核对原始正式计划与全部正式整改正文，按 check.check_ids 汇总全部遗漏及根因，再完成整批修复，最后统一测试。最终 delivery.plan_self_check 填写给定 schema。不得另建或执行 implementation_plan.md 等替代计划。"
-        : "严格按原始正式计划和批准的整改正文完成全部开发与单元/集成/E2E测试，覆盖新流程及受影响旧逻辑。不得另建或执行替代计划。发现计划矛盾应报告阻塞。完成后返回 delivery 交付清单，不得自行提交 Git 或宣布人工验收通过。",
-      execution_order: batchExecutionInstructions,
-      workflow: w,
-      run,
-      plan,
-      authorities: this.engine.planSelfCheck.authorities(w),
-      check,
-      check_schema: z.toJSONSchema(PlanSelfCheckReportSchema),
-      feedback: this.engine.store.list("feedback_message", w.id),
-      functional_issues: this.engine.store.list("functional_issue", w.id),
-      project: this.engine.project(w.project_id),
-      workspaces: this.workspaces(w),
-      repair_assignment:
-        this.engine.store.get("repair_assignment", w.id) ?? null,
-      repair_instructions:
-        this.engine.store.get<any>("repair_state", w.id)?.instructions ??
-        this.engine.store.get<any>("repair_assignment", w.id)?.instructions ??
-        null,
-      delivery_feedback: rejectedDeliveryFeedback(this.engine.store, w),
-      delivery_instruction:
-        "测试报告放入 .reports/；测试声明须匹配本轮真实工具命令、退出码、报告及验收项，不能制造宿主记录。最终输出 JSON {delivery: ...}。",
-    };
+    const materials = this.executeMaterials(w, run);
     const value = await this.invoke(
       w,
       run,
       materials,
       modelOutputSchema(
-        z.object({ delivery: DeliveryManifestSchema }),
+        ExecutorRoundResultSchema,
         this.workspaces(w).map((ws) => ws.repo_id),
       ),
       token,
@@ -274,23 +272,26 @@ export class ProfileRuntime {
       "RUN_REVOKED",
       "运行阶段已变化",
     );
-    const parsed = z.object({ delivery: DeliveryManifestSchema }).parse(value);
+    const parsed = ExecutorRoundResultSchema.safeParse(value);
     const currentRun = this.engine.store.must<Run>("run", run.id);
-    const delivery = {
+    const payload = parsed.success
+      ? parsed.data
+      : {
+          status: "unclear",
+          summary:
+            typeof value === "object"
+              ? JSON.stringify(value)
+              : String(value ?? ""),
+        };
+    await this.engine.receiveRoundResult(w.id, run.id, {
       schema_version: "v2",
       workflow_id: w.id,
       run_id: run.id,
       conversation_id: currentRun.conversation_id,
       plan_revision: w.plan_revision,
       plan_hash: w.plan_hash,
-      ...parsed.delivery,
-    };
-    const result = await this.engine.deliver(w.id, delivery);
-    if (result.status !== "accepted")
-      throw new FlowError("DELIVERY_REJECTED", result.message, 422, {
-        delivery_id: result.delivery_id,
-        issues: result.issues,
-      });
+      ...payload,
+    });
   }
   async resolveMergeConflict(
     w: Workflow,
@@ -311,6 +312,7 @@ export class ProfileRuntime {
         "合并发生代码冲突。严格在原批准计划和正式整改范围内解决冲突，同时保留双方有效需求。禁止统一使用 ours/theirs、reset、stash 或删除历史。完成后返回结构化回执，不得自行提交 Git 或删除工作树。",
       workflow: w,
       run,
+      request,
       request_id: request.id,
       plan,
       conflict_paths: request.conflict_paths,
@@ -342,40 +344,13 @@ export class ProfileRuntime {
     return parsed.receipt;
   }
   async review(w: Workflow, run: Run) {
-    const snapshot = this.engine.store.must<Snapshot>(
-      "snapshot",
-      w.snapshot_id!,
-    );
-    const phase =
-      w.stage === "quality_before_human" ? "before_human" : "after_human";
+    const snapshot = w.snapshot_id
+      ? this.engine.store.get<Snapshot>("snapshot", w.snapshot_id)
+      : undefined;
     const value = await this.invoke(
       w,
       run,
-      {
-        instructions: reviewInstructions,
-        skill_resources: reviewSkillResources(),
-        review_contract: reviewContractContext(this.engine, w, run),
-        workflow: w,
-        run,
-        phase,
-        cycle: this.engine.quality.getOrCreateGate(w.id, phase).cycle,
-        feedback_cursor: Math.max(
-          0,
-          ...this.engine.store
-            .list<any>("feedback_message", w.id)
-            .map((m) => m.seq),
-        ),
-        plan: this.engine.plan(w.id),
-        authorities: this.engine.planSelfCheck.authorities(w),
-        executor_plan_check: this.engine.planSelfCheck.current(w.id),
-        snapshot,
-        diff: await this.engine.git.diff(snapshot),
-        deliveries: this.engine.store.list("delivery", w.id),
-        evidence: this.engine.getEvidence(w.id),
-        acceptance: this.engine.store.get("acceptance", w.id) ?? null,
-        project: this.engine.project(w.project_id),
-        skill: readFileSync(this.reviewSkill(), "utf8"),
-      },
+      await this.reviewMaterials(w, run, snapshot),
       modelOutputSchema(
         ReviewSchema,
         this.workspaces(w).map((ws) => ws.repo_id),
@@ -434,6 +409,119 @@ export class ProfileRuntime {
       }),
     );
   }
+  private planMaterials(
+    w: Workflow,
+    workspaces: Workspace[],
+    selectedSource: SourceInput | undefined,
+  ) {
+    return applyPlanningHandoffMaterials(
+      {
+        instructions:
+          "你是规划模型。读取需求及引用的真实工作区文件，返回唯一正式计划。包含完整需求、确定实施步骤、单元/集成/E2E场景及受影响旧功能回归；等待用户批准后才实施。只读，不修改代码。如果提供 current_plan，须在同一任务中按用户的规划反馈修正该计划，逐条回应修改意见并提交完整新版，不能自行批准或启动实施。",
+        current_plan: w.plan_revision
+          ? readPlanMaterial(this.engine.store, w.id, w.plan_revision)
+          : null,
+        selected_source:
+          selectedSource?.plan_hash === w.plan_hash ? selectedSource : null,
+        requirements: this.engine.store.list("requirement_message", w.id),
+        request: w.request,
+        project: this.engine.project(w.project_id),
+        feedback: this.engine.store.list("feedback_message", w.id),
+        baselines: Object.fromEntries(
+          workspaces.map((ws) => [ws.repo_id, ws.baseline]),
+        ),
+        project_config_hash: objectHash(this.engine.project(w.project_id)),
+      },
+      this.readPlanningHandoff(w.id),
+    );
+  }
+  private executeMaterials(w: Workflow, run: Run) {
+    const plan = this.engine.plan(w.id);
+    return applyContinuationMaterials(
+      {
+        instructions:
+          "严格按原始正式计划和批准的整改正文完成全部开发任务及测试代码，再由多个子 Agent 并行运行独立的单元、集成和 E2E 目标，各自修复并重跑。不得另建或执行替代计划。发现计划矛盾应报告阻塞。完成后说明本轮结果，直接交代码审查。报告可附，不为调用 ID、清单或 hash 重跑测试。不得自行提交 Git 或宣布人工验收通过。",
+        execution_order: batchExecutionInstructions,
+        workflow: w,
+        run,
+        plan,
+        authorities: this.engine.planSelfCheck.authorities(w),
+        feedback: this.engine.store.list("feedback_message", w.id),
+        functional_issues: this.engine.store.list("functional_issue", w.id),
+        project: this.engine.project(w.project_id),
+        workspaces: this.workspaces(w),
+        repair_assignment:
+          this.engine.store.get("repair_assignment", w.id) ?? null,
+        repair_instructions:
+          this.engine.store.get<any>("repair_state", w.id)?.instructions ??
+          this.engine.store.get<any>("repair_assignment", w.id)?.instructions ??
+          null,
+        completion_instruction:
+          "最终输出 JSON {status, summary, notes, artifacts}。status 只能是 completed、need_planner 或 need_user。未知状态不会被当成完成。",
+      },
+      this.readContinuation(run),
+    );
+  }
+  private async reviewMaterials(
+    w: Workflow,
+    run: Run,
+    snapshot: Snapshot | undefined,
+  ) {
+    const phase =
+      w.stage === "quality_before_human" ? "before_human" : "after_human";
+    return applyContinuationMaterials(
+      {
+        instructions: reviewInstructions,
+        skill_resources: reviewSkillResources(),
+        review_contract: reviewContractContext(this.engine, w, run),
+        workflow: w,
+        run,
+        phase,
+        cycle: this.engine.quality.getOrCreateGate(w.id, phase).cycle,
+        plan: this.engine.plan(w.id),
+        authorities: this.engine.planSelfCheck.authorities(w),
+        snapshot,
+        diff: snapshot ? await this.engine.git.diff(snapshot) : "",
+        completion: this.engine.store.list("delivery", w.id).at(-1),
+        project: this.engine.project(w.project_id),
+        skill: readFileSync(this.reviewSkill(), "utf8"),
+      },
+      this.readContinuation(run),
+    );
+  }
+  private readContinuation(run: Run): RunContinuation | undefined {
+    return (
+      asRunContinuation(run.continuation) ??
+      asRunContinuation(
+        this.engine.store.get("run_continuation", run.workflow_id),
+      ) ??
+      asRunContinuation(this.engine.store.get("run_continuation", run.id))
+    );
+  }
+  private readPlanningHandoff(workflowId: string) {
+    return this.engine.store.get<PlanningHandoff>("planning_handoff", workflowId);
+  }
+  private conversationToResume(
+    run: Run,
+    purpose: string,
+    sessionKey: string,
+  ) {
+    const stored = this.engine.store.get<{ id: string }>(
+      "native_conversation",
+      sessionKey,
+    );
+    const continuation = this.readContinuation(run);
+    return selectConversationToResume({
+      purpose,
+      continuation: {
+        conversation_id:
+          continuation?.conversation_id ??
+          (continuation ? undefined : run.continuation_conversation_id),
+      },
+      planningSession: purpose === "planning" ? stored : undefined,
+      defaultSession: stored,
+    });
+  }
   private async invoke(
     w: Workflow,
     run: Run,
@@ -443,36 +531,137 @@ export class ProfileRuntime {
     planningWorkspaces?: Workspace[],
   ): Promise<any> {
     const profile = profileForRun(this.engine.store, run);
-    const adapter = createDefaultAdapterRegistry().mustGet(profile.adapterId);
+    const adapter = await adapterForToolProfile(profile);
     const root = join(this.engine.config.storage_root, "native-runs", run.id);
     mkdirSync(root, { recursive: true });
     const handoff = join(root, "HANDOFF.json"),
       output = join(root, "result.json"),
       schemaPath = join(root, "schema.json");
-    atomicWrite(handoff, JSON.stringify(materials, null, 2));
-    atomicWrite(schemaPath, JSON.stringify(schema));
     const purpose = run.purpose!;
+    const inputFiles = resolveRunConversationAttachments(
+      this.engine,
+      w,
+      profile,
+    );
+    const recoveryGuidance = readRoleRecoveryGuidance(this.engine, w, run, {
+      adapterId: profile.adapterId,
+      attachments: recoveryAttachmentHints(inputFiles.attachments),
+    });
+    atomicWrite(
+      handoff,
+      JSON.stringify(
+        withHandoffAttachments(
+          withRecoveryMaterials(materials, recoveryGuidance),
+          inputFiles.attachments,
+        ),
+        null,
+        2,
+      ),
+    );
+    atomicWrite(schemaPath, JSON.stringify(schema));
     const workspaces =
       planningWorkspaces ??
       (["planning", "aside"].includes(purpose)
         ? await this.planningWorkspaces(w)
         : this.workspaces(w));
-    // Read-only review/aside always starts a separate conversation; implementation resumes only the exact profile.
-    const sessionKey =
-      w.id +
-      ":" +
-      objectHash(profile) +
-      ":" +
-      (["implement", "plan_self_check", "functional_fix"].includes(purpose)
-        ? "execution"
-        : purpose);
-    const previous =
-      purpose === "planning" || !readOnlyPurpose(purpose)
-        ? this.engine.store.get<{ id: string }>(
-            "native_conversation",
-            sessionKey,
-          )
-        : undefined;
+    const primaryWs = workspaces[0];
+    const identity = await resolveSessionIdentity(adapter, {
+      frozenProfile: profile,
+      workspace: {
+        root: primaryWs?.root ?? "",
+        source_root: primaryWs?.source_root ?? primaryWs?.root,
+        repo_id: primaryWs?.repo_id,
+        common_dir: primaryWs?.common_dir,
+        all_workspaces: workspaces.map((ws) => ({
+          repo_id: ws.repo_id,
+          root: ws.root,
+          source_root: ws.source_root ?? ws.root,
+          common_dir: ws.common_dir,
+        })),
+      },
+      effectiveEnvironment: process.env as Record<string, string>,
+    });
+    if (!identity.resolved) {
+      throw new FlowError(
+        "SESSION_IDENTITY_UNRESOLVED",
+        identity.unresolved_reason || "无法解析会话真实身份",
+        422,
+      );
+    }
+    const bindingKey = {
+      workflow_id: w.id,
+      adapter_id: identity.adapter_id,
+      host_id: identity.host_id,
+      client_scope_id: identity.client_scope_id,
+      provider_account_scope: identity.provider_account_scope,
+      canonical_model_id: identity.canonical_model_id,
+      workspace_identity: identity.workspace_identity,
+    };
+    const sessionKey = computeSessionBindingKey(bindingKey);
+    const taskStrategy: "unified" | "legacy" = (w as any).binding_strategy ?? "legacy";
+    let sessionBinding: any;
+
+    if (purpose !== "aside") {
+      if (taskStrategy === "unified") {
+        sessionBinding = this.executionSessionStore.getOrCreateBinding(bindingKey, {
+          workspace_root: primaryWs?.root ?? "",
+          source_root: primaryWs?.source_root ?? primaryWs?.root ?? "",
+          repo_id: primaryWs?.repo_id ?? "primary",
+        });
+        if (sessionBinding.state === "unavailable" || sessionBinding.state === "retired") {
+          throw new FlowError(
+            "SESSION_BINDING_UNAVAILABLE",
+            `会话绑定处于不可用状态 (${sessionBinding.state})，禁止启动`,
+            409,
+          );
+        }
+      } else {
+        // CW3-F03: 缺策略的历史任务按 legacy 只读核验，未处理旧候选/pending 阻止误建根，绝不隐式建 binding
+        const existingBindings = this.executionSessionStore.listBindings(w.id);
+        const matchBinding = existingBindings.find((b) => computeSessionBindingKey(b) === sessionKey);
+        if (matchBinding) {
+          if (matchBinding.state === "unavailable" || matchBinding.state === "retired") {
+            throw new FlowError(
+              "SESSION_BINDING_UNAVAILABLE",
+              `会话绑定处于不可用状态 (${matchBinding.state})，禁止启动`,
+              409,
+            );
+          }
+          sessionBinding = matchBinding;
+        }
+        const repairRecords = this.engine.store.list<any>("session_binding_repair_record", w.id);
+        const hasUnresolvedRepair = repairRecords.some(
+          (r) => r.status === "candidate" || r.status === "ambiguous" || r.status === "conflict",
+        );
+        if (hasUnresolvedRepair) {
+          throw new FlowError(
+            "UNRESOLVED_SESSION_CANDIDATE",
+            "历史任务存在未解决的会话候选或歧义，禁止隐式启动新建根；请先完成会话修复",
+            409,
+          );
+        }
+      }
+    }
+
+    const continuation = this.readContinuation(run);
+    // CW-D05: 统一绑定为唯一权威来源，对于统一策略任务不再使用旧指针优先覆盖
+    let previous: { id: string } | undefined;
+    if (purpose !== "aside") {
+      if (sessionBinding?.conversation_id) {
+        previous = { id: sessionBinding.conversation_id };
+      } else if (taskStrategy === "legacy") {
+        // CW4-F01: 历史任务只使用能匹配当前工具、模型、工作区及已知配置身份的旧记录；
+        // 删掉不核对身份就采用任务级 conversation 的兜底，防止跨工具串用会话
+        const legacyConv = this.engine.store.get<{ id: string }>("native_conversation", sessionKey);
+        if (legacyConv?.id) {
+          previous = { id: legacyConv.id };
+        }
+      }
+    }
+    if (continuationSessionRequired(purpose, continuation) && !previous)
+      throw normalizeRuntimeFailure(
+        new FlowError("NATIVE_RUN_FAILED", "原角色会话不可恢复", 422),
+      );
     const context = {
       workflowId: w.id,
       runId: run.id,
@@ -482,9 +671,12 @@ export class ProfileRuntime {
       workspaceRoots: Object.fromEntries(
         workspaces.map((ws) => [ws.repo_id, ws.root]),
       ),
-      allowedPaths: w.plan_revision
-        ? this.engine.plan(w.id).plan.scope.allowed_paths
-        : [],
+      allowedPaths: [
+        ...(w.plan_revision
+          ? this.engine.plan(w.id).plan.scope.allowed_paths
+          : []),
+        ...inputFiles.extraReadRoots,
+      ],
       toolProfile: profile,
       handoffDocPath: handoff,
       outputPath: output,
@@ -493,29 +685,31 @@ export class ProfileRuntime {
         1,
         (run.deadline_at ?? Date.now() + 300000) - Date.now(),
       ),
-      prompt:
-        "完整任务及唯一正式计划材料：" +
-        handoff +
-        "。必须先阅读全部材料和引用文件；按 " +
-        schemaPath +
-        " 返回一个 JSON 对象作为最终回答。禁止额外创建替代计划。",
+      prompt: invokePrompt(
+        purpose,
+        handoff,
+        schemaPath,
+        continuation,
+        nativePromptExtra(recoveryGuidance, inputFiles.attachments),
+      ),
+      inputAttachments: inputFiles.attachments,
     };
-    const invocation = previous
+    if (adapter.prepareInputAttachments && inputFiles.attachments.length) {
+      await adapter.prepareInputAttachments(inputFiles.attachments);
+    }
+    const prepared = previous
       ? await adapter.resume({
           ...context,
           previousConversationId: previous.id,
         })
       : await adapter.prepare(context);
-    const baseline = readOnlyPurpose(purpose)
-      ? captureInputs(workspaces)
-      : undefined;
-    const pending = new Map<
-      string,
-      {
-        fact: HostToolExecutionFact;
-        reports: ReturnType<typeof captureReports>;
-      }
-    >();
+    const invocation: PreparedInvocation & {
+      attachments: typeof inputFiles.attachments;
+    } = {
+      ...prepared,
+      attachments: inputFiles.attachments,
+    };
+    const pending = new Map<string, { fact: HostToolExecutionFact }>();
     const save = (fact: HostToolExecutionFact) =>
       this.engine.store.put(
         "native_execution",
@@ -525,49 +719,19 @@ export class ProfileRuntime {
       );
     adapter.onExecutionFact = (fact) => {
       if (!fact.ended_at && !pending.has(fact.tool_call_id)) {
-        let entry: HostToolExecutionFact = {
+        const entry: HostToolExecutionFact = {
           ...fact,
           workflow_id: w.id,
           run_id: run.id,
           plan_hash: w.plan_hash,
         };
-        try {
-          entry.input_fingerprints = captureInputs(workspaces);
-          pending.set(fact.tool_call_id, {
-            fact: entry,
-            reports: captureReports(
-              workspaces,
-              this.engine.project(w.project_id).commands,
-            ),
-          });
-        } catch (e) {
-          entry.evidence_error = String(e);
-          pending.set(fact.tool_call_id, { fact: entry, reports: {} });
-        }
+        pending.set(fact.tool_call_id, {
+          fact: entry,
+        });
       } else if (fact.ended_at && pending.has(fact.tool_call_id)) {
         const before = pending.get(fact.tool_call_id)!;
         pending.delete(fact.tool_call_id);
-        const final = { ...before.fact, ...fact };
-        try {
-          requireCondition(
-            objectHash(final.input_fingerprints) ===
-              objectHash(captureInputs(workspaces)),
-            "INPUT_CHANGED",
-            "测试期间源码发生变化",
-          );
-          final.report_hashes = {};
-          for (const [key, value] of Object.entries(
-            captureReports(
-              workspaces,
-              this.engine.project(w.project_id).commands,
-            ),
-          ))
-            if (before.reports[key]?.version !== value.version)
-              final.report_hashes[key] = value.hash;
-        } catch (e) {
-          final.evidence_error = String(e);
-        }
-        save(final);
+        save({ ...before.fact, ...fact });
       }
     };
     const agyRecords = new AgyNativeRecordSource(homedir());
@@ -584,37 +748,174 @@ export class ProfileRuntime {
             save,
           })
         : undefined;
-    const proc = this.processes.start({
-      ...invocation,
-      id: run.id,
-      workflow_id: w.id,
-      timeout_ms: context.timeoutMs,
-      deadline_at: run.deadline_at,
-      env: {
-        ...invocation.env,
-        ...(token ? { DEVFLOW_RUN_TOKEN: token } : {}),
-        DEVFLOW_BASE_URL: "http://127.0.0.1:" + this.engine.config.server.port,
-      },
-    });
+    const asideCodexHome =
+      purpose === "aside" && profile.adapterId === "codex"
+        ? join(root, "codex-home")
+        : undefined;
+    if (asideCodexHome) mkdirSync(asideCodexHome, { recursive: true });
+
+    // CW2-F08 / CW2-D04: 正式模型调用必须接入统一派发门面与占用管理
+    const dispatchManager = new CliDispatchManager(this.engine.store, this.processes);
+    const dispatchId = `disp_${w.id}_${run.id}`;
+    let dispatchRecord: any;
+    if (purpose !== "aside") {
+      dispatchRecord = dispatchManager.prepareDispatch({
+        dispatchId,
+        workflowId: w.id,
+        runId: run.id,
+        bindingId: sessionBinding?.id,
+        expectedConversationId: sessionBinding?.conversation_id,
+        strategy: taskStrategy,
+      });
+      dispatchManager.claimStarting(dispatchId);
+    }
+
+    let proc: any;
+    try {
+      proc = this.processes.start({
+        ...invocation,
+        id: run.id,
+        workflow_id: w.id,
+        timeout_ms: context.timeoutMs,
+        deadline_at: run.deadline_at,
+        env: {
+          ...invocation.env,
+          ...(token ? { DEVFLOW_RUN_TOKEN: token } : {}),
+          DEVFLOW_BASE_URL: "http://127.0.0.1:" + this.engine.config.server.port,
+          ...(asideCodexHome ? { CODEX_HOME: asideCodexHome } : {}),
+        },
+      });
+    } catch (err: any) {
+      if (dispatchRecord) {
+        dispatchManager.finishDispatch(dispatchId, { exitCode: 1, error: err.message });
+      }
+      throw err;
+    }
+
+    if (dispatchRecord && proc.pid) {
+      dispatchManager.observeProcess(dispatchId, { pid: proc.pid });
+    }
+    proc.completion
+      .then((res: any) => {
+        if (dispatchRecord) {
+          const code = typeof res?.code === "number" ? res.code : null;
+          dispatchManager.finishDispatch(dispatchId, {
+            exitCode: code,
+            error: res?.error || (code === null ? "进程未返回有效退出码" : undefined),
+          });
+        }
+      })
+      .catch((err: any) => {
+        if (dispatchRecord) {
+          dispatchManager.finishDispatch(dispatchId, { exitCode: 1, error: String(err) });
+        }
+      });
     const telemetry = new RunTelemetry(this.engine.store, w, run);
-    const sessionObserver = profile.adapterId === "codex"
-      ? new CodexSessionObserver({
-          home: invocation.env.CODEX_HOME ?? process.env.CODEX_HOME ?? join(homedir(), ".codex"),
-          cwd: invocation.cwd,
-          startedAt: run.started_at,
-          telemetry,
-        })
-      : undefined;
+    const codexHome =
+      asideCodexHome ??
+      invocation.env.CODEX_HOME ??
+      process.env.CODEX_HOME ??
+      join(homedir(), ".codex");
+    const stopQuota =
+      profile.adapterId === "codex" && purpose !== "aside"
+        ? observeCodexAccountQuota(
+            {
+              executable: invocation.executable,
+              prefixArgs: Array.isArray(profile.options.prefixArgs)
+                ? (profile.options.prefixArgs as string[])
+                : [],
+              cwd: invocation.cwd,
+              home: codexHome,
+            },
+            telemetry,
+          )
+        : undefined;
+    const sessionObserver =
+      profile.adapterId === "codex"
+        ? new CodexSessionObserver({
+            home: codexHome,
+            cwd: invocation.cwd,
+            startedAt: run.started_at,
+            telemetry,
+          })
+        : undefined;
     let final: unknown,
       text = "",
       conversation = previous?.id,
       failure: string | undefined,
       stderrTail = "";
     let permissionFailure: FlowError | undefined;
-    const handle = (event: NormalizedEvent) => {
+    bindRunConversationObserver({
+      store: this.engine.store,
+      workflow: w,
+      run,
+      adapter,
+      telemetry,
+      previousNativeId: previous?.id,
+      onRootSession: (nativeId) => {
+        if (previous && nativeId !== previous.id) {
+          failure = "会话 ID 与精确续接目标不一致";
+          return;
+        }
+        conversation = nativeId;
+        sessionObserver?.bind(nativeId);
+        try {
+          this.engine.store.transaction(() => {
+            // CW4-F01: init 回调排除 aside 对正式根指针的写入，临时提问不污染正式绑定
+            if (purpose !== "aside") {
+              if (taskStrategy === "unified") {
+                if (sessionBinding && nativeId) {
+                  this.executionSessionStore.bindConversationId(
+                    sessionBinding.id,
+                    nativeId,
+                    run.id,
+                  );
+                }
+              } else {
+                // legacy 只确认旧来源和 Run/dispatch，不隐式造 binding
+                this.engine.store.put("native_conversation", sessionKey, w.id, {
+                  id: nativeId,
+                  profile,
+                  run_id: run.id,
+                });
+                this.engine.store.put("conversation", w.id, w.id, {
+                  id: nativeId,
+                  profile,
+                  run_id: run.id,
+                });
+              }
+            }
+
+            // 同步记录 Run 根会话事实 (不等整轮结束)
+            const existingRun = this.engine.store.get<Run>("run", run.id);
+            if (existingRun) {
+              this.engine.store.put("run", run.id, w.id, {
+                ...existingRun,
+                conversation_id: nativeId,
+                root_session_id: nativeId,
+              });
+            }
+
+            // 同步记录 dispatch 观察到的根会话 ID
+            if (dispatchRecord) {
+              const currentDisp = this.engine.store.get<CliDispatchRecord>("cli_dispatch_record", dispatchId);
+              if (currentDisp) {
+                this.engine.store.put("cli_dispatch_record", dispatchId, w.id, {
+                  ...currentDisp,
+                  observed_conversation_id: nativeId,
+                });
+              }
+            }
+          });
+        } catch (err: any) {
+          failure = err.message || "会话根绑定失败";
+        }
+      },
+    });
+    const handle = (event: NormalizedEvent, decodedConversation = false) => {
       const v = event.raw as any;
       if (v && typeof v === "object") {
-        telemetry.accept(v);
+        if (!decodedConversation) telemetry.accept(v);
         if (
           profile.adapterId === "agy" &&
           v.event === "result" &&
@@ -632,18 +933,6 @@ export class ProfileRuntime {
           );
         }
         agy?.accept(v);
-        const session =
-          v.thread_id ??
-          v.session_id ??
-          v.sessionId ??
-          v.conversation_id ??
-          v.init?.conversation_id;
-        if (typeof session === "string") {
-          if (previous && session !== previous.id)
-            failure = "会话 ID 与精确续接目标不一致";
-          conversation = session;
-          sessionObserver?.bind(session);
-        }
         if (
           v.is_error === true ||
           v.type === "error" ||
@@ -685,14 +974,18 @@ export class ProfileRuntime {
           join(root, stream + ".jsonl"),
           redact(typeof data === "string" ? data : data.toString("utf8")),
         );
-      for (const event of adapter.decode({
+      const chunk: HostChunk = {
         stream,
         data,
         timestamp: now(),
         runId: run.id,
         final: finalChunk,
-      })) {
-        if (stream === "stdout") handle(event);
+      };
+      const decodedConversation = adapter.decodeConversation?.(chunk) ?? [];
+      acceptDecodedConversation(telemetry, decodedConversation);
+      for (const event of adapter.decode(chunk)) {
+        if (stream === "stdout")
+          handle(event, decodedConversation.length > 0);
       }
     };
     proc.on("stdout", (data: Buffer) => {
@@ -729,6 +1022,7 @@ export class ProfileRuntime {
       consume("stdout", "", true);
       consume("stderr", "", true);
     } finally {
+      stopQuota?.();
       await sessionObserver?.close();
       telemetry.finish(
         !exit || exit.code !== 0 || !!exit.termination_reason || !!failure || !!permissionFailure,
@@ -743,6 +1037,7 @@ export class ProfileRuntime {
       // A denied operation still belongs to a real session. Preserve its exact
       // identity for an explicitly authorized resume; never silently start over.
       if (
+        taskStrategy === "legacy" &&
         !readOnlyPurpose(purpose) &&
         conversation &&
         !failure &&
@@ -767,6 +1062,9 @@ export class ProfileRuntime {
       failure ||
       this.engine.store.get("run_stop", run.id)
     ) {
+      const recovered =
+        purpose === "aside" ? recoverAsideAnswer(final, text) : undefined;
+      if (recovered) return { answer: recovered };
       const diagnostic =
         failure ?? (redact(stderrTail).trim() || "CLI 未正常完成");
       const classified = classifyFailure(diagnostic);
@@ -782,6 +1080,7 @@ export class ProfileRuntime {
       // A failed run is not a successful delivery, but its genuine conversation
       // can still be continued once the runtime problem has been resolved.
       if (
+        taskStrategy === "legacy" &&
         code !== "RUN_REVOKED" &&
         !readOnlyPurpose(purpose) &&
         conversation &&
@@ -808,13 +1107,7 @@ export class ProfileRuntime {
         }),
       );
     }
-    if (baseline)
-      requireCondition(
-        objectHash(baseline) === objectHash(captureInputs(workspaces)),
-        "READ_ONLY_VIOLATION",
-        "只读阶段修改了工作区，结论作废",
-      );
-    if (conversation) {
+    if (taskStrategy === "legacy" && conversation && purpose !== "aside") {
       this.engine.store.put("native_conversation", sessionKey, w.id, {
         id: conversation,
         profile,
@@ -827,12 +1120,572 @@ export class ProfileRuntime {
           run_id: run.id,
         });
     }
-    if (existsSync(output)) final = JSON.parse(readFileSync(output, "utf8"));
+    if (existsSync(output)) {
+      try {
+        final = JSON.parse(readFileSync(output, "utf8"));
+      } catch {
+        if (purpose !== "aside")
+          final = { summary: readFileSync(output, "utf8") };
+      }
+    }
     if (final === undefined) {
       const match = text.trim().match(/^```(?:json)?\s*([\s\S]*?)\s*```$/);
-      final = JSON.parse(match?.[1] ?? text);
+      try {
+        final = JSON.parse(match?.[1] ?? text);
+      } catch (error) {
+        if (purpose === "aside") {
+          const recovered = recoverAsideAnswer(undefined, text);
+          if (recovered) final = { answer: recovered };
+          else throw error;
+        } else {
+          final = { summary: text };
+        }
+      }
+    }
+    if (purpose === "aside") {
+      const recovered = recoverAsideAnswer(final, text);
+      if (recovered) {
+        atomicWrite(output, JSON.stringify({ answer: recovered }, null, 2));
+        return { answer: recovered };
+      }
     }
     atomicWrite(output, JSON.stringify(final, null, 2));
     return normalizeModelOutput(final);
   }
+}
+
+function invokePrompt(
+  purpose: string,
+  handoff: string,
+  schemaPath: string,
+  continuation?: RunContinuation,
+  recoveryGuidance?: string,
+) {
+  if (purpose === "aside")
+    return joinPrompt(asidePrompt(handoff, schemaPath), recoveryGuidance);
+  if (continuation?.kind === "intent_clarification")
+    return joinPrompt(
+      INTENT_CLARIFICATION_INSTRUCTION +
+        "。请读取工作包 " +
+        handoff +
+        "。必须按 " +
+        schemaPath +
+        " 返回一个 JSON 对象作为最终回答。",
+      recoveryGuidance,
+    );
+  return joinPrompt(
+    "完整任务及唯一正式计划材料：" +
+      handoff +
+      "。必须先阅读全部材料和引用文件；按 " +
+      schemaPath +
+      " 返回一个 JSON 对象作为最终回答。禁止额外创建替代计划。",
+    recoveryGuidance,
+  );
+}
+
+function asideQuestionMaterials(
+  engine: Engine,
+  w: Workflow,
+  question: {
+    question: string;
+    refs: unknown[];
+    plan_revision?: number;
+    plan_hash?: string;
+  },
+  plan: ReturnType<typeof readPlanMaterial> | null,
+) {
+  return {
+    kind: "temporary_question",
+    isolation:
+      "独立临时问答，不是主任务。不得接管、续写或修改主流程、代码、计划或工作流。",
+    question: {
+      question: question.question,
+      plan_revision: question.plan_revision,
+      plan_hash: question.plan_hash,
+    },
+    refs: question.refs ?? [],
+    workflow: {
+      id: w.id,
+      state: w.state,
+      request: w.request,
+      plan_revision: w.plan_revision,
+    },
+    main_run: asideMainRunSummary(engine, w),
+    plan: plan
+      ? {
+          revision: plan.revision,
+          hash: plan.hash,
+          markdown: plan.markdown,
+        }
+      : null,
+    plan_summary: asidePlanSummary(plan),
+    previous_questions: asidePreviousAnswers(engine, w, question.plan_revision),
+  };
+}
+
+function asideMainRunSummary(engine: Engine, w: Workflow) {
+  if (!w.run_id) return null;
+  const run = engine.store.get<Run>("run", w.run_id);
+  if (!run) return null;
+  return {
+    id: run.id,
+    purpose: run.purpose,
+    stage: run.stage,
+    status: run.status,
+    adapter: run.adapter,
+  };
+}
+
+function asidePlanSummary(plan: ReturnType<typeof readPlanMaterial> | null) {
+  if (!plan) return null;
+  const native = plan.plan;
+  return {
+    revision: plan.revision,
+    hash: plan.hash,
+    design_summary: native.design_ref?.summary,
+    modules: (native.modules ?? []).map((module) => ({
+      id: module.id,
+      title: module.title,
+    })),
+    work_items: (native.work_items ?? []).map((item) => ({
+      id: item.id,
+      title: item.title,
+    })),
+  };
+}
+
+function asidePreviousAnswers(
+  engine: Engine,
+  w: Workflow,
+  planRevision?: number,
+) {
+  if (!planRevision) return [];
+  return engine.store
+    .list<any>("aside_session", w.id)
+    .filter(
+      (q) => q.plan_revision === planRevision && q.status === "completed",
+    )
+    .sort((a, b) => a.created_at.localeCompare(b.created_at))
+    .slice(-10)
+    .map((q) => ({ question: q.question, answer: q.answer }));
+}
+
+function asidePrompt(handoff: string, schemaPath: string) {
+  return (
+    "这是独立的临时问答，不是主任务执行。主任务仍在另一进程继续，你不得接管、续写、修改代码/计划/工作流，也不得把这个问题当成新的开发任务。只阅读工作包中的问题、任务摘要和用户引用，直接回答用户问题。请读取工作包 " +
+    handoff +
+    "。必须按 " +
+    schemaPath +
+    ' 返回 JSON 对象 {"answer":"..."} 作为最终回答。'
+  );
+}
+
+function recoverAsideAnswer(value: unknown, text = "") {
+  if (typeof value === "string" && value.trim()) return value.trim();
+  if (
+    value &&
+    typeof value === "object" &&
+    typeof (value as { answer?: unknown }).answer === "string"
+  ) {
+    const answer = (value as { answer: string }).answer.trim();
+    if (answer) return answer;
+  }
+  const trimmed = text.trim();
+  if (!trimmed) return undefined;
+  try {
+    const parsed = JSON.parse(
+      trimmed.replace(/^```(?:json)?\s*([\s\S]*?)\s*```$/m, "$1"),
+    );
+    return recoverAsideAnswer(parsed, "");
+  } catch {
+    return trimmed;
+  }
+}
+
+function requireAsideAnswer(value: unknown) {
+  const answer = recoverAsideAnswer(value);
+  if (!answer) throw new Error("模型没有返回提问回答");
+  return answer;
+}
+
+const conversationServices = new WeakMap<Store, ConversationService>();
+
+export function conversationServiceOf(store: Store): ConversationService {
+  const existing = conversationServices.get(store);
+  if (existing) return existing;
+  const created = new ConversationService(store);
+  conversationServices.set(store, created);
+  return created;
+}
+
+export function acceptDecodedConversation(
+  telemetry: RunTelemetry,
+  decoded: NativeConversationEvent[],
+  raw?: unknown,
+) {
+  if (decoded.length) {
+    for (const event of decoded) telemetry.accept(event);
+    return true;
+  }
+  if (raw !== undefined) telemetry.accept(raw);
+  return false;
+}
+
+export function bindRunConversationObserver(input: {
+  store: Store;
+  workflow: Workflow;
+  run: Run;
+  adapter: NativeAgentAdapter;
+  telemetry: RunTelemetry;
+  previousNativeId?: string;
+  onRootSession?: (nativeId: string) => void;
+}) {
+  const conversations = conversationServiceOf(input.store);
+  if (input.adapter.subagents) {
+    conversations.setCapabilities(input.workflow.id, input.adapter.subagents);
+  }
+  const ctx: ConversationApplyContext = {
+    project_id: input.workflow.project_id,
+    workflow_id: input.workflow.id,
+    run_id: input.run.id,
+    adapter_id: input.run.profile?.adapterId ?? input.run.adapter,
+    scope: input.run.purpose ?? input.run.stage,
+    lineage_id: `${input.workflow.id}:${input.run.purpose ?? input.run.stage}:${input.run.adapter}`,
+    purpose: input.run.purpose ?? input.run.stage,
+    root_native_id: input.previousNativeId,
+  };
+  const observer = new ConversationObserver({ service: conversations, context: ctx });
+  observer.start();
+  hookTelemetryObserverStop(input.telemetry, observer);
+  input.telemetry.bindConversationObserver({
+    applyConversationEvent(event, route) {
+      const applied = conversations.applyEvent(ctx, event);
+      if (applied.node && applied.attempt) {
+        conversationRecoveryOf(input.store).observeAttempt(input.workflow.id, {
+          conversation_id: applied.node.id,
+          run_id: input.run.id,
+          status: applied.attempt.status,
+          native_session_id: applied.node.native_session_id,
+          native_agent_id: applied.node.native_agent_id,
+          parent_id: applied.node.parent_id,
+        });
+      }
+      const child = applied.node;
+      if (child && isAppliedConversationChild(child, route)) {
+        addBoundConversationSource(observer, input.adapter, ctx, event, child);
+      }
+      if (!shouldApplyRootSessionIdentity(route)) return;
+      const nativeId = route.nativeConversationId ?? route.nativeRootId;
+      if (!nativeId) return;
+      ctx.root_native_id = ctx.root_native_id ?? nativeId;
+      if (applied.node) {
+        ctx.conversation_id = applied.node.root_id;
+        input.telemetry.bindConversationContext({
+          conversation_id: applied.node.id,
+          conversation_attempt_id: applied.attempt?.id,
+          root_conversation_id: applied.node.root_id,
+        });
+      }
+      input.onRootSession?.(nativeId);
+    },
+  });
+}
+
+function hookTelemetryObserverStop(
+  telemetry: RunTelemetry,
+  observer: ConversationObserver,
+) {
+  const finish = telemetry.finish.bind(telemetry);
+  telemetry.finish = (failed = false) => {
+    void observer.stop();
+    finish(failed);
+  };
+}
+
+function isAppliedConversationChild(
+  node: ConversationNode | undefined,
+  route: ConversationTelemetryRoute,
+): boolean {
+  if (!node) return false;
+  if (node.parent_id) return true;
+  if (node.kind === "subagent") return true;
+  return route.scope === "child";
+}
+
+function addBoundConversationSource(
+  observer: ConversationObserver,
+  adapter: NativeAgentAdapter,
+  ctx: ConversationApplyContext,
+  event: NativeConversationEvent,
+  node: ConversationNode,
+) {
+  if (!adapter.readConversationEvents) return;
+  const recordSource: ConversationRecordSource = {
+    adapterId: ctx.adapter_id,
+    capabilities: () => adapter.subagents ?? unknownSubagentCapabilities(),
+    readEvents: (cursor) => adapter.readConversationEvents!(cursor),
+  };
+  for (const sourceId of childObserverSourceIds(ctx.adapter_id, event, node)) {
+    observer.addSource({
+      source_id: sourceId,
+      adapter_id: ctx.adapter_id,
+      conversation_id: node.id,
+      record_source: recordSource,
+    });
+  }
+}
+
+function childObserverSourceIds(
+  adapterId: string,
+  event: NativeConversationEvent,
+  node: ConversationNode,
+): string[] {
+  const ids = [event.source_id];
+  if (node.native_agent_id) {
+    ids.push(`${adapterId}:transcript:${node.native_agent_id}`);
+  }
+  if (node.native_session_id) {
+    ids.push(`${adapterId}:session:${node.native_session_id}`);
+  }
+  return [...new Set(ids)];
+}
+
+function attachmentIdsFromConversation(
+  engine: Engine,
+  workflowId: string,
+): Set<string> {
+  const ids = new Set<string>();
+  for (const file of engine.store.list<ConversationFile>(
+    CONVERSATION_ENTITY.file,
+    workflowId,
+  )) {
+    if ((file.referenced_message_ids?.length ?? 0) > 0) ids.add(file.id);
+  }
+  for (const message of engine.store.list<{ attachment_ids?: string[] }>(
+    CONVERSATION_ENTITY.message,
+    workflowId,
+  )) {
+    for (const fileId of message.attachment_ids ?? []) ids.add(fileId);
+  }
+  for (const message of engine.store.list<{ attachment_ids?: string[] }>(
+    "feedback_message",
+    workflowId,
+  )) {
+    for (const fileId of message.attachment_ids ?? []) ids.add(fileId);
+  }
+  return ids;
+}
+
+function readyConversationInputFiles(engine: Engine, workflow: Workflow) {
+  const wanted = attachmentIdsFromConversation(engine, workflow.id);
+  return engine.store
+    .list<ConversationFile>(CONVERSATION_ENTITY.file, workflow.id)
+    .filter((file) => file.status === "ready" && wanted.has(file.id));
+}
+
+function resolveRunConversationAttachments(
+  engine: Engine,
+  workflow: Workflow,
+  profile: ToolProfile,
+) {
+  const files = readyConversationInputFiles(engine, workflow);
+  if (!files.length) {
+    return { attachments: [], extraReadRoots: [] as string[] };
+  }
+  const tree = conversationServiceOf(engine.store).getTree(workflow.id);
+  const resolved = resolveConversationInputAttachments({
+    files,
+    storageRoot: engine.config.storage_root,
+    workflowId: workflow.id,
+    profile,
+    fileInput: tree.capabilities.file_input,
+  });
+  if (!resolved.ok) {
+    throw new FlowError(resolved.code, resolved.message, 422);
+  }
+  return {
+    attachments: resolved.attachments,
+    extraReadRoots: resolved.extraReadRoots,
+  };
+}
+
+const conversationRecoveries = new WeakMap<Store, ConversationRecovery>();
+
+export function bindConversationRecovery(
+  store: Store,
+  recovery: ConversationRecovery,
+) {
+  conversationRecoveries.set(store, recovery);
+}
+
+export function conversationRecoveryOf(store: Store): ConversationRecovery {
+  const existing = conversationRecoveries.get(store);
+  if (existing) return existing;
+  const conversations = conversationServiceOf(store);
+  const created = new ConversationRecovery({
+    store,
+    conversations,
+    controls: new ConversationControlService(store, conversations, {
+      async stopConversation() {
+        return { accepted: false, confirmation: "unknown" };
+      },
+    }),
+    runPort: storeRecoveryRunPort(store),
+  });
+  conversationRecoveries.set(store, created);
+  return created;
+}
+
+export function engineRecoveryRunPort(engine: Engine): RecoveryRunPort {
+  const stored = storeRecoveryRunPort(engine.store);
+  return {
+    createRun(request) {
+      const run = stored.createRun(request);
+      if (request.continuation) {
+        saveRunContinuation(
+          engine.store,
+          request.run_id,
+          request.workflow_id,
+          request.continuation,
+        );
+      }
+      return run;
+    },
+    observeAttempt(observation) {
+      if (!observation.run_id || observation.parent_id) return;
+      const run = engine.store.get<Run>("run", observation.run_id);
+      if (!run) return;
+      engine.store.put("run", run.id, run.workflow_id, {
+        ...run,
+        conversation_id: observation.conversation_id,
+      });
+    },
+  };
+}
+
+export function readRoleRecoveryGuidance(
+  engine: Engine,
+  workflow: Workflow,
+  run: Pick<
+    Run,
+    "id" | "purpose" | "stage" | "adapter" | "conversation_id"
+  > & { profile?: Run["profile"] },
+  extra?: RecoveryGuidanceOptions,
+): string | undefined {
+  const manifest = latestRecoveryManifest(engine.store, workflow.id, run);
+  if (!manifest) return undefined;
+  const capabilities = conversationServiceOf(engine.store).getTree(
+    workflow.id,
+  ).capabilities;
+  const options = {
+    adapterId: extra?.adapterId ?? run.profile?.adapterId ?? run.adapter,
+    attachments: extra?.attachments,
+  };
+  return guidanceForRunPurpose(
+    run,
+    workflow,
+    engine,
+    manifest,
+    capabilities,
+    options,
+  );
+}
+
+export function joinPrompt(base: string, extra?: string) {
+  if (!extra) return base;
+  return `${base}\n${extra}`;
+}
+
+function attachmentPromptNote(
+  attachments: Array<{ display_name: string }>,
+): string | undefined {
+  if (!attachments.length) return undefined;
+  return (
+    ATTACHMENT_HANDOFF_NOTICE +
+    " 本次输入附件：" +
+    attachments.map((item) => item.display_name).join("、") +
+    "。"
+  );
+}
+
+function nativePromptExtra(
+  recoveryGuidance: string | undefined,
+  attachments: Array<{ display_name: string }>,
+): string | undefined {
+  const parts = [recoveryGuidance, attachmentPromptNote(attachments)].filter(
+    (part): part is string => Boolean(part),
+  );
+  return parts.length ? parts.join("\n") : undefined;
+}
+
+function withHandoffAttachments(
+  materials: unknown,
+  attachments: Array<{ display_name: string; absolute_path: string }>,
+) {
+  if (!attachments.length || !materials || typeof materials !== "object")
+    return materials;
+  return { ...(materials as object), attachments };
+}
+
+function withRecoveryMaterials(materials: unknown, extra?: string) {
+  if (!extra || !materials || typeof materials !== "object") return materials;
+  return { ...(materials as object), recovery_guidance: extra };
+}
+
+function recoveryAttachmentHints(
+  attachments: Array<{ display_name: string; read_mode: "text" | "image" | "binary" }>,
+): RecoveryGuidanceAttachment[] | undefined {
+  if (!attachments.length) return undefined;
+  return attachments.map((item) => ({
+    display_name: item.display_name,
+    read_mode: item.read_mode,
+  }));
+}
+
+function latestRecoveryManifest(
+  store: Store,
+  workflowId: string,
+  run: Pick<Run, "id" | "conversation_id">,
+): RecoveryManifest | undefined {
+  const items = store.list<RecoveryManifest>(
+    CONVERSATION_ENTITY.recovery,
+    workflowId,
+  );
+  if (!items.length) return undefined;
+  const matched = items.filter(
+    (item) =>
+      item.target_run_id === run.id ||
+      item.source_run_id === run.id ||
+      item.root_conversation_id === run.conversation_id,
+  );
+  const pool = matched.length ? matched : items;
+  return pool.sort((a, b) => b.recovery_id.localeCompare(a.recovery_id))[0];
+}
+
+function guidanceForRunPurpose(
+  run: Pick<Run, "purpose" | "stage">,
+  workflow: Workflow,
+  engine: Engine,
+  manifest: RecoveryManifest,
+  capabilities: ReturnType<ConversationService["getTree"]>["capabilities"],
+  extra?: RecoveryGuidanceOptions,
+) {
+  const purpose = run.purpose ?? run.stage ?? "";
+  if (purpose === "planning" || purpose === "planner_takeover")
+    return planningRecoveryGuidance(manifest, capabilities, extra);
+  if (purpose === "aside")
+    return asideRecoveryGuidance(manifest, capabilities, extra);
+  if (
+    purpose === "quality_review" ||
+    purpose === "review" ||
+    purpose === "diagnosis"
+  )
+    return reviewRecoveryGuidance(manifest, capabilities, extra);
+  if (
+    purpose === "functional_fix" ||
+    !!engine.store.get("repair_assignment", workflow.id) ||
+    !!engine.store.get("repair_state", workflow.id)
+  )
+    return repairRecoveryGuidance(manifest, capabilities, extra);
+  return executeRecoveryGuidance(manifest, capabilities, extra);
 }

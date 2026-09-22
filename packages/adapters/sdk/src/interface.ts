@@ -1,4 +1,8 @@
 import type { ToolProfile } from "../../../contracts/src/execution-spec.js";
+import type {
+  SubagentCapabilities,
+} from "../../../contracts/src/conversation.js";
+import type { ResolvedInputAttachment } from "../../../contracts/src/conversation-input.js";
 
 export interface ProbeRequest {
   toolProfile: ToolProfile;
@@ -38,6 +42,8 @@ export interface RunContext {
   conversationId?: string;
   timeoutMs?: number;
   feedbackCursor?: number;
+  inputAttachments?: ResolvedInputAttachment[];
+  recoveryManifestRef?: string;
   purpose:
     | "planning"
     | "implement"
@@ -114,13 +120,95 @@ export interface StopResult {
   reason?: string;
 }
 
+export interface NativeConversationEvent {
+  source_id: string;
+  source_seq: string;
+  root_native_id: string;
+  session_native_id?: string;
+  agent_native_id?: string;
+  parent_native_id?: string;
+  kind: "discovered" | "state" | "activity" | "model" | "quota";
+  occurred_at?: string;
+  payload: unknown;
+}
+
+export interface ConversationSourceCursor {
+  source_id: string;
+  source_seq?: string;
+  file_identity?: string;
+}
+
+export interface ConversationStopTarget {
+  conversation_id: string;
+  native_session_id?: string;
+  native_agent_id?: string;
+  job_id?: string;
+}
+
+export interface ConversationStopResult {
+  conversation_id: string;
+  confirmation: "native" | "owned_process_tree" | "unconfirmed";
+  status?: string;
+  reason?: string;
+}
+
+export interface PreparedInputAttachments {
+  attachments: ResolvedInputAttachment[];
+  extraReadRoots: string[];
+  unsupported?: string;
+}
+
+export interface SessionIdentityResolutionInput {
+  frozenProfile: ToolProfile;
+  resolvedExecutable?: string;
+  effectiveEnvironment?: Record<string, string>;
+  workspace: {
+    root: string;
+    source_root?: string;
+    repo_id?: string;
+    common_dir?: string;
+    all_workspaces?: Array<{
+      repo_id?: string;
+      root: string;
+      source_root?: string;
+      common_dir?: string;
+    }>;
+  };
+}
+
+export interface ResolvedSessionIdentity {
+  adapter_id: string;
+  host_id: string;
+  client_scope_id: string;
+  provider_account_scope: string;
+  canonical_model_id: string;
+  workspace_identity: string;
+  missing_fields?: string[];
+  resolved: boolean;
+  unresolved_reason?: string;
+}
+
 export interface NativeAgentAdapter {
   onExecutionFact?: (fact: ExecutionFactPage["facts"][number]) => void;
+  subagents?: SubagentCapabilities;
   probe(input: ProbeRequest): Promise<CapabilityReport>;
+  resolveSessionIdentity?(
+    input: SessionIdentityResolutionInput,
+  ): Promise<ResolvedSessionIdentity> | ResolvedSessionIdentity;
   prepare(input: RunContext): Promise<PreparedInvocation>;
   buildInvocation(input: RunContext, executable: string): PreparedInvocation;
   decode(chunk: HostChunk): NormalizedEvent[];
+  decodeConversation?(chunk: HostChunk): NativeConversationEvent[];
   readExecutionFacts(input: FactCursor): Promise<ExecutionFactPage>;
+  readConversationEvents?(
+    cursor: ConversationSourceCursor,
+  ): Promise<NativeConversationEvent[]>;
+  prepareInputAttachments?(
+    attachments: ResolvedInputAttachment[],
+  ): Promise<PreparedInputAttachments>;
+  stopConversation?(
+    target: ConversationStopTarget,
+  ): Promise<ConversationStopResult>;
   resume(input: ResumeContext): Promise<PreparedInvocation>;
   stop(identity: ProcessIdentity): Promise<StopResult>;
 }

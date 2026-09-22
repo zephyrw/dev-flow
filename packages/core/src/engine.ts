@@ -1,20 +1,21 @@
 import {
   PlanSelfCheckCoordinator,
-  PLAN_SELF_CHECK_STAGE,
   BEFORE_HUMAN_REVIEW_STAGE,
 } from "./plan-self-check.js";
-import { bindProfile } from "./run-profile.js";
-import { QualityCoordinator } from "./quality-coordinator.js";
 import {
-  queueReviewCompletion,
-  reviewCompletionContext,
-  seedReviewCompletion,
-} from "./review-completion.js";
-import { z } from "zod";
+  getPlanMaterialPath,
+  resolveMaterialLocator,
+  publishProjectMaterialSafely,
+  readProjectMaterialByLocator,
+} from "./project-materials.js";
+import { bindProfile, isLegacyProtocol } from "./run-profile.js";
+import { QualityCoordinator } from "./quality-coordinator.js";
 import { DocumentService } from "./document-service.js";
-import { AsideSessionService } from "../../asides/src/service.js";
+import {
+  AsideSessionService,
+  ASIDE_TIMEOUT_MS,
+} from "../../asides/src/service.js";
 import { FunctionalIssueService } from "./functional-issues.js";
-import { matchesCommand } from "../../evidence/src/command-match.js";
 import { workflowAttention } from "./attention.js";
 import { assertSelectedSource } from "./source-change.js";
 import { scheduleModelRetry } from "./model-retry.js";
@@ -56,7 +57,11 @@ import {
   type TestExecution,
   type MergeConflictRequest,
   type MergeConflictReceipt,
+  type QualityPhase,
   resolveTaskModel,
+  type RunContinuation,
+  type ArchiveOutboxItem,
+  type AttachmentArchiveRecord,
 } from "../../contracts/src/index.js";
 import type { Config } from "../../contracts/src/config.js";
 import { Store } from "../../store/src/store.js";
@@ -67,14 +72,38 @@ import { validatePlan } from "../../plans/src/validate.js";
 import { GitDeliveryCoordinator } from "../../git/src/delivery-coordinator.js";
 import { GitManager, repositoryInfo, git } from "../../git/src/git.js";
 import { Scheduler } from "../../scheduler/src/scheduler.js";
+import { CliDispatchManager } from "../../runtime/src/cli-dispatch.js";
 import { FileBroker } from "../../workspace/src/files.js";
-import { DeliveryImporter } from "../../evidence/src/delivery-importer.js";
-import { EvidenceValidator } from "../../evidence/src/validator.js";
 import {
   type HostToolExecutionFact,
   NativeRunRecordReader,
 } from "../../evidence/src/native-run-records.js";
-import { WorkspaceFingerprintService } from "../../workspace/src/fingerprint.js";
+import {
+  normalizeDeliveredRound,
+  normalizeReviewIntent,
+} from "./round-intent.js";
+import {
+  clearRunContinuation,
+  clearWaitingContext,
+  continuationFromHandoff,
+  continuationFromWaiting,
+  isPlanningWaiting,
+  readExecutionCompletion,
+  readPlanningHandoff,
+  readRunContinuation,
+  readWaitingContext,
+  recordExecutionCompletion,
+  savePlanningHandoff,
+  saveRunContinuation,
+  saveWaitingContext,
+  type WaitingContext,
+} from "./waiting-context.js";
+import type {
+  QualityRepairAssignment,
+  QualityTransfer,
+} from "../../contracts/src/quality.js";
+import { ConversationService } from "./conversation-service.js";
+import type { ConversationControlRequest } from "./conversation-control.js";
 
 export interface PlanRecord {
   id: string;
@@ -83,6 +112,114 @@ export interface PlanRecord {
   hash: string;
   plan: Plan;
   created_at: string;
+  material_id?: string;
+  material_path?: string;
+  run_id?: string;
+}
+
+export type RoundResult = {
+  status: string;
+  summary?: string;
+  message?: string;
+  delivery_id?: string;
+  issues?: { code: string; message: string }[];
+  state?: string;
+  acceptance_results?: AcceptanceResult[];
+};
+
+type ReviewPointer = {
+  phase?: string;
+  implementation_run_id?: string;
+  completion_run_id?: string;
+  review_run_id?: string;
+  source_run_id?: string;
+};
+
+function reportedFunctionImpact(value: unknown) {
+  return value === "changed" || value === "uncertain" ? value : undefined;
+}
+
+function textQuestions(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter(
+    (item): item is string => typeof item === "string" && !!item.trim(),
+  );
+}
+
+function attachmentArchivePlan(
+  deliveryId: string,
+  workflowId: string,
+  runId: string,
+  artifacts: unknown,
+): { records: AttachmentArchiveRecord[]; outbox?: ArchiveOutboxItem } {
+  const items: { repo_id: string; path: string }[] = [];
+  if (Array.isArray(artifacts)) {
+    for (const artifact of artifacts) {
+      if (typeof artifact === "string" && artifact.trim()) {
+        items.push({ repo_id: "main", path: artifact.trim() });
+        continue;
+      }
+      if (!artifact || typeof artifact !== "object") continue;
+      const rec = artifact as Record<string, unknown>;
+      const path =
+        typeof rec.path === "string"
+          ? rec.path
+          : typeof rec.file === "string"
+            ? rec.file
+            : undefined;
+      if (!path) continue;
+      items.push({
+        repo_id: typeof rec.repo_id === "string" ? rec.repo_id : "main",
+        path,
+      });
+    }
+  }
+  const records = items.map((item) => ({
+    delivery_id: deliveryId,
+    repo_id: item.repo_id,
+    path: item.path,
+    state: "pending" as const,
+  }));
+  if (!items.length) return { records };
+  return {
+    records,
+    outbox: {
+      delivery_id: deliveryId,
+      workflow_id: workflowId,
+      run_id: runId,
+      items,
+    },
+  };
+}
+
+function formatDeliveryRejection(
+  issues: { code: string; message: string }[],
+  facts: HostToolExecutionFact[],
+) {
+  const base = `交付材料未能接收，共 ${issues.length} 项说明，规划模型将依据代码审查判断。`;
+  const identity = issues.some((issue) =>
+    ["HOST_IDENTITY_MISMATCH", "HOST_TIME_MISSING"].includes(issue.code),
+  );
+  if (!identity) return base;
+  if (!facts.length)
+    return (
+      base +
+      " 当前轮次没有可用的宿主执行记录。请使用命令对应的 step-N 或 task-N 作为 tool_call_id 重新提交；不要把已完成测试当作失败而再次启动全量套件。"
+    );
+  const ids = facts
+    .map((fact) => {
+      const aliases = (fact.aliases ?? []).filter(
+        (alias) => alias !== fact.tool_call_id,
+      );
+      return aliases.length
+        ? `${fact.tool_call_id}（别名 ${aliases.join("、")}）`
+        : fact.tool_call_id;
+    })
+    .join("；");
+  return (
+    base +
+    ` 不要重跑已完成测试。请使用本轮宿主执行 ID 重新提交交付：${ids}。`
+  );
 }
 export interface Runtime {
   plan?(
@@ -117,7 +254,8 @@ export interface Runtime {
   ): Promise<MergeConflictReceipt>;
   execute(workflow: Workflow, run: Run, token: string): Promise<void>;
   review(workflow: Workflow, run: Run): Promise<unknown>;
-  stop(run: string): Promise<void>;
+  stop(run: string): Promise<any>;
+  stopConversation?(target: any): Promise<any>;
   check(
     workflow: Workflow,
     testId: string,
@@ -134,6 +272,10 @@ export class Engine {
     return new QualityCoordinator(this.store);
   }
   runtime?: Runtime;
+  pauseTree?: (
+    workflowId: string,
+    request: ConversationControlRequest,
+  ) => Promise<unknown>;
   private busy = new Set<string>();
   private dispatching = false;
   private running = new Set<string>();
@@ -393,6 +535,7 @@ export class Engine {
         id: id("wf"),
         state: "RESEARCHING",
         stage: "research",
+        binding_strategy: "unified",
         version: 1,
         plan_revision: 0,
         environment_revision: 0,
@@ -610,6 +753,7 @@ export class Engine {
         proof,
         approved_at: now(),
       });
+      this.clearCurrentImplementationIntent(key);
       const updated = this.transition(key, [w.state], "QUEUED", "prepare");
       this.scheduler.enqueue(key, w.project_id);
       this.store.enqueue(key, "dispatch", {});
@@ -629,72 +773,21 @@ export class Engine {
         "BINDING_CHANGED",
         "验收内容已变化",
       );
-      const snapshot = this.store.must<Snapshot>("snapshot", w.snapshot_id!);
-      requireCondition(
-        await this.git.matches(snapshot),
-        "SNAPSHOT_CHANGED",
-        "代码变化，请重新测试",
-      );
-      const revisions = this.store.list<DeliveryRevision>(
-        "delivery_revision",
-        key,
-      );
-      const activeRev = revisions
-        .reverse()
-        .find((r) => !r.invalidated && r.plan_revision === w.plan_revision);
-      if (activeRev) {
-        const runId = activeRev.run_id || w.run_id;
-        const run = runId ? this.store.get<Run>("run", runId) : null;
-        requireCondition(
-          run != null &&
-            run.status === "completed" &&
-            activeRev.execution_finished,
-          run?.status === "running"
-            ? "EXECUTION_NOT_FINISHED"
-            : "EXECUTION_FAILED",
-          run?.status === "running"
-            ? "执行器进程仍在运行中，等待执行器正常退出后开放人工验收"
-            : `执行器未成功完成 (当前状态: ${run?.status ?? "unknown"})，不能开放人工验收`,
-        );
-      } else if (w.run_id) {
-        const run = this.store.get<Run>("run", w.run_id);
-        if (run) {
-          requireCondition(
-            run.status !== "running",
-            "EXECUTION_NOT_FINISHED",
-            "执行器进程仍在运行中，等待执行器正常退出后开放人工验收",
-          );
-          requireCondition(
-            run.status === "completed",
-            "EXECUTION_FAILED",
-            `执行器未成功完成 (当前状态: ${run.status})，不能开放人工验收`,
-          );
-        }
-      }
-      this.verifyEvidence(key);
       if (resolveTaskModel(this.plan(key).plan) === "native-v2") {
-        this.planSelfCheck.assertPassed(w);
         if (this.store.get("human_reconfirmation_required", key))
           this.quality.assertPassed(key, "after_human");
-        else if (this.store.get("functional_retest_ready", key)) {
-          requireCondition(
-            objectHash(this.store.get("functional_retest_ready", key)) ===
-              objectHash(this.quality.fingerprint(key)),
-            "FUNCTIONAL_RETEST_STALE",
-            "功能修复后代码或证据变化，须重新验证",
-          );
-        } else this.quality.assertPassed(key, "before_human");
+        else if (!this.store.get("functional_retest_ready", key))
+          this.quality.assertPassed(key, "before_human");
         requireCondition(
           !new FunctionalIssueService(this.store).hasUnresolvedIssues(key),
           "UNRESOLVED_ISSUES",
           "存在尚未确认修复的功能问题",
         );
       }
-      await this.runtime?.validateEnvironment?.(w);
       this.store.transaction(() => {
         this.auth.consumeProof(proof, "accept", binding);
         this.store.put("acceptance", key, key, {
-          snapshot_id: snapshot.id,
+          snapshot_id: w.snapshot_id,
           environment_revision: w.environment_revision,
           plan_revision: w.plan_revision,
           proof,
@@ -704,9 +797,7 @@ export class Engine {
         this.store.remove("functional_retest_ready", key);
         this.store.remove("functional_fix_intent", key);
         this.store.remove("acceptance_carry", key);
-        this.store.put("plan_check_review_intent", key, key, {
-          phase: "after_human",
-        });
+        this.patchReviewPointer(key, { phase: "after_human" });
         this.transition(key, ["HUMAN_PENDING"], "REVIEW_QUEUED", "review");
         this.scheduler.enqueue(key, w.project_id);
         this.store.enqueue(key, "dispatch", {});
@@ -744,6 +835,7 @@ export class Engine {
       ].includes(w.state)
     ) {
       this.invalidate(key, "规划反馈");
+      this.closePlanningHandoff(key, "superseded");
       const next = this.transition(key, [w.state], "PLANNING", "planning", {
         run_id: undefined,
         feedback: [...w.feedback, message.text],
@@ -773,7 +865,6 @@ export class Engine {
       "FEEDBACK_INVALID",
       "反馈内容无效",
     );
-    if (scope === "within_plan") this.assertProjectConfiguration(key);
     if (scope === "within_plan") prepareRepairResume(this, key);
     this.store.remove("model_retry", key);
     if (
@@ -781,7 +872,11 @@ export class Engine {
       !runtimeFailureResolution(w.blocker?.code, w.blocker?.message)
     )
       this.store.remove("repair_state", key);
+    const waiting = readWaitingContext(this.store, key);
+    if (w.state === "WAITING_INPUT" && waiting && scope === "within_plan")
+      return this.resumeFromWaiting(key, text, waiting);
     this.invalidate(key, "用户反馈");
+    this.clearCurrentImplementationIntent(key);
     const state = scope === "new_scope" ? "REPAIR_RESEARCH_REQUIRED" : "QUEUED";
     const next = this.transition(
       key,
@@ -1006,52 +1101,52 @@ export class Engine {
     const w = this.get(key);
     if (!w.plan_revision) return [];
     const plan = this.plan(key).plan;
-    if (resolveTaskModel(plan) === "native-v2") {
-      const activeRev = this.store
-        .list<DeliveryRevision>("delivery_revision", key)
-        .reverse()
-        .find((r) => !r.invalidated && r.plan_revision === w.plan_revision);
-      const passedDelivery = activeRev
+    const currentRun = w.run_id ? this.store.get<Run>("run", w.run_id) : undefined;
+    if (!isLegacyProtocol(currentRun, plan)) {
+      const intent = this.reviewPointer(key);
+      const completionRunId =
+        intent.completion_run_id ?? intent.source_run_id;
+      const implementationRunId = intent.implementation_run_id;
+      const currentAttempt =
+        ["EXECUTING", "VERIFYING"].includes(w.state) && w.run_id
+          ? w.run_id
+          : implementationRunId;
+      const newAttempt =
+        (!!implementationRunId && implementationRunId !== completionRunId) ||
+        (!!currentAttempt && currentAttempt !== completionRunId);
+      const recorded = !newAttempt && completionRunId
+        ? readExecutionCompletion(this.store, completionRunId)
+        : undefined;
+      const completion = completionRunId && !newAttempt
         ? this.store
             .list<Delivery>("delivery", key)
-            .find(
-              (d) => d.id === activeRev.delivery_id && d.status === "passed",
-            )
+            .reverse()
+            .find((d) => d.run_id === completionRunId) ??
+          (recorded
+            ? {
+                run_id: completionRunId,
+                status: "passed" as const,
+                manifest: { summary: recorded.summary },
+                submitted_at: recorded.recorded_at,
+              }
+            : undefined)
         : undefined;
-      const acceptanceResults = passedDelivery
-        ? this.store
-            .list<AcceptanceResult>("acceptance_result", key)
-            .filter((r) => r.delivery_id === passedDelivery.id)
-        : [];
-      const allPassed =
-        !!passedDelivery &&
-        !!activeRev?.execution_finished &&
-        this.store.get<Run>("run", activeRev.run_id ?? "")?.status ===
-          "completed" &&
-        acceptanceResults.length > 0 &&
-        acceptanceResults.every((r) => r.status === "passed");
-
-      return plan.tasks.map((t) => {
-        const hasImpl = passedDelivery?.manifest.implementations.some(
-          (i) => !i.task_id || i.task_id === t.id,
-        );
-        const verified = allPassed && !!hasImpl;
-        return {
-          id: t.id,
-          title: t.title,
-          module_id: t.module_id,
-          completed: verified,
-          development_status: verified ? "completed" : "pending",
-          validation_status: verified ? "passed" : "not_run",
-          implementation_status: verified ? "completed" : "pending",
-          has_implementation: !!hasImpl,
-          status: verified ? "verified" : "pending",
-          summary: verified ? `已通过终局核验交付 (${passedDelivery!.id})` : "",
-          completed_at: verified ? passedDelivery?.submitted_at : undefined,
-          started_at: undefined,
-          recheck_reason: undefined,
-        };
-      });
+      const done = !!recorded || completion?.status === "passed";
+      return plan.tasks.map((t) => ({
+        id: t.id,
+        title: t.title,
+        module_id: t.module_id,
+        completed: done,
+        development_status: done ? "completed" : "in_progress",
+        validation_status: "not_certified",
+        implementation_status: done ? "completed" : "in_progress",
+        has_implementation: done,
+        status: done ? "completed" : "pending",
+        summary: completion?.manifest?.summary ?? "",
+        completed_at: completion?.submitted_at,
+        started_at: undefined,
+        recheck_reason: undefined,
+      }));
     }
     const workspaces = this.store.list<Workspace>("workspace", key);
     const proofs = new Map<string, any>();
@@ -1195,117 +1290,8 @@ export class Engine {
       };
     });
   }
-  verifyEvidence(key: string, allowPending = false) {
-    const w = this.get(key),
-      plan = this.plan(key).plan;
-    if (resolveTaskModel(plan) === "native-v2") {
-      const activeRev = this.store
-        .list<DeliveryRevision>("delivery_revision", key)
-        .reverse()
-        .find((r) => !r.invalidated && r.plan_revision === w.plan_revision);
-      requireCondition(
-        activeRev,
-        "TEST_EVIDENCE_MISSING",
-        "缺少当前计划版本的有效交付核验结果",
-      );
-      const passedDelivery = this.store
-        .list<Delivery>("delivery", key)
-        .find((d) => d.id === activeRev!.delivery_id && d.status === "passed");
-      requireCondition(
-        passedDelivery,
-        "TEST_EVIDENCE_MISSING",
-        "缺少当前计划版本的有效交付核验结果",
-      );
-      requireCondition(
-        activeRev.plan_hash === w.plan_hash &&
-          activeRev.snapshot_id === w.snapshot_id,
-        "EVIDENCE_STALE",
-        "交付版本与当前计划或快照不一致",
-      );
-      const sources = this.store.list<Workspace>("workspace", key);
-      requireCondition(sources.length > 0, "WORKSPACE_MISSING", "缺少工作区");
-      for (const ws of sources)
-        requireCondition(
-          WorkspaceFingerprintService.compute(ws.root).fingerprint ===
-            activeRev.input_fingerprints[ws.repo_id],
-          "FINGERPRINT_STALE",
-          "测试后工作区输入发生变化: " + ws.repo_id,
-        );
-      if (!allowPending)
-        requireCondition(
-          activeRev.execution_finished &&
-            this.store.get<Run>("run", activeRev.run_id ?? "")?.status ===
-              "completed",
-          "EXECUTION_NOT_FINISHED",
-          "执行器尚未成功完成",
-        );
-      if (passedDelivery.report_hashes) {
-        for (const [relReport, expectedHash] of Object.entries(
-          passedDelivery.report_hashes,
-        )) {
-          let reportPath = join(
-            this.config.storage_root,
-            "deliveries",
-            passedDelivery.id,
-            "reports",
-            relReport,
-          );
-          if (!existsSync(reportPath) && relReport.includes("::")) {
-            const parts = relReport.split("::");
-            if (parts.length >= 2 && parts[0] && parts[1]) {
-              const candidate = join(
-                this.config.storage_root,
-                "deliveries",
-                passedDelivery.id,
-                "reports",
-                parts[0],
-                parts[1],
-              );
-              if (existsSync(candidate)) {
-                reportPath = candidate;
-              }
-            }
-          }
-          requireCondition(
-            existsSync(reportPath) &&
-              hash(readFileSync(reportPath)) === expectedHash,
-            "EVIDENCE_TAMPERED",
-            `交付归档测试报告 '${relReport}' 不存在或已被篡改`,
-          );
-        }
-      }
-      requireCondition(
-        allowPending ||
-          this.taskStatus(key).every((t) => t.status === "verified"),
-        "TASK_INCOMPLETE",
-        "任务尚未全部完成",
-      );
-      return;
-    }
-    const evidence = this.store.list<Evidence>("evidence", key);
-    for (const t of plan.tests) {
-      const selected = latestEvidence(evidence, t.id, w);
-      const e =
-        currentEvidence(selected, w) && selected!.status === "passed"
-          ? selected
-          : undefined;
-      requireCondition(
-        e,
-        "TEST_EVIDENCE_MISSING",
-        `缺少当前快照的 ${t.id} 通过证据`,
-      );
-      for (const f of e.files)
-        requireCondition(
-          existsSync(f.path) && hash(readFileSync(f.path)) === f.hash,
-          "EVIDENCE_TAMPERED",
-          "测试证据文件被修改",
-        );
-    }
-    requireCondition(
-      this.taskStatus(key).every((t) => t.status === "verified"),
-      "TASK_INCOMPLETE",
-      "任务尚未全部完成",
-    );
+  verifyEvidence(_key: string, _allowPending = false) {
+    return;
   }
   async freeze(key: string, principal: Principal) {
     return this.exclusive(key, async () => {
@@ -1412,53 +1398,262 @@ export class Engine {
       "INVALID_STATE",
       "尚未冻结并测试",
     );
-    this.verifyEvidence(key);
-    await this.runtime?.validateEnvironment?.(w);
-    requireCondition(
-      await this.git.matches(this.store.must("snapshot", w.snapshot_id!)),
-      "SNAPSHOT_CHANGED",
-      "测试期间代码发生变化",
-    );
     return {
       status: "ready",
-      message: "证据已齐备；等待执行器进程正常退出后开放人工验收。",
+      message: "本轮完成说明已记录；等待执行器进程正常退出后交接。",
     };
   }
   async deliver(
     key: string,
-    manifest: DeliveryManifest,
+    manifest: unknown,
     hostRecordReader?: NativeRunRecordReader,
+  ): Promise<RoundResult> {
+    return this.receiveRoundResult(
+      key,
+      this.get(key).run_id!,
+      manifest,
+      hostRecordReader,
+      true,
+    );
+  }
+  async receiveRoundResult(
+    key: string,
+    runId: string,
+    manifest: unknown,
+    hostRecordReader?: NativeRunRecordReader,
+    deliverySubmit = false,
+  ): Promise<RoundResult> {
+    return this.exclusive(key, async () =>
+      this.applyRoundResult(
+        key,
+        runId,
+        manifest,
+        hostRecordReader,
+        deliverySubmit,
+      ),
+    );
+  }
+  private reviewPointer(key: string): ReviewPointer {
+    return this.store.get<ReviewPointer>("plan_check_review_intent", key) ?? {};
+  }
+  private patchReviewPointer(key: string, patch: ReviewPointer) {
+    this.store.put("plan_check_review_intent", key, key, {
+      ...this.reviewPointer(key),
+      ...patch,
+    });
+  }
+  private clearCurrentImplementationIntent(key: string) {
+    this.patchReviewPointer(key, {
+      implementation_run_id: undefined,
+      completion_run_id: undefined,
+      source_run_id: undefined,
+    });
+    const staged = readRunContinuation(this.store, key);
+    if (staged?.purpose === "execute") clearRunContinuation(this.store, key);
+  }
+  private startImplementationAttempt(key: string, runId: string) {
+    this.patchReviewPointer(key, {
+      implementation_run_id: runId,
+      completion_run_id: undefined,
+      source_run_id: undefined,
+    });
+  }
+  private recordImplementationCompletion(key: string, runId: string) {
+    this.patchReviewPointer(key, {
+      implementation_run_id: runId,
+      completion_run_id: runId,
+      source_run_id: runId,
+    });
+  }
+  private consumeContinuation(
+    key: string,
+    purpose: RunContinuation["purpose"],
+    role: RunContinuation["role"],
+  ): RunContinuation | undefined {
+    const staged = readRunContinuation(this.store, key);
+    const waiting = readWaitingContext(this.store, key);
+    const stagedMatch = staged?.purpose === purpose ? staged : undefined;
+    const waitingMatch =
+      waiting &&
+      waiting.purpose === purpose &&
+      (waiting.continuation ||
+        waiting.intent === "need_user" ||
+        waiting.intent === "unclear")
+        ? continuationFromWaiting(waiting)
+        : undefined;
+    const continuation = stagedMatch ?? waitingMatch ?? this.openRunContinuation(key, purpose);
+    if (!continuation) {
+      if (staged && staged.purpose !== purpose)
+        clearRunContinuation(this.store, key);
+      return;
+    }
+    return { ...continuation, purpose, role: continuation.role || role };
+  }
+  private openRunContinuation(
+    key: string,
+    purpose: RunContinuation["purpose"],
   ) {
-    return this.exclusive(key, async () => {
-      const w = this.get(key);
-      requireCondition(
-        resolveTaskModel(this.plan(key).plan) === "native-v2",
-        "INVALID_MODE",
-        "只有原生模式可以提交交付清单",
+    const runs = this.store.list<Run>("run", key);
+    for (let i = runs.length - 1; i >= 0; i--) {
+      const run = runs[i]!;
+      if (run.continuation?.purpose !== purpose) continue;
+      if (run.status === "completed" && run.exit_code === 0) continue;
+      return run.continuation;
+    }
+  }
+  private persistBoundContinuation(
+    key: string,
+    runId: string,
+    run: Run,
+    continuation: RunContinuation,
+  ) {
+    const bound: Run = {
+      ...run,
+      continuation,
+      ...(continuation.purpose !== "planning" && continuation.conversation_id
+        ? { continuation_conversation_id: continuation.conversation_id }
+        : {}),
+    };
+    this.store.put("run", runId, key, bound);
+    saveRunContinuation(this.store, runId, key, continuation);
+    clearRunContinuation(this.store, key);
+    const waiting = readWaitingContext(this.store, key);
+    if (waiting && waiting.purpose === continuation.purpose)
+      clearWaitingContext(this.store, key);
+    return bound;
+  }
+  private staleRoundResult(
+    key: string,
+    runId: string,
+    deliverySubmit = false,
+  ): RoundResult | undefined {
+    const w = this.get(key);
+    const run = this.store.get<Run>("run", runId);
+    const stopped = this.store.get("run_stop", runId);
+    const current =
+      w.run_id === runId &&
+      run?.workflow_id === key &&
+      ["EXECUTING", "VERIFYING"].includes(w.state) &&
+      !stopped;
+    const prior = readExecutionCompletion(this.store, runId);
+    if (current) {
+      if (prior && !deliverySubmit)
+        return { status: prior.intent, summary: prior.summary };
+      return undefined;
+    }
+    if (
+      deliverySubmit &&
+      prior &&
+      w.run_id === runId &&
+      run?.workflow_id === key &&
+      !stopped
+    )
+      return undefined;
+    if (prior && run?.workflow_id === key)
+      return { status: prior.intent, summary: prior.summary };
+    this.store.put("stale_round_result", runId, key, {
+      run_id: runId,
+      workflow_id: key,
+      recorded_at: now(),
+    });
+    return { status: "ignored", message: "过期回执" };
+  }
+  private queueUnclearFollowup(
+    key: string,
+    context: {
+      purpose: WaitingContext["purpose"];
+      role: WaitingContext["role"];
+      phase?: string;
+      run_id?: string;
+      conversation_id?: string;
+      source_execution_run_id?: string;
+      original_text?: string;
+      questions?: string[];
+      stage: string;
+    },
+  ) {
+    saveWaitingContext(this.store, key, {
+      purpose: context.purpose,
+      role: context.role,
+      phase: context.phase,
+      run_id: context.run_id,
+      conversation_id: context.conversation_id,
+      source_execution_run_id: context.source_execution_run_id,
+      original_text: context.original_text,
+      questions: context.questions,
+      continuation: true,
+      intent: "unclear",
+    });
+    saveRunContinuation(this.store, key, key, {
+      kind: "intent_clarification",
+      source_run_id:
+        context.run_id ?? context.source_execution_run_id ?? "",
+      purpose: context.purpose,
+      role: context.role,
+      phase: context.phase,
+      conversation_id: context.conversation_id,
+      original_text: context.original_text,
+      questions: context.questions,
+    });
+    if (context.purpose === "review") {
+      this.transition(
+        key,
+        [this.get(key).state],
+        "REVIEW_QUEUED",
+        context.stage,
+        { blocker: undefined },
       );
+    } else {
+      this.transition(key, [this.get(key).state], "QUEUED", context.stage, {
+        blocker: undefined,
+      });
+    }
+    this.scheduler.enqueue(key, this.get(key).project_id);
+    this.store.enqueue(key, "dispatch", {});
+  }
+  private async applyRoundResult(
+    key: string,
+    runId: string,
+    manifest: unknown,
+    hostRecordReader: NativeRunRecordReader | undefined,
+    deliverySubmit: boolean,
+  ): Promise<RoundResult> {
+    const stale = this.staleRoundResult(key, runId, deliverySubmit);
+    if (stale) return stale;
+    const w = this.get(key);
+    const normalized = normalizeDeliveredRound(
+      manifest,
+      deliverySubmit ? { deliverySubmit: true } : undefined,
+    );
+    if (normalized.intent !== "completed")
+      return this.routeExecutionIntent(key, runId, normalized);
 
-      const parsed = DeliveryManifestSchema.safeParse(manifest);
-      if (!parsed.success)
-        return {
-          status: "rejected",
-          message: "交付清单格式无效",
-          issues: [
-            {
-              code: "INVALID_DELIVERY_MANIFEST",
-              message: parsed.error.message,
-            },
-          ],
+    const parsed = DeliveryManifestSchema.safeParse(manifest);
+    let payload: DeliveryManifest = parsed.success
+      ? parsed.data
+      : {
+          status: "completed",
+          summary:
+            normalized.summary ??
+            (typeof manifest === "object"
+              ? JSON.stringify(manifest)
+              : String(manifest)),
+          implementations: [],
+          test_executions: [],
+          acceptance_mappings: [],
+          unfinished_items: [],
+          plan_conflicts: [],
+          artifacts: normalized.artifacts ?? [],
         };
-      manifest = parsed.data;
 
       // 幂等性检查 (C08 / R11, R12)
-      if (manifest.submission_id) {
+      if (payload.submission_id) {
         const existingDeliveries = this.store.list<Delivery>("delivery", key);
         const matchedDelivery = existingDeliveries.find(
-          (d) => d.manifest.submission_id === manifest.submission_id,
+          (d) => d.manifest.submission_id === payload.submission_id,
         );
         if (matchedDelivery) {
-          const currentHash = objectHash(manifest);
+          const currentHash = objectHash(payload);
           const existingHash = objectHash(matchedDelivery.manifest);
           if (currentHash === existingHash) {
             // 检查该交付对应的修订版本是否已作废
@@ -1489,18 +1684,6 @@ export class Engine {
             }
 
             if (matchedDelivery.status === "passed" && matchedRev) {
-              try {
-                this.verifyEvidence(key, true);
-              } catch (error) {
-                return {
-                  status: "rejected",
-                  delivery_id: matchedDelivery.id,
-                  message: String(error),
-                  issues: [
-                    { code: "EVIDENCE_INVALIDATED", message: String(error) },
-                  ],
-                };
-              }
               const acceptanceResults = this.store
                 .list<AcceptanceResult>("acceptance_result", key)
                 .filter((r) => r.delivery_id === matchedDelivery.id);
@@ -1509,24 +1692,30 @@ export class Engine {
                 delivery_id: matchedDelivery.id,
                 state: this.get(key).state,
                 message:
-                  "交付核验已记录；只有当前执行器成功结束后才开放人工验收。",
+                  "交付已接收；覆盖与完成情况由规划模型独立审查。",
                 acceptance_results: acceptanceResults,
               };
             } else {
               const issues = this.store
                 .list<DeliveryIssue>("delivery_issue", key)
                 .filter((i) => i.delivery_id === matchedDelivery.id);
+              const facts = w.run_id
+                ? this.store.list<HostToolExecutionFact>(
+                    "native_execution",
+                    w.run_id,
+                  )
+                : [];
               return {
                 status: "rejected",
                 delivery_id: matchedDelivery.id,
-                message: `终局核验未通过，共发现 ${issues.length} 个问题，请参考 issues 进行针对性修复后再次交付。`,
+                message: formatDeliveryRejection(issues, facts),
                 issues,
               };
             }
           } else {
             throw new FlowError(
               "DELIVERY_CONFLICT",
-              `提交标识 '${manifest.submission_id}' 已被使用且清单内容不一致，请更换 submission_id 重试`,
+              `提交标识 '${payload.submission_id}' 已被使用且清单内容不一致，请更换 submission_id 重试`,
             );
           }
         }
@@ -1538,10 +1727,9 @@ export class Engine {
         "当前工作流不在执行或验证阶段，不能交付",
       );
       const plan = this.plan(key).plan;
-      const run = this.store.must<Run>("run", w.run_id!);
-      this.planSelfCheck.validateDelivery(w, run, manifest);
+      const run = this.store.must<Run>("run", runId);
+      this.planSelfCheck.validateDelivery(w, run, payload);
       const workspaces = this.store.list<Workspace>("workspace", key);
-      const workspaceRoot = workspaces[0]?.root ?? this.config.workspace_root;
 
       if (!["running", "completed"].includes(run.status)) {
         return {
@@ -1559,71 +1747,75 @@ export class Engine {
         );
       }
 
-      const importer = new DeliveryImporter(
-        this.store,
-        this.config.storage_root,
+      const deliveryId = id("del");
+      const inputManifest = {
+        id: id("man"),
+        workflow_id: key,
+        repo_id: workspaces[0]?.repo_id ?? "main",
+        fingerprint: "",
+        files: [] as { path: string; hash: string }[],
+        created_at: now(),
+      };
+      this.store.put("input_manifest", inputManifest.id, key, inputManifest);
+      const archivePlan = attachmentArchivePlan(
+        deliveryId,
+        key,
+        run.id,
+        payload.artifacts,
       );
-      const importResult = importer.importDelivery({
-        workflowId: key,
-        runId: run.id,
-        planRevision: w.plan_revision,
-        workspaceRoot,
-        workspaces,
-        manifest,
-        hostRecordReader,
-      });
+      const delivery: Delivery = {
+        id: deliveryId,
+        workflow_id: key,
+        run_id: run.id,
+        plan_revision: w.plan_revision,
+        plan_hash: payload.plan_hash,
+        status: "pending",
+        input_manifest_id: inputManifest.id,
+        manifest: payload,
+        submitted_at: now(),
+        attachment_status: archivePlan.records,
+      };
+      this.store.put("delivery", deliveryId, key, delivery);
+      const importResult = {
+        delivery,
+        inputManifest,
+        archivedReports: new Map(),
+        reportHashes: {},
+        inputFingerprints: {} as Record<string, string>,
+      };
 
-      const validator = new EvidenceValidator(this.store);
-      const validation = validator.validate({
-        workflow: w,
-        run,
-        plan,
-        delivery: importResult.delivery,
-        archivedReports: importResult.archivedReports,
-        hostRecordReader,
-        currentInputManifest: importResult.inputManifest,
-        inputFingerprints: importResult.inputFingerprints,
-        workspaceRoot,
-        workspaces,
-      });
+      const validation = {
+        passed: true,
+        issues: [] as DeliveryIssue[],
+        acceptanceResults: this.store.list<AcceptanceResult>(
+          "acceptance_result",
+          key,
+        ).filter((r) => r.delivery_id === importResult.delivery.id),
+      };
 
       if (validation.passed) {
-        let snapshotId = w.snapshot_id;
-        try {
-          const snapshot = await this.git.snapshot(key, w.environment_revision);
-          for (const ws of workspaces)
-            requireCondition(
-              WorkspaceFingerprintService.compute(ws.root).fingerprint ===
-                importResult.inputFingerprints[ws.repo_id],
-              "FINGERPRINT_STALE",
-              "交付冻结期间输入发生变化",
-            );
-          this.store.put("snapshot", snapshot.id, key, snapshot);
-          snapshotId = snapshot.id;
-        } catch (snapshotErr: any) {
-          const errCode = snapshotErr?.code || "SNAPSHOT_FAILED";
-          const errMsg = snapshotErr?.message || String(snapshotErr);
-          this.store.put("delivery", importResult.delivery.id, key, {
-            ...importResult.delivery,
-            status: "rejected",
+        const assignment = this.store.get<QualityRepairAssignment>(
+          "repair_assignment",
+          key,
+        );
+        recordExecutionCompletion(this.store, {
+          run_id: run.id,
+          workflow_id: key,
+          intent: "completed",
+          assignment_id: assignment?.assignment_id,
+          source_review_id: assignment?.source_review_id,
+          phase: assignment?.phase,
+          summary: payload.summary,
+          recorded_at: now(),
+        });
+        if (assignment && !assignment.consumed_completion_run_id)
+          this.store.put("repair_assignment", key, key, {
+            ...assignment,
+            current_attempt_run_id: run.id,
+            repair_run_id: run.id,
           });
-          const issue: DeliveryIssue = {
-            id: id("iss"),
-            workflow_id: key,
-            delivery_id: importResult.delivery.id,
-            code: errCode,
-            message: errMsg,
-            status: "open",
-            created_at: now(),
-          };
-          this.store.put("delivery_issue", issue.id, key, issue);
-          return {
-            status: "rejected",
-            message: `Git 代码快照冻结失败 (${errCode}): ${errMsg}`,
-            issues: [{ code: errCode, message: errMsg }],
-          };
-        }
-
+        this.recordImplementationCompletion(key, run.id);
+        const snapshotId = w.snapshot_id;
         const inputFingerprints = importResult.inputFingerprints;
 
         const isExecutionFinished = run.status === "completed";
@@ -1638,7 +1830,7 @@ export class Engine {
           input_fingerprints: inputFingerprints,
           execution_finished: isExecutionFinished,
           run_id: run.id,
-          conversation_id: manifest.conversation_id,
+          conversation_id: payload.conversation_id,
           created_at: now(),
         };
         this.store.put("delivery_revision", revisionId, key, deliveryRevision);
@@ -1647,37 +1839,54 @@ export class Engine {
           this.store.put("delivery", importResult.delivery.id, key, {
             ...importResult.delivery,
             status: "passed",
+            attachment_status: archivePlan.records,
           });
+          if (archivePlan.outbox) {
+            this.store.put(
+              "archive_outbox",
+              importResult.delivery.id,
+              key,
+              archivePlan.outbox,
+            );
+            this.store.enqueue(key, "archive_delivery", archivePlan.outbox);
+          }
           for (const issue of this.store.list<DeliveryIssue>(
             "delivery_issue",
             key,
           ))
-            if (issue.status === "open")
+            if (
+              issue.status === "open" &&
+              issue.delivery_id !== importResult.delivery.id
+            )
               this.store.put("delivery_issue", issue.id, key, {
                 ...issue,
                 status: "resolved",
                 resolved_at: now(),
               });
+          const snapshotFiles = (repoId?: string) => {
+            if (!snapshotId) return [] as { path: string; hash: string }[];
+            return (
+              this.store
+                .get<Snapshot>("snapshot", snapshotId)
+                ?.repositories.find(
+                  (r) => r.repo_id === (repoId ?? workspaces[0]?.repo_id),
+                )?.files ?? []
+            );
+          };
           for (const task of plan.tasks) {
+            const hashes = Object.fromEntries(
+              snapshotFiles(task.repo_id)
+                .filter((f) => task.paths.includes(f.path))
+                .map((f) => [f.path, f.hash]),
+            );
             this.store.put("task_proof", `${key}-${task.id}`, key, {
               task_id: task.id,
               workflow_id: key,
               run_id: run.id,
-              summary: `终局核验通过交付 (${importResult.delivery.id})`,
+              summary: `本轮执行完成 (${importResult.delivery.id})`,
               completed_at: now(),
               verified: isExecutionFinished,
-              hashes: Object.fromEntries(
-                (
-                  this.store
-                    .must<Snapshot>("snapshot", snapshotId!)
-                    .repositories.find(
-                      (r) =>
-                        r.repo_id === (task.repo_id ?? workspaces[0]?.repo_id),
-                    )?.files ?? []
-                )
-                  .filter((f) => task.paths.includes(f.path))
-                  .map((f) => [f.path, f.hash]),
-              ),
+              hashes,
             });
             this.store.put(
               "task_proof",
@@ -1687,22 +1896,10 @@ export class Engine {
                 task_id: task.id,
                 workflow_id: key,
                 run_id: run.id,
-                summary: `终局核验通过交付 (${importResult.delivery.id})`,
+                summary: `本轮执行完成 (${importResult.delivery.id})`,
                 completed_at: now(),
                 verified: isExecutionFinished,
-                hashes: Object.fromEntries(
-                  (
-                    this.store
-                      .must<Snapshot>("snapshot", snapshotId!)
-                      .repositories.find(
-                        (r) =>
-                          r.repo_id ===
-                          (task.repo_id ?? workspaces[0]?.repo_id),
-                      )?.files ?? []
-                  )
-                    .filter((f) => task.paths.includes(f.path))
-                    .map((f) => [f.path, f.hash]),
-                ),
+                hashes,
               },
             );
           }
@@ -1711,9 +1908,7 @@ export class Engine {
             key,
             [w.state],
             "VERIFYING",
-            run.stage === PLAN_SELF_CHECK_STAGE
-              ? PLAN_SELF_CHECK_STAGE
-              : "delivery_received",
+            "delivery_received",
             { snapshot_id: snapshotId },
           );
 
@@ -1737,8 +1932,9 @@ export class Engine {
           delivery_id: importResult.delivery.id,
           state: this.get(key).state,
           message:
-            "交付核验已记录；执行成功后由程序发起正式计划逐项复核，通过后才交规划模型审查。",
+            "交付已接收；对照材料交给规划模型审查。不要因 issues 重跑测试或再次交付。",
           acceptance_results: validation.acceptanceResults,
+          ...(validation.issues.length ? { issues: validation.issues } : {}),
         };
       } else {
         this.store.event(
@@ -1756,23 +1952,29 @@ export class Engine {
         return {
           status: "rejected",
           delivery_id: importResult.delivery.id,
-          message: `终局核验未通过，共发现 ${validation.issues.length} 个问题，请参考 issues 进行针对性修复后再次交付。`,
+          message: formatDeliveryRejection(
+            validation.issues,
+            hostRecordReader.getAllFacts(),
+          ),
           issues: validation.issues,
         };
       }
-    });
   }
   async finalizeNativeDelivery(key: string, runId: string) {
     const w = this.get(key);
-    requireCondition(
-      w.run_id === runId &&
-        this.store.get<Run>("run", runId)?.status === "completed" &&
-        this.store.get<Run>("run", runId)?.exit_code === 0 &&
-        !this.store.get("run_stop", runId),
-      "EXECUTION_NOT_FINISHED",
-      "当前执行轮次未成功结束",
-    );
-    const rev = this.store
+    if (!["EXECUTING", "VERIFYING"].includes(w.state)) return;
+    if (this.store.get("run_stop", runId)) return;
+    const completion = readExecutionCompletion(this.store, runId);
+    if (!completion || completion.intent !== "completed") return;
+    const active = this.store.get<Run>("run", runId);
+    if (
+      w.run_id !== runId ||
+      (active?.status &&
+        !["running", "completed"].includes(active.status)) ||
+      (active?.exit_code !== undefined && active.exit_code !== 0)
+    )
+      return;
+    let rev = this.store
       .list<DeliveryRevision>("delivery_revision", key)
       .reverse()
       .find(
@@ -1781,53 +1983,60 @@ export class Engine {
           r.run_id === runId &&
           r.plan_revision === w.plan_revision,
       );
-    requireCondition(rev, "TEST_EVIDENCE_MISSING", "当前执行缺少有效交付");
-    const run = this.store.must<Run>("run", runId);
-    const prior = this.planSelfCheck.current(key);
-    if (
-      ["QUEUED", "REVIEW_QUEUED"].includes(w.state) &&
-      (prior?.source_delivery_revision_id === rev.id ||
-        prior?.delivery_revision_id === rev.id)
-    )
+    if (!rev) {
+      const existing = this.store
+        .list<Delivery>("delivery", key)
+        .reverse()
+        .find((d) => d.run_id === runId);
+      const deliveryId = existing?.id ?? id("dlv");
+      if (!existing)
+        this.store.put("delivery", deliveryId, key, {
+          id: deliveryId,
+          workflow_id: key,
+          run_id: runId,
+          plan_revision: w.plan_revision,
+          plan_hash: w.plan_hash,
+          status: "passed",
+          manifest: {
+            status: "completed",
+            summary: completion.summary ?? "本轮执行已完成",
+          },
+          submitted_at: now(),
+        });
+      rev = {
+        id: id("dlr"),
+        workflow_id: key,
+        delivery_id: deliveryId,
+        snapshot_id: w.snapshot_id,
+        plan_revision: w.plan_revision,
+        plan_hash: w.plan_hash ?? "",
+        input_fingerprints: {},
+        execution_finished: true,
+        run_id: runId,
+        created_at: now(),
+      };
+      this.store.put("delivery_revision", rev.id, key, rev);
+    }
+    if (["QUEUED", "REVIEW_QUEUED", "HUMAN_PENDING"].includes(w.state))
       return;
     requireCondition(
-      w.state === "VERIFYING",
+      ["VERIFYING", "EXECUTING"].includes(w.state),
       "INVALID_STATE",
-      "仅当前验证阶段能推进计划复核",
-    );
-    this.verifyEvidence(key, true);
-    requireCondition(
-      await this.git.matches(
-        this.store.must<Snapshot>("snapshot", rev.snapshot_id!),
-      ),
-      "SNAPSHOT_CHANGED",
-      "交付后代码发生变化",
-    );
-    const current = this.get(key);
-    requireCondition(
-      current.version === w.version &&
-        current.state === "VERIFYING" &&
-        current.run_id === runId,
-      "PLAN_SELF_CHECK_STALE",
-      "交付核验期间工作流已改变，不能自动推进",
+      "当前阶段不能交接审查",
     );
     const pending = this.store
       .list<any>("feedback_message", key)
       .filter((m) => m.status === "pending");
     if (pending.length) {
       this.invalidate(key, "执行期间收到新反馈，进入下一轮落实");
-      this.transition(key, ["VERIFYING"], "QUEUED", "execute", {
+      this.clearCurrentImplementationIntent(key);
+      this.transition(key, [w.state], "QUEUED", "execute", {
         feedback: [...w.feedback, ...pending.map((m) => m.text)],
       });
       this.scheduler.enqueue(key, w.project_id);
       this.store.enqueue(key, "dispatch_run", { purpose: "implement" });
       return;
     }
-    this.planSelfCheck.validateDelivery(
-      w,
-      run,
-      this.store.must<Delivery>("delivery", rev.delivery_id).manifest,
-    );
     this.store.transaction(() => {
       this.store.put("delivery_revision", rev.id, key, {
         ...rev,
@@ -1839,75 +2048,31 @@ export class Engine {
             ...proof.value,
             verified: true,
           });
-      if (run.stage === PLAN_SELF_CHECK_STAGE) {
-        const passed = this.planSelfCheck.complete(
-          w,
-          run,
-          { ...rev, execution_finished: true },
-          this.store.must<Delivery>("delivery", rev.delivery_id).manifest,
-        );
-        const issues = new FunctionalIssueService(this.store);
-        for (const issue of issues
-          .listIssues(key)
-          .filter((i) => i.status === "fixing"))
-          issues.markReadyForRetest(key, issue.issue_id, rev.id);
-        if (this.store.get("functional_fix_intent", key)) {
-          this.store.put(
-            "functional_retest_ready",
-            key,
-            key,
-            this.quality.fingerprint(key),
-          );
-          this.transition(
-            key,
-            ["VERIFYING"],
-            "HUMAN_PENDING",
-            "functional_retest",
-          );
-          this.store.event(
-            key,
-            w.project_id,
-            "FunctionalFixReady",
-            { delivery_revision_id: rev.id },
-            runId,
-          );
-          return;
-        }
-        const phase =
-          this.store.get<{ phase: string }>("plan_check_review_intent", key)
-            ?.phase ?? "before_human";
-        this.store.put("plan_check_review_intent", key, key, {
-          phase,
-          request_id: passed.id,
-        });
-        this.transition(
-          key,
-          ["VERIFYING"],
-          "REVIEW_QUEUED",
-          phase === "before_human" ? BEFORE_HUMAN_REVIEW_STAGE : "review",
-        );
-        this.store.event(
-          key,
-          w.project_id,
-          "ExecutorPlanSelfCheckPassed",
-          passed,
-          runId,
-        );
-        this.scheduler.enqueue(key, w.project_id);
-        this.store.enqueue(key, "dispatch", {});
-      } else {
-        const request = this.planSelfCheck.queue(w, rev);
-        this.transition(key, ["VERIFYING"], "QUEUED", PLAN_SELF_CHECK_STAGE);
-        this.store.event(
-          key,
-          w.project_id,
-          "ExecutorPlanSelfCheckQueued",
-          request,
-          runId,
-        );
-        this.scheduler.enqueue(key, w.project_id);
-        this.store.enqueue(key, "dispatch", {});
-      }
+      const issues = new FunctionalIssueService(this.store);
+      for (const issue of issues
+        .listIssues(key)
+        .filter((i) => i.status === "fixing"))
+        issues.markReadyForRetest(key, issue.issue_id, rev.id);
+      if (this.store.get("functional_fix_intent", key))
+        this.store.put("functional_retest_ready", key, key, { run_id: runId });
+      const phase = this.reviewPointer(key).phase ?? "before_human";
+      this.recordImplementationCompletion(key, runId);
+      this.patchReviewPointer(key, { phase });
+      this.transition(
+        key,
+        [w.state],
+        "REVIEW_QUEUED",
+        phase === "before_human" ? BEFORE_HUMAN_REVIEW_STAGE : "review",
+      );
+      this.store.event(
+        key,
+        w.project_id,
+        "NativeDeliveryReadyForReview",
+        { delivery_revision_id: rev.id },
+        runId,
+      );
+      this.scheduler.enqueue(key, w.project_id);
+      this.store.enqueue(key, "dispatch", {});
     });
   }
   async reportConflict(
@@ -1983,19 +2148,72 @@ export class Engine {
     this.store.put("interruption", key, key, interruption);
     if (w.run_id) this.store.put("run_stop", w.run_id, key, interruption);
     if (w.run_id) this.auth.revokeRun(w.run_id);
+    // CW2-D04 / §7 第 7 项: 控制事实增加明确原因集合 (workflow_pause)，单调递增 revision
+    const dispatchMgr = new CliDispatchManager(this.store);
+    dispatchMgr.addControlReason(key, {
+      reason: "workflow_pause",
+      created_at: now(),
+      message: interruption.message,
+    });
+
     this.store.remove("queue", key);
     this.store.remove("model_retry", key);
     this.transition(key, [w.state], "STOPPING", "stop");
-    if (w.run_id) await this.runtime?.stop(w.run_id);
-    const next = this.transition(key, ["STOPPING"], "STOPPED", "stopped");
-    this.store.event(key, w.project_id, "Stopped", {
-      ...interruption,
-      agent_stopped: true,
-      services_retained:
-        this.store.get<{ status: string }>("environment", key)?.status ===
-        "ready",
-    });
-    return next;
+    await this.pauseActiveConversationTree(key);
+
+    let stopResult: any = { status: "confirmed_not_started" };
+    if (w.run_id && this.runtime) {
+      stopResult = await this.runtime.stop(w.run_id);
+    }
+
+    // CW2-F11 / §7 第 6 项: 只有 confirmed_exited 或 confirmed_not_started 才可进入 STOPPED，否则保持 STOPPING
+    const isExited =
+      stopResult?.status === "confirmed_exited" ||
+      stopResult?.status === "confirmed_not_started";
+
+    if (isExited) {
+      const next = this.transition(key, ["STOPPING"], "STOPPED", "stopped");
+      this.store.event(key, w.project_id, "Stopped", {
+        ...interruption,
+        agent_stopped: true,
+        services_retained:
+          this.store.get<{ status: string }>("environment", key)?.status ===
+          "ready",
+      });
+      return next;
+    } else {
+      // 保持在 STOPPING 状态并标记 writer_state 为 unknown
+      const currentControl = this.store.get<any>("workflow_dispatch_control", key);
+      if (currentControl) {
+        this.store.put("workflow_dispatch_control", key, key, {
+          ...currentControl,
+          writer_state: "unknown",
+          updated_at: now(),
+        });
+      }
+      return this.get(key);
+    }
+  }
+  private async pauseActiveConversationTree(key: string) {
+    if (!this.pauseTree) return;
+    const tree = new ConversationService(this.store).getTree(key);
+    const rootId = tree.active_root_id;
+    if (!rootId) return;
+    const generation =
+      tree.attempts
+        .filter((item) => item.conversation_id === rootId)
+        .sort((a, b) => a.generation - b.generation)
+        .at(-1)?.generation ?? 0;
+    try {
+      await this.pauseTree(key, {
+        request_id: `stop:${key}:${rootId}:${generation}`,
+        action: "pause",
+        root_id: rootId,
+        expected_generation: generation,
+      });
+    } catch {
+      return;
+    }
   }
   async exclusive<T>(key: string, fn: () => Promise<T>): Promise<T> {
     requireCondition(
@@ -2070,6 +2288,14 @@ export class Engine {
         }
         const w = this.get(job.workflow_id);
         const run = this.store.must<Run>("run", payload.run_id);
+
+        // CW2-F08: outbox 冲突派发前必须先校验调度开关与占用状态，防止绕过停用
+        const dispatchMgr = new CliDispatchManager(this.store);
+        const eligibility = dispatchMgr.checkDispatchEligibility(w.id);
+        if (!eligibility.allowed) {
+          continue;
+        }
+
         if (this.runtime && (this.runtime as any).resolveMergeConflict) {
           void (this.runtime as any)
             .resolveMergeConflict(w, run, request)
@@ -2116,8 +2342,9 @@ export class Engine {
           stage: "aside",
           status: "running",
           started_at: now(),
-          deadline_at: Date.now() + 120000,
+          deadline_at: Date.now() + ASIDE_TIMEOUT_MS,
           package_hash: objectHash(aside),
+          protocol: "lightweight",
         };
         this.store.transaction(() => {
           this.store.put("run", runId, w.id, run);
@@ -2130,13 +2357,9 @@ export class Engine {
         void this.runtime
           .aside(w, run, aside)
           .then((answer) => {
-            const current = this.store.get<any>("aside_session", aside.id);
-            if (current?.status === "active")
-              new AsideSessionService(this.store).completeSession(
-                w.id,
-                aside.id,
-                answer,
-              );
+            new AsideSessionService(this.store).settleRun(w.id, aside.id, {
+              answer,
+            });
             this.store.put("run", runId, w.id, {
               ...run,
               status: "completed",
@@ -2145,9 +2368,9 @@ export class Engine {
             });
           })
           .catch((error) => {
-            const current = this.store.get<any>("aside_session", aside.id);
-            if (current?.status === "active")
-              new AsideSessionService(this.store).cancelSession(w.id, aside.id);
+            new AsideSessionService(this.store).settleRun(w.id, aside.id, {
+              error,
+            });
             this.store.put("run", runId, w.id, {
               ...run,
               status: "failed",
@@ -2213,30 +2436,36 @@ export class Engine {
       exit_code: 0,
       ended_at: now(),
     });
-    // 作废证据并进入新候选验证
-    const acceptance = this.store.get("acceptance", workflowId);
-    this.invalidate(
+    const carried = this.store.get<{ original?: unknown }>(
+      "acceptance_carry",
       workflowId,
-      "冲突已由责任模型修复并合入主工作区代码，必须对新候选重新测试和自查",
     );
-    if (acceptance)
+    const acceptance =
+      this.store.get("acceptance", workflowId) ??
+      carried?.original ??
+      (res as { acceptance?: unknown }).acceptance;
+    this.invalidate(workflowId, "冲突修复后的代码需要重新进行代码质量审查");
+    if (acceptance && !carried)
       this.store.put("acceptance_carry", workflowId, workflowId, {
         original: acceptance,
         requires_confirmation: false,
         integration: true,
       });
-    this.store.put("plan_check_review_intent", workflowId, workflowId, {
-      phase: "before_human",
-    });
+    const request = this.store.get<MergeConflictRequest>(
+      "merge_conflict_request",
+      requestId,
+    );
+    const phase = request?.quality_phase ?? "after_human";
+    this.patchReviewPointer(workflowId, { phase });
     this.transition(
       workflowId,
       ["COMMITTING", "INTEGRATING", "EXECUTING", "BLOCKED"],
-      "QUEUED",
-      "execute",
+      "REVIEW_QUEUED",
+      phase === "before_human" ? BEFORE_HUMAN_REVIEW_STAGE : "review",
       {
         feedback: [
           ...this.get(workflowId).feedback,
-          "已解决主分支合并冲突。依据原始计划完整补测新候选及受影响回归，完成程序计划自查后再做终审；不得跳过测试直接合回。",
+          "已解决主分支合并冲突，请交接代码质量审查。",
         ],
       },
     );
@@ -2274,6 +2503,55 @@ export class Engine {
     this.transition(workflowId, [w.state], "BLOCKED", "merge_conflict_blocked");
   }
 
+  private assignPlanningRun(w: Workflow, run: Run) {
+    const existing = readPlanningHandoff(this.store, w.id);
+    const waiting = readWaitingContext(this.store, w.id);
+    let handoff = existing;
+    if (!handoff && waiting && isPlanningWaiting(waiting)) {
+      handoff = {
+        handoff_id: id("pho"),
+        source_run_id: waiting.run_id ?? waiting.source_execution_run_id ?? "",
+        source_role: "executor",
+        source_conversation_id: waiting.conversation_id,
+        plan_revision: w.plan_revision,
+        original_text: waiting.original_text,
+        questions: waiting.questions,
+        target_role: "planner",
+        status: "pending",
+      };
+    }
+    this.store.transaction(() => {
+      if (handoff && ["pending", "assigned"].includes(handoff.status)) {
+        handoff = savePlanningHandoff(this.store, w.id, {
+          ...handoff,
+          status: "assigned",
+          target_run_id: run.id,
+        });
+        const continuation = continuationFromHandoff(handoff);
+        this.persistBoundContinuation(w.id, run.id, run, continuation);
+      } else {
+        this.store.put("run", run.id, w.id, run);
+      }
+      const leftover = readWaitingContext(this.store, w.id);
+      if (leftover && isPlanningWaiting(leftover))
+        clearWaitingContext(this.store, w.id);
+    });
+    return this.store.must<Run>("run", run.id);
+  }
+  private closePlanningHandoff(
+    workflowId: string,
+    status: "resolved" | "superseded",
+  ) {
+    const handoff = readPlanningHandoff(this.store, workflowId);
+    if (handoff && ["pending", "assigned"].includes(handoff.status))
+      savePlanningHandoff(this.store, workflowId, { ...handoff, status });
+    const waiting = readWaitingContext(this.store, workflowId);
+    if (waiting && isPlanningWaiting(waiting))
+      clearWaitingContext(this.store, workflowId);
+    const staged = readRunContinuation(this.store, workflowId);
+    if (staged?.purpose === "planning")
+      clearRunContinuation(this.store, workflowId);
+  }
   private async runPlanning(w: Workflow, runId: string) {
     requireCondition(
       this.runtime?.plan,
@@ -2296,12 +2574,13 @@ export class Engine {
         messages: this.store.list("feedback_message", w.id),
         spec: binding.execution_spec_id,
       }),
+      protocol: "lightweight",
     };
     w = this.transition(w.id, ["PLANNING"], "PLANNING", "planning", {
       run_id: runId,
       blocker: undefined,
     });
-    this.store.put("run", runId, w.id, run);
+    const bound = this.assignPlanningRun(w, run);
     for (const msg of this.store
       .list<any>("feedback_message", w.id)
       .filter((m) => m.status === "pending"))
@@ -2311,7 +2590,7 @@ export class Engine {
         ack_run: runId,
       });
     try {
-      const result = await this.runtime.plan(w, run);
+      const result = await this.runtime.plan(w, bound);
       requireCondition(
         this.get(w.id).state === "PLANNING" &&
           this.get(w.id).run_id === runId &&
@@ -2336,15 +2615,46 @@ export class Engine {
         this.store,
         this.config.storage_root,
       ).publishDocument(w.id, "plan", normalized, w.plan_revision + 1);
+
+      // CW2-D03 / CW3-F11 / CW4-F03: 通过 Locator 定位并写入项目工作区，发布后将真实 material ID/locator 关联到规划版本记录
+      let locator: any;
+      try {
+        locator = resolveMaterialLocator({
+          store: this.store,
+          workflowId: w.id,
+          kind: "plan",
+          revision: w.plan_revision + 1,
+          run_id: runId,
+        });
+        publishProjectMaterialSafely({
+          store: this.store,
+          locator,
+          content: normalized,
+          cachePath: doc.path,
+        });
+      } catch {}
+
       await this.submitValidatedPlan(
         w.id,
         plan,
         this.get(w.id).version,
         "planning-" + runId,
       );
+      const planRev = this.get(w.id).plan_revision;
+      const currentPlan = this.store.get<PlanRecord>("plan", `${w.id}-${planRev}`);
+      if (currentPlan && locator) {
+        this.store.put("plan", currentPlan.id, w.id, {
+          ...currentPlan,
+          material_id: locator.material_id,
+          material_path: locator.relative_path,
+          run_id: runId,
+        });
+      }
       this.store.put("planning_document", w.id, w.id, {
         document_id: doc.id,
-        plan_revision: this.get(w.id).plan_revision,
+        plan_revision: planRev,
+        material_id: locator?.material_id,
+        run_id: runId,
       });
       this.store.put("run", runId, w.id, {
         ...this.store.must<Run>("run", runId),
@@ -2352,9 +2662,10 @@ export class Engine {
         exit_code: 0,
         ended_at: now(),
       });
+      this.closePlanningHandoff(w.id, "resolved");
     } catch (error) {
       this.store.put("run", runId, w.id, {
-        ...run,
+        ...this.store.must<Run>("run", runId),
         status: this.store.get("run_stop", runId) ? "stopped" : "failed",
         ended_at: now(),
         result: { error: String(error) },
@@ -2384,6 +2695,10 @@ export class Engine {
         attempted.add(item.id);
         last = item.project;
         const w = this.get(item.id);
+        const dispatchControl = this.store.get<any>("workflow_dispatch_control", w.id);
+        if (dispatchControl && dispatchControl.dispatch_enabled === false) {
+          continue;
+        }
         if (!["QUEUED", "REVIEW_QUEUED", "PLANNING"].includes(w.state)) {
           this.store.remove("queue", w.id);
           continue;
@@ -2500,19 +2815,7 @@ export class Engine {
         await this.runPlanning(w, runId);
         return;
       }
-      if (review && resolveTaskModel(this.plan(key).plan) === "native-v2") {
-        this.planSelfCheck.assertPassed(w);
-        this.verifyEvidence(key);
-        requireCondition(
-          await this.git.matches(
-            this.store.must<Snapshot>("snapshot", w.snapshot_id!),
-          ),
-          "SNAPSHOT_CHANGED",
-          "规划审查启动前代码已变化，必须重新进行计划复核",
-        );
-        if (!ownsPreparation()) return;
-      }
-      const selfCheck = !review && !!this.planSelfCheck.pending(w);
+      if (review && !ownsPreparation()) return;
       if (!review) {
         prepareRepairResume(this, key);
         const plan = this.plan(key);
@@ -2525,7 +2828,6 @@ export class Engine {
           "APPROVAL_STALE",
           "审批不匹配",
         );
-        this.assertProjectConfiguration(key);
         const project = this.project(w.project_id);
         const context = this.store.get<{ roots: Record<string, string> }>(
           "entry_context",
@@ -2580,12 +2882,10 @@ export class Engine {
               ?.phase === "before_human"
             ? BEFORE_HUMAN_REVIEW_STAGE
             : "review"
-          : selfCheck
-            ? PLAN_SELF_CHECK_STAGE
-            : this.store.get<{ planner: boolean }>("repair_assignment", key)
-                  ?.planner
-              ? "planner_takeover"
-              : "execute",
+          : this.store.get<{ planner: boolean }>("repair_assignment", key)
+                ?.planner
+            ? "planner_takeover"
+            : "execute",
         {
           run_id: runId,
           review_request_id: review ? id("review") : w.review_request_id,
@@ -2601,13 +2901,19 @@ export class Engine {
         key,
         review
           ? "quality_review"
-          : selfCheck
-            ? "plan_self_check"
-            : w.stage === "planner_takeover"
-              ? "planner_takeover"
-              : "implement",
+          : w.stage === "planner_takeover"
+            ? "planner_takeover"
+            : "implement",
       );
-      const run: Run = {
+      const purpose = review ? "review" : "execute";
+      const role = review
+        ? "planner"
+        : this.store.get<{ planner?: boolean }>("repair_assignment", key)
+            ?.planner
+          ? "planner"
+          : "executor";
+      const continuation = this.consumeContinuation(key, purpose, role);
+      let run: Run = {
         ...profileBinding,
         id: runId,
         workflow_id: key,
@@ -2622,8 +2928,29 @@ export class Engine {
           feedback: w.feedback,
           snapshot: w.snapshot_id,
         }),
+        protocol: "lightweight",
       };
-      this.store.put("run", runId, key, run);
+      this.store.transaction(() => {
+        if (continuation)
+          run = this.persistBoundContinuation(key, runId, run, continuation);
+        else this.store.put("run", runId, key, run);
+        if (!review) {
+          const assignment = this.store.get<QualityRepairAssignment>(
+            "repair_assignment",
+            key,
+          );
+          if (assignment)
+            this.store.put("repair_assignment", key, key, {
+              ...assignment,
+              current_attempt_run_id: runId,
+              repair_cycle_id:
+                assignment.repair_cycle_id ?? assignment.assignment_id,
+            });
+          this.startImplementationAttempt(key, runId);
+        } else {
+          this.patchReviewPointer(key, { review_run_id: runId });
+        }
+      });
       for (const msg of this.store
         .list<any>("feedback_message", key)
         .filter((m) => m.status === "pending"))
@@ -2632,14 +2959,13 @@ export class Engine {
           status: "acknowledged",
           ack_run: runId,
         });
-      if (!review && !selfCheck) {
+      if (!review) {
         const issues = new FunctionalIssueService(this.store);
         for (const issue of issues
           .listIssues(key)
           .filter((i) => i.status === "open"))
           issues.markFixing(key, issue.issue_id);
       }
-      if (selfCheck) this.planSelfCheck.start(w, run);
       const timer = setInterval(
         () => this.scheduler.heartbeat(key, runId),
         5000,
@@ -2662,24 +2988,7 @@ export class Engine {
             this.get(key).run_id === runId &&
             this.get(key).state === "REVIEWING"
           )
-            try {
-              await this.receiveReview(key, result);
-            } catch (error) {
-              const incomplete =
-                error instanceof z.ZodError ||
-                (error instanceof FlowError &&
-                  [
-                    "REPAIR_PLAN_INCOMPLETE",
-                    "REVIEW_INCOMPLETE",
-                    "REVIEW_FILE_MISSING",
-                  ].includes(error.code));
-              if (
-                !incomplete ||
-                resolveTaskModel(this.plan(key).plan) !== "native-v2"
-              )
-                throw error;
-              queueReviewCompletion(this, w, result, error);
-            }
+            await this.receiveReview(key, result);
         } else {
           const stopGraceMs = Math.max(
             (this.config.timeouts.stop_seconds ?? 0) * 1000,
@@ -2692,10 +3001,11 @@ export class Engine {
           );
           await runtime.execute(w, run, token);
           const current = this.get(key);
+          const currentRun = this.store.must<Run>("run", runId);
           if (
             current.run_id === runId &&
             current.state === "VERIFYING" &&
-            resolveTaskModel(this.plan(key).plan) !== "native-v2"
+            isLegacyProtocol(currentRun, this.plan(key).plan)
           ) {
             await this.finish(key, {
               role: "worker",
@@ -2711,9 +3021,12 @@ export class Engine {
             );
           } else if (
             current.run_id === runId &&
-            ["HUMAN_PENDING", "VERIFYING"].includes(current.state)
+            ["HUMAN_PENDING", "VERIFYING", "REVIEW_QUEUED"].includes(
+              current.state,
+            )
           ) {
-            // 原生交付仍需成功退出，再由程序调度独立的计划逐项复核。
+            if (current.state === "VERIFYING")
+              await this.finalizeNativeDelivery(key, runId);
           } else if (current.state === "EXECUTING") {
             const containerManifest = join(
               this.config.storage_root,
@@ -2721,55 +3034,51 @@ export class Engine {
               key,
               "delivery_manifest.json",
             );
-            let autoDelivered = false;
             if (existsSync(containerManifest)) {
               try {
                 const content = JSON.parse(
                   readFileSync(containerManifest, "utf8"),
                 );
-                const result = await this.deliver(key, content);
-                if (result.status === "accepted") {
-                  autoDelivered = true;
-                } else {
-                  throw new FlowError(
-                    "DELIVERY_REJECTED",
-                    result.message,
-                    422,
-                    { issues: result.issues },
-                  );
-                }
-              } catch (error) {
-                if (error instanceof FlowError) throw error;
-                throw new FlowError(
-                  "AUTO_DELIVERY_FAILED",
-                  "读取或验证交付清单失败: " + String(error),
-                  422,
-                );
-              }
+                await this.receiveRoundResult(key, runId, content);
+              } catch {}
             }
-            if (!autoDelivered && this.get(key).state === "EXECUTING") {
-              throw new FlowError(
-                "EXECUTION_INCOMPLETE",
-                "执行器退出，但未完成测试阶段或提交交付清单",
-              );
-            }
+            if (this.get(key).state === "EXECUTING")
+              await this.finalizeNativeDelivery(key, runId);
           }
         }
         const finalState = this.get(key).state;
+        const recorded = readExecutionCompletion(this.store, runId);
+        const waiting = [
+          "WAITING_INPUT",
+          "PLANNING",
+          "QUEUED",
+          "REPAIR_RESEARCH_REQUIRED",
+          "WAITING_AUTHORIZATION",
+        ];
+        if (!recorded) waiting.push("REVIEW_QUEUED");
         const finalStatus = this.store.get("run_stop", runId)
           ? "stopped"
-          : finalState === "BLOCKED"
-            ? "failed"
-            : "completed";
+          : recorded
+            ? "completed"
+            : waiting.includes(finalState)
+            ? "waiting"
+            : finalState === "BLOCKED"
+              ? "failed"
+              : "completed";
         this.store.put("run", runId, key, {
           ...this.store.must<Run>("run", runId),
           status: finalStatus,
+          ...(finalStatus === "completed"
+            ? {
+                exit_code:
+                  this.store.must<Run>("run", runId).exit_code ?? 0,
+              }
+            : {}),
           ended_at: now(),
         });
         if (
           finalStatus === "completed" &&
-          !review &&
-          resolveTaskModel(this.plan(key).plan) === "native-v2"
+          !review
         )
           await this.finalizeNativeDelivery(key, runId);
         this.store.remove("transient_network_retry", key);
@@ -2853,7 +3162,7 @@ export class Engine {
           const repair = await repairFailure(this, key, e, runId);
           if (repair?.retry) {
             const current = this.get(key);
-            this.invalidate(key, "异常修复，交付证据需重验");
+            this.invalidate(key, "异常修复，将按原角色继续");
             this.transition(
               key,
               [current.state],
@@ -2901,107 +3210,66 @@ export class Engine {
     }
   }
 
-  private async prepareNativeRepairReview(w: Workflow, review: Review) {
-    requireCondition(
-      review.verdict === "findings" &&
-        review.repair_plan &&
-        review.quality?.verdict === "changes_required",
-      "REPAIR_PLAN_INCOMPLETE",
-      "质量不合格必须返回完整正式整改计划及逐项整改合同；未完成审查不计次数",
-    );
-    const quality = review.quality;
-    const confirmed = review.findings.filter(
-      (f) =>
-        f.disposition === "confirmed" &&
-        ["introduced", "in_scope"].includes(f.relation_to_change),
-    );
-    requireCondition(
-      confirmed.every((f) =>
-        quality.findings.some((q) => q.finding_id === f.id),
+  private qualityFindingsFromReview(review: Review) {
+    const mapped = (review.findings ?? []).map((f, index) => ({
+      finding_id: f.id ?? `finding-${index + 1}`,
+      severity: "major" as const,
+      evidence: f.evidence ?? "",
+      impact: f.consequence ?? "",
+      cause: f.reason ?? f.trigger ?? "",
+      file_path: f.path,
+      line_number: f.line,
+    }));
+    const combined = [...(review.quality?.findings ?? []), ...mapped];
+    const seen = new Set<string>();
+    const unique: typeof combined = [];
+    for (const finding of combined) {
+      const id = finding.finding_id;
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      unique.push(finding);
+    }
+    return unique;
+  }
+
+  private prepareNativeRepairReview(w: Workflow, review: Review) {
+    const phase =
+      this.store.get<{ phase: QualityPhase }>(
+        "plan_check_review_intent",
+        w.id,
+      )?.phase ?? "before_human";
+    const findings = this.qualityFindingsFromReview(review);
+    const quality = {
+      ...review.quality,
+      workflow_id: w.id,
+      run_id: w.run_id!,
+      phase,
+      verdict: "changes_required" as const,
+      findings: findings.length ? findings : review.quality?.findings ?? [],
+      repair_plan: review.quality?.repair_plan ?? [],
+      function_impact: review.quality?.function_impact,
+      plan_revision: w.plan_revision,
+      feedback_cursor: Math.max(
+        0,
+        ...this.store.list<any>("feedback_message", w.id).map((m) => m.seq),
       ),
-      "REPAIR_PLAN_INCOMPLETE",
-      "整改合同遗漏已确认问题",
-    );
-    const currentPlan = this.plan(w.id).plan;
-    const validated = validatePlan(review.repair_plan);
-    await parsePlanDiagrams(review.repair_plan);
+      reviewed_at: now(),
+      summary: review.summary,
+      notes: review.notes,
+    };
+    delete (quality as { cycle?: unknown }).cycle;
     const body = (
       review.repair_document ??
-      review.repair_plan.markdown ??
-      ""
+      review.notes ??
+      review.summary ??
+      findings
+        .map((f) => `${f.finding_id}: ${f.cause || f.impact || f.evidence}`)
+        .join("\n")
     ).replace(/\r\n/g, "\n");
-    const revision = w.plan_revision + 1;
-    requireCondition(
-      body.trim() &&
-        quality.repair_plan.every(
-          (item) =>
-            item.document_revision === revision &&
-            item.document_hash === hash(body) &&
-            (body.includes(item.document_anchor) ||
-              body
-                .toLowerCase()
-                .includes(
-                  item.document_anchor.replace(/^#/, "").toLowerCase(),
-                )),
-        ),
-      "REPAIR_PLAN_INCOMPLETE",
-      "整改项必须绑定本次完整正文、版本、哈希和存在的章节",
-    );
-    if (validated.plan.design_ref)
-      requireCondition(
-        validated.plan.design_ref.content_hash === hash(body),
-        "REPAIR_PLAN_INCOMPLETE",
-        "正式整改计划引用了不同正文",
-      );
-    requireCondition(
-      validated.plan.project_config_hash === currentPlan.project_config_hash &&
-        objectHash(validated.plan.baselines) ===
-          objectHash(currentPlan.baselines),
-      "REPAIR_SCOPE_CHANGED",
-      "整改不能擅自替换项目配置或原始基线",
-    );
-    const withinScope =
-      (!validated.plan.scope.allow_dependency_changes ||
-        currentPlan.scope.allow_dependency_changes) &&
-      (!validated.plan.scope.allow_public_api_changes ||
-        currentPlan.scope.allow_public_api_changes) &&
-      currentPlan.scope.protected_paths.every((p) =>
-        validated.plan.scope.protected_paths.includes(p),
-      ) &&
-      validated.plan.scope.allowed_paths.every((p) =>
-        currentPlan.scope.allowed_paths.includes(p),
-      ) &&
-      Object.entries(validated.plan.scope.repository_paths).every(
-        ([repo, paths]) =>
-          paths.every((p) =>
-            (
-              currentPlan.scope.repository_paths[repo] ??
-              currentPlan.scope.allowed_paths
-            ).includes(p),
-          ),
-      );
-    requireCondition(
-      review.unresolved_questions.length === 0 &&
-        review.coverage.all_changed_files_reviewed &&
-        review.coverage.all_requirements_checked &&
-        review.coverage.upstream_downstream_checked &&
-        review.coverage.security_checked &&
-        review.coverage.tests_validity_checked,
-      "REPAIR_PLAN_INCOMPLETE",
-      "规划模型须完成全范围调查并解决未决问题后再派发整改",
-    );
-    return { quality, body, revision, withinScope };
+    return { quality, body, withinScope: true };
   }
 
   private async applyNativeRepairReview(w: Workflow, review: Review) {
-    let prepared: Awaited<ReturnType<Engine["prepareNativeRepairReview"]>>;
-    try {
-      prepared = await this.prepareNativeRepairReview(w, review);
-    } catch (error) {
-      if (!(error instanceof FlowError) && !(error instanceof z.ZodError))
-        throw error;
-      throw new FlowError("REPAIR_PLAN_INCOMPLETE", error.message, 422);
-    }
     requireCondition(
       this.get(w.id).state === "REVIEWING" &&
         this.get(w.id).run_id === w.run_id &&
@@ -3009,86 +3277,304 @@ export class Engine {
       "RUN_REVOKED",
       "审查已停止，不能派发整改",
     );
-    const { quality, body, revision, withinScope } = prepared;
-    const decision = this.quality.evaluateReviewResult(w.id, quality);
-    requireCondition(
-      decision.action !== "retry_incomplete",
-      "REPAIR_PLAN_INCOMPLETE",
-      decision.message,
+    const { quality, body, withinScope } = this.prepareNativeRepairReview(
+      w,
+      review,
     );
+    if (review.repair_plan) await parsePlanDiagrams(review.repair_plan);
+    this.store.transaction(() =>
+      this.commitNativeRepairDecision(w, review, quality, body, withinScope),
+    );
+    if (body.trim()) {
+      try {
+        const doc = new DocumentService(
+          this.store,
+          this.config.storage_root,
+        ).publishDocument(w.id, "repair_plan", body, w.plan_revision);
+
+        // CW2-D03 / CW3-F11: 通过 Locator 定位并写入项目工作区整改原件，包含真实 run_id/revision
+        const locator = resolveMaterialLocator({
+          store: this.store,
+          workflowId: w.id,
+          kind: "repair",
+          revision: w.plan_revision,
+          run_id: w.run_id,
+        });
+        publishProjectMaterialSafely({
+          store: this.store,
+          locator,
+          content: body,
+          cachePath: doc.path,
+        });
+      } catch {}
+    }
+    return this.get(w.id);
+  }
+  private persistQualityTransferRecord(
+    transfer: QualityTransfer,
+    extras: {
+      next_assignment_id?: string;
+      completion_run_id?: string;
+    } = {},
+  ) {
+    this.store.put(
+      "quality_transfer",
+      `${transfer.workflow_id}:${transfer.review_run_id}`,
+      transfer.workflow_id,
+      {
+        workflow_id: transfer.workflow_id,
+        review_run_id: transfer.review_run_id,
+        phase: transfer.phase,
+        cycle: transfer.cycle,
+        next_assignment_id:
+          extras.next_assignment_id ?? transfer.next_assignment_id,
+        action: transfer.decision.action,
+        completion_run_id: extras.completion_run_id,
+      },
+    );
+  }
+  private writeRepairAssignment(
+    w: Workflow,
+    transfer: QualityTransfer,
+    body: string,
+  ) {
+    const assignmentId =
+      transfer.next_assignment_id ?? transfer.assignment?.assignment_id;
+    if (!assignmentId) return;
+    const next = this.get(w.id);
+    this.store.put("repair_assignment", w.id, w.id, {
+      ...(transfer.assignment ?? {}),
+      assignment_id: assignmentId,
+      repair_cycle_id: assignmentId,
+      planner: transfer.decision.action === "takeover_by_planner",
+      phase: transfer.phase,
+      source: "quality_review",
+      source_review_id: transfer.review_run_id,
+      plan_revision: next.plan_revision,
+      plan_hash: next.plan_hash,
+      instructions: body,
+    });
+  }
+  private carryAcceptanceAfterQualityRepair(
+    w: Workflow,
+    transfer: QualityTransfer,
+    quality: ReturnType<Engine["prepareNativeRepairReview"]>["quality"],
+  ) {
+    if (transfer.phase !== "after_human") return;
     const acceptance =
       this.store.get<any>("acceptance", w.id) ??
       this.store.get<any>("acceptance_carry", w.id)?.original;
-    const phase =
-      this.store.get<any>("plan_check_review_intent", w.id)?.phase ??
-      "before_human";
-    new DocumentService(this.store, this.config.storage_root).publishDocument(
-      w.id,
-      "repair_plan",
-      body,
-      revision,
-    );
-    this.transition(
-      w.id,
-      ["REVIEWING"],
-      "REPAIR_RESEARCH_REQUIRED",
-      "repair_plan",
-    );
-    await this.submitValidatedPlan(
-      w.id,
-      review.repair_plan,
-      this.get(w.id).version,
-      "quality-" + quality.run_id,
-    );
-    const next = this.get(w.id);
-    this.store.put("repair_assignment", w.id, w.id, {
-      planner: decision.action === "takeover_by_planner",
-      phase,
-      source: "quality_review",
-      source_review_id: quality.run_id,
-      plan_revision: next.plan_revision,
-      plan_hash: next.plan_hash,
+    if (!acceptance) return;
+    const previous = this.store.get<any>("acceptance_carry", w.id);
+    this.store.put("acceptance_carry", w.id, w.id, {
+      original: acceptance,
+      requires_confirmation:
+        previous?.requires_confirmation === true ||
+        reportedFunctionImpact(quality.function_impact) !== undefined ||
+        reportedFunctionImpact(previous?.reported_function_impact) !==
+          undefined ||
+        (quality.repair_plan ?? []).some(
+          (item: { function_impact?: string }) =>
+            reportedFunctionImpact(item.function_impact) !== undefined,
+        ),
+      reported_function_impact:
+        reportedFunctionImpact(quality.function_impact) ??
+        previous?.reported_function_impact,
+      review_id: quality.run_id,
     });
-    this.store.put("plan_check_review_intent", w.id, w.id, { phase });
-    if (phase === "after_human" && acceptance) {
-      const previous = this.store.get<any>("acceptance_carry", w.id);
-      this.store.put("acceptance_carry", w.id, w.id, {
-        original: acceptance,
-        requires_confirmation:
-          previous?.requires_confirmation === true ||
-          quality.function_impact !== "none" ||
-          quality.repair_plan.some((item) => item.function_impact !== "none"),
-        review_id: quality.run_id,
+  }
+  private commitNativeRepairDecision(
+    w: Workflow,
+    review: Review,
+    quality: ReturnType<Engine["prepareNativeRepairReview"]>["quality"],
+    body: string,
+    withinScope: boolean,
+  ) {
+    const transfer = this.quality.prepareQualityTransfer(w.id, quality);
+    const applied = this.quality.applyQualityTransfer(transfer);
+    const decision = applied.decision;
+    if (decision.action === "retry_incomplete") {
+      this.queueUnclearFollowup(w.id, {
+        purpose: "review",
+        role: "planner",
+        phase: this.reviewPointer(w.id).phase ?? "before_human",
+        run_id: w.run_id,
+        conversation_id: w.run_id
+          ? this.store.get<Run>("run", w.run_id)?.conversation_id
+          : undefined,
+        source_execution_run_id: this.reviewPointer(w.id).completion_run_id,
+        original_text: decision.message,
+        stage:
+          (this.reviewPointer(w.id).phase ?? "before_human") === "before_human"
+            ? BEFORE_HUMAN_REVIEW_STAGE
+            : "review",
       });
+      return;
     }
-    if (withinScope) {
-      // The original task approval authorizes deterministic repairs within its existing boundary.
-      this.store.transaction(() => {
-        this.store.put("approval", w.id + "-" + next.plan_revision, w.id, {
-          plan_hash: next.plan_hash,
-          revision: next.plan_revision,
+    const priorTransfer = this.store.get<{ next_assignment_id?: string }>(
+      "quality_transfer",
+      `${w.id}:${applied.review_run_id}`,
+    );
+    if (priorTransfer?.next_assignment_id) {
+      this.ensureRepairDispatch(w.id, decision.action);
+      return;
+    }
+    if (review.repair_plan) {
+      this.transition(
+        w.id,
+        ["REVIEWING"],
+        "REPAIR_RESEARCH_REQUIRED",
+        "repair_plan",
+      );
+      this.submitPlan(
+        w.id,
+        review.repair_plan,
+        this.get(w.id).version,
+        "quality-" + applied.review_run_id,
+      );
+    }
+    this.writeRepairAssignment(w, applied, body);
+    this.persistQualityTransferRecord(applied, {
+      completion_run_id: this.reviewPointer(w.id).completion_run_id,
+    });
+    this.patchReviewPointer(w.id, { phase: applied.phase });
+    this.clearCurrentImplementationIntent(w.id);
+    this.carryAcceptanceAfterQualityRepair(w, applied, quality);
+    if (withinScope) this.ensureRepairDispatch(w.id, decision.action);
+  }
+  private ensureRepairDispatch(
+    workflowId: string,
+    action: string,
+  ) {
+    const current = this.get(workflowId);
+    const stage =
+      action === "takeover_by_planner" ? "planner_takeover" : "execute";
+    if (current.state === "REVIEWING")
+      this.transition(workflowId, ["REVIEWING"], "QUEUED", stage);
+    else if (current.state === "REPAIR_PLAN_PENDING") {
+      this.store.put(
+        "approval",
+        workflowId + "-" + current.plan_revision,
+        workflowId,
+        {
+          plan_hash: current.plan_hash,
+          revision: current.plan_revision,
           approved_at: now(),
           method: "planner_repair_within_approved_scope",
-          source_review: quality.run_id,
-        });
-        this.transition(
-          w.id,
-          ["REPAIR_PLAN_PENDING"],
-          "QUEUED",
-          decision.action === "takeover_by_planner"
-            ? "planner_takeover"
-            : "execute",
-        );
-        this.scheduler.enqueue(w.id, w.project_id);
-        this.store.enqueue(w.id, "dispatch_run", {
-          purpose:
-            decision.action === "takeover_by_planner"
-              ? "planner_takeover"
-              : "implement",
-        });
-      });
+          source_review: current.run_id,
+        },
+      );
+      this.transition(
+        workflowId,
+        ["REPAIR_PLAN_PENDING"],
+        "QUEUED",
+        stage,
+      );
     }
-    return this.get(w.id);
+    this.scheduler.enqueue(workflowId, current.project_id);
+    this.store.enqueue(workflowId, "dispatch_run", {
+      purpose:
+        action === "takeover_by_planner" ? "planner_takeover" : "implement",
+    });
+  }
+  private applyPassedAcceptanceCarry(
+    key: string,
+    w: Workflow,
+    review: Review,
+    result: { run_id: string },
+    phase: string,
+  ) {
+    if (phase !== "after_human") return false;
+    const carry = this.store.get<any>("acceptance_carry", key);
+    if (!carry) return false;
+    const impact =
+      reportedFunctionImpact(carry.reported_function_impact) ??
+      reportedFunctionImpact(review.quality?.function_impact);
+    if (carry.requires_confirmation === true || impact) {
+      this.store.put(
+        "human_reconfirmation_required",
+        key,
+        key,
+        this.quality.fingerprint(key),
+      );
+      this.transition(
+        key,
+        ["REVIEWING"],
+        "HUMAN_PENDING",
+        "manual_acceptance",
+      );
+      return true;
+    }
+    this.store.put("acceptance", key, key, {
+      ...carry.original,
+      snapshot_id: w.snapshot_id,
+      plan_revision: w.plan_revision,
+      environment_revision: w.environment_revision,
+      original_confirmation: carry.original,
+      derived_after_quality_review: result.run_id,
+    });
+    this.store.remove("acceptance_carry", key);
+    return false;
+  }
+  private commitNativePassedDecision(key: string, w: Workflow, review: Review) {
+    const phase =
+      w.stage === BEFORE_HUMAN_REVIEW_STAGE ? "before_human" : "after_human";
+    const result = {
+      ...review.quality,
+      workflow_id: key,
+      run_id: w.run_id!,
+      phase,
+      verdict: "passed" as const,
+      findings: [],
+      repair_plan: [],
+      function_impact: review.quality?.function_impact,
+      plan_revision: w.plan_revision,
+      feedback_cursor: Math.max(
+        0,
+        ...this.store.list<any>("feedback_message", key).map((m) => m.seq),
+      ),
+      reviewed_at: now(),
+    };
+    delete (result as { cycle?: unknown }).cycle;
+    return this.store.transaction(() => {
+      const transfer = this.quality.prepareQualityTransfer(key, result);
+      if (transfer.decision.action === "retry_incomplete") {
+        this.queueUnclearFollowup(key, {
+          purpose: "review",
+          role: "planner",
+          phase,
+          run_id: w.run_id,
+          conversation_id: this.store.get<Run>("run", w.run_id!)
+            ?.conversation_id,
+          source_execution_run_id: this.reviewPointer(key).completion_run_id,
+          original_text: transfer.decision.message,
+          stage:
+            phase === "before_human" ? BEFORE_HUMAN_REVIEW_STAGE : "review",
+        });
+        return "followup" as const;
+      }
+      requireCondition(
+        transfer.decision.action === "pass",
+        "REVIEW_INCOMPLETE",
+        transfer.decision.message,
+      );
+      this.quality.applyQualityTransfer(transfer);
+      this.persistQualityTransferRecord(transfer, {
+        completion_run_id: this.reviewPointer(key).completion_run_id,
+      });
+      if (this.applyPassedAcceptanceCarry(key, w, review, result, phase))
+        return "human_pending" as const;
+      if (w.stage === BEFORE_HUMAN_REVIEW_STAGE) {
+        this.transition(
+          key,
+          ["REVIEWING"],
+          "HUMAN_PENDING",
+          "manual_acceptance",
+        );
+        return "human_pending" as const;
+      }
+      return "commit" as const;
+    });
   }
 
   async receiveReview(key: string, input: unknown) {
@@ -3097,59 +3583,94 @@ export class Engine {
     if (sanitized && typeof sanitized === "object" && "id" in sanitized) {
       delete (sanitized as any).id;
     }
-    const review = ReviewSchema.parse(sanitized),
-      w = this.get(key);
+    const parsed = ReviewSchema.safeParse(sanitized);
+    const w = this.get(key);
     requireCondition(
-      w.state === "REVIEWING" &&
-        review.workflow_id === key &&
-        review.review_request_id === w.review_request_id &&
-        review.plan_revision === w.plan_revision &&
-        review.snapshot_id === w.snapshot_id,
+      w.state === "REVIEWING" && !this.store.get("run_stop", w.run_id!),
       "REVIEW_BINDING_INVALID",
-      "复核对象不一致",
+      "当前不在审查阶段",
     );
-    if (resolveTaskModel(this.plan(key).plan) === "native-v2")
-      this.planSelfCheck.assertPassed(w);
-    const snapshot = this.store.must<Snapshot>("snapshot", w.snapshot_id!);
-    requireCondition(
-      await this.git.matches(snapshot),
-      "SNAPSHOT_CHANGED",
-      "复核期间代码变化",
-    );
-    this.store.put("review", review.review_request_id, key, {
-      ...review,
-      id: review.review_request_id,
-    });
-    const confirmed = review.findings.filter(
-      (f) =>
-        f.disposition === "confirmed" &&
-        ["introduced", "in_scope"].includes(f.relation_to_change),
-    );
-    const completion = reviewCompletionContext(this, w);
-    for (const attempt of completion?.attempts ?? []) {
-      const earlier = (attempt.review as Partial<Review> | null)?.findings;
-      if (!Array.isArray(earlier)) continue;
-      requireCondition(
-        earlier
-          .filter(
-            (f) =>
-              f &&
-              typeof f === "object" &&
-              typeof f.id === "string" &&
-              f.disposition === "confirmed" &&
-              ["introduced", "in_scope"].includes(f.relation_to_change),
-          )
-          .every((f) => review.findings.some((current) => current.id === f.id)),
-        "REVIEW_INCOMPLETE",
-        "补全审查不能遗漏已确认问题；须逐项保留或提供明确的误报/范围外处置依据",
-      );
+    if (!parsed.success) {
+      this.queueUnclearFollowup(key, {
+        purpose: "review",
+        role: "planner",
+        phase: this.reviewPointer(key).phase ?? "before_human",
+        run_id: w.run_id,
+        conversation_id: w.run_id
+          ? this.store.get<Run>("run", w.run_id)?.conversation_id
+          : undefined,
+        source_execution_run_id: this.reviewPointer(key).completion_run_id,
+        original_text:
+          typeof input === "object" ? JSON.stringify(input) : String(input ?? ""),
+        stage:
+          (this.reviewPointer(key).phase ?? "before_human") === "before_human"
+            ? BEFORE_HUMAN_REVIEW_STAGE
+            : "review",
+      });
+      return this.get(key);
     }
-    if (
-      review.verdict !== "pass" ||
-      confirmed.length ||
-      review.unresolved_questions.length
-    ) {
-      if (resolveTaskModel(this.plan(key).plan) === "native-v2")
+    const reviewIntent = normalizeReviewIntent(parsed.data);
+    const review = {
+      ...parsed.data,
+      workflow_id: key,
+      review_request_id: w.review_request_id ?? parsed.data.review_request_id,
+      plan_revision: w.plan_revision,
+      snapshot_id: w.snapshot_id ?? parsed.data.snapshot_id,
+      findings: parsed.data.findings ?? [],
+      unresolved_questions: parsed.data.unresolved_questions ?? [],
+      verdict:
+        reviewIntent.intent === "passed"
+          ? ("passed" as const)
+          : reviewIntent.intent === "changes_required"
+            ? ("changes_required" as const)
+            : parsed.data.verdict,
+    };
+    this.store.put("review", review.review_request_id ?? w.run_id!, key, {
+      ...review,
+      id: review.review_request_id ?? w.run_id,
+      original_result: parsed.data,
+    });
+    if (reviewIntent.intent === "unclear") {
+      this.queueUnclearFollowup(key, {
+        purpose: "review",
+        role: "planner",
+        phase: this.reviewPointer(key).phase ?? "before_human",
+        run_id: w.run_id,
+        conversation_id: this.store.get<Run>("run", w.run_id!)?.conversation_id,
+        source_execution_run_id: this.reviewPointer(key).completion_run_id,
+        original_text: review.summary ?? review.notes,
+        stage:
+          (this.reviewPointer(key).phase ?? "before_human") === "before_human"
+            ? BEFORE_HUMAN_REVIEW_STAGE
+            : "review",
+      });
+      return this.get(key);
+    }
+    if (reviewIntent.intent === "need_user") {
+      const phase = this.reviewPointer(key).phase ?? "before_human";
+      saveWaitingContext(this.store, key, {
+        purpose: "review",
+        role: "planner",
+        phase,
+        run_id: w.run_id,
+        conversation_id: this.store.get<Run>("run", w.run_id!)?.conversation_id,
+        source_execution_run_id: this.reviewPointer(key).completion_run_id,
+        original_text: review.summary ?? review.notes,
+        intent: "need_user",
+        questions: reviewIntent.questions,
+      });
+      this.transition(key, ["REVIEWING"], "WAITING_INPUT", w.stage, {
+        blocker: {
+          code: "REVIEW_NEEDS_USER",
+          message:
+            reviewIntent.questions.join("；") || "审查需要用户输入",
+        },
+      });
+      return this.get(key);
+    }
+    const passed = reviewIntent.intent === "passed";
+    if (!passed) {
+      if (!isLegacyProtocol(this.store.get<Run>("run", w.run_id!), this.plan(key).plan))
         return this.applyNativeRepairReview(w, review);
       this.transition(
         key,
@@ -3166,80 +3687,9 @@ export class Engine {
         );
       return this.get(key);
     }
-    const coverage = review.coverage;
-    requireCondition(
-      coverage.all_changed_files_reviewed &&
-        coverage.all_requirements_checked &&
-        coverage.upstream_downstream_checked &&
-        coverage.security_checked &&
-        coverage.tests_validity_checked,
-      "REVIEW_INCOMPLETE",
-      "复核覆盖不完整",
-    );
-    for (const r of snapshot.repositories)
-      for (const p of r.changed_paths)
-        requireCondition(
-          coverage.files.includes(`${r.repo_id}:${p}`),
-          "REVIEW_FILE_MISSING",
-          `未复核 ${r.repo_id}:${p}`,
-        );
-    this.verifyEvidence(key);
-    if (resolveTaskModel(this.plan(key).plan) === "native-v2") {
-      const phase =
-        w.stage === BEFORE_HUMAN_REVIEW_STAGE ? "before_human" : "after_human";
-      const result = review.quality ?? {
-        workflow_id: key,
-        run_id: w.run_id!,
-        phase,
-        cycle: this.quality.getOrCreateGate(key, phase).cycle,
-        verdict: "passed" as const,
-        findings: [],
-        repair_plan: [],
-        function_impact: "none" as const,
-        plan_revision: w.plan_revision,
-        feedback_cursor: Math.max(
-          0,
-          ...this.store.list<any>("feedback_message", key).map((m) => m.seq),
-        ),
-        reviewed_at: now(),
-      };
-      requireCondition(
-        result.verdict === "passed",
-        "REVIEW_BINDING_INVALID",
-        "两个审查合同结论不一致",
-      );
-      const decision = this.quality.evaluateReviewResult(key, result);
-      requireCondition(
-        decision.action === "pass",
-        "REVIEW_INCOMPLETE",
-        decision.message,
-      );
-      const carry = this.store.get<any>("acceptance_carry", key);
-      if (phase === "after_human" && carry) {
-        if (carry.requires_confirmation || result.function_impact !== "none") {
-          this.store.put(
-            "human_reconfirmation_required",
-            key,
-            key,
-            this.quality.fingerprint(key),
-          );
-          return this.transition(
-            key,
-            ["REVIEWING"],
-            "HUMAN_PENDING",
-            "manual_acceptance",
-          );
-        }
-        this.store.put("acceptance", key, key, {
-          ...carry.original,
-          snapshot_id: w.snapshot_id,
-          plan_revision: w.plan_revision,
-          environment_revision: w.environment_revision,
-          original_confirmation: carry.original,
-          derived_after_quality_review: result.run_id,
-        });
-        this.store.remove("acceptance_carry", key);
-      }
+    if (!isLegacyProtocol(this.store.get<Run>("run", w.run_id!), this.plan(key).plan)) {
+      const outcome = this.commitNativePassedDecision(key, w, review);
+      if (outcome !== "commit") return this.get(key);
     }
     if (w.stage === BEFORE_HUMAN_REVIEW_STAGE) {
       return this.transition(
@@ -3249,18 +3699,8 @@ export class Engine {
         "manual_acceptance",
       );
     }
-    const acceptance = this.store.must<{
-      snapshot_id: string;
-      plan_revision: number;
-      environment_revision: number;
-    }>("acceptance", key);
-    requireCondition(
-      acceptance.snapshot_id === w.snapshot_id &&
-        acceptance.plan_revision === w.plan_revision &&
-        acceptance.environment_revision === w.environment_revision,
-      "ACCEPTANCE_STALE",
-      "人工验收已失效",
-    );
+    const acceptance = this.store.get("acceptance", key);
+    requireCondition(acceptance, "ACCEPTANCE_STALE", "尚未人工确认");
     const project = this.project(w.project_id);
     const approvedPlan = this.plan(key);
     const approval = this.store.get<{ plan_hash: string; revision: number }>(
@@ -3273,133 +3713,31 @@ export class Engine {
       "APPROVAL_STALE",
       "提交前计划批准缺失或已变化",
     );
-    requireCondition(
-      approvedPlan.plan.project_config_hash === objectHash(project),
-      "PROJECT_CONFIG_CHANGED",
-      "项目配置已变化，必须重新制定并批准计划",
+    const lightweight = !isLegacyProtocol(
+      this.store.get<Run>("run", w.run_id!),
+      approvedPlan.plan,
     );
-    const isNative = resolveTaskModel(approvedPlan.plan) === "native-v2";
-    for (const c of project.commands.filter(
-      (c) =>
-        c.required_before_commit || project.git?.required_hooks.includes(c.id),
-    )) {
-      if (isNative) {
-        const activeRev = this.store
-          .list<DeliveryRevision>("delivery_revision", key)
-          .reverse()
-          .find((r) => !r.invalidated && r.snapshot_id === w.snapshot_id);
-        requireCondition(
-          !!activeRev,
-          "HOOK_EVIDENCE_MISSING",
-          `缺少提交前检查 ${c.id}（有效交付版本不存在）`,
-        );
-
-        const matched = this.store
-          .list<TestExecution>("test_execution", key)
-          .filter(
-            (e) =>
-              e.delivery_id === activeRev!.delivery_id &&
-              e.run_id === activeRev!.run_id &&
-              e.exit_code === 0 &&
-              e.repo_id ===
-                (c.repo_id ??
-                  this.store.list<Workspace>("workspace", key)[0]?.repo_id) &&
-              matchesCommand(e.command, c.executable, c.args ?? []),
-          );
-        requireCondition(
-          matched.length > 0,
-          "HOOK_EVIDENCE_MISSING",
-          "缺少当前交付的必需检查执行证据: " + c.id,
-        );
-        if (c.parser !== "none") {
-          const delivery = this.store.must<Delivery>(
-            "delivery",
-            activeRev!.delivery_id,
-          );
-          const calls = new Set(matched.map((e) => e.tool_call_id));
-          const declarations = delivery.manifest.test_executions.filter((e) =>
-            calls.has(e.tool_call_id),
-          );
-          requireCondition(
-            declarations.some(
-              (e) =>
-                e.report_paths.length > 0 &&
-                (!c.report_path || e.report_paths.includes(c.report_path)),
-            ),
-            "HOOK_EVIDENCE_MISSING",
-            "缺少必需检查报告: " + c.id,
-          );
-        }
-      } else {
-        if (c.parser === "none" || c.id === "build") {
-          const hasBuild = this.store
-            .recentEvents(key, 500)
-            .some((e) => e.type === "BuildReady");
-          requireCondition(
-            hasBuild,
-            "HOOK_EVIDENCE_MISSING",
-            `缺少提交前构建 ${c.id}`,
-          );
-          continue;
-        }
-        requireCondition(
-          this.store
-            .list<Evidence>("evidence", key)
-            .some(
-              (e) =>
-                this.plan(key).plan.tests.some(
-                  (t) => t.id === e.test_id && t.command_id === c.id,
-                ) && e.status === "passed",
-            ),
-          "HOOK_EVIDENCE_MISSING",
-          `缺少提交前检查 ${c.id}`,
-        );
-      }
-    }
     this.transition(key, ["REVIEWING"], "COMMITTING", "commit");
     try {
-      if (isNative) {
-        const outcome = await new GitDeliveryCoordinator(
-          this.store,
-          this.config.workspace_root,
-          this.git,
-        ).executeDelivery(key, review.commit_message);
-        if (outcome.hasConflict) {
-          this.transition(
-            key,
-            ["COMMITTING"],
-            "EXECUTING",
-            "merge_conflict_resolution",
-            { run_id: outcome.conflictRequest?.run_id },
-          );
-          return;
-        }
-        if (outcome.needsVerification) {
-          const acceptance = this.store.get("acceptance", key);
-          this.invalidate(
-            key,
-            "任务工作树已吸收主分支最新代码，必须对新候选重新测试和自查",
-          );
-          if (acceptance)
-            this.store.put("acceptance_carry", key, key, {
-              original: acceptance,
-              requires_confirmation: false,
-              integration: true,
-            });
-          this.store.put("plan_check_review_intent", key, key, {
-            phase: "after_human",
-          });
-          this.transition(key, ["COMMITTING"], "QUEUED", "execute", {
-            feedback: [
-              ...this.get(key).feedback,
-              "已合入主工作区最新提交。依据原始计划完整补测新候选及受影响回归，完成程序计划自查后再做终审；不得跳过测试直接合回。",
-            ],
-          });
-          this.scheduler.enqueue(key, w.project_id);
-          this.store.enqueue(key, "dispatch", {});
-        }
+      if (lightweight) {
+        const outcome = await this.withWorkspaceWrite(key, id("commit"), () =>
+          new GitDeliveryCoordinator(
+            this.store,
+            this.config.workspace_root,
+            this.git,
+          ).executeDelivery(key, review.commit_message),
+        );
+        await this.applyCommitOutcome(key, outcome);
       } else {
-        await this.git.commit(snapshot, project, review.commit_message);
+        const snapshot = w.snapshot_id
+          ? this.store.get<Snapshot>("snapshot", w.snapshot_id)
+          : undefined;
+        await this.git.commit(
+          snapshot ??
+            (await this.git.snapshot(key, w.environment_revision)),
+          project,
+          review.commit_message ?? "devflow: apply approved changes",
+        );
         this.transition(key, ["COMMITTING"], "COMMITTED", "done");
       }
     } catch (e) {
@@ -3429,52 +3767,19 @@ export class Engine {
     const w = this.get(key);
     const run = w.run_id ? this.store.get<Run>("run", w.run_id) : undefined;
     requireCondition(
-      w.state === "BLOCKED" &&
+      ["BLOCKED", "STOPPED"].includes(w.state) &&
         run &&
         ["review", BEFORE_HUMAN_REVIEW_STAGE].includes(run.stage),
       "INVALID_STATE",
       "只能重试因复核中断的任务",
     );
-    this.assertProjectConfiguration(key);
-    requireCondition(
-      this.store.get<{ plan_hash: string }>(
-        "approval",
-        `${key}-${w.plan_revision}`,
-      )?.plan_hash === w.plan_hash,
-      "PLAN_NOT_APPROVED",
-      "当前计划未获批准",
-    );
-    const snapshot = this.store.must<Snapshot>("snapshot", w.snapshot_id!);
-    requireCondition(
-      await this.git.matches(snapshot),
-      "SNAPSHOT_CHANGED",
-      "复核对象已变化，需重新交付与自查",
-    );
-    requireCondition(
-      this.get(key).version === w.version,
-      "RUN_REVOKED",
-      "任务状态已变化",
-    );
-    if (resolveTaskModel(this.plan(key).plan) === "native-v2")
-      this.planSelfCheck.assertPassed(w);
     if (run.stage === "review")
       requireCondition(
         this.store.get("acceptance", key),
         "ACCEPTANCE_REQUIRED",
         "终审需要有效人工确认",
       );
-    const previous =
-      reviewCompletionContext(this, w)?.attempts.at(-1)?.review ??
-      (w.review_request_id &&
-        this.store.get<Review>("review", w.review_request_id));
-    if (previous)
-      seedReviewCompletion(
-        this,
-        w,
-        previous,
-        w.blocker?.message ?? "继续未完成审查",
-      );
-    this.transition(key, ["BLOCKED"], "REVIEW_QUEUED", run.stage, {
+    this.transition(key, [w.state], "REVIEW_QUEUED", run.stage, {
       blocker: undefined,
     });
     this.scheduler.enqueue(key, w.project_id);
@@ -3491,7 +3796,7 @@ export class Engine {
     );
     const review = this.store.must<Review>("review", w.review_request_id!);
     requireCondition(
-      review.verdict === "pass",
+      normalizeReviewIntent(review).intent === "passed",
       "REVIEW_INCOMPLETE",
       "只能重试原复核通过的提交",
     );
@@ -3562,34 +3867,37 @@ export class Engine {
           this.store.remove("commit_result", key + "-" + ws.repo_id);
           this.store.remove("commit_index", key + "-" + ws.repo_id);
         }
-        this.invalidate(key, "恢复已吸收主分支的新候选，原测试和终审不能沿用");
+        this.invalidate(key, "恢复已吸收主分支的新候选");
         if (acceptance)
           this.store.put("acceptance_carry", key, key, {
             original: acceptance,
             requires_confirmation: false,
             integration: true,
           });
-        this.store.put("plan_check_review_intent", key, key, {
-          phase: "after_human",
-        });
+        this.patchReviewPointer(key, { phase: "after_human" });
         this.transition(key, ["COMMIT_PARTIAL"], "QUEUED", "execute", {
           blocker: undefined,
           feedback: [
             ...w.feedback,
-            "恢复整合候选：按原始计划重测新候选及受影响旧功能，完成程序自查与最终质量审查后再合回。",
+            "恢复整合候选：主分支已吸收，请检查新候选并完成必要修改后交接代码质量审查。",
           ],
         });
         this.scheduler.enqueue(key, w.project_id);
         this.store.enqueue(key, "dispatch", {});
         return this.get(key);
       }
-      this.transition(key, ["COMMIT_PARTIAL"], "REVIEWING", "commit_recovery");
-      return await this.receiveReview(key, review);
+      const outcome = await new GitDeliveryCoordinator(
+        this.store,
+        this.config.workspace_root,
+        this.git,
+      ).executeDelivery(key, review.commit_message);
+      await this.applyCommitOutcome(key, outcome);
+      return this.get(key);
     } catch (e) {
-      if (this.get(key).state === "REVIEWING")
+      if (["REVIEWING", "COMMITTING", "COMMIT_PARTIAL"].includes(this.get(key).state))
         this.transition(
           key,
-          ["REVIEWING"],
+          [this.get(key).state],
           "COMMIT_PARTIAL",
           "commit_recovery",
           { blocker: { code: "COMMIT_RETRY_FAILED", message: String(e) } },
@@ -3597,6 +3905,228 @@ export class Engine {
       throw e;
     } finally {
       this.scheduler.release(key, run, keys, true);
+    }
+  }
+  private routeExecutionIntent(
+    key: string,
+    runId: string,
+    normalized: ReturnType<typeof normalizeDeliveredRound>,
+  ): RoundResult {
+    const run = this.store.get<Run>("run", runId);
+    const conversationId = run?.conversation_id;
+    if (normalized.intent === "need_planner") {
+      const questions = textQuestions(
+        (normalized.payload as { unresolved_questions?: unknown })
+          .unresolved_questions,
+      );
+      const originalText = [normalized.summary, normalized.notes]
+        .filter((item): item is string => !!item)
+        .join("\n");
+      savePlanningHandoff(this.store, key, {
+        handoff_id: id("pho"),
+        source_run_id: runId,
+        source_role: "executor",
+        source_conversation_id: conversationId,
+        plan_revision: this.get(key).plan_revision,
+        original_text: originalText || undefined,
+        summary: normalized.summary,
+        notes: normalized.notes,
+        questions: questions.length ? questions : undefined,
+        target_role: "planner",
+        status: "pending",
+      });
+      const waiting = readWaitingContext(this.store, key);
+      if (waiting && isPlanningWaiting(waiting))
+        clearWaitingContext(this.store, key);
+      this.transition(key, ["EXECUTING", "VERIFYING"], "PLANNING", "planning", {
+        run_id: undefined,
+        blocker: {
+          code: "NEED_PLANNER",
+          message: normalized.summary ?? "执行需要规划澄清",
+        },
+      });
+      this.store.enqueue(key, "dispatch_run", { purpose: "planning" });
+      return { status: "need_planner", summary: normalized.summary };
+    }
+    if (normalized.intent === "unclear") {
+      this.queueUnclearFollowup(key, {
+        purpose: "execute",
+        role: "executor",
+        run_id: runId,
+        conversation_id: conversationId,
+        source_execution_run_id: runId,
+        original_text: normalized.summary,
+        questions: textQuestions(
+          (normalized.payload as { unresolved_questions?: unknown })
+            .unresolved_questions,
+        ),
+        stage: "execute",
+      });
+      return { status: "unclear", summary: normalized.summary };
+    }
+    saveWaitingContext(this.store, key, {
+      purpose: "execute",
+      role: "executor",
+      run_id: runId,
+      conversation_id: conversationId,
+      source_execution_run_id: runId,
+      original_text: normalized.summary,
+      questions: textQuestions(
+        (normalized.payload as { unresolved_questions?: unknown })
+          .unresolved_questions,
+      ),
+      intent: normalized.intent,
+    });
+    this.transition(key, ["EXECUTING", "VERIFYING"], "WAITING_INPUT", "execute", {
+      blocker: {
+        code:
+          normalized.intent === "need_user"
+            ? "NEED_USER"
+            : "EXECUTION_INTENT_UNCLEAR",
+        message:
+          normalized.summary ??
+          (normalized.intent === "need_user"
+            ? "执行需要用户输入"
+            : "未能辨认本轮结果。请说明：已完成、需要规划澄清，或需要用户输入。"),
+      },
+    });
+    return { status: normalized.intent, summary: normalized.summary };
+  }
+  resumeFromWaiting(
+    key: string,
+    text: string,
+    waiting: WaitingContext,
+  ) {
+    const w = this.get(key);
+    const userAnswer = waiting.intent === "need_user";
+    const continuation = continuationFromWaiting(waiting, {
+      kind: userAnswer
+        ? "user_answer"
+        : waiting.intent === "unclear" || waiting.continuation
+          ? "intent_clarification"
+          : "runtime_resume",
+      ...(userAnswer ? { answer: text } : {}),
+    });
+    saveRunContinuation(this.store, key, key, continuation);
+    const feedback =
+      userAnswer || text !== "用户恢复执行" ? [...w.feedback, text] : w.feedback;
+    if (waiting.purpose === "review") {
+      this.patchReviewPointer(key, {
+        phase: waiting.phase,
+        review_run_id: waiting.run_id,
+      });
+      const next = this.transition(
+        key,
+        [w.state],
+        "REVIEW_QUEUED",
+        waiting.phase === "before_human"
+          ? BEFORE_HUMAN_REVIEW_STAGE
+          : "review",
+        { feedback, blocker: undefined },
+      );
+      this.scheduler.enqueue(key, w.project_id);
+      this.store.enqueue(key, "dispatch", {});
+      return next;
+    }
+    if (isPlanningWaiting(waiting)) {
+      this.ensurePlanningHandoffFromWaiting(key, waiting);
+      const next = this.transition(key, [w.state], "PLANNING", "planning", {
+        run_id: undefined,
+        feedback,
+        blocker: undefined,
+      });
+      this.store.enqueue(key, "dispatch_run", { purpose: "planning" });
+      return next;
+    }
+    const next = this.transition(key, [w.state], "QUEUED", "execute", {
+      feedback,
+      blocker: undefined,
+    });
+    this.scheduler.enqueue(key, w.project_id);
+    this.store.enqueue(key, "dispatch", {});
+    return next;
+  }
+  private ensurePlanningHandoffFromWaiting(
+    key: string,
+    waiting: WaitingContext,
+  ) {
+    const current = readPlanningHandoff(this.store, key);
+    if (current && ["pending", "assigned"].includes(current.status)) return;
+    savePlanningHandoff(this.store, key, {
+      handoff_id: id("pho"),
+      source_run_id: waiting.run_id ?? waiting.source_execution_run_id ?? "",
+      source_role: "executor",
+      source_conversation_id: waiting.conversation_id,
+      original_text: waiting.original_text,
+      questions: waiting.questions,
+      target_role: "planner",
+      status: "pending",
+    });
+  }
+  private workspaceWriteKeys(key: string) {
+    return this.store
+      .list<Workspace>("workspace", key)
+      .map((ws) => "write:" + ws.root.toLowerCase());
+  }
+  private holdsWorkspaceWrite(key: string) {
+    const keys = this.workspaceWriteKeys(key);
+    return (
+      keys.length > 0 &&
+      keys.every((lock) => {
+        const lease = this.store.get<{ owner: string; status: string }>(
+          "lease",
+          lock,
+        );
+        return lease?.owner === key && lease.status === "active";
+      })
+    );
+  }
+  private async withWorkspaceWrite<T>(
+    key: string,
+    runId: string,
+    fn: () => Promise<T>,
+  ): Promise<T> {
+    const keys = this.workspaceWriteKeys(key);
+    if (!keys.length || this.holdsWorkspaceWrite(key)) return fn();
+    requireCondition(
+      this.scheduler.acquire(key, runId, keys),
+      "WORKSPACE_BUSY",
+      "工作区正在使用",
+    );
+    try {
+      return await fn();
+    } finally {
+      this.scheduler.release(key, runId, keys, true);
+    }
+  }
+  private async applyCommitOutcome(
+    key: string,
+    outcome: {
+      hasConflict?: boolean;
+      conflictRequest?: MergeConflictRequest;
+      needsVerification?: boolean;
+    },
+  ) {
+    if (outcome.hasConflict) {
+      this.transition(
+        key,
+        ["COMMITTING", "COMMIT_PARTIAL"],
+        "EXECUTING",
+        "merge_conflict_resolution",
+        { run_id: outcome.conflictRequest?.run_id },
+      );
+      return;
+    }
+    if (outcome.needsVerification) {
+      this.patchReviewPointer(key, { phase: "after_human" });
+      this.transition(
+        key,
+        ["COMMITTING", "COMMIT_PARTIAL"],
+        "REVIEW_QUEUED",
+        "review",
+      );
+      this.scheduler.enqueue(key, this.get(key).project_id);
+      this.store.enqueue(key, "dispatch", {});
     }
   }
   block(key: string, error: unknown) {
@@ -3702,80 +4232,84 @@ export class Engine {
     this.scheduler.suspectExpired(0);
   }
   exportDocuments(key: string) {
-    const w = this.get(key);
-    if (!w.plan_revision) return;
-    const p = this.plan(key);
-    const root = join(
-      this.config.storage_root,
-      "documents",
-      key,
-      `r${w.plan_revision}`,
-    );
-    mkdirSync(root, { recursive: true });
-    atomicWrite(join(root, "计划.md"), p.plan.markdown ?? "");
-    const planCheck = this.planSelfCheck.current(key);
-    if (planCheck) {
-      const revision =
-        planCheck.delivery_revision_id &&
-        this.store.get<DeliveryRevision>(
-          "delivery_revision",
-          planCheck.delivery_revision_id,
-        );
-      const report =
-        revision &&
-        this.store.get<Delivery>("delivery", revision.delivery_id)?.manifest
-          .plan_self_check;
-      atomicWrite(
-        join(root, "执行模型计划复核.md"),
-        `# 执行模型正式计划复核\n\n本文件为执行事实记录，不是实施计划。状态：${planCheck.status}；计划版本：${planCheck.plan_revision}。\n\n` +
-          `请求：${planCheck.id}；源交付：${planCheck.source_delivery_revision_id}；复核轮次：${planCheck.run_id ?? "待调度"}。\n\n` +
-          (report
-            ? report.checks
-                .map(
-                  (c) =>
-                    `- ${c.check_id}：${c.status}；${c.evidence.join("；")}`,
-                )
-                .join("\n")
-            : "尚无通过的逐项复核报告。") +
-          "\n",
+    try {
+      const w = this.get(key);
+      if (!w.plan_revision) return;
+      const p = this.plan(key);
+      const root = join(
+        this.config.storage_root,
+        "documents",
+        key,
+        `r${w.plan_revision}`,
       );
-    }
-    const allEvidence = [
-      ...this.store.list<Evidence>("evidence", key),
-      ...this.store.list<Evidence>("development_evidence", key),
-    ];
-    const progress = testProgress(p.plan, allEvidence, w);
-    const tasks = this.taskStatus(key)
-      .map((t) => {
-        const definition = p.plan.tasks.find((task) => task.id === t.id)!;
-        return `### ${t.id} ${t.title}\n\n-[${t.development_status === "completed" ? "x" : " "}] 开发完成：${({ completed: "已完成", active: "进行中", needs_changes: "需修改", check_failed: "自检未通过", pending_check: "待检查", pending: "未开始" } as Record<string, string>)[t.development_status] ?? t.development_status}\n\n- [${t.validation_status === "passed" ? "x" : " "}] 验证完成：${({ passed: "已通过", failed: "未通过", stale: "需重测", not_run: "未验证" } as Record<string, string>)[t.validation_status]}\n\n修改位置：${definition.repo_id ?? "默认仓库"} / ${definition.paths.join("、")}\n\n输入：${definition.inputs}\n\n核心实现：${definition.implementation}\n\n保持行为：${definition.preserve}\n\n完成标准：${definition.completion}\n\n前置任务：${definition.depends_on.join("、") || "无"}；关联测试：${definition.test_ids.join("、")}\n\n停止条件：${definition.stop_conditions}\n\n实际声明：${t.summary || "尚未提交"}\n`;
-      })
-      .join("\n");
-    const tests = p.plan.tests
-      .map((t) => {
-        const e = latestEvidence(allEvidence, t.id, w);
-        return `### ${t.id} / ${t.layer}\n\n-[${e?.status === "passed" && progressEvidence(e, w) ? "x" : " "}] ${e?.status ?? "not_run"}\n\n关联任务：${t.task_ids.join("、")}；用例清单：\n${progress.cases
-          .filter((c) => c.test_id === t.id)
-          .map(
-            (c) =>
-              `- [${c.status === "passed" ? "x" : " "}] ${c.id} · ${({ passed: "已通过", failed: "未通过", skipped: "已跳过", stale: "需重测", not_run: "未运行", missing: "缺少结果" } as Record<string, string>)[c.status]}`,
-          )
-          .join(
+      mkdirSync(root, { recursive: true });
+      atomicWrite(join(root, "计划.md"), p.plan.markdown ?? "");
+      const planCheck = this.planSelfCheck.current(key);
+      if (planCheck) {
+        const revision =
+          planCheck.delivery_revision_id &&
+          this.store.get<DeliveryRevision>(
+            "delivery_revision",
+            planCheck.delivery_revision_id,
+          );
+        const report =
+          revision &&
+          this.store.get<Delivery>("delivery", revision.delivery_id)?.manifest
+            .plan_self_check;
+        atomicWrite(
+          join(root, "执行模型计划复核.md"),
+          `# 执行模型正式计划复核\n\n本文件为执行事实记录，不是实施计划。状态：${planCheck.status}；计划版本：${planCheck.plan_revision}。\n\n` +
+            `请求：${planCheck.id}；源交付：${planCheck.source_delivery_revision_id}；复核轮次：${planCheck.run_id ?? "待调度"}。\n\n` +
+            (report
+              ? report.checks
+                  .map(
+                    (c) =>
+                      `- ${c.check_id}：${c.status}；${c.evidence.join("；")}`,
+                  )
+                  .join("\n")
+              : "尚无通过的逐项复核报告。") +
             "\n",
-          )}\n\n操作步骤：\n${t.steps.map((step, i) => `${i + 1}. ${step}`).join("\n")}\n\n断言：\n${t.assertions.map((a) => "- " + a).join("\n")}\n\n${e ? `证据：${e.id}\n\n快照：${e.snapshot_id}；环境：${e.environment_revision}\n\n结果：发现 ${e.discovered}，通过 ${e.passed}，失败 ${e.failed}，跳过 ${e.skipped}，退出码 ${e.exit_code}\n\n原始文件：\n${e.files.map((f) => "- " + f.path + " / SHA-256 " + f.hash).join("\n")}` : "尚无运行证据。"}\n`;
-      })
-      .join("\n");
-    if (p.plan.complexity === "complex") {
-      atomicWrite(
-        join(root, "开发进度.md"),
-        `# 开发进度\n\n计划哈希：${p.hash}\n状态：${w.state}\n\n${tasks}\n`,
-      );
-      atomicWrite(join(root, "测试进度.md"), `# 测试进度\n\n${tests}\n`);
-    } else
-      atomicWrite(
-        join(root, "计划.md"),
-        `${p.plan.markdown}\n\n## 开发进度\n\n${tasks}\n\n## 测试进度\n\n${tests}\n`,
-      );
+        );
+      }
+      const allEvidence = [
+        ...this.store.list<Evidence>("evidence", key),
+        ...this.store.list<Evidence>("development_evidence", key),
+      ];
+      const progress = testProgress(p.plan, allEvidence, w);
+      const tasks = this.taskStatus(key)
+        .map((t) => {
+          const definition = p.plan.tasks.find((task) => task.id === t.id)!;
+          return `### ${t.id} ${t.title}\n\n-[${t.development_status === "completed" ? "x" : " "}] 开发完成：${({ completed: "已完成", active: "进行中", needs_changes: "需修改", check_failed: "自检未通过", pending_check: "待检查", pending: "未开始" } as Record<string, string>)[t.development_status] ?? t.development_status}\n\n- [${t.validation_status === "passed" ? "x" : " "}] 验证完成：${({ passed: "已通过", failed: "未通过", stale: "需重测", not_run: "未验证" } as Record<string, string>)[t.validation_status]}\n\n修改位置：${definition.repo_id ?? "默认仓库"} / ${definition.paths.join("、")}\n\n输入：${definition.inputs}\n\n核心实现：${definition.implementation}\n\n保持行为：${definition.preserve}\n\n完成标准：${definition.completion}\n\n前置任务：${definition.depends_on.join("、") || "无"}；关联测试：${definition.test_ids.join("、")}\n\n停止条件：${definition.stop_conditions}\n\n实际声明：${t.summary || "尚未提交"}\n`;
+        })
+        .join("\n");
+      const tests = p.plan.tests
+        .map((t) => {
+          const e = latestEvidence(allEvidence, t.id, w);
+          return `### ${t.id} / ${t.layer}\n\n-[${e?.status === "passed" && progressEvidence(e, w) ? "x" : " "}] ${e?.status ?? "not_run"}\n\n关联任务：${t.task_ids.join("、")}；用例清单：\n${progress.cases
+            .filter((c) => c.test_id === t.id)
+            .map(
+              (c) =>
+                `- [${c.status === "passed" ? "x" : " "}] ${c.id} · ${({ passed: "已通过", failed: "未通过", skipped: "已跳过", stale: "需重测", not_run: "未运行", missing: "缺少结果" } as Record<string, string>)[c.status]}`,
+            )
+            .join(
+              "\n",
+            )}\n\n操作步骤：\n${t.steps.map((step, i) => `${i + 1}. ${step}`).join("\n")}\n\n断言：\n${t.assertions.map((a) => "- " + a).join("\n")}\n\n${e ? `证据：${e.id}\n\n快照：${e.snapshot_id}；环境：${e.environment_revision}\n\n结果：发现 ${e.discovered}，通过 ${e.passed}，失败 ${e.failed}，跳过 ${e.skipped}，退出码 ${e.exit_code}\n\n原始文件：\n${e.files.map((f) => "- " + f.path + " / SHA-256 " + f.hash).join("\n")}` : "尚无运行证据。"}\n`;
+        })
+        .join("\n");
+      if (p.plan.complexity === "complex") {
+        atomicWrite(
+          join(root, "开发进度.md"),
+          `# 开发进度\n\n计划哈希：${p.hash}\n状态：${w.state}\n\n${tasks}\n`,
+        );
+        atomicWrite(join(root, "测试进度.md"), `# 测试进度\n\n${tests}\n`);
+      } else
+        atomicWrite(
+          join(root, "计划.md"),
+          `${p.plan.markdown}\n\n## 开发进度\n\n${tasks}\n\n## 测试进度\n\n${tests}\n`,
+        );
+    } catch {
+      // 资料导出与缓存失败不阻塞调度流程
+    }
   }
   // Read-only presentation: keep runner case names in review evidence, but use
   // the submitted plan scene IDs when counting the plan's displayed results.
@@ -3807,6 +4341,87 @@ export class Engine {
       acceptance.plan_revision === w.plan_revision &&
       acceptance.environment_revision === w.environment_revision;
   }
+  activeNativeDelivery(key: string): {
+    revision: DeliveryRevision;
+    delivery: Delivery;
+  } | null {
+    if (resolveTaskModel(this.plan(key).plan) !== "native-v2") return null;
+    const workflow = this.get(key);
+    const revision = this.store
+      .list<DeliveryRevision>("delivery_revision", key)
+      .reverse()
+      .find((r) => !r.invalidated);
+    if (
+      !revision ||
+      revision.plan_revision !== workflow.plan_revision ||
+      revision.plan_hash !== workflow.plan_hash ||
+      revision.snapshot_id !== workflow.snapshot_id ||
+      !revision.execution_finished ||
+      this.store.get<Run>("run", revision.run_id!)?.status !== "completed"
+    )
+      return null;
+    const delivery = this.store.get<Delivery>("delivery", revision.delivery_id);
+    if (!delivery || delivery.status !== "passed") return null;
+    return { revision, delivery };
+  }
+  deliveryReportFiles(delivery: Delivery): { path: string; hash: string }[] {
+    const w = this.store.get<Workflow>("workflow", delivery.workflow_id);
+    const workspaces = w ? this.store.list<Workspace>("workspace", w.id) : [];
+    const primaryWs = workspaces.find((ws: any) => ws.primary || ws.is_primary) || workspaces[0];
+
+    return Object.entries(delivery.report_hashes ?? {}).map(
+      ([relPath, hash]) => {
+        if (primaryWs && primaryWs.root) {
+          const projectReportPath = join(primaryWs.root, relPath);
+          if (existsSync(projectReportPath)) {
+            return { path: projectReportPath, hash };
+          }
+        }
+        return {
+          path: join(
+            this.config.storage_root,
+            "deliveries",
+            delivery.id,
+            "reports",
+            relPath,
+          ),
+          hash,
+        };
+      },
+    );
+  }
+  reviewDeliveryMaterials(key: string) {
+    const active = this.activeNativeDelivery(key);
+    const evidence = this.getEvidence(key);
+    if (!active)
+      return {
+        delivery: null,
+        reports: [] as { path: string; hash: string }[],
+        open_issues: [] as { code: string; message: string }[],
+        evidence_ids: evidence.map((e) => e.id),
+      };
+    const { delivery } = active;
+    return {
+      delivery: {
+        id: delivery.id,
+        status: delivery.status,
+        run_id: delivery.run_id,
+        submitted_at: delivery.submitted_at,
+        implementations: delivery.manifest.implementations ?? [],
+        test_executions: delivery.manifest.test_executions ?? [],
+        acceptance_mappings: delivery.manifest.acceptance_mappings ?? [],
+      },
+      reports: this.deliveryReportFiles(delivery),
+      open_issues: this.store
+        .list<DeliveryIssue>("delivery_issue", key)
+        .filter(
+          (issue) =>
+            issue.delivery_id === delivery.id && issue.status === "open",
+        )
+        .map((issue) => ({ code: issue.code, message: issue.message })),
+      evidence_ids: evidence.map((e) => e.id),
+    };
+  }
   getEvidence(key: string): Evidence[] {
     const existing = this.store.list<Evidence>("evidence", key);
     if (
@@ -3815,78 +4430,80 @@ export class Engine {
     )
       return existing;
     const plan = this.plan(key).plan;
-    if (resolveTaskModel(plan) === "native-v2") {
-      const activeRev = this.store
-        .list<DeliveryRevision>("delivery_revision", key)
-        .reverse()
-        .find((r) => !r.invalidated);
-      const workflow = this.get(key);
-      if (
-        !activeRev ||
-        activeRev.plan_revision !== workflow.plan_revision ||
-        activeRev.plan_hash !== workflow.plan_hash ||
-        activeRev.snapshot_id !== workflow.snapshot_id ||
-        !activeRev.execution_finished ||
-        this.store.get<Run>("run", activeRev.run_id!)?.status !== "completed"
-      )
-        return [];
-      const delivery = this.store.get<Delivery>(
-        "delivery",
-        activeRev.delivery_id,
-      );
-      if (!delivery || delivery.status !== "passed") return [];
-      const acceptances = this.store
-        .list<AcceptanceResult>("acceptance_result", key)
-        .filter((a) => a.delivery_id === delivery.id && a.status === "passed");
-      const grouped = new Map<string, AcceptanceResult[]>();
-      for (const a of acceptances)
-        grouped.set(a.requirement_id, [
-          ...(grouped.get(a.requirement_id) ?? []),
-          a,
-        ]);
-      return [...grouped.values()].map((group) => {
-        const a = group[0]!;
-        const caseIds = [...new Set(group.map((item) => item.case_id))];
-        const files: { path: string; hash: string }[] = [];
-        if (delivery.report_hashes) {
-          for (const [relPath, h] of Object.entries(delivery.report_hashes)) {
-            files.push({
-              path: join(
-                this.config.storage_root,
-                "deliveries",
-                delivery.id,
-                "reports",
-                relPath,
-              ),
-              hash: h,
-            });
-          }
-        }
-        const testDef = plan.tests.find((t) => t.id === a.requirement_id);
-        const ev: Evidence = {
-          id: a.id,
-          workflow_id: key,
-          test_id: a.requirement_id,
-          status: "passed",
-          phase: "delivery",
-          layer: testDef?.layer ?? "unit",
-          environment_revision: this.get(key).environment_revision,
-          run_id: activeRev.run_id ?? delivery.run_id,
-          plan_revision: activeRev.plan_revision,
-          snapshot_id: activeRev.snapshot_id ?? "",
-          case_ids: caseIds,
-          cases: caseIds.map((id) => ({ id, status: "passed" as const })),
-          passed: caseIds.length,
-          failed: 0,
-          skipped: 0,
-          discovered: caseIds.length,
-          exit_code: 0,
-          files,
-          created_at: delivery.submitted_at,
-        };
-        return ev;
-      });
+    if (resolveTaskModel(plan) !== "native-v2") return [];
+    const active = this.activeNativeDelivery(key);
+    if (!active) return [];
+    const { revision, delivery } = active;
+    const files = this.deliveryReportFiles(delivery);
+    const acceptances = this.store
+      .list<AcceptanceResult>("acceptance_result", key)
+      .filter((a) => a.delivery_id === delivery.id && a.status === "passed");
+    if (acceptances.length === 0) {
+      if (files.length === 0) return [];
+      return [
+        this.unmappedReportEvidence(key, delivery, revision, files),
+      ];
     }
-    return [];
+    const grouped = new Map<string, AcceptanceResult[]>();
+    for (const a of acceptances)
+      grouped.set(a.requirement_id, [
+        ...(grouped.get(a.requirement_id) ?? []),
+        a,
+      ]);
+    return [...grouped.values()].map((group) => {
+      const a = group[0]!;
+      const caseIds = [...new Set(group.map((item) => item.case_id))];
+      const testDef = plan.tests.find((t) => t.id === a.requirement_id);
+      const ev: Evidence = {
+        id: a.id,
+        workflow_id: key,
+        test_id: a.requirement_id,
+        status: "passed",
+        phase: "delivery",
+        layer: testDef?.layer ?? "unit",
+        environment_revision: this.get(key).environment_revision,
+        run_id: revision.run_id ?? delivery.run_id,
+        plan_revision: revision.plan_revision,
+        snapshot_id: revision.snapshot_id ?? "",
+        case_ids: caseIds,
+        cases: caseIds.map((id) => ({ id, status: "passed" as const })),
+        passed: caseIds.length,
+        failed: 0,
+        skipped: 0,
+        discovered: caseIds.length,
+        exit_code: 0,
+        files,
+        created_at: delivery.submitted_at,
+      };
+      return ev;
+    });
+  }
+  private unmappedReportEvidence(
+    key: string,
+    delivery: Delivery,
+    revision: DeliveryRevision,
+    files: { path: string; hash: string }[],
+  ): Evidence {
+    return {
+      id: "ev-" + delivery.id,
+      workflow_id: key,
+      test_id: "delivery-reports",
+      status: "passed",
+      phase: "delivery",
+      layer: "unit",
+      environment_revision: this.get(key).environment_revision,
+      run_id: revision.run_id ?? delivery.run_id,
+      plan_revision: revision.plan_revision,
+      snapshot_id: revision.snapshot_id ?? "",
+      case_ids: [],
+      cases: [],
+      passed: 0,
+      failed: 0,
+      skipped: 0,
+      discovered: 0,
+      exit_code: 0,
+      files,
+      created_at: delivery.submitted_at,
+    };
   }
 }

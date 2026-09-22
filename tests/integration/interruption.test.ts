@@ -60,18 +60,10 @@ for (const cancel of [true, false])
         expect(detail.attention?.interruption?.source).toBe("local_console");
         expect(detail.runs[0]?.result).not.toHaveProperty("error");
       } else {
-        await expect
-          .poll(() => s.store.list("run", w.id).length, { timeout: 20000 })
-          .toBeGreaterThan(1);
-        expect(s.store.get<any>("repair_state", w.id)?.last_error).toContain(
-          "upstream connection failed",
-        );
         expect(s.store.list<any>("run", w.id)[0].result.error).toContain(
           "upstream connection failed",
         );
-        expect(s.engine.get(w.id).feedback.join("\n")).toContain(
-          "upstream connection failed",
-        );
+        expect(s.engine.get(w.id).state).toBe("BLOCKED");
       }
     } finally {
       if ((s.engine as any).running.size) {

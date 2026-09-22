@@ -35,6 +35,7 @@ export const FeedbackMessageSchema = z
     kind: z.enum(["planning", "execution", "functional"]),
     text: z.string().min(1),
     refs: z.array(WorkspaceReferenceSchema).default([]),
+    attachment_ids: z.array(Id).default([]),
     target_document_revision: z.number().int().nonnegative().default(0),
     status: z.enum(["pending", "acknowledged", "resolved"]).default("pending"),
     ack_run: z.string().optional(),
@@ -61,6 +62,7 @@ export const FunctionalIssueSchema = z
     created_seq: z.number().int().positive(),
     description: z.string().min(1),
     refs: z.array(WorkspaceReferenceSchema).default([]),
+    attachment_ids: z.array(Id).default([]),
     status: z
       .enum(["open", "queued", "fixing", "ready_for_retest", "confirmed"])
       .default("open"),
@@ -85,6 +87,7 @@ export const AsideSessionSchema = z
     plan_hash: z.string().min(1).optional(),
     question: z.string().min(1),
     refs: z.array(WorkspaceReferenceSchema).default([]),
+    attachment_ids: z.array(Id).default([]),
     status: z
       .enum(["active", "queued", "completed", "expired", "cancelled"])
       .default("queued"),

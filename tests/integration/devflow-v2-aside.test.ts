@@ -118,4 +118,13 @@ describe("IT-ASIDE: 全局单槽位控制、队列流转、取消与正式反馈
     );
     expect(matched.length).toBe(1);
   });
+
+  it("TC-ASIDE-04: 运行失败写入可见原因，而不是静默取消", () => {
+    const s = asideService.submitQuestion(wf1, "执行到哪了？");
+    expect(s.status).toBe("active");
+    asideService.settleRun(wf1, s.id, { error: new Error("TIMEOUT") });
+    const updated = env.store.get<any>("aside_session", s.id);
+    expect(updated.status).toBe("expired");
+    expect(updated.answer).toContain("提问超时");
+  });
 });

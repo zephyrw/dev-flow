@@ -178,6 +178,16 @@ export function PlanReviewDialog({
             value={text}
             disabled={pending}
             onChange={(event) => setText(event.target.value)}
+            onKeyDown={(event) => {
+              if (
+                event.key !== "Enter" ||
+                event.shiftKey ||
+                event.nativeEvent.isComposing
+              )
+                return;
+              event.preventDefault();
+              void submit(event as unknown as React.FormEvent);
+            }}
           />
           {error && (
             <div className="error" role="alert">

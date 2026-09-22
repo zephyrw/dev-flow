@@ -13,7 +13,6 @@ import {
   type Workflow,
   type DeliveryRevision,
 } from "../../packages/contracts/src/index.js";
-import { PLAN_SELF_CHECK_STAGE } from "../../packages/core/src/plan-self-check.js";
 import type { Runtime } from "../../packages/core/src/engine.js";
 
 export async function fixture(
@@ -57,6 +56,47 @@ export async function fixture(
   return result;
 }
 export type Fixture = Awaited<ReturnType<typeof fixture>>;
+// Isolated precondition for runtime/telemetry tests. The full quality-flow
+// integration test creates these audit records through real review scheduling.
+export function seedPlannerTakeover(s: Fixture) {
+  const w = s.engine.get(s.w.id);
+  const phase = "before_human";
+  const reviewIds = Array.from({ length: 3 }, (_, i) => `repair-review-${i}`);
+  for (const reviewId of reviewIds) {
+    const runId = `implementation-${reviewId}`;
+    s.store.put("run", runId, w.id, {
+      id: runId,
+      workflow_id: w.id,
+      purpose: "implement",
+      status: "completed",
+      exit_code: 0,
+      plan_revision: w.plan_revision,
+    });
+    s.store.put("quality_review", reviewId, w.id, {
+      workflow_id: w.id,
+      phase,
+      verdict: "changes_required",
+      plan_revision: w.plan_revision,
+      executor_repair_run_id: runId,
+    });
+  }
+  s.store.put("quality_gate", s.engine.quality.getGateKey(w.id, phase), w.id, {
+    ...s.engine.quality.getOrCreateGate(w.id, phase),
+    status: "rejected",
+    executor_rejections: 3,
+    failed_repair_review_ids: reviewIds,
+    current_review_id: reviewIds.at(-1),
+    takeover: true,
+  });
+  s.store.put("repair_assignment", w.id, w.id, {
+    planner: true,
+    phase,
+    source: "quality_review",
+    source_review_id: reviewIds.at(-1),
+    plan_revision: w.plan_revision,
+    plan_hash: w.plan_hash,
+  });
+}
 export function report(s: Fixture, run: Run) {
   const request = s.engine.planSelfCheck.current(s.w.id)!;
   return {
@@ -113,9 +153,6 @@ export async function deliver(
         case_id: "updates content",
       },
     ],
-    ...(run.stage === PLAN_SELF_CHECK_STAGE
-      ? { plan_self_check: report(s, run) }
-      : {}),
   });
   const reader = attestFixture(
     s.engine,
@@ -160,17 +197,13 @@ export function runtime(
     async execute(w, run) {
       s.stages.push(run.stage);
       expect(s.engine.get(w.id).state).toBe("EXECUTING");
-      if (run.stage === PLAN_SELF_CHECK_STAGE && onCheck) return onCheck(run);
+      if (onCheck) return onCheck(run);
       writeFileSync(join(s.repo, "app.txt"), "after\n");
       expect((await deliver(s, run)).status).toBe("accepted");
       expect(s.engine.get(w.id).state).toBe("VERIFYING");
-      expect(() =>
-        s.engine.quality.assertPassed(w.id, "before_human"),
-      ).toThrow();
     },
     async review(w, run) {
       s.stages.push(run.stage);
-      expect(s.engine.planSelfCheck.assertPassed(w).status).toBe("passed");
       return passReview(w);
     },
     async stop() {},

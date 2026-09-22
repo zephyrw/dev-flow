@@ -1,4 +1,7 @@
-import { GitDeliveryCoordinator } from "../../packages/git/src/delivery-coordinator.js";
+import {
+  GitDeliveryCoordinator,
+  mergeConflictResolutionInstructions,
+} from "../../packages/git/src/delivery-coordinator.js";
 import { describe, it, expect } from "vitest";
 import { setup, repository, project, proof } from "../helpers.js";
 import { CreateWorkflowService } from "../../packages/core/src/create-workflow.js";
@@ -9,7 +12,9 @@ import { writeFileSync, existsSync } from "node:fs";
 import type {
   MergeConflictRequest,
   MergeConflictReceipt,
+  AcceptanceCarry,
 } from "../../packages/contracts/src/index.js";
+import { MergeConflictReceiptSchema } from "../../packages/contracts/src/merge-conflict.js";
 
 describe("DevFlow v2 Git 冲突模型修复与终态保护", () => {
   it(
@@ -97,7 +102,16 @@ describe("DevFlow v2 Git 冲突模型修复与终态保护", () => {
           }
           await new Promise((r) => setTimeout(r, 100));
         }
-        throw Error("Timeout waiting for " + state);
+        throw Error(
+          "Timeout waiting for " +
+            state +
+            " current=" +
+            JSON.stringify({
+              state: s.engine.get(w.id).state,
+              stage: s.engine.get(w.id).stage,
+              blocker: s.engine.get(w.id).blocker,
+            }),
+        );
       };
 
       try {
@@ -109,15 +123,8 @@ describe("DevFlow v2 Git 冲突模型修复与终态保护", () => {
         const accept = proof(s.engine, w.id, "accept");
         await s.engine.accept(w.id, accept.proof, accept.binding);
 
-        // 持续调度直到冲突解决并重新进入 HUMAN_PENDING
-        await wait("HUMAN_PENDING");
-        expect(conflictResolved).toBe(true);
-
-        // 冲突解决后生成新合并候选，作废旧证据并重新补测与终审
-        const accept2 = proof(s.engine, w.id, "accept");
-        await s.engine.accept(w.id, accept2.proof, accept2.binding);
-
         await wait("COMPLETED");
+        expect(conflictResolved).toBe(true);
 
         // 断言最终主工作区内容同时保留了双方需求
         const finalContent = await git(r.repo, ["show", "HEAD:app.txt"]);
@@ -135,6 +142,8 @@ describe("DevFlow v2 Git 冲突模型修复与终态保护", () => {
             "COMMITTED",
             "COMMIT_PARTIAL",
             "CLEANUP_PENDING",
+            "COMMITTING",
+            "INTEGRATING",
           ].includes(s.engine.get(w.id).state)
         ) {
           await s.engine.stop(w.id);
@@ -315,4 +324,160 @@ describe("DevFlow v2 Git 冲突模型修复与终态保护", () => {
       s.store.close();
     }
   });
+
+  it("解析保留明确功能影响，旧回执缺字段仍兼容", () => {
+    expect(
+      MergeConflictReceiptSchema.parse({
+        request_id: "req",
+        workflow_id: "wf",
+        run_id: "run",
+        candidate_commit: "a",
+        source_commit: "b",
+        status: "resolved",
+        resolved_paths: ["app.txt"],
+        function_impact: "changed",
+        function_impact_explanation: "合并后行为变化",
+      }).function_impact,
+    ).toBe("changed");
+    expect(
+      MergeConflictReceiptSchema.parse({
+        request_id: "req",
+        workflow_id: "wf",
+        run_id: "run",
+        candidate_commit: "a",
+        source_commit: "b",
+        status: "resolved",
+        resolved_paths: ["app.txt"],
+      }).function_impact,
+    ).toBeUndefined();
+    expect(mergeConflictResolutionInstructions()).toContain("function_impact");
+  });
+
+  it("none 沿承接、changed/uncertain 需要确认，重复回执不丢影响", async () => {
+    const noneCarry = await resolveConflictWithImpact("none");
+    expect(noneCarry.carry?.requires_confirmation).toBe(false);
+    expect(noneCarry.carry?.reported_function_impact).toBe("none");
+    noneCarry.store.close();
+
+    const changed = await resolveConflictWithImpact("changed");
+    expect(changed.carry?.requires_confirmation).toBe(true);
+    expect(changed.carry?.reported_function_impact).toBe("changed");
+    expect(changed.store.get("acceptance", "conflict-wf")).toBeUndefined();
+    const duplicate = await changed.coordinator.handleConflictResolution(
+      "conflict-wf",
+      changed.requestId,
+      changed.receipt,
+    );
+    expect(duplicate.carried).toBe(true);
+    const afterDuplicate = changed.store.get<AcceptanceCarry>(
+      "acceptance_carry",
+      "conflict-wf",
+    );
+    expect(afterDuplicate?.reported_function_impact).toBe("changed");
+    expect(afterDuplicate?.requires_confirmation).toBe(true);
+    const noneReplay = await changed.coordinator.handleConflictResolution(
+      "conflict-wf",
+      changed.requestId,
+      { ...changed.receipt, function_impact: "none" },
+    );
+    expect(noneReplay.carried).toBe(true);
+    expect(
+      changed.store.get<AcceptanceCarry>("acceptance_carry", "conflict-wf")
+        ?.reported_function_impact,
+    ).toBe("changed");
+    changed.store.close();
+
+    const uncertain = await resolveConflictWithImpact("uncertain");
+    expect(uncertain.carry?.requires_confirmation).toBe(true);
+    expect(uncertain.carry?.reported_function_impact).toBe("uncertain");
+    uncertain.store.close();
+  });
 });
+
+async function resolveConflictWithImpact(
+  impact: "none" | "changed" | "uncertain",
+) {
+  const s = setup();
+  const r = await repository(s.root);
+  await git(r.repo, ["checkout", "-b", "source"]);
+  writeFileSync(join(r.repo, "app.txt"), "upstream line\n");
+  await git(r.repo, ["add", "app.txt"]);
+  await git(r.repo, ["commit", "-m", "source change"]);
+  const sourceCommit = (await git(r.repo, ["rev-parse", "HEAD"])).trim();
+  await git(r.repo, ["checkout", "task/fixture"]);
+  writeFileSync(join(r.repo, "app.txt"), "after\n");
+  await git(r.repo, ["add", "app.txt"]);
+  await git(r.repo, ["commit", "-m", "candidate change"]);
+  const candidateCommit = (await git(r.repo, ["rev-parse", "HEAD"])).trim();
+  try {
+    await git(
+      r.repo,
+      ["merge", "--no-edit", sourceCommit],
+      {
+        GIT_EDITOR: ":",
+        GIT_MERGE_AUTOEDIT: "no",
+        GIT_PAGER: "cat",
+      },
+    );
+  } catch {}
+  writeFileSync(join(r.repo, "app.txt"), "after\nupstream line\n");
+  const requestId = "conflict-req-" + impact;
+  s.store.put("workflow", "conflict-wf", "p1", {
+    id: "conflict-wf",
+    project_id: "p1",
+    state: "INTEGRATING",
+    stage: "integration",
+    version: 1,
+    snapshot_id: "snap",
+  });
+  s.store.put("project", "p1", "global", project(r.repo));
+  s.store.put("workspace", "ws-conflict", "conflict-wf", {
+    id: "ws-conflict",
+    repo_id: "main",
+    root: r.repo,
+    branch: "task/fixture",
+    common_dir: r.repo,
+    owned: true,
+    baseline: candidateCommit,
+  });
+  s.store.put("merge_conflict_request", requestId, "conflict-wf", {
+    id: requestId,
+    workflow_id: "conflict-wf",
+    repo_id: "main",
+    plan_revision: 1,
+    plan_hash: "hash",
+    candidate_commit: candidateCommit,
+    source_commit: sourceCommit,
+    worktree_root: r.repo,
+    common_dir: r.repo,
+    conflict_paths: ["app.txt"],
+    run_id: "conflict-run",
+    status: "running",
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  });
+  s.store.put("acceptance", "conflict-wf", "conflict-wf", {
+    snapshot_id: "snap",
+    confirmed_by: "tester",
+  });
+  const coordinator = new GitDeliveryCoordinator(s.store, s.root);
+  const receipt: MergeConflictReceipt = {
+    request_id: requestId,
+    workflow_id: "conflict-wf",
+    run_id: "conflict-run",
+    candidate_commit: candidateCommit,
+    source_commit: sourceCommit,
+    status: "resolved",
+    resolved_paths: ["app.txt"],
+    function_impact: impact,
+    function_impact_explanation: "impact-" + impact,
+  };
+  await coordinator.handleConflictResolution("conflict-wf", requestId, receipt);
+  return {
+    store: s.store,
+    coordinator,
+    requestId,
+    receipt,
+    carry: s.store.get<AcceptanceCarry>("acceptance_carry", "conflict-wf"),
+  };
+}

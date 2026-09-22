@@ -1,9 +1,28 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import {
+  spawn,
+  execFileSync,
+  type ChildProcessWithoutNullStreams,
+} from "node:child_process";
 import { EventEmitter } from "node:events";
 import { existsSync } from "node:fs";
 import { FlowError, requireCondition } from "../../contracts/src/index.js";
 import { JsonLines } from "../../adapters/agy/src/protocol.js";
 import { id } from "../../core/src/util.js";
+
+function killProcessTree(pid?: number) {
+  if (!pid) return;
+  try {
+    if (process.platform === "win32") {
+      execFileSync("taskkill", ["/F", "/T", "/PID", String(pid)], {
+        windowsHide: true,
+        stdio: "ignore",
+      });
+      return;
+    }
+    process.kill(pid, "SIGTERM");
+  } catch {}
+}
+
 export interface ProcessSpec {
   id: string;
   workflow_id?: string;
@@ -15,8 +34,24 @@ export interface ProcessSpec {
   deadline_at?: number;
   stdin?: string;
 }
+export interface ProcessStopOptions {
+  expectedPid?: number;
+  checkNotStarted?: boolean;
+}
+
+export interface ProcessStopResult {
+  status:
+    | "confirmed_exited"
+    | "confirmed_not_started"
+    | "requested"
+    | "unknown"
+    | "not_owned";
+  pid?: number;
+}
+
 export interface ManagedProcess extends EventEmitter {
   id: string;
+  pid?: number;
   completion: Promise<{
     code: number | null;
     signal?: string;
@@ -29,6 +64,8 @@ export interface ManagedProcess extends EventEmitter {
 }
 export class ProcessManager {
   private active = new Map<string, ManagedProcess>();
+  private stopHistory = new Map<string, ProcessStopResult>();
+  private closing = false;
   constructor(
     private hostExecutable: string,
     private requireHost = true,
@@ -38,6 +75,13 @@ export class ProcessManager {
     ) => void,
   ) {}
   start(spec: ProcessSpec): ManagedProcess {
+    if (this.closing) {
+      throw new FlowError(
+        "PROCESS_MANAGER_CLOSING",
+        "进程管理器正在关闭，拒绝启动新进程",
+        503,
+      );
+    }
     const existing = this.active.get(spec.id);
     if (existing) return existing;
     const isWindows = process.platform === "win32";
@@ -109,6 +153,7 @@ export class ProcessManager {
       if (spec.stdin) child.stdin.end(spec.stdin);
       else child.stdin.end();
     }
+    events.pid = child.pid;
     events.pauseOutput = () => {
       child.stdout.pause();
     };
@@ -131,6 +176,10 @@ export class ProcessManager {
           timer = undefined;
         }
         this.active.delete(spec.id);
+        this.stopHistory.set(spec.id, {
+          status: "confirmed_exited",
+          pid: events.pid,
+        });
         this.lifecycle?.(spec, {
           status: "exited",
           code,
@@ -149,6 +198,10 @@ export class ProcessManager {
           timer = undefined;
         }
         this.active.delete(spec.id);
+        this.stopHistory.set(spec.id, {
+          status: "confirmed_exited",
+          pid: events.pid,
+        });
         settled = true;
         this.lifecycle?.(spec, { status: "failed", confirmed: false });
         reject(e);
@@ -198,13 +251,10 @@ export class ProcessManager {
         try {
           if (child.stdin?.writable) {
             child.stdin.write(JSON.stringify({ action: "stop" }) + "\n");
-          } else {
-            child.kill();
           }
-        } catch {
-          child.kill();
-        }
-      } else child.kill();
+        } catch {}
+      }
+      killProcessTree(child.pid);
       await done;
     };
     let timeoutDuration = spec.timeout_ms;
@@ -229,14 +279,41 @@ export class ProcessManager {
   get(key: string) {
     return this.active.get(key);
   }
-  async stop(key: string) {
+  async stop(
+    key: string,
+    options?: ProcessStopOptions,
+  ): Promise<ProcessStopResult> {
+    const history = this.stopHistory.get(key);
+    if (
+      history &&
+      (history.status === "confirmed_exited" ||
+        history.status === "confirmed_not_started")
+    ) {
+      return history;
+    }
     const p = this.active.get(key);
-    if (p) await p.stop();
+    if (!p) {
+      if (options?.checkNotStarted) {
+        const res: ProcessStopResult = { status: "confirmed_not_started" };
+        this.stopHistory.set(key, res);
+        return res;
+      }
+      return { status: "unknown" };
+    }
+    if (options?.expectedPid && p.pid && p.pid !== options.expectedPid) {
+      return { status: "not_owned", pid: p.pid };
+    }
+    const pid = p.pid;
+    await p.stop();
+    const result: ProcessStopResult = { status: "confirmed_exited", pid };
+    this.stopHistory.set(key, result);
+    return result;
   }
   list() {
     return [...this.active.keys()];
   }
   async close() {
+    this.closing = true;
     await Promise.all([...this.active.values()].map((p) => p.stop()));
   }
 }

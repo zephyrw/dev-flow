@@ -1,0 +1,4 @@
+{"type":"system","subtype":"init","session_id":"qoder-session-root-003","agent_id":"qoder-agent-root-003"}
+{"type":"assistant","session_id":"qoder-session-root-003","agent_id":"qoder-agent-root-003","message":{"content":[{"type":"text","text":"主会话输出"}]}}
+{"type":"assistant","session_id":"qoder-session-child-aa","agent_id":"qoder-agent-child-bb","parent_session_id":"qoder-session-root-003","message":{"content":[{"type":"text","text":"子会话输出"}]}}
+{"type":"user","session_id":"qoder-session-root-003","message":{"content":[{"type":"tool_result","tool_use_id":"call_bind","agent_id":"qoder-agent-child-bb","session_id":"qoder-session-child-aa","content":"{\"agent_id\":\"qoder-agent-child-bb\",\"session_id\":\"qoder-session-child-aa\"}"}]}}

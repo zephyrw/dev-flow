@@ -1,3 +1,4 @@
+import { FlowError } from "../../../contracts/src/index.js";
 import type { RunContext, PreparedInvocation } from "./interface.js";
 export const readOnlyPurpose = (p: string) =>
   ["planning", "quality_review", "aside"].includes(p);
@@ -59,8 +60,11 @@ export function clientInvocation(
         Math.max(1, Math.ceil((input.timeoutMs ?? 300000) / 60000)) + "m",
       );
       if (model) args.push("--model", model);
-      if (resume) args.push("--conversation", resume);
-      else args.push("--new-project");
+      if (resume) {
+        args.push("--conversation", resume);
+      } else if ((input as any).projectId) {
+        args.push("--project", (input as any).projectId);
+      }
       args.push("--mode", readonly ? "plan" : "accept-edits");
       for (const root of Object.values(input.workspaceRoots))
         args.push("--add-dir", root);
@@ -79,9 +83,16 @@ export function clientInvocation(
       if (readonly)
         args.push(
           "--tools",
-          "Read,Glob,Grep",
+          "Read,Glob,Grep,Agent,Task",
           "--disallowedTools",
-          "Bash,Edit,Write,NotebookEdit,Agent",
+          "Bash,Edit,Write,NotebookEdit",
+          "--agents",
+          JSON.stringify({
+            "devflow-readonly": {
+              description: "DevFlow read-only subagent",
+              tools: ["Read", "Glob", "Grep"],
+            },
+          }),
         );
       if (resume) args.push("--resume", resume);
       if (model) args.push("--model", model);
@@ -92,7 +103,6 @@ export function clientInvocation(
         "--output-format",
         "streaming-json",
         "--no-plan",
-        "--no-subagents",
         "--no-auto-update",
       );
       if (readonly)
@@ -104,16 +114,32 @@ export function clientInvocation(
           "--deny",
           "Edit",
           "--deny",
+          "Write",
+          "--deny",
           "MCPTool",
+          "--agents",
+          JSON.stringify({
+            "devflow-readonly-child": {
+              description: "DevFlow read-only subagent",
+              tools: ["read", "grep", "glob"],
+            },
+          }),
         );
       if (resume) args.push("--resume", resume);
       if (model) args.push("--model", model);
       args.push("-p", prompt);
       break;
     case "kimi-code":
+      // CW-D09: Kimi headless 方案的 --plan 与 -p 冲突，只读角色在 spawn 前直接返回 READ_ONLY_UNSUPPORTED
+      if (readonly) {
+        throw new FlowError(
+          "READ_ONLY_UNSUPPORTED",
+          "Kimi Code 当前 headless 方案不支持只读执行（--plan 与 -p 冲突），无法安全执行只读角色",
+          422,
+        );
+      }
       args.push("--output-format", "stream-json");
       if (resume) args.push("--session", resume);
-      if (readonly) args.push("--plan");
       if (model) args.push("--model", model);
       args.push("-p", prompt);
       break;
@@ -125,7 +151,21 @@ export function clientInvocation(
         "--permission-mode",
         readonly ? "plan" : "accept_edits",
       );
-      if (readonly) args.push("--tools", "Read,Glob,Grep");
+      if (readonly) {
+        args.push(
+          "--tools",
+          "Read,Glob,Grep,Agent",
+          "--disallowed-tools",
+          "Bash,Edit,Write,NotebookEdit,Task",
+          "--agents",
+          JSON.stringify({
+            "devflow-readonly-child": {
+              description: "DevFlow read-only subagent",
+              tools: ["Read", "Glob", "Grep"],
+            },
+          }),
+        );
+      }
       if (resume) args.push("--resume", resume);
       if (model) args.push("--model", model);
       args.push(prompt);
@@ -147,6 +187,25 @@ export function clientInvocation(
                 glob: "allow",
                 grep: "allow",
                 list: "allow",
+                task: {
+                  "*": "deny",
+                  "devflow-review-child": "allow",
+                },
+              },
+            },
+            "devflow-review-child": {
+              mode: "subagent",
+              description: "DevFlow read-only subagent",
+              permission: {
+                "*": "deny",
+                read: "allow",
+                glob: "allow",
+                grep: "allow",
+                list: "allow",
+                edit: "deny",
+                write: "deny",
+                bash: "deny",
+                patch: "deny",
               },
             },
           },

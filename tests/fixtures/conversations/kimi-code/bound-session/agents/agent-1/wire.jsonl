@@ -1,0 +1,3 @@
+{"type":"profile.bind","modelAlias":"kimi-code/k3","profileName":"explore","thinkingEffort":"low"}
+{"type":"context.append_loop_event","event":{"type":"tool.call","toolCallId":"tool_read_child","name":"Read","args":{"file_path":"fixture.txt"}}}
+{"type":"context.append_loop_event","event":{"type":"tool.result","toolCallId":"tool_read_child","result":{"output":"fixture text"}}}

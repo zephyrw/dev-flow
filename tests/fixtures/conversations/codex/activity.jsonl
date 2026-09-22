@@ -1,0 +1,8 @@
+{"type":"thread.started","thread_id":"019947a2-8a00-7000-8000-000000000010"}
+{"type":"item.completed","thread_id":"019947a2-8a00-7000-8000-000000000010","item":{"id":"item_spawn_1","type":"agent","status":"completed","thread_id":"019947a2-8a00-7000-8000-000000000011","agent_id":"explore-1"}}
+{"type":"thread.started","thread_id":"019947a2-8a00-7000-8000-000000000011"}
+{"type":"item.started","thread_id":"019947a2-8a00-7000-8000-000000000010","item":{"id":"item_root_cmd","type":"command_execution","command":"pnpm test tests/unit/root.test.ts","cwd":"/workspace/demo","status":"in_progress"}}
+{"type":"item.started","thread_id":"019947a2-8a00-7000-8000-000000000011","item":{"id":"item_child_cmd","type":"command_execution","command":"node --test tests/child.test.js","cwd":"/workspace/demo","status":"in_progress"}}
+{"type":"item.completed","thread_id":"019947a2-8a00-7000-8000-000000000011","item":{"id":"item_child_cmd","type":"command_execution","command":"node --test tests/child.test.js","exit_code":0,"status":"completed"}}
+{"type":"item.completed","thread_id":"019947a2-8a00-7000-8000-000000000010","item":{"id":"item_root_msg","type":"agent_message","text":"根会话公开摘要"}}
+{"type":"item.completed","thread_id":"019947a2-8a00-7000-8000-000000000011","item":{"id":"item_child_msg","type":"agent_message","text":"子会话公开摘要"}}

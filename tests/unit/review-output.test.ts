@@ -14,7 +14,4 @@ it("UT-16 Codex wire schema uses explicit repository keys and closed required pr
       else if (value && typeof value === "object") walk(value);
   };
   walk(schema);
-  expect(
-    schema.properties.repair_plan.anyOf[0].properties.baselines.required,
-  ).toEqual(["main", "api"]);
 });

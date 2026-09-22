@@ -1,0 +1,5 @@
+{"role":"meta","type":"system.version","version":"0.37.2"}
+{"role":"assistant","content":"开始查看工作区"}
+{"role":"assistant","tool_calls":[{"type":"function","id":"tool_read_root","function":{"name":"Read","arguments":"{\"file_path\":\"README.md\"}"}}]}
+{"role":"tool","tool_call_id":"tool_read_root","content":"# fixture"}
+{"role":"meta","type":"session.resume_hint","session_id":"session_aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeee1","command":"kimi -r session_aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeee1","content":"To resume this session: kimi -r session_aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeee1"}

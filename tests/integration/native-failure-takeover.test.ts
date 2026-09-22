@@ -1,5 +1,11 @@
 import { expect, it, vi } from "vitest";
-import { fixture, runtime, until, cleanup } from "../fixtures/native-flow.js";
+import {
+  fixture,
+  runtime,
+  until,
+  cleanup,
+  seedPlannerTakeover,
+} from "../fixtures/native-flow.js";
 import { FlowError } from "../../packages/contracts/src/index.js";
 import { rejectedDeliveryFeedback } from "../../packages/core/src/delivery-feedback.js";
 import { resumeApproved } from "../../packages/runtime/src/recovery.js";
@@ -47,14 +53,12 @@ it("three failed native execution rounds keep the executor and do not count as q
     ...base,
     diagnose,
     async execute(w, run, token) {
-      if (run.purpose !== "plan_self_check") {
-        owners.push(run.adapter);
-        if (owners.length <= 3)
-          throw new FlowError(
-            "DELIVERY_REJECTED",
-            `核验剩余 ${41 - owners.length} 个问题`,
-          );
-      }
+      owners.push(run.adapter);
+      if (owners.length <= 3)
+        throw new FlowError(
+          "DELIVERY_REJECTED",
+          `核验剩余 ${41 - owners.length} 个问题`,
+        );
       await base.execute(w, run, token);
     },
   };
@@ -103,6 +107,35 @@ it("execution recovery stops after six failed runs without switching to the plan
   }
 }, 150000);
 
+it("a legitimate quality takeover keeps planner ownership during bounded execution recovery", async () => {
+  const s = await fixture();
+  seedPlannerTakeover(s);
+  const owners: string[] = [];
+  s.engine.runtime = {
+    ...runtime(s),
+    async execute(_w, run) {
+      owners.push(run.adapter);
+      expect(run.purpose).toBe("planner_takeover");
+      throw new FlowError("DELIVERY_REJECTED", "规划接管后的交付尚未完成");
+    },
+  };
+  try {
+    await until(s, ["BLOCKED"], 120000);
+    expect(owners).toEqual(Array(3).fill("codex"));
+    expect(s.engine.get(s.w.id).blocker?.code).toBe("REPAIR_EXHAUSTED");
+    expect(s.engine.quality.getGate(s.w.id, "before_human")).toMatchObject({
+      executor_rejections: 3,
+      takeover: true,
+    });
+    expect(s.store.get("repair_assignment", s.w.id)).toMatchObject({
+      planner: true,
+      source: "quality_review",
+    });
+  } finally {
+    await cleanup(s);
+  }
+}, 150000);
+
 it("dispatch rejects a queued legacy takeover even without an explicit resume", async () => {
   const s = await fixture();
   const base = runtime(s);
@@ -123,32 +156,28 @@ it("dispatch rejects a queued legacy takeover even without an explicit resume", 
   try {
     await until(s, ["HUMAN_PENDING", "BLOCKED"]);
     expect(s.engine.get(s.w.id).state).toBe("HUMAN_PENDING");
-    expect(owners).toEqual(["agy", "agy"]);
+    expect(owners).toEqual(["agy"]);
     expect(s.store.get("repair_assignment", s.w.id)).toBeUndefined();
   } finally {
     await cleanup(s);
   }
 });
 
-it("three plan self-check failures never count as quality remediation or change ownership", async () => {
+it("执行交付后直接进入规划审查，不会把执行失败计为质量整改接管", async () => {
   const s = await fixture();
   const base = runtime(s);
-  let failures = 0;
   const owners: string[] = [];
   s.engine.runtime = {
     ...base,
     async execute(w, run, token) {
       owners.push(run.adapter);
-      if (run.purpose === "plan_self_check" && failures++ < 3)
-        throw new FlowError("PLAN_SELF_CHECK_INCOMPLETE", "缺少逐项证据");
       await base.execute(w, run, token);
     },
   };
   try {
     await until(s, ["HUMAN_PENDING", "BLOCKED"]);
     expect(s.engine.get(s.w.id).state).toBe("HUMAN_PENDING");
-    expect(failures).toBe(4);
-    expect(owners.every((owner) => owner === "agy")).toBe(true);
+    expect(owners).toEqual(["agy"]);
     expect(s.engine.quality.getGate(s.w.id, "before_human")).toMatchObject({
       executor_rejections: 0,
       takeover: false,

@@ -1,6 +1,5 @@
 import React, { useState } from "react";
 import { CommandPreview } from "./command-preview.js";
-import type { NativeTestRun } from "../../../packages/presentation/src/native-progress.js";
 export const taskLabels: Record<string, string> = {
   completed: "开发完成",
   active: "进行中",
@@ -11,6 +10,10 @@ export const taskLabels: Record<string, string> = {
   pending: "未开始",
   unobserved: "等待进度同步",
 };
+function developmentStatus(task: any) {
+  const status = task.development_status ?? task.implementation_status;
+  return status === "in_progress" ? "active" : status;
+}
 export const caseLabels: Record<string, string> = {
   passed: "已通过",
   failed: "失败",
@@ -18,6 +21,14 @@ export const caseLabels: Record<string, string> = {
   stale: "待复测",
   not_run: "未运行",
   missing: "未发现",
+};
+const attachmentLabels: Record<string, string> = {
+  pending: "待归档",
+  archived: "已归档",
+  missing: "文件缺失",
+  unreadable: "无法读取",
+  archive_failed: "归档失败",
+  skipped: "已跳过",
 };
 export function TaskTree({ detail, title }: { detail: any; title?: string }) {
   const [filter, setFilter] = useState(""),
@@ -38,8 +49,7 @@ export function TaskTree({ detail, title }: { detail: any; title?: string }) {
     (t: any) =>
       (!filter ||
         `${t.id} ${t.title}`.toLowerCase().includes(filter.toLowerCase())) &&
-      (state === "all" ||
-        (t.development_status ?? t.implementation_status) === state),
+      (state === "all" || developmentStatus(t) === state),
   );
   return (
     <div className="task-tree-container">
@@ -149,9 +159,7 @@ export function TaskTree({ detail, title }: { detail: any; title?: string }) {
                       <div className="task-header-row">
                         <b className="task-title">{t.title}</b>
                         <span className={`badge ${t.implementation_status}`}>
-                          {taskLabels[
-                            t.development_status ?? t.implementation_status
-                          ] ?? "未开始"}
+                          {taskLabels[developmentStatus(t)] ?? "未开始"}
                         </span>
                         <span className="validation-status">
                           {native ? "交付记录：" : "验证："}
@@ -248,6 +256,7 @@ export function TestResults({
     e2e: "浏览器自动测试",
     opentabs: "E2E（历史浏览器用例）",
   };
+  const selfTests = detail.native_progress?.tests ?? [];
   return (
     <div className="test-results-container">
       <div className="panel-toolbar-header">
@@ -269,72 +278,8 @@ export function TestResults({
           </div>
         </div>
       </div>
-      {detail.native_progress && (
-        <section className="native-test-progress" aria-label="原生自测进度">
-          <h3>实时自测</h3>
-          <p className="notice-subtle">
-            这里显示测试工具返回的运行状态和用例数量；计划用例按提交的对应关系统计报告结果，两种数量分别统计。
-          </p>
-          {detail.native_progress.tests.length === 0 && (
-            <p className="empty">
-              尚未观察到测试命令；执行记录更新后自动同步。
-            </p>
-          )}
-          {detail.native_progress.latest.map((run: NativeTestRun) => (
-            <article className="native-test-run" key={run.key}>
-              <div className="test-case-row">
-                <b>
-                  {
-                    {
-                      running: "测试运行中",
-                      passed: "自测通过",
-                      failed: "自测失败",
-                      returned: "自测已执行，用例数量待确认",
-                      interrupted: "执行已结束，未收到最终测试结果",
-                    }[run.status]
-                  }
-                </b>
-                {run.passed !== undefined && (
-                  <span>
-                    通过 {run.passed} · 失败 {run.failed ?? 0} · 跳过{" "}
-                    {run.skipped ?? 0}
-                  </span>
-                )}
-                <time>{new Date(run.created_at).toLocaleTimeString()}</time>
-              </div>
-              <CommandPreview command={run.command} cwd={run.cwd} />
-            </article>
-          ))}
-          <details className="activity-details">
-            <summary>
-              查看近期测试执行记录（{detail.native_progress.tests.length} 次）
-            </summary>
-            {detail.native_progress.tests.map((run: NativeTestRun) => (
-              <div key={run.key} className="native-test-run">
-                <span>
-                  {new Date(run.created_at).toLocaleTimeString()} ·{" "}
-                  {
-                    {
-                      running: "运行中",
-                      passed: "通过",
-                      failed: "失败",
-                      returned: "结果待确认",
-                      interrupted: "已中断",
-                    }[run.status]
-                  }
-                </span>
-                <CommandPreview command={run.command} cwd={run.cwd} />
-              </div>
-            ))}
-          </details>
-          <h3>计划用例报告结果</h3>
-        </section>
-      )}
-      {native && (
-        <p className="notice-subtle">
-          报告通过表示关联测试的报告结果；是否满足原计划由现有质量审核判断，人工验收单独确认。
-        </p>
-      )}
+      <AttachmentArchiveStatus items={detail.attachment_status} />
+      {native && selfTests.length > 0 && <NativeSelfTests runs={selfTests} />}
       <div className="test-layers-list">
         {Object.entries(layers).map(([layer, label]) => {
           const all = progress.cases.filter((c: any) => c.layer === layer),
@@ -415,5 +360,59 @@ export function TestResults({
       </div>
       {!progress.cases.length && <p className="empty">暂无测试清单</p>}
     </div>
+  );
+}
+
+function AttachmentArchiveStatus({ items }: { items?: any[] }) {
+  if (!items?.length) return null;
+  return (
+    <section className="native-test-progress" aria-label="附件归档状态">
+      {items.map((item) => (
+        <article
+          className="native-test-run"
+          key={[item.delivery_id, item.repo_id, item.path].join(":")}
+        >
+          <div className="test-case-row">
+            <span className={"badge " + item.state}>
+              {attachmentLabels[item.state] ?? item.state}
+            </span>
+            <b className="test-case-id">{item.path}</b>
+          </div>
+          {item.detail && item.state !== "archived" ? (
+            <p className="associated-tasks">{item.detail}</p>
+          ) : null}
+        </article>
+      ))}
+    </section>
+  );
+}
+
+function NativeSelfTests({ runs }: { runs: any[] }) {
+  const labels: Record<string, string> = {
+    running: "测试运行中",
+    passed: "自测通过",
+    failed: "自测失败",
+    returned: "已返回",
+    interrupted: "已中断",
+  };
+  return (
+    <section className="native-test-progress" aria-label="原生自测进度">
+      {runs.map((run) => (
+        <article
+          className="native-test-run"
+          key={run.key ?? run.sequence ?? run.command}
+        >
+          <div className="test-case-row">
+            <span className={"badge " + run.status}>
+              {labels[run.status] ?? run.status}
+            </span>
+            {run.created_at && (
+              <time>{new Date(run.created_at).toLocaleTimeString()}</time>
+            )}
+          </div>
+          <CommandPreview command={run.command} cwd={run.cwd} />
+        </article>
+      ))}
+    </section>
   );
 }

@@ -10,7 +10,7 @@ test("真实只读提问不改变主任务，转正式反馈后重新规划", as
     .fill("当前计划会修改哪些文件？");
   const before = await (await page.request.get("/api/workflows/" + id)).json();
   await page.getByRole("button", { name: /^提交提问/ }).click();
-  await expect(page.getByLabel("任务反馈记录")).toContainText(
+  await expect(page.getByLabel("临时提问记录")).toContainText(
     "这次只读提问没有更改",
     { timeout: 30000 },
   );

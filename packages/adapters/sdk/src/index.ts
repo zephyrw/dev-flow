@@ -1,6 +1,9 @@
 export * from "./interface.js";
 export * from "./registry.js";
 export * from "./base-adapter.js";
+export * from "./conversation-source.js";
+export * from "./resume-instructions.js";
+export * from "./identity.js";
 
 import { AdapterRegistry } from "./registry.js";
 import { CodexNativeAdapter } from "../../codex/src/adapter.js";

@@ -2,7 +2,7 @@ import { parse } from "yaml";
 
 export const DEFAULT_TEMPLATE_YAML = `
 id: native-development
-revision: 5
+revision: 6
 task_model: native-v2
 roles:
   planner: task.plannerProfile
@@ -14,25 +14,15 @@ flow:
   - planning
   - plan_approval
   - native_implementation_and_self_test
-  - delivery_validation
-  - executor_plan_self_check
   - quality_before_human
   - human_functional_verification
   - quality_after_human
   - commit_and_integrate
   - cleanup_owned_workspace
-plan_self_check:
-  owner: executor
-  trigger: every_successful_implementation_or_repair
-  authority: approved_original_and_repair_plans
-  require_current_delivery_and_successful_exit: true
-  unresolved_findings: repair_and_retest_before_quality_review
-  counts_as_quality_rejection: false
 quality:
   max_executor_rejections: 3
   first_failed_delivery_counts: false
   takeover: planner
-  takeover_self_review: fresh_readonly_session
 feedback:
   functional_repair_owner: executor
   human_closes_issues: true
@@ -50,19 +40,11 @@ export interface WorkflowTemplate {
   task_model: string;
   roles: Record<string, string>;
   flow: string[];
-  plan_self_check: {
-    owner: string;
-    trigger: string;
-    authority: string;
-    require_current_delivery_and_successful_exit: boolean;
-    unresolved_findings: string;
-    counts_as_quality_rejection: boolean;
-  };
   quality: {
     max_executor_rejections: number;
     first_failed_delivery_counts: boolean;
     takeover: string;
-    takeover_self_review: string;
+    takeover_self_review?: string;
   };
   feedback: {
     functional_repair_owner: string;

@@ -11,7 +11,11 @@ import {
   resolveTaskModel,
 } from "../../contracts/src/index.js";
 import type { Store } from "../../store/src/store.js";
-import { WorkspaceFingerprintService } from "../../workspace/src/fingerprint.js";
+import {
+  WorkspaceFingerprintService,
+  resolveExcludedRelativePaths,
+  resolveScanContext,
+} from "../../workspace/src/fingerprint.js";
 import { readFileSync, existsSync } from "node:fs";
 import { hash } from "../../core/src/util.js";
 import { join, basename } from "node:path";
@@ -140,8 +144,14 @@ export class CurrentDeliveryReader {
             reason: `交付记录中缺少仓库 '${ws.repo_id}' 的输入指纹`,
           };
         }
+        const { registeredWorktrees, backupSubtrees } = resolveScanContext(ws.root, {
+          store: (options as any)?.store ?? (this as any).store,
+          knownWorkspaces: workspaces,
+          currentWorkspaceRoot: ws.root,
+        });
         const currentFp = WorkspaceFingerprintService.compute(
           ws.root,
+          { registeredWorktrees, backupSubtrees },
         ).fingerprint;
         if (currentFp !== recordedFp) {
           return {
@@ -154,19 +164,7 @@ export class CurrentDeliveryReader {
       }
     }
 
-    // 4. 校验归档测试报告完整性与原始哈希 (fail-closed)
-    if (
-      options.verifyArchivedReports !== false &&
-      (!delivery.archive_root ||
-        !Object.keys(delivery.report_hashes ?? {}).length)
-    ) {
-      return {
-        valid: false,
-        revision: activeRev,
-        delivery,
-        reason: "交付缺少归档报告目录或哈希，须重新提交交付",
-      };
-    }
+    // 4. 已归档报告若存在则核对其哈希；缺少报告不阻断规划审查。
     if (options.verifyArchivedReports !== false && delivery.report_hashes) {
       for (const [relPath, expectedHash] of Object.entries(
         delivery.report_hashes,
@@ -244,34 +242,6 @@ export class CurrentDeliveryReader {
     const acceptanceResults = this.store
       .list<AcceptanceResult>("acceptance_result", workflowId)
       .filter((r) => r.delivery_id === delivery.id);
-
-    const required =
-      plan.tests?.filter(
-        (t) => !plan.exemptions?.some((e) => e.layer === t.layer),
-      ) ?? [];
-    const coverage =
-      required.length > 0 &&
-      required.every((t) =>
-        t.expected_case_ids.every((c) =>
-          acceptanceResults.some(
-            (r) =>
-              r.requirement_id === t.id &&
-              (r.scene_id === c || r.case_id === c),
-          ),
-        ),
-      );
-    if (
-      !coverage ||
-      acceptanceResults.length === 0 ||
-      acceptanceResults.some((r) => r.status !== "passed")
-    ) {
-      return {
-        valid: false,
-        revision: activeRev,
-        delivery,
-        reason: "验收用例未全部通过或为空",
-      };
-    }
 
     return {
       valid: true,

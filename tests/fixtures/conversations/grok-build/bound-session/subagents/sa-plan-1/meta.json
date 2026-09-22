@@ -1,0 +1,9 @@
+{
+  "subagent_id": "sa-plan-1",
+  "session_id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeee4",
+  "agent_id": "ag-child-1",
+  "subagent_type": "plan",
+  "description": "Bound inspect",
+  "file_input_binary": true,
+  "stop": "native"
+}

@@ -3,7 +3,10 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { createHash } from "node:crypto";
 import type { Workspace } from "../../contracts/src/index.js";
-import { WorkspaceFingerprintService } from "../../workspace/src/fingerprint.js";
+import {
+  WorkspaceFingerprintService,
+  resolveExcludedRelativePaths,
+} from "../../workspace/src/fingerprint.js";
 import { safePath } from "../../workspace/src/files.js";
 import {
   NativeRunRecordReader,
@@ -19,13 +22,55 @@ const sha = (bytes: Buffer | string) =>
 
 export function captureInputs(workspaces: Workspace[]): Record<string, string> {
   return Object.fromEntries(
-    workspaces.map((w) => [
-      w.repo_id,
-      WorkspaceFingerprintService.compute(w.root).fingerprint,
-    ]),
+    workspaces.map((w) => {
+      const { registeredWorktrees, backupSubtrees } = resolveExcludedRelativePaths(w.root, {
+        knownWorkspaces: workspaces,
+        currentWorkspaceRoot: w.root,
+      });
+      return [
+        w.repo_id,
+        WorkspaceFingerprintService.compute(w.root, {
+          registeredWorktrees,
+          backupSubtrees,
+        }).fingerprint,
+      ];
+    }),
   );
 }
 const reportCache = new Map<string, { hash: string; version: string }>();
+
+function collectExecutionAliases(
+  stepIndex: unknown,
+  call: string,
+  hostCallId: string | undefined,
+  output: string,
+): string[] {
+  const ids = new Set<string>();
+  const add = (value?: string) => {
+    if (value && value.trim()) ids.add(value.trim());
+  };
+  add(call);
+  add(hostCallId);
+  if (typeof stepIndex === "number" && Number.isSafeInteger(stepIndex)) {
+    add("step-" + stepIndex);
+    add("task-" + stepIndex);
+  }
+  for (const match of output.matchAll(/Command ID:\s*([\w-]+)/gi)) add(match[1]);
+  for (const match of output.matchAll(/Task ID:\s*[`"]?([\w/-]+)/gi))
+    add(match[1]);
+  for (const match of output.matchAll(/task id[:\s]+["`]?([\w/-]+)/gi))
+    add(match[1]);
+  return [...ids];
+}
+
+function resolveCommandCwd(
+  params: Record<string, unknown>,
+  workspaces: Workspace[],
+): string | undefined {
+  const raw = params.Cwd ?? params.cwd;
+  if (typeof raw === "string" && raw.trim()) return raw;
+  return workspaces[0]?.root;
+}
 export function captureReports(
   workspaces: Workspace[],
   configured: { repo_id?: string; report_path?: string }[] = [],
@@ -86,13 +131,7 @@ export function captureReports(
 export class NativeExecutionObserver {
   private boundary = -1;
   private conversation?: string;
-  private pending = new Map<
-    string,
-    {
-      fact: HostToolExecutionFact;
-      reports: ReturnType<typeof captureReports>;
-    }
-  >();
+  private pending = new Map<string, { fact: HostToolExecutionFact }>();
   private commands = new Map<string, string>();
   constructor(
     private options: {
@@ -130,14 +169,23 @@ export class NativeExecutionObserver {
     } catch {
       /* Missing metadata cannot certify a test. */
     }
-    if (host && host.name !== name) return;
+    if (host && host.name !== name) {
+      if (Object.keys(host.parameters).length) return;
+      host = { ...host, name };
+    }
     const info = {
       ...rawInfo,
       ...(host
         ? {
-            parameters: host.parameters,
-            output: host.output,
-            exit_code: host.exit_code,
+            parameters: {
+              ...(rawInfo.parameters ?? rawInfo.args ?? {}),
+              ...host.parameters,
+            },
+            output: host.output ?? rawInfo.output,
+            exit_code:
+              typeof host.exit_code === "number"
+                ? host.exit_code
+                : rawInfo.exit_code,
           }
         : {}),
     };
@@ -170,15 +218,16 @@ export class NativeExecutionObserver {
             exit_code: info.exit_code,
           }),
       ).getFact(original);
-      const code = this.options.readHostStep
-        ? host?.exit_code
-        : observed?.exit_code;
+      const code =
+        typeof host?.exit_code === "number"
+          ? host.exit_code
+          : observed?.exit_code;
       if (code !== undefined) this.finish(original, code, timestamp);
       return;
     }
     if (!["run_command", "terminal", "exec"].includes(name) || !call) return;
     const command = params.CommandLine ?? params.command ?? params.cmd;
-    const cwd = params.Cwd ?? params.cwd;
+    const cwd = resolveCommandCwd(params, this.options.workspaces);
     if (typeof command !== "string" || typeof cwd !== "string") return;
     if (
       ["ACTIVE", "RUNNING", "IN_PROGRESS", "STARTED"].includes(step.state) &&
@@ -195,32 +244,35 @@ export class NativeExecutionObserver {
         started_at: timestamp,
       };
       try {
-        fact.input_fingerprints = captureInputs(this.options.workspaces);
-        this.pending.set(call, {
-          fact,
-          reports: captureReports(
-            this.options.workspaces,
-            this.options.reports,
-          ),
-        });
+        this.pending.set(call, { fact });
       } catch (error) {
         fact.evidence_error = String(error);
-        this.pending.set(call, { fact, reports: {} });
+        this.pending.set(call, { fact });
       }
     }
     if (!this.pending.has(call)) return;
-    if (host) {
-      const pending = this.pending.get(call)!;
-      pending.fact.tool_call_id = host.call_id;
-      pending.fact.aliases = [call];
-    }
     const output = typeof info.output === "string" ? info.output : "";
+    const pending = this.pending.get(call)!;
+    if (host) pending.fact.tool_call_id = host.call_id;
+    pending.fact.aliases = collectExecutionAliases(
+      step.step_index,
+      call,
+      host?.call_id,
+      output,
+    );
     const cmdId = output.match(/Command ID:\s*([\w-]+)/i)?.[1];
     if (cmdId) this.commands.set(cmdId, call);
     const fact = NativeRunRecordReader.fromString(
       JSON.stringify({ ...event, timestamp }),
     ).getFact(call);
-    const code = this.options.readHostStep ? host?.exit_code : fact?.exit_code;
+    const code =
+      typeof host?.exit_code === "number"
+        ? host.exit_code
+        : typeof info.exit_code === "number"
+          ? info.exit_code
+          : this.options.readHostStep
+            ? undefined
+            : fact?.exit_code;
     if (step.state === "DONE" && code !== undefined)
       this.finish(call, code, timestamp);
   }
@@ -229,21 +281,6 @@ export class NativeExecutionObserver {
     if (!pending) return;
     this.pending.delete(call);
     const fact = { ...pending.fact, exit_code: code, status: "DONE", ended_at };
-    try {
-      const after = captureInputs(this.options.workspaces);
-      if (JSON.stringify(after) !== JSON.stringify(fact.input_fingerprints))
-        throw new Error("Inputs changed during command execution");
-      const reports = captureReports(
-        this.options.workspaces,
-        this.options.reports,
-      );
-      fact.report_hashes = {};
-      for (const [key, value] of Object.entries(reports))
-        if (pending.reports[key]?.version !== value.version)
-          fact.report_hashes[key] = value.hash;
-    } catch (error) {
-      fact.evidence_error = String(error);
-    }
     this.options.save(fact);
   }
 }

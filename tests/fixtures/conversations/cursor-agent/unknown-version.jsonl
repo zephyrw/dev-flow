@@ -1,0 +1,5 @@
+{"type":"system","subtype":"init","apiKeySource":"login","cwd":"/tmp/cursor-demo","session_id":"chat-old-001","model":"Composer 1.5","permissionMode":"default","children":[{"id":"fake-child"}],"subagent_count":3,"quota_dashboard":true}
+{"type":"mystery_event","session_id":"chat-old-001","agent_farms":true,"native_abort":true}
+{"type":"tool_call","subtype":"started","call_id":"call-old-1","tool_call":{"shellToolCall":{"args":{"command":"echo hi"}}},"session_id":"chat-old-001","timestamp_ms":1735689650000}
+{"type":"thinking","subtype":"completed","session_id":"chat-old-001","timestamp_ms":1735689651000}
+{"type":"result","subtype":"success","is_error":false,"duration_ms":100,"duration_api_ms":80,"result":"完成","session_id":"chat-old-001","request_id":"req-unknown-001"}

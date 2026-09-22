@@ -1,0 +1,2 @@
+{"type":"user","uuid":"tr-user-1","session_id":"agent-readonly-1","message":{"role":"user","content":[{"type":"text","text":"列出固定文件"}]}}
+{"type":"assistant","uuid":"evt-child-text","session_id":"agent-readonly-1","message":{"role":"assistant","model":"claude-haiku-4-5","content":[{"type":"text","text":"目录中有 README.md"}]}}

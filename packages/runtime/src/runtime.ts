@@ -1,14 +1,13 @@
-import {
-  PLAN_SELF_CHECK_STAGE,
-  BEFORE_HUMAN_REVIEW_STAGE,
-} from "../../core/src/plan-self-check.js";
-import { PlanSelfCheckReportSchema } from "../../contracts/src/plan-self-check.js";
+import { BEFORE_HUMAN_REVIEW_STAGE } from "../../core/src/plan-self-check.js";
 import { AgyNativeRecordSource } from "../../adapters/agy/src/native-record-source.js";
 import { RunTelemetry } from "./run-telemetry.js";
+import { CodexSessionObserver } from "./codex-session-observer.js";
+import { observeCodexAccountQuota } from "./codex-account-quota.js";
 import { rejectedDeliveryFeedback } from "../../core/src/delivery-feedback.js";
 import { batchExecutionInstructions } from "../../core/src/execution-guidance.js";
 import { NativeExecutionObserver } from "../../evidence/src/native-execution-observer.js";
 import { reconcileImplementationProofs } from "../../core/src/progress.js";
+import { isLegacyProtocol } from "../../core/src/run-profile.js";
 import { assertMeaningfulTestFiles } from "../../core/src/test-quality.js";
 import type { OperationRequest } from "../../core/src/interactions.js";
 import {
@@ -32,6 +31,7 @@ import {
 } from "../../contracts/src/review-output.js";
 import type { Engine, Runtime } from "../../core/src/engine.js";
 import type { Principal } from "../../core/src/auth.js";
+import { CliDispatchManager } from "./cli-dispatch.js";
 import {
   requireCondition,
   FlowError,
@@ -42,8 +42,9 @@ import {
   type Evidence,
   type Snapshot,
   type Workspace,
+  type MergeConflictRequest,
 } from "../../contracts/src/index.js";
-import { ProcessManager } from "../../process/src/manager.js";
+import { ProcessManager, type ProcessStopResult } from "../../process/src/manager.js";
 import { executablePath } from "../../process/src/executable.js";
 import { JsonLines, AgyProtocol } from "../../adapters/agy/src/protocol.js";
 import {
@@ -60,21 +61,51 @@ import { Environments, expand } from "./environment.js";
 import { BrowserGateway } from "./browser.js";
 import { takeReportSlot, cleanArchivedReports } from "./report-output.js";
 import { safePath } from "../../workspace/src/files.js";
-import { writeAgyProject } from "../../adapters/agy/src/project.js";
 import {
   writeAgyConfiguration,
   agyArguments,
   observeAgy,
 } from "../../adapters/agy/src/session.js";
 import { writeAgyNativeConfiguration } from "../../adapters/agy/src/native-adapter.js";
-import { HandoffBuilder } from "../../adapters/agy/src/handoff.js";
+import {
+  HandoffBuilder,
+  nativeLaunchInstruction,
+} from "../../adapters/agy/src/handoff.js";
 import { BufferedEventSink } from "../../core/src/buffered-sink.js";
-import { ProfileRuntime } from "./profile-runtime.js";
+import {
+  ProfileRuntime,
+  acceptDecodedConversation,
+  bindRunConversationObserver,
+  joinPrompt,
+  readRoleRecoveryGuidance,
+} from "./profile-runtime.js";
+import {
+  agyEventConversationId,
+  decodeAgyConversationEvent,
+} from "../../adapters/agy/src/conversation-source.js";
 import {
   reviewSkillResources,
   reviewContractContext,
   reviewInstructions,
 } from "./review-materials.js";
+import {
+  INTENT_CLARIFICATION_INSTRUCTION,
+  applyContinuationMaterials,
+  asRunContinuation,
+} from "../../core/src/round-intent.js";
+import { createDefaultAdapterRegistry } from "../../adapters/sdk/src/index.js";
+import type { NativeAgentAdapter } from "../../adapters/sdk/src/interface.js";
+import {
+  CONVERSATION_ENTITY,
+  type ConversationAttempt,
+  type ConversationNode,
+} from "../../contracts/src/index.js";
+import type {
+  StopPort,
+  StopPortResult,
+  StopPortTarget,
+} from "../../core/src/conversation-control.js";
+import type { Store } from "../../store/src/store.js";
 export class LocalRuntime implements Runtime {
   private get native() {
     return new ProfileRuntime(this.engine, this.processes);
@@ -89,6 +120,13 @@ export class LocalRuntime implements Runtime {
   ) {
     return this.native.aside(workflow, run, question);
   }
+  async resolveMergeConflict(
+    workflow: Workflow,
+    run: Run,
+    request: MergeConflictRequest,
+  ) {
+    return this.native.resolveMergeConflict(workflow, run, request);
+  }
   processes: ProcessManager;
   environments: Environments;
   browser: BrowserGateway;
@@ -96,6 +134,7 @@ export class LocalRuntime implements Runtime {
   private cancelledRuns = new Set<string>();
   private preparing = new Map<string, Promise<void>>();
   private preparationProcesses = new Map<string, Set<string>>();
+  private adapters = createDefaultAdapterRegistry();
   async validateEnvironment(workflow: Workflow) {
     if (!this.engine.project(workflow.project_id).services.length) return;
     const env = this.engine.store.get<any>("environment", workflow.id);
@@ -210,8 +249,15 @@ export class LocalRuntime implements Runtime {
           cwd: root,
           env: {},
           stdin: JSON.stringify({
-            instruction:
+            instruction: joinPrompt(
               "先读取 section=skill，再读取 plan、project、相关源码；只读诊断，最后只返回 JSON 对象，字段为 diagnosis、instructions、requires_plan_change、repair_plan。不改变范围时 repair_plan=null；需要改变范围时提交完整 Plan 合同。",
+              readRoleRecoveryGuidance(this.engine, workflow, {
+                id: workflow.run_id ?? workflow.id,
+                purpose: "quality_review",
+                stage: "diagnosis",
+                adapter: "codex",
+              }),
+            ),
             error,
             logs: this.engine.store
               .recentEvents(workflow.id, 160)
@@ -441,13 +487,15 @@ export class LocalRuntime implements Runtime {
     return current;
   }
   async execute(workflow: Workflow, run: Run, token: string) {
-    if (run.execution_spec_id || run.adapter !== "agy")
-      return this.native.execute(workflow, run, token);
-    reconcileImplementationProofs(this.engine, workflow.id);
-    this.assertRun(workflow.id, run.id, ["EXECUTING"]);
     if (run.deadline_at && Date.now() >= run.deadline_at) {
       throw new FlowError("TIMEOUT", "执行启动前已达到截止时间");
     }
+    const planRecord = this.engine.plan(workflow.id);
+    const plan = planRecord.plan;
+    if (!isLegacyProtocol(run, plan) || run.execution_spec_id || run.adapter !== "agy")
+      return this.native.execute(workflow, run, token);
+    reconcileImplementationProofs(this.engine, workflow.id);
+    this.assertRun(workflow.id, run.id, ["EXECUTING"]);
     const directory = join(
       this.engine.config.storage_root,
       "containers",
@@ -464,8 +512,6 @@ export class LocalRuntime implements Runtime {
       "BUILD_REQUIRED",
       "请先完成生产构建",
     );
-    const planRecord = this.engine.plan(workflow.id);
-    const plan = planRecord.plan;
     const isNativeV2 = resolveTaskModel(plan) === "native-v2";
 
     if (isNativeV2) {
@@ -476,17 +522,15 @@ export class LocalRuntime implements Runtime {
     const projectBinding = this.engine.store.get<{ id: string }>(
       "agy_project",
       workflow.id,
-    ) ?? { id: crypto.randomUUID() };
-    writeAgyProject(homedir(), projectBinding.id, directory);
-    this.engine.store.put(
-      "agy_project",
-      workflow.id,
-      workflow.id,
-      projectBinding,
     );
     const conversation = this.engine.store.get<{ id: string }>(
       "conversation",
       workflow.id,
+    );
+    const recoveryGuidance = readRoleRecoveryGuidance(
+      this.engine,
+      workflow,
+      run,
     );
 
     if (isNativeV2) {
@@ -500,8 +544,14 @@ export class LocalRuntime implements Runtime {
           plan,
           runId: run.id,
           packageHash: run.package_hash,
+          directory,
           workspaces,
         });
+        if (recoveryGuidance)
+          fullPkg.instructions = joinPrompt(
+            fullPkg.instructions,
+            recoveryGuidance,
+          );
         HandoffBuilder.writeHandoffFiles(directory, fullPkg, plan.markdown);
       } else {
         const issues =
@@ -516,6 +566,7 @@ export class LocalRuntime implements Runtime {
           runId: run.id,
           conversationId: conversation.id,
           packageHash: run.package_hash,
+          directory,
           workspaces,
           deliveryIssues: issues,
         });
@@ -533,6 +584,11 @@ export class LocalRuntime implements Runtime {
           resumePkg.instructions +=
             " 设计和索引未变，沿用前轮完整工作包；本轮仅提供新增反馈和未解决事项。";
         }
+        if (recoveryGuidance)
+          resumePkg.instructions = joinPrompt(
+            resumePkg.instructions,
+            recoveryGuidance,
+          );
         HandoffBuilder.writeHandoffFiles(
           directory,
           resumePkg,
@@ -552,36 +608,6 @@ export class LocalRuntime implements Runtime {
       );
     }
 
-    if (isNativeV2 && run.stage === PLAN_SELF_CHECK_STAGE) {
-      const request = this.engine.planSelfCheck.current(workflow.id)!;
-      const authorities = this.engine.planSelfCheck.authorities(workflow);
-      const authoritativePlan = authorities.find(
-        (p) => p.revision === workflow.plan_revision,
-      )!.plan;
-      const pkg = HandoffBuilder.buildPlanSelfCheckHandoff({
-        workflow: this.engine.get(workflow.id),
-        plan: authoritativePlan,
-        runId: run.id,
-        packageHash: run.package_hash,
-        workspaces: this.engine.store.list<Workspace>("workspace", workflow.id),
-        conversationId: conversation?.id,
-        request,
-      });
-      HandoffBuilder.writeHandoffFiles(
-        directory,
-        pkg,
-        authoritativePlan.markdown,
-      );
-      atomicWrite(
-        join(directory, "AUTHORITATIVE_PLANS.json"),
-        JSON.stringify(authorities, null, 2),
-      );
-      atomicWrite(
-        join(directory, "plan-self-check.schema.json"),
-        JSON.stringify(z.toJSONSchema(PlanSelfCheckReportSchema), null, 2),
-      );
-    }
-
     const prompt = isNativeV2
       ? JSON.stringify({
           workflow_id: workflow.id,
@@ -589,12 +615,12 @@ export class LocalRuntime implements Runtime {
           plan_revision: workflow.plan_revision,
           plan_hash: workflow.plan_hash,
           package_hash: run.package_hash,
-          instruction:
-            run.stage === PLAN_SELF_CHECK_STAGE
-              ? "程序强制发起的独立计划复核轮次：重新阅读 AUTHORITATIVE_PLANS.json 中原始计划和正式整改计划全文，以及 HANDOFF.md、handoff.json。先按 self_check.check_ids 完整核查实际代码与测试，汇总遗漏及根因，完成整批修复后统一测试。禁止另建或使用 implementation_plan.md 等替代计划。依据 plan-self-check.schema.json 在当前轮次交付清单中填写 plan_self_check，绑定 handoff.json 的请求和轮次。全部核对及测试通过后提交 devflow_deliver；这不是规划模型的独立代码审查，不可自行宣布跳过它。"
-              : conversation?.id
-                ? "会话恢复：请完整查看 handoff.json 中的全部反馈与核验 issues，核清全部已知问题根因后使用原生工具完成整批修复，统一测试后提交交付清单。"
-                : "原生开发模式：请先阅读工作包 HANDOFF.md 与 handoff.json。使用客户端原生工具完成批准范围内全部实现和测试代码，再统一运行测试。所有必需验收场景通过后，通过 devflow_deliver 或交付清单文件完成终局交付。",
+          instruction: joinPrompt(
+            conversation?.id
+              ? nativeLaunchInstruction(directory, "resume")
+              : nativeLaunchInstruction(directory, "full"),
+            recoveryGuidance,
+          ),
           execution_order: batchExecutionInstructions,
         })
       : JSON.stringify({
@@ -603,17 +629,32 @@ export class LocalRuntime implements Runtime {
           plan_revision: workflow.plan_revision,
           plan_hash: workflow.plan_hash,
           package_hash: run.package_hash,
-          instruction:
+          instruction: joinPrompt(
             "首先调用 devflow_execute_context，读取完整批准计划与 Skill。逐任务实施，仅使用 devflow_worker 工具。报告任务后 devflow_freeze，逐项 devflow_run_check，全部通过后 devflow_finish。遇到范围外问题报告阻塞并结束。",
+            recoveryGuidance,
+          ),
           execution_order: batchExecutionInstructions,
         });
     this.assertRun(workflow.id, run.id, ["EXECUTING"]);
     const remainingMs = run.deadline_at
       ? Math.max(0, run.deadline_at - Date.now())
       : this.engine.config.timeouts.agent_minutes * 60000;
-    if (remainingMs <= 0) {
-      throw new FlowError("TIMEOUT", "执行启动前已达到截止时间");
+    const dispatchManager = new CliDispatchManager(this.engine.store, this.processes);
+    const dispatchId = `disp_${workflow.id}_${run.id}`;
+    let dispatchRecord: any;
+    try {
+      dispatchRecord = dispatchManager.prepareDispatch({
+        dispatchId,
+        workflowId: workflow.id,
+        runId: run.id,
+        strategy: "legacy",
+      });
+      dispatchManager.claimStarting(dispatchId);
+    } catch (err: any) {
+      // 若派发门禁拒绝则抛出错误
+      throw err;
     }
+
     const proc = this.processes.start({
       id: run.id,
       workflow_id: workflow.id,
@@ -624,7 +665,7 @@ export class LocalRuntime implements Runtime {
           prompt,
           this.engine.config.timeouts.agent_minutes,
           conversation?.id,
-          projectBinding.id,
+          projectBinding?.id,
           isNativeV2 ? "accept-edits" : undefined,
         ),
         "--add-dir",
@@ -643,7 +684,39 @@ export class LocalRuntime implements Runtime {
       timeout_ms: remainingMs,
       deadline_at: run.deadline_at,
     });
+
+    if (dispatchRecord && proc.pid) {
+      dispatchManager.observeProcess(dispatchId, { pid: proc.pid });
+    }
+    proc.completion
+      .then((res: any) => {
+        if (dispatchRecord) {
+          const code = typeof res?.code === "number" ? res.code : null;
+          dispatchManager.finishDispatch(dispatchId, {
+            exitCode: code,
+            error: res?.error || (code === null ? "进程未返回有效退出码" : undefined),
+          });
+        }
+      })
+      .catch((err: any) => {
+        if (dispatchRecord) {
+          dispatchManager.finishDispatch(dispatchId, { exitCode: 1, error: String(err) });
+        }
+      });
     const telemetry = new RunTelemetry(this.engine.store, workflow, run);
+    bindRunConversationObserver({
+      store: this.engine.store,
+      workflow,
+      run,
+      adapter: this.adapters.mustGet("agy"),
+      telemetry,
+      previousNativeId: conversation?.id,
+      onRootSession: (nativeId) => {
+        this.engine.store.put("conversation", workflow.id, workflow.id, {
+          id: nativeId,
+        });
+      },
+    });
     const nativeRecords = new AgyNativeRecordSource(homedir());
     const nativeObserver = isNativeV2
       ? new NativeExecutionObserver({
@@ -666,6 +739,7 @@ export class LocalRuntime implements Runtime {
             ),
         })
       : undefined;
+    let conversationRoot = conversation?.id;
     const result = await observeAgy(proc, {
       model: this.engine.config.models.executor,
       conversation: conversation?.id,
@@ -677,12 +751,12 @@ export class LocalRuntime implements Runtime {
         this.preparing.has(run.id) ||
         this.checking.has(workflow.id),
       onEvent: (event) => {
-        if (event.event === "init")
-          this.engine.store.put("conversation", workflow.id, workflow.id, {
-            id: event.conversation_id,
-          });
         nativeObserver?.accept(event);
-        telemetry.accept(event);
+        conversationRoot = acceptAgyLiveTelemetry(
+          telemetry,
+          event,
+          conversationRoot,
+        );
       },
       onDiagnostic: (text) =>
         this.engine.store.event(
@@ -1094,7 +1168,7 @@ export class LocalRuntime implements Runtime {
         if (!development) {
           this.engine.invalidate(
             workflow.id,
-            "检查失败，返回批准范围内修复；所有测试需重新运行",
+            "检查失败，在批准范围内修复后先重跑该测试，再由负责的子 Agent 并行运行独立的受影响回归目标",
           );
           this.engine.transition(
             workflow.id,
@@ -1204,90 +1278,98 @@ export class LocalRuntime implements Runtime {
     }
   }
   async review(workflow: Workflow, run: Run) {
-    if (run.execution_spec_id) return this.native.review(workflow, run);
+    const plan = this.engine.plan(workflow.id).plan;
+    if (!isLegacyProtocol(run, plan)) return this.native.review(workflow, run);
+    return this.legacyReview(workflow, run);
+  }
+  private async legacyReview(workflow: Workflow, run: Run) {
     this.assertRun(workflow.id, run.id, ["REVIEWING"]);
-    const snapshot = this.engine.store.must<Snapshot>(
-      "snapshot",
-      workflow.snapshot_id!,
-    );
+    const snapshot = workflow.snapshot_id
+      ? this.engine.store.get<Snapshot>("snapshot", workflow.snapshot_id)
+      : undefined;
     const root = join(this.engine.config.storage_root, "reviews", run.id);
     mkdirSync(root, { recursive: true });
     const schema = join(root, "schema.json"),
       output = join(root, "review.json");
     const manifest = join(root, "materials.json");
-    const materials = {
-      skill_resources: reviewSkillResources(),
-      review_contract: reviewContractContext(this.engine, workflow, run),
-      plan: this.engine.plan(workflow.id).plan,
-      plan_record: this.engine.plan(workflow.id),
-      plan_authorities: this.engine.planSelfCheck.authorities(workflow),
-      executor_plan_check:
-        this.engine.planSelfCheck.current(workflow.id) ?? null,
-      executor_plan_check_report: (() => {
-        const check = this.engine.planSelfCheck.current(workflow.id);
-        const rev =
-          check?.delivery_revision_id &&
-          this.engine.store.get<any>(
-            "delivery_revision",
-            check.delivery_revision_id,
-          );
-        return rev
-          ? this.engine.store.get<any>("delivery", rev.delivery_id)?.manifest
-              ?.plan_self_check
-          : null;
-      })(),
-      approval:
-        this.engine.store.get(
-          "approval",
-          workflow.id + "-" + workflow.plan_revision,
-        ) ?? null,
-      acceptance: this.engine.store.get("acceptance", workflow.id) ?? null,
-      project: this.engine.project(workflow.project_id),
-      claims: this.engine.taskStatus(workflow.id),
-      evidence: this.engine.getEvidence(workflow.id),
-      skill: readFileSync(
-        resolve("packages/skills/devflow-review/SKILL.md"),
-        "utf8",
-      ),
-      diff: await this.engine.git.diff(snapshot),
-      snapshot,
-      workspaces: this.engine.store.list<Workspace>("workspace", workflow.id),
-    };
+    const continuation =
+      asRunContinuation(run.continuation) ??
+      asRunContinuation(
+        this.engine.store.get("run_continuation", workflow.id),
+      ) ??
+      asRunContinuation(this.engine.store.get("run_continuation", run.id));
+    const materials = applyContinuationMaterials(
+      {
+        skill_resources: reviewSkillResources(),
+        review_contract: reviewContractContext(this.engine, workflow, run),
+        plan: this.engine.plan(workflow.id).plan,
+        plan_record: this.engine.plan(workflow.id),
+        plan_authorities: this.engine.planSelfCheck.authorities(workflow),
+        approval:
+          this.engine.store.get(
+            "approval",
+            workflow.id + "-" + workflow.plan_revision,
+          ) ?? null,
+        project: this.engine.project(workflow.project_id),
+        skill: readFileSync(
+          resolve("packages/skills/devflow-review/SKILL.md"),
+          "utf8",
+        ),
+        diff: snapshot ? await this.engine.git.diff(snapshot) : "",
+        snapshot,
+        workspaces: this.engine.store.list<Workspace>("workspace", workflow.id),
+      },
+      continuation,
+    );
     atomicWrite(manifest, JSON.stringify(materials));
     atomicWrite(
       schema,
       JSON.stringify(
-        reviewOutputSchema(snapshot.repositories.map((r) => r.repo_id)),
+        reviewOutputSchema(
+          snapshot?.repositories.map((r) => r.repo_id) ?? [],
+        ),
       ),
     );
-    const prompt = JSON.stringify({
-      instruction:
-        reviewInstructions +
-        "使用 devflow_review MCP 的 context/read_file/search/evidence/hash_document 工具，不使用 shell。先读取 section=skill_resources、review_contract 和 project，next_offset 非 null 时继续分页。完整正文确定后用 devflow_review_hash_document 计算 document_hash，不能猜测哈希。coverage.files 使用 repo_id:path。严格使用指定 JSON Schema。",
-      review_contract: materials.review_contract,
-      phase:
-        workflow.stage === BEFORE_HUMAN_REVIEW_STAGE
-          ? "before_human"
-          : "after_human",
-      plan_self_check_instruction:
-        "先读取 plan_authorities、executor_plan_check、executor_plan_check_report，依据原始计划及正式修订独立审查实际代码与原始测试证据；执行模型逐项自查报告只是待验证资料，不能代替你的审查。before_human 阶段尚未人工验收是正常流程，不得因此拒绝审查。禁止依据执行模型另写的替代计划缩减审查范围。",
-      review_request_id: workflow.review_request_id,
-      workflow_id: workflow.id,
-      plan_revision: workflow.plan_revision,
-      snapshot_id: snapshot.id,
-      plan: this.engine.plan(workflow.id).plan,
-      diff: await this.engine.git.diff(snapshot),
-      evidence: this.engine.getEvidence(workflow.id),
-      workspaces: this.engine.store
-        .list<Workspace>("workspace", workflow.id)
-        .map((w) => ({ repo_id: w.repo_id, path: w.root })),
-    });
+    const recoveryGuidance = readRoleRecoveryGuidance(
+      this.engine,
+      workflow,
+      run,
+    );
+    const prompt = JSON.stringify(
+      continuation?.kind === "intent_clarification"
+        ? {
+            instruction: joinPrompt(
+              INTENT_CLARIFICATION_INSTRUCTION,
+              recoveryGuidance,
+            ),
+            original_text: continuation.original_text,
+          }
+        : {
+            instruction: joinPrompt(reviewInstructions, recoveryGuidance),
+            review_contract: reviewContractContext(this.engine, workflow, run),
+            phase:
+              workflow.stage === BEFORE_HUMAN_REVIEW_STAGE
+                ? "before_human"
+                : "after_human",
+            review_request_id: workflow.review_request_id,
+            workflow_id: workflow.id,
+            plan_revision: workflow.plan_revision,
+            snapshot_id: snapshot?.id,
+            plan: this.engine.plan(workflow.id).plan,
+            diff: snapshot ? await this.engine.git.diff(snapshot) : "",
+            workspaces: this.engine.store
+              .list<Workspace>("workspace", workflow.id)
+              .map((item) => ({ repo_id: item.repo_id, path: item.root })),
+            questions: continuation?.questions,
+            answer: continuation?.answer,
+          },
+    );
     const args = [
       ...this.engine.config.models.codex_prefix_args,
       "exec",
       "--ignore-user-config",
       "--ignore-rules",
-      "--ephemeral",
+      "--json",
       "--model",
       this.engine.config.models.reviewer,
       "--sandbox",
@@ -1321,6 +1403,21 @@ export class LocalRuntime implements Runtime {
       "REVIEWER_UNAVAILABLE",
       "独立复核程序不可用，不能生成通过结论；修复后重试复核",
     );
+    const dispatchManager = new CliDispatchManager(this.engine.store, this.processes);
+    const dispatchId = `disp_${workflow.id}_${run.id}`;
+    let dispatchRecord: any;
+    try {
+      dispatchRecord = dispatchManager.prepareDispatch({
+        dispatchId,
+        workflowId: workflow.id,
+        runId: run.id,
+        strategy: "legacy",
+      });
+      dispatchManager.claimStarting(dispatchId);
+    } catch (err: any) {
+      throw err;
+    }
+
     const proc = this.processes.start({
       id: run.id,
       workflow_id: workflow.id,
@@ -1331,15 +1428,50 @@ export class LocalRuntime implements Runtime {
       stdin: prompt,
       timeout_ms: this.engine.config.timeouts.agent_minutes * 60000,
     });
-    proc.on("stdout", (b: Buffer) =>
-      this.engine.store.event(
-        workflow.id,
-        workflow.project_id,
-        "ReviewOutput",
-        { text: redact(b.toString("utf8")) },
-        run.id,
-      ),
-    );
+
+    if (dispatchRecord && proc.pid) {
+      dispatchManager.observeProcess(dispatchId, { pid: proc.pid });
+    }
+    proc.completion
+      .then((res: any) => {
+        if (dispatchRecord) {
+          const code = typeof res?.code === "number" ? res.code : null;
+          dispatchManager.finishDispatch(dispatchId, {
+            exitCode: code,
+            error: res?.error || (code === null ? "进程未返回有效退出码" : undefined),
+          });
+        }
+      })
+      .catch((err: any) => {
+        if (dispatchRecord) {
+          dispatchManager.finishDispatch(dispatchId, { exitCode: 1, error: String(err) });
+        }
+      });
+    const telemetry = new RunTelemetry(this.engine.store, workflow, run);
+    const stopQuota = observeCodexAccountQuota({ executable: codexBin, prefixArgs: this.engine.config.models.codex_prefix_args, cwd: root, home: process.env.CODEX_HOME ?? join(homedir(), ".codex") }, telemetry);
+    const observer = new CodexSessionObserver({
+      home: process.env.CODEX_HOME ?? join(homedir(), ".codex"),
+      cwd: root,
+      startedAt: run.started_at,
+      telemetry,
+    });
+    const adapter = this.adapters.mustGet("codex");
+    bindRunConversationObserver({
+      store: this.engine.store,
+      workflow,
+      run,
+      adapter,
+      telemetry,
+      onRootSession: (nativeId) => observer.bind(nativeId),
+    });
+    const lines = new JsonLines((event) => {
+      acceptCodexLiveTelemetry(telemetry, adapter, event, run.id);
+    });
+    let streamError: unknown;
+    proc.on("stdout", (b: Buffer) => {
+      appendFileSync(join(root, "stdout.jsonl"), redact(b.toString("utf8")));
+      try { lines.push(b); } catch (error) { streamError ??= error; }
+    });
     proc.on("stderr", (b: Buffer) =>
       this.engine.store.event(
         workflow.id,
@@ -1358,8 +1490,17 @@ export class LocalRuntime implements Runtime {
         run.id,
       ),
     );
+    let exit: Awaited<typeof proc.completion> | undefined;
+    try {
+      exit = await proc.completion;
+      try { lines.finish(); } catch (error) { streamError ??= error; }
+    } finally {
+      stopQuota();
+      await observer.close();
+      telemetry.finish(!exit || exit.code !== 0 || !!streamError);
+    }
     requireCondition(
-      (await proc.completion).code === 0 && existsSync(output),
+      exit.code === 0 && !streamError && existsSync(output),
       "REVIEW_FAILED",
       "复核进程失败或未返回结构化报告",
     );
@@ -1367,12 +1508,39 @@ export class LocalRuntime implements Runtime {
   }
   async stop(run: string) {
     this.cancelledRuns.add(run);
+    const existingStop = this.engine.store.get<ProcessStopResult>("stop_result", run);
+    if (
+      existingStop &&
+      (existingStop.status === "confirmed_exited" ||
+        existingStop.status === "confirmed_not_started")
+    ) {
+      return existingStop;
+    }
+
     for (const processId of this.preparationProcesses.get(run) ?? [])
       await this.processes.stop(processId);
     await this.preparing.get(run)?.catch(() => {});
     await this.browser.stop(run);
-    await this.processes.stop(run);
+    let stopResult = await this.processes.stop(run);
+
     const record = this.engine.store.get<Run>("run", run);
+    if (stopResult.status === "unknown" && record) {
+      const procRecord = this.engine.store.get<{ status: string; confirmed?: boolean }>(
+        "process_record",
+        run,
+      );
+      if (procRecord && procRecord.status === "exited" && procRecord.confirmed) {
+        stopResult = { status: "confirmed_exited" };
+      }
+    }
+
+    if (
+      stopResult.status === "confirmed_exited" ||
+      stopResult.status === "confirmed_not_started"
+    ) {
+      this.engine.store.put("stop_result", run, record?.workflow_id ?? run, stopResult);
+    }
+
     if (
       record &&
       record.plan_revision > 0 &&
@@ -1386,8 +1554,111 @@ export class LocalRuntime implements Runtime {
       run,
     ))
       await this.processes.stop(p.id);
+    return stopResult;
+  }
+  async stopConversation(target: StopPortTarget): Promise<StopPortResult> {
+    const node = this.engine.store.get<ConversationNode>(
+      CONVERSATION_ENTITY.node,
+      target.conversation_id,
+    );
+    const attempt = readStopAttempt(this.engine.store, target, node);
+    const adapterId = node?.adapter_id ?? attemptAdapter(this.engine.store, attempt);
+    const adapter = adapterId ? this.adapters.get(adapterId as never) : undefined;
+    if (adapter?.stopConversation) {
+      await adapter.stopConversation({
+        conversation_id: target.conversation_id,
+        native_session_id: target.native_session_id,
+        native_agent_id: target.native_agent_id,
+      });
+    }
+    const runId = attempt?.run_id ?? workflowRunId(this.engine.store, node);
+    if (!runId) return { accepted: false, confirmation: "unknown" };
+    const stopResult = await this.processes.stop(runId);
+    if (stopResult.status === "confirmed_exited") {
+      return { accepted: true, confirmation: "exited" };
+    }
+    if (stopResult.status === "confirmed_not_started") {
+      return { accepted: true, confirmation: "exited" };
+    }
+    return { accepted: false, confirmation: "unknown" };
   }
   async close() {
     await this.processes.close();
   }
+}
+
+export function runtimeStopPort(runtime?: LocalRuntime): StopPort {
+  if (typeof runtime?.stopConversation !== "function") {
+    return {
+      async stopConversation() {
+        return { accepted: false, confirmation: "unknown" };
+      },
+    };
+  }
+  return {
+    stopConversation: (target) => runtime.stopConversation(target),
+  };
+}
+
+function readStopAttempt(
+  store: Store,
+  target: StopPortTarget,
+  node?: ConversationNode,
+): ConversationAttempt | undefined {
+  if (target.attempt_id) {
+    return store.get<ConversationAttempt>(
+      CONVERSATION_ENTITY.attempt,
+      target.attempt_id,
+    );
+  }
+  if (!node?.current_attempt_id) return undefined;
+  return store.get<ConversationAttempt>(
+    CONVERSATION_ENTITY.attempt,
+    node.current_attempt_id,
+  );
+}
+
+function attemptAdapter(
+  store: Store,
+  attempt?: ConversationAttempt,
+): string | undefined {
+  if (!attempt?.run_id) return undefined;
+  return store.get<Run>("run", attempt.run_id)?.adapter;
+}
+
+function workflowRunId(store: Store, node?: ConversationNode) {
+  if (!node?.workflow_id) return undefined;
+  return store.get<{ run_id?: string }>("workflow", node.workflow_id)?.run_id;
+}
+
+function acceptAgyLiveTelemetry(
+  telemetry: RunTelemetry,
+  event: unknown,
+  rootNativeId?: string,
+) {
+  const root = rootNativeId ?? agyEventConversationId(event);
+  acceptDecodedConversation(
+    telemetry,
+    root ? decodeAgyConversationEvent(event, { rootNativeId: root }) : [],
+    event,
+  );
+  return root;
+}
+
+function acceptCodexLiveTelemetry(
+  telemetry: RunTelemetry,
+  adapter: NativeAgentAdapter,
+  event: Record<string, unknown>,
+  runId: string,
+) {
+  acceptDecodedConversation(
+    telemetry,
+    adapter.decodeConversation?.({
+      stream: "stdout",
+      data: JSON.stringify(event) + "\n",
+      timestamp: now(),
+      runId,
+    }) ?? [],
+    event,
+  );
 }

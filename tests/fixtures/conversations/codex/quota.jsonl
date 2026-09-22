@@ -1,0 +1,5 @@
+{"type":"thread.started","thread_id":"019947a2-8a00-7000-8000-000000000010"}
+{"type":"item.completed","thread_id":"019947a2-8a00-7000-8000-000000000010","item":{"id":"item_spawn_1","type":"agent","status":"completed","thread_id":"019947a2-8a00-7000-8000-000000000011","agent_id":"explore-1"}}
+{"type":"thread.started","thread_id":"019947a2-8a00-7000-8000-000000000011"}
+{"type":"item.completed","thread_id":"019947a2-8a00-7000-8000-000000000011","item":{"id":"item_child_cmd","type":"command_execution","command":"node --test","exit_code":0,"status":"completed"},"rate_limits":{"limit_id":"codex","primary":{"used_percent":96,"window_minutes":10080}}}
+{"type":"turn.failed","thread_id":"019947a2-8a00-7000-8000-000000000011","error":{"code":"rate_limit","message":"quota exceeded"}}

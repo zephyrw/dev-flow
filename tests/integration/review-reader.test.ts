@@ -60,6 +60,9 @@ it("IT-12 reviewer MCP exposes only read tools and rejects foreign or changed sn
     }
     const resources = JSON.parse(resourceText);
     expect(
+      resources["devflow/references/role-and-schedule.md"],
+    ).toContain("两阶段");
+    expect(
       resources["devflow-review/references/repair-document-contract.md"],
     ).toBe(
       readFileSync(
@@ -69,7 +72,6 @@ it("IT-12 reviewer MCP exposes only read tools and rejects foreign or changed sn
         "utf8",
       ),
     );
-    expect(resources["devflow-test/SKILL.md"]).toContain("E2E");
     const contract: any = await client.callTool({
       name: "devflow_review_context",
       arguments: { section: "review_contract" },
@@ -87,7 +89,8 @@ it("IT-12 reviewer MCP exposes only read tools and rejects foreign or changed sn
     expect((await read("../outside.txt")).isError).toBe(true);
     expect((await read(".git/config")).isError).toBe(true);
     writeFileSync(join(s.repo, "app.txt"), "unexpected change");
-    expect((await read("app.txt")).isError).toBe(true);
+    const changed: any = await read("app.txt");
+    expect(JSON.parse(changed.content[0].text).text).toBe("unexpected change");
   } finally {
     await client.close();
     s.store.close();

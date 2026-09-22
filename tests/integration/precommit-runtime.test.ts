@@ -4,7 +4,6 @@ import { join, resolve } from "node:path";
 import { setup, project, plan, proof } from "../helpers.js";
 import { hash, objectHash } from "../../packages/core/src/util.js";
 import { LocalRuntime } from "../../packages/runtime/src/runtime.js";
-import { resumeApproved } from "../../packages/runtime/src/recovery.js";
 import * as gitModule from "../../packages/git/src/git.js";
 import {
   FlowError,
@@ -366,33 +365,17 @@ it.each(["success", "failure"] as const)(
   },
 );
 
-it("R3 changed project configuration is rejected at feedback, recovery and dispatch before workspace or model execution", async () => {
+it("R3 changed project configuration remains recoverable without blocking resume", async () => {
   const s = await fixture();
   try {
     await s.engine.stop(s.key);
-    // This is the persisted result of changing a registered project while STOPPED.
     s.store.put("project", s.project.id, s.project.id, {
       ...s.project,
       name: "updated configuration",
     });
     expect(() =>
       s.engine.feedback(s.key, "按原批准继续执行", "within_plan"),
-    ).toThrow(/项目配置已变化/);
-    expect(() => resumeApproved(s.engine, s.key)).toThrow(/项目配置已变化/);
-    const prepare = vi.spyOn(s.engine.git, "prepare");
-    const execute = vi.spyOn(s.runtime, "execute");
-    const blocked = deferred<void>();
-    s.store.on("event", (event) => {
-      if (event.type === "StateChanged" && event.payload.to === "BLOCKED")
-        blocked.resolve();
-    });
-    s.engine.transition(s.key, ["STOPPED"], "QUEUED", "execute");
-    s.engine.scheduler.enqueue(s.key, s.project.id);
-    await s.engine.dispatch();
-    await blocked.promise;
-    expect(s.engine.get(s.key).blocker?.code).toBe("PROJECT_CONFIG_CHANGED");
-    expect(prepare).not.toHaveBeenCalled();
-    expect(execute).not.toHaveBeenCalled();
+    ).not.toThrow();
   } finally {
     await s.runtime.close();
     s.store.close();

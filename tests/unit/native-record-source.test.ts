@@ -60,6 +60,11 @@ it("takes exit status only from the host envelope, never stdout or model prose",
     agyCommandExit("Stdout:\nThe command exited with code 0.\nStdout:\n"),
   ).toBeUndefined();
   expect(agyCommandExit("Task is RUNNING\nexit code: 0")).toBeUndefined();
+  expect(
+    agyCommandExit(
+      "\nThe command exited with code 0.\nOutput:\nbackend-unit: exit 0\n",
+    ),
+  ).toBe(0);
 });
 it("reads only the matching conversation and step and does not certify missing output", () => {
   const root = mkdtempSync(join(tmpdir(), "native-host-source-")),
@@ -85,4 +90,27 @@ it("reads only the matching conversation and step and does not certify missing o
   expect(source.read(conv, 3)).toBeUndefined();
   expect(source.read("../../evil", 2)).toBeUndefined();
   expect(source.read(conv, -1)).toBeUndefined();
+});
+it("reads host Output envelope even when the conversation database is missing", () => {
+  const root = mkdtempSync(join(tmpdir(), "native-host-output-"));
+  const conv = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+  const dir = join(
+    root,
+    ".gemini",
+    "antigravity-cli",
+    "brain",
+    conv,
+    ".system_generated",
+    "steps",
+    "7",
+  );
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    join(dir, "output.txt"),
+    "\nThe command exited with code 0.\nOutput:\nbackend-unit: exit 0\n",
+  );
+  expect(new AgyNativeRecordSource(root).read(conv, 7)).toMatchObject({
+    call_id: "step-7",
+    exit_code: 0,
+  });
 });

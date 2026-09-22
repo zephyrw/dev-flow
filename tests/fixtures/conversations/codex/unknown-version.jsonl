@@ -1,0 +1,5 @@
+{"type":"future.event.v9","thread_id":"019947a2-8a00-7000-8000-000000000010","agent":{"id":"should-not-become-child","thread_id":"019947a2-8a00-7000-8000-000000000099"}}
+{"hello":"world"}
+{"type":"item.started","item":{"id":"item_quantum","type":"quantum_tool","thread_id":"019947a2-8a00-7000-8000-000000000098","status":"in_progress"}}
+{"type":"collab_resume","thread_id":"019947a2-8a00-7000-8000-000000000010","child_thread_id":"019947a2-8a00-7000-8000-000000000097"}
+{"type":"item.completed","item":{"id":"item_skip","type":"agent_reasoning","text":"私有推理不应建成子会话"}}

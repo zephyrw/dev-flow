@@ -1,0 +1,5 @@
+{"type":"step_start","timestamp":1774000000000,"sessionID":"ses_root1","part":{"id":"prt_step1","sessionID":"ses_root1","messageID":"msg_1","type":"step-start"}}
+{"type":"tool_use","timestamp":1774000000500,"sessionID":"ses_root1","part":{"id":"prt_task1","sessionID":"ses_root1","messageID":"msg_1","type":"tool","tool":"task","callID":"call_task1","state":{"status":"completed","input":{"description":"列出临时目录","prompt":"只读列出固定文件","subagent_type":"devflow-review"},"metadata":{"parentSessionId":"ses_root1","sessionId":"ses_child1","title":"列出临时目录","model":{"id":"gpt-5","providerID":"openai"}}}}}
+{"type":"text","timestamp":1774000000800,"sessionID":"ses_root1","part":{"id":"prt_text1","sessionID":"ses_root1","messageID":"msg_1","type":"text","text":"子任务已完成"}}
+{"type":"item.started","timestamp":1774000000900,"item":{"id":"codex-item","type":"command_execution"}}
+{"type":"reasoning","timestamp":1774000001000,"sessionID":"ses_root1","part":{"id":"prt_think","sessionID":"ses_root1","type":"reasoning","text":"私有推理不应展示"}}

@@ -1,7 +1,11 @@
 import { it, expect } from "vitest";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { fixture, cleanup } from "../fixtures/native-flow.js";
+import {
+  fixture,
+  cleanup,
+  seedPlannerTakeover,
+} from "../fixtures/native-flow.js";
 import { LocalRuntime } from "../../packages/runtime/src/runtime.js";
 import { readableLogs } from "../../packages/presentation/src/activity.js";
 
@@ -39,7 +43,7 @@ it("the production planner-takeover runtime publishes native actions before proc
     executorProfile: profile,
     created_at: new Date().toISOString(),
   });
-  s.store.put("repair_assignment", s.w.id, s.w.id, { planner: true });
+  seedPlannerTakeover(s);
   const runtime = new LocalRuntime(s.engine);
   s.engine.runtime = runtime;
   try {

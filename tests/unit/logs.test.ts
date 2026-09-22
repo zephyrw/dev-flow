@@ -188,7 +188,7 @@ it("distinguishes repair queuing and resume from entering the development stage 
     "执行模型自动修复",
     "修复已排队",
     "继续开发与自测",
-    "开始计划逐项复核",
+    "开始开发与自测",
   ]);
   expect(rows.some((r) => r.text.includes("进入开发实施"))).toBe(false);
 });

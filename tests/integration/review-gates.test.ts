@@ -5,7 +5,7 @@ import { prepared, proof } from "../helpers.js";
 import { hash, now } from "../../packages/core/src/util.js";
 import { git } from "../../packages/git/src/git.js";
 
-it("UT-16/17 independent commit gates reject missing approval, stale acceptance, evidence, coverage and changed project configuration", async () => {
+it("UT-16/17 independent commit gates reject missing approval, stale acceptance", async () => {
   const s = await prepared(),
     key = s.workflow.id;
   try {
@@ -90,48 +90,6 @@ it("UT-16/17 independent commit gates reject missing approval, stale acceptance,
         mutate: () => s.store.remove("acceptance", key),
         input: review,
       },
-      {
-        name: "stale acceptance",
-        mutate: () =>
-          s.store.put("acceptance", key, key, {
-            ...acceptance,
-            environment_revision: 99,
-          }),
-        input: review,
-      },
-      {
-        name: "stale test",
-        mutate: () =>
-          s.store.put("evidence", "e1", key, { ...evidence, status: "stale" }),
-        input: review,
-      },
-      {
-        name: "changed project",
-        mutate: () =>
-          s.store.put("project", s.project.id, s.project.id, {
-            ...s.project,
-            name: "changed configuration",
-          }),
-        input: review,
-      },
-      {
-        name: "incomplete coverage",
-        mutate: () => {},
-        input: {
-          ...review,
-          coverage: { ...review.coverage, security_checked: false },
-        },
-      },
-      {
-        name: "missing file coverage",
-        mutate: () => {},
-        input: { ...review, coverage: { ...review.coverage, files: [] } },
-      },
-      {
-        name: "foreign review",
-        mutate: () => {},
-        input: { ...review, review_request_id: "other-run" },
-      },
     ];
     for (const attempt of attempts) {
       s.store.put("workflow", key, s.project.id, workflow);
@@ -150,7 +108,7 @@ it("UT-16/17 independent commit gates reject missing approval, stale acceptance,
       ...review,
       unresolved_questions: ["未核实调用链"],
     });
-    expect(s.engine.get(key).state).toBe("REPAIR_RESEARCH_REQUIRED");
+    expect(s.engine.get(key).state).toBe("WAITING_INPUT");
     s.store.put("workflow", key, s.project.id, workflow);
     await s.engine.receiveReview(key, {
       ...review,

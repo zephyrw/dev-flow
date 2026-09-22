@@ -1,0 +1,7 @@
+{"type":"system","subtype":"init","apiKeySource":"login","cwd":"/tmp/cursor-demo","session_id":"chat-root-001","model":"Composer 1.5","permissionMode":"default"}
+{"type":"tool_call","subtype":"started","call_id":"call-shell-1","tool_call":{"shellToolCall":{"args":{"command":"ls"}}},"model_call_id":"model-call-2","session_id":"chat-root-001","timestamp_ms":1735689610000}
+{"type":"tool_call","subtype":"completed","call_id":"call-shell-1","tool_call":{"shellToolCall":{"args":{"command":"ls"}}},"session_id":"chat-root-001","timestamp_ms":1735689610500}
+{"type":"tool_call","subtype":"started","call_id":"call-task-plain","tool_call":{"taskToolCall":{"args":{"description":"探索代码","prompt":"阅读公开文件","subagent_type":"explore"}}},"session_id":"chat-root-001","timestamp_ms":1735689611000}
+{"type":"tool_call","subtype":"completed","call_id":"call-task-plain","tool_call":{"taskToolCall":{"args":{"description":"探索代码","subagent_type":"explore"}}},"session_id":"chat-root-001","timestamp_ms":1735689612000}
+{"type":"thinking","subtype":"delta","text":"redacted-private-reasoning","session_id":"chat-root-001","timestamp_ms":1735689612500}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"目录查看完成"}]},"session_id":"chat-root-001","timestamp_ms":1735689613000}

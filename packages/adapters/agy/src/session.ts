@@ -49,6 +49,10 @@ export function writeAgyConfiguration(
     ),
   );
 }
+export function agyRunLogFile(directory: string, runId: string) {
+  return join(directory, runId + ".agy-cli.log");
+}
+
 export function agyArguments(
   model: string,
   prompt: string,
@@ -56,6 +60,7 @@ export function agyArguments(
   conversation?: string,
   project?: string,
   mode?: "accept-edits" | "plan",
+  logFile?: string,
 ) {
   return [
     "--model",
@@ -73,7 +78,8 @@ export function agyArguments(
       ? ["--conversation", conversation]
       : project
         ? ["--project", project]
-        : ["--new-project"]),
+        : []),
+    ...(logFile ? ["--log-file", logFile] : []),
   ];
 }
 export async function observeAgy(

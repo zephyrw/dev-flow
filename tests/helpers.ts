@@ -11,15 +11,30 @@ import {
 } from "../packages/contracts/src/index.js";
 import { hash, objectHash, now } from "../packages/core/src/util.js";
 import { git } from "../packages/git/src/git.js";
+import {
+  ensureTestInstanceDirs,
+  loadTestInstanceConfig,
+  usesIsolatedTestRoot,
+} from "./helpers/test-isolation.js";
 export function setup() {
-  const root = mkdtempSync(join(tmpdir(), "devflow-test-"));
+  process.env.DEVFLOW_ACCOUNT_SCOPE = process.env.DEVFLOW_ACCOUNT_SCOPE || "test-account-fixture";
+  const isolated = usesIsolatedTestRoot();
+  const instance = loadTestInstanceConfig();
+  if (isolated) ensureTestInstanceDirs(instance);
+  const root = isolated
+    ? instance.runDirResolved
+    : mkdtempSync(join(tmpdir(), "devflow-test-"));
   const config = ConfigSchema.parse({
-    storage_root: join(root, "state"),
-    workspace_root: join(root, "worktrees"),
-    server: { port: 14810, human_origin: "http://localhost:14810" },
+    storage_root: isolated ? instance.storageRoot : join(root, "state"),
+    workspace_root: isolated ? instance.workspaceRoot : join(root, "worktrees"),
+    server: isolated
+      ? { port: instance.port, human_origin: instance.humanOrigin }
+      : { port: 14810, human_origin: "http://localhost:14810" },
     host: { required: false },
   });
-  const store = new Store(join(root, "state", "devflow.sqlite"));
+  const store = new Store(
+    isolated ? instance.sqliteFile : join(root, "state", "devflow.sqlite"),
+  );
   const engine = new Engine(store, config);
   return { root, store, engine, config };
 }
@@ -33,7 +48,8 @@ export async function repository(root: string, name = "repo") {
   writeFileSync(join(repo, "app.txt"), "before\n");
   writeFileSync(join(repo, ".gitignore"), ".reports/\n");
   await git(repo, ["add", "."]);
-  await git(repo, ["commit", "-m", "fixture baseline"]);
+  const dirty = await git(repo, ["status", "--porcelain"]);
+  if (dirty.trim()) await git(repo, ["commit", "-m", "fixture baseline"]);
   return { repo, baseline: await git(repo, ["rev-parse", "HEAD"]) };
 }
 export function project(root: string) {

@@ -125,18 +125,22 @@ test.describe("H02 Activity & Guidance Resilience", () => {
     await page.routeWebSocket("**/api/events?*", () => {});
 
     await page.goto("/?workflow=wf-c02");
+    if (!(await page.locator(".execution-sidebar").isVisible()))
+      await page.getByRole("button", { name: "执行过程", exact: true }).click();
+    await page.getByRole("button", { name: "指导或提问" }).click();
+    await page.getByRole("radio", { name: /临时提问/ }).check();
 
-    // 局部错误展示
     const alert = page.getByRole("alert");
     await expect(alert).toBeVisible();
-    await expect(alert).toContainText("任务反馈响应格式无效");
+    await expect(alert).toContainText("临时提问响应格式无效");
+    await expect(page.getByRole("button", { name: "历史提问" })).toHaveCount(0);
 
-    // 恢复为合法数组并重新加载
     returnValid = true;
-    await page.reload();
+    await page.getByRole("radio", { name: /反馈并调整/ }).check();
+    await page.getByRole("radio", { name: /临时提问/ }).check();
 
-    // 刷新后错误消失
     await expect(page.getByRole("alert")).not.toBeVisible();
+    await expect(page.getByRole("button", { name: "历史提问" })).toHaveCount(0);
     expect(pageErrors.length).toBe(0);
   });
 
@@ -330,8 +334,8 @@ test.describe("H02 Activity & Guidance Resilience", () => {
 
     await page.goto("/?workflow=wf-c04");
 
-    // 点击“给执行模型补充指导”展开指导表单
-    await page.getByRole("button", { name: "给执行模型补充指导" }).click();
+    // 点击“指导或提问”展开指导表单
+    await page.getByRole("button", { name: "指导或提问" }).click();
     await expect(page.locator(".guidance-form")).toBeVisible();
 
     const textarea = page.locator(".guidance-form textarea");
@@ -361,5 +365,91 @@ test.describe("H02 Activity & Guidance Resilience", () => {
     // 确认未提示成功
     await expect(page.getByText("已保存，正在继续这个任务。")).not.toBeVisible();
     expect(pageErrors.length).toBe(0);
+  });
+
+  test("H02-C05: 历史补拉第一页立即显示，不等待更早页返回", async ({
+    page,
+  }) => {
+    const workflow = {
+      id: "wf-catchup-first",
+      project_id: "p1",
+      title: "首批补拉",
+      state: "EXECUTING",
+      plan_revision: 1,
+    };
+    const detail = {
+      workflow,
+      project: { id: "p1", name: "补拉项目" },
+      plan: {
+        plan: { task_model: "native-v2", modules: [], tasks: [], tests: [] },
+      },
+      tasks: [],
+      test_progress: { total: 0, passed: 0, failed: 0, cases: [] },
+      events: [],
+      runs: [],
+      evidence: [],
+      attention: null,
+    };
+    let releaseOlder = () => {};
+    const older = new Promise<void>((resolve) => {
+      releaseOlder = resolve;
+    });
+    await page.route("**/api/**", async (route) => {
+      const url = new URL(route.request().url());
+      const path = url.pathname;
+      if (path.endsWith("/history")) {
+        const before = url.searchParams.get("before");
+        if (!before) {
+          return route.fulfill({
+            json: {
+              events: [
+                {
+                  workflow_id: workflow.id,
+                  event_seq: 9001,
+                  type: "StateChanged",
+                  created_at: new Date().toISOString(),
+                  payload: { to: "REVIEW_QUEUED", stage: "quality_before_human" },
+                },
+              ],
+              next_before: 9001,
+            },
+          });
+        }
+        await older;
+        return route.fulfill({
+          json: {
+            events: [
+              {
+                workflow_id: workflow.id,
+                event_seq: 1,
+                type: "StateChanged",
+                created_at: new Date().toISOString(),
+                payload: { to: "QUEUED" },
+              },
+            ],
+            next_before: null,
+          },
+        });
+      }
+      if (path.endsWith("/functional-issues") || path.endsWith("/asides")) {
+        return route.fulfill({ json: [] });
+      }
+      if (path.endsWith("/projects")) {
+        return route.fulfill({ json: [detail.project] });
+      }
+      if (path.endsWith("/workflows")) {
+        return route.fulfill({ json: [workflow] });
+      }
+      return route.fulfill({ json: detail });
+    });
+    await page.routeWebSocket("**/api/notifications", () => {});
+    await page.routeWebSocket("**/api/events?*", () => {});
+    await page.goto("/?workflow=wf-catchup-first");
+    if (!(await page.locator(".execution-sidebar").isVisible()))
+      await page.getByRole("button", { name: "执行过程", exact: true }).click();
+    const sidebar = page.getByRole("region", { name: "执行过程侧栏" });
+    await expect(sidebar.getByText("等待规划模型审查")).toBeVisible();
+    await expect(sidebar.getByText("等待可用执行资源。")).toHaveCount(0);
+    releaseOlder();
   });
 });

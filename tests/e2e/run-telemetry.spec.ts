@@ -38,6 +38,14 @@ async function screen(page: Page) {
     effort: "xhigh",
     status: "responding",
     active_tools: 0,
+    current_activity: {
+      id: "cmd",
+      kind: "tool",
+      title: "执行命令",
+      text: longCommand,
+      command: longCommand,
+      status: "active",
+    },
     started_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
     activity_at: new Date().toISOString(),
@@ -45,6 +53,7 @@ async function screen(page: Page) {
       source: "native_session",
       observed_at: new Date().toISOString(),
       buckets: [
+        { id: "spark", model: "unrelated-model", label: "Other model", windows: [{ used_percent: 0, window_minutes: 300 }] },
         {
           id: "codex",
           windows: [
@@ -121,6 +130,7 @@ async function screen(page: Page) {
             ? [{ id: "p", name: "隔离测试" }]
             : /\/(asides|functional-issues|messages)$/.test(path)
               ? []
+              : path.endsWith("/history") ? { events: detail.events, next_before: null }
               : detail,
     });
   });
@@ -129,7 +139,9 @@ async function screen(page: Page) {
     socket = ws;
   });
   await page.goto("/?workflow=" + workflow.id);
-  await expect(page.getByRole("region", { name: "执行过程侧栏" })).toBeVisible();
+  await expect(
+    page.getByRole("region", { name: "执行过程侧栏" }),
+  ).toBeVisible();
   return {
     detail,
     send(type: string, payload: any, run = workflow.run_id) {
@@ -150,9 +162,20 @@ test("Codex and AGY use identical one-line command and middle-ellipsis path rend
   await screen(page);
   const card = page.getByRole("region", { name: "当前工具与模型" });
   await expect(card).toContainText("Codex CLI");
-  await expect(card).toContainText("gpt-6-astra · xhigh");
+  await expect(card).toContainText("gpt-6-astra");
   await expect(card).toContainText("剩余 27%");
-  await expect(card).toContainText("账号共享额度");
+  await expect(card).not.toContainText("Other model");
+  await expect(card).not.toContainText("100%");
+  await expect(card).toHaveAttribute("title", /账号共享额度/);
+  await expect(card).not.toContainText("执行命令");
+  await expect(card).not.toContainText(longCommand);
+  await expect(card.locator(".command-preview")).toHaveCount(0);
+  expect(
+    await card.evaluate((el) => el.getBoundingClientRect().height),
+  ).toBeLessThanOrEqual(24);
+  const currentEvent = page.locator(".latest-activity");
+  await expect(currentEvent).toContainText("PlannerRuntime.ts");
+  await expect(card).not.toContainText("PlannerRuntime.ts");
   const logs = page.locator(".execution-sidebar .logs");
   await expect(logs.locator(".command-first-line")).toHaveCount(2);
   for (const line of await logs.locator(".command-first-line").all()) {
@@ -168,9 +191,12 @@ test("Codex and AGY use identical one-line command and middle-ellipsis path rend
   expect(await paths.first().textContent()).toBe(
     await paths.last().textContent(),
   );
-  await expect(paths.first()).toContainText("...");
   await expect(paths.first()).toContainText("PlannerRuntime.ts");
   await expect(paths.first()).toHaveAttribute("title", longPath);
+  await expect(paths.first().locator(".summary-path-prefix")).toHaveCSS(
+    "text-overflow",
+    "ellipsis",
+  );
   expect(
     await paths
       .first()
@@ -185,6 +211,10 @@ test("Codex and AGY use identical one-line command and middle-ellipsis path rend
   });
   await page.getByRole("button", { name: "收起执行过程" }).click();
   await expect(card).toBeVisible();
+  await currentEvent.click();
+  await expect(
+    page.getByRole("region", { name: "执行过程侧栏" }),
+  ).toBeVisible();
   await page.setViewportSize({ width: 900, height: 950 });
   expect(
     await card.evaluate((el) => el.scrollWidth <= el.clientWidth + 1),
@@ -218,6 +248,7 @@ test("live updates reconcile completed commands, survive reload, and reject old-
   fixture.detail.runtime = {
     run_id: "r2",
     adapter: "agy",
+    requested_model: "gemini-test-model",
     purpose: "implement",
     status: "starting",
     started_at: new Date().toISOString(),
@@ -230,7 +261,8 @@ test("live updates reconcile completed commands, survive reload, and reject old-
     "r2",
   );
   await expect(card).toContainText("Antigravity CLI");
-  await expect(card).toContainText("实际模型未确认");
+  await expect(card).toContainText("gemini-test-model");
+  await expect(card).not.toContainText("待确认");
   fixture.send(
     "RunObserved",
     {
@@ -251,7 +283,8 @@ test("live updates reconcile completed commands, survive reload, and reject old-
   );
   await expect(card).not.toContainText("late-old-model");
   await expect(card).not.toContainText("剩余");
-  await expect(card).toContainText("尚未提供");
+  await expect(card).not.toContainText("额度");
+  await expect(card.getByLabel("运行账号额度")).toHaveCount(0);
 });
 
 test("stale quota is labeled and a failed run cannot continue showing a running tool", async ({
@@ -270,7 +303,22 @@ test("stale quota is labeled and a failed run cannot continue showing a running 
   };
   await page.reload();
   const card = page.getByRole("region", { name: "当前工具与模型" });
-  await expect(card).toContainText("上次读取，待更新");
+  await expect(card).toContainText("待更新");
+  await expect(card).toHaveAttribute("title", /上次读取，待更新/);
   await expect(card).not.toContainText("stale-active-command");
-  await expect(card).toContainText("已停止或结束");
+  await expect(card).not.toContainText("已停止或结束");
+});
+
+test("an older controller catches up real observer events without a websocket notification", async ({ page }) => {
+  const fixture = await screen(page);
+  const runtime = fixture.detail.runtime;
+  delete fixture.detail.runtime;
+  fixture.detail.runs = [{ id: "r", adapter: "codex", profile: { modelId: "gpt-6-astra" }, started_at: runtime.started_at, status: "running" }];
+  await page.reload();
+  const header = page.getByRole("region", { name: "当前工具与模型" });
+  await expect(header).toHaveText("Codex CLI·gpt-6-astra");
+  fixture.detail.events.push({ workflow_id: "wf-telemetry", run_id: "r", type: "NativeActivity", event_seq: 50, created_at: new Date().toISOString(), payload: { id: "bridge-command", kind: "tool", title: "执行命令", command: "pnpm run verify-live", text: "pnpm run verify-live", status: "active" } });
+  await expect(page.locator(".execution-sidebar .command-first-line").filter({ hasText: "pnpm run verify-live" })).toBeVisible({ timeout: 12000 });
+  await expect(page.locator(".latest-activity")).toContainText("pnpm run verify-live");
+  await expect(header).not.toContainText("verify-live");
 });

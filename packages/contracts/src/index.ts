@@ -158,12 +158,32 @@ export const CommandSchema = z
     required_before_commit: z.boolean().default(false),
   })
   .strict();
+export const ProjectRepositorySchema = z
+  .object({
+    id: Id,
+    path: z.string().min(1),
+    worktree_base_path: z.string().optional(),
+    material_paths: z
+      .object({
+        plan_dir: RelativePath.optional(),
+        review_dir: RelativePath.optional(),
+        repair_dir: RelativePath.optional(),
+        process_dir: RelativePath.optional(),
+        evidence_dir: RelativePath.optional(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
+export type ProjectRepository = z.infer<typeof ProjectRepositorySchema>;
+
 export const ProjectSchema = z
   .object({
     id: Id,
     name: z.string().min(1),
+    primary_repo_id: Id.optional(),
     repositories: z
-      .array(z.object({ id: Id, path: z.string().min(1) }).strict())
+      .array(ProjectRepositorySchema)
       .min(1),
     commands: z.array(CommandSchema).default([]),
     services: z
@@ -214,53 +234,67 @@ export const ProjectSchema = z
   })
   .strict();
 export type Project = z.infer<typeof ProjectSchema>;
+export const ReviewCoverageSchema = z
+  .object({
+    all_changed_files_reviewed: z.boolean().optional(),
+    all_requirements_checked: z.boolean().optional(),
+    upstream_downstream_checked: z.boolean().optional(),
+    security_checked: z.boolean().optional(),
+    tests_validity_checked: z.boolean().optional(),
+    files: z.array(z.string()).optional().default([]),
+  })
+  .passthrough();
+export const ReviewFindingSchema = z
+  .object({
+    id: Id.optional(),
+    severity: z.enum(["P0", "P1", "P2", "P3"]).optional(),
+    repo_id: Id.optional(),
+    path: RelativePath.optional(),
+    line: z.number().int().positive().optional(),
+    trigger: z.string().optional(),
+    evidence: z.string().optional(),
+    consequence: z.string().optional(),
+    relation_to_change: z
+      .enum(["introduced", "in_scope", "historical", "suggestion"])
+      .optional(),
+    disposition: z
+      .enum(["confirmed", "false_positive", "out_of_scope"])
+      .optional(),
+    reason: z.string().optional(),
+  })
+  .passthrough();
 export const ReviewSchema = z
   .object({
-    schema_version: z.literal(1),
-    review_request_id: Id,
-    workflow_id: Id,
-    plan_revision: z.number().int().positive(),
-    snapshot_id: z.string(),
-    verdict: z.enum(["pass", "findings", "incomplete"]),
-    coverage: z
-      .object({
-        all_changed_files_reviewed: z.boolean(),
-        all_requirements_checked: z.boolean(),
-        upstream_downstream_checked: z.boolean(),
-        security_checked: z.boolean(),
-        tests_validity_checked: z.boolean(),
-        files: z.array(z.string()),
-      })
-      .strict(),
-    findings: z.array(
-      z
-        .object({
-          id: Id,
-          severity: z.enum(["P0", "P1", "P2", "P3"]),
-          repo_id: Id,
-          path: RelativePath,
-          line: z.number().int().positive(),
-          trigger: z.string().min(1),
-          evidence: z.string().min(1),
-          consequence: z.string().min(1),
-          relation_to_change: z.enum([
-            "introduced",
-            "in_scope",
-            "historical",
-            "suggestion",
-          ]),
-          disposition: z.enum(["confirmed", "false_positive", "out_of_scope"]),
-          reason: z.string().min(1),
-        })
-        .strict(),
-    ),
-    unresolved_questions: z.array(z.string()),
-    repair_plan: PlanSchema.nullable(),
-    commit_message: z.string().min(1).max(500),
+    schema_version: z.number().int().optional(),
+    review_request_id: Id.optional(),
+    workflow_id: Id.optional(),
+    plan_revision: z.number().int().optional(),
+    snapshot_id: z.string().optional(),
+    verdict: z
+      .enum([
+        "pass",
+        "findings",
+        "incomplete",
+        "passed",
+        "changes_required",
+        "need_user",
+        "quality_pass",
+      ])
+      .optional(),
+    coverage: ReviewCoverageSchema.optional(),
+    findings: z.array(ReviewFindingSchema).optional().default([]),
+    unresolved_questions: z.array(z.string()).optional().default([]),
+    repair_plan: PlanSchema.nullable().optional(),
+    commit_message: z.string().max(500).optional(),
     quality: QualityReviewResultSchema.nullish(),
-    repair_document: z.string().min(1).nullish(),
+    repair_document: z.string().nullish(),
+    summary: z.string().optional(),
+    notes: z.string().optional(),
+    status: z
+      .enum(["completed", "passed", "changes_required", "need_user", "incomplete"])
+      .optional(),
   })
-  .strict();
+  .passthrough();
 export type Review = z.infer<typeof ReviewSchema>;
 export interface Workflow {
   id: string;
@@ -269,6 +303,7 @@ export interface Workflow {
   request: string;
   complexity: "simple" | "complex";
   workspace_mode: "existing_workspace" | "new_worktree";
+  binding_strategy?: "unified" | "legacy";
   state: State;
   stage: string;
   version: number;
@@ -305,10 +340,13 @@ export interface Run {
   adapter: import("./execution-spec.js").SupportedAdapterId;
   purpose?: import("../../core/src/run-profile.js").RunPurpose;
   execution_spec_id?: string;
+  protocol?: "lightweight" | "legacy";
   profile?: import("./execution-spec.js").ToolProfile;
   stage: string;
   status: string;
   conversation_id?: string;
+  continuation_conversation_id?: string;
+  continuation?: import("./tr-handoff.js").RunContinuation;
   started_at: string;
   deadline_at?: number;
   ended_at?: string;
@@ -445,8 +483,9 @@ export const DeliveryManifestSchema = z
             id: z.string().min(1),
             reason: z.string().min(1),
           })
-          .strict(),
+          .passthrough(),
       )
+      .optional()
       .default([]),
     plan_conflicts: z
       .array(
@@ -456,21 +495,32 @@ export const DeliveryManifestSchema = z
             description: z.string().min(1),
             proposed_change: z.string().optional(),
           })
-          .strict(),
+          .passthrough(),
       )
+      .optional()
       .default([]),
+    status: z
+      .enum(["completed", "need_planner", "need_user", "unclear"])
+      .optional(),
+    summary: z.string().optional(),
+    notes: z.string().optional(),
+    artifacts: z.array(z.any()).optional(),
   })
-  .strict();
-export const NativeDeliveryManifestSchema = DeliveryManifestSchema.extend({
-  schema_version: z.literal("v2"),
-  submission_id: Id,
-  workflow_id: Id,
-  run_id: Id,
-  conversation_id: Id,
-  plan_revision: z.number().int().positive(),
-  plan_hash: z.string().min(1),
-});
+  .passthrough();
+export const NativeDeliveryManifestSchema = DeliveryManifestSchema;
+export const ExecutorRoundResultSchema = z
+  .object({
+    status: z
+      .enum(["completed", "need_planner", "need_user", "unclear"])
+      .optional(),
+    summary: z.string().optional(),
+    notes: z.string().optional(),
+    artifacts: z.array(z.any()).optional(),
+    delivery: DeliveryManifestSchema.optional(),
+  })
+  .passthrough();
 export type DeliveryManifest = z.infer<typeof DeliveryManifestSchema>;
+export type ExecutorRoundResult = z.infer<typeof ExecutorRoundResultSchema>;
 
 export interface Delivery {
   id: string;
@@ -486,6 +536,7 @@ export interface Delivery {
   report_hashes?: Record<string, string>;
   manifest: DeliveryManifest;
   submitted_at: string;
+  attachment_status?: import("./tr-handoff.js").AttachmentArchiveRecord[];
 }
 
 export interface DeliveryRevision {
@@ -579,8 +630,135 @@ export interface RunUsage {
   recorded_at: string;
 }
 
+/**
+ * CW-D00 / §3.3 正式材料引用合同
+ * 增量字段为 repo_id/workspace_id/path/kind/revision/source_hash/cache_path/status
+ * path 是项目相对路径
+ */
+export const ProjectMaterialSchema = z
+  .object({
+    id: Id,
+    workflow_id: Id,
+    repo_id: Id.optional(),
+    workspace_id: z.string().min(1),
+    path: RelativePath,
+    kind: z.enum(["plan", "review", "repair", "process", "evidence"]),
+    revision: z.number().int().positive().default(1),
+    source_hash: z.string().min(1), // 原始字节 SHA-256
+    cache_path: z.string().optional(),
+    status: z.enum(["pending", "verified", "conflict", "missing"]).default("verified"),
+    created_at: z.string().min(1),
+    updated_at: z.string().min(1),
+  })
+  .strict();
+export type ProjectMaterial = z.infer<typeof ProjectMaterialSchema>;
+
+/**
+ * 依据 CW2-D04 / §7 第 7 项规范：控制事实明确原因集合
+ * 至少区分 user_disabled、workflow_pause、manual_handoff、migration
+ */
+export const DispatchControlReasonSchema = z.enum([
+  "user_disabled",
+  "workflow_pause",
+  "manual_handoff",
+  "migration",
+]);
+export type DispatchControlReason = z.infer<typeof DispatchControlReasonSchema>;
+
+export const DispatchControlReasonItemSchema = z
+  .object({
+    reason: DispatchControlReasonSchema,
+    request_id: z.string().optional(),
+    revision: z.number().int().nonnegative().optional(),
+    migration_id: z.string().optional(),
+    created_at: z.string().min(1),
+    message: z.string().optional(),
+  })
+  .strict();
+export type DispatchControlReasonItem = z.infer<
+  typeof DispatchControlReasonItemSchema
+>;
+
+/**
+ * CW2-D00 / CW2-D04 调度控制合同
+ * 增加单调 revision，修改时 CAS，dispatch_enabled 由原因集合导出
+ */
+export const WorkflowDispatchControlSchema = z
+  .object({
+    workflow_id: Id,
+    revision: z.number().int().positive().default(1),
+    dispatch_enabled: z.boolean().default(true),
+    writer_state: z.enum(["idle", "active", "unknown"]).default("idle"),
+    reasons: z.array(DispatchControlReasonItemSchema).default([]),
+    paused_reason: z.string().optional(),
+    reason: z.string().optional(),
+    updated_at: z.string().min(1),
+  })
+  .strict();
+export type WorkflowDispatchControl = z.infer<
+  typeof WorkflowDispatchControlSchema
+>;
+
+/**
+ * CW-D00 / §3.2 受管派发事实记录合同
+ * 最少冻结 dispatch_id/run_id/workflow_id/control_revision/expected_conversation_id/host_id/process_identity/state/event_cursor/result_id
+ * 按 strategy 区分身份引用：unified 冻结 binding_id/generation/binding_revision；legacy 冻结 legacy_source_ref/source_entity_version/resolved_identity
+ */
+export const CliDispatchRecordSchema = z
+  .object({
+    id: z.string().min(1),
+    dispatch_id: z.string().min(1),
+    run_id: Id,
+    workflow_id: Id,
+    control_revision: z.number().int().positive().default(1),
+    expected_conversation_id: z.string().optional(),
+    host_id: z.string().min(1),
+    process_identity: z
+      .object({
+        pid: z.number().int().positive().optional(),
+        started_at: z.string().optional(),
+        host: z.string().optional(),
+        process_record_id: z.string().optional(),
+      })
+      .strict()
+      .default({}),
+    state: z.enum([
+      "prepared",
+      "starting",
+      "running",
+      "stopping",
+      "completed",
+      "interrupted",
+      "cancelled",
+      "needs_reconcile",
+    ]),
+    event_cursor: z.number().int().nonnegative().default(0),
+    result_id: z.string().optional(),
+    strategy: z.enum(["unified", "legacy"]).default("unified"),
+    // unified strategy 字段
+    binding_id: z.string().optional(),
+    generation: z.number().int().positive().optional(),
+    binding_revision: z.number().int().positive().optional(),
+    // legacy strategy 字段
+    legacy_source_ref: z.string().optional(),
+    source_entity_version: z.number().int().optional(),
+    resolved_identity: z.record(z.string(), z.unknown()).optional(),
+    exit_code: z.number().optional(),
+    error: z.string().optional(),
+    created_at: z.string().optional(),
+    updated_at: z.string().optional(),
+  })
+  .strict();
+export type CliDispatchRecord = z.infer<typeof CliDispatchRecordSchema>;
+
 export * from "./native-plan.js";
 export * from "./quality.js";
 export * from "./feedback.js";
 export * from "./execution-spec.js";
 export * from "./merge-conflict.js";
+export * from "./tr-handoff.js";
+export * from "./conversation.js";
+export * from "./conversation-input.js";
+export * from "./conversation-guidance.js";
+export * from "./run-observation.js";
+export * from "./session-binding.js";

@@ -41,6 +41,127 @@ const DEFAULT_EXCLUDE_FILE_PATTERNS = [
   /(?:^|[\\/])junit.*\.xml$/,
 ];
 
+export interface FingerprintComputeOptions {
+  includes?: string[]; // 相对路径列表，为空时扫描整个工作区
+  excludes?: string[]; // 额外的排除目录或文件（如报告文件等）
+  registeredWorktrees?: string[]; // 依据 CW-D12 注入的已登记工作树集合（项目相对路径）
+  backupSubtrees?: string[]; // 依据 CW-D12 注入的已登记备份子树集合（项目相对路径）
+}
+
+function isUnderBoundary(relPath: string, boundaryDir: string): boolean {
+  const normRel = relPath.replaceAll("\\", "/").toLowerCase();
+  const normBound = boundaryDir.replaceAll("\\", "/").toLowerCase().replace(/\/+$/, "");
+  return normRel === normBound || normRel.startsWith(normBound + "/");
+}
+
+export interface ScanContext {
+  scanRoot: string;
+  registeredWorktrees: string[];
+  backupSubtrees: string[];
+}
+
+/**
+ * 依据 CW3-F14 规范：建立全局 ScanContext
+ * 结合全局已确认 Workspace 映射与实际 Git 登记/common-dir，
+ * 当前扫描根不排除，失效登记不排普通代码，备份独立持久登记
+ */
+export function resolveScanContext(
+  scanRoot: string,
+  options?: {
+    store?: any;
+    knownWorkspaces?: Array<{ root: string; id?: string }>;
+    currentWorkspaceRoot?: string;
+    backupRoots?: string[];
+  },
+): ScanContext {
+  const normScanRoot = resolve(scanRoot).replaceAll("\\", "/").toLowerCase();
+  const normCurrent = options?.currentWorkspaceRoot
+    ? resolve(options.currentWorkspaceRoot).replaceAll("\\", "/").toLowerCase()
+    : undefined;
+
+  let workspacesToInspect = options?.knownWorkspaces ?? [];
+  if (options?.store) {
+    try {
+      const allWs = options.store.list("workspace");
+      if (Array.isArray(allWs) && allWs.length > 0) {
+        workspacesToInspect = allWs;
+      }
+    } catch {}
+  }
+
+  const registeredWorktrees: string[] = [];
+  for (const ws of workspacesToInspect) {
+    if (!ws?.root) continue;
+    const wsRoot = resolve(ws.root).replaceAll("\\", "/");
+    const normWsRoot = wsRoot.toLowerCase();
+    if (normCurrent && normWsRoot === normCurrent) continue;
+    if (normWsRoot === normScanRoot) continue;
+    if (normWsRoot.startsWith(normScanRoot + "/")) {
+      // CW3-F14: 核验实际 Git 登记，失效登记变成普通目录后不得误排真实代码
+      const dotGitPath = join(ws.root, ".git");
+      let isValidWorktree = false;
+      if (existsSync(dotGitPath)) {
+        try {
+          const stat = statSync(dotGitPath);
+          if (stat.isFile()) {
+            const dotGitContent = readFileSync(dotGitPath, "utf8");
+            if (dotGitContent.includes("gitdir:")) {
+              isValidWorktree = true;
+            }
+          }
+        } catch {}
+      }
+
+      if (isValidWorktree) {
+        const rel = relative(scanRoot, ws.root).replaceAll("\\", "/");
+        if (rel && !rel.startsWith("..") && !registeredWorktrees.includes(rel)) {
+          registeredWorktrees.push(rel);
+        }
+      }
+    }
+  }
+
+  const backupSubtrees: string[] = [];
+  let backupsToInspect = options?.backupRoots ?? [];
+  if (options?.store) {
+    try {
+      const allBackups = options.store.list("backup_registration");
+      if (Array.isArray(allBackups)) {
+        backupsToInspect = [
+          ...backupsToInspect,
+          ...allBackups.map((b: any) => b.path || b.root).filter(Boolean),
+        ];
+      }
+    } catch {}
+  }
+
+  for (const bk of backupsToInspect) {
+    const bkRoot = resolve(bk).replaceAll("\\", "/");
+    const normBkRoot = bkRoot.toLowerCase();
+    if (normBkRoot.startsWith(normScanRoot + "/")) {
+      const rel = relative(scanRoot, bk).replaceAll("\\", "/");
+      if (rel && !rel.startsWith("..") && !backupSubtrees.includes(rel)) {
+        backupSubtrees.push(rel);
+      }
+    }
+  }
+
+  return { scanRoot, registeredWorktrees, backupSubtrees };
+}
+
+export function resolveExcludedRelativePaths(
+  scanRoot: string,
+  options?: {
+    store?: any;
+    knownWorkspaces?: Array<{ root: string; id?: string }>;
+    currentWorkspaceRoot?: string;
+    backupRoots?: string[];
+  },
+): { registeredWorktrees: string[]; backupSubtrees: string[] } {
+  const ctx = resolveScanContext(scanRoot, options);
+  return { registeredWorktrees: ctx.registeredWorktrees, backupSubtrees: ctx.backupSubtrees };
+}
+
 export class WorkspaceFingerprintService {
   private static cache = new Map<string, { version: string; hash: string }>();
   /**
@@ -48,10 +169,7 @@ export class WorkspaceFingerprintService {
    */
   static compute(
     workspaceRoot: string,
-    options?: {
-      includes?: string[]; // 相对路径列表，为空时扫描整个工作区
-      excludes?: string[]; // 额外的排除目录或文件（如报告文件等）
-    },
+    options?: FingerprintComputeOptions,
   ): FingerprintResult {
     const root = resolve(workspaceRoot);
     if (!existsSync(root) || !statSync(root).isDirectory())
@@ -60,6 +178,8 @@ export class WorkspaceFingerprintService {
     const extraExcludes = new Set(
       (options?.excludes ?? []).map((e) => e.replaceAll("\\", "/")),
     );
+    const registeredWorktrees = options?.registeredWorktrees ?? [];
+    const backupSubtrees = options?.backupSubtrees ?? [];
 
     const walk = (currentDir: string) => {
       if (!existsSync(currentDir)) return;
@@ -74,15 +194,27 @@ export class WorkspaceFingerprintService {
             "Input links require an explicit supported policy: " + relPath,
           );
         if (entry.isDirectory()) {
+          // 目录边界排除核查 (CW-D12)
+          const isRegisteredTree = registeredWorktrees.some((b) => isUnderBoundary(relPath, b));
+          const isBackupSubtree = backupSubtrees.some((b) => isUnderBoundary(relPath, b));
           if (
             DEFAULT_EXCLUDE_DIRS.has(entry.name) ||
             extraExcludes.has(relPath) ||
-            extraExcludes.has(entry.name)
+            extraExcludes.has(entry.name) ||
+            isRegisteredTree ||
+            isBackupSubtree
           ) {
             continue;
           }
           walk(fullPath);
         } else if (entry.isFile()) {
+          // 排除已登记的工作树或备份子树中的文件
+          if (
+            registeredWorktrees.some((b) => isUnderBoundary(relPath, b)) ||
+            backupSubtrees.some((b) => isUnderBoundary(relPath, b))
+          ) {
+            continue;
+          }
           // 排除额外指定的报告或临时文件
           if (extraExcludes.has(relPath)) {
             continue;

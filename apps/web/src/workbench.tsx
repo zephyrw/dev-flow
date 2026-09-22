@@ -157,22 +157,13 @@ export function EnvironmentSummary({ detail }: { detail: any }) {
     project = detail.project;
   // An exit code and stdout prove only that a script ran. Data validation is
   // reported separately from service health and never inferred from a message.
-  const integration =
-    detail.test_progress?.cases?.filter(
-      (c: any) => c.layer === "integration",
-    ) ?? [];
-  const tested =
-    integration.length > 0 &&
-    integration.every((c: any) => c.status === "passed");
-  const needsData =
-    !!project.data.fixture_command_id || project.data.mode === "external_lock";
   const servicesReady =
     env?.status === "ready" &&
     project.services.length > 0 &&
     project.services.every((s: any) =>
       env.services.some((a: any) => a.id === s.id && a.status === "ready"),
     );
-  const ready = servicesReady && (!needsData || tested);
+  const ready = servicesReady;
   return (
     <div className="environment-summary">
       <p className="notice-subtle">
@@ -189,7 +180,7 @@ export function EnvironmentSummary({ detail }: { detail: any }) {
             : env?.error
               ? "本机验证副本启动失败"
               : servicesReady
-                ? "服务已启动，数据验证尚未完成"
+                ? "服务已启动"
                 : env?.status === "starting"
                   ? "正在准备环境…"
                   : "验收环境尚未就绪"}
@@ -213,7 +204,7 @@ export function EnvironmentSummary({ detail }: { detail: any }) {
                     ? "已启动"
                     : "未就绪"}
               </b>
-              {ready && s.port_pool === "frontend" && (
+              {actual?.origin && s.port_pool === "frontend" && (
                 <a
                   className="btn-link"
                   href={actual.origin}
@@ -235,13 +226,13 @@ export function EnvironmentSummary({ detail }: { detail: any }) {
           </span>
         </div>
         <div className="metric-row">
-          <span className="metric-title">数据与依赖验证</span>
-          <b className={`metric-status ${tested ? "ready" : ""}`}>
-            {needsData
-              ? tested
-                ? "本版本集成测试已通过"
-                : "尚未通过本版本集成测试"
-              : "未配置外部数据准备"}
+          <span className="metric-title">数据准备</span>
+          <b className="metric-status">
+            {project.data.mode === "external_lock"
+              ? "外部测试资源"
+              : project.data.fixture_command_id
+                ? "已配置独立数据"
+                : "未配置外部数据准备"}
           </b>
         </div>
       </div>

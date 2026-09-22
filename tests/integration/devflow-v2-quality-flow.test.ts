@@ -7,23 +7,18 @@ import {
   passReview,
   type Fixture,
 } from "../fixtures/native-flow.js";
-import { proof } from "../helpers.js";
-import { hash, now } from "../../packages/core/src/util.js";
-import type { Workflow, Run } from "../../packages/contracts/src/index.js";
+import { proof, setup } from "../helpers.js";
+import { now } from "../../packages/core/src/util.js";
+import type { Workflow } from "../../packages/contracts/src/index.js";
 import { reviewContractContext } from "../../packages/runtime/src/review-materials.js";
-import { workflowAttention } from "../../packages/core/src/attention.js";
-function failReview(s: Fixture, w: Workflow, run: Run) {
-  const phase =
-    w.stage === "quality_before_human" ? "before_human" : "after_human";
+function failReview(s: Fixture, w: Workflow) {
   const body =
     (s.engine.plan(s.w.id).plan.markdown ?? "") +
     "\n## R1\n核对 app.txt 为 after 并运行原始单元测试，保留换行及其他文件。不得另建计划。\n";
-  const repair = structuredClone(s.engine.plan(w.id).plan);
-  repair.markdown = body;
   return {
     ...passReview(w),
     verdict: "findings",
-    repair_plan: repair,
+    repair_plan: null,
     repair_document: body,
     findings: [
       {
@@ -40,89 +35,10 @@ function failReview(s: Fixture, w: Workflow, run: Run) {
         reason: "测试夹具强制拒绝，验证正式整改后的调度",
       },
     ],
-    quality: {
-      workflow_id: w.id,
-      run_id: run.id,
-      phase,
-      cycle: s.engine.quality.getOrCreateGate(w.id, phase).cycle,
-      verdict: "changes_required",
-      function_impact: "none",
-      plan_revision: w.plan_revision,
-      feedback_cursor: 0,
-      reviewed_at: now(),
-      findings: [
-        {
-          finding_id: "F1",
-          severity: "major",
-          repo_id: "main",
-          evidence_locations: ["app.txt:1"],
-          evidence: "文本质量检查失败",
-          impact: "不满足计划",
-          cause: "遗漏核验",
-          verification_type: "statically_confirmed",
-        },
-      ],
-      repair_plan: [
-        {
-          repair_item_id: "R1",
-          finding_ids: ["F1"],
-          design_section: "R1",
-          evidence_locations: ["app.txt:1"],
-          reproduction: "读取 app.txt",
-          expected_actual: "期望完整匹配",
-          root_cause: "遗漏核验",
-          allowed_changes: [
-            {
-              repo_id: "main",
-              path: "app.txt",
-              symbol: "content",
-              action: "modify",
-              purpose: "满足原计划",
-            },
-          ],
-          forbidden_changes: ["其他文件"],
-          preserved_behaviors: ["保留换行"],
-          implementation_steps: [
-            {
-              sequence: 1,
-              depends_on: [],
-              action: "核对文本",
-              input: "app.txt",
-              output: "after 加换行",
-              algorithm: "完整匹配",
-              pre_conditions: "原计划已批准",
-              post_conditions: "内容符合",
-              interfaces: "无接口变化",
-              state_and_transaction_rules: "单文件原子写",
-              idempotency_and_recovery: "重复执行结果一致",
-            },
-          ],
-          acceptance_cases: [
-            {
-              case_id: "UT01",
-              layer: "unit",
-              fixtures: "app.txt",
-              steps: ["运行原始文本检查"],
-              expected_assertions: ["after 加换行"],
-              pre_fix_failure: "不匹配",
-            },
-          ],
-          regression_cases: ["其余文件保持不变"],
-          regression_impact_rationale: "局部纯文本变更",
-          completion_evidence: ["真实原始报告"],
-          stop_conditions: ["范围冲突即停止"],
-          function_impact: "none",
-          function_impact_explanation: "实现既有计划，无新增行为",
-          document_revision: w.plan_revision + 1,
-          document_hash: hash(body),
-          document_anchor: "#r1",
-        },
-      ],
-    },
   };
 }
 describe("质量审查生产调度闭环", { timeout: 1500000 }, () => {
-  it("审查材料缺失由规划模型补全，首次完整发现问题仍不计整改失败", async () => {
+  it("首次代码质量不通过只派发整改且计数为 0，通过后进入人工", async () => {
     const s = await fixture();
     const base = runtime(s);
     let reviews = 0;
@@ -132,39 +48,22 @@ describe("质量审查生产调度闭环", { timeout: 1500000 }, () => {
         reviews++;
         const context = reviewContractContext(s.engine, w, r);
         expect(context.run_id).toBe(r.id);
-        if (reviews === 1)
-          return {
-            ...failReview(s, w, r),
-            verdict: "incomplete",
-            quality: null,
-            unresolved_questions: ["缺少整改合同资料"],
-          };
-        if (reviews <= 3) {
-          expect(context.completion?.attempts[0]?.review).toMatchObject({
-            findings: [{ id: "F1" }],
-          });
-          expect(workflowAttention(s.engine, w.id)?.message).toContain(
-            "无需你编写",
-          );
-          expect(
-            s.engine.quality.getGate(w.id, "before_human")?.executor_rejections,
-          ).toBe(0);
-          if (reviews === 2) return passReview(w); // Dropping F1 must not evade review.
-          return failReview(s, w, r);
-        }
-        expect(context.completion).toBeNull(); // The new repair plan has fresh input.
-        return passReview(w);
+        expect(
+          s.engine.quality.getGate(w.id, "before_human")?.executor_rejections ??
+            0,
+        ).toBe(0);
+        return reviews === 1 ? failReview(s, w) : passReview(w);
       },
     };
     try {
-      await until(s, ["HUMAN_PENDING", "BLOCKED", "REPAIR_PLAN_PENDING"]);
+      await until(s, ["HUMAN_PENDING", "BLOCKED", "WAITING_INPUT"]);
       expect(s.engine.get(s.w.id).blocker).toBeUndefined();
       expect(s.engine.get(s.w.id).state).toBe("HUMAN_PENDING");
-      expect(reviews).toBe(4);
-      expect(s.engine.get(s.w.id).plan_revision).toBe(2);
+      expect(reviews).toBe(2);
       expect(s.engine.quality.getGate(s.w.id, "before_human")).toMatchObject({
         executor_rejections: 0,
         takeover: false,
+        status: "passed",
       });
       expect(s.store.list("acceptance", s.w.id)).toHaveLength(0);
     } finally {
@@ -172,68 +71,48 @@ describe("质量审查生产调度闭环", { timeout: 1500000 }, () => {
     }
   });
 
-  it("畸形整改最多自动补全两次，保留原交付，人工重试仍回到人工前复核", async () => {
+  it("审查需要用户输入时进入等待，不自动补全材料", async () => {
     const s = await fixture();
-    const base = runtime(s);
-    let reviews = 0;
     s.engine.runtime = {
-      ...base,
-      async review(w, r) {
-        reviews++;
-        reviewContractContext(s.engine, w, r);
-        const malformed: any = failReview(s, w, r);
-        delete malformed.quality.repair_plan[0].root_cause;
-        if (reviews === 1) malformed.findings = [null];
-        return malformed;
+      ...runtime(s),
+      async review(w) {
+        return {
+          ...passReview(w),
+          unresolved_questions: ["需要用户确认接口约定"],
+        };
       },
     };
     try {
-      await until(s, ["BLOCKED", "HUMAN_PENDING"]);
-      expect(reviews).toBe(3);
-      expect(s.engine.get(s.w.id).blocker?.code).toBe(
-        "REVIEW_COMPLETION_EXHAUSTED",
-      );
+      await until(s, ["WAITING_INPUT", "BLOCKED"]);
+      expect(s.engine.get(s.w.id).state).toBe("WAITING_INPUT");
+      expect(s.engine.get(s.w.id).blocker?.code).toBe("REVIEW_NEEDS_USER");
       expect(
-        s.engine.quality.getGate(s.w.id, "before_human")?.executor_rejections,
+        s.engine.quality.getGate(s.w.id, "before_human")?.executor_rejections ??
+          0,
       ).toBe(0);
-      const snapshot = s.engine.get(s.w.id).snapshot_id;
-      const delivery = s.engine.planSelfCheck.current(s.w.id);
-      s.engine.runtime = undefined;
-      await s.engine.retryReview(s.w.id);
-      expect(s.engine.get(s.w.id)).toMatchObject({
-        state: "REVIEW_QUEUED",
-        stage: "quality_before_human",
-        snapshot_id: snapshot,
-        plan_revision: 1,
-      });
-      expect(s.engine.planSelfCheck.current(s.w.id)).toEqual(delivery);
-      expect(s.store.get("acceptance", s.w.id)).toBeUndefined();
     } finally {
       await cleanup(s);
     }
   });
 
-  it("用户在补全排队时暂停，不再次调用复核模型", async () => {
+  it("用户在等待输入时暂停，不再次调用复核模型", async () => {
     const s = await fixture();
     let reviews = 0;
     s.engine.runtime = {
       ...runtime(s),
-      async review(w, r) {
+      async review(w) {
         reviews++;
-        return { ...failReview(s, w, r), verdict: "incomplete", quality: null };
+        return {
+          ...passReview(w),
+          unresolved_questions: ["需要用户确认"],
+        };
       },
     };
-    let stopping: Promise<unknown> | undefined;
-    s.store.on("event", (event) => {
-      if (event.type === "ReviewCompletionQueued")
-        stopping = s.engine.stop(s.w.id);
-    });
     try {
-      await until(s, ["STOPPED", "BLOCKED"]);
-      await stopping;
+      await until(s, ["WAITING_INPUT", "BLOCKED"]);
+      await s.engine.stop(s.w.id);
       expect(s.engine.get(s.w.id).state).toBe("STOPPED");
       expect(reviews).toBe(1);
-      expect(s.store.get("queue", s.w.id)).toBeUndefined();
     } finally {
       await cleanup(s);
     }
@@ -262,15 +141,16 @@ describe("质量审查生产调度闭环", { timeout: 1500000 }, () => {
         const phase =
           w.stage === "quality_before_human" ? "before_human" : "after_human";
         counts[phase]++;
-        expect(s.engine.quality.getOrCreateGate(w.id, phase).executor_rejections)
-          .toBe(Math.max(0, Math.min(3, counts[phase] - 2)));
-        return counts[phase] <= 4 ? failReview(s, w, r) : passReview(w);
+        expect(
+          s.engine.quality.getOrCreateGate(w.id, phase).executor_rejections,
+        ).toBe(Math.max(0, Math.min(3, counts[phase] - 2)));
+        return counts[phase] <= 4 ? failReview(s, w) : passReview(w);
       },
     };
     try {
       await until(
         s,
-        ["HUMAN_PENDING", "BLOCKED", "REPAIR_PLAN_PENDING"],
+        ["HUMAN_PENDING", "BLOCKED", "REPAIR_PLAN_PENDING", "WAITING_INPUT"],
         660000,
       );
       expect(s.engine.get(s.w.id).blocker).toBeUndefined();
@@ -289,7 +169,13 @@ describe("质量审查生产调度闭环", { timeout: 1500000 }, () => {
       await s.engine.accept(s.w.id, p.proof, p.binding);
       await until(
         s,
-        ["COMMITTED", "BLOCKED", "REPAIR_PLAN_PENDING", "COMMIT_PARTIAL"],
+        [
+          "COMMITTED",
+          "BLOCKED",
+          "REPAIR_PLAN_PENDING",
+          "COMMIT_PARTIAL",
+          "WAITING_INPUT",
+        ],
         660000,
       );
       expect(s.engine.get(s.w.id).blocker).toBeUndefined();
@@ -310,9 +196,12 @@ describe("质量审查生产调度闭环", { timeout: 1500000 }, () => {
       ).toBe(true);
       for (const phase of ["before_human", "after_human"])
         expect(
-          s.store.list<any>("quality_review", s.w.id).filter(
-            (review) => review.phase === phase && review.executor_repair_run_id,
-          ),
+          s.store
+            .list<any>("quality_review", s.w.id)
+            .filter(
+              (review) =>
+                review.phase === phase && review.executor_repair_run_id,
+            ),
         ).toHaveLength(3);
       expect(s.store.list("commit_result", s.w.id)).toHaveLength(1);
     } finally {
@@ -344,6 +233,76 @@ describe("质量审查生产调度闭环", { timeout: 1500000 }, () => {
       expect(s.engine.get(s.w.id).state).toBe("QUEUED");
     } finally {
       await cleanup(s);
+    }
+  });
+
+  it("事务提交前中断没有新决定，提交后重放补齐同一派发", () => {
+    const opened = setup();
+    const q = opened.engine.quality;
+    opened.store.put("workflow", "wf", "p", {
+      id: "wf",
+      project_id: "p",
+      state: "REVIEWING",
+      stage: "quality_before_human",
+      plan_revision: 1,
+      plan_hash: "plan",
+      run_id: "run",
+      version: 1,
+    });
+    opened.store.put("run", "run", "wf", {
+      id: "run",
+      workflow_id: "wf",
+      plan_revision: 1,
+      purpose: "review",
+      status: "completed",
+      exit_code: 0,
+    });
+    const input = {
+      workflow_id: "wf",
+      run_id: "run",
+      phase: "before_human",
+      cycle: 1,
+      verdict: "changes_required",
+      plan_revision: 1,
+      findings: [
+        {
+          finding_id: "F1",
+          evidence: "仍有问题",
+          impact: "错误",
+          cause: "遗漏",
+        },
+      ],
+    };
+    try {
+      const prepared = q.prepareQualityTransfer("wf", input);
+      expect(prepared.write).toBe("full");
+      expect(q.getGate("wf", "before_human")).toBeUndefined();
+      expect(opened.store.get("repair_assignment", "wf")).toBeUndefined();
+      opened.store.transaction(() => q.applyQualityTransfer(prepared));
+      expect(q.getGate("wf", "before_human")?.current_review_id).toBe("run");
+      expect(
+        opened.store.get<any>("repair_assignment", "wf")?.assignment_id,
+      ).toBe(prepared.next_assignment_id);
+      opened.store.remove("repair_assignment", "wf");
+      opened.store.put("quality_eval_dedup", "wf:run", "wf", {
+        ...opened.store.must<any>("quality_eval_dedup", "wf:run"),
+        assignment_applied: false,
+      });
+      const recovered = q.recoverQualityDispatch("wf", "before_human");
+      expect(recovered?.write).toBe("backfill");
+      opened.store.transaction(() => q.applyQualityTransfer(recovered!));
+      expect(q.getGate("wf", "before_human")?.executor_rejections).toBe(0);
+      expect(
+        opened.store.get<any>("repair_assignment", "wf")?.source_review_id,
+      ).toBe("run");
+      expect(
+        opened.store.get<any>("repair_assignment", "wf")?.assignment_id,
+      ).toBe(prepared.next_assignment_id);
+      const replay = q.prepareQualityTransfer("wf", input);
+      expect(replay.write).toBe("none");
+      expect(replay.next_assignment_id).toBe(prepared.next_assignment_id);
+    } finally {
+      opened.store.close();
     }
   });
 });

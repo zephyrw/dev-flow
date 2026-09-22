@@ -82,7 +82,7 @@ export async function repairFailure(
     resolveTaskModel(engine.plan(key).plan) === "native-v2"
       ? "在正式批准范围内自主使用原生工具完成开发和自测，再提交真实交付证据。遇到权限拒绝时停止并报告具体操作，不得反复重试或换工具绕过。"
       : "需要未登记的诊断或安装命令时调用 devflow_request_operation。";
-  let instructions = `本轮遇到 ${code}：${message}。完整读取 diagnostics、feedback 和已有执行记录，核对命令、退出码和全部错误，核清全部已知问题根因及影响后完成整批修复，再统一测试；不要只改包装脚本或反复重报所有任务。${batchExecutionInstructions}${executionGuidance}检查必须实际执行，不能重复声明完成后退出。`;
+  let instructions = `本轮遇到 ${code}：${message}。完整读取 diagnostics、feedback 和已有执行记录，核对命令、退出码和全部错误，定位当前失败目标的根因及影响，修复后先重跑该目标，再由负责的子 Agent 并行运行独立的受影响回归目标；不要只改包装脚本或反复重报所有任务。${batchExecutionInstructions}${executionGuidance}检查必须实际执行，不能重复声明完成后退出。`;
   const save = (status: string) =>
     engine.store.put("repair_state", key, key, {
       plan_revision: w.plan_revision,
@@ -197,12 +197,11 @@ function repairNativeFailure(
   const assignment = engine.store.get<any>("repair_assignment", key);
   const planner =
     assignment?.planner === true &&
-    ["planner_takeover", "plan_self_check"].includes(run?.purpose);
+    ["planner_takeover"].includes(run?.purpose);
   const phase =
-    run?.purpose === "plan_self_check" ? "plan_self_check" : "implementation";
+    run?.purpose === "planner_takeover" ? "planner_takeover" : "implementation";
   const saved = engine.store.get<any>("repair_state", key);
-  const prior =
-    saved?.plan_revision === w.plan_revision ? saved : null;
+  const prior = saved?.plan_revision === w.plan_revision ? saved : null;
   const failures: Array<{ run_id: string; planner: boolean }> =
     prior?.failed_runs ?? [];
   if (!failures.some((f) => f.run_id === runId))
@@ -218,7 +217,7 @@ function repairNativeFailure(
   );
   const delivery = rejectedDeliveryFeedback(engine.store, w);
   const owner = planner ? "规划模型" : "执行模型";
-  const instructions = `${owner}在原批准工作区和范围内实际修复 ${code}：${message}。保留已有实现，先完整核查本次全部核验拒绝原因及共因，再完成整批代码修改，最后统一测试并提交新的真实交付；不得只给诊断建议。${batchExecutionInstructions}不得更改原批准计划或伪造测试记录、调用编号和报告。需要改变范围、权限或外部条件时报告具体阻塞。`;
+  const instructions = `${owner}在原批准工作区和范围内实际修复 ${code}：${message}。保留已有实现，定位当前失败目标的根因，修复后先重跑该目标，再由负责的子 Agent 并行运行独立的受影响回归目标并说明结果。${batchExecutionInstructions}不得更改原批准计划。需要改变范围、权限或外部条件时报告具体阻塞。`;
   engine.store.put("repair_state", key, key, {
     plan_revision: w.plan_revision,
     phase,
@@ -231,9 +230,7 @@ function repairNativeFailure(
     instructions,
     delivery_feedback: delivery,
     user_summary: failureSummary(code, message),
-    status: exhausted
-      ? "exhausted"
-      : "repairing",
+    status: exhausted ? "exhausted" : "repairing",
     updated_at: now(),
   });
   if (exhausted) {

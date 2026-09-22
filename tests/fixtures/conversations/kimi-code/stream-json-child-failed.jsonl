@@ -1,0 +1,6 @@
+{"role":"meta","type":"session.resume_hint","session_id":"session_aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeee1","command":"kimi -r session_aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeee1","content":"To resume this session: kimi -r session_aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeee1"}
+{"role":"assistant","tool_calls":[{"type":"function","id":"tool_fail_child","function":{"name":"Agent","arguments":"{\"description\":\"异常退出\",\"subagent_type\":\"explore\"}"}}]}
+{"role":"tool","tool_call_id":"tool_fail_child","content":"agent_id: agent-4\nactual_subagent_type: explore\nstatus: failed\n\nsubagent error: Subagent turn cancelled"}
+{"role":"assistant","tool_calls":[{"type":"function","id":"tool_stop_child","function":{"name":"Agent","arguments":"{\"description\":\"中途停止\",\"subagent_type\":\"explore\"}"}}]}
+{"role":"tool","tool_call_id":"tool_stop_child","content":"The subagent was stopped before it finished."}
+{"role":"meta","type":"turn.step.retrying","failed_attempt":1,"next_attempt":2,"max_attempts":3,"delay_ms":800,"error_name":"APIProviderRateLimitError","error_message":"rate limited","status_code":429}
