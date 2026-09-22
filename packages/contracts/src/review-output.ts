@@ -1,9 +1,27 @@
 import { z } from "zod";
+import { ReviewFindingSchema } from "./review-findings.js";
 import { ReviewSchema } from "./index.js";
+
+export const ReviewModelQualitySchema = z.object({
+  function_impact: z.enum(["none", "changed", "uncertain"]).default("none"),
+  summary: z.string().optional(),
+  notes: z.string().optional(),
+});
+
+export const ReviewModelOutputSchema = z.object({
+  verdict: z.enum(["passed", "changes_required", "need_user"]),
+  summary: z.string().optional(),
+  findings: z.array(ReviewFindingSchema).optional().default([]),
+  unresolved_questions: z.array(z.string()).optional().default([]),
+  repair_document: z.string().nullish(),
+  notes: z.string().optional(),
+  quality: ReviewModelQualitySchema.nullish(),
+});
+export type ReviewModelOutput = z.infer<typeof ReviewModelOutputSchema>;
 
 /** Codex structured outputs require closed objects and all properties required. */
 export function reviewOutputSchema(repositoryIds: string[]) {
-  return modelOutputSchema(ReviewSchema, repositoryIds);
+  return modelOutputSchema(ReviewModelOutputSchema, repositoryIds);
 }
 export function modelOutputSchema(
   contract: z.ZodType,

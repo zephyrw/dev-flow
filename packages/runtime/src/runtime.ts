@@ -742,7 +742,7 @@ export class LocalRuntime implements Runtime {
           plan_hash: workflow.plan_hash,
           package_hash: run.package_hash,
           instruction: joinPrompt(
-            "首先调用 devflow_execute_context，读取完整批准计划与 Skill。逐任务实施，仅使用 devflow_worker 工具。报告任务后 devflow_freeze，逐项 devflow_run_check，全部通过后 devflow_finish。遇到范围外问题报告阻塞并结束。",
+            "首先调用 devflow_execute_context，读取完整批准计划与 Skill。按既定设计完成开发并主动补齐必要遗漏，逐任务实施，仅使用 devflow_worker 工具。报告任务后 devflow_freeze，逐项 devflow_run_check，全部通过后 devflow_finish。遇到关键设计冲突或必须超范围时报告阻塞并结束。",
             recoveryGuidance,
           ),
           execution_order: batchExecutionInstructions,

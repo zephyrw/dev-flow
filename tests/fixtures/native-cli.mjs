@@ -39,7 +39,7 @@ if (pIndex !== -1 && args[pIndex + 1]) {
     prompt = fs.readFileSync(0, "utf8");
   } catch {}
 }
-const file = prompt.match(/(?:完整任务及唯一正式计划材料：|请读取工作包\s*)(.+?)(?:。必须|。严格|$)/)?.[1]?.trim();
+const file = prompt.match(/(?:(?:完整任务|任务工作包)及唯一正式计划材料：|任务工作包：|请读取工作包\s*)(.+?)(?:。先读取|。必须|。严格|$)/)?.[1]?.trim();
 if (!file) throw new Error("Missing original handoff: prompt was " + JSON.stringify(prompt));
 const m = JSON.parse(fs.readFileSync(file, "utf8")),
   stage = process.env.DEVFLOW_STAGE;

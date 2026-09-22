@@ -82,7 +82,7 @@ export async function repairFailure(
   const userSummary = failureSummary(code, message);
   const executionGuidance =
     resolveTaskModel(engine.plan(key).plan) === "native-v2"
-      ? "在正式批准范围内自主使用原生工具完成开发和自测，再提交真实交付证据。遇到权限拒绝时停止并报告具体操作，不得反复重试或换工具绕过。"
+      ? "在正式批准范围内自主使用原生工具完成开发和自测，并主动补齐修复所必需的相关遗漏，再说明实际修复与测试结果。遇到权限拒绝时停止并报告具体操作，不得反复重试或换工具绕过。"
       : "需要未登记的诊断或安装命令时调用 devflow_request_operation。";
   let instructions = `本轮遇到 ${code}：${message}。完整读取 diagnostics、feedback 和已有执行记录，核对命令、退出码和全部错误，定位当前失败目标的根因及影响，修复后先重跑该目标，再由负责的子 Agent 并行运行独立的受影响回归目标；不要只改包装脚本或反复重报所有任务。${batchExecutionInstructions}${executionGuidance}检查必须实际执行，不能重复声明完成后退出。`;
   const save = (status: string) =>
@@ -219,7 +219,7 @@ function repairNativeFailure(
   );
   const delivery = rejectedDeliveryFeedback(engine.store, w);
   const owner = planner ? "规划模型" : "执行模型";
-  const instructions = `${owner}在原批准工作区和范围内实际修复 ${code}：${message}。保留已有实现，定位当前失败目标的根因，修复后先重跑该目标，再由负责的子 Agent 并行运行独立的受影响回归目标并说明结果。${batchExecutionInstructions}不得更改原批准计划。需要改变范围、权限或外部条件时报告具体阻塞。`;
+  const instructions = `${owner}在原批准工作区和范围内实际修复 ${code}：${message}。保留已有实现，定位当前失败目标的根因，按既定设计修复并主动补齐必要遗漏，修复后先重跑该目标，再由负责的子 Agent 并行运行独立的受影响回归目标并说明结果。${batchExecutionInstructions}不得擅自更改原批准计划或关键架构。需要改变范围、权限或外部条件时报告具体阻塞。`;
   engine.store.put("repair_state", key, key, {
     plan_revision: w.plan_revision,
     phase,

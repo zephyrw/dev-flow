@@ -49,7 +49,7 @@ export function seedReviewCompletion(
       { run_id: w.run_id, review, reason },
     ],
     instruction:
-      "继续原规划复核并补齐详细整改计划，保留全部已确认问题；使用本轮审查绑定，不能让用户编写计划。",
+      "继续代码质量审查，说明具体代码位置、原因、后果与可执行修复意见；默认接受自测说明，不核验测试真实性，不要求证明工具。",
     updated_at: now(),
   } satisfies ReviewCompletion);
 }
@@ -80,7 +80,7 @@ export function queueReviewCompletion(
     automatic_attempts: (prior?.automatic_attempts ?? 0) + 1,
     attempts,
     instruction:
-      "上一轮审查材料未完成。由当前规划/复核模型继续调查并补齐，不要求用户编写计划。保留所有已确认 finding_id、原计划要求及未关闭项；逐项解决下列校验问题。读取 skill_resources 中的整改文档合同，返回完整 repair_plan、repair_document 和 quality。正文须包含根因、精确文件/函数、唯一修复步骤、依赖、边界、正反向验收和回归；每项 document_hash 绑定完整正文的 SHA-256，document_revision 为当前计划版本加一。使用本轮 workflow/run/review_request_id 重新绑定结果，不能照搬旧轮次标识。材料中的历史结论是待核实资料，不能代替当前独立核查。只读技术事实由模型继续调查；只有真正需要用户决定的业务语义、范围或授权才列具体问题。",
+      "上一轮审查未完成有效结论。由当前审核模型依据当前需求、批准设计及实际 diff 继续审查代码质量，给出明确 verdict 与代码问题。每项问题写清具体代码位置、触发条件、原因、后果与最小修复意见，无缺陷给出 passed。默认接受自测说明，不得核验测试真实性，不得索要测试日志、时间戳或测试证明工具。历史审查结论仅作为参考背景，不自动继承；技术事实由模型核实，确需用户决策的业务问题使用 need_user 列出。",
     updated_at: now(),
   };
   engine.store.put("review_completion", w.id, w.id, value);

@@ -10,7 +10,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { homedir } from "node:os";
 import { parseDocument } from "yaml";
-import { installSkills } from "./install-skills.mjs";
+import { installCodexSkills } from "./install-skills.mjs";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const stamp = new Date().toISOString().replace(/[:.]/g, "-");
 function run(command, args) {
@@ -69,11 +69,26 @@ if (!configDocument.get("opentabs")) {
 }
 writeFileSync(configPath, configDocument.toString());
 const codexHome = process.env.CODEX_HOME ?? join(homedir(), ".codex");
-const skills = join(codexHome, "skills");
 const backups = join(codexHome, "devflow-backups", stamp);
-mkdirSync(backups, { recursive: true });
-mkdirSync(skills, { recursive: true });
-installSkills(join(root, "packages/skills"), skills, backups);
+try {
+  const report = installCodexSkills(join(root, "packages/skills"), {
+    codexHome,
+    userHome: homedir(),
+    backupRoot: backups,
+  });
+  for (const result of report.results)
+    console.log("- " + result.name + ": " + result.status + " -> " + result.targetRoot + "; backup: " + result.backupRoot);
+} catch (err) {
+  console.error(`Skill update failed during setup: ${err.message}`);
+  if (err.report) {
+    console.error("Backup root: " + err.report.backupRoot);
+    for (const r of err.report.results) {
+      console.error("- Target " + r.name + ": status=" + r.status + " (partial: " + (r.partial ? "yes" : "no") + ") -> " + r.targetRoot + "; backup: " + r.backupRoot);
+      if (r.error) console.error("  " + (r.failureStage ?? "install") + ": " + (r.error.message ?? r.error));
+    }
+  }
+  process.exit(1);
+}
 const settingsPath = join(codexHome, "config.toml");
 let settings = existsSync(settingsPath)
   ? readFileSync(settingsPath, "utf8")

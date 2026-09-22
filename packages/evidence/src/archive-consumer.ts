@@ -195,8 +195,17 @@ export function drainArchiveOutbox(
 ): Promise<void> {
   const previous = draining.get(store);
   const job = (async () => {
-    if (previous) await previous;
-    await runArchivePass(store, options);
+    if (previous) {
+      try {
+        await previous;
+      } catch {}
+    }
+    try {
+      await runArchivePass(store, options);
+    } catch (err: any) {
+      if (err?.message?.includes("database connection is not open")) return;
+      throw err;
+    }
   })();
   draining.set(store, job);
   return job.finally(() => {
@@ -345,6 +354,7 @@ async function runArchivePass(
   store: Store,
   options: { storageRoot: string; workspaces?: Workspace[] },
 ): Promise<void> {
+  if (!(store as any).db?.open) return;
   const jobs = collectOutboxJobs(store);
   for (const job of jobs) {
     for (const item of job.items) {
@@ -427,6 +437,7 @@ async function archiveOne(
       detail: "归档失败",
     };
   }
+  if (!(store as any).db?.open) return;
   store.transaction(() => {
     store.put(RECORD_KIND, entry.key, entry.job.workflow_id, result);
     const workflow = store.get<Workflow>("workflow", entry.job.workflow_id);

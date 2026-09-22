@@ -15,7 +15,7 @@
 
 先读取登记项目的完整配置；每个仓库基线必须是已核实的 commit ID。
 
-任务应有 id、title、requirements、depends_on、paths、inputs、implementation、preserve、completion、test_ids、stop_conditions。路径为仓库内相对路径。文档深度按任务需要，足以让执行模型按确定设计实施。
+任务应有 id、title、requirements、depends_on、paths、inputs、implementation、preserve、completion、test_ids、stop_conditions。路径为仓库内相对路径。`task.paths` 是该任务的实现索引与重点修改参考，与 `plan.scope` 的硬授权边界严格区分；未在 `paths` 中逐一列出的文件，只要位于明确允许修改的目录内且属于完成同一需求所必需的接线、参数、边界或测试，执行模型应在满足同目标、必要、授权范围内、最小修改四项条件时主动补齐并在进度中记录原因，未列文件不等于自动禁止修改；但不得突破 `protected_paths` 或允许范围。文档深度按任务需要，足以让执行模型按确定设计实施。
 
 新计划优先使用 `task_model: "native-v2"`。在 `native-v2` 下：
 - 规划提供确定、完整的架构与详细设计正文，搭配精简结构化索引（包含需求、模块 `modules`、任务 `tasks`、验收项 `tests`、依赖与设计引用）；

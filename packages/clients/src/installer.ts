@@ -5,8 +5,9 @@ import {
   readFileSync,
   copyFileSync,
   lstatSync,
+  constants,
 } from "node:fs";
-import { join, resolve, dirname } from "node:path";
+import { join, resolve, dirname, relative, isAbsolute, sep } from "node:path";
 import { homedir } from "node:os";
 import type { SupportedAdapterId } from "../../contracts/src/execution-spec.js";
 import { atomicWrite, hash } from "../../core/src/util.js";
@@ -38,7 +39,112 @@ export interface ClientInstallOptions {
   bridge?: string;
   config?: string;
 }
-function copyVerified(src: string, dest: string) {
+
+function canonicalize(p: string): string {
+  const abs = resolve(p);
+  return process.platform === "win32" ? abs.toLowerCase() : abs;
+}
+
+function overlaps(a: string, b: string): boolean {
+  const contains = (parent: string, child: string) => {
+    const rel = relative(canonicalize(parent), canonicalize(child));
+    return rel === "" || (rel !== ".." && !rel.startsWith(".." + sep) && !isAbsolute(rel));
+  };
+  return contains(a, b) || contains(b, a);
+}
+
+function statIfPresent(path: string) {
+  try {
+    return lstatSync(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+}
+
+function assertDirectory(path: string) {
+  assertNoSymlinkInAncestors(path);
+  const stat = statIfPresent(path);
+  if (stat && !stat.isDirectory()) throw new Error("Skill 路径不是目录：" + path);
+}
+
+function assertBackupAvailable(source: string, target: string, suffix: string) {
+  const backup = target + suffix;
+  assertNoSymlinkInAncestors(backup);
+  if (statIfPresent(backup) || statIfPresent(source + suffix))
+    throw new Error("备份文件冲突：" + backup);
+}
+
+function preflightCopy(src: string, dest: string, backupSuffix: string) {
+  assertDirectory(src);
+  assertDirectory(dest);
+  assertTreeHasNoSymlinks(src);
+  assertTreeHasNoSymlinks(dest);
+  for (const item of readdirSync(src, { withFileTypes: true })) {
+    const source = join(src, item.name), target = join(dest, item.name);
+    if (item.isDirectory()) preflightCopy(source, target, backupSuffix);
+    else if (item.isFile()) {
+      const installed = statIfPresent(target);
+      if (installed && !installed.isFile())
+        throw new Error("Skill 文件目标不是普通文件：" + target);
+      if (installed && hash(readFileSync(target)) !== hash(readFileSync(source)))
+        assertBackupAvailable(source, target, backupSuffix);
+    }
+  }
+}
+
+export function assertNoSymlinkInAncestors(targetPath: string) {
+  const resolved = resolve(targetPath);
+  let current = resolved;
+  const parts: string[] = [];
+  while (true) {
+    parts.unshift(current);
+    const parent = dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  for (const p of parts) {
+    try {
+      const stat = lstatSync(p);
+      if (p !== resolved && !stat.isDirectory() && !stat.isSymbolicLink())
+        throw new Error("Skill 父路径不是目录：" + p);
+      if (stat.isSymbolicLink()) {
+        throw new Error("不覆盖链接目录：" + p);
+      }
+    } catch (err: any) {
+      if (err?.code === "ENOENT") break;
+      throw err;
+    }
+  }
+}
+
+export function assertTreeHasNoSymlinks(rootPath: string) {
+  assertNoSymlinkInAncestors(rootPath);
+  try {
+    const stat = lstatSync(rootPath);
+    if (stat.isSymbolicLink()) {
+      throw new Error("Skill 不接受链接：" + rootPath);
+    }
+    if (stat.isDirectory()) {
+      for (const entry of readdirSync(rootPath, { withFileTypes: true })) {
+        const full = join(rootPath, entry.name);
+        if (entry.isSymbolicLink()) {
+          throw new Error("Skill 不接受链接：" + full);
+        }
+        if (entry.isDirectory()) {
+          assertTreeHasNoSymlinks(full);
+        }
+      }
+    }
+  } catch (err: any) {
+    if (err?.code === "ENOENT") return;
+    throw err;
+  }
+}
+
+function copyVerified(src: string, dest: string, backupSuffix: string) {
+  assertNoSymlinkInAncestors(src);
+  assertNoSymlinkInAncestors(dest);
   if (
     lstatSync(src).isSymbolicLink() ||
     (existsSync(dest) && lstatSync(dest).isSymbolicLink())
@@ -48,16 +154,20 @@ function copyVerified(src: string, dest: string) {
   for (const item of readdirSync(src, { withFileTypes: true })) {
     const source = join(src, item.name),
       target = join(dest, item.name);
+    assertNoSymlinkInAncestors(source);
+    assertNoSymlinkInAncestors(target);
     if (
       item.isSymbolicLink() ||
       (existsSync(target) && lstatSync(target).isSymbolicLink())
     )
       throw new Error("Skill 不接受链接：" + target);
-    if (item.isDirectory()) copyVerified(source, target);
+    if (item.isDirectory()) copyVerified(source, target, backupSuffix);
     else if (item.isFile()) {
       const bytes = readFileSync(source);
-      if (existsSync(target) && hash(readFileSync(target)) !== hash(bytes))
-        copyFileSync(target, target + ".devflow-backup-" + Date.now());
+      if (existsSync(target) && hash(readFileSync(target)) !== hash(bytes)) {
+        assertBackupAvailable(source, target, backupSuffix);
+        copyFileSync(target, target + backupSuffix, constants.COPYFILE_EXCL);
+      }
       atomicWrite(target, bytes);
       if (hash(readFileSync(target)) !== hash(bytes))
         throw new Error("Skill 文件校验失败：" + target);
@@ -106,6 +216,18 @@ export class ClientInstaller {
   }
   locateClientSkillDir(client: SupportedAdapterId) {
     return join(this.locateClientBaseDir(client), "skills");
+  }
+  locateClientSkillDirs(client: SupportedAdapterId): string[] {
+    const primary = resolve(this.locateClientSkillDir(client));
+    if (client === "codex") {
+      const h = this.home();
+      const sharedAgents = resolve(join(h, ".agents", "skills"));
+      if (canonicalize(primary) === canonicalize(sharedAgents)) {
+        return [primary];
+      }
+      return [primary, sharedAgents];
+    }
+    return [primary];
   }
   private configure(client: SupportedAdapterId) {
     const base = this.locateClientBaseDir(client),
@@ -196,29 +318,52 @@ export class ClientInstaller {
       skillsInstalled: [],
       mcpConfigured: false,
     };
-    const target = this.locateClientSkillDir(client);
-    // Validate the complete required distribution before writing anything.
-    for (const name of ALLOWED_SKILLS)
-      if (!existsSync(join(this.skillsSourceDir, name, "SKILL.md")))
+    const targets = this.locateClientSkillDirs(client);
+    const source = resolve(this.skillsSourceDir);
+    const backupSuffix = ".devflow-backup-" + Date.now();
+    // Check every source/target relationship before any target is changed.
+    for (let i = 0; i < targets.length; i++) {
+      if (overlaps(source, targets[i]!))
+        throw new Error("Skill 源目录与目标目录必须分离：" + targets[i]);
+      for (let j = i + 1; j < targets.length; j++) {
+        if (overlaps(targets[i]!, targets[j]!))
+          throw new Error("Skill 目标目录不能相互包含：" + targets[j]);
+      }
+    }
+    assertDirectory(source);
+    for (const name of ALLOWED_SKILLS) {
+      const skill = join(source, name);
+      assertDirectory(skill);
+      assertTreeHasNoSymlinks(skill);
+      if (!statIfPresent(join(skill, "SKILL.md"))?.isFile())
         throw new Error("缺少必需 Skill：" + name);
-    for (const skillName of ALLOWED_SKILLS) {
-      const dest = join(target, skillName);
-      try {
-        copyVerified(join(this.skillsSourceDir, skillName), dest);
-        report.skillsInstalled.push({
-          clientId: client,
-          skillName,
-          targetPath: dest,
-          status: "installed",
-        });
-      } catch (e) {
-        report.skillsInstalled.push({
-          clientId: client,
-          skillName,
-          targetPath: dest,
-          status: "failed",
-          reason: String(e),
-        });
+    }
+    for (const target of targets) {
+      assertDirectory(target);
+      for (const skillName of ALLOWED_SKILLS)
+        preflightCopy(join(source, skillName), join(target, skillName), backupSuffix);
+    }
+
+    for (const target of targets) {
+      for (const skillName of ALLOWED_SKILLS) {
+        const dest = join(target, skillName);
+        try {
+          copyVerified(join(source, skillName), dest, backupSuffix);
+          report.skillsInstalled.push({
+            clientId: client,
+            skillName,
+            targetPath: dest,
+            status: "installed",
+          });
+        } catch (e) {
+          report.skillsInstalled.push({
+            clientId: client,
+            skillName,
+            targetPath: dest,
+            status: "failed",
+            reason: String(e),
+          });
+        }
       }
     }
     try {

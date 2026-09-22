@@ -19,6 +19,7 @@ import {
   redact,
   id,
 } from "../../core/src/util.js";
+import { executionScopeInstructions } from "../../core/src/role-boundaries.js";
 import {
   ATTACHMENT_HANDOFF_NOTICE,
   CONVERSATION_ENTITY,
@@ -30,6 +31,7 @@ import {
   type Workspace,
   type Snapshot,
   ReviewSchema,
+  reviewOutputSchema,
   ExecutorRoundOutputSchema,
   ExecutorRoundResultSchema,
   requireCondition,
@@ -207,7 +209,7 @@ export class ProfileRuntime {
           run,
           {
             instructions:
-              "只读诊断故障。按当前唯一正式计划定位根因，给出确定修复步骤；需要改变范围时返回完整正式计划并等待批准。禁止另建替代计划。",
+              "只读诊断故障。按当前唯一正式计划定位真实运行或环境故障根因，给出确定修复步骤；诊断不是代码质量审核，不能产出测试真实性核验或证明工具任务；需要改变范围时返回完整正式计划并等待批准。禁止另建替代计划。",
             error,
             plan: this.engine.plan(w.id),
             authorities: this.engine.planSelfCheck.authorities(w),
@@ -313,8 +315,10 @@ export class ProfileRuntime {
       ]);
     } catch {}
     const materials = {
-      instructions:
-        "合并发生代码冲突。严格在原批准计划和正式整改范围内解决冲突，同时保留双方有效需求。禁止统一使用 ours/theirs、reset、stash 或删除历史。完成后返回结构化回执，不得自行提交 Git 或删除工作树。",
+      instructions: [
+        executionScopeInstructions,
+        "合并发生代码冲突。严格在原批准计划和正式整改范围内解决冲突，主动补齐解决冲突所必需的接线与调整，同时保留双方有效需求。禁止统一使用 ours/theirs、reset、stash 或删除历史。完成后返回结构化回执，不得自行提交 Git 或删除工作树。",
+      ].join("\n\n"),
       workflow: w,
       run,
       request,
@@ -356,10 +360,7 @@ export class ProfileRuntime {
       w,
       run,
       await this.reviewMaterials(w, run, snapshot),
-      modelOutputSchema(
-        ReviewSchema,
-        this.workspaces(w).map((ws) => ws.repo_id),
-      ),
+      reviewOutputSchema(this.workspaces(w).map((ws) => ws.repo_id)),
     );
     return normalizeModelOutput(value);
   }
@@ -445,7 +446,8 @@ export class ProfileRuntime {
     return this.continuationMaterials(
       {
         instructions:
-          "严格按原始正式计划和批准的整改正文完成全部开发任务及测试代码，再由多个子 Agent 并行运行独立的单元、集成和 E2E 目标，各自修复并重跑。不得另建或执行替代计划。发现计划矛盾应报告阻塞。完成后说明本轮结果，直接交代码审查。报告可附，不为调用 ID、清单或 hash 重跑测试。不得自行提交 Git 或宣布人工验收通过。",
+          executionScopeInstructions +
+          "严格按原始正式计划和批准的整改正文完成全部开发任务及测试代码，主动识别补齐同一需求内必需的相关代码和测试，再由多个子 Agent 并行运行独立的单元、集成和 E2E 目标，各自修复并重跑。不得另建或执行替代计划。发现计划矛盾应报告阻塞。完成后说明本轮结果，直接交代码审查。报告可附，不为调用 ID、清单或 hash 重跑测试。不得自行提交 Git 或宣布人工验收通过。",
         execution_order: batchExecutionInstructions,
         workflow: w,
         run,
@@ -1246,7 +1248,7 @@ export class ProfileRuntime {
   }
 }
 
-function invokePrompt(
+export function invokePrompt(
   purpose: string,
   handoff: string,
   schemaPath: string,
@@ -1265,10 +1267,24 @@ function invokePrompt(
         " 返回一个 JSON 对象作为最终回答。",
       recoveryGuidance,
     );
+  if (purpose === "quality_review") {
+    return joinPrompt(
+      "任务工作包：" +
+        handoff +
+        "。先读取当前工作包中的角色职责、任务正文与批准设计；引用材料仅按本次任务及当前角色判断所必需的范围读取。" +
+        "不要求遍历测试报告、执行日志、证明附件；这些缺失不触发代码整改。历史材料只作为背景，不自动产生新的流程或证明任务。" +
+        "按 " +
+        schemaPath +
+        " 返回一个 JSON 对象作为最终回答。禁止额外创建替代计划。",
+      recoveryGuidance,
+    );
+  }
   return joinPrompt(
-    "完整任务及唯一正式计划材料：" +
+    "任务工作包及唯一正式计划材料：" +
       handoff +
-      "。必须先阅读全部材料和引用文件；按 " +
+      "。先读取当前工作包中的角色职责、任务正文与批准设计；引用材料仅按本次任务及当前角色判断所必需的范围读取。" +
+      "必要实现材料按当前需求读取，不将历史证明要求自动继承为新待办。历史材料只作为背景，不自动产生新的流程或证明任务。" +
+      "按 " +
       schemaPath +
       " 返回一个 JSON 对象作为最终回答。禁止额外创建替代计划。",
     recoveryGuidance,

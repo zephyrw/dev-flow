@@ -37,15 +37,24 @@ it("IT-12 reviewer MCP exposes only read tools and rejects foreign or changed sn
       }),
     );
     const names = (await client.listTools()).tools.map((t) => t.name);
-    expect(names).toHaveLength(5);
-    expect(names.some((n) => /apply|commit|approve/.test(n))).toBe(false);
-    const hashed: any = await client.callTool({
-      name: "devflow_review_hash_document",
-      arguments: { text: "# 整改\r\n完整正文" },
-    });
-    expect(JSON.parse(hashed.content[0].text).document_hash).toBe(
-      hash("# 整改\n完整正文"),
+    expect(names.sort()).toEqual(
+      [
+        "devflow_review_context",
+        "devflow_review_read_file",
+        "devflow_review_search",
+      ].sort(),
     );
+    expect(names).not.toContain("devflow_review_hash_document");
+    expect(names).not.toContain("devflow_review_evidence");
+    expect(names.some((n) => /apply|commit|approve/.test(n))).toBe(false);
+
+    // 验证旧审计 section（如 evidence）已被拒绝
+    const evidenceContext: any = await client.callTool({
+      name: "devflow_review_context",
+      arguments: { section: "evidence" },
+    });
+    expect(evidenceContext.isError).toBe(true);
+
     let resourceText = "",
       offset: number | null = 0;
     while (offset !== null) {
