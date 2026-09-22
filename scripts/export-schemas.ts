@@ -15,6 +15,7 @@ import {
   ModelErrorBodySchema,
   RepairSelectionSchema,
 } from "../packages/contracts/src/index.js";
+import { ReviewModelOutputSchema } from "../packages/contracts/src/review-output.js";
 import { BrowserRecipeSchema } from "../packages/runtime/src/recipe.js";
 import { HttpExecutionSpecGetResponseSchema } from "../packages/core/src/execution-spec-view.js";
 const target = process.argv[2] ?? "examples/schemas";
@@ -23,7 +24,7 @@ for (const [name, schema] of Object.entries({
   config: ConfigSchema,
   project: ProjectSchema,
   plan: PlanSchema,
-  review: ReviewSchema,
+  review: ReviewModelOutputSchema,
   "browser-recipe": BrowserRecipeSchema,
   "model-defaults": ModelDefaultsSchema,
   "model-catalog": ModelCatalogSchema,

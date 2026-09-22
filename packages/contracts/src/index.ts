@@ -2,6 +2,7 @@ import { z } from "zod";
 import { PlanSelfCheckReportSchema } from "./plan-self-check.js";
 import { NativePlanSchema } from "./native-plan.js";
 import { QualityReviewResultSchema } from "./quality.js";
+import { ReviewFindingSchema } from "./review-findings.js";
 export const Id = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,95}$/);
 export const RelativePath = z
   .string()
@@ -224,25 +225,7 @@ export const ReviewCoverageSchema = z
     files: z.array(z.string()).optional().default([]),
   })
   .passthrough();
-export const ReviewFindingSchema = z
-  .object({
-    id: Id.optional(),
-    severity: z.enum(["P0", "P1", "P2", "P3"]).optional(),
-    repo_id: Id.optional(),
-    path: RelativePath.optional(),
-    line: z.number().int().positive().optional(),
-    trigger: z.string().optional(),
-    evidence: z.string().optional(),
-    consequence: z.string().optional(),
-    relation_to_change: z
-      .enum(["introduced", "in_scope", "historical", "suggestion"])
-      .optional(),
-    disposition: z
-      .enum(["confirmed", "false_positive", "out_of_scope"])
-      .optional(),
-    reason: z.string().optional(),
-  })
-  .passthrough();
+export * from "./review-findings.js";
 export const ReviewSchema = z
   .object({
     schema_version: z.number().int().optional(),
@@ -682,3 +665,4 @@ export * from "./model-routing.js";
 export * from "./merge-conflict.js";
 export * from "./tr-handoff.js";
 export * from "./agy-account.js";
+export * from "./review-output.js";

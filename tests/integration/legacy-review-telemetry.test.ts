@@ -23,7 +23,28 @@ it("legacy review streams named file operations before exit and still returns it
     },2000);
   `);
   const workflow = { ...s.engine.get(s.w.id), state: "REVIEWING" as const, stage: "quality_before_human", run_id: "review-stream", snapshot_id: "snapshot-stream", review_request_id: "request-stream" };
-  const run = { id: workflow.run_id, workflow_id: workflow.id, adapter: "codex", purpose: "quality_review", status: "running", started_at: new Date().toISOString(), profile: { modelId: "fixture-model", adapterId: "codex" } } as Run;
+  const run = {
+    id: workflow.run_id,
+    workflow_id: workflow.id,
+    adapter: "codex",
+    purpose: "quality_review",
+    protocol: "legacy",
+    status: "running",
+    started_at: new Date().toISOString(),
+    profile: {
+      id: "profile-fixture",
+      revision: 1,
+      modelId: "fixture-model",
+      adapterId: "codex",
+      executableRef: process.execPath,
+      modelSelection: "explicit",
+      selectionKind: "fixed",
+      reasoning: { mode: "native-default" },
+      options: {
+        prefixArgs: [cli],
+      },
+    },
+  } as Run;
   s.store.put("workflow", workflow.id, workflow.project_id, workflow);
   s.store.put("run", run.id, workflow.id, run);
   s.store.put("snapshot", workflow.snapshot_id, workflow.id, { id: workflow.snapshot_id, repositories: [{repo_id:"main",files:[]}] });

@@ -17,6 +17,7 @@ import type {
 } from "../../packages/contracts/src/index.js";
 import { MergeConflictReceiptSchema } from "../../packages/contracts/src/merge-conflict.js";
 import { fixture, cleanup } from "../fixtures/native-flow.js";
+import { seedVerifiedAccess } from "../../packages/core/src/access-guard.js";
 
 describe("DevFlow v2 Git 冲突模型修复与终态保护", () => {
   it(
@@ -27,14 +28,16 @@ describe("DevFlow v2 Git 冲突模型修复与终态保护", () => {
         r = await repository(s.root),
         p = project(r.repo);
       s.store.put("project", p.id, "global", p);
-      s.store.put("tool_profile", "profile-codex", "global", {
+      const profileCodex = {
         id: "profile-codex",
         revision: 1,
-        adapterId: "codex",
+        adapterId: "codex" as const,
         executableRef: process.execPath,
-        modelSelection: "native-config",
+        modelSelection: "native-config" as const,
         options: { prefixArgs: [resolve("tests/fixtures/native-cli.mjs")] },
-      });
+      };
+      s.store.put("tool_profile", "profile-codex", "global", profileCodex);
+      seedVerifiedAccess(s.store, profileCodex);
 
       const w = new CreateWorkflowService(s.store).execute({
         request_id: "conflict-main",
@@ -232,14 +235,16 @@ describe("DevFlow v2 Git 冲突模型修复与终态保护", () => {
       r = await repository(s.root),
       p = project(r.repo);
     s.store.put("project", p.id, "global", p);
-    s.store.put("tool_profile", "profile-codex", "global", {
+    const profileCodex = {
       id: "profile-codex",
       revision: 1,
-      adapterId: "codex",
+      adapterId: "codex" as const,
       executableRef: process.execPath,
-      modelSelection: "native-config",
+      modelSelection: "native-config" as const,
       options: { prefixArgs: [resolve("tests/fixtures/native-cli.mjs")] },
-    });
+    };
+    s.store.put("tool_profile", "profile-codex", "global", profileCodex);
+    seedVerifiedAccess(s.store, profileCodex);
 
     const w = new CreateWorkflowService(s.store).execute({
       request_id: "dirty-check",

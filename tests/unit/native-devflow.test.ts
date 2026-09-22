@@ -161,17 +161,37 @@ describe("DevFlow 原生执行与终局核验单元测试", () => {
       expect(pkg.delivery_issues![0]!.code).toBe("ACCEPTANCE_CASE_FAILED");
     });
 
-    it("启动提示使用容器绝对路径", () => {
+    it("UT04: 启动提示与交接包保持职责边界一致，full与resume均包含执行补齐约束且不要求证明工具", () => {
       const files = {
         json: join(testDir, "handoff.json"),
         markdown: join(testDir, "HANDOFF.md"),
         plans: join(testDir, "AUTHORITATIVE_PLANS.json"),
         schema: join(testDir, "plan-self-check.schema.json"),
       };
-      expect(nativeLaunchInstruction(testDir, "full")).toContain(files.markdown);
-      expect(nativeLaunchInstruction(testDir, "full")).toContain(files.json);
-      expect(nativeLaunchInstruction(testDir, "resume")).toContain(files.json);
-      expect(nativeLaunchInstruction(testDir, "full")).toContain("直接交代码审查");
+      const fullPrompt = nativeLaunchInstruction(testDir, "full");
+      const resumePrompt = nativeLaunchInstruction(testDir, "resume");
+
+      expect(fullPrompt).toContain(files.markdown);
+      expect(fullPrompt).toContain(files.json);
+      expect(fullPrompt).toContain("主动补齐");
+      expect(fullPrompt).toContain("直接交代码审查");
+
+      expect(resumePrompt).toContain(files.json);
+      expect(resumePrompt).toContain("主动补齐");
+      expect(resumePrompt).toContain("说明实际修复与测试结果");
+
+      // 验证计划、路径、反馈与索引语义完整保留
+      const fullPkg = HandoffBuilder.buildFullHandoff({
+        workflow: mockWorkflow,
+        plan: mockPlan,
+        runId: "run-1",
+        packageHash: "pkg-hash",
+        directory: testDir,
+      });
+      expect(fullPkg.index.tasks).toHaveLength(1);
+      expect(fullPkg.feedback).toContain("初始需求说明");
+      expect(fullPkg.index.modules).toHaveLength(1);
+      expect(fullPkg.instructions).toContain("主动识别并补齐");
     });
   });
 

@@ -411,9 +411,10 @@ export function makeMcp(engine: Engine, principal: Principal, modelAccess?: Mode
                 files.markdown +
                 " 与 " +
                 files.json +
-                " 完整设计与验收要求，完成全部实现和测试代码后由多个子 Agent 并行运行各自明确的独立测试目标，通过后使用 devflow_deliver 交付。" +
+                " 完整设计与验收要求，在批准范围内完成全部实现和测试代码，主动补齐同一目标内必需的相关代码和测试，后由多个子 Agent 并行运行各自明确的独立测试目标，通过后使用 devflow_deliver 交付。" +
                 batchExecutionInstructions
-              : "使用本工具 section=plan/skill/tasks/tests/scope/feedback/environment 读取批准信息；每次响应 text 是内容分段，next_offset 非 null 时继续相同 section 和 id。section=tool,id=完整工具名 可读取准确参数 Schema。先完整读取计划、任务及测试再修改。禁止原生工具。",
+              : "使用本工具 section=plan/skill/tasks/tests/scope/feedback/environment 读取批准信息；按既定设计完成实现并主动补齐必要遗漏，每次响应 text 是内容分段，next_offset 非 null 时继续相同 section 和 id。section=tool,id=完整工具名 可读取准确参数 Schema。先完整读取计划、任务及测试再修改。禁止原生工具。" +
+                batchExecutionInstructions,
           };
         }
         let value: unknown;

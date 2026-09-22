@@ -203,6 +203,7 @@ export class RunTelemetry {
     if (this.timer) clearTimeout(this.timer);
     this.timer = undefined;
     if (!this.dirty && !this.pending.size) return;
+    if (!(this.store as any).db?.open) return;
     this.observation.updated_at = now();
     const snapshot = publicEvent(this.observation);
     const publish = this.run.purpose !== "aside";

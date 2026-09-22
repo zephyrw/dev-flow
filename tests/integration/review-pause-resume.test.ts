@@ -249,7 +249,8 @@ it("审查用户回答进入原审查上下文并续接原会话", async () => {
     );
     expect(materials.answer).toBe("API_BASE");
     expect(materials.questions).toEqual(["缺哪个配置项？"]);
-    expect(materials.instructions).toContain("你负责代码质量");
+    expect(materials.instructions).toContain("你负责本次需求和变更的代码质量");
+    expect(materials.instructions).toContain("不检查测试是否真实执行");
     const stored = s.store.must<Run>("run", run.id);
     expect(stored.conversation_id).toBe("review-session");
   } finally {

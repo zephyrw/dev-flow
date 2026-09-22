@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
   createIsolatedTestEnv,
   type IsolatedTestEnv,
@@ -27,7 +27,7 @@ import { seedVerifiedAccess } from "../../packages/core/src/access-guard.js";
 import type { Store } from "../../packages/store/src/store.js";
 import Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
-import { writeFileSync, mkdirSync, existsSync, readFileSync } from "node:fs";
+import { writeFileSync, mkdirSync, existsSync, readFileSync, symlinkSync, lstatSync } from "node:fs";
 import { join } from "node:path";
 
 describe("IT-INSTALLER: 六核心 Skill/MCP 完整分发、选定闭包与配置保护 (W07, RQ-21, RQ-22)", () => {
@@ -70,6 +70,7 @@ describe("IT-INSTALLER: 六核心 Skill/MCP 完整分发、选定闭包与配置
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     await env.cleanup();
   });
 
@@ -77,24 +78,27 @@ describe("IT-INSTALLER: 六核心 Skill/MCP 完整分发、选定闭包与配置
     const report = installer.installSkillsForClient("codex");
 
     expect(report.clientId).toBe("codex");
-    expect(report.skillsInstalled.length).toBe(6);
+    expect(report.skillsInstalled.length).toBe(12);
     expect(report.skillsInstalled.every((s) => s.status === "installed")).toBe(
       true,
     );
 
-    const targetDir = installer.locateClientSkillDir("codex")!;
-    for (const sk of [
-      "devflow",
-      "devflow-project-onboard",
-      "devflow-plan",
-      "devflow-execute",
-      "devflow-test",
-      "devflow-review",
-    ]) {
-      expect(existsSync(join(targetDir, sk, "SKILL.md"))).toBe(true);
-      expect(existsSync(join(targetDir, sk, "references", "guide.md"))).toBe(
-        true,
-      );
+    const targetDirs = installer.locateClientSkillDirs("codex");
+    expect(targetDirs.length).toBe(2);
+    for (const targetDir of targetDirs) {
+      for (const sk of [
+        "devflow",
+        "devflow-project-onboard",
+        "devflow-plan",
+        "devflow-execute",
+        "devflow-test",
+        "devflow-review",
+      ]) {
+        expect(existsSync(join(targetDir, sk, "SKILL.md"))).toBe(true);
+        expect(existsSync(join(targetDir, sk, "references", "guide.md"))).toBe(
+          true,
+        );
+      }
     }
   });
 
@@ -130,6 +134,129 @@ describe("IT-INSTALLER: 六核心 Skill/MCP 完整分发、选定闭包与配置
     );
     expect(mcpJson.mcpServers.devflow).toBeDefined();
     expect(mcpJson.mcpServers.devflow.command).toBe(process.execPath);
+  });
+
+  it("RT07: ClientInstaller 在父目录是符号链接时拒绝执行，在双目标相同时仅执行一次安装，并在自定义 options.home 时不越界访问默认 home", () => {
+    // 1. options.home 隔离性
+    const customHome = join(env.root, "isolated-home-dir");
+    mkdirSync(customHome, { recursive: true });
+    const customInstaller = new ClientInstaller(fakeSkillsSrc, {
+      home: customHome,
+    });
+    const codexDirs = customInstaller.locateClientSkillDirs("codex");
+    expect(codexDirs.length).toBe(2);
+    for (const d of codexDirs) {
+      expect(d.toLowerCase().startsWith(customHome.toLowerCase())).toBe(true);
+    }
+
+    // 2. 父目录是符号链接/junction 时拒绝执行
+    const realTargetDir = join(env.root, "real_folder");
+    mkdirSync(realTargetDir, { recursive: true });
+    const junctionHome = join(env.root, "junction_home");
+    symlinkSync(realTargetDir, junctionHome, "junction");
+
+    const linkInstaller = new ClientInstaller(fakeSkillsSrc, {
+      home: junctionHome,
+    });
+    expect(() => linkInstaller.installSkillsForClient("codex")).toThrow(
+      /不覆盖链接目录|Skill 不接受链接/,
+    );
+    expect(existsSync(join(realTargetDir, ".codex", "skills", "devflow"))).toBe(false);
+
+    // 3. 双目标规范化相同时仅安装一次
+    const savedCodexHome = process.env.CODEX_HOME;
+    const savedUserProfile = process.env.USERPROFILE;
+    const savedHome = process.env.HOME;
+    try {
+      const dedupHome = join(env.root, "dedup_home");
+      mkdirSync(dedupHome, { recursive: true });
+      process.env.CODEX_HOME = join(dedupHome, ".agents");
+      process.env.USERPROFILE = dedupHome;
+      process.env.HOME = dedupHome;
+      const dedupInstaller = new ClientInstaller(fakeSkillsSrc, {
+        bridge: join(env.root, "bridge.js"),
+        config: join(env.root, "devflow.yaml"),
+      });
+      const dirs = dedupInstaller.locateClientSkillDirs("codex");
+      expect(dirs.length).toBe(1);
+
+      const report = dedupInstaller.installSkillsForClient("codex");
+      expect(report.skillsInstalled.length).toBe(6);
+      expect(report.skillsInstalled.every((s) => s.status === "installed")).toBe(true);
+      expect(existsSync(join(dirs[0]!, "devflow", "SKILL.md"))).toBe(true);
+    } finally {
+      if (savedCodexHome === undefined) {
+        delete process.env.CODEX_HOME;
+      } else {
+        process.env.CODEX_HOME = savedCodexHome;
+      }
+      if (savedUserProfile === undefined) {
+        delete process.env.USERPROFILE;
+      } else {
+        process.env.USERPROFILE = savedUserProfile;
+      }
+      if (savedHome === undefined) {
+        delete process.env.HOME;
+      } else {
+        process.env.HOME = savedHome;
+      }
+    }
+  });
+
+  it("RT16: 源与任一目标重叠时在另一目标写入前拒绝", () => {
+    const untouched = join(env.root, "untouched");
+    vi.spyOn(installer, "locateClientSkillDirs").mockReturnValue([untouched, fakeSkillsSrc]);
+    expect(() => installer.installSkillsForClient("codex")).toThrow(/源目录与目标目录必须分离/);
+    expect(existsSync(untouched)).toBe(false);
+    expect(readFileSync(join(fakeSkillsSrc, "devflow", "SKILL.md"), "utf8")).toBe("# devflow\nDescription of devflow");
+  });
+
+  it("RT17: 两个目标相互嵌套时首次写入前拒绝", () => {
+    const outer = join(env.root, "nested-target");
+    vi.spyOn(installer, "locateClientSkillDirs").mockReturnValue([outer, join(outer, "nested")]);
+    expect(() => installer.installSkillsForClient("codex")).toThrow(/目标目录不能相互包含/);
+    expect(existsSync(outer)).toBe(false);
+  });
+
+  it("RT18: 无关个人 skill 链接不阻止受管 skill 更新", () => {
+    const primary = installer.locateClientSkillDir("codex");
+    mkdirSync(primary, { recursive: true });
+    const personal = join(env.root, "personal-skill");
+    mkdirSync(personal);
+    writeFileSync(join(personal, "SKILL.md"), "personal original");
+    const link = join(primary, "personal-link");
+    symlinkSync(personal, link, process.platform === "win32" ? "junction" : "dir");
+    const report = installer.installSkillsForClient("codex");
+    expect(report.skillsInstalled).toHaveLength(12);
+    expect(report.skillsInstalled.every((skill) => skill.status === "installed")).toBe(true);
+    expect(lstatSync(link).isSymbolicLink()).toBe(true);
+    expect(readFileSync(join(link, "SKILL.md"), "utf8")).toBe("personal original");
+  });
+
+  it("RT19: 已有文件的悬空备份链接在任一目标改动前拒绝", () => {
+    vi.spyOn(Date, "now").mockReturnValue(1700000000000);
+    const [primary, shared] = installer.locateClientSkillDirs("codex");
+    const skill = join(shared!, "devflow");
+    mkdirSync(skill, { recursive: true });
+    const oldFile = join(skill, "SKILL.md");
+    writeFileSync(oldFile, "old entry");
+    const missing = join(env.root, "missing-backup");
+    const backup = oldFile + ".devflow-backup-1700000000000";
+    symlinkSync(missing, backup, process.platform === "win32" ? "junction" : "dir");
+    expect(() => installer.installSkillsForClient("codex")).toThrow(/链接/);
+    expect(existsSync(primary!)).toBe(false);
+    expect(readFileSync(oldFile, "utf8")).toBe("old entry");
+    expect(lstatSync(backup).isSymbolicLink()).toBe(true);
+    expect(existsSync(missing)).toBe(false);
+  });
+
+  it("RT21: 第二目标父目录被普通文件占位时首目标保持未写入", () => {
+    const [primary] = installer.locateClientSkillDirs("codex");
+    const blocker = join(env.root, ".agents");
+    writeFileSync(blocker, "keep blocker");
+    expect(() => installer.installSkillsForClient("codex")).toThrow(/父路径不是目录/);
+    expect(existsSync(primary!)).toBe(false);
+    expect(readFileSync(blocker, "utf8")).toBe("keep blocker");
   });
 
   it("TC-INST-04: UpgradeManager 对活动数据库执行一致性快照备份，验证备份可读且与原库分离", async () => {
