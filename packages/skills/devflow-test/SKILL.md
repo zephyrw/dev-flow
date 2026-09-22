@@ -52,4 +52,4 @@ description: 为 DevFlow 开发落实单元、集成、E2E 三层测试，覆盖
 
 普通任务使用项目原生测试命令或本地脚本；仅用户要求或已处于真实 DevFlow 交接上下文才使用工作流调度。不得因目录名含 devflow、读取本 skill 或执行已有计划就创建/恢复工作流，亦不得声称平台启动测试。实际执行方式按终端命令报告。
 
-职责、主链路、两阶段计数与三次接管见 [职责与调度](../devflow/references/role-and-schedule.md)。
+职责、主链路与策略 2 规则见 [职责与调度](../devflow/references/role-and-schedule.md)。

@@ -634,7 +634,7 @@ it("R12：指纹不匹配时不复用过期会话", () => {
 function idleRuntime() {
   return {
     execute: async () => {},
-    stop: async () => {},
+    stop: async () => ({ status: "confirmed_exited" }),
     review: async () => ({}),
     check: async () => {
       throw new Error("unused");
