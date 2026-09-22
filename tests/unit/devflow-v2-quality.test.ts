@@ -93,8 +93,9 @@ describe("质量关卡拒绝非法输入", () => {
     expect(q.canTakeOver("wf", "before_human")).toBe(false);
     expect(() => q.startPlannerTakeover("wf")).toThrow();
     expect(getDefaultTemplate().quality.first_failed_delivery_counts).toBe(
-      false,
+      undefined,
     );
+    expect(getDefaultTemplate().quality_policy_version).toBe(2);
   });
 
   it("完整通过清除连续失败与接管归属，重复结果保持幂等", () => {

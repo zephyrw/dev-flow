@@ -50,6 +50,8 @@ export const DispatchContextSchema = z
       "quality_review",
       "planner_takeover",
       "functional_fix",
+      "executor_test",
+      "planner_commit",
       "aside",
       "merge_conflict",
       "diagnose",

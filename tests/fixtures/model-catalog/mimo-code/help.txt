@@ -1,0 +1,20 @@
+mimo run [message..]
+
+Options:
+  --version           Show version number
+  --session, -s       session id to continue
+  --continue, -c      continue the last session
+  --model, -m         model to use in the format of provider/model
+  --variant           model variant (provider-specific reasoning effort, e.g., high, max, minimal)
+  --agent             agent to use
+  --format            format: default (formatted) or json (raw JSON events)
+  --file, -f          file(s) to attach to message
+  --dir               directory to run in
+  --thinking          show thinking blocks
+  --help              Show help
+
+mimo models [provider]
+
+Options:
+  --verbose           use more verbose model output (includes metadata like costs)
+  --refresh           refresh the models cache from models.dev

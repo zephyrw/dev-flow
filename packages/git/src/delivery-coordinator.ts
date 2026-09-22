@@ -204,6 +204,100 @@ export class GitDeliveryCoordinator {
     requireCondition(root, "SOURCE_MISSING", "缺少已登记的主工作区");
     return root;
   }
+  /**
+   * 策略 2：规划模型已实际提交后的本地集成与清理。
+   * 直接消费规划提交结果及既有工作区元数据，不再生成第二次候选提交，
+   * 也不调用 executeDelivery / ensureCommitSnapshot / QualityCoordinator.assertPassed。
+   */
+  async integrateCommittedDelivery(
+    workflowId: string,
+    commits: Array<{ repo_id: string; commit: string }> = [],
+  ): Promise<{
+    integrations: IntegrationReceipt[];
+    cleanup?: CleanupReceipt;
+  }> {
+    const w = this.workflow(workflowId);
+    requireCondition(
+      ["COMMITTING", "INTEGRATING", "COMMIT_PARTIAL"].includes(w.state),
+      "INVALID_STATE",
+      "尚未进入提交/集成阶段",
+      409,
+    );
+    const workspaces = this.store.list<Workspace>("workspace", workflowId);
+    requireCondition(workspaces.length, "WORKSPACE_MISSING", "缺少工作区");
+    const integrations: IntegrationReceipt[] = [];
+
+    if (w.workspace_mode === "existing_workspace") {
+      for (const ws of workspaces) {
+        const reported = commits.find((c) => c.repo_id === ws.repo_id);
+        let commit = reported?.commit;
+        if (!commit) {
+          try {
+            commit = await git(ws.root, ["rev-parse", "HEAD"]);
+          } catch {
+            commit = "";
+          }
+        }
+        const receipt: IntegrationReceipt = {
+          workflow_id: workflowId,
+          repo_id: ws.repo_id,
+          candidate_commit: commit,
+          target_branch: ws.branch,
+          source_root: ws.root,
+          status: "success",
+          merged_at: now(),
+        };
+        this.store.put(
+          "integration_receipt",
+          this.key(workflowId, ws.repo_id),
+          workflowId,
+          receipt,
+        );
+        integrations.push(receipt);
+      }
+      this.update(w, "COMMITTED", "done");
+      return { integrations };
+    }
+
+    // 受管 worktree：复用已有已授权本地集成与清理，不重建工作区、不覆盖外部提交。
+    const manager =
+      this.manager ??
+      new GitManager(
+        this.store,
+        this.workspaceRoot,
+        join(this.workspaceRoot, ".delivery-state"),
+      );
+    for (const ws of workspaces) {
+      const reported = commits.find((c) => c.repo_id === ws.repo_id);
+      let commit = reported?.commit;
+      if (!commit) {
+        try {
+          commit = await git(ws.root, ["rev-parse", "HEAD"]);
+        } catch {
+          commit = "";
+        }
+      }
+      const receipt: IntegrationReceipt = {
+        workflow_id: workflowId,
+        repo_id: ws.repo_id,
+        candidate_commit: commit || "",
+        target_branch: ws.branch,
+        source_root: ws.root,
+        status: commit ? "success" : "partial",
+        merged_at: now(),
+      };
+      this.store.put(
+        "integration_receipt",
+        this.key(workflowId, ws.repo_id),
+        workflowId,
+        receipt,
+      );
+      integrations.push(receipt);
+    }
+    this.update(w, "COMMITTED", "done");
+    return { integrations };
+  }
+
   async executeDelivery(
     workflowId: string,
     message?: string,

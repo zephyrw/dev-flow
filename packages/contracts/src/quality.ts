@@ -171,7 +171,48 @@ export type QualityDecisionAction =
   | "pass"
   | "repair_by_executor"
   | "takeover_by_planner"
-  | "retry_incomplete";
+  | "retry_incomplete"
+  | "executor_test"
+  | "planner_commit";
+
+export type QualityFlowPhase = "before_human" | "after_human";
+
+/** 策略 2 的唯一路由数据源；平台只读它决定下一动作，不校验结果真实性。 */
+export type QualityFlow = {
+  workflow_id: string;
+  phase: QualityFlowPhase;
+  executor_repair_completed: boolean;
+  planner_repairs_only: boolean;
+};
+
+export type CodeReviewResult = {
+  verdict: "passed" | "changes_required" | "need_user";
+  summary?: string;
+  /** 可直接传正文；附件路径只是展示补充。 */
+  repair_document?: string;
+  function_impact?: "none" | "changed" | "uncertain";
+};
+
+export type PlannerRepairResult = {
+  /** completed 表示规划模型已修复并阅读代码自查，不表示测试完成。 */
+  status: "completed" | "need_user" | "need_planner";
+  summary?: string;
+};
+
+export type ExecutorTestResult = {
+  /** completed 表示必要测试及期间相关修复已完成；平台不核验。 */
+  status: "completed" | "need_user" | "need_planner";
+  summary?: string;
+  /** 兼容历史字段，仅展示，不据此分流。 */
+  code_changed?: boolean;
+  function_impact?: "none" | "changed" | "uncertain";
+};
+
+export type PlannerCommitResult = {
+  status: "completed" | "need_user" | "need_planner";
+  repositories?: Array<{ repo_id: string; commit: string }>;
+  summary?: string;
+};
 
 export interface QualityDecision {
   action: QualityDecisionAction;

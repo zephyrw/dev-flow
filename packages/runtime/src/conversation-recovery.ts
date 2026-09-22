@@ -932,6 +932,8 @@ function asRunPurpose(purpose: string): Run["purpose"] | undefined {
     case "quality_review":
     case "planner_takeover":
     case "functional_fix":
+    case "executor_test":
+    case "planner_commit":
     case "aside":
     case "merge_conflict":
       return purpose;

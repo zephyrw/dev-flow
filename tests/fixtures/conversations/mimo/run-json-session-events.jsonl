@@ -1,0 +1,8 @@
+{"type":"step_start","timestamp":1774000000000,"sessionID":"ses_mimo1","part":{"id":"prt_step1","sessionID":"ses_mimo1","messageID":"msg_1","type":"step-start"}}
+{"type":"tool_use","timestamp":1774000000500,"sessionID":"ses_mimo1","part":{"id":"prt_tool1","sessionID":"ses_mimo1","messageID":"msg_1","type":"tool","tool":"bash","callID":"call_tool1","state":{"status":"completed","input":{"command":"ls"},"metadata":{"exit":0}}}}
+{"type":"text","timestamp":1774000000800,"sessionID":"ses_mimo1","part":{"id":"prt_text1","sessionID":"ses_mimo1","messageID":"msg_1","type":"text","text":"已完成文件读取"}}
+{"type":"step_start","timestamp":1774000001000,"sessionID":"ses_other9","part":{"id":"prt_step2","sessionID":"ses_other9","messageID":"msg_2","type":"step-start"}}
+{"type":"error","timestamp":1774000001200,"sessionID":"ses_other9","error":{"name":"ProviderAuthError","data":{"message":"other-session auth failed"}}}
+{"type":"error","timestamp":1774000001500,"sessionID":"ses_mimo1","error":{"name":"RateLimitError","data":{"message":"本任务触发限流"}}}
+{"type":"text","timestamp":1774000001800,"sessionID":"ses_mimo1","part":{"id":"prt_text2","sessionID":"ses_mimo1","messageID":"msg_1","type":"text","text":"continuing after limit"}}
+{"type":"step_finish","timestamp":1774000002000,"sessionID":"ses_mimo1","part":{"id":"prt_step3","sessionID":"ses_mimo1","messageID":"msg_1","type":"step-finish","reason":"stop"}}

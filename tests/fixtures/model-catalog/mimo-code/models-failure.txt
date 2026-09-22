@@ -1,0 +1,2 @@
+Error: not logged in
+authentication required to list models

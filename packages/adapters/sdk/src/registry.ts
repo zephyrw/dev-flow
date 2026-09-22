@@ -112,6 +112,7 @@ export const ADAPTER_BINARY_NAMES: Record<SupportedAdapterId, string> = {
   qoder: "qodercli",
   opencode: "opencode",
   "cursor-agent": "agent",
+  "mimo-code": "mimo",
 };
 
 export type AdapterExecutableResolver = (

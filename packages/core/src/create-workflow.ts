@@ -280,6 +280,7 @@ export class CreateWorkflowService {
           complexity: "simple",
           workspace_mode: mode,
           binding_strategy: "unified",
+          quality_policy_version: getDefaultTemplate().quality_policy_version ?? 2,
           state: "PLANNING",
           stage: "planning",
           version: 1,
@@ -312,6 +313,7 @@ export class CreateWorkflowService {
       mode: specMode({ plannerProfile, executorProfile, roleOverrides }),
       template_id: "native-development",
       template_revision: getDefaultTemplate().revision,
+      quality_policy_version: getDefaultTemplate().quality_policy_version ?? 2,
       created_at: now(),
       ...(sourceDefaultsRevision !== undefined
         ? { source_defaults_revision: sourceDefaultsRevision }

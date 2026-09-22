@@ -163,6 +163,7 @@ export const TOOL_DISPLAY_ORDER: Array<{
   { adapterId: "kimi-code", label: "Kimi Code" },
   { adapterId: "qoder", label: "Qoder CLI" },
   { adapterId: "opencode", label: "OpenCode" },
+  { adapterId: "mimo-code", label: "MiMo Code" },
 ];
 
 export const CATALOG_FRESH_MS = 24 * 60 * 60 * 1000;

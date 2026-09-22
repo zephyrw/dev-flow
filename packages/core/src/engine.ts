@@ -74,6 +74,11 @@ import { atomicWrite, id, now, objectHash, hash } from "./util.js";
 import { parsePlanDiagrams } from "../../plans/src/diagrams.js";
 import { validatePlan } from "../../plans/src/validate.js";
 import { GitDeliveryCoordinator } from "../../git/src/delivery-coordinator.js";
+import {
+  usesPolicyV2,
+  routeQualityEvent,
+  ensureQualityFlow,
+} from "./quality-policy-migration.js";
 import { GitManager, repositoryInfo, git } from "../../git/src/git.js";
 import { Scheduler } from "../../scheduler/src/scheduler.js";
 import { CliDispatchManager } from "../../runtime/src/cli-dispatch.js";
@@ -753,10 +758,13 @@ export class Engine {
         "验收内容已变化",
       );
       if (resolveTaskModel(this.plan(key).plan) === "native-v2") {
-        if (this.store.get("human_reconfirmation_required", key))
-          this.quality.assertPassed(key, "after_human");
-        else if (!this.store.get("functional_retest_ready", key))
-          this.quality.assertPassed(key, "before_human");
+        // 策略 2：不调用旧 QualityGate.assertPassed，不追加自动功能重确认。
+        if (!usesPolicyV2(w)) {
+          if (this.store.get("human_reconfirmation_required", key))
+            this.quality.assertPassed(key, "after_human");
+          else if (!this.store.get("functional_retest_ready", key))
+            this.quality.assertPassed(key, "before_human");
+        }
         requireCondition(
           !new FunctionalIssueService(this.store).hasUnresolvedIssues(key),
           "UNRESOLVED_ISSUES",
@@ -777,6 +785,10 @@ export class Engine {
         this.store.remove("functional_fix_intent", key);
         this.store.remove("acceptance_carry", key);
         this.patchReviewPointer(key, { phase: "after_human" });
+        if (usesPolicyV2(w)) {
+          // 人工通过 → phase=after_human，planner_repairs_only=true → 最终质量复核
+          routeQualityEvent(this.store, key, { type: "human_functional_passed" });
+        }
         this.transition(key, ["HUMAN_PENDING"], "REVIEW_QUEUED", "review");
         this.scheduler.enqueue(key, w.project_id);
         this.store.enqueue(key, "dispatch", {});
@@ -1952,6 +1964,221 @@ export class Engine {
         };
       }
   }
+  /**
+   * 策略 2：规划模型已实际 git commit 后，调用 integrateCommittedDelivery
+   * 完成已授权本地集成与清理；不生成第二次候选提交。
+   */
+  private async completePlannerCommit(
+    key: string,
+    runId: string,
+    completion: { summary?: string; repositories?: Array<{ repo_id: string; commit: string }> },
+  ) {
+    const w = this.get(key);
+    const commits = Array.isArray(completion.repositories)
+      ? completion.repositories
+      : [];
+    this.transition(key, ["EXECUTING", "VERIFYING"], "COMMITTING", "planner_commit");
+    try {
+      const outcome = await this.withWorkspaceWrite(key, id("integrate"), () =>
+        new GitDeliveryCoordinator(
+          this.store,
+          this.config.workspace_root,
+          this.git,
+        ).integrateCommittedDelivery(key, commits),
+      );
+      this.store.event(
+        key,
+        w.project_id,
+        "PlannerCommitIntegrated",
+        {
+          run_id: runId,
+          integrations: outcome.integrations.map((i) => ({
+            repo_id: i.repo_id,
+            commit: i.candidate_commit,
+            status: i.status,
+          })),
+        },
+        runId,
+      );
+    } catch (e) {
+      // 集成冲突/部分失败：保留成功结果，只恢复未完成操作；不回质量整改计数。
+      this.transition(key, ["COMMITTING"], "COMMIT_PARTIAL", "planner_commit", {
+        blocker: {
+          code: "INTEGRATE_FAILED",
+          message: String(e),
+        },
+      });
+    }
+  }
+
+  /**
+   * 策略 2：实施/整改/测试/功能修复完成后的唯一下一动作。
+   * 测试期间相关小修改不复核；测试完成按 phase 直达人工或规划提交。
+   */
+  private dispatchPolicy2AfterImplement(
+    key: string,
+    runId: string,
+    active: Run | undefined,
+    phase: "before_human" | "after_human",
+  ) {
+    const purpose = active?.purpose;
+    const flow = ensureQualityFlow(this.store, key);
+    if (purpose === "planner_takeover") {
+      const { action } = routeQualityEvent(this.store, key, {
+        type: "planner_repair_completed",
+      });
+      this.applyPolicy2Action(key, runId, action, phase);
+      return;
+    }
+    if (purpose === "executor_test") {
+      const { action } = routeQualityEvent(this.store, key, {
+        type: "executor_test_completed",
+      });
+      this.applyPolicy2Action(key, runId, action, phase);
+      return;
+    }
+    if (purpose === "functional_fix") {
+      this.store.put("functional_retest_ready", key, key, { run_id: runId });
+      this.transition(key, ["EXECUTING", "VERIFYING"], "HUMAN_PENDING", "accept");
+      this.store.event(
+        key,
+        this.get(key).project_id,
+        "FunctionalFixReadyForHuman",
+        { run_id: runId },
+        runId,
+      );
+      this.scheduler.enqueue(key, this.get(key).project_id);
+      return;
+    }
+    const isQualityRepair =
+      flow.executor_repair_completed || flow.planner_repairs_only;
+    const { action } = routeQualityEvent(this.store, key, {
+      type: "implement_completed",
+      is_quality_repair: isQualityRepair,
+    });
+    this.applyPolicy2Action(key, runId, action, phase);
+  }
+
+  private applyPolicy2Action(
+    key: string,
+    runId: string,
+    action: { kind: string; phase?: string; reason?: string },
+    phase: "before_human" | "after_human",
+  ) {
+    const w = this.get(key);
+    switch (action.kind) {
+      case "quality_review":
+        this.transition(
+          key,
+          ["EXECUTING", "VERIFYING", "REVIEW_QUEUED"],
+          "REVIEW_QUEUED",
+          phase === "before_human" ? BEFORE_HUMAN_REVIEW_STAGE : "review",
+        );
+        this.store.event(
+          key,
+          w.project_id,
+          "NativeDeliveryReadyForReview",
+          { run_id: runId },
+          runId,
+        );
+        this.scheduler.enqueue(key, w.project_id);
+        this.store.enqueue(key, "dispatch", {});
+        return;
+      case "human":
+        this.transition(
+          key,
+          ["EXECUTING", "VERIFYING"],
+          "HUMAN_PENDING",
+          "accept",
+        );
+        this.store.event(
+          key,
+          w.project_id,
+          "ReadyForHumanFunctionalReview",
+          { run_id: runId },
+          runId,
+        );
+        this.scheduler.enqueue(key, w.project_id);
+        return;
+      case "executor_test":
+        this.transition(
+          key,
+          ["EXECUTING", "VERIFYING", "PLANNER_TAKEOVER"],
+          "QUEUED",
+          "executor_test",
+        );
+        this.scheduler.enqueue(key, w.project_id);
+        this.store.enqueue(key, "dispatch_run", {
+          purpose: "executor_test",
+          review_phase: phase,
+        });
+        return;
+      case "planner_repair":
+        this.transition(
+          key,
+          ["EXECUTING", "VERIFYING", "REVIEW_QUEUED", "REVIEWING"],
+          "PLANNER_TAKEOVER",
+          "planner_takeover",
+        );
+        this.scheduler.enqueue(key, w.project_id);
+        this.store.enqueue(key, "dispatch_run", {
+          purpose: "planner_takeover",
+          review_phase: phase,
+          planner_takeover: true,
+        });
+        return;
+      case "executor_repair":
+        this.transition(
+          key,
+          ["EXECUTING", "VERIFYING", "REVIEW_QUEUED"],
+          "QUEUED",
+          "execute",
+        );
+        this.scheduler.enqueue(key, w.project_id);
+        this.store.enqueue(key, "dispatch_run", {
+          purpose: "implement",
+          review_phase: phase,
+          repair_kind: "quality",
+        });
+        return;
+      case "functional_fix":
+        this.transition(
+          key,
+          ["HUMAN_PENDING", "EXECUTING", "VERIFYING"],
+          "QUEUED",
+          "execute",
+        );
+        this.scheduler.enqueue(key, w.project_id);
+        this.store.enqueue(key, "dispatch_run", {
+          purpose: "functional_fix",
+          review_phase: phase,
+        });
+        return;
+      case "planner_commit":
+        this.transition(
+          key,
+          ["EXECUTING", "VERIFYING", "REVIEWING", "REVIEW_QUEUED"],
+          "COMMITTING",
+          "planner_commit",
+        );
+        this.scheduler.enqueue(key, w.project_id);
+        this.store.enqueue(key, "dispatch_run", {
+          purpose: "planner_commit",
+          review_phase: phase,
+        });
+        return;
+      case "wait":
+      default:
+        this.transition(key, ["EXECUTING", "VERIFYING"], "WAITING_INPUT", "execute", {
+          blocker: {
+            code: "NEED_USER",
+            message: action.reason ?? "需要用户输入",
+          },
+        });
+        return;
+    }
+  }
+
   async finalizeNativeDelivery(key: string, runId: string) {
     const w = this.get(key);
     if (!["EXECUTING", "VERIFYING"].includes(w.state)) return;
@@ -1959,6 +2186,11 @@ export class Engine {
     const completion = readExecutionCompletion(this.store, runId);
     if (!completion || completion.intent !== "completed") return;
     const active = this.store.get<Run>("run", runId);
+    // 策略 2：规划提交完成后直接本地集成，不走质量复核。
+    if (active?.purpose === "planner_commit" && usesPolicyV2(w)) {
+      await this.completePlannerCommit(key, runId, completion);
+      return;
+    }
     if (
       w.run_id !== runId ||
       (active?.status &&
@@ -2049,9 +2281,18 @@ export class Engine {
       }
       if (this.store.get("functional_fix_intent", key))
         this.store.put("functional_retest_ready", key, key, { run_id: runId });
-      const phase = this.reviewPointer(key).phase ?? "before_human";
+      const phase: "before_human" | "after_human" =
+        this.reviewPointer(key).phase === "after_human"
+          ? "after_human"
+          : "before_human";
       this.recordImplementationCompletion(key, runId);
       this.patchReviewPointer(key, { phase });
+      // 策略 2：按 Run 用途与 quality_flow 路由，不总是进质量复核。
+      const policy2 = usesPolicyV2(w);
+      if (policy2) {
+        this.dispatchPolicy2AfterImplement(key, runId, active, phase);
+        return;
+      }
       this.transition(
         key,
         [w.state],
@@ -3558,6 +3799,111 @@ export class Engine {
       review_id: quality.run_id,
     });
   }
+  private commitPolicy2RepairDecision(
+    w: Workflow,
+    review: Review,
+    quality: { verdict?: string; summary?: string; repair_document?: string },
+    body: string,
+    withinScope: boolean,
+  ) {
+    const phase: "before_human" | "after_human" =
+      this.reviewPointer(w.id).phase === "after_human"
+        ? "after_human"
+        : "before_human";
+    const { flow, action } = routeQualityEvent(this.store, w.id, {
+      type: "quality_review",
+      result: {
+        verdict:
+          quality.verdict === "passed" || quality.verdict === "changes_required"
+            ? quality.verdict
+            : "need_user",
+        summary: quality.summary,
+        repair_document: quality.repair_document,
+      },
+    });
+    this.patchReviewPointer(w.id, { phase: flow.phase });
+    if (action.kind === "wait") {
+      this.queueUnclearFollowup(w.id, {
+        purpose: "review",
+        role: "planner",
+        phase: flow.phase,
+        run_id: w.run_id,
+        conversation_id: w.run_id
+          ? this.store.get<Run>("run", w.run_id)?.conversation_id
+          : undefined,
+        source_execution_run_id: this.reviewPointer(w.id).completion_run_id,
+        original_text: action.reason ?? "审查结论不明确",
+        stage: flow.phase === "before_human" ? BEFORE_HUMAN_REVIEW_STAGE : "review",
+      });
+      return;
+    }
+    if (body.trim()) {
+      try {
+        new DocumentService(
+          this.store,
+          this.config.storage_root,
+        ).publishDocument(w.id, "repair_plan", body, w.plan_revision);
+      } catch {}
+    }
+    this.clearCurrentImplementationIntent(w.id);
+    if (withinScope) {
+      // 复用统一动作派发：executor_repair / planner_repair / human / planner_commit
+      this.dispatchPolicy2AfterReview(w.id, action, flow.phase);
+    }
+  }
+
+  private dispatchPolicy2AfterReview(
+    key: string,
+    action: { kind: string; phase?: string; reason?: string },
+    phase: "before_human" | "after_human",
+  ) {
+    const w = this.get(key);
+    switch (action.kind) {
+      case "executor_repair":
+        this.transition(key, ["REVIEWING"], "QUEUED", "execute");
+        this.scheduler.enqueue(key, w.project_id);
+        this.store.enqueue(key, "dispatch_run", {
+          purpose: "implement",
+          review_phase: phase,
+          repair_kind: "quality",
+        });
+        return;
+      case "planner_repair":
+        this.transition(key, ["REVIEWING"], "PLANNER_TAKEOVER", "planner_takeover");
+        this.scheduler.enqueue(key, w.project_id);
+        this.store.enqueue(key, "dispatch_run", {
+          purpose: "planner_takeover",
+          review_phase: phase,
+          planner_takeover: true,
+        });
+        return;
+      case "human":
+        this.transition(key, ["REVIEWING"], "HUMAN_PENDING", "manual_acceptance");
+        this.scheduler.enqueue(key, w.project_id);
+        return;
+      case "planner_commit":
+        this.transition(key, ["REVIEWING"], "COMMITTING", "planner_commit");
+        this.scheduler.enqueue(key, w.project_id);
+        this.store.enqueue(key, "dispatch_run", {
+          purpose: "planner_commit",
+          review_phase: phase,
+        });
+        return;
+      case "quality_review":
+        this.transition(
+          key,
+          ["REVIEWING"],
+          "REVIEW_QUEUED",
+          phase === "before_human" ? BEFORE_HUMAN_REVIEW_STAGE : "review",
+        );
+        this.scheduler.enqueue(key, w.project_id);
+        this.store.enqueue(key, "dispatch", {});
+        return;
+      default:
+        return;
+    }
+  }
+
   private commitNativeRepairDecision(
     w: Workflow,
     review: Review,
@@ -3565,6 +3911,11 @@ export class Engine {
     body: string,
     withinScope: boolean,
   ) {
+    // 策略 2：一次执行整改后规划接管；人工后有问题直接规划修复。
+    if (usesPolicyV2(w)) {
+      this.commitPolicy2RepairDecision(w, review, quality, body, withinScope);
+      return;
+    }
     const transfer = this.quality.prepareQualityTransfer(w.id, quality);
     const applied = this.quality.applyQualityTransfer(transfer);
     const decision = applied.decision;
@@ -3893,7 +4244,16 @@ export class Engine {
       this.store.get<Run>("run", w.run_id!),
       approvedPlan.plan,
     );
-    this.transition(key, ["REVIEWING"], "COMMITTING", "commit");
+    this.transition(key, ["REVIEWING"], "COMMITTING", "planner_commit");
+    // 策略 2：派发 planner_commit，由规划模型实际 git commit；平台不代做候选提交。
+    if (usesPolicyV2(w)) {
+      this.scheduler.enqueue(key, w.project_id);
+      this.store.enqueue(key, "dispatch_run", {
+        purpose: "planner_commit",
+        review_phase: this.reviewPointer(key).phase ?? "after_human",
+      });
+      return this.get(key);
+    }
     try {
       if (lightweight) {
         const outcome = await this.withWorkspaceWrite(key, id("commit"), () =>

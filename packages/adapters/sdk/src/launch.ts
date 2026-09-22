@@ -18,6 +18,7 @@ export function nativeLaunch(
     "claude-code": "@anthropic-ai/claude-code",
     opencode: "opencode-ai",
     "kimi-code": "@moonshot-ai/kimi-code",
+    "mimo-code": "@mimo-ai/cli",
   };
   const packageName = packageNames[adapterId];
   if (packageName) {

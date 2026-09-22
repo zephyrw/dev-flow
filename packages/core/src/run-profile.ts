@@ -45,6 +45,8 @@ export type RunPurpose =
   | "quality_review"
   | "planner_takeover"
   | "functional_fix"
+  | "executor_test"
+  | "planner_commit"
   | "aside"
   | "merge_conflict"
   | "diagnose";
@@ -72,12 +74,15 @@ type PlannerTakeoverRecord = {
 
 const PLANNER_RUN_PURPOSES = new Set([
   "planning",
+  "quality_review",
   "planner_takeover",
+  "planner_commit",
   "aside",
 ]);
 const EXECUTOR_RUN_PURPOSES = new Set([
   "implement",
   "functional_fix",
+  "executor_test",
   "plan_self_check",
   "merge_conflict",
 ]);
@@ -207,6 +212,7 @@ export function resolveRoutingRole(context: DispatchContext): RoutingRole {
   switch (context.purpose) {
     case "planning":
     case "planner_takeover":
+    case "planner_commit":
     case "aside":
       return "planner";
     case "quality_review":
@@ -214,11 +220,16 @@ export function resolveRoutingRole(context: DispatchContext): RoutingRole {
       return "reviewer";
     case "plan_self_check":
     case "merge_conflict":
+    case "executor_test":
       return "executor";
     case "functional_fix":
       return "functional_fixer";
     case "implement":
       return resolveImplementRole(context);
+    default: {
+      const exhaustive: never = context.purpose;
+      return exhaustive;
+    }
   }
 }
 

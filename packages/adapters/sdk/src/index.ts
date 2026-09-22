@@ -35,6 +35,7 @@ import { ClaudeCodeNativeAdapter } from "../../claude/src/adapter.js";
 import { KimiCodeNativeAdapter } from "../../kimi/src/adapter.js";
 import { QoderNativeAdapter } from "../../qoder/src/adapter.js";
 import { OpenCodeNativeAdapter } from "../../opencode/src/adapter.js";
+import { MimoCodeNativeAdapter } from "../../mimo/src/adapter.js";
 import { CursorAgentNativeAdapter } from "../../cursor/src/adapter.js";
 import { parseStructuredProbeTerminal } from "./probe-terminal.js";
 import type { ProbeTerminalInput } from "./interface.js";
@@ -56,5 +57,6 @@ export function createDefaultAdapterRegistry(): AdapterRegistry {
   registry.register("qoder", new QoderNativeAdapter());
   registry.register("opencode", new OpenCodeNativeAdapter());
   registry.register("cursor-agent", new CursorAgentNativeAdapter());
+  registry.register("mimo-code", new MimoCodeNativeAdapter());
   return registry;
 }

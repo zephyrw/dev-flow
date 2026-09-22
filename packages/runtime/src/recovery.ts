@@ -104,6 +104,7 @@ export function resolveResumeTarget(engine: Engine, key: string) {
     priorState === "BLOCKED" ||
     purpose === "implement" ||
     purpose === "functional_fix" ||
+    purpose === "executor_test" ||
     purpose === "planner_takeover"
   ) {
     return {
@@ -111,7 +112,18 @@ export function resolveResumeTarget(engine: Engine, key: string) {
       stage:
         purpose === "planner_takeover" || stage === "planner_takeover"
           ? "planner_takeover"
-          : "execute",
+          : purpose === "executor_test"
+            ? "executor_test"
+            : purpose === "functional_fix"
+              ? "functional_fix"
+              : "execute",
+      enqueue: true,
+    };
+  }
+  if (purpose === "planner_commit" || stage === "planner_commit" || w.state === "COMMITTING") {
+    return {
+      state: "COMMITTING" as const,
+      stage: "planner_commit",
       enqueue: true,
     };
   }

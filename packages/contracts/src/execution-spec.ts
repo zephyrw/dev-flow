@@ -10,6 +10,7 @@ export const SupportedAdapters = [
   "qoder",
   "opencode",
   "cursor-agent",
+  "mimo-code",
 ] as const;
 export type SupportedAdapterId = (typeof SupportedAdapters)[number];
 
@@ -142,7 +143,8 @@ export const ExecutionSpecObjectSchema = z
     executorProfile: ToolProfileSchema,
     roleOverrides: RoleOverridesSchema.optional(),
     template_id: z.string().default("native-development"),
-    template_revision: z.number().int().positive().default(3),
+    template_revision: z.number().int().positive().default(7),
+    quality_policy_version: z.number().int().positive().optional(),
     mode: z.enum(["single_tool", "composite"]).default("single_tool"),
     created_at: z.string().min(1),
     source_defaults_revision: z.number().int().nonnegative().optional(),
@@ -235,6 +237,7 @@ export const ExecutionSpecViewSchema = z
         roleOverrides: RoleOverridesSchema,
         template_id: z.string(),
         template_revision: z.number().int().positive(),
+        quality_policy_version: z.number().int().positive().optional(),
         mode: z.enum(["single_tool", "composite"]),
         created_at: z.string().min(1),
         source_defaults_revision: z.number().int().nonnegative().optional(),

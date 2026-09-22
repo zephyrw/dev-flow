@@ -107,7 +107,9 @@ export function recordIsTerminalSuccess(record: JsonRecord): boolean {
 }
 
 function normalizedModel(model: string, adapterId?: string): string {
-  return adapterId === "opencode" ? model.split("#")[0]! : model;
+  return adapterId === "opencode" || adapterId === "mimo-code"
+    ? model.split("#")[0]!
+    : model;
 }
 
 function plainObservedModels(text: string): string[] {

@@ -212,6 +212,11 @@ export class ClientInstaller {
         );
       case "cursor-agent":
         return join(h, ".cursor");
+      case "mimo-code":
+        return join(
+          (!isolated && process.env.XDG_CONFIG_HOME) || join(h, ".config"),
+          "mimo",
+        );
     }
   }
   locateClientSkillDir(client: SupportedAdapterId) {

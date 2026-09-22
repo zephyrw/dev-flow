@@ -100,7 +100,7 @@ export function isDiscoveryEnvironmentError(text: string): boolean {
   ) {
     return false;
   }
-  return /eacces|eperm|permission denied|access is denied|dpapi|目录不可读|cannot read.*(dir|directory|log|cache)|users?[\\/].*(denied|unreadable)/i.test(
+  return /eacces|eperm|permission denied|access is denied|dpapi|目录不可读|cannot read.*(dir|directory|log|cache)|users?[\\/].*(denied|unreadable)|not logged in|authentication required|unauthorized|login required/i.test(
     text,
   );
 }
@@ -114,6 +114,16 @@ export function classifyDiscoveryFailure(
     return {
       code: "DISCOVERY_ENVIRONMENT_UNAVAILABLE",
       message: "本机目录或权限不可用，不能判定账号未授权",
+    };
+  }
+  if (
+    /login[_\s-]?required|not logged in|unauthoriz|authentication required/i.test(
+      combined,
+    )
+  ) {
+    return {
+      code: "DISCOVERY_AUTH_REQUIRED",
+      message: "CLI 需要登录后才能列出模型目录",
     };
   }
   if (/timed? ?out|超时/i.test(combined)) {

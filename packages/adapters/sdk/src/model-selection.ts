@@ -232,6 +232,9 @@ function buildAdapterSelection(
       return buildReasoningFlag(token, requested);
     case "opencode":
       return buildOpenCode(token, requested, capability);
+    case "mimo-code":
+      // MiMo shares the provider/model#variant / --variant transport; freeze full provider/model.
+      return buildOpenCode(token, requested, capability);
     default: {
       const adapter: SupportedAdapterId = profile.adapterId;
       fail("CLI_PARAMETER_UNSUPPORTED", `不支持的工具 ${adapter}`);

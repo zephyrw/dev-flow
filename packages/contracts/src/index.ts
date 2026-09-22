@@ -287,6 +287,8 @@ export interface Workflow {
   complexity: "simple" | "complex";
   workspace_mode: "existing_workspace" | "new_worktree";
   binding_strategy?: "unified" | "legacy";
+  /** 缺省代表历史质量策略；新建任务默认 2。 */
+  quality_policy_version?: number;
   state: State;
   stage: string;
   version: number;

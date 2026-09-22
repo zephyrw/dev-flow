@@ -45,6 +45,10 @@ import { parseGrokModelCatalog } from "../../adapters/grok/src/model-configurati
 import { parseKimiModelCatalog } from "../../adapters/kimi/src/model-configuration.js";
 import { parseQoderModelCatalog } from "../../adapters/qoder/src/model-configuration.js";
 import { parseOpenCodeModelCatalog, detectOpenCodeVariantEncoding } from "../../adapters/opencode/src/model-configuration.js";
+import {
+  parseMimoModelCatalog,
+  detectMimoVariantEncoding,
+} from "../../adapters/mimo/src/model-configuration.js";
 import { now, objectHash } from "./util.js";
 import { resolveModelIdentity } from "./model-identity.js";
 
@@ -61,6 +65,7 @@ const FINGERPRINTS: Record<SupportedAdapterId, string> = {
   qoder: "qoder",
   opencode: "opencode",
   "cursor-agent": "cursor|agent",
+  "mimo-code": "mimo",
 };
 
 export type CatalogOperationStatus =
@@ -552,6 +557,7 @@ function parseAdapterCatalog(
   if (adapterId === "kimi-code") return parseKimiModelCatalog(input);
   if (adapterId === "qoder") return parseQoderModelCatalog(input);
   if (adapterId === "opencode") return parseOpenCodeModelCatalog(input);
+  if (adapterId === "mimo-code") return parseMimoModelCatalog(input);
   return failedModelCatalog(
     adapterId,
     input,
@@ -571,6 +577,7 @@ function firstNonEmptyLine(text: string): string | undefined {
 function catalogArgs(adapterId: SupportedAdapterId): string[] {
   if (adapterId === "qoder") return ["--list-models"];
   if (adapterId === "opencode") return ["models", "--verbose"];
+  if (adapterId === "mimo-code") return ["models", "--verbose"];
   return ["models"];
 }
 
@@ -675,7 +682,10 @@ export function assertManualNativeId(
   if (/[\s;|&$<>`\\\n\r]/.test(id) || id.startsWith("-")) {
     throw new FlowError("INVALID_REQUEST", "模型 ID 含有非法字符", 422);
   }
-  const allowSlash = adapterId === "opencode" || adapterId === "kimi-code";
+  const allowSlash =
+    adapterId === "opencode" ||
+    adapterId === "kimi-code" ||
+    adapterId === "mimo-code";
   const pattern = allowSlash
     ? /^[A-Za-z0-9][A-Za-z0-9._:+/-]*$/
     : /^[A-Za-z0-9][A-Za-z0-9._:+-]*$/;
@@ -1276,11 +1286,19 @@ export class ModelCatalogService {
   private async readInvocationCapability(
     scope: CatalogScopeInput,
   ): Promise<ModelInvocationCapability | undefined> {
-    if (scope.adapterId !== "opencode") return undefined;
-    const help = await this.runCli(scope, ["run", "--help"], this.versionHelpTimeoutMs);
-    if (help.exitCode !== 0 || help.timedOut || help.truncated || help.spawnError) return undefined;
-    const encoding = detectOpenCodeVariantEncoding(help.stdout);
-    return encoding ? { opencodeVariantEncoding: encoding } : undefined;
+    if (scope.adapterId === "opencode") {
+      const help = await this.runCli(scope, ["run", "--help"], this.versionHelpTimeoutMs);
+      if (help.exitCode !== 0 || help.timedOut || help.truncated || help.spawnError) return undefined;
+      const encoding = detectOpenCodeVariantEncoding(help.stdout);
+      return encoding ? { opencodeVariantEncoding: encoding } : undefined;
+    }
+    if (scope.adapterId === "mimo-code") {
+      const help = await this.runCli(scope, ["run", "--help"], this.versionHelpTimeoutMs);
+      if (help.exitCode !== 0 || help.timedOut || help.truncated || help.spawnError) return undefined;
+      const encoding = detectMimoVariantEncoding(help.stdout);
+      return encoding ? { opencodeVariantEncoding: encoding } : undefined;
+    }
+    return undefined;
   }
 
   private persistCatalog(

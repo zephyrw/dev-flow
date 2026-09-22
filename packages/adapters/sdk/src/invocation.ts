@@ -211,6 +211,72 @@ export function clientInvocation(
       pushFrozenSelection(args, env, input);
       args.push(prompt);
       break;
+    case "mimo-code":
+      // MiMo Code: independent identity; prompt via stdin; never shell-interpolate.
+      // New tasks must not use --continue (would resume someone else's latest session).
+      args.push("run", "--format", "json");
+      if (resume) args.push("--session", resume);
+      pushFrozenSelection(args, env, input);
+      // Role/permission config is scoped to this managed subprocess only.
+      env.MIMOCODE_CONFIG_CONTENT = JSON.stringify(
+        readonly
+          ? {
+              agent: {
+                "devflow-review": {
+                  mode: "primary",
+                  description: "DevFlow read-only inspection",
+                  permission: {
+                    "*": "deny",
+                    read: "allow",
+                    glob: "allow",
+                    grep: "allow",
+                    list: "allow",
+                    task: {
+                      "*": "deny",
+                      "devflow-review-child": "allow",
+                    },
+                  },
+                },
+                "devflow-review-child": {
+                  mode: "subagent",
+                  description: "DevFlow read-only subagent",
+                  permission: {
+                    "*": "deny",
+                    read: "allow",
+                    glob: "allow",
+                    grep: "allow",
+                    list: "allow",
+                    edit: "deny",
+                    write: "deny",
+                    bash: "deny",
+                    patch: "deny",
+                  },
+                },
+              },
+            }
+          : {
+              agent: {
+                "devflow-executor": {
+                  mode: "primary",
+                  description: "DevFlow implement / test / fix",
+                },
+                "devflow-planner": {
+                  mode: "primary",
+                  description: "DevFlow planner repair / commit",
+                },
+              },
+            },
+      );
+      // Pin in-flight CLI behavior; upgrades only apply at a later launch boundary.
+      env.MIMOCODE_DISABLE_AUTOUPDATE = "1";
+      return {
+        executable,
+        args,
+        cwd,
+        env,
+        stdin: prompt,
+        conversationId: resume,
+      };
     case "opencode":
       args.push("run", "--format", "json");
       if (resume) args.push("--session", resume);
