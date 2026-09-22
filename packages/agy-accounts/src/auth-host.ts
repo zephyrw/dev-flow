@@ -1,28 +1,60 @@
 import {
   spawn,
-  execFile,
   type ChildProcessWithoutNullStreams,
 } from "node:child_process";
-import { promisify } from "node:util";
-import { resolve } from "node:path";
+import { resolve, join, dirname } from "node:path";
 import { existsSync } from "node:fs";
 import { createInterface } from "node:readline";
+import { fileURLToPath } from "node:url";
 import type {
   AuthHostPort,
   AuthHostCapabilities,
   ActiveCredentialInspection,
 } from "./ports.js";
 import type { AgyAccountAuth } from "../../contracts/src/agy-account.js";
-const execFileAsync = promisify(execFile);
+
 type Pending = {
   resolve: (data: unknown) => void;
   reject: (error: Error) => void;
   timer: ReturnType<typeof setTimeout>;
 };
 
-/** One daemon owns the OS mutex for the entire managed lifetime. */
+/**
+ * Resolve the credential-worker.js entry point.
+ * In dist mode: dist/packages/agy-accounts/src/credential-worker.js
+ * In source mode: packages/agy-accounts/src/credential-worker.js
+ */
+function resolveCredentialWorker(): string {
+  // Try dist layout first (production)
+  const distPath = join(
+    dirname(fileURLToPath(import.meta.url)),
+    "credential-worker.js",
+  );
+  if (existsSync(distPath)) return distPath;
+
+  // Try source layout (development) - require tsx loader
+  const srcPath = join(
+    process.cwd(),
+    "packages",
+    "agy-accounts",
+    "src",
+    "credential-worker.ts",
+  );
+  if (existsSync(srcPath)) return srcPath;
+
+  throw new Error("credential_worker_not_found");
+}
+
+/**
+ * Credential host using Node subprocess (replaces C# DevFlowAuthHost).
+ *
+ * Spawns credential-worker.js as an isolated Node process. Raw credentials
+ * only exist inside that subprocess — the main process never sees them.
+ *
+ * Protocol: JSONL over stdin/stdout (same as old C# host for compatibility).
+ */
 export class DevFlowAuthHost implements AuthHostPort {
-  private readonly executablePath: string;
+  private readonly workerScript: string;
   private child?: ChildProcessWithoutNullStreams;
   private pending = new Map<string, Pending>();
   private counter = 0;
@@ -30,12 +62,8 @@ export class DevFlowAuthHost implements AuthHostPort {
   private lockId?: string;
   private starting?: Promise<void>;
   private lostListeners = new Set<() => void>();
-  constructor(executablePath?: string) {
-    this.executablePath = resolve(
-      executablePath ??
-        process.env.DEVFLOW_AUTH_HOST_EXECUTABLE ??
-        "dist/host/devflow-auth-host.exe",
-    );
+  constructor(workerScript?: string) {
+    this.workerScript = workerScript ?? resolveCredentialWorker();
   }
   onLockLost(listener: () => void): () => void {
     this.lostListeners.add(listener);
@@ -82,31 +110,16 @@ export class DevFlowAuthHost implements AuthHostPort {
       version,
     });
     if (process.platform !== "win32") return unavailable("unsupported");
-    if (!existsSync(this.executablePath)) return unavailable("missing_binary");
-    try {
-      const { stdout } = await execFileAsync(
-        this.executablePath,
-        ["--version"],
-        {
-          windowsHide: true,
-          timeout: 5000,
-          maxBuffer: 4096,
-        },
-      );
-      // Version 1 exited after acquiring its mutex. Never use it to modify credentials.
-      if (stdout.trim() !== "devflow-auth-host v2.0.0")
-        return unavailable("incompatible_protocol");
-      return {
-        supported: true,
-        platform: "win32",
-        dpapi_available: true,
-        cred_manager_available: true,
-        named_mutex_available: true,
-        version: "2.0.0",
-      };
-    } catch {
-      return unavailable("helper_unavailable");
-    }
+    if (!existsSync(this.workerScript)) return unavailable("missing_worker");
+    // Node credential worker is always available if the script exists
+    return {
+      supported: true,
+      platform: "win32",
+      dpapi_available: true,
+      cred_manager_available: true,
+      named_mutex_available: true,
+      version: "3.0.0-node",
+    };
   }
   private async ensureDaemon(): Promise<void> {
     if (this.child) return;
@@ -114,10 +127,19 @@ export class DevFlowAuthHost implements AuthHostPort {
     this.starting = (async () => {
       if (!(await this.capabilities()).supported)
         throw new Error("auth_host_capability_unavailable");
-      const child = spawn(this.executablePath, [], {
-        windowsHide: true,
-        stdio: ["pipe", "pipe", "pipe"],
-      });
+
+      // Spawn Node credential worker as isolated subprocess
+      // Uses process.execPath (node) to run the worker script
+      const isTypeScript = this.workerScript.endsWith(".ts");
+      const child = isTypeScript
+        ? spawn("node", ["--import", "tsx", this.workerScript], {
+            windowsHide: true,
+            stdio: ["pipe", "pipe", "pipe"],
+          })
+        : spawn(process.execPath, [this.workerScript], {
+            windowsHide: true,
+            stdio: ["pipe", "pipe", "pipe"],
+          });
       this.child = child;
       const pipeError = () => this.disconnected(new Error("auth_host_disconnected"), child);
       child.stdin.on("error", pipeError);
