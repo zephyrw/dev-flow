@@ -458,20 +458,18 @@ export async function runInstaller(
       tools.some((t) => !SupportedAdapters.includes(t as SupportedAdapterId))
     )
       return INSTALL_EXIT_CODES.CONFIGURATION_CONFLICT;
-    const hostName =
-      process.platform === "win32" ? "devflow-host.exe" : "devflow-host";
     const required = [
       "dist/apps/api/src/main.js",
       "dist/apps/api/src/accounts-main.js",
       "dist/packages/agy-accounts/src/service.js",
+      "dist/packages/agy-accounts/src/credential-worker.js",
       "dist/packages/service/src/open.js",
       ...(process.platform === "win32"
-        ? ["dist/host/devflow-auth-host.exe"]
+        ? ["dist/packages/agy-accounts/src/credential-windows.js"]
         : []),
       "dist/web/index.html",
       "dist/packages/bridge/src/planner.js",
       "dist/packages/service/src/launcher.js",
-      "dist/host/" + hostName,
       "package.json",
       "node_modules/better-sqlite3/package.json",
       ...[

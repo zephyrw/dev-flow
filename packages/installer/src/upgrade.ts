@@ -41,11 +41,17 @@ export class UpgradeManager {
   }
 }
 
-/** Add only account defaults; preserve comments and all existing user choices. */
+/**
+ * Migrate account configuration for Node runtime.
+ *
+ * In v2, auth_host_executable is removed since the credential worker
+ * is now a built-in Node subprocess. This function strips the old field
+ * and ensures agy_accounts.enabled exists.
+ */
 export function migrateAccountConfiguration(
   configPath: string,
-  authHost: string,
-  previousManagedHost?: string,
+  _authHost?: string,
+  _previousManagedHost?: string,
 ) {
   const original = readFileSync(configPath, "utf8");
   const document = parseDocument(original);
@@ -55,20 +61,10 @@ export function migrateAccountConfiguration(
     document.setIn(["agy_accounts", "enabled"], false);
     changed = true;
   }
-  const configured = document.getIn(["agy_accounts", "auth_host_executable"]);
-  const oldManaged =
-    typeof configured === "string" &&
-    previousManagedHost &&
-    resolve(dirname(configPath), configured).toLowerCase() ===
-      resolve(previousManagedHost).toLowerCase();
-  const defaultRelative =
-    configured === "dist/host/devflow-auth-host.exe" ||
-    configured === join("dist", "host", "devflow-auth-host.exe");
-  if (!configured || oldManaged || defaultRelative) {
-    if (configured !== authHost) {
-      document.setIn(["agy_accounts", "auth_host_executable"], authHost);
-      changed = true;
-    }
+  // Remove auth_host_executable if present (no longer needed with Node runtime)
+  if (document.getIn(["agy_accounts", "auth_host_executable"]) !== undefined) {
+    document.deleteIn(["agy_accounts", "auth_host_executable"]);
+    changed = true;
   }
   if (!changed) return { changed: false, backup: undefined };
   const backup =
