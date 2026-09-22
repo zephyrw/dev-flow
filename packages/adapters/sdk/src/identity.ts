@@ -5,55 +5,113 @@ import { createHash } from "node:crypto";
 import type { NativeAgentAdapter, SessionIdentityResolutionInput, ResolvedSessionIdentity } from "./interface.js";
 
 /**
+ * 从 JSON 配置文件读取常见账户字段
+ */
+function readAccountFromJson(filePath: string): string | undefined {
+  try {
+    if (!existsSync(filePath)) return undefined;
+    const data = JSON.parse(readFileSync(filePath, "utf8"));
+    return data.active_account || data.account_id || data.email
+      || data.user_id || data.account || data.profile
+      || undefined;
+  } catch {}
+  return undefined;
+}
+
+/**
  * 读取本地非敏感 CLI 账户身份（只读解码）
+ * 部分适配器（如 claude-code/grok-build）只有 API key 而无账户概念，
+ * 此时返回 undefined，由调用方决定是否使用占位值。
  */
 export function readLocalAccountScope(adapterId: string, clientHome: string): string | undefined {
   try {
-    if (adapterId === "codex") {
-      const authFile = join(clientHome, "auth.json");
-      if (existsSync(authFile)) {
-        const data = JSON.parse(readFileSync(authFile, "utf8"));
-        return data.account_id || data.email || data.user_id || undefined;
+    switch (adapterId) {
+      case "codex": {
+        const authFile = join(clientHome, "auth.json");
+        const fromAuth = readAccountFromJson(authFile);
+        if (fromAuth) return fromAuth;
+        return readAccountFromJson(join(clientHome, "config.json"));
       }
-      const configFile = join(clientHome, "config.json");
-      if (existsSync(configFile)) {
-        const data = JSON.parse(readFileSync(configFile, "utf8"));
-        return data.account || data.profile || undefined;
-      }
-    } else if (adapterId === "agy") {
-      const settingsFile = join(clientHome, "settings.json");
-      if (existsSync(settingsFile)) {
-        const data = JSON.parse(readFileSync(settingsFile, "utf8"));
-        return data.active_account || data.account_id || data.email || undefined;
-      }
+      case "agy":
+        return readAccountFromJson(join(clientHome, "settings.json"));
+      case "claude-code":
+      case "grok-build":
+      case "kimi-code":
+      case "opencode":
+      case "cursor-agent":
+      case "mimo-code":
+      case "qoder":
+        return readAccountFromJson(join(clientHome, "settings.json"))
+          ?? readAccountFromJson(join(clientHome, "config.json"));
+      default:
+        return undefined;
     }
   } catch {}
   return undefined;
 }
 
 /**
+ * 从 JSON 配置文件读取 model 字段，通用逻辑
+ */
+function readModelFromJson(filePath: string): string | undefined {
+  try {
+    if (!existsSync(filePath)) return undefined;
+    const data = JSON.parse(readFileSync(filePath, "utf8"));
+    if (data.model && data.model !== "default") return String(data.model);
+  } catch {}
+  return undefined;
+}
+
+/**
  * 从实际有效配置文件读取 native-config 默认模型
+ * 路径映射与 packages/clients/src/installer.ts locateClientBaseDir 保持一致
  */
 function readLocalConfiguredModel(adapterId: string, clientHome: string): string | undefined {
   try {
-    if (adapterId === "codex") {
-      const tomlFile = join(clientHome, "config.toml");
-      if (existsSync(tomlFile)) {
-        const tomlContent = readFileSync(tomlFile, "utf8");
-        const m = tomlContent.match(/^\s*model\s*=\s*["']([^"']+)["']/m);
-        if (m && m[1] && m[1] !== "default") return m[1];
+    switch (adapterId) {
+      case "codex": {
+        const tomlFile = join(clientHome, "config.toml");
+        if (existsSync(tomlFile)) {
+          const tomlContent = readFileSync(tomlFile, "utf8");
+          const m = tomlContent.match(/^\s*model\s*=\s*["']([^"']+)["']/m);
+          if (m && m[1] && m[1] !== "default") return m[1];
+        }
+        return readModelFromJson(join(clientHome, "config.json"));
       }
-      const configFile = join(clientHome, "config.json");
-      if (existsSync(configFile)) {
-        const data = JSON.parse(readFileSync(configFile, "utf8"));
+      case "agy":
+        return readModelFromJson(join(clientHome, "settings.json"));
+      case "claude-code": {
+        // claude-code 同时支持 .model 和 .env.ANTHROPIC_MODEL
+        // 逻辑与 packages/adapters/claude/src/model-configuration.ts readClaudeConfiguredModels 一致
+        const settingsPath = join(clientHome, "settings.json");
+        if (!existsSync(settingsPath)) return undefined;
+        const data = JSON.parse(readFileSync(settingsPath, "utf8"));
         if (data.model && data.model !== "default") return String(data.model);
+        if (data.env?.ANTHROPIC_MODEL && data.env.ANTHROPIC_MODEL !== "default") {
+          return String(data.env.ANTHROPIC_MODEL);
+        }
+        return undefined;
       }
-    } else if (adapterId === "agy") {
-      const settingsFile = join(clientHome, "settings.json");
-      if (existsSync(settingsFile)) {
-        const data = JSON.parse(readFileSync(settingsFile, "utf8"));
-        if (data.model && data.model !== "default") return String(data.model);
-      }
+      case "grok-build":
+        return readModelFromJson(join(clientHome, "settings.json"))
+          ?? readModelFromJson(join(clientHome, "config.json"));
+      case "kimi-code":
+        return readModelFromJson(join(clientHome, "settings.json"))
+          ?? readModelFromJson(join(clientHome, "config.json"));
+      case "opencode":
+        return readModelFromJson(join(clientHome, "settings.json"))
+          ?? readModelFromJson(join(clientHome, "config.json"));
+      case "cursor-agent":
+        return readModelFromJson(join(clientHome, "settings.json"))
+          ?? readModelFromJson(join(clientHome, "config.json"));
+      case "mimo-code":
+        return readModelFromJson(join(clientHome, "settings.json"))
+          ?? readModelFromJson(join(clientHome, "config.json"));
+      case "qoder":
+        return readModelFromJson(join(clientHome, "settings.json"))
+          ?? readModelFromJson(join(clientHome, "config.json"));
+      default:
+        return undefined;
     }
   } catch {}
   return undefined;
@@ -61,18 +119,45 @@ function readLocalConfiguredModel(adapterId: string, clientHome: string): string
 
 /**
  * 统一解析并规范化 client_scope_id (绝对路径且全小写)
+ * 路径映射与 packages/clients/src/installer.ts locateClientBaseDir 保持一致
  */
 export function resolveClientScope(
   adapterId: string,
   env: Record<string, string | undefined> = process.env,
 ): string | undefined {
+  const h = homedir();
   let clientScope: string | undefined;
-  if (adapterId === "codex") {
-    clientScope = env.CODEX_HOME || join(homedir(), ".codex");
-  } else if (adapterId === "agy") {
-    clientScope = env.AGY_HOME || join(homedir(), ".gemini", "antigravity");
-  } else {
-    clientScope = env.DEVFLOW_CLIENT_SCOPE;
+  switch (adapterId) {
+    case "codex":
+      clientScope = env.CODEX_HOME || join(h, ".codex");
+      break;
+    case "agy":
+      clientScope = env.AGY_HOME || join(h, ".gemini", "antigravity");
+      break;
+    case "claude-code":
+      clientScope = env.CLAUDE_HOME || join(h, ".claude");
+      break;
+    case "grok-build":
+      clientScope = env.GROK_HOME || join(h, ".grok");
+      break;
+    case "kimi-code":
+      clientScope = env.KIMI_CODE_HOME || join(h, ".kimi-code");
+      break;
+    case "opencode":
+      clientScope = env.OPENCODE_HOME || join(env.XDG_CONFIG_HOME || join(h, ".config"), "opencode");
+      break;
+    case "cursor-agent":
+      clientScope = env.CURSOR_HOME || join(h, ".cursor");
+      break;
+    case "mimo-code":
+      clientScope = env.MIMO_HOME || join(env.XDG_CONFIG_HOME || join(h, ".config"), "mimo");
+      break;
+    case "qoder":
+      clientScope = env.QODER_HOME || join(h, ".qoder");
+      break;
+    default:
+      clientScope = env.DEVFLOW_CLIENT_SCOPE;
+      break;
   }
   return clientScope ? normalize(resolve(clientScope)).toLowerCase() : undefined;
 }
@@ -132,12 +217,20 @@ export async function resolveSessionIdentity(
   }
 
   // 3. 解析账户身份 (account_scope)
+  // 并非所有适配器都有本地账户体系（如 claude-code/grok-build 等只有 API key，无 account 概念）。
+  // SessionBindingKeySchema 要求 provider_account_scope 非空，
+  // 因此当适配器确实无账户信息时，用确定性占位值 "_" 而非阻断身份解析。
   let accountScope = env.DEVFLOW_ACCOUNT_SCOPE || env.DEVFLOW_PROVIDER_ACCOUNT;
   if (!accountScope && clientScope) {
     accountScope = readLocalAccountScope(profile.adapterId, clientScope);
   }
   if (!accountScope || accountScope === "default-account" || accountScope === "default") {
-    missing.push("provider_account_scope");
+    // codex 和 agy 有明确的账户体系，缺失时如实报告
+    if (profile.adapterId === "codex" || profile.adapterId === "agy") {
+      missing.push("provider_account_scope");
+    } else {
+      accountScope = "_";
+    }
   }
 
   // 4. 解析模型事实 (canonical_model_id) - CW3-F04: 配置读取优先于 DEVFLOW_RESOLVED_MODEL

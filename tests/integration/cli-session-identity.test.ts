@@ -172,4 +172,165 @@ describe("CW2-T10: CLI 会话真实身份解析与隔离集成测试", () => {
     expect(result.canonical_model_id).toBe("gemini-2.5-pro");
     expect(result.provider_account_scope).toBe("agy-user-999@domain.com");
   });
+
+  it("CW2-T10: claude-code native-config 读取 settings.json 模型，无账户时用占位值", async () => {
+    const claudeHome = join(tempDir, "fake-claude-home");
+    mkdirSync(claudeHome, { recursive: true });
+    writeFileSync(
+      join(claudeHome, "settings.json"),
+      JSON.stringify({ model: "claude-sonnet-4-20250514" }),
+      "utf8",
+    );
+
+    const claudeAdapter: NativeAgentAdapter = {
+      id: "claude-code",
+      name: "Claude Code Adapter",
+    } as any;
+
+    const result = await resolveSessionIdentity(claudeAdapter, {
+      frozenProfile: {
+        id: "p-claude-1",
+        revision: 1,
+        adapterId: "claude-code",
+        modelSelection: "native-config",
+        options: {},
+      } as any,
+      effectiveEnvironment: {
+        CLAUDE_HOME: claudeHome,
+        DEVFLOW_HOST_ID: "testhost-01",
+      },
+      workspace: { root: fakeWorkspaceRoot },
+    });
+
+    expect(result.resolved).toBe(true);
+    expect(result.canonical_model_id).toBe("claude-sonnet-4-20250514");
+    expect(result.provider_account_scope).toBe("_");
+    expect(result.client_scope_id).toBe(normalize(resolve(claudeHome)).toLowerCase());
+  });
+
+  it("CW2-T10: claude-code 读取 .env.ANTHROPIC_MODEL 作为 fallback", async () => {
+    const claudeHome = join(tempDir, "claude-env-model");
+    mkdirSync(claudeHome, { recursive: true });
+    writeFileSync(
+      join(claudeHome, "settings.json"),
+      JSON.stringify({ env: { ANTHROPIC_MODEL: "claude-opus-4-20250514" } }),
+      "utf8",
+    );
+
+    const claudeAdapter: NativeAgentAdapter = {
+      id: "claude-code",
+      name: "Claude Code Adapter",
+    } as any;
+
+    const result = await resolveSessionIdentity(claudeAdapter, {
+      frozenProfile: {
+        id: "p-claude-2",
+        revision: 1,
+        adapterId: "claude-code",
+        modelSelection: "native-config",
+        options: {},
+      } as any,
+      effectiveEnvironment: {
+        CLAUDE_HOME: claudeHome,
+        DEVFLOW_HOST_ID: "testhost-01",
+      },
+      workspace: { root: fakeWorkspaceRoot },
+    });
+
+    expect(result.resolved).toBe(true);
+    expect(result.canonical_model_id).toBe("claude-opus-4-20250514");
+  });
+
+  it("CW2-T10: mimo-code native-config 读取 config.json 模型，无账户时用占位值", async () => {
+    const mimoHome = join(tempDir, "fake-mimo-home");
+    mkdirSync(mimoHome, { recursive: true });
+    writeFileSync(
+      join(mimoHome, "settings.json"),
+      JSON.stringify({ model: "xiaomi/mimo-v2.6-pro" }),
+      "utf8",
+    );
+
+    const mimoAdapter: NativeAgentAdapter = {
+      id: "mimo-code",
+      name: "MiMo Code Adapter",
+    } as any;
+
+    const result = await resolveSessionIdentity(mimoAdapter, {
+      frozenProfile: {
+        id: "p-mimo-1",
+        revision: 1,
+        adapterId: "mimo-code",
+        modelSelection: "native-config",
+        options: {},
+      } as any,
+      effectiveEnvironment: {
+        MIMO_HOME: mimoHome,
+        DEVFLOW_HOST_ID: "testhost-01",
+      },
+      workspace: { root: fakeWorkspaceRoot },
+    });
+
+    expect(result.resolved).toBe(true);
+    expect(result.canonical_model_id).toBe("xiaomi/mimo-v2.6-pro");
+    expect(result.provider_account_scope).toBe("_");
+  });
+
+  it("CW2-T10: 无本地模型配置时 canonical_model_id 缺失，native-config resolved false", async () => {
+    const emptyClaudeHome = join(tempDir, "empty-claude-home");
+    mkdirSync(emptyClaudeHome, { recursive: true });
+    // 不写入 settings.json
+
+    const claudeAdapter: NativeAgentAdapter = {
+      id: "claude-code",
+      name: "Claude Code Adapter",
+    } as any;
+
+    const result = await resolveSessionIdentity(claudeAdapter, {
+      frozenProfile: {
+        id: "p-claude-empty",
+        revision: 1,
+        adapterId: "claude-code",
+        modelSelection: "native-config",
+        options: {},
+      } as any,
+      effectiveEnvironment: {
+        CLAUDE_HOME: emptyClaudeHome,
+        DEVFLOW_HOST_ID: "testhost-01",
+      },
+      workspace: { root: fakeWorkspaceRoot },
+    });
+
+    expect(result.resolved).toBe(false);
+    expect(result.missing_fields).toContain("canonical_model_id");
+  });
+
+  it("CW2-T10: explicit 模式直接使用 modelId，不依赖本地配置", async () => {
+    const noConfigHome = join(tempDir, "no-config-home");
+    mkdirSync(noConfigHome, { recursive: true });
+
+    const mimoAdapter: NativeAgentAdapter = {
+      id: "mimo-code",
+      name: "MiMo Code Adapter",
+    } as any;
+
+    const result = await resolveSessionIdentity(mimoAdapter, {
+      frozenProfile: {
+        id: "p-mimo-explicit",
+        revision: 1,
+        adapterId: "mimo-code",
+        modelSelection: "explicit",
+        modelId: "xiaomi/mimo-v2.6-flash",
+        options: {},
+      } as any,
+      effectiveEnvironment: {
+        MIMO_HOME: noConfigHome,
+        DEVFLOW_HOST_ID: "testhost-01",
+      },
+      workspace: { root: fakeWorkspaceRoot },
+    });
+
+    expect(result.resolved).toBe(true);
+    expect(result.canonical_model_id).toBe("xiaomi/mimo-v2.6-flash");
+    expect(result.provider_account_scope).toBe("_");
+  });
 });
