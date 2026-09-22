@@ -112,21 +112,19 @@ export class AgyWorkflowRecoveryCoordinator {
         }
       }
 
-      // 4. 决策状态机 (AGF-D09)
+      // 4. 决策状态机 (轻量化：本地会话有会话 ID 则续接，无则新 Run 重试；预算充足均允许恢复)
       let decision: RecoveryDecision = "exact_resume";
       let state: RecoveryProgressState = "resume_pending";
 
-      if (originalConversationId) {
+      if (remainingMs <= 0) {
+        decision = "manual_required";
+        state = "manual_required";
+      } else if (originalConversationId) {
         decision = "exact_resume";
-        state = remainingMs > 0 ? "resume_pending" : "manual_required";
+        state = "resume_pending";
       } else {
-        if (recreationPolicy === "recreate_after_confirmed_unavailable") {
-          decision = "recreate_root";
-          state = remainingMs > 0 ? "recreate_pending" : "manual_required";
-        } else {
-          decision = "manual_required";
-          state = "manual_required";
-        }
+        decision = "recreate_root";
+        state = "recreate_pending";
       }
 
       // 5. 保存恢复清单

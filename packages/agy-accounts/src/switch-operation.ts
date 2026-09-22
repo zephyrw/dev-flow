@@ -591,7 +591,9 @@ export class SwitchOperationExecutor {
         !!probeRes.executable_fingerprint &&
         options.requiredPoolIds.length > 0 &&
         options.requiredPoolIds.every((id) => {
-          const pool = probeRes.pools.find((p) => p.pool_id === id);
+          const pool =
+            probeRes.pools.find((p) => p.pool_id === id) ??
+            (id === "global" ? probeRes.pools[0] : undefined);
           return (
             pool &&
             ["weekly", "five_hour"].every((kind) =>
@@ -604,7 +606,7 @@ export class SwitchOperationExecutor {
             )
           );
         });
-      for (const pool of probeRes.pools)
+      for (const pool of probeRes.pools) {
         this.repository.saveQuotaSnapshot({
           id: `snp_${options.operationId}_${candidateIndex}_${pool.pool_id}`,
           realm_id: options.realmId,
@@ -620,19 +622,46 @@ export class SwitchOperationExecutor {
           observed_at: this.clock.toISOString(),
           windows: pool.windows,
         });
+        if (
+          pool.pool_id !== "global" &&
+          !probeRes.pools.some((p) => p.pool_id === "global")
+        ) {
+          this.repository.saveQuotaSnapshot({
+            id: `snp_${options.operationId}_${candidateIndex}_global`,
+            realm_id: options.realmId,
+            account_id: targetAcc.id,
+            auth_epoch: realm.auth_epoch,
+            pool_id: "global",
+            model_ids: pool.model_ids,
+            source: "official_cli_usage",
+            cli_version: probeRes.cli_version,
+            parser_revision: 1,
+            executable_fingerprint: probeRes.executable_fingerprint,
+            capability_verified: probeRes.capability_verified,
+            observed_at: this.clock.toISOString(),
+            windows: pool.windows,
+          });
+        }
+      }
       if (!complete) {
         targetAcc.state = "pending_quota";
         targetAcc.revision++;
         this.repository.saveAccount(targetAcc);
         throw new Error("quota_capability_unavailable");
       }
-      const zero = probeRes.pools
-        .filter((p) => options.requiredPoolIds.includes(p.pool_id))
-        .some((p) =>
-          p.windows.some(
-            (w) => w.remaining_fraction === null || w.remaining_fraction <= 0,
-          ),
-        );
+      const targetPools = probeRes.pools.filter(
+        (p) =>
+          options.requiredPoolIds.includes(p.pool_id) ||
+          (options.requiredPoolIds.includes("global") &&
+            (p.pool_id === "global" || probeRes.pools.length === 1)),
+      );
+      const poolsToCheck =
+        targetPools.length > 0 ? targetPools : probeRes.pools;
+      const zero = poolsToCheck.some((p) =>
+        p.windows.some(
+          (w) => w.remaining_fraction === null || w.remaining_fraction <= 0,
+        ),
+      );
       targetAcc.state = zero ? "waiting_quota" : "ready";
       targetAcc.revision++;
       this.repository.saveAccount(targetAcc);
@@ -676,14 +705,14 @@ export class SwitchOperationExecutor {
         }
         throw new Error("no_eligible_account");
       }
-      const weekly = Math.min(
-        ...probeRes.pools
-          .filter((p) => options.requiredPoolIds.includes(p.pool_id))
-          .map(
-            (p) =>
-              p.windows.find((w) => w.kind === "weekly")!.remaining_fraction!,
-          ),
-      );
+      const weekly = poolsToCheck.length > 0
+        ? Math.min(
+            ...poolsToCheck.map(
+              (p) =>
+                p.windows.find((w) => w.kind === "weekly")?.remaining_fraction ?? 1,
+            ),
+          )
+        : 1;
       operation.candidate_results = operation.candidate_results.filter(
         (r) => r.account_id !== targetAcc.id,
       );

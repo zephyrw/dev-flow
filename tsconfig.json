@@ -6,5 +6,6 @@
     "noUncheckedIndexedAccess": true, "forceConsistentCasingInFileNames": true,
     "types": ["node", "vitest/globals"]
   },
-  "include": ["apps", "packages", "tests", "vitest.config.ts", "playwright.config.ts"]
+  "include": ["apps", "packages", "tests", "vitest.config.ts", "playwright.config.ts"],
+  "exclude": ["dist"]
 }

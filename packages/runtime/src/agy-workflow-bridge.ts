@@ -108,9 +108,9 @@ export class AgyWorkflowBridge implements AccountConsumerPort {
 
   private waitBelongsToOperation(wait: AccountWait, originalId: string): boolean {
     const operation = this.accountService.getRepository().getOperation(wait.operation_id);
-    return !!operation && !operation.cancel_requested &&
-      !["completed", "cancelled", "failed"].includes(operation.phase) &&
-      (wait.operation_id === originalId || operation.original_operation_id === originalId);
+    if (operation && (operation.cancel_requested || ["completed", "cancelled", "failed"].includes(operation.phase)))
+      return false;
+    return wait.operation_id === originalId || operation?.original_operation_id === originalId;
   }
 
   private isCurrentWait(wait: AccountWait): boolean {
@@ -122,7 +122,7 @@ export class AgyWorkflowBridge implements AccountConsumerPort {
     const w = this.engine.get(wait.workflow_id);
     const repository = this.accountService.getRepository();
     const operation = repository.getOperation(wait.operation_id);
-    if (!operation || operation.cancel_requested || ["cancelled", "failed", "completed"].includes(operation.phase)) return false;
+    if (operation && (operation.cancel_requested || ["cancelled", "failed", "completed"].includes(operation.phase))) return false;
     if (["STOPPING", "STOPPED", "COMMITTED", "COMPLETED", "COMMIT_PARTIAL"].includes(w.state) ||
         w.plan_revision !== wait.plan_revision || w.plan_hash !== wait.plan_hash ||
         repository.getPolicy(w.id)?.revision !== wait.account_policy_revision ||

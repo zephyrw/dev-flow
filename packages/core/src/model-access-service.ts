@@ -668,8 +668,13 @@ export class ModelAccessService {
     const identity = readManagedAgyModelIdentity(this.store);
     if (frozen.adapterId !== "agy" || profile.adapterId !== "agy" ||
         frozen.accountScope !== native.accountFingerprint ||
-        frozen.providerScope !== native.providerEndpointFingerprint ||
-        !operation || !commit || !identity || operation.cancel_requested ||
+        frozen.providerScope !== native.providerEndpointFingerprint) {
+      throw new FlowError("MODEL_IDENTITY_CHANGED", "账号恢复的已提交身份或验证记录已变化", 409);
+    }
+    if (!operation || !commit || !identity) {
+      return this.assertFrozenAccess(profile, frozen);
+    }
+    if (operation.cancel_requested ||
         !["committed", "recovering", "completed"].includes(operation.phase) ||
         commit.realm_id !== operation.realm_id || commit.realm_id !== identity.realmId ||
         commit.account_id !== identity.accountId || commit.auth_epoch !== identity.authEpoch ||
