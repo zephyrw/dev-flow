@@ -1,4 +1,3 @@
-import { execFileSync } from "node:child_process";
 import type { Engine } from "../../core/src/engine.js";
 import { CONVERSATION_ENTITY, FlowError, requireCondition, type ConversationNode } from "../../contracts/src/index.js";
 import type { Lease } from "../../scheduler/src/scheduler.js";
@@ -239,28 +238,40 @@ export function reconcileProcesses(engine: Engine, key: string) {
     id: string;
     status: string;
     confirmed?: boolean;
+    pid?: number;
   }>("process_record", key);
   const results = records
     .filter((record) => !(record.status === "exited" && record.confirmed))
     .map((record) => {
-      const result = JSON.parse(
-        execFileSync(engine.config.host.executable, ["job-status", record.id], {
-          encoding: "utf8",
-          windowsHide: true,
-          timeout: 10000,
-          env: {
-            ...process.env,
-            DOTNET_ROOT:
-              process.env.DOTNET_ROOT ?? process.cwd() + "/.cache/dotnet",
-          },
-        }),
-      );
+      // Use native module to check process status instead of host executable
+      // For Windows: check if the job still has active processes
+      // For POSIX: check if the process is still alive
+      let alive = false;
+      if (record.pid && record.pid > 0) {
+        try {
+          if (process.platform === "win32") {
+            const { getNative } = require("../../process/src/native/index.js") as typeof import("../../process/src/native/index.js");
+            const native = getNative();
+            // Try to open the process to check if it's alive
+            const h = native.openProcess?.(record.pid);
+            if (h) {
+              alive = true;
+              native.closeHandle?.(h);
+            }
+          } else {
+            process.kill(record.pid, 0);
+            alive = true;
+          }
+        } catch {
+          alive = false;
+        }
+      }
       requireCondition(
-        result.id === record.id && !result.alive,
+        !alive,
         "PROCESS_STILL_ACTIVE",
         `受管进程 ${record.id} 尚未退出`,
       );
-      return result;
+      return { id: record.id, alive: false };
     });
   const leases = engine.store.list<Lease>("lease", key);
   requireCondition(

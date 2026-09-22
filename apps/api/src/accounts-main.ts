@@ -12,7 +12,6 @@ const store = new Store(join(config.storage_root, "devflow.sqlite"));
 const accountService = bootstrapAccountService(store, {
   authHostExecutable: config.agy_accounts.auth_host_executable,
   agyCliPath: config.models.agy_executable,
-  hostExecutable: config.host.executable,
   settings: config.agy_accounts,
 });
 const app = buildAccountsServer(accountService, {

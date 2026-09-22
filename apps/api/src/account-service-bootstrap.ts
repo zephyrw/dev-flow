@@ -30,7 +30,6 @@ export function bootstrapAccountService(
   options: {
     authHostExecutable?: string;
     agyCliPath?: string;
-    hostExecutable: string;
     processManager?: ProcessManager;
     processHost?: ProcessHostPort;
     settings?: Partial<AgyAccountSettings>;
@@ -49,7 +48,7 @@ export function bootstrapAccountService(
     }
   }
 
-  const runner = new AgyAccountJobRunner(options.hostExecutable, cliPath ?? "agy");
+  const runner = new AgyAccountJobRunner(cliPath ?? "agy");
 
   if (cliPath && existsSync(cliPath)) {
     try {
@@ -87,7 +86,6 @@ export function bootstrapAccountService(
     options.processHost ??
     new AgyAccountProcessHost({
       store,
-      hostExecutable: options.hostExecutable,
       agyExecutable: cliPath ?? options.agyCliPath ?? "agy",
       processManager: options.processManager,
     });

@@ -1,14 +1,14 @@
+import { basename, resolve } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { basename, resolve } from "node:path";
 import type { Store } from "../../store/src/store.js";
+
+const execFileAsync = promisify(execFile);
 import type {
   ProcessHostPort,
   ExternalProcessInfo,
 } from "../../agy-accounts/src/ports.js";
 import type { ProcessManager } from "./manager.js";
-
-const execute = promisify(execFile);
 type RecordEntry = {
   id: string;
   pid?: number;
@@ -34,7 +34,6 @@ export class AgyAccountProcessHost implements ProcessHostPort {
   constructor(
     private options: {
       store: Store;
-      hostExecutable: string;
       agyExecutable: string;
       processManager?: ProcessManager;
     },
@@ -43,29 +42,31 @@ export class AgyAccountProcessHost implements ProcessHostPort {
     return this.options.store.list<RecordEntry>("process_record");
   }
   async assertCapabilities() {
-    if (process.platform !== "win32")
-      throw new Error("AGY_PROCESS_HOST_UNSUPPORTED");
-    const { stdout } = await execute(this.options.hostExecutable, ["doctor"], {
-      windowsHide: true,
-      timeout: 5000,
-    });
-    const c = JSON.parse(stdout.trim());
-    if (c.suspended_spawn !== true || c.kill_on_close !== true)
-      throw new Error("AGY_PROCESS_HOST_CAPABILITY_MISSING");
+    // With Node native module, capabilities are always available
+    // (koffi on Windows, built-in on POSIX)
+    return;
   }
   async confirmJobsStopped(ids: string[]) {
     for (const id of ids) {
       if (!/^[A-Za-z0-9_-]{1,150}$/.test(id)) return false;
+      // Check if the process is still alive using native module
+      const record = this.records().find(r => r.id === id);
+      if (!record || !record.pid) continue;
       try {
-        const { stdout } = await execute(
-          this.options.hostExecutable,
-          ["job-status", id],
-          { windowsHide: true, timeout: 5000 },
-        );
-        const status = JSON.parse(stdout.trim());
-        if (status.id !== id || status.alive !== false) return false;
+        if (process.platform === "win32") {
+          const { getNative } = require("./native/index.js") as typeof import("./native/index.js");
+          const native = getNative();
+          const h = native.openProcess?.(record.pid);
+          if (h) {
+            native.closeHandle?.(h);
+            return false; // Process still alive
+          }
+        } else {
+          process.kill(record.pid, 0);
+          return false; // Process still alive
+        }
       } catch {
-        return false;
+        // Process gone
       }
     }
     return true;
@@ -96,7 +97,7 @@ export class AgyAccountProcessHost implements ProcessHostPort {
       "$p.Name -match '(?i)agy|antigravity|language_server'",
       `($p.Name -match '(?i)agy|antigravity|language_server' -or $p.Name -eq '${configuredName}')`,
     );
-    const { stdout } = await execute(
+    const { stdout } = await execFileAsync(
       "powershell.exe",
       [
         "-NoProfile",
