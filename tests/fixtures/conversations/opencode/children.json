@@ -1,0 +1,24 @@
+[
+  {
+    "id": "ses_child1",
+    "slug": "child-1",
+    "projectID": "prj_1",
+    "directory": "C:/tmp/devflow-opencode",
+    "parentID": "ses_root1",
+    "title": "列出临时目录 (@devflow-review subagent)",
+    "agent": "devflow-review",
+    "model": { "id": "gpt-5", "providerID": "openai" },
+    "version": "1.18.30",
+    "time": { "created": 1774000000400, "updated": 1774000000600 }
+  },
+  {
+    "id": "ses_foreign",
+    "slug": "other",
+    "projectID": "prj_other",
+    "directory": "C:/other",
+    "parentID": "ses_other_root",
+    "title": "外部会话",
+    "version": "1.18.30",
+    "time": { "created": 1774000000001, "updated": 1774000000700 }
+  }
+]

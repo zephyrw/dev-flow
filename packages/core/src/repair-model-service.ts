@@ -430,6 +430,7 @@ export class RepairModelService {
         created_seq: existing.length + 1,
         description: item.description,
         refs: item.refs ?? [],
+        attachment_ids: [],
         status: "open",
         created_at: now(),
       };

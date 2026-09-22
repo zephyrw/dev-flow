@@ -1,0 +1,3 @@
+{"type":"profile.bind","modelAlias":"kimi-code/k3","profileName":"agent","thinkingEffort":"high"}
+{"type":"context.append_loop_event","event":{"type":"tool.call","toolCallId":"tool_spawn_explore","name":"Agent","args":{"description":"只读探索","subagent_type":"explore"}}}
+{"type":"context.append_loop_event","event":{"type":"tool.result","toolCallId":"tool_spawn_explore","result":{"output":"agent_id: agent-1\nactual_subagent_type: explore\nstatus: completed\n\n[summary]\nok"}}}

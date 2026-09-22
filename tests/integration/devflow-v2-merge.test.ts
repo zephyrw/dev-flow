@@ -12,13 +12,16 @@ it(
     const s = setup(),
       r = await repository(s.root),
       p = project(r.repo);
+    const excludePath = join(r.repo, ".git", "info", "exclude");
+    writeFileSync(excludePath, "\n.devflow-fixture*\n", { flag: "a" });
     s.store.put("project", p.id, "global", p);
     s.store.put("tool_profile", "profile-codex", "global", {
       id: "profile-codex",
       revision: 1,
       adapterId: "codex",
       executableRef: process.execPath,
-      modelSelection: "native-config",
+      modelSelection: "explicit",
+      modelId: "fixture-only",
       options: { prefixArgs: [resolve("tests/fixtures/native-cli.mjs")] },
     });
     const w = new CreateWorkflowService(s.store).execute({
@@ -79,8 +82,9 @@ it(
         "main advanced",
       );
       const ws = s.store.list<any>("workspace", w.id)[0];
-      expect(existsSync(ws.root)).toBe(false);
-      expect(await git(r.repo, ["branch", "--list", ws.branch])).toBe("");
+      // CW-D01: 正常交付完成后保留工作树与分支
+      expect(existsSync(ws.root)).toBe(true);
+      expect(await git(r.repo, ["branch", "--list", ws.branch])).toContain(ws.branch);
     } finally {
       if (
         ![

@@ -2,6 +2,8 @@ import { failureSummary } from "./failure.js";
 import { ReviewActivityStream } from "./review-activity.js";
 import { runtimeFailureResolution } from "../../contracts/src/runtime-failure.js";
 import { toolSummary, toolOutputSummary } from "./tool-summary.js";
+import { conversationActivityLogEntry } from "./conversation-activity.js";
+import { CONVERSATION_EVENT } from "../../contracts/src/conversation.js";
 export interface LogEntry {
   key: string;
   sequence: number;
@@ -31,6 +33,11 @@ export function mergeEvents(workflow: string, ...batches: any[][]): any[] {
           "AgentEvent",
           "NativeActivity",
           "RunObserved",
+          "ConversationActivity",
+          "ConversationDiscovered",
+          "ConversationUpdated",
+          "ConversationControlUpdated",
+          "AsideUpdated",
           "ServiceOutput",
           "FixtureOutput",
           "CheckOutput",
@@ -220,6 +227,28 @@ export function readableLogs(events: any[], workflow: string): LogEntry[] {
         text: p.text ?? "", kind: p.kind, status: p.status, command: p.command, cwd: p.cwd, resultText: p.resultText, raw: [e] });
       continue;
     }
+    if (e.type === CONVERSATION_EVENT.activity) {
+      if (isAsideRun(e.run_id)) continue;
+      if (p.root_id && p.conversation_id && p.conversation_id !== p.root_id)
+        continue;
+      const mapped = conversationActivityLogEntry(e);
+      if (!mapped) continue;
+      let row = steps.get(mapped.key);
+      if (!row) {
+        rows.push(mapped);
+        steps.set(mapped.key, mapped);
+      } else {
+        Object.assign(row, mapped);
+      }
+      continue;
+    }
+    if (
+      e.type === CONVERSATION_EVENT.discovered ||
+      e.type === CONVERSATION_EVENT.updated ||
+      e.type === CONVERSATION_EVENT.controlUpdated ||
+      e.type === CONVERSATION_EVENT.asideUpdated
+    )
+      continue;
     if (e.type === "ReviewDiagnostic") {
       const run = String(e.run_id ?? "unknown");
       const stream = reviewStreams.get(run) ?? new ReviewActivityStream();

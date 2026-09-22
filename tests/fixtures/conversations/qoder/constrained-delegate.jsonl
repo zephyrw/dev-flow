@@ -1,0 +1,5 @@
+{"type":"system","subtype":"init","session_id":"qoder-session-root-001","cwd":"/workspace/demo","model":"qoder-model-x","tools":["Read","Glob","Grep","Agent"]}
+{"type":"assistant","session_id":"qoder-session-root-001","message":{"content":[{"type":"tool_use","id":"call_review_1","name":"Agent","input":{"description":"核对接口","prompt":"只读取指定测试文件","subagent_type":"devflow-readonly-child","tools":["Read","Glob","Grep"]}}]}}
+{"type":"user","session_id":"qoder-session-root-001","message":{"content":[{"type":"tool_result","tool_use_id":"call_review_1","agent_id":"qoder-agent-child-9f","session_id":"qoder-session-child-9f","content":"已读取指定测试文件"}]}}
+{"type":"assistant","session_id":"qoder-session-child-9f","agent_id":"qoder-agent-child-9f","parent_session_id":"qoder-session-root-001","message":{"content":[{"type":"text","text":"接口断言与计划一致"}]}}
+{"type":"result","subtype":"success","session_id":"qoder-session-root-001","is_error":false}

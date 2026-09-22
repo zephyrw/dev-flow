@@ -1,0 +1,4 @@
+{"type":"system","subtype":"init","apiKeySource":"login","cwd":"/tmp/cursor-demo","session_id":"chat-root-001","model":"Composer 1.5","permissionMode":"default"}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"继续未完成工作"}]},"session_id":"chat-root-001"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"已按原会话继续"}]},"session_id":"chat-root-001","timestamp_ms":1735689630000}
+{"type":"result","subtype":"success","is_error":false,"duration_ms":800,"duration_api_ms":700,"result":"续接完成","session_id":"chat-root-001","request_id":"req-resume-001"}

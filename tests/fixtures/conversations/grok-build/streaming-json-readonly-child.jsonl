@@ -1,0 +1,3 @@
+{"type":"tool_call","toolCallId":"call_spawn_readonly","title":"Spawn subagent","kind":"other","status":"in_progress","toolName":"spawn_subagent","rawInput":{"description":"Review plan","subagent_type":"devflow-readonly-child","tools":["read","grep","glob"],"prompt":"redacted"}}
+{"type":"tool_call_update","toolCallId":"call_spawn_readonly","status":"completed","rawOutput":{"subagent_id":"sa-readonly-1","session_id":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeee3"}}
+{"type":"end","stopReason":"end_turn","sessionId":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeee0"}

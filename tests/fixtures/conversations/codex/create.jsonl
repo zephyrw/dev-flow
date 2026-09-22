@@ -1,0 +1,5 @@
+{"type":"thread.started","thread_id":"019947a2-8a00-7000-8000-000000000010"}
+{"type":"turn.started","thread_id":"019947a2-8a00-7000-8000-000000000010"}
+{"type":"item.started","thread_id":"019947a2-8a00-7000-8000-000000000010","item":{"id":"item_spawn_1","type":"agent","status":"in_progress"}}
+{"type":"item.completed","thread_id":"019947a2-8a00-7000-8000-000000000010","item":{"id":"item_spawn_1","type":"agent","status":"completed","thread_id":"019947a2-8a00-7000-8000-000000000011","agent_id":"explore-1","agent_nickname":"explore","parent_thread_id":"019947a2-8a00-7000-8000-000000000010"}}
+{"type":"thread.started","thread_id":"019947a2-8a00-7000-8000-000000000011"}

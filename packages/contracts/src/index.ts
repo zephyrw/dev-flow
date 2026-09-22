@@ -158,12 +158,32 @@ export const CommandSchema = z
     required_before_commit: z.boolean().default(false),
   })
   .strict();
+export const ProjectRepositorySchema = z
+  .object({
+    id: Id,
+    path: z.string().min(1),
+    worktree_base_path: z.string().optional(),
+    material_paths: z
+      .object({
+        plan_dir: RelativePath.optional(),
+        review_dir: RelativePath.optional(),
+        repair_dir: RelativePath.optional(),
+        process_dir: RelativePath.optional(),
+        evidence_dir: RelativePath.optional(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
+export type ProjectRepository = z.infer<typeof ProjectRepositorySchema>;
+
 export const ProjectSchema = z
   .object({
     id: Id,
     name: z.string().min(1),
+    primary_repo_id: Id.optional(),
     repositories: z
-      .array(z.object({ id: Id, path: z.string().min(1) }).strict())
+      .array(ProjectRepositorySchema)
       .min(1),
     commands: z.array(CommandSchema).default([]),
     services: z
@@ -283,6 +303,7 @@ export interface Workflow {
   request: string;
   complexity: "simple" | "complex";
   workspace_mode: "existing_workspace" | "new_worktree";
+  binding_strategy?: "unified" | "legacy";
   state: State;
   stage: string;
   version: number;
@@ -672,6 +693,127 @@ export interface RunUsage {
   recorded_at: string;
 }
 
+/**
+ * CW-D00 / §3.3 正式材料引用合同
+ * 增量字段为 repo_id/workspace_id/path/kind/revision/source_hash/cache_path/status
+ * path 是项目相对路径
+ */
+export const ProjectMaterialSchema = z
+  .object({
+    id: Id,
+    workflow_id: Id,
+    repo_id: Id.optional(),
+    workspace_id: z.string().min(1),
+    path: RelativePath,
+    kind: z.enum(["plan", "review", "repair", "process", "evidence"]),
+    revision: z.number().int().positive().default(1),
+    source_hash: z.string().min(1), // 原始字节 SHA-256
+    cache_path: z.string().optional(),
+    status: z.enum(["pending", "verified", "conflict", "missing"]).default("verified"),
+    created_at: z.string().min(1),
+    updated_at: z.string().min(1),
+  })
+  .strict();
+export type ProjectMaterial = z.infer<typeof ProjectMaterialSchema>;
+
+/**
+ * 依据 CW2-D04 / §7 第 7 项规范：控制事实明确原因集合
+ * 至少区分 user_disabled、workflow_pause、manual_handoff、migration
+ */
+export const DispatchControlReasonSchema = z.enum([
+  "user_disabled",
+  "workflow_pause",
+  "manual_handoff",
+  "migration",
+]);
+export type DispatchControlReason = z.infer<typeof DispatchControlReasonSchema>;
+
+export const DispatchControlReasonItemSchema = z
+  .object({
+    reason: DispatchControlReasonSchema,
+    request_id: z.string().optional(),
+    revision: z.number().int().nonnegative().optional(),
+    migration_id: z.string().optional(),
+    created_at: z.string().min(1),
+    message: z.string().optional(),
+  })
+  .strict();
+export type DispatchControlReasonItem = z.infer<
+  typeof DispatchControlReasonItemSchema
+>;
+
+/**
+ * CW2-D00 / CW2-D04 调度控制合同
+ * 增加单调 revision，修改时 CAS，dispatch_enabled 由原因集合导出
+ */
+export const WorkflowDispatchControlSchema = z
+  .object({
+    workflow_id: Id,
+    revision: z.number().int().positive().default(1),
+    dispatch_enabled: z.boolean().default(true),
+    writer_state: z.enum(["idle", "active", "unknown"]).default("idle"),
+    reasons: z.array(DispatchControlReasonItemSchema).default([]),
+    paused_reason: z.string().optional(),
+    reason: z.string().optional(),
+    updated_at: z.string().min(1),
+  })
+  .strict();
+export type WorkflowDispatchControl = z.infer<
+  typeof WorkflowDispatchControlSchema
+>;
+
+/**
+ * CW-D00 / §3.2 受管派发事实记录合同
+ * 最少冻结 dispatch_id/run_id/workflow_id/control_revision/expected_conversation_id/host_id/process_identity/state/event_cursor/result_id
+ * 按 strategy 区分身份引用：unified 冻结 binding_id/generation/binding_revision；legacy 冻结 legacy_source_ref/source_entity_version/resolved_identity
+ */
+export const CliDispatchRecordSchema = z
+  .object({
+    id: z.string().min(1),
+    dispatch_id: z.string().min(1),
+    run_id: Id,
+    workflow_id: Id,
+    control_revision: z.number().int().positive().default(1),
+    expected_conversation_id: z.string().optional(),
+    host_id: z.string().min(1),
+    process_identity: z
+      .object({
+        pid: z.number().int().positive().optional(),
+        started_at: z.string().optional(),
+        host: z.string().optional(),
+        process_record_id: z.string().optional(),
+      })
+      .strict()
+      .default({}),
+    state: z.enum([
+      "prepared",
+      "starting",
+      "running",
+      "stopping",
+      "completed",
+      "interrupted",
+      "cancelled",
+      "needs_reconcile",
+    ]),
+    event_cursor: z.number().int().nonnegative().default(0),
+    result_id: z.string().optional(),
+    strategy: z.enum(["unified", "legacy"]).default("unified"),
+    // unified strategy 字段
+    binding_id: z.string().optional(),
+    generation: z.number().int().positive().optional(),
+    binding_revision: z.number().int().positive().optional(),
+    // legacy strategy 字段
+    legacy_source_ref: z.string().optional(),
+    source_entity_version: z.number().int().optional(),
+    resolved_identity: z.record(z.string(), z.unknown()).optional(),
+    exit_code: z.number().optional(),
+    error: z.string().optional(),
+    created_at: z.string().optional(),
+    updated_at: z.string().optional(),
+  })
+  .strict();
+export type CliDispatchRecord = z.infer<typeof CliDispatchRecordSchema>;
+
 export * from "./native-plan.js";
 export * from "./quality.js";
 export * from "./feedback.js";
@@ -683,3 +825,8 @@ export * from "./merge-conflict.js";
 export * from "./tr-handoff.js";
 export * from "./agy-account.js";
 export * from "./agy-recovery.js";
+export * from "./conversation.js";
+export * from "./conversation-input.js";
+export * from "./conversation-guidance.js";
+export * from "./run-observation.js";
+export * from "./session-binding.js";

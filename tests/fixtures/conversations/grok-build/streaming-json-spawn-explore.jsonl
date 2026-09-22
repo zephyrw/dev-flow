@@ -1,0 +1,5 @@
+{"type":"tool_call","toolCallId":"call_spawn_explore","title":"Spawn subagent","kind":"other","status":"in_progress","toolName":"spawn_subagent","rawInput":{"description":"Inspect adapters","subagent_type":"explore","prompt":"redacted"}}
+{"type":"tool_call_update","toolCallId":"call_spawn_explore","status":"completed","rawOutput":{"subagent_id":"sa-explore-1","session_id":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeee1"}}
+{"type":"tool_call","toolCallId":"call_read","title":"Read","kind":"read","status":"in_progress","toolName":"read_file","rawInput":{"target_file":"src/main.ts"}}
+{"type":"text","data":"Delegated a read-only inspect."}
+{"type":"end","stopReason":"end_turn","sessionId":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeee0"}

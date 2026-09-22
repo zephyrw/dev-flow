@@ -1,0 +1,1 @@
+{"type":"system","subtype":"init","session_id":"qoder-session-root-001","cwd":"/workspace/demo","model":"qoder-model-x","tools":["Read","Glob","Grep","Agent"]}

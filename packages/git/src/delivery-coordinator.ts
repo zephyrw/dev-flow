@@ -52,6 +52,29 @@ export interface CleanupReceipt {
   branch_deleted: boolean;
   cleaned_at: string;
 }
+export interface CleanupWorkspacePreviewItem {
+  workspace_id: string;
+  repo_id: string;
+  root: string;
+  branch: string;
+  head: string;
+  workspace_version: number;
+  writer_status: "idle" | "active" | "unknown";
+  has_untracked: boolean;
+  has_uncommitted: boolean;
+  materials_summary: string[];
+  is_safe_to_cleanup: boolean;
+  block_reason?: string;
+}
+export interface CleanupPreviewResult {
+  workflow_id: string;
+  workflow_version: number;
+  control_revision: number;
+  preview_version: number;
+  preview_digest: string;
+  workspaces: CleanupWorkspacePreviewItem[];
+  can_cleanup: boolean;
+}
 interface Candidate {
   workflow_id: string;
   repo_id: string;
@@ -536,21 +559,159 @@ export class GitDeliveryCoordinator {
       );
       integrations.push(receipt);
     }
-    this.update(w, "CLEANUP_PENDING", "cleanup");
+    this.update(w, "COMPLETED", "done");
     return {
       integrations,
-      cleanup: await this.cleanupWorkspaces(workflowId, workspaces),
     };
   }
+  /**
+   * 依据 CW2-D01 / §4 第 6 项规范：显式清理增加真正只读 preview
+   */
+  async previewCleanupWorkspaces(
+    workflowId: string,
+    requestedWorkspaceIds?: string[],
+  ): Promise<CleanupPreviewResult> {
+    const w = this.workflow(workflowId);
+    const control = this.store.get<any>("workflow_dispatch_control", workflowId);
+    const controlRevision = control?.revision ?? 1;
+
+    // 检查是否有未结束的写者
+    const activeRuns = this.store
+      .list<Run>("run", workflowId)
+      .filter((r) => r.status === "running");
+    const activeDispatches = this.store
+      .list<any>("cli_dispatch_record", workflowId)
+      .filter((d: any) => ["starting", "running", "stopping"].includes(d.state));
+
+    let writerStatus: "idle" | "active" | "unknown" = "idle";
+    if (activeRuns.length > 0 || activeDispatches.length > 0) {
+      writerStatus = "active";
+    } else if (control?.writer_state && control.writer_state !== "idle") {
+      writerStatus = control.writer_state;
+    }
+
+    const allWorkspaces = this.store.list<Workspace>("workspace", workflowId);
+    const targetWorkspaces = requestedWorkspaceIds && requestedWorkspaceIds.length > 0
+      ? allWorkspaces.filter((ws) => requestedWorkspaceIds.includes(ws.id))
+      : allWorkspaces;
+
+    const items: CleanupWorkspacePreviewItem[] = [];
+    for (const ws of targetWorkspaces) {
+      const receipt = this.store.get<IntegrationReceipt>(
+        "integration_receipt",
+        this.key(workflowId, ws.repo_id),
+      );
+      let head = "";
+      let hasUntracked = false;
+      let hasUncommitted = false;
+      let isSafe = true;
+      let blockReason: string | undefined;
+
+      const root = existsSync(ws.root)
+        ? realpathSync(ws.root)
+        : resolve(ws.root);
+
+      if (!receipt || receipt.status !== "success") {
+        isSafe = false;
+        blockReason = "该仓库尚未确认成功整合，禁止清理";
+      } else if (writerStatus !== "idle") {
+        isSafe = false;
+        blockReason = `存在活跃写者 (状态: ${writerStatus})，禁止清理`;
+      } else if (!ws.owned || !ws.branch.startsWith("devflow/")) {
+        isSafe = false;
+        blockReason = "非本任务受管临时分支，禁止清理";
+      } else if (existsSync(root)) {
+        try {
+          head = (await git(root, ["rev-parse", "HEAD"])).trim();
+          const statusOut = await git(root, ["status", "--porcelain"]);
+          if (statusOut.trim()) {
+            hasUncommitted = true;
+            if (statusOut.includes("??")) {
+              hasUntracked = true;
+            }
+            isSafe = false;
+            blockReason = "工作树存在未提交或未跟踪内容，禁止清理以保护原件";
+          }
+        } catch (err: any) {
+          isSafe = false;
+          blockReason = `读取工作树 Git 状态失败: ${err.message}`;
+        }
+      }
+
+      // 材料摘要
+      const materialsSummary: string[] = [];
+      const planDir = join(root, "docs", "plan", workflowId);
+      if (existsSync(planDir)) materialsSummary.push("docs/plan");
+      const procDir = join(root, "docs", "process", workflowId);
+      if (existsSync(procDir)) materialsSummary.push("docs/process");
+
+      items.push({
+        workspace_id: ws.id,
+        repo_id: ws.repo_id,
+        root: ws.root,
+        branch: ws.branch,
+        head,
+        workspace_version: (ws as any).version ?? 1,
+        writer_status: writerStatus,
+        has_untracked: hasUntracked,
+        has_uncommitted: hasUncommitted,
+        materials_summary: materialsSummary,
+        is_safe_to_cleanup: isSafe,
+        block_reason: blockReason,
+      });
+    }
+
+    const previewVersion = (w.version ?? 1) * 100 + controlRevision;
+    const previewDigest = hash(
+      JSON.stringify({
+        workflow_id: workflowId,
+        workflow_version: w.version,
+        control_revision: controlRevision,
+        items: items.map((it) => ({
+          id: it.workspace_id,
+          root: it.root,
+          branch: it.branch,
+          head: it.head,
+          safe: it.is_safe_to_cleanup,
+        })),
+      }),
+    );
+
+    const canCleanup = items.length > 0 && items.every((it) => it.is_safe_to_cleanup);
+
+    return {
+      workflow_id: workflowId,
+      workflow_version: w.version,
+      control_revision: controlRevision,
+      preview_version: previewVersion,
+      preview_digest: previewDigest,
+      workspaces: items,
+      can_cleanup: canCleanup,
+    };
+  }
+
   async cleanupWorkspaces(
     workflowId: string,
-    requested: Workspace[],
+    requested: Array<{ id: string; root?: string; branch?: string; expected_version?: number }>,
+    options?: {
+      explicit_selection?: boolean;
+      preview_version?: number;
+      preview_digest?: string;
+      expected_control_revision?: number;
+      expected_workflow_version?: number;
+    },
   ): Promise<CleanupReceipt> {
     const w = this.workflow(workflowId);
     requireCondition(
+      options?.explicit_selection === true,
+      "EXPLICIT_SELECTION_REQUIRED",
+      "工作区清理必须由用户本次明确选择触发，禁止自动清理或沿用旧意图",
+      400,
+    );
+    requireCondition(
       ["CLEANUP_PENDING", "COMPLETED"].includes(w.state),
       "INVALID_STATE",
-      "只有确认全部整合成功后才能清理",
+      "只有确认整合成功后才能清理",
       409,
     );
     requireCondition(
@@ -559,26 +720,97 @@ export class GitDeliveryCoordinator {
       "主工作区无需清理",
       409,
     );
-    const workspaces = this.store.list<Workspace>("workspace", workflowId);
+
+    if (options?.expected_workflow_version !== undefined) {
+      requireCondition(
+        w.version === options.expected_workflow_version,
+        "VERSION_CONFLICT",
+        `工作流版本冲突: 期望 v${options.expected_workflow_version}, 当前 v${w.version}`,
+        409,
+      );
+    }
+
+    const control = this.store.get<any>("workflow_dispatch_control", workflowId);
+    if (options?.expected_control_revision !== undefined && control) {
+      requireCondition(
+        control.revision === options.expected_control_revision,
+        "REVISION_CONFLICT",
+        `调度控制版本冲突: 期望 r${options.expected_control_revision}, 当前 r${control.revision}`,
+        409,
+      );
+    }
+
+    if (options?.preview_digest) {
+      const currentPreview = await this.previewCleanupWorkspaces(workflowId);
+      requireCondition(
+        options.preview_digest === currentPreview.preview_digest,
+        "PREVIEW_DIGEST_MISMATCH",
+        "清理预览已过期或工作区事实已变更，禁止清理",
+        409,
+      );
+    }
+
+    // CW2-F07 / CW3-F15: 写者状态核查，禁止在 active/unknown/prepared/needs_reconcile 时清理
+    const activeRuns = this.store
+      .list<Run>("run", workflowId)
+      .filter((r) => ["running", "starting", "executing"].includes((r.status || "").toLowerCase()));
+    const activeDispatches = this.store
+      .list<any>("cli_dispatch_record", workflowId)
+      .filter((d: any) => ["prepared", "starting", "running", "stopping", "needs_reconcile"].includes((d.state || "").toLowerCase()));
     requireCondition(
-      workspaces.length > 0 &&
-        workspaces.length === requested.length &&
-        workspaces.every((ws) =>
-          requested.some(
-            (r) =>
-              r.id === ws.id && r.root === ws.root && r.branch === ws.branch,
-          ),
-        ),
-      "WORKSPACE_BINDING_INVALID",
-      "清理目标与登记的工作区不一致",
+      activeRuns.length === 0 &&
+        activeDispatches.length === 0 &&
+        (!control?.writer_state || control.writer_state === "idle"),
+      "WRITER_ACTIVE",
+      "当前存在正在运行的写者或写者状态未知，禁止清理",
+      409,
     );
-    // Validate every receipt and ownership before any destructive operation.
+
+    const allWorkspaces = this.store.list<Workspace>("workspace", workflowId);
+    requireCondition(
+      requested.length > 0,
+      "NO_WORKSPACES_SELECTED",
+      "未指定要清理的目标工作区",
+      400,
+    );
+
+    // 核验用户请求的每一项工作区都合法存在且归属一致（允许只选部分工作区 CW2-F07）
+    const matchedWorkspaces: Array<{ ws: Workspace; req: any }> = [];
+    for (const req of requested) {
+      const found = allWorkspaces.find((ws) => ws.id === req.id);
+      requireCondition(
+        found !== undefined,
+        "WORKSPACE_NOT_FOUND",
+        `工作区 ${req.id} 不属于当前工作流`,
+        404,
+      );
+      if (req.root) {
+        requireCondition(
+          resolve(req.root).toLowerCase() === resolve(found.root).toLowerCase(),
+          "WORKSPACE_ROOT_MISMATCH",
+          `工作区路径不匹配: ${req.root}`,
+          409,
+        );
+      }
+      if (req.branch) {
+        requireCondition(
+          req.branch === found.branch,
+          "WORKSPACE_BRANCH_MISMATCH",
+          `工作区分支不匹配: ${req.branch}`,
+          409,
+        );
+      }
+      matchedWorkspaces.push({ ws: found, req });
+    }
+
+    // 核验每个待清理工作区的整合回执、Git 登记状态和原件未修改事实
     const checked: Array<{
       ws: Workspace;
       source: string;
       registered: boolean;
     }> = [];
-    for (const ws of workspaces) {
+
+    for (const { ws } of matchedWorkspaces) {
       const receipt = this.store.get<IntegrationReceipt>(
         "integration_receipt",
         this.key(workflowId, ws.repo_id),
@@ -586,10 +818,11 @@ export class GitDeliveryCoordinator {
       requireCondition(
         receipt?.status === "success",
         "MERGE_RECEIPT_MISSING",
-        "尚有仓库未确认整合，禁止清理",
+        `仓库 ${ws.repo_id} 尚未确认成功整合，禁止清理`,
+        409,
       );
-      const source = this.source(w, ws),
-        info = await repositoryInfo(source);
+      const source = this.source(w, ws);
+      const info = await repositoryInfo(source);
       requireCondition(
         info.branch === receipt.target_branch &&
           (await git(source, [
@@ -599,6 +832,7 @@ export class GitDeliveryCoordinator {
           ])) === receipt.candidate_commit,
         "MERGE_CONFIRMATION_FAILED",
         "主分支没有已确认的候选提交",
+        409,
       );
       requireCondition(
         ws.owned &&
@@ -606,6 +840,7 @@ export class GitDeliveryCoordinator {
           ws.branch !== info.branch,
         "WORKSPACE_OWNERSHIP_INVALID",
         "禁止清理非本任务临时工作树或主分支",
+        409,
       );
       const root = existsSync(ws.root)
         ? realpathSync(ws.root)
@@ -613,6 +848,7 @@ export class GitDeliveryCoordinator {
       const allowed = [
         this.workspaceRoot,
         join(ws.common_dir, "devflow", "worktrees"),
+        join(source, ".worktrees"),
       ].some((base) => {
         const rel = relative(resolve(base), root);
         return !!rel && !rel.startsWith("..") && !isAbsolute(rel);
@@ -621,6 +857,7 @@ export class GitDeliveryCoordinator {
         allowed && root.toLowerCase() !== resolve(source).toLowerCase(),
         "CLEANUP_PATH_INVALID",
         "清理路径不在受管任务目录中",
+        409,
       );
       const entries = (
         await git(source, ["worktree", "list", "--porcelain"])
@@ -630,32 +867,44 @@ export class GitDeliveryCoordinator {
           e.split(/\r?\n/)[0]?.slice(9).replaceAll("\\", "/").toLowerCase() ===
           root.replaceAll("\\", "/").toLowerCase(),
       );
-      if (entry)
+      if (entry) {
         requireCondition(
           entry.split(/\r?\n/).includes("branch refs/heads/" + ws.branch),
           "WORKTREE_BRANCH_CHANGED",
           "工作树分支与登记不一致",
+          409,
         );
+      }
       requireCondition(
         entry || !existsSync(root),
         "WORKTREE_NOT_REGISTERED",
         "目标目录不再是登记的工作树",
+        409,
       );
-      if (entry)
+      if (entry) {
+        const statusOutput = await git(root, ["status", "--porcelain"]);
         requireCondition(
-          !(await git(root, ["status", "--porcelain"])) &&
-            (await git(source, [
-              "merge-base",
-              await git(root, ["rev-parse", "HEAD"]),
-              receipt.candidate_commit,
-            ])) === (await git(root, ["rev-parse", "HEAD"])),
+          !statusOutput.trim(),
+          "WORKTREE_DIRTY",
+          "工作树仍有未保存或未提交修改，禁止清理以保护原件",
+          409,
+        );
+        requireCondition(
+          (await git(source, [
+            "merge-base",
+            await git(root, ["rev-parse", "HEAD"]),
+            receipt.candidate_commit,
+          ])) === (await git(root, ["rev-parse", "HEAD"])),
           "WORKTREE_NOT_MERGED",
           "工作树仍有未整合修改，禁止清理",
+          409,
         );
+      }
       checked.push({ ws, source, registered: !!entry });
     }
-    let worktreeRemoved = true,
-      branchDeleted = true;
+
+    let worktreeRemoved = true;
+    let branchDeleted = true;
     for (const { ws, source, registered } of checked) {
       try {
         if (registered) await git(source, ["worktree", "remove", ws.root]);
@@ -664,12 +913,14 @@ export class GitDeliveryCoordinator {
         continue;
       }
       try {
-        if (await git(source, ["branch", "--list", ws.branch]))
+        if (await git(source, ["branch", "--list", ws.branch])) {
           await git(source, ["branch", "-d", "--", ws.branch]);
+        }
       } catch {
         branchDeleted = false;
       }
     }
+
     const receipt = {
       workflow_id: workflowId,
       worktree_removed: worktreeRemoved,
@@ -677,12 +928,43 @@ export class GitDeliveryCoordinator {
       cleaned_at: now(),
     };
     this.store.put("cleanup_receipt", workflowId, workflowId, receipt);
-    this.update(
-      w,
-      worktreeRemoved && branchDeleted ? "COMPLETED" : "CLEANUP_PENDING",
-      worktreeRemoved && branchDeleted ? "done" : "cleanup",
+
+    // 只有全部工作区都已清理完成时才标记为 COMPLETED 终态
+    const remainingWorkspaces = allWorkspaces.filter(
+      (ws) => !checked.some((c) => c.ws.id === ws.id),
     );
+    if (remainingWorkspaces.length === 0) {
+      this.update(
+        w,
+        worktreeRemoved && branchDeleted ? "COMPLETED" : "CLEANUP_PENDING",
+        worktreeRemoved && branchDeleted ? "done" : "cleanup",
+      );
+    }
     return receipt;
+  }
+
+  /**
+   * 依据 CW-D01 规范：历史 CLEANUP_PENDING 若已有全部成功整合回执，恢复为“交付已完成、工作树保留”
+   */
+  reconcileCompletedWorkflows(workflowId: string): boolean {
+    const w = this.workflow(workflowId);
+    if (w.state === "CLEANUP_PENDING") {
+      const workspaces = this.store.list<Workspace>("workspace", workflowId);
+      const allSuccess =
+        workspaces.length > 0 &&
+        workspaces.every((ws) => {
+          const receipt = this.store.get<IntegrationReceipt>(
+            "integration_receipt",
+            this.key(workflowId, ws.repo_id),
+          );
+          return receipt?.status === "success";
+        });
+      if (allSuccess) {
+        this.update(w, "COMPLETED", "done");
+        return true;
+      }
+    }
+    return false;
   }
 
   async handleConflictResolution(

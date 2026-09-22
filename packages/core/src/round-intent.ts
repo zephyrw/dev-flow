@@ -244,11 +244,12 @@ export function selectConversationToResume(input: {
   planningSession?: { id: string };
   defaultSession?: { id: string };
 }): { id: string } | undefined {
+  if (input.purpose === "aside") return undefined;
   if (input.purpose === "planning") return input.planningSession;
   if (input.continuation?.conversation_id)
     return { id: input.continuation.conversation_id };
-  if (input.purpose === "quality_review" || input.purpose === "aside")
-    return undefined;
+  if (input.purpose === "quality_review")
+    return input.planningSession ?? input.defaultSession;
   return input.defaultSession;
 }
 

@@ -1,0 +1,23 @@
+[
+  {
+    "info": {
+      "id": "msg_1",
+      "sessionID": "ses_root1",
+      "role": "assistant",
+      "time": { "created": 1774000000200 }
+    },
+    "parts": [
+      {
+        "id": "prt_root_tool",
+        "sessionID": "ses_root1",
+        "type": "tool",
+        "tool": "task",
+        "callID": "call_task1",
+        "state": {
+          "status": "completed",
+          "input": { "description": "列出临时目录", "subagent_type": "devflow-review" }
+        }
+      }
+    ]
+  }
+]

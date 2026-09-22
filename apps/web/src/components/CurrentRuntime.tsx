@@ -3,6 +3,7 @@ import {
   visibleRunObservation,
   runtimeToolNames,
 } from "../../../../packages/presentation/src/run-observation.js";
+import { CliSessionDetails } from "./CliSessionDetails.js";
 import "./current-runtime.css";
 import "./model-settings.css";
 import { AgyRuntimeAccount } from "./AgyRuntimeAccount.js";
@@ -17,6 +18,7 @@ export function CurrentRuntime({
   onEdit?: (role?: string) => void;
 }) {
   const [now, setNow] = useState(Date.now());
+  const [showSessionDetails, setShowSessionDetails] = useState(false);
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 10000);
     return () => clearInterval(timer);
@@ -147,6 +149,43 @@ export function CurrentRuntime({
             {quotaText}
           </span>
         </>
+      )}
+      <button
+        type="button"
+        onClick={() => setShowSessionDetails(!showSessionDetails)}
+        style={{
+          marginLeft: "8px",
+          padding: "2px 8px",
+          fontSize: "11px",
+          background: showSessionDetails ? "#0969da" : "#ffffff",
+          color: showSessionDetails ? "#ffffff" : "#0969da",
+          border: "1px solid #0969da",
+          borderRadius: "4px",
+          cursor: "pointer",
+        }}
+      >
+        {showSessionDetails ? "收起会话说明" : "会话与续接说明"}
+      </button>
+
+      {showSessionDetails && detail?.workflow?.id && (
+        <div
+          style={{
+            position: "absolute",
+            top: "100%",
+            right: 0,
+            marginTop: "6px",
+            zIndex: 1000,
+            width: "520px",
+            boxShadow: "0 8px 24px rgba(0, 0, 0, 0.15)",
+            background: "#ffffff",
+            borderRadius: "8px",
+          }}
+        >
+          <CliSessionDetails
+            key={detail.workflow.id}
+            workflowId={detail.workflow.id}
+          />
+        </div>
       )}
     </section>
   );

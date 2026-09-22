@@ -1,0 +1,5 @@
+{"event":"init","conversation_id":"22222222-2222-4222-8222-222222222222","init":{"model":"gemini-3.7-flash-high","cwd":"C:/fixture/child"}}
+{"event":"step_update","step_update":{"conversation_id":"22222222-2222-4222-8222-222222222222","step_index":0,"state":"DONE","step_type":"user_input"}}
+{"event":"step_update","step_update":{"conversation_id":"22222222-2222-4222-8222-222222222222","step_index":4,"state":"ACTIVE","step_type":"tool","tool_name":"run_command","tool_info":{"name":"run_command","parameters":{"CommandLine":"pnpm exec vitest run tests/unit/agy-conversation-source.test.ts","Cwd":"C:/fixture/child"}}}}
+{"event":"step_update","step_update":{"conversation_id":"22222222-2222-4222-8222-222222222222","step_index":4,"state":"DONE","step_type":"tool","tool_name":"run_command","tool_info":{"name":"run_command","parameters":{"CommandLine":"pnpm exec vitest run tests/unit/agy-conversation-source.test.ts","Cwd":"C:/fixture/child"},"output":"The command exited with code 0.\nStdout:\n1 passed\n"}}}
+{"event":"result","result":{"conversation_id":"22222222-2222-4222-8222-222222222222","status":"SUCCESS","response":"子会话完成指定测试"}}

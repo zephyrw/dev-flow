@@ -49,6 +49,10 @@ export function writeAgyConfiguration(
     ),
   );
 }
+export function agyRunLogFile(directory: string, runId: string) {
+  return join(directory, runId + ".agy-cli.log");
+}
+
 export function agyArguments(
   model: string,
   prompt: string,
@@ -57,6 +61,7 @@ export function agyArguments(
   project?: string,
   mode?: "accept-edits" | "plan",
   effortArgs?: string[],
+  logFile?: string,
 ) {
   const effort = effortArgs ?? ["--effort", "high"];
   return [
@@ -74,7 +79,8 @@ export function agyArguments(
       ? ["--conversation", conversation]
       : project
         ? ["--project", project]
-        : ["--new-project"]),
+        : []),
+    ...(logFile ? ["--log-file", logFile] : []),
   ];
 }
 export async function observeAgy(

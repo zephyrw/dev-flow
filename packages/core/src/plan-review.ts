@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { Id, requireCondition } from "../../contracts/src/index.js";
+import { Id, requireCondition, FlowError } from "../../contracts/src/index.js";
 import { WorkspaceReferenceSchema } from "../../contracts/src/feedback.js";
 import { AsideSessionService } from "../../asides/src/service.js";
 import type { Store } from "../../store/src/store.js";
@@ -20,7 +20,12 @@ export const RejectPlanSchema = PlanFeedbackSchema.extend({
 }).strict();
 export const PlanQuestionSchema = PlanFeedbackSchema.strict();
 
-// Native plans store their full prose in a versioned document, not in the contract.
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { resolveMaterialLocator } from "./project-materials.js";
+import type { ProjectMaterial, Workspace, Run } from "../../contracts/src/index.js";
+
+// Native plans store their full prose in project materials or versioned documents, not in the contract.
 export function readPlanMaterial(
   store: Store,
   workflowId: string,
@@ -30,16 +35,128 @@ export function readPlanMaterial(
     .list<PlanRecord>("plan", workflowId)
     .find((p) => p.revision === revision);
   requireCondition(record, "PLAN_MISSING", "计划版本不存在", 404);
-  const document = store
-    .list<ProjectDocument>("project_document", workflowId)
-    .find(
-      (d) =>
-        d.revision === revision &&
-        ["plan", "repair_plan"].includes(d.document_type) &&
-        (!record.plan.design_ref ||
-          d.hash === record.plan.design_ref.content_hash),
+
+  const planDoc = store.get<{ material_id?: string; run_id?: string; plan_revision?: number }>(
+    "planning_document",
+    workflowId,
+  );
+  const currentDoc = planDoc?.plan_revision === revision ? planDoc : undefined;
+  const materialId = record.material_id ?? currentDoc?.material_id;
+  let material = materialId
+    ? store.get<ProjectMaterial>("project_material", materialId)
+    : undefined;
+  requireCondition(!materialId || material, "PLAN_MATERIAL_LOST", "计划关联的项目材料记录已丢失", 409);
+
+  // 兼容尚未保存 material_id 的规划结果。Run 记录的是输入版本 N，产物属于 N+1。
+  if (!material) {
+    const published = store.list<ProjectMaterial>("project_material", workflowId)
+      .filter((m) => m.kind === "plan" && m.revision === revision);
+    const linkedRunId = record.run_id ?? currentDoc?.run_id;
+    const planningRunIds = linkedRunId
+      ? [linkedRunId]
+      : store.list<Run>("run", workflowId)
+          .filter((r) => r.plan_revision + 1 === revision && r.status === "completed" &&
+            (r.purpose === "planning" || r.stage === "planning"))
+          .map((r) => r.id);
+    let candidates = published.filter((m) => planningRunIds.some(
+      (runId) => m.id === `mat_${workflowId}_plan_r${revision}_run_${runId}`,
+    ));
+    const expectedHash = record.plan.design_ref?.content_hash;
+    if (expectedHash && candidates.length > 0) {
+      candidates = candidates.filter((m) => m.source_hash === expectedHash);
+      requireCondition(candidates.length > 0, "PLAN_MATERIAL_CONFLICT", "项目材料与该计划版本不一致", 409);
+    }
+    requireCondition(candidates.length <= 1, "PLAN_MATERIAL_AMBIGUOUS", "该计划版本存在多个材料来源，不能自动选择", 409);
+    material = candidates[0] ?? published.find((m) =>
+      m.id === `mat_${workflowId}_plan_${revision}` || m.id === `mat_${workflowId}_plan_r${revision}`,
     );
-  const markdown = document?.content ?? record.plan.markdown;
+    requireCondition(material || published.length === 0, "PLAN_MATERIAL_UNRESOLVED", "项目计划材料存在，但无法关联到生成轮次", 409);
+  }
+  if (material) {
+    requireCondition(
+      material.workflow_id === workflowId && material.kind === "plan" && material.revision === revision,
+      "PLAN_MATERIAL_CONFLICT",
+      "项目材料不属于该任务的计划版本",
+      409,
+    );
+  }
+
+  let markdown: string | undefined;
+  let sourceType: "project" | "result_pending" | "platform_legacy" = "project";
+
+  // 解析目标项目文件路径
+  let targetPath: string | undefined;
+  if (material) {
+    const ws = store.get<Workspace>("workspace", material.workspace_id);
+    requireCondition(ws && ws.workflow_id === workflowId, "WORKSPACE_NOT_FOUND", "项目计划所属工作区不存在", 409);
+    targetPath = join(ws.root, material.path);
+  }
+  if (!targetPath) {
+    const locator = resolveMaterialLocator({
+      store,
+      workflowId,
+      kind: "plan",
+      revision,
+    });
+    targetPath = locator.absolute_path;
+  }
+
+  // 核验原件
+  if (targetPath && existsSync(targetPath)) {
+    const raw = readFileSync(targetPath, "utf8");
+    const norm = raw.replace(/\r\n/g, "\n");
+    const currentHash = hash(record.plan.design_ref ? norm : raw);
+
+    const expectedHash = record.plan.design_ref?.content_hash ?? material?.source_hash;
+    if (expectedHash && currentHash !== expectedHash) {
+      throw new FlowError(
+        "PLAN_MATERIAL_CONFLICT",
+        `项目中的计划原件已被修改 (预期: ${expectedHash.slice(0, 8)}, 当前: ${currentHash.slice(0, 8)})，发生原件冲突`,
+        409,
+      );
+    }
+    markdown = raw;
+    sourceType = "project";
+  } else if (material?.status === "pending") {
+    // 项目原件未发布成功但属于本轮生成 (result_pending)
+    const document = store
+      .list<ProjectDocument>("project_document", workflowId)
+      .find(
+        (d) =>
+          d.revision === revision &&
+          ["plan", "repair_plan"].includes(d.document_type) &&
+          (!record.plan.design_ref || d.hash === record.plan.design_ref.content_hash),
+      );
+    markdown = document?.content ?? record.plan.markdown;
+    sourceType = "result_pending";
+  } else if (material) {
+    // CW3-F12 / CW4-F03: 已存在材料记录但磁盘文件丢失或冲突，禁止以平台缓存掩盖！
+    if (material.status === "conflict") {
+      throw new FlowError(
+        "PLAN_MATERIAL_CONFLICT",
+        `项目中的计划原件发生内容冲突 (${material.path})`,
+        409,
+      );
+    }
+    throw new FlowError(
+      "PLAN_MATERIAL_LOST",
+      `已发布的项目计划原件已丢失 (${material.path})，禁止以平台缓存掩盖`,
+      409,
+    );
+  } else {
+    // 确无任何项目材料记录的历史计划才保留缓存兼容
+    const document = store
+      .list<ProjectDocument>("project_document", workflowId)
+      .find(
+        (d) =>
+          d.revision === revision &&
+          ["plan", "repair_plan"].includes(d.document_type) &&
+          (!record.plan.design_ref || d.hash === record.plan.design_ref.content_hash),
+      );
+    markdown = document?.content ?? record.plan.markdown;
+    sourceType = "platform_legacy";
+  }
+
   requireCondition(
     typeof markdown === "string" && markdown.trim(),
     "PLAN_DOCUMENT_MISSING",
@@ -54,7 +171,7 @@ export function readPlanMaterial(
     "计划正文与当前版本不一致",
     409,
   );
-  return { ...record, markdown };
+  return { ...record, markdown, source_type: sourceType };
 }
 
 export class PlanReviewService {

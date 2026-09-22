@@ -57,6 +57,60 @@ export class Store extends EventEmitter {
     if (!v) throw new FlowError("NOT_FOUND", `${kind} ${key} 不存在`, 404);
     return v;
   }
+  getWithVersion<T>(kind: string, key: string): { data: T; version: number } | undefined {
+    const r = this.db
+      .prepare("SELECT data, version FROM entities WHERE kind=? AND id=?")
+      .get(kind, key) as { data: string; version: number } | undefined;
+    return r ? { data: JSON.parse(r.data) as T, version: r.version } : undefined;
+  }
+  getVersion(kind: string, key: string): number | undefined {
+    const r = this.db
+      .prepare("SELECT version FROM entities WHERE kind=? AND id=?")
+      .get(kind, key) as { version: number } | undefined;
+    return r?.version;
+  }
+  compareAndSwap<T>(
+    kind: string,
+    key: string,
+    owner: string,
+    expectedVersion: number,
+    data: T,
+  ): { data: T; version: number } {
+    return this.transaction(() => {
+      const current = this.getWithVersion<T>(kind, key);
+      const currentVersion = current?.version ?? 0;
+      if (currentVersion !== expectedVersion) {
+        throw new FlowError(
+          "VERSION_CONFLICT",
+          `${kind} ${key} 版本冲突: 期望 v${expectedVersion}, 当前 v${currentVersion}`,
+          409,
+        );
+      }
+      if (expectedVersion === 0) {
+        this.db
+          .prepare(
+            "INSERT INTO entities(kind,id,owner,data,version) VALUES(?,?,?,?,1)",
+          )
+          .run(kind, key, owner, canonical(data));
+        return { data, version: 1 };
+      } else {
+        const nextVersion = expectedVersion + 1;
+        const res = this.db
+          .prepare(
+            "UPDATE entities SET data=?, owner=?, version=? WHERE kind=? AND id=? AND version=?",
+          )
+          .run(canonical(data), owner, nextVersion, kind, key, expectedVersion);
+        if (res.changes !== 1) {
+          throw new FlowError(
+            "VERSION_CONFLICT",
+            `${kind} ${key} 版本并发修改冲突`,
+            409,
+          );
+        }
+        return { data, version: nextVersion };
+      }
+    });
+  }
   list<T>(kind: string, owner?: string): T[] {
     const rows =
       owner === undefined
@@ -197,6 +251,126 @@ export class Store extends EventEmitter {
   }
   jobStatus(key: string, status: string) {
     this.db.prepare("UPDATE outbox SET status=? WHERE id=?").run(status, key);
+  }
+  conversationActivities(
+    workflowId: string,
+    conversationId: string,
+    options?: { before_seq?: number; limit?: number },
+  ): { items: DomainEvent[]; next_before_seq?: number; has_more: boolean } {
+    const limit = Math.min(200, Math.max(1, options?.limit ?? 100));
+    const before = options?.before_seq;
+    const rows =
+      before === undefined
+        ? this.db
+            .prepare<unknown[], { seq: number; data: string }>(
+              "SELECT seq, data FROM events WHERE workflow_id=? AND json_extract(data, '$.type')=? AND json_extract(data, '$.payload.conversation_id')=? ORDER BY seq DESC LIMIT ?",
+            )
+            .all(workflowId, "ConversationActivity", conversationId, limit + 1)
+        : this.db
+            .prepare<unknown[], { seq: number; data: string }>(
+              "SELECT seq, data FROM events WHERE workflow_id=? AND json_extract(data, '$.type')=? AND json_extract(data, '$.payload.conversation_id')=? AND seq<? ORDER BY seq DESC LIMIT ?",
+            )
+            .all(
+              workflowId,
+              "ConversationActivity",
+              conversationId,
+              before,
+              limit + 1,
+            );
+    const has_more = rows.length > limit;
+    const page = has_more ? rows.slice(0, limit) : rows;
+    const items = page.map((row) => JSON.parse(row.data) as DomainEvent);
+    const oldest = page[page.length - 1];
+    return {
+      items,
+      next_before_seq: oldest?.seq,
+      has_more,
+    };
+  }
+  conversationNodesByRoot<T>(rootId: string): T[] {
+    return (
+      this.db
+        .prepare<unknown[], { data: string }>(
+          "SELECT data FROM entities WHERE kind=? AND json_extract(data, '$.root_id')=? ORDER BY rowid",
+        )
+        .all("conversation_node", rootId)
+        .map((row) => JSON.parse(row.data) as T)
+    );
+  }
+  close() {
+    this.db.close();
+  }
+}
+
+/**
+ * 依据 CW2-D00 / §3.2 规范：为离线预览提供独立只读 reader。
+ * 数据库必须已存在，以 readonly + fileMustExist 打开，不调用 runMigrations，不创建目录或写 WAL。
+ */
+export class ReadonlyStore {
+  db: Database.Database;
+  constructor(public file: string) {
+    this.db = new Database(file, { readonly: true, fileMustExist: true });
+    // 验证基本 schema 是否存在
+    const table = this.db
+      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='entities'")
+      .get() as { name: string } | undefined;
+    if (!table) {
+      this.db.close();
+      throw new FlowError("UNSUPPORTED_SCHEMA", `数据库缺少必需架构表 entities: ${file}`, 500);
+    }
+  }
+  get<T>(kind: string, key: string): T | undefined {
+    const r = this.db
+      .prepare("SELECT data FROM entities WHERE kind=? AND id=?")
+      .get(kind, key) as { data: string } | undefined;
+    return r ? (JSON.parse(r.data) as T) : undefined;
+  }
+  must<T>(kind: string, key: string): T {
+    const v = this.get<T>(kind, key);
+    if (!v) throw new FlowError("NOT_FOUND", `${kind} ${key} 不存在`, 404);
+    return v;
+  }
+  getWithVersion<T>(kind: string, key: string): { data: T; version: number } | undefined {
+    const r = this.db
+      .prepare("SELECT data, version FROM entities WHERE kind=? AND id=?")
+      .get(kind, key) as { data: string; version: number } | undefined;
+    return r ? { data: JSON.parse(r.data) as T, version: r.version } : undefined;
+  }
+  getVersion(kind: string, key: string): number | undefined {
+    const r = this.db
+      .prepare("SELECT version FROM entities WHERE kind=? AND id=?")
+      .get(kind, key) as { version: number } | undefined;
+    return r?.version;
+  }
+  list<T>(kind: string, owner?: string): T[] {
+    const rows =
+      owner === undefined
+        ? this.db
+            .prepare("SELECT data FROM entities WHERE kind=? ORDER BY rowid")
+            .all(kind)
+        : this.db
+            .prepare(
+              "SELECT data FROM entities WHERE kind=? AND owner=? ORDER BY rowid",
+            )
+            .all(kind, owner);
+    return (rows as { data: string }[]).map((r) => JSON.parse(r.data) as T);
+  }
+  entries<T>(kind: string, owner: string): { id: string; value: T }[] {
+    return (
+      this.db
+        .prepare("SELECT id,data FROM entities WHERE kind=? AND owner=?")
+        .all(kind, owner) as { id: string; data: string }[]
+    ).map((row) => ({ id: row.id, value: JSON.parse(row.data) as T }));
+  }
+  conversationNodesByRoot<T>(rootId: string): T[] {
+    return (
+      this.db
+        .prepare<unknown[], { data: string }>(
+          "SELECT data FROM entities WHERE kind=? AND json_extract(data, '$.root_id')=? ORDER BY rowid",
+        )
+        .all("conversation_node", rootId)
+        .map((row) => JSON.parse(row.data) as T)
+    );
   }
   close() {
     this.db.close();

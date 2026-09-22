@@ -103,8 +103,11 @@ export function clientInvocation(
         Math.max(1, Math.ceil((input.timeoutMs ?? 300000) / 60000)) + "m",
       );
       pushFrozenSelection(args, env, input);
-      if (resume) args.push("--conversation", resume);
-      else args.push("--new-project");
+      if (resume) {
+        args.push("--conversation", resume);
+      } else if ((input as any).projectId) {
+        args.push("--project", (input as any).projectId);
+      }
       args.push("--mode", readonly ? "plan" : "accept-edits");
       for (const root of Object.values(input.workspaceRoots))
         args.push("--add-dir", root);
@@ -123,8 +126,15 @@ export function clientInvocation(
       if (readonly)
         args.push(
           "--tools",
-          "Read,Glob,Grep",
-          "--disallowed-tools=Bash,Edit,Write,NotebookEdit,Agent",
+          "Read,Glob,Grep,Agent,Task",
+          "--disallowed-tools=Bash,Edit,Write,NotebookEdit",
+          "--agents",
+          JSON.stringify({
+            "devflow-readonly": {
+              description: "DevFlow read-only subagent",
+              tools: ["Read", "Glob", "Grep"],
+            },
+          }),
         );
       if (resume) args.push("--resume", resume);
       pushFrozenSelection(args, env, input);
@@ -135,7 +145,6 @@ export function clientInvocation(
         "--output-format",
         "streaming-json",
         "--no-plan",
-        "--no-subagents",
       );
       if (readonly)
         args.push(
@@ -146,16 +155,32 @@ export function clientInvocation(
           "--deny",
           "Edit",
           "--deny",
+          "Write",
+          "--deny",
           "MCPTool",
+          "--agents",
+          JSON.stringify({
+            "devflow-readonly-child": {
+              description: "DevFlow read-only subagent",
+              tools: ["read", "grep", "glob"],
+            },
+          }),
         );
       if (resume) args.push("--resume", resume);
       pushFrozenSelection(args, env, input);
       args.push("-p", prompt);
       break;
     case "kimi-code":
+      // CW-D09: Kimi headless 方案的 --plan 与 -p 冲突，只读角色在 spawn 前直接返回 READ_ONLY_UNSUPPORTED
+      if (readonly) {
+        throw new FlowError(
+          "READ_ONLY_UNSUPPORTED",
+          "Kimi Code 当前 headless 方案不支持只读执行（--plan 与 -p 冲突），无法安全执行只读角色",
+          422,
+        );
+      }
       args.push("--output-format", "stream-json");
       if (resume) args.push("--session", resume);
-      if (readonly) args.push("--plan");
       pushFrozenSelection(args, env, input);
       args.push("-p", prompt);
       break;
@@ -167,7 +192,21 @@ export function clientInvocation(
         "--permission-mode",
         readonly ? "dont_ask" : "accept_edits",
       );
-      if (readonly) args.push("--tools", "Read,Glob,Grep");
+      if (readonly) {
+        args.push(
+          "--tools",
+          "Read,Glob,Grep,Agent",
+          "--disallowed-tools",
+          "Bash,Edit,Write,NotebookEdit,Task",
+          "--agents",
+          JSON.stringify({
+            "devflow-readonly-child": {
+              description: "DevFlow read-only subagent",
+              tools: ["Read", "Glob", "Grep"],
+            },
+          }),
+        );
+      }
       if (resume) args.push("--resume", resume);
       pushFrozenSelection(args, env, input);
       args.push(prompt);
@@ -189,6 +228,25 @@ export function clientInvocation(
                 glob: "allow",
                 grep: "allow",
                 list: "allow",
+                task: {
+                  "*": "deny",
+                  "devflow-review-child": "allow",
+                },
+              },
+            },
+            "devflow-review-child": {
+              mode: "subagent",
+              description: "DevFlow read-only subagent",
+              permission: {
+                "*": "deny",
+                read: "allow",
+                glob: "allow",
+                grep: "allow",
+                list: "allow",
+                edit: "deny",
+                write: "deny",
+                bash: "deny",
+                patch: "deny",
               },
             },
           },

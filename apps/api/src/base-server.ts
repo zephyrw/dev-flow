@@ -18,6 +18,7 @@ export interface BaseServerOptions {
   storageInstance?: string;
   registerStatic?: boolean;
   errorRetryable?: (code: string) => boolean;
+  writeContentTypeAllowed?: (method: string, url: string, contentType: string | undefined) => boolean;
 }
 export function createBaseServer(options: BaseServerOptions) {
   const app = Fastify({ logger: false, bodyLimit: 8 * 1024 * 1024 });
@@ -69,7 +70,9 @@ export function createBaseServer(options: BaseServerOptions) {
     )
       requireCondition(
         req.headers.origin === origin.origin &&
-          req.headers["content-type"]?.startsWith("application/json"),
+          (options.writeContentTypeAllowed
+            ? options.writeContentTypeAllowed(req.method, req.url, req.headers["content-type"])
+            : req.headers["content-type"]?.startsWith("application/json")),
         "CSRF_DENIED",
         "需要同源 JSON 请求",
         403,

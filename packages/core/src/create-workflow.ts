@@ -1,4 +1,5 @@
 import { captureInitialState } from "../../git/src/initial-state.js";
+import { resolveWorktreePath, ensureWorktreeGitExcluded } from "../../git/src/workspace-paths.js";
 import { getDefaultTemplate } from "./templates/default-template.js";
 import type { Store } from "../../store/src/store.js";
 import type { Config } from "../../contracts/src/config.js";
@@ -31,6 +32,14 @@ import { id, now, objectHash } from "./util.js";
 import { realpathSync, mkdirSync, existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { resolve, basename, join } from "node:path";
+import { createHash } from "node:crypto";
+
+export function generateWorkflowId(requestId: string): string {
+  const hashHex = createHash("sha256")
+    .update("devflow:create:v1\n" + requestId)
+    .digest("hex");
+  return `wf-${hashHex.slice(0, 32)}`;
+}
 
 export interface CreateWorkflowRequest {
   request_id: string;
@@ -38,6 +47,10 @@ export interface CreateWorkflowRequest {
   request_text: string;
   refs?: WorkspaceReference[];
   workspace_mode?: "new_worktree" | "existing_workspace";
+  worktree_path?: string;
+  worktree_paths?: Record<string, string>;
+  branch?: string;
+  branches?: Record<string, string>;
   planner_profile_id?: string;
   executor_profile_id?: string;
   planner_profile?: ToolProfile;
@@ -123,7 +136,7 @@ export class CreateWorkflowService {
     const refs = (input.refs ?? []).map((r) =>
       WorkspaceReferenceSchema.parse(r),
     );
-    const mode = input.workspace_mode ?? "new_worktree";
+    const mode = input.workspace_mode ?? "existing_workspace";
     requireCondition(
       ["new_worktree", "existing_workspace"].includes(mode),
       "INVALID_WORKSPACE_MODE",
@@ -218,43 +231,64 @@ export class CreateWorkflowService {
     );
     const existing = this.store
       .list<Project>("project")
-      .find(
-        (p) =>
-          p.repositories.length === 1 &&
-          resolve(p.repositories[0]!.path).toLowerCase() ===
-            source.toLowerCase(),
+      .find((p) =>
+        p.repositories.some(
+          (r) => resolve(r.path).toLowerCase() === source.toLowerCase(),
+        ),
       );
     const project =
-      pending?.project ?? existing ??
+      pending?.project ??
+      existing ??
       ProjectSchema.parse({
         id: id("proj"),
         name: basename(source),
         repositories: [{ id: "main", path: source }],
       });
-    const repoId = project.repositories[0]!.id;
-    const workflowId = pending?.workflow.id ?? id("wf");
-    const target =
-      mode === "new_worktree"
-        ? join(common, "devflow", "worktrees", workflowId)
-        : source;
-    const taskBranch =
-      mode === "new_worktree" ? "devflow/" + workflowId : branch;
-    const workflow: Workflow = pending?.workflow ?? {
-      id: workflowId,
-      project_id: project.id,
-      title: input.request_text.slice(0, 60).replace(/[\r\n]+/g, " "),
-      request: input.request_text,
-      complexity: "simple",
-      workspace_mode: mode,
-      state: "PLANNING",
-      stage: "planning",
-      version: 1,
-      plan_revision: 0,
-      environment_revision: 1,
-      created_at: now(),
-      updated_at: now(),
-      feedback: [],
-    };
+    const effectiveRepo =
+      project.repositories.find(
+        (r) => resolve(r.path).toLowerCase() === source.toLowerCase(),
+      ) ??
+      (project.primary_repo_id
+        ? project.repositories.find((r) => r.id === project.primary_repo_id)
+        : project.repositories[0]);
+    const repoId = effectiveRepo?.id ?? "main";
+    const workflowId = pending?.workflow.id ?? generateWorkflowId(input.request_id);
+    let target = source;
+    let taskBranch = branch;
+    if (mode === "new_worktree") {
+      const explicit = input.worktree_paths?.[repoId] ?? input.worktree_path;
+      target = resolveWorktreePath({
+        sourceRoot: source,
+        workflowId,
+        repoId,
+        explicitPath: explicit,
+        projectConfiguredPath: effectiveRepo?.worktree_base_path,
+      });
+      ensureWorktreeGitExcluded(source);
+      taskBranch = input.branches?.[repoId] ?? input.branch ?? `devflow/${workflowId}/${repoId}`;
+    }
+    const workflow: Workflow = pending?.workflow
+      ? {
+          ...pending.workflow,
+          binding_strategy: pending.workflow.binding_strategy ?? "unified",
+        }
+      : {
+          id: workflowId,
+          project_id: project.id,
+          title: input.request_text.slice(0, 60).replace(/[\r\n]+/g, " "),
+          request: input.request_text,
+          complexity: "simple",
+          workspace_mode: mode,
+          binding_strategy: "unified",
+          state: "PLANNING",
+          stage: "planning",
+          version: 1,
+          plan_revision: 0,
+          environment_revision: 1,
+          created_at: now(),
+          updated_at: now(),
+          feedback: [],
+        };
     const workspace: Workspace = pending?.workspace ?? {
       id: id("ws"),
       workflow_id: workflowId,

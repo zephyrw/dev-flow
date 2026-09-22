@@ -13,6 +13,7 @@ export interface SubmitFeedbackRequest {
   kind: "planning" | "execution" | "functional";
   text: string;
   refs?: WorkspaceReference[];
+  attachment_ids?: string[];
   target_document_revision?: number;
   interrupt_requested?: boolean;
 }
@@ -52,6 +53,8 @@ export class FeedbackService {
         matched.text === req.text &&
           matched.kind === req.kind &&
           objectHash(matched.refs) === objectHash(req.refs ?? []) &&
+          objectHash(matched.attachment_ids ?? []) ===
+            objectHash(req.attachment_ids ?? []) &&
           matched.target_document_revision ===
             (req.target_document_revision ?? 0),
         "IDEMPOTENCY_CONFLICT",
@@ -75,6 +78,7 @@ export class FeedbackService {
       kind: req.kind,
       text: req.text,
       refs: req.refs ?? [],
+      attachment_ids: req.attachment_ids ?? [],
       target_document_revision: req.target_document_revision ?? 0,
       status: "pending",
       created_at: now(),

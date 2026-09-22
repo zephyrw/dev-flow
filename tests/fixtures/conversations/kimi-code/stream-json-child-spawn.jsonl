@@ -1,0 +1,8 @@
+{"role":"meta","type":"system.version","version":"0.37.2"}
+{"role":"meta","type":"session.resume_hint","session_id":"session_aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeee1","command":"kimi -r session_aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeee1","content":"To resume this session: kimi -r session_aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeee1"}
+{"role":"assistant","tool_calls":[{"type":"function","id":"tool_spawn_explore","function":{"name":"Agent","arguments":"{\"description\":\"只读列出临时目录\",\"prompt\":\"列出固定文件\",\"subagent_type\":\"explore\"}"}}]}
+{"role":"tool","tool_call_id":"tool_spawn_explore","content":"agent_id: agent-1\nactual_subagent_type: explore\nstatus: completed\n\n[summary]\nlisted fixture files"}
+{"role":"assistant","tool_calls":[{"type":"function","id":"tool_spawn_plan","function":{"name":"Agent","arguments":"{\"description\":\"只读规划\",\"subagent_type\":\"plan\"}"}}]}
+{"role":"tool","tool_call_id":"tool_spawn_plan","content":"agent_id: agent-2\nactual_subagent_type: plan\nstatus: completed\n\n[summary]\nplan only"}
+{"role":"assistant","tool_calls":[{"type":"function","id":"tool_spawn_coder","function":{"name":"Agent","arguments":"{\"description\":\"可写实现\",\"subagent_type\":\"coder\"}"}}]}
+{"role":"tool","tool_call_id":"tool_spawn_coder","content":"agent_id: agent-3\nactual_subagent_type: coder\nstatus: completed\n\n[summary]\nedited files"}

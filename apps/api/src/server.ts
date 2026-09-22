@@ -2,7 +2,8 @@ import { createBaseServer } from "./base-server.js";
 import websocket from "@fastify/websocket";
 import staticPlugin from "@fastify/static";
 import { existsSync, readFileSync } from "node:fs";
-import { resolve, join, basename } from "node:path";
+import { resolve, join, basename, normalize } from "node:path";
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import { NodeStreamableHTTPServerTransport } from "@modelcontextprotocol/node";
 import {
@@ -13,7 +14,17 @@ import {
   RepairSelectionSchema,
   type FunctionalIssue,
   type RepairModelBatch,
+  type Project,
+  CONVERSATION_ENTITY,
+  type ConversationAttempt,
+  type ConversationMessage,
+  type Workspace,
+  type Run,
 } from "../../../packages/contracts/src/index.js";
+import { ProjectAssetMigrationService } from "../../../packages/core/src/project-asset-migration.js";
+import { decideOperation } from "../../../packages/core/src/interactions.js";
+import type { Store } from "../../../packages/store/src/store.js";
+import type { ConversationService } from "../../../packages/core/src/conversation-service.js";
 import { makeMcp, workerNames } from "../../../packages/mcp/src/tools.js";
 import type { Engine } from "../../../packages/core/src/engine.js";
 import {
@@ -22,16 +33,15 @@ import {
   publicEvent,
   now,
 } from "../../../packages/core/src/util.js";
-import type { LocalRuntime } from "../../../packages/runtime/src/runtime.js";
 import {
-  resumeApproved,
-  reconcileProcesses,
-} from "../../../packages/runtime/src/recovery.js";
-import { CreateWorkflowService } from "../../../packages/core/src/create-workflow.js";
+  LocalRuntime,
+  runtimeStopPort,
+} from "../../../packages/runtime/src/runtime.js";
+import { CreateWorkflowService, generateWorkflowId } from "../../../packages/core/src/create-workflow.js";
 import { WorkspaceReferenceService } from "../../../packages/workspace/src/references.js";
 import { AsideSessionService } from "../../../packages/asides/src/service.js";
 import { FunctionalIssueService } from "../../../packages/core/src/functional-issues.js";
-import { repositoryInfo } from "../../../packages/git/src/git.js";
+import { repositoryInfo, previewWorktreePath } from "../../../packages/git/src/git.js";
 import { GitDeliveryCoordinator } from "../../../packages/git/src/delivery-coordinator.js";
 import { DocumentService } from "../../../packages/core/src/document-service.js";
 import { FeedbackService } from "../../../packages/core/src/feedback-service.js";
@@ -52,6 +62,48 @@ import { registerAgyAccountRoutes, registerAgyWorkflowRecoveryRoutes } from "./a
 import { registerAgyAccountPolicyRoutes } from "./agy-account-policy-routes.js";
 import { bootstrapAccountService } from "./account-service-bootstrap.js";
 import type { AgyAccountService } from "../../../packages/agy-accounts/src/service.js";
+import { ExecutionSessionStore } from "../../../packages/core/src/execution-session-store.js";
+import { SessionBindingRepairService } from "../../../packages/core/src/session-binding-repair.js";
+import { CliDispatchManager } from "../../../packages/runtime/src/cli-dispatch.js";
+import {
+  generateResumeInstructions,
+  createDefaultAdapterRegistry,
+  resolveToolExecutable,
+  resolveSessionIdentity,
+} from "../../../packages/adapters/sdk/src/index.js";
+import { nativeLaunch } from "../../../packages/adapters/sdk/src/launch.js";
+import { latestSpec, bindProfile } from "../../../packages/core/src/run-profile.js";
+import type { ToolProfile } from "../../../packages/contracts/src/execution-spec.js";
+import {
+  SessionBindingAdoptInputSchema,
+  SessionBindingRepairApplyInputSchema,
+  SessionBindingRepairRollbackInputSchema,
+} from "../../../packages/contracts/src/session-binding.js";
+import { conversationFilePlugin } from "./routes/conversation-files.js";
+import { projectAsidesPlugin } from "./routes/project-asides.js";
+import { conversationPlugin } from "./routes/conversations.js";
+import { conversationControlPlugin } from "./routes/conversation-controls.js";
+import { conversationMessagePlugin } from "./routes/conversation-messages.js";
+import { ConversationFileService } from "../../../packages/core/src/conversation-files.js";
+import {
+  ConversationControlService,
+  CONVERSATION_CONTROL_FENCE,
+  type ConversationControlFence,
+  type ConversationControlRequest,
+  type ConversationControlResult,
+} from "../../../packages/core/src/conversation-control.js";
+import {
+  ConversationMessageService,
+  type ConversationMessageResult,
+} from "../../../packages/core/src/conversation-message-service.js";
+import { conversationServiceOf, engineRecoveryRunPort, bindConversationRecovery } from "../../../packages/runtime/src/profile-runtime.js";
+import {
+  ConversationRecovery,
+} from "../../../packages/runtime/src/conversation-recovery.js";
+import {
+  resumeApproved,
+  reconcileProcesses,
+} from "../../../packages/runtime/src/recovery.js";
 
 export async function buildServer(
   engine: Engine,
@@ -62,6 +114,7 @@ export async function buildServer(
     humanOrigin: engine.config.server.human_origin,
     mode: "full", storageInstance: engine.config.storage_root, registerStatic: false,
     errorRetryable: modelErrorRetryable,
+    writeContentTypeAllowed,
   });
   await app.register(websocket, { options: { maxPayload: 65536 } });
   app.get("/api/projects", async (req) => {
@@ -95,6 +148,8 @@ export async function buildServer(
     engine.config,
     accessService,
   );
+  const sessionStore = new ExecutionSessionStore(engine.store);
+  const dispatchManager = new CliDispatchManager(engine.store);
   const asideService = new AsideSessionService(engine.store);
   const issueService = new FunctionalIssueService(engine.store);
   const documentService = new DocumentService(
@@ -103,16 +158,119 @@ export async function buildServer(
   );
   const feedbackService = new FeedbackService(engine.store);
   const modelServices = registerModelRoutes(app, engine, human, accessService);
+  const conversations = conversationServiceOf(engine.store);
+  const conversationFiles = new ConversationFileService(
+    engine.store,
+    engine.config.storage_root,
+  );
+  const conversationControls = new ConversationControlService(
+    engine.store,
+    conversations,
+    runtimeStopPort(engine.runtime as LocalRuntime | undefined),
+  );
+  engine.pauseTree = async (workflowId, request) => {
+    const fence = existingPauseFence(engine.store, workflowId, request.root_id);
+    if (fence) return conversationControls.reconcile(workflowId, fence.control_id);
+    return conversationControls.pauseTree(workflowId, request);
+  };
+  const conversationMessages = new ConversationMessageService({
+    store: engine.store,
+    files: conversationFiles,
+    feedback: feedbackService,
+    asides: asideService,
+    issues: issueService,
+    conversations,
+    storageRoot: engine.config.storage_root,
+    control: { pauseTree: (workflowId, request) => conversationControls.pauseTree(workflowId, request) },
+  });
+  const conversationRecovery = new ConversationRecovery({
+    store: engine.store,
+    conversations,
+    controls: conversationControls,
+    runPort: engineRecoveryRunPort(engine),
+  });
+  bindConversationRecovery(engine.store, conversationRecovery);
+  await app.register(conversationFilePlugin, {
+    files: conversationFiles,
+    human,
+  });
+  await app.register(projectAsidesPlugin, { store: engine.store, human });
+  await app.register(conversationPlugin, {
+    conversations,
+    store: engine.store,
+    human,
+  });
+  await app.register(conversationControlPlugin, {
+    controls: conversationControls,
+    human,
+  });
+  await app.register(conversationMessagePlugin, {
+    messages: {
+      submit: async (workflowId: string, body: unknown) => {
+        const result = await conversationMessages.submit(workflowId, body);
+        await afterConversationMessage(engine, workflowId, result);
+        return result;
+      },
+    } as ConversationMessageService,
+    human,
+  });
 
   app.get("/api/workflows", async (req) => {
     human(req);
     return engine.list();
   });
+  app.post("/api/workspaces/preview", async (req) => {
+    human(req);
+    const b = z
+      .object({
+        workspace_root: z.string().min(1),
+        request_id: z.string().optional(),
+        workflow_id: z.string().optional(),
+        repo_id: z.string().default("main"),
+        workspace_mode: z
+          .enum(["existing_workspace", "new_worktree"])
+          .default("existing_workspace"),
+        explicit_path: z.string().optional(),
+        worktree_path: z.string().optional(),
+        project_configured_path: z.string().optional(),
+        branch: z.string().optional(),
+      })
+      .parse(req.body);
+    const effectiveWorkflowId =
+      b.workflow_id ||
+      (b.request_id ? generateWorkflowId(b.request_id) : "preview-wf");
+
+    // 服务端读取已登记 Project，客户端不得伪造 project_configured_path
+    const normSource = normalize(resolve(b.workspace_root)).toLowerCase();
+    const existingProject = engine.store
+      .list<Project>("project")
+      .find((p) =>
+        p.repositories.some(
+          (r: any) => normalize(resolve(r.path)).toLowerCase() === normSource,
+        ),
+      );
+    const effectiveRepo =
+      existingProject?.repositories.find(
+        (r: any) => normalize(resolve(r.path)).toLowerCase() === normSource,
+      ) ?? existingProject?.repositories[0];
+    const serverConfiguredPath = effectiveRepo?.worktree_base_path;
+
+    return previewWorktreePath({
+      sourceRoot: b.workspace_root,
+      workflowId: effectiveWorkflowId,
+      repoId: effectiveRepo?.id ?? b.repo_id,
+      mode: b.workspace_mode,
+      explicitPath: b.worktree_path || b.explicit_path,
+      projectConfiguredPath: serverConfiguredPath,
+      branch: b.branch,
+    });
+  });
+
   app.post("/api/workflows", async (req) => {
     human(req);
     const body = req.body as any;
     if (body.workspace_root) {
-      // 统一新任务创建服务入口 (N06)
+      // 统一新任务创建服务入口 (N06, CW-D11)
       const res = createWorkflowService.execute({
         request_id:
           body.request_id || body.idempotency_key || `req_${Date.now()}`,
@@ -120,6 +278,10 @@ export async function buildServer(
         request_text: body.request_text || body.request || "",
         refs: body.refs,
         workspace_mode: body.workspace_mode,
+        worktree_path: body.worktree_path || body.explicit_path,
+        worktree_paths: body.worktree_paths,
+        branch: body.branch,
+        branches: body.branches,
         planner_profile_id: body.planner_profile_id,
         executor_profile_id: body.executor_profile_id,
         planner_profile: body.planner_profile,
@@ -185,19 +347,370 @@ export async function buildServer(
     );
   });
 
+  app.get("/api/workflows/:id/session-bindings", async (req) => {
+    human(req);
+    const workflowId = Id.parse((req.params as any).id);
+    const w = engine.get(workflowId);
+    const bindings = sessionStore.listBindings(workflowId);
+    const strategy = (w as any).binding_strategy ?? "unified";
+    const migrationPending = (w as any).migration_pending ?? false;
+
+    // CW3-F26: 从当前 workflow.run_id 对应、归属一致的持久 Run/dispatch 取实际 binding ID
+    // legacy 或无已确认当前绑定就不返回 current_binding_id。唯一合法绑定的页面便利选择按原合同保留，多个历史绑定不得冒充当前
+    let currentBindingId: string | undefined;
+    if (strategy !== "legacy") {
+      const boundBindings = bindings.filter((b: any) => b.state === "bound");
+      if (w.run_id) {
+        const dispatches = engine.store.list<any>("cli_dispatch_record", workflowId);
+        const currentDispatch = dispatches.find((d: any) => d.run_id === w.run_id);
+        if (currentDispatch?.binding_id) {
+          const match = boundBindings.find((b: any) => b.id === currentDispatch.binding_id);
+          if (match) {
+            currentBindingId = match.id;
+          }
+        }
+      }
+      // 若无当前 Run 的 dispatch 匹配，但全任务有且仅有唯一一个合法 bound 绑定，按原合同保留便利选择
+      if (!currentBindingId && boundBindings.length === 1 && boundBindings[0]) {
+        currentBindingId = boundBindings[0].id;
+      }
+    }
+
+    return {
+      workflow_id: workflowId,
+      workflow_version: (w as any).version ?? 1,
+      binding_strategy: strategy,
+      migration_pending: migrationPending,
+      bindings,
+      current_binding_id: currentBindingId,
+    };
+  });
+
+  app.post("/api/workflows/:id/session-bindings/adopt", async (req) => {
+    human(req);
+    const workflowId = Id.parse((req.params as any).id);
+    const input = SessionBindingAdoptInputSchema.parse(req.body);
+
+    // 1. CW3-F16: 幂等检查优先于占用门禁，相同 request_id 正文一致直接重放
+    const idemKey = `adopt_${workflowId}_${input.request_id}`;
+    const existingIdem = engine.store.get<{ request_hash: string; result: any }>("idempotency_record", idemKey);
+    if (existingIdem) {
+      const reqDigest = createHash("sha256").update(JSON.stringify(input)).digest("hex");
+      if (existingIdem.request_hash === reqDigest) {
+        const wf = engine.get(workflowId);
+        return {
+          binding: existingIdem.result,
+          replayed: true,
+          workflow_version: (wf as any).version ?? 1,
+        };
+      }
+      throw new FlowError(
+        "IDEMPOTENCY_CONFLICT",
+        `相同 request_id (${input.request_id}) 但请求正文不一致`,
+        409,
+      );
+    }
+
+    // 2. 检查写者状态 (CW2-D06 / §9.1 第 3 项: 调度停用 与 写者 idle 必须同时满足)
+    const occupancy = dispatchManager.readInvocationOccupancy(workflowId);
+    const control = dispatchManager.getDispatchControl(workflowId);
+    if (control.dispatch_enabled) {
+      throw new FlowError(
+        "DISPATCH_NOT_DISABLED",
+        "必须先停用任务自动调度，方可接管外部会话",
+        409,
+      );
+    }
+    if (occupancy.state !== "idle") {
+      throw new FlowError(
+        "WRITER_ACTIVE",
+        `当前存在未结束的受管调用 (状态: ${occupancy.state})，禁止接管外部会话`,
+        409,
+      );
+    }
+
+    // 3. CW4-F05: 使用请求已有的 profile_ref，从任务关联 execution_spec 的 profile 中解析实际工具配置并检查对应 revision
+    const spec = latestSpec(engine.store, workflowId);
+    requireCondition(spec, "EXECUTION_SPEC_NOT_FOUND", "未找到任务对应的执行配置 (execution_spec)", 404);
+    const profiles = [spec.plannerProfile, spec.executorProfile].filter(
+      (p) => p.id === input.profile_ref.id,
+    );
+    requireCondition(profiles.length > 0, "PROFILE_NOT_FOUND", "指定工具配置不属于当前任务", 404);
+    const profile = profiles.find((p) => p.revision === input.profile_ref.revision);
+    requireCondition(
+      profile,
+      "PROFILE_REVISION_MISMATCH",
+      "指定工具配置版本已变化，请刷新后重试",
+      409,
+    );
+
+    // 4. 用该配置和所属 workspace 走现有身份解析流程，把完整真实身份传给 adoptExistingSession
+    const workspaces = engine.store.list<Workspace>("workspace", workflowId);
+    const targetWs = workspaces.find((w) => w.id === input.workspace_id);
+    requireCondition(targetWs, "WORKSPACE_NOT_FOUND", `未找到属于当前任务的工作区: ${input.workspace_id}`, 404);
+
+    const adapterRegistry = createDefaultAdapterRegistry();
+    const adapter = adapterRegistry.mustGet(profile.adapterId);
+    const resolvedIdentity = await resolveSessionIdentity(adapter, {
+      frozenProfile: profile,
+      workspace: {
+        root: targetWs.root,
+        all_workspaces: workspaces,
+      },
+      effectiveEnvironment: process.env as Record<string, string>,
+    });
+
+    if (!resolvedIdentity.resolved) {
+      throw new FlowError(
+        "IDENTITY_UNVERIFIED",
+        resolvedIdentity.unresolved_reason || "会话身份尚未通过可信解析，禁止接管",
+        400,
+      );
+    }
+
+    const binding = sessionStore.adoptExistingSession(workflowId, input, {
+      adapter_id: resolvedIdentity.adapter_id,
+      host_id: resolvedIdentity.host_id,
+      client_scope_id: resolvedIdentity.client_scope_id,
+      provider_account_scope: resolvedIdentity.provider_account_scope,
+      canonical_model_id: resolvedIdentity.canonical_model_id,
+      workspace_identity: resolvedIdentity.workspace_identity,
+      workspace_root: targetWs.root,
+      source_root: targetWs.source_root ?? targetWs.root,
+      repo_id: targetWs.repo_id ?? "main",
+      expected_workflow_version: input.expected_workflow_version,
+      expected_control_revision: input.expected_control_revision,
+    });
+    const workflow = engine.get(workflowId);
+    return {
+      binding,
+      replayed: false,
+      workflow_version: (workflow as any).version ?? 1,
+    };
+  });
+
+  // CW2-D02: 资产与工作树迁移服务路由
+  app.get("/api/workflows/:id/assets/preview", async (req: any) => {
+    human(req);
+    const workflowId = Id.parse((req.params as any).id);
+    const service = new ProjectAssetMigrationService(engine.store, engine.config.storage_root);
+    const q = req.query || {};
+    return service.preview({
+      workflowId,
+      workspaceId: q.workspace_id,
+      mode: q.mode,
+      explicitTargetRoot: q.target_root,
+    });
+  });
+
+  app.post("/api/workflows/:id/assets/preview", async (req: any) => {
+    human(req);
+    const workflowId = Id.parse((req.params as any).id);
+    const service = new ProjectAssetMigrationService(engine.store, engine.config.storage_root);
+    const b = req.body || {};
+    return service.preview({
+      workflowId,
+      workspaceId: b.workspace_id,
+      mode: b.mode,
+      explicitTargetRoot: b.target_root,
+    });
+  });
+
+  app.post("/api/workflows/:id/assets/apply", async (req: any) => {
+    human(req);
+    const workflowId = Id.parse((req.params as any).id);
+    const service = new ProjectAssetMigrationService(engine.store, engine.config.storage_root);
+    const body = req.body || {};
+    requireCondition(body.request_id, "REQUEST_ID_REQUIRED", "request_id 不能为空", 400);
+    return await service.apply({
+      ...body,
+      workflow_id: workflowId,
+    });
+  });
+
+  app.post("/api/workflows/:id/assets/resume", async (req: any) => {
+    human(req);
+    const workflowId = Id.parse((req.params as any).id);
+    const service = new ProjectAssetMigrationService(engine.store, engine.config.storage_root);
+    const body = req.body || {};
+    requireCondition(body.migration_id, "MIGRATION_ID_REQUIRED", "migration_id 不能为空", 400);
+    requireCondition(body.request_id, "REQUEST_ID_REQUIRED", "request_id 不能为空", 400);
+    return await service.resume(workflowId, body.migration_id, body.request_id);
+  });
+
+  app.post("/api/workflows/:id/assets/rollback", async (req: any) => {
+    human(req);
+    const workflowId = Id.parse((req.params as any).id);
+    const service = new ProjectAssetMigrationService(engine.store, engine.config.storage_root);
+    const body = req.body || {};
+    requireCondition(body.migration_id, "MIGRATION_ID_REQUIRED", "migration_id 不能为空", 400);
+    requireCondition(body.request_id, "REQUEST_ID_REQUIRED", "request_id 不能为空", 400);
+    return await service.rollback(workflowId, body.migration_id, body.request_id);
+  });
+
+  app.post(
+    "/api/workflows/:id/session-bindings/repair-preview",
+    async (req) => {
+      human(req);
+      const workflowId = Id.parse((req.params as any).id);
+      const repairService = new SessionBindingRepairService(engine.store);
+      const expectedVersion = (req.body as any)?.expected_workflow_version;
+      return repairService.previewRepair(workflowId, expectedVersion);
+    },
+  );
+
+  app.post(
+    "/api/workflows/:id/session-bindings/repair",
+    async (req) => {
+      human(req);
+      const workflowId = Id.parse((req.params as any).id);
+      const input = SessionBindingRepairApplyInputSchema.parse(req.body);
+      const repairService = new SessionBindingRepairService(engine.store);
+      return repairService.applyRepair(workflowId, input);
+    },
+  );
+
+  app.post(
+    "/api/workflows/:id/session-bindings/repair-rollback",
+    async (req) => {
+      human(req);
+      const workflowId = Id.parse((req.params as any).id);
+      const input = SessionBindingRepairRollbackInputSchema.parse(req.body);
+      const repairService = new SessionBindingRepairService(engine.store);
+      return repairService.rollbackRepair(workflowId, input);
+    },
+  );
+
+  app.get(
+    "/api/workflows/:id/session-bindings/:bindingId/resume-instructions",
+    async (req) => {
+      human(req);
+      const workflowId = Id.parse((req.params as any).id);
+      const bindingId = Id.parse((req.params as any).bindingId);
+      const binding = sessionStore.getBindingById(bindingId);
+      requireCondition(
+        binding && binding.workflow_id === workflowId,
+        "BINDING_NOT_FOUND",
+        "未找到对应的会话绑定",
+        404,
+      );
+      const occupancy = dispatchManager.readInvocationOccupancy(workflowId);
+      const control = dispatchManager.getDispatchControl(workflowId);
+      const w = engine.get(workflowId);
+      const migrationInProgress = Boolean(
+        (w as any).migration_pending ||
+        control.reasons.some((r: any) => r.reason === "migration")
+      );
+
+      const safeEnv: Record<string, string> = {};
+      if (binding.adapter_id === "codex" && binding.client_scope_id) {
+        safeEnv.CODEX_HOME = binding.client_scope_id;
+      } else if (binding.adapter_id === "agy" && binding.client_scope_id) {
+        safeEnv.AGY_HOME = binding.client_scope_id;
+      }
+
+      // CW4-F02: resume API 从该绑定关联 Run 的冻结 profile 获取原工具入口，复用现有启动入口解析规则
+      let cliLaunch: { executablePath: string; prefixArgs: string[] } | undefined;
+      const runId = binding.latest_run_id || binding.first_run_id;
+      let profile: ToolProfile | undefined;
+      if (runId) {
+        const r = engine.store.get<Run>("run", runId);
+        profile = (r as any)?.profile;
+      }
+      if (!profile) {
+        const spec = latestSpec(engine.store, workflowId);
+        if (spec) {
+          profile =
+            spec.executorProfile.adapterId === binding.adapter_id
+              ? spec.executorProfile
+              : spec.plannerProfile.adapterId === binding.adapter_id
+                ? spec.plannerProfile
+                : undefined;
+        }
+      }
+      if (!profile) {
+        try {
+          const bp = bindProfile(engine.store, engine.config, workflowId, "implement");
+          if (bp.profile.adapterId === binding.adapter_id) {
+            profile = bp.profile;
+          }
+        } catch {}
+      }
+
+      if (profile) {
+        try {
+          const adapter = createDefaultAdapterRegistry().get(binding.adapter_id as any);
+          if (adapter) {
+            const adp = adapter as any;
+            const executablePath = resolveToolExecutable(
+              adp.defaultBinaryName,
+              profile.executableRef,
+              adp.fallbackDirs,
+            );
+            if (executablePath) {
+              const launch = nativeLaunch(executablePath, binding.adapter_id);
+              const extraPrefix = Array.isArray((profile.options as any)?.prefixArgs)
+                ? (profile.options as any).prefixArgs
+                : [];
+              cliLaunch = {
+                executablePath: launch.executable,
+                prefixArgs: [...launch.prefix, ...extraPrefix],
+              };
+            }
+          }
+        } catch {}
+      }
+
+      return generateResumeInstructions({
+        bindingId: binding.id,
+        workflowId: binding.workflow_id,
+        adapterId: binding.adapter_id,
+        conversationId: binding.conversation_id || "",
+        cwd: binding.workspace_root,
+        bindingRevision: binding.revision,
+        bindingState: binding.state,
+        managedWriterState: occupancy.state,
+        dispatchEnabled: control.dispatch_enabled,
+        modelId: binding.canonical_model_id,
+        safeEnv,
+        migrationInProgress,
+        cliLaunch,
+      });
+    },
+  );
+
+  app.get("/api/workflows/:id/dispatch-control", async (req) => {
+    human(req);
+    const workflowId = Id.parse((req.params as any).id);
+    return dispatchManager.getDispatchControl(workflowId);
+  });
+
+  app.post("/api/workflows/:id/dispatch-control", async (req) => {
+    human(req);
+    const workflowId = Id.parse((req.params as any).id);
+    const b = z
+      .object({
+        request_id: z.string().optional(),
+        expected_control_revision: z.number().int().nonnegative().optional(),
+        dispatch_enabled: z.boolean(),
+        reason: z.string().optional(),
+      })
+      .parse(req.body);
+    return dispatchManager.setDispatchControl({
+      workflowId,
+      dispatch_enabled: b.dispatch_enabled,
+      reason: b.reason,
+      request_id: b.request_id,
+      expected_control_revision: b.expected_control_revision,
+    });
+  });
+
   // /btw 临时只读提问路由 (RQ-09 & 5.2 节)
   app.post("/api/workflows/:id/asides", async (req) => {
     human(req);
     const workflowId = Id.parse((req.params as any).id);
     const body = (req.body || {}) as any;
     const text = body.text || body.question || "";
-    requireCondition(
-      text.trim().length > 0,
-      "EMPTY_QUESTION",
-      "提问正文不能为空",
-      400,
-    );
-
     if (body.expected_version !== undefined) {
       const w = engine.get(workflowId);
       requireCondition(
@@ -207,13 +720,33 @@ export async function buildServer(
         409,
       );
     }
-
+    let result: ConversationMessageResult | undefined;
+    try {
+      result = await conversationMessages.submitAside(workflowId, {
+        request_id: body.request_id || body.idempotency_key || `req_${Date.now()}`,
+        text,
+        refs: body.refs ?? [],
+        attachment_ids: body.attachment_ids ?? [],
+        root_conversation_id: body.root_conversation_id,
+        expected_generation: body.expected_generation,
+      });
+    } catch (error) {
+      if (!isMissingConversation(error)) throw error;
+    }
+    if (result) {
+      await afterConversationMessage(engine, workflowId, result);
+      return (
+        engine.store.get("aside_session", result.aside_id ?? "") ?? result
+      );
+    }
     engine.get(workflowId);
     const aside = asideService.submitQuestion(
       workflowId,
       text,
       body.refs ?? [],
       body.profile_revision,
+      undefined,
+      body.attachment_ids ?? [],
     );
     void engine.dispatch();
     return aside;
@@ -253,6 +786,12 @@ export async function buildServer(
       404,
     );
     if (aside.run_id) await engine.runtime?.stop(aside.run_id);
+    await pauseAsideTree(
+      conversationControls,
+      conversations,
+      workflowId,
+      aside,
+    );
     asideService.cancelSession(workflowId, asideId);
     void engine.dispatch();
     return { ok: true, status: "cancelled" };
@@ -315,9 +854,11 @@ export async function buildServer(
       return prior.response;
     }
     const wf = engine.get(workflowId);
+    const expectedSnapshot = wf.snapshot_id ?? null;
+    const bodySnapshot = body.snapshot_id ?? null;
     requireCondition(
       wf.version === body.expected_version &&
-        (wf.snapshot_id ?? null) === (body.snapshot_id ?? null),
+        expectedSnapshot === bodySnapshot,
       "VERSION_CONFLICT",
       "核验对象已变化",
       409,
@@ -343,8 +884,15 @@ export async function buildServer(
     const workflowId = Id.parse((req.params as any).id);
     const body = (req.body || {}) as any;
 
+    const w = engine.get(workflowId);
+    requireCondition(
+      ["CLEANUP_PENDING", "COMPLETED", "COMMITTED", "FAILED"].includes(w.state),
+      "INVALID_STATE",
+      `当前状态 (${w.state}) 不允许执行工作区清理或重试`,
+      409,
+    );
+
     if (body.expected_version !== undefined) {
-      const w = engine.get(workflowId);
       requireCondition(
         w.version === body.expected_version,
         "VERSION_CONFLICT",
@@ -353,13 +901,67 @@ export async function buildServer(
       );
     }
 
-    const workspaces = engine.store.list<any>("workspace", workflowId);
     const gd = new GitDeliveryCoordinator(
       engine.store,
       engine.config.workspace_root,
     );
-    const receipt = await gd.cleanupWorkspaces(workflowId, workspaces);
+
+    // CW-D01: 旧 /cleanup/retry 无本次新选择时只能读状态，不能借旧失败记录继续删
+    if (body.explicit_selection !== true || !Array.isArray(body.selected_workspaces)) {
+      gd.reconcileCompletedWorkflows(workflowId);
+      const receipt = engine.store.get<any>("cleanup_receipt", workflowId);
+      const w = engine.get(workflowId);
+      return {
+        receipt,
+        workflow: w,
+        message: w.state === "COMPLETED" ? "交付已完成、工作树保留" : "未指定明确清理选择，仅返回当前状态",
+      };
+    }
+
+    const allWorkspaces = engine.store.list<any>("workspace", workflowId);
+    const requestedItems: Array<{ id: string; root?: string; branch?: string; expected_version?: number }> = [];
+
+    for (const item of body.selected_workspaces) {
+      if (typeof item === "string") {
+        throw new FlowError(
+          "INVALID_ARGUMENT",
+          "已废弃字符串工作区清理入参，必须传入包含 id、root、branch 的精确结构对象",
+          400,
+        );
+      } else if (item && typeof item === "object" && item.id) {
+        requestedItems.push({
+          id: item.id,
+          root: item.root,
+          branch: item.branch,
+          expected_version: item.expected_version,
+        });
+      }
+    }
+
+    const receipt = await gd.cleanupWorkspaces(workflowId, requestedItems, {
+      explicit_selection: true,
+      preview_version: body.preview_version,
+      preview_digest: body.preview_digest,
+      expected_control_revision: body.expected_control_revision,
+      expected_workflow_version: body.expected_version ?? body.expected_workflow_version,
+    });
     return { receipt };
+  });
+
+  // CW2-D01 / §4 第 6 项规范：只读清理预览
+  app.get("/api/workflows/:id/workspaces/cleanup/preview", async (req: any) => {
+    human(req);
+    const workflowId = Id.parse((req.params as any).id);
+    const gd = new GitDeliveryCoordinator(
+      engine.store,
+      engine.config.workspace_root,
+    );
+    const requestedIds = req.query?.workspace_ids
+      ? (Array.isArray(req.query.workspace_ids)
+          ? (req.query.workspace_ids as string[])
+          : String(req.query.workspace_ids).split(","))
+      : undefined;
+    return await gd.previewCleanupWorkspaces(workflowId, requestedIds);
   });
 
   // 功能问题跟踪路由 (RQ-08 & 5.2 节)
@@ -385,41 +987,80 @@ export async function buildServer(
       );
     }
 
-    requireCondition(
-      engine.get(workflowId).state === "HUMAN_PENDING",
-      "INVALID_STATE",
-      "功能核验阶段才能提交功能问题",
-      409,
-    );
-    const issue = engine.store.transaction(() => {
-      const issue = issueService.createIssue(workflowId, text, body.refs ?? []);
-      engine.store.put("functional_fix_intent", workflowId, workflowId, {
-        ...engine.store.get<Record<string, unknown>>(
-          "functional_fix_intent",
-          workflowId,
-        ),
-        source_snapshot: engine.get(workflowId).snapshot_id,
-      });
-      const message = feedbackService.submitFeedback({
-        workflow_id: workflowId,
-        request_id: body.request_id ?? issue.issue_id,
-        kind: "functional",
+    const requestId = body.request_id ?? crypto.randomUUID();
+    const assignRepair = (issue: FunctionalIssue) => attachIssueRepairOptions(modelServices.repairs, {
+      workflow_id: workflowId,
+      request_id: requestId,
+      issue,
+      body,
+      store: engine.store,
+      specs: modelServices.specs,
+    });
+    let result: ConversationMessageResult | undefined;
+    try {
+      result = await conversationMessages.submitFunctional(workflowId, {
+        request_id: requestId,
         text,
         refs: body.refs ?? [],
+        attachment_ids: body.attachment_ids ?? [],
+        root_conversation_id: body.root_conversation_id,
+        expected_generation: body.expected_generation,
+      }, {
+        idempotencyContext: {
+          repair_model: body.repair_model,
+          remember_for_task: body.remember_for_task,
+          expected_spec_revision: body.expected_spec_revision,
+        },
+        onIssueCreated: assignRepair,
       });
-      attachIssueRepairOptions(modelServices.repairs, {
-        workflow_id: workflowId,
-        request_id: body.request_id ?? issue.issue_id,
-        issue,
-        body,
-        store: engine.store,
-        specs: modelServices.specs,
+    } catch (error) {
+      if (!isMissingConversation(error)) throw error;
+    }
+    if (!result) {
+      requireCondition(
+        engine.get(workflowId).state === "HUMAN_PENDING",
+        "INVALID_STATE",
+        "功能核验阶段才能提交功能问题",
+        409,
+      );
+      const issue = engine.store.transaction(() => {
+        const created = issueService.createIssue(
+          workflowId,
+          text,
+          body.refs ?? [],
+          {},
+          body.attachment_ids ?? [],
+        );
+        engine.store.put("functional_fix_intent", workflowId, workflowId, {
+          ...engine.store.get<Record<string, unknown>>("functional_fix_intent", workflowId),
+          source_snapshot: engine.get(workflowId).snapshot_id,
+        });
+        const message = feedbackService.submitFeedback({
+          workflow_id: workflowId,
+          request_id: body.request_id ?? created.issue_id,
+          kind: "functional",
+          text,
+          refs: body.refs ?? [],
+          attachment_ids: body.attachment_ids ?? [],
+        });
+        assignRepair(created);
+        engine.queueFormalFeedback(workflowId, message.message_id);
+        return created;
       });
-      engine.queueFormalFeedback(workflowId, message.message_id);
+      void engine.dispatch();
       return issue;
-    });
-    void engine.dispatch();
-    return issue;
+    }
+    await afterConversationMessage(engine, workflowId, result);
+    const saved = readConversationMessage(
+      engine.store,
+      workflowId,
+      result.message_id,
+    );
+    return (
+      issueService
+        .listIssues(workflowId)
+        .find((item) => item.issue_id === saved?.functional_issue_id) ?? result
+    );
   };
 
   const handleListIssues = async (req: any) => {
@@ -621,12 +1262,18 @@ export async function buildServer(
   app.get("/api/workflows/:id", async (req) => {
     human(req);
     const key = Id.parse((req.params as any).id);
-    if ((req.query as any)?.view === "summary") return engine.summary(key);
+    if ((req.query as any)?.view === "summary") {
+      return {
+        ...engine.summary(key),
+        conversation_tree: conversations.getTree(key),
+      };
+    }
     const detail = engine.detail(key, false);
     return {
       ...detail,
       events: detail.events.map((e) => engine.store.publicEvent(e)),
       attachment_status: listAttachmentRecords(engine.store, key),
+      conversation_tree: conversations.getTree(key),
     };
   });
   app.get("/api/workflows/:id/attachments", async (req) => {
@@ -977,13 +1624,6 @@ export async function buildServer(
     const key = Id.parse((req.params as any).id);
     const body = (req.body || {}) as any;
     const text = String(body.text || "").trim();
-    requireCondition(
-      text.length > 0,
-      "EMPTY_FEEDBACK",
-      "反馈正文不能为空",
-      400,
-    );
-
     const w = engine.get(key);
     if (body.expected_version !== undefined) {
       requireCondition(
@@ -993,41 +1633,54 @@ export async function buildServer(
         409,
       );
     }
-
-    const requestId =
-      body.request_id || body.idempotency_key || `req_${Date.now()}`;
-    const kind =
-      body.kind ??
-      (["PLAN_PENDING", "REPAIR_PLAN_PENDING", "PLANNING"].includes(w.state)
-        ? "planning"
-        : "execution");
-    const feedbackMsg = feedbackService.submitFeedback({
-      request_id: requestId,
-      workflow_id: key,
-      kind,
-      text,
-      refs: body.refs,
-      target_document_revision: body.target_document_revision,
-      interrupt_requested: body.interrupt_requested,
-    });
-
+    let submitted: ConversationMessageResult | undefined;
+    try {
+      submitted = await conversationMessages.submitFormal(key, {
+        request_id:
+          body.request_id || body.idempotency_key || `req_${Date.now()}`,
+        text,
+        refs: body.refs ?? [],
+        attachment_ids: body.attachment_ids ?? [],
+        root_conversation_id: body.root_conversation_id,
+        expected_generation: body.expected_generation,
+      });
+    } catch (error) {
+      if (!isMissingConversation(error)) throw error;
+    }
+    if (!submitted) {
+      requireCondition(
+        text.length > 0,
+        "EMPTY_FEEDBACK",
+        "反馈正文不能为空",
+        400,
+      );
+      return submitLegacyFeedback(engine, feedbackService, key, body, text);
+    }
+    const saved = readConversationMessage(
+      engine.store,
+      key,
+      submitted.message_id,
+    );
+    const feedbackMsg = saved?.feedback_message_id
+      ? engine.store.get<any>("feedback_message", saved.feedback_message_id)
+      : undefined;
     engine.store.event(key, w.project_id, "UserGuidance", {
-      text,
+      text: text || saved?.text || "",
       scope: body.scope ?? "within_plan",
       status: "received",
-      feedback_id: feedbackMsg.message_id,
+      feedback_id: saved?.feedback_message_id,
     });
-
     if (!body.interrupt_requested && body.scope !== "new_scope") {
-      const result = engine.queueFormalFeedback(key, feedbackMsg.message_id);
-      void engine.dispatch();
-      return { ok: true, message: feedbackMsg, result };
+      await afterConversationMessage(engine, key, submitted);
+      return { ok: true, message: feedbackMsg, result: engine.get(key) };
     }
     if (
       body.interrupt_requested ||
-      ["EXECUTING", "VERIFYING", "QUEUED", "HUMAN_PENDING"].includes(w.state)
+      ["EXECUTING", "VERIFYING", "QUEUED", "HUMAN_PENDING"].includes(
+        engine.get(key).state,
+      )
     ) {
-      await engine.stop(key, "local_console");
+      await engine.stop(key, "local_console").catch(() => {});
     }
     await engine.waitForIdle(key);
     if (
@@ -1050,7 +1703,11 @@ export async function buildServer(
       "AUTHORIZATION_PENDING",
       "先批准或拒绝待授权操作；可以在授权卡片中填写处理意见",
     );
-    const result = engine.feedback(key, text, body.scope ?? "within_plan");
+    const result = engine.feedback(
+      key,
+      text || saved?.text || "",
+      body.scope ?? "within_plan",
+    );
     void engine.dispatch();
     return {
       ok: true,
@@ -1066,12 +1723,20 @@ export async function buildServer(
       key,
       (req.body || {}) as Record<string, unknown>,
     );
-    return engine.stop(key, "local_console");
+    return stopWorkflowIfAllowed(engine, key);
   });
   app.post("/api/workflows/:id/recover", async (req) => {
     human(req);
     const key = Id.parse((req.params as any).id);
     assertResumeMode(engine, key, (req.body || {}) as Record<string, unknown>);
+    const body = (req.body || {}) as any;
+    await resumeActiveTree(
+      conversationControls,
+      conversationRecovery,
+      conversations,
+      key,
+      body,
+    );
     await engine.waitForIdle(key);
     await (engine.runtime as LocalRuntime)?.browser?.reconcile(key);
     await (engine.runtime as LocalRuntime)?.environments
@@ -1142,7 +1807,7 @@ export async function buildServer(
       "INVALID_STATE",
       "执行期间不能释放环境",
     );
-    await (engine.runtime as LocalRuntime).environments.stop(key);
+    await (engine.runtime as LocalRuntime).environments?.stop?.(key);
     return { ok: true };
   });
   app.post("/api/workflows/:id/browser/lock", async (req) => {
@@ -1169,7 +1834,7 @@ export async function buildServer(
   app.post("/api/workflows/:id/browser/reconcile", async (req) => {
     human(req);
     const key = Id.parse((req.params as any).id);
-    await (engine.runtime as LocalRuntime).browser.reconcile(key);
+    await (engine.runtime as LocalRuntime).browser?.reconcile?.(key);
     return { ok: true };
   });
   app.get("/api/settings", async (req) => {
@@ -1302,4 +1967,270 @@ export async function buildServer(
   }
   return app;
 }
-import { decideOperation } from "../../../packages/core/src/interactions.js";
+
+function writeContentTypeAllowed(
+  method: string,
+  url: string,
+  contentType: string | string[] | undefined,
+): boolean {
+  const type = String(contentType ?? "");
+  if (type.startsWith("application/json")) return true;
+  return isConversationFileContentPut(method, url) && type.startsWith("application/octet-stream");
+}
+
+function isMissingConversation(error: unknown): boolean {
+  return (
+    error instanceof FlowError &&
+    (error.code === "NOT_FOUND" ||
+      error.code === "CONVERSATION_NOT_IN_WORKFLOW" ||
+      error.code === "STALE_ROOT")
+  );
+}
+
+async function submitLegacyFeedback(
+  engine: Engine,
+  feedbackService: FeedbackService,
+  key: string,
+  body: any,
+  text: string,
+) {
+  const w = engine.get(key);
+  const requestId =
+    body.request_id || body.idempotency_key || `req_${Date.now()}`;
+  const kind =
+    body.kind ??
+    (["PLAN_PENDING", "REPAIR_PLAN_PENDING", "PLANNING"].includes(w.state)
+      ? "planning"
+      : "execution");
+  const feedbackMsg = feedbackService.submitFeedback({
+    request_id: requestId,
+    workflow_id: key,
+    kind,
+    text,
+    refs: body.refs,
+    attachment_ids: body.attachment_ids,
+    target_document_revision: body.target_document_revision,
+    interrupt_requested: body.interrupt_requested,
+  });
+  engine.store.event(key, w.project_id, "UserGuidance", {
+    text,
+    scope: body.scope ?? "within_plan",
+    status: "received",
+    feedback_id: feedbackMsg.message_id,
+  });
+  if (!body.interrupt_requested && body.scope !== "new_scope") {
+    const result = engine.queueFormalFeedback(key, feedbackMsg.message_id);
+    void engine.dispatch();
+    return { ok: true, message: feedbackMsg, result };
+  }
+  if (
+    body.interrupt_requested ||
+    ["EXECUTING", "VERIFYING", "QUEUED", "HUMAN_PENDING"].includes(w.state)
+  ) {
+    await engine.stop(key, "local_console").catch(() => {});
+  }
+  await engine.waitForIdle(key);
+  if (
+    [
+      "STOPPED",
+      "BLOCKED",
+      "RECOVERY_REQUIRED",
+      "WAITING_INPUT",
+      "WAITING_AUTHORIZATION",
+    ].includes(engine.get(key).state)
+  ) {
+    await (engine.runtime as LocalRuntime)?.browser?.reconcile(key);
+    await (engine.runtime as LocalRuntime)?.environments?.stop(key);
+    reconcileProcesses(engine, key);
+  }
+  requireCondition(
+    !engine.store
+      .list<{ status: string }>("operation_request", key)
+      .some((r) => r.status === "pending"),
+    "AUTHORIZATION_PENDING",
+    "先批准或拒绝待授权操作；可以在授权卡片中填写处理意见",
+  );
+  const result = engine.feedback(key, text, body.scope ?? "within_plan");
+  void engine.dispatch();
+  return { ok: true, message: feedbackMsg, result };
+}
+
+function isConversationFileContentPut(method: string, url: string): boolean {
+  if (method !== "PUT") return false;
+  const path = url.split("?")[0] ?? "";
+  return /\/api\/workflows\/[^/]+\/conversation-files\/[^/]+\/content$/.test(
+    path,
+  );
+}
+
+function latestRootGeneration(
+  attempts: ConversationAttempt[],
+  rootId: string,
+): number {
+  return (
+    attempts
+      .filter((item) => item.conversation_id === rootId)
+      .sort((a, b) => a.generation - b.generation)
+      .at(-1)?.generation ?? 0
+  );
+}
+
+function existingPauseFence(
+  store: Store,
+  workflowId: string,
+  rootId: string,
+): ConversationControlFence | undefined {
+  return store
+    .list<ConversationControlFence>(CONVERSATION_CONTROL_FENCE, workflowId)
+    .filter((item) => item.root_id === rootId && item.dispatch_frozen)
+    .sort((a, b) => b.updated_at.localeCompare(a.updated_at))[0];
+}
+
+async function pauseActiveTree(
+  controls: ConversationControlService,
+  conversations: ConversationService,
+  store: Store,
+  workflowId: string,
+  requestId?: string,
+): Promise<ConversationControlResult | undefined> {
+  const tree = conversations.getTree(workflowId);
+  const rootId = tree.active_root_id;
+  if (!rootId) return undefined;
+  const generation = latestRootGeneration(tree.attempts, rootId);
+  const fence = existingPauseFence(store, workflowId, rootId);
+  if (fence) return controls.reconcile(workflowId, fence.control_id);
+  try {
+    return await controls.pauseTree(workflowId, {
+      request_id: requestId || `stop:${workflowId}:${rootId}:${generation}`,
+      action: "pause",
+      root_id: rootId,
+      expected_generation: generation,
+    });
+  } catch (error) {
+    if (
+      error instanceof FlowError &&
+      (error.code === "NOT_FOUND" ||
+        error.code === "STALE_ROOT" ||
+        error.code === "VERSION_CONFLICT")
+    ) {
+      return undefined;
+    }
+    throw error;
+  }
+}
+
+async function resumeActiveTree(
+  controls: ConversationControlService,
+  recovery: ConversationRecovery,
+  conversations: ConversationService,
+  workflowId: string,
+  body: { request_id?: string; root_id?: string; expected_generation?: number },
+): Promise<void> {
+  const tree = conversations.getTree(workflowId);
+  const rootId = body.root_id ?? tree.active_root_id;
+  if (!rootId) return;
+  const request: ConversationControlRequest = {
+    request_id:
+      body.request_id ||
+      `recover:${workflowId}:${rootId}:${latestRootGeneration(tree.attempts, rootId)}`,
+    action: "resume",
+    root_id: rootId,
+    expected_generation:
+      body.expected_generation ?? latestRootGeneration(tree.attempts, rootId),
+  };
+  try {
+    await recovery.arrangeRecovery(workflowId, request, {
+      reason: "user_resume",
+    });
+  } catch (error) {
+    if (error instanceof FlowError && error.code === "NOT_FOUND") {
+      try {
+        controls.resumeTree(workflowId, request);
+      } catch {}
+      return;
+    }
+    throw error;
+  }
+}
+
+async function pauseAsideTree(
+  controls: ConversationControlService,
+  conversations: ConversationService,
+  workflowId: string,
+  aside: { id: string; run_id?: string },
+): Promise<void> {
+  const tree = conversations.getTree(workflowId);
+  const attempt = aside.run_id
+    ? tree.attempts.find((item) => item.run_id === aside.run_id)
+    : undefined;
+  const node = attempt
+    ? tree.nodes.find((item) => item.id === attempt.conversation_id)
+    : tree.nodes.find((item) => item.kind === "aside" && item.id === item.root_id);
+  if (!node) return;
+  try {
+    await controls.pauseTree(workflowId, {
+      request_id: `aside-cancel:${aside.id}`,
+      action: "pause",
+      root_id: node.root_id,
+      expected_generation: latestRootGeneration(tree.attempts, node.root_id),
+    });
+  } catch (error) {
+    if (error instanceof FlowError && error.code === "NOT_FOUND") return;
+    throw error;
+  }
+}
+
+function readConversationMessage(
+  store: Store,
+  workflowId: string,
+  messageId: string,
+): ConversationMessage | undefined {
+  const saved = store.get<ConversationMessage>(
+    CONVERSATION_ENTITY.message,
+    messageId,
+  );
+  if (saved?.workflow_id === workflowId) return saved;
+  return store
+    .list<ConversationMessage>(CONVERSATION_ENTITY.message, workflowId)
+    .find((item) => item.id === messageId);
+}
+
+async function afterConversationMessage(
+  engine: Engine,
+  workflowId: string,
+  result: ConversationMessageResult,
+): Promise<void> {
+  const saved = readConversationMessage(
+    engine.store,
+    workflowId,
+    result.message_id,
+  );
+  if (saved?.functional_issue_id) {
+    engine.store.put("functional_fix_intent", workflowId, workflowId, {
+      source_snapshot: engine.get(workflowId).snapshot_id,
+    });
+  }
+  const running = ["EXECUTING", "VERIFYING", "QUEUED", "REVIEWING"].includes(
+    engine.get(workflowId).state,
+  );
+  if (result.mode === "formal" && running) {
+    await stopWorkflowIfAllowed(engine, workflowId);
+  }
+  if (saved?.feedback_message_id) {
+    try {
+      engine.queueFormalFeedback(workflowId, saved.feedback_message_id);
+    } catch {}
+  }
+  void engine.dispatch();
+}
+
+async function stopWorkflowIfAllowed(engine: Engine, workflowId: string) {
+  try {
+    return await engine.stop(workflowId, "local_console");
+  } catch (error) {
+    if (error instanceof FlowError && error.code === "INVALID_STATE") {
+      return engine.get(workflowId);
+    }
+    throw error;
+  }
+}

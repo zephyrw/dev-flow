@@ -12,9 +12,11 @@ import {
   type Workspace,
   type Evidence,
 } from "../../contracts/src/index.js";
+import { reviewBridgeInstructions } from "../../core/src/conversation-guidance.js";
 const path = process.env.DEVFLOW_REVIEW_MANIFEST;
 requireCondition(path, "MANIFEST_REQUIRED", "缺少只读复核材料清单");
 const manifest = JSON.parse(readFileSync(path, "utf8"));
+const reviewGuidance = reviewBridgeInstructions();
 const server = new McpServer({ name: "devflow_review", version: "0.1.0" });
 const register = (
   name: string,
@@ -66,7 +68,8 @@ const page = (text: string, offset: number) => {
 };
 register(
   "devflow_review_context",
-  "分页读取 plan、skill_resources、review_contract 等审查材料。skill_resources 含代码质量审查与职责说明。读取直到 next_offset 为 null。",
+  "分页读取 plan、skill_resources、review_contract 等审查材料。skill_resources 含代码质量审查与职责说明。读取直到 next_offset 为 null。 " +
+    reviewGuidance,
   z.object({
     section: z.enum([
       "plan",

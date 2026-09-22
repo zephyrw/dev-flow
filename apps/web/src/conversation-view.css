@@ -1,0 +1,95 @@
+.conversation-breadcrumb {
+  min-width: 0;
+  padding: 0 16px 8px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-surface-subtle);
+}
+
+.conversation-breadcrumb-list {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  gap: 0;
+}
+
+.conversation-breadcrumb-item {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  flex: 1 1 0;
+}
+
+.conversation-breadcrumb-sep {
+  flex: 0 0 auto;
+  margin: 0 6px;
+  color: var(--text-light);
+}
+
+.conversation-breadcrumb-link,
+.conversation-breadcrumb-current {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.conversation-breadcrumb-link {
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--primary);
+  cursor: pointer;
+  text-align: left;
+}
+
+.conversation-breadcrumb-link:hover {
+  color: var(--primary-hover);
+  text-decoration: underline;
+}
+
+.conversation-breadcrumb-current {
+  color: var(--text-main);
+  font-weight: 600;
+}
+
+.conversation-view-runtime {
+  padding: 6px 16px 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conversation-view-notice {
+  margin: 0;
+  padding: 6px 16px;
+  font-size: 12px;
+  color: var(--color-warning-text);
+  background: var(--color-warning-bg);
+}
+
+.activity.separator,
+.activity-separator {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0;
+  color: var(--text-light);
+  font-size: 12px;
+}
+
+.execution-heading-left .btn-text {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text-muted);
+  font-size: 12px;
+  cursor: pointer;
+}

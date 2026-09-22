@@ -5,3 +5,18 @@ export const batchExecutionInstructions =
   "初次开发与正式整改先完成正式范围，不把单个功能伪装成计划完成；进入测试阶段后允许逐个定位和修复。" +
   "主 Agent 明确各子 Agent 的目标、文件和资源归属；共享代码问题指定一个负责人修复，通知受影响 Agent 定向回归。只协调实际代码或资源冲突，无关目标继续推进。通过且不受本次修改影响的目标不重复执行。" +
   "无关问题只记录，不扩大范围或顺手重构。该规则由执行模型落实，平台不增加测试粒度或证明校验。完成开发和自测后说明结果，直接交代码审查；不为调用 ID、清单或 hash 重跑测试。";
+
+export {
+  asideRecoveryGuidance,
+  executeRecoveryGuidance,
+  planningBridgeInstructions,
+  planningRecoveryGuidance,
+  repairRecoveryGuidance,
+  reviewBridgeInstructions,
+  reviewRecoveryGuidance,
+} from "./conversation-guidance.js";
+export type {
+  RecoveryGuidanceAttachment,
+  RecoveryGuidanceOptions,
+  RecoveryGuidanceRole,
+} from "./conversation-guidance.js";

@@ -20,6 +20,40 @@ export function runtimeFailureForTask(detail: any) {
     : resolution;
 }
 
+async function resumeFromNotice(
+  setPending: (value: boolean) => void,
+  setError: (value: string) => void,
+  send: (path: string, body: unknown) => Promise<unknown>,
+  refresh: () => Promise<void>,
+  workflow: { id: string; version: number },
+  resolution: { code: string; title: string },
+) {
+  setPending(true);
+  setError("");
+  try {
+    if (resolution.code === "MODEL_QUOTA") {
+      await send(`/workflows/${workflow.id}/browser/reconcile`, {});
+      await send(`/workflows/${workflow.id}/environment/stop`, {}).catch(
+        () => {},
+      );
+      await send(`/workflows/${workflow.id}/recover`, {});
+    } else {
+      await send(`/workflows/${workflow.id}/feedback`, {
+        request_id: crypto.randomUUID(),
+        expected_version: workflow.version,
+        scope: "within_plan",
+        text: `已按处理方法检查并处理“${resolution.title}”。请在原批准范围内继续原任务，保留已有修改；若运行条件仍不满足，请报告具体原因，不要将环境问题计为代码整改失败。`,
+      });
+    }
+    await refresh();
+    window.dispatchEvent(new Event("devflow-activity"));
+  } catch (error) {
+    setError(error instanceof Error ? error.message : String(error));
+  } finally {
+    setPending(false);
+  }
+}
+
 export function RuntimeFailureNotice({
   detail,
   send,
@@ -93,24 +127,7 @@ export function RuntimeFailureNotice({
       ) : (
         <button
           disabled={pending}
-          onClick={async () => {
-            setPending(true);
-            setError("");
-            try {
-              await send(`/workflows/${w.id}/feedback`, {
-                request_id: crypto.randomUUID(),
-                expected_version: w.version,
-                scope: "within_plan",
-                text: `已按处理方法检查并处理“${resolution.title}”。请在原批准范围内继续原任务，保留已有修改；若运行条件仍不满足，请报告具体原因，不要将环境问题计为代码整改失败。`,
-              });
-              await refresh();
-              window.dispatchEvent(new Event("devflow-activity"));
-            } catch (e) {
-              setError(e instanceof Error ? e.message : String(e));
-            } finally {
-              setPending(false);
-            }
-          }}
+          onClick={() => void resumeFromNotice(setPending, setError, send, refresh, w, resolution)}
         >
           {pending ? "正在恢复…" : "已处理，继续原任务"}
         </button>

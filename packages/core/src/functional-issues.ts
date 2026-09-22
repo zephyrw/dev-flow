@@ -19,6 +19,7 @@ export class FunctionalIssueService {
     description: string,
     refs: WorkspaceReference[] = [],
     options: { skipAutoBatch?: boolean } = {},
+    attachment_ids: string[] = [],
   ): FunctionalIssue {
     const existing = this.listIssues(workflowId);
     const issue: FunctionalIssue = {
@@ -27,6 +28,7 @@ export class FunctionalIssueService {
       created_seq: existing.length + 1,
       description,
       refs,
+      attachment_ids: attachment_ids.slice(),
       status: "open",
       created_at: now(),
     };

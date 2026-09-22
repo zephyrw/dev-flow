@@ -214,3 +214,73 @@ export function isCurrentPlanningSource(input: {
   if (open && input.handoff?.target_run_id === input.runId) return true;
   return false;
 }
+
+export function preserveWaitingOwnership(
+  waiting: WaitingContext,
+): RunContinuation {
+  return {
+    ...continuationFromWaiting(waiting, { kind: "runtime_resume" }),
+    purpose: waiting.purpose,
+    role: waiting.role,
+    phase: waiting.phase,
+    conversation_id: waiting.conversation_id,
+    source_run_id:
+      waiting.run_id ?? waiting.source_execution_run_id ?? "",
+  };
+}
+
+export function continuationForRecovery(
+  waiting: WaitingContext | undefined,
+  fallback: {
+    source_run_id: string;
+    purpose: WaitingPurpose;
+    role: WaitingRole;
+    phase?: string;
+    conversation_id?: string;
+  },
+): RunContinuation {
+  if (waiting) return preserveWaitingOwnership(waiting);
+  return {
+    kind: "runtime_resume",
+    source_run_id: fallback.source_run_id,
+    purpose: fallback.purpose,
+    role: fallback.role,
+    phase: fallback.phase,
+    conversation_id: fallback.conversation_id,
+  };
+}
+
+export function waitingPurposeFromRun(
+  purpose?: string,
+  stage?: string,
+  continuation?: RunContinuation,
+): { purpose: WaitingPurpose; role: WaitingRole; phase?: string } {
+  if (continuation) {
+    return {
+      purpose: continuation.purpose,
+      role: continuation.role,
+      phase: continuation.phase ?? reviewPhaseOf(stage),
+    };
+  }
+  if (purpose === "planning")
+    return { purpose: "planning", role: "planner" };
+  if (purpose === "quality_review") {
+    return {
+      purpose: "review",
+      role: "planner",
+      phase: reviewPhaseOf(stage) ?? "before_human",
+    };
+  }
+  if (purpose === "planner_takeover")
+    return { purpose: "execute", role: "planner", phase: stage };
+  return { purpose: "execute", role: "executor", phase: stage };
+}
+
+function reviewPhaseOf(stage?: string): string | undefined {
+  if (!stage) return undefined;
+  if (stage === "before_human" || stage === "quality_before_human")
+    return "before_human";
+  if (stage === "after_human" || stage === "quality_after_human")
+    return "after_human";
+  return stage === "review" ? "after_human" : undefined;
+}

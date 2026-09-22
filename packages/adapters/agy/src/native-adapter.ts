@@ -2,7 +2,7 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { atomicWrite } from "../../../core/src/util.js";
 import { nativeLaunchInstruction } from "./handoff.js";
-import { agyArguments, observeAgy } from "./session.js";
+import { agyArguments, agyRunLogFile, observeAgy } from "./session.js";
 import type {
   ProcessManager,
   ManagedProcess,
@@ -111,6 +111,7 @@ export class AgyNativeAdapter {
           projectBindingId,
           "accept-edits",
           launcher.effortArgs,
+          agyRunLogFile(directory, run.id),
         ),
         "--add-dir",
         directory,

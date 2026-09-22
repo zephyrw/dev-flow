@@ -1,0 +1,4 @@
+{"type":"system","subtype":"init","session_id":"qoder-session-root-002","cwd":"/workspace/demo","tools":["Read","Glob","Grep","Agent","Task"]}
+{"type":"assistant","session_id":"qoder-session-root-002","message":{"content":[{"type":"tool_use","id":"call_open_1","name":"Agent","input":{"description":"任意委派","prompt":"继续处理"}}]}}
+{"type":"assistant","session_id":"qoder-session-root-002","message":{"content":[{"type":"tool_use","id":"call_open_2","name":"Task","input":{"description":"第二个委派","prompt":"再开一个"}}]}}
+{"type":"user","session_id":"qoder-session-root-002","message":{"content":[{"type":"tool_result","tool_use_id":"call_open_1","agent_id":"qoder-agent-open-1","content":"子会话已启动"}]}}

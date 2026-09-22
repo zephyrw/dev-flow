@@ -1,0 +1,15 @@
+{
+  "agent": {
+    "devflow-review": {
+      "mode": "primary",
+      "description": "DevFlow read-only inspection",
+      "permission": {
+        "*": "deny",
+        "read": "allow",
+        "glob": "allow",
+        "grep": "allow",
+        "list": "allow"
+      }
+    }
+  }
+}

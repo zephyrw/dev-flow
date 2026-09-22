@@ -3,7 +3,10 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { createHash } from "node:crypto";
 import type { Workspace } from "../../contracts/src/index.js";
-import { WorkspaceFingerprintService } from "../../workspace/src/fingerprint.js";
+import {
+  WorkspaceFingerprintService,
+  resolveExcludedRelativePaths,
+} from "../../workspace/src/fingerprint.js";
 import { safePath } from "../../workspace/src/files.js";
 import {
   NativeRunRecordReader,
@@ -19,10 +22,19 @@ const sha = (bytes: Buffer | string) =>
 
 export function captureInputs(workspaces: Workspace[]): Record<string, string> {
   return Object.fromEntries(
-    workspaces.map((w) => [
-      w.repo_id,
-      WorkspaceFingerprintService.compute(w.root).fingerprint,
-    ]),
+    workspaces.map((w) => {
+      const { registeredWorktrees, backupSubtrees } = resolveExcludedRelativePaths(w.root, {
+        knownWorkspaces: workspaces,
+        currentWorkspaceRoot: w.root,
+      });
+      return [
+        w.repo_id,
+        WorkspaceFingerprintService.compute(w.root, {
+          registeredWorktrees,
+          backupSubtrees,
+        }).fingerprint,
+      ];
+    }),
   );
 }
 const reportCache = new Map<string, { hash: string; version: string }>();

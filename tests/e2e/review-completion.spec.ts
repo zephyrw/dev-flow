@@ -1,9 +1,24 @@
 import { test, expect, type Page } from "@playwright/test";
 
+type ReviewFixtureWorkflow = {
+  id: string;
+  title: string;
+  project_id: string;
+  state: string;
+  stage: string;
+  version?: number;
+  plan_revision: number;
+  environment_revision?: number;
+  feedback?: unknown[];
+  run_id: string;
+  updated_at: string;
+  blocker?: { code: string; message: string };
+};
+
 test("不完整审查的继续按钮交给规划复核，不重启开发或清空证据", async ({
   page,
 }) => {
-  const workflow = {
+  const workflow: ReviewFixtureWorkflow = {
     id: "wf-review-completion",
     title: "审查结论待辨认验证",
     project_id: "p1",
@@ -66,7 +81,7 @@ test("不完整审查的继续按钮交给规划复核，不重启开发或清�
 });
 
 test("审查需要用户时等待指导，回答后回到原审查队列", async ({ page }) => {
-  const workflow = {
+  const workflow: ReviewFixtureWorkflow = {
     id: "wf-review-need-user",
     title: "审查求助恢复",
     project_id: "p1",
@@ -79,7 +94,7 @@ test("审查需要用户时等待指导，回答后回到原审查队列", async
     blocker: {
       code: "REVIEW_NEEDS_USER",
       message: "缺配置项名称",
-    } as { code: string; message: string } | undefined,
+    },
   };
   const detail = reviewDetail(workflow, {
     developed: 1,
@@ -175,7 +190,7 @@ test("审查结论不明时留在审查队列续问，不进入等待用户", as
 });
 
 test("规划求助结束后运行故障仍回到执行，不再派发规划", async ({ page }) => {
-  const workflow = {
+  const workflow: ReviewFixtureWorkflow = {
     id: "wf-planner-recover",
     title: "规划求助后恢复",
     project_id: "p1",

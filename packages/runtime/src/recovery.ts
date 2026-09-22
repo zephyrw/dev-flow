@@ -1,10 +1,10 @@
 import { execFileSync } from "node:child_process";
 import type { Engine } from "../../core/src/engine.js";
-import { FlowError, requireCondition } from "../../contracts/src/index.js";
+import { CONVERSATION_ENTITY, FlowError, requireCondition, type ConversationNode } from "../../contracts/src/index.js";
 import type { Lease } from "../../scheduler/src/scheduler.js";
 import { now } from "../../core/src/util.js";
 import type { OperationRequest } from "../../core/src/interactions.js";
-import { assertAccountModelRetryAccess, stageModelRunRetry, type ModelRetry } from "../../core/src/model-retry.js";
+import { assertAccountModelRetryAccess, stageModelRunRetry, isQuotaRetryBlocked, isRetryBatchCurrent, readRetryBatch, type ModelRetry } from "../../core/src/model-retry.js";
 import type { LocalRuntime } from "./runtime.js";
 import { prepareRepairResume } from "../../core/src/repair.js";
 import {
@@ -145,6 +145,26 @@ export function resolveResumeTarget(engine: Engine, key: string) {
   );
 }
 
+import { CliDispatchManager } from "./cli-dispatch.js";
+import { reconcileMaterialOutbox } from "../../core/src/project-materials.js";
+import { ConversationService } from "../../core/src/conversation-service.js";
+import {
+  ConversationControlService,
+  type StopPort,
+} from "../../core/src/conversation-control.js";
+import {
+  ConversationRecovery,
+  storeRecoveryRunPort,
+  type RecoveryArrangement,
+} from "./conversation-recovery.js";
+
+const noopStopPort: StopPort = {
+  async stopConversation() {
+    return { accepted: false, confirmation: "unknown" };
+  },
+};
+
+
 const resuming = new WeakMap<Engine, Set<string>>();
 export async function resumeModelWaits(engine: Engine, at = Date.now()) {
   let active = resuming.get(engine);
@@ -165,6 +185,15 @@ export async function resumeModelWaits(engine: Engine, at = Date.now()) {
       engine.store.remove("model_retry", retry.id);
       continue;
     }
+    if (isQuotaRetryBlocked(engine.store, retry)) {
+      engine.store.remove("model_retry", retry.id);
+      continue;
+    }
+    const batch = readRetryBatch(engine.store, retry.id, retry.run_id);
+    if (!isRetryBatchCurrent(retry, batch)) {
+      engine.store.remove("model_retry", retry.id);
+      continue;
+    }
     if (retry.retry_at > at) continue;
     active.add(retry.id);
     try {
@@ -173,8 +202,9 @@ export async function resumeModelWaits(engine: Engine, at = Date.now()) {
       await runtime?.browser?.reconcile(retry.id);
       await runtime?.environments?.stop(retry.id);
       if (!valid()) continue;
+      if (isQuotaRetryBlocked(engine.store, retry)) continue;
       if (retry.run_id) stageModelRunRetry(engine.store, retry.id, retry.run_id);
-      resumeApproved(engine, retry.id, { autoRetry: true });
+      resumeApproved(engine, retry.id, "quota_retry");
       engine.store.remove("model_retry", retry.id);
       engine.store.event(
         retry.id,
@@ -278,14 +308,18 @@ export function reconcileProcesses(engine: Engine, key: string) {
     if (env)
       engine.store.put("environment", key, key, { ...env, status: "stopped" });
     engine.store.event(key, w.project_id, "ProcessesReconciled", { results });
+    const dispatchMgr = new CliDispatchManager(engine.store);
+    dispatchMgr.reconcileDispatch(key);
+    reconcileMaterialOutbox(engine.store, key);
   });
   return results;
 }
 export function resumeApproved(
   engine: Engine,
   key: string,
-  options: { autoRetry?: boolean } = {},
+  sourceOrOptions: "user_resume" | "quota_retry" | "manual_handoff" | "migration" | { autoRetry?: boolean } = "user_resume",
 ) {
+  const source = typeof sourceOrOptions === "string" ? sourceOrOptions : sourceOrOptions.autoRetry ? "quota_retry" : "user_resume";
   reconcileProcesses(engine, key);
   const w = engine.get(key);
   requireCondition(
@@ -300,19 +334,46 @@ export function resumeApproved(
     "COMMIT_RECOVERY_REQUIRED",
     "部分提交只能重试原提交，不能启动开发",
   );
-  if (!options.autoRetry) {
+  if (source !== "quota_retry") {
     // A missing authorization pauses account recovery without changing its model.
     // Explicit user stop/model-switch already removes this pending retry.
     if (!w.run_id || !assertAccountModelRetryAccess(engine.store, key, w.run_id))
       engine.store.remove("pending_model_retry", key);
     engine.store.remove("transient_network_retry", key);
   }
-  engine.store.remove("model_retry", key);
   const waiting = readWaitingContext(engine.store, key);
+  const target = isPlanningRecovery(engine, key, w, waiting)
+    ? { state: "PLANNING" as const, stage: "planning", enqueue: true }
+    : resolveResumeTarget(engine, key);
+  assertResumePreconditions(engine, key, target);
+  // CW2-F12 / CW3-F06: 严格区分来源，自动恢复严禁解除用户原因 (workflow_pause)
+  const dispatchMgr = new CliDispatchManager(engine.store);
+  if (source === "user_resume") {
+    dispatchMgr.removeControlReason(key, "workflow_pause");
+  } else if (source === "migration") {
+    dispatchMgr.removeControlReason(key, "migration");
+  }
+
+  const control = dispatchMgr.getDispatchControl(key);
+  requireCondition(
+    !control.reasons.some((r) => r.reason === "migration"),
+    "MIGRATION_IN_PROGRESS",
+    "工作流仍有未完成的资产迁移，禁止恢复执行",
+    409,
+  );
+  if (!control.dispatch_enabled) {
+    const reasons = control.reasons.map((r) => r.message || r.reason).join("; ");
+    throw new FlowError("DISPATCH_DISABLED", `无法恢复执行: ${reasons || "调度已停用"}`, 409);
+  }
+
+  const arranged = target.state === "HUMAN_PENDING" ? undefined : arrangeConversationRecovery(
+    engine, key, source === "quota_retry" ? "quota_retry" : source === "user_resume" ? "user_resume" : "service_recovery",
+  );
+  engine.store.remove("model_retry", key);
   const resumedWaiting = resumeWaitingIfCurrent(engine, key, w, waiting);
   if (resumedWaiting) return resumedWaiting;
-  const target = resolveResumeTarget(engine, key);
-  assertResumePreconditions(engine, key, target);
+  const routed = routeArrangedResume(engine, key, w, arranged);
+  if (routed) return routed;
   const restored = engine.restoreFailedRole(key, "用户恢复执行");
   if (restored) return restored;
   if (target.state === "QUEUED") {
@@ -410,4 +471,133 @@ function archiveStalePlanning(
       });
   }
   if (isPlanningWaiting(waiting)) clearWaitingContext(engine.store, key);
+}
+
+function arrangeConversationRecovery(
+  engine: Engine,
+  key: string,
+  reason: "user_resume" | "quota_retry" | "service_recovery",
+): RecoveryArrangement | undefined {
+  const session = openConversationRecovery(engine, key);
+  if (!session) return undefined;
+  session.recovery.assertResumeReady(key, session.request);
+  const arranged = session.recovery.commitArrangement(key, session.request, {
+    reason,
+  });
+  session.controls.resumeTree(key, session.request);
+  return arranged;
+}
+
+function openConversationRecovery(engine: Engine, key: string) {
+  const nodes = engine.store.list<ConversationNode>(
+    CONVERSATION_ENTITY.node,
+    key,
+  );
+  if (!nodes.length) return undefined;
+  const conversations = new ConversationService(engine.store);
+  const controls = new ConversationControlService(
+    engine.store,
+    conversations,
+    noopStopPort,
+  );
+  const recovery = new ConversationRecovery({
+    store: engine.store,
+    conversations,
+    controls,
+    runPort: storeRecoveryRunPort(engine.store),
+  });
+  const tree = conversations.getTree(key);
+  const rootId = tree.active_root_id;
+  if (!rootId) return undefined;
+  const generation =
+    tree.attempts
+      .filter((item) => item.conversation_id === rootId)
+      .sort((a, b) => a.generation - b.generation)
+      .at(-1)?.generation ?? 0;
+  return {
+    recovery,
+    controls,
+    request: {
+      request_id: `recover-${key}-${rootId}-${generation}`,
+      action: "resume" as const,
+      root_id: rootId,
+      expected_generation: generation,
+    },
+  };
+}
+
+function isPlanningRecovery(
+  engine: Engine,
+  key: string,
+  w: Workflow,
+  waiting: WaitingContext | undefined,
+  arranged?: RecoveryArrangement,
+) {
+  if (arranged?.planning_only || arranged?.purpose === "planning") return true;
+  if (
+    w.state === "PLANNING" ||
+    w.state === "PLAN_PENDING" ||
+    w.state === "REPAIR_PLAN_PENDING" ||
+    w.state === "RESEARCHING"
+  )
+    return true;
+  const run = w.run_id
+    ? engine.store.get<{ purpose?: string; stage?: string }>("run", w.run_id)
+    : undefined;
+  if (run?.purpose === "planning" || run?.stage === "planning") return true;
+  if (
+    waiting &&
+    isPlanningWaiting(waiting) &&
+    isCurrentPlanningSource({
+      handoff: readPlanningHandoff(engine.store, key), waiting,
+      state: w.state, blockerCode: w.blocker?.code, runId: w.run_id, run,
+    })
+  )
+    return true;
+  return isStoppedUnapprovedPlanning(engine, key, w);
+}
+
+function isStoppedUnapprovedPlanning(engine: Engine, key: string, w: Workflow) {
+  const interruption = engine.store.get<{ prior_stage?: string }>(
+    "interruption",
+    key,
+  );
+  const prior = interruption?.prior_stage;
+  if (!["planning", "plan_approval", "research"].includes(prior ?? ""))
+    return false;
+  const approval = engine.store.get<{ plan_hash: string }>(
+    "approval",
+    `${key}-${w.plan_revision}`,
+  );
+  return !w.plan_hash || approval?.plan_hash !== w.plan_hash;
+}
+
+function routeArrangedResume(
+  engine: Engine,
+  key: string,
+  w: Workflow,
+  arranged?: RecoveryArrangement,
+) {
+  if (!arranged) return;
+  engine.store.remove("model_retry", key);
+  if (arranged.planning_only || arranged.purpose === "planning") {
+    const next = engine.transition(key, [w.state], "PLANNING", "planning", {
+      blocker: undefined,
+    });
+    engine.store.enqueue(key, "dispatch_run", { purpose: "planning" });
+    return next;
+  }
+  if (
+    arranged.purpose === "quality_review" ||
+    arranged.waiting_purpose === "review"
+  ) {
+    const stage =
+      arranged.phase === "before_human" ? "quality_before_human" : "review";
+    const next = engine.transition(key, [w.state], "REVIEW_QUEUED", stage, {
+      blocker: undefined,
+    });
+    engine.scheduler.enqueue(key, w.project_id);
+    engine.store.enqueue(key, "dispatch", {});
+    return next;
+  }
 }

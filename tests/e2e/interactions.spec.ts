@@ -369,11 +369,11 @@ test("guidance remains available in a recovered task and is sent without startin
   let received: any;
   await page.route("**/api/**", async (route) => {
     const path = new URL(route.request().url()).pathname;
-    if (path.endsWith("/feedback")) {
+    if (path.endsWith("/feedback") || path.endsWith("/conversation-messages")) {
       received = route.request().postDataJSON();
       w.state = "QUEUED";
       w.version++;
-      await route.fulfill({ json: w });
+      await route.fulfill({ json: { ...w, message_id: "msg-1" } });
       return;
     }
     await route.fulfill({
@@ -390,17 +390,42 @@ test("guidance remains available in a recovered task and is sent without startin
   await page.routeWebSocket("**/api/events?*", () => {});
   await page.goto("/?workflow=" + w.id);
   await page.getByRole("button", { name: "执行过程", exact: true }).click();
+  await expect(page.getByRole("button", { name: "指导或提问", exact: true })).toHaveCount(
+    0,
+  );
   await page
-    .getByRole("button", { name: "指导或提问", exact: true })
-    .click();
-  await page
-    .locator(".guidance-form textarea")
+    .locator(".conversation-composer-input")
     .fill("读取启动日志，修复报错并继续测试。");
-  await page.getByRole("button", { name: "发送指导并继续" }).click();
+  await page.getByRole("button", { name: "发送", exact: true }).click();
   await expect
     .poll(() => received)
     .toMatchObject({
       text: "读取启动日志，修复报错并继续测试。",
-      scope: "within_plan",
     });
+});
+
+test("SA-E22 shared composer still creates, sends plan feedback and workspace refs", async ({
+  page,
+}) => {
+  test.setTimeout(120000);
+  const { createNative, openExecutionSidebar, composerInput, setNativeFixture } =
+    await import("./native-helper.js");
+  await setNativeFixture(page, {});
+  const id = await createNative(
+    page,
+    "E22 共享输入回归：将文本改为 after",
+    "new_worktree",
+  );
+  await openExecutionSidebar(page);
+  await expect(page.getByRole("button", { name: "创建并开始规划" })).toHaveCount(0);
+  await composerInput(page).fill("请补充换行验证，并 @");
+  await composerInput(page).type("app.txt");
+  await page.keyboard.press("Enter");
+  await page.getByRole("button", { name: "发送", exact: true }).click();
+  await expect
+    .poll(async () => {
+      const detail = await (await page.request.get(`/api/workflows/${id}`)).json();
+      return JSON.stringify(detail.workflow.feedback ?? []);
+    }, { timeout: 30000 })
+    .toContain("请补充换行验证");
 });

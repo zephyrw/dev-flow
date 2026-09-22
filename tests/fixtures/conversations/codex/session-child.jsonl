@@ -1,0 +1,4 @@
+{"type":"session_meta","timestamp":"2026-09-20T00:00:00.000Z","payload":{"id":"019947a2-8a00-7000-8000-000000000011","cwd":"/workspace/demo"}}
+{"type":"turn_context","timestamp":"2026-09-20T00:00:01.000Z","payload":{"model":"gpt-5.2-codex","effort":"medium"}}
+{"type":"event_msg","timestamp":"2026-09-20T00:00:02.000Z","payload":{"type":"token_count","rate_limits":{"limit_id":"codex-child","primary":{"used_percent":12,"window_minutes":60}}}}
+{"type":"unknown_vendor_event","timestamp":"2026-09-20T00:00:03.000Z","payload":{"type":"agent","thread_id":"019947a2-8a00-7000-8000-000000000099"}}

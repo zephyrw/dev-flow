@@ -79,6 +79,96 @@ export function decodeAgyToolMetadata(payload: Buffer) {
     throw new Error("Invalid AGY arguments");
   return { call_id: text(call, 1), name: text(call, 2), parameters };
 }
+
+export const AGY_DELEGATION_TOOL = "invoke_subagent";
+const AGY_CONVERSATION_ID = /^[0-9a-f-]{36}$/i;
+const PUBLIC_METADATA_FIELDS = ["call_id", "name", "parameters", "output"];
+
+export interface AgyStepIdentity {
+  conversation_id: string;
+  step_index: number;
+}
+
+export interface AgyChildAssociation {
+  parent_conversation_id: string;
+  parent_step_index: number;
+  spawn_call_id?: string;
+  child_conversation_id?: string;
+  agent_native_id?: string;
+  title?: string;
+  unread_fields: string[];
+  unread_reason?: string;
+}
+
+export function isAgyConversationId(value: unknown): value is string {
+  return typeof value === "string" && AGY_CONVERSATION_ID.test(value);
+}
+
+export function isAgyDelegationTool(name: unknown): name is string {
+  return name === AGY_DELEGATION_TOOL;
+}
+
+export function agyStepSourceId(identity: AgyStepIdentity): string {
+  return `agy:${identity.conversation_id}:step:${identity.step_index}`;
+}
+
+export function tryDecodeAgyToolMetadata(
+  payload: Buffer,
+):
+  | { ok: true; value: ReturnType<typeof decodeAgyToolMetadata> }
+  | { ok: false; unread_fields: string[]; reason: string } {
+  try {
+    return { ok: true, value: decodeAgyToolMetadata(payload) };
+  } catch {
+    return {
+      ok: false,
+      unread_fields: [...PUBLIC_METADATA_FIELDS],
+      reason: "unreadable_metadata",
+    };
+  }
+}
+
+function publicJsonObject(text: string | undefined): Record<string, unknown> | undefined {
+  if (!text?.trim()) return;
+  try {
+    const value = JSON.parse(text);
+    if (!value || typeof value !== "object" || Array.isArray(value)) return;
+    return value as Record<string, unknown>;
+  } catch {
+    return;
+  }
+}
+
+function publicConversationId(source: Record<string, unknown> | undefined): string | undefined {
+  if (!source) return;
+  const value = source.ConversationId ?? source.conversationId ?? source.conversation_id;
+  return isAgyConversationId(value) ? value : undefined;
+}
+
+export function childAssociationFromPublicStep(
+  identity: AgyStepIdentity,
+  step: AgyNativeStep,
+): AgyChildAssociation | undefined {
+  if (!isAgyDelegationTool(step.name)) return;
+  const typeName = step.parameters.TypeName;
+  const role = step.parameters.Role;
+  const fromParams = publicConversationId(step.parameters);
+  const fromOutput = publicConversationId(publicJsonObject(step.output));
+  const childId = fromParams ?? fromOutput;
+  const unread_fields: string[] = [];
+  if (!childId) unread_fields.push("ConversationId");
+  return {
+    parent_conversation_id: identity.conversation_id,
+    parent_step_index: identity.step_index,
+    spawn_call_id: step.call_id || agyStepSourceId(identity),
+    child_conversation_id: childId,
+    agent_native_id: typeof typeName === "string" && typeName ? typeName : undefined,
+    title: typeof role === "string" && role ? role : undefined,
+    unread_fields,
+    unread_reason: childId ? undefined : "child_identity_not_in_public_metadata",
+  };
+}
+
 /** This prefix is host-generated. Text after Stdout/Output/Stderr is never parsed as
  * an exit code, even if the tested program prints a fake success footer. */
 export function agyCommandExit(output: string): number | undefined {
@@ -114,9 +204,34 @@ function readAgyStepOutput(
 
 export class AgyNativeRecordSource {
   constructor(private profileRoot: string) {}
+  readIdentifiedStep(identity: AgyStepIdentity): AgyNativeStep | undefined {
+    return this.read(identity.conversation_id, identity.step_index);
+  }
+  readChildAssociation(
+    identity: AgyStepIdentity,
+  ): AgyChildAssociation | undefined {
+    if (
+      !isAgyConversationId(identity.conversation_id) ||
+      !Number.isSafeInteger(identity.step_index) ||
+      identity.step_index < 0
+    )
+      return;
+    try {
+      const step = this.readIdentifiedStep(identity);
+      if (!step) return;
+      return childAssociationFromPublicStep(identity, step);
+    } catch {
+      return {
+        parent_conversation_id: identity.conversation_id,
+        parent_step_index: identity.step_index,
+        unread_fields: [...PUBLIC_METADATA_FIELDS],
+        unread_reason: "unreadable_metadata",
+      };
+    }
+  }
   read(conversation: string, index: number): AgyNativeStep | undefined {
     if (
-      !/^[0-9a-f-]{36}$/i.test(conversation) ||
+      !isAgyConversationId(conversation) ||
       !Number.isSafeInteger(index) ||
       index < 0
     )

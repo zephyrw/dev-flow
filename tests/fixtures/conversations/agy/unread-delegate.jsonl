@@ -1,0 +1,2 @@
+{"event":"init","conversation_id":"11111111-1111-4111-8111-111111111111","init":{"model":"gemini-3.7-flash-high","cwd":"C:/fixture/parent"}}
+{"event":"step_update","step_update":{"conversation_id":"11111111-1111-4111-8111-111111111111","step_index":7,"state":"DONE","step_type":"tool","tool_name":"invoke_subagent","tool_info":{"name":"invoke_subagent","parameters":{"TypeName":"DeepInvestigator","Workspace":"inherit","Prompt":"调查失败原因"},"output":"ENCRYPTED:not-json-and-not-a-child-record 44444444-4444-4444-8444-444444444444"}}}

@@ -1,0 +1,4 @@
+{
+  "ses_root1": { "type": "busy" },
+  "ses_child1": { "type": "idle" }
+}

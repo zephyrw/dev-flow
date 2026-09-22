@@ -52,7 +52,9 @@ export async function cleanArchivedReports(
     if (!command.report_path) continue;
     const ws = command.repo_id
       ? workspaces.find((x) => x.repo_id === command.repo_id)
-      : workspaces[0];
+      : (project.primary_repo_id
+          ? workspaces.find((x) => x.repo_id === project.primary_repo_id)
+          : workspaces.find((x: any) => x.is_primary || x.primary || x.repo_id === "main" || x.repo_id === "primary") || workspaces[0]);
     if (!ws) continue;
     const reports = [command.report_path];
     const directory = dirname(command.report_path);

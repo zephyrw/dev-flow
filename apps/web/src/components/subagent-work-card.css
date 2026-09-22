@@ -1,0 +1,201 @@
+.subagent-work-card {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  max-height: 200px;
+  border-top: 1px solid var(--border-subtle, #e2e8f0);
+  background: var(--bg-surface, #ffffff);
+  min-height: 0;
+}
+
+.subagent-work-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-shrink: 0;
+  padding: 8px 12px;
+}
+
+.subagent-work-card-headline,
+.subagent-work-card-history {
+  margin: 0;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-main, #0f172a);
+}
+
+.subagent-work-card-history {
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  padding: 0;
+  justify-content: flex-start;
+  text-align: left;
+}
+
+.subagent-work-card-history:hover {
+  background: transparent;
+  color: var(--primary, #2563eb);
+}
+
+.subagent-work-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.subagent-work-card-pause,
+.subagent-work-card-collapse {
+  box-shadow: none;
+}
+
+.subagent-work-card-pause {
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+.subagent-work-card-collapse {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-light, #94a3b8);
+  font-size: 18px;
+  line-height: 1;
+}
+
+.subagent-work-card-collapse:hover {
+  background: var(--bg-surface-subtle, #f1f5f9);
+  color: var(--text-main, #0f172a);
+}
+
+.subagent-work-card-capability {
+  margin: 0;
+  padding: 8px 12px;
+  color: var(--text-muted, #475569);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.subagent-work-card-list {
+  margin: 0;
+  padding: 0 8px 8px;
+  list-style: none;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.subagent-work-card-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+  margin: 0;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: var(--radius-sm, 6px);
+  background: transparent;
+  box-shadow: none;
+  text-align: left;
+  font-weight: 400;
+}
+
+.subagent-work-card-row:hover {
+  background: var(--bg-surface-subtle, #f1f5f9);
+}
+
+.subagent-work-card-dot {
+  flex-shrink: 0;
+  color: var(--text-light, #94a3b8);
+  line-height: 20px;
+}
+
+.subagent-work-card-body {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.subagent-work-card-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text-main, #0f172a);
+}
+
+.subagent-work-card-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--text-light, #94a3b8);
+}
+
+.subagent-work-card-summary {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-muted, #475569);
+}
+
+.subagent-work-card-status {
+  font-size: 11px;
+  color: var(--text-light, #94a3b8);
+}
+
+.subagent-work-card.is-collapsed {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+}
+
+.subagent-work-card-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.subagent-work-card-chip {
+  border: 1px solid var(--border-subtle, #e2e8f0);
+  background: var(--bg-surface-subtle, #f8fafc);
+  box-shadow: none;
+  padding: 3px 8px;
+  border-radius: var(--radius-full, 9999px);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-muted, #475569);
+}
+
+.subagent-work-card-chip.is-working {
+  color: var(--primary-text, #1e40af);
+  background: var(--primary-light, #eff6ff);
+  border-color: var(--primary-border, #bfdbfe);
+}
+
+.subagent-work-card-chip.is-exception {
+  color: var(--color-danger-text, #991b1b);
+  background: var(--color-danger-bg, #fef2f2);
+  border-color: var(--color-danger-border, #fecaca);
+}
+
+.subagent-work-card-chip.is-stale,
+.subagent-work-card-chip.is-paused {
+  color: var(--color-warning-text, #92400e);
+  background: var(--color-warning-bg, #fffbeb);
+  border-color: var(--color-warning-border, #fde68a);
+}

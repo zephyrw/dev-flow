@@ -11,6 +11,7 @@ export interface ProjectDocument {
   revision: number;
   hash: string;
   content: string;
+  path?: string;
   anchor_map?: Record<string, string>;
   approved_by_human?: boolean;
   approval_receipt?: {
@@ -84,6 +85,13 @@ export class DocumentService {
       revision: nextRevision,
       hash: docHash,
       content: normContent,
+      path: join(
+        this.storageRoot,
+        "documents",
+        workflowId,
+        `r${nextRevision}`,
+        `${documentType}.md`,
+      ),
       anchor_map: anchorMap,
       approved_by_human: false,
       created_at: now(),

@@ -1,0 +1,4 @@
+{"type":"session_meta","timestamp":"2026-09-20T00:00:00.000Z","payload":{"id":"019947a2-8a00-7000-8000-000000000010","cwd":"/workspace/demo"}}
+{"type":"turn_context","timestamp":"2026-09-20T00:00:01.000Z","payload":{"model":"gpt-5.2","effort":"xhigh"}}
+{"type":"event_msg","timestamp":"2026-09-20T00:00:02.000Z","payload":{"type":"token_count","rate_limits":{"limit_id":"codex","primary":{"used_percent":41,"window_minutes":10080}}}}
+{"type":"response_item","timestamp":"2026-09-20T00:00:03.000Z","payload":{"type":"reasoning","encrypted":true}}

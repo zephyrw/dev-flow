@@ -2,6 +2,12 @@ import {
   PlanSelfCheckCoordinator,
   BEFORE_HUMAN_REVIEW_STAGE,
 } from "./plan-self-check.js";
+import {
+  getPlanMaterialPath,
+  resolveMaterialLocator,
+  publishProjectMaterialSafely,
+  readProjectMaterialByLocator,
+} from "./project-materials.js";
 import { bindProfile, buildDispatchContext, isLegacyProtocol } from "./run-profile.js";
 import { bindRepairAssignment, closeOpenRepairBatches } from "./repair-model-service.js";
 import { QualityCoordinator } from "./quality-coordinator.js";
@@ -70,6 +76,7 @@ import { validatePlan } from "../../plans/src/validate.js";
 import { GitDeliveryCoordinator } from "../../git/src/delivery-coordinator.js";
 import { GitManager, repositoryInfo, git } from "../../git/src/git.js";
 import { Scheduler } from "../../scheduler/src/scheduler.js";
+import { CliDispatchManager } from "../../runtime/src/cli-dispatch.js";
 import { FileBroker } from "../../workspace/src/files.js";
 import {
   type HostToolExecutionFact,
@@ -109,6 +116,8 @@ import type {
   QualityRepairAssignment,
   QualityTransfer,
 } from "../../contracts/src/quality.js";
+import { ConversationService } from "./conversation-service.js";
+import type { ConversationControlRequest } from "./conversation-control.js";
 
 export interface PlanRecord {
   id: string;
@@ -117,6 +126,9 @@ export interface PlanRecord {
   hash: string;
   plan: Plan;
   created_at: string;
+  material_id?: string;
+  material_path?: string;
+  run_id?: string;
 }
 
 export type RoundResult = {
@@ -210,7 +222,8 @@ export interface Runtime {
   ): Promise<MergeConflictReceipt>;
   execute(workflow: Workflow, run: Run, token: string): Promise<void>;
   review(workflow: Workflow, run: Run): Promise<unknown>;
-  stop(run: string): Promise<void>;
+  stop(run: string): Promise<any>;
+  stopConversation?(target: any): Promise<any>;
   check(
     workflow: Workflow,
     testId: string,
@@ -227,6 +240,10 @@ export class Engine {
     return new QualityCoordinator(this.store);
   }
   runtime?: Runtime;
+  pauseTree?: (
+    workflowId: string,
+    request: ConversationControlRequest,
+  ) => Promise<unknown>;
   private busy = new Set<string>();
   private dispatching = false;
   private running = new Set<string>();
@@ -492,6 +509,7 @@ export class Engine {
         id: id("wf"),
         state: "RESEARCHING",
         stage: "research",
+        binding_strategy: "unified",
         version: 1,
         plan_revision: 0,
         environment_revision: 0,
@@ -1468,9 +1486,25 @@ export class Engine {
         waiting.intent === "unclear")
         ? continuationFromWaiting(waiting)
         : undefined;
-    const continuation = stagedMatch ?? waitingMatch;
-    if (!continuation) return;
+    const continuation = stagedMatch ?? waitingMatch ?? this.openRunContinuation(key, purpose);
+    if (!continuation) {
+      if (staged && staged.purpose !== purpose)
+        clearRunContinuation(this.store, key);
+      return;
+    }
     return { ...continuation, purpose, role: continuation.role || role };
+  }
+  private openRunContinuation(
+    key: string,
+    purpose: RunContinuation["purpose"],
+  ) {
+    const runs = this.store.list<Run>("run", key);
+    for (let i = runs.length - 1; i >= 0; i--) {
+      const run = runs[i]!;
+      if (run.continuation?.purpose !== purpose) continue;
+      if (run.status === "completed" && run.exit_code === 0) continue;
+      return run.continuation;
+    }
   }
   private persistBoundContinuation(
     key: string,
@@ -2128,22 +2162,76 @@ export class Engine {
     this.clearNetworkRetryTimer(key);
     if (w.run_id) this.store.put("run_stop", w.run_id, key, interruption);
     if (w.run_id) this.auth.revokeRun(w.run_id);
+    // CW2-D04 / §7 第 7 项: 控制事实增加明确原因集合 (workflow_pause)，单调递增 revision
+    const dispatchMgr = new CliDispatchManager(this.store);
+    dispatchMgr.addControlReason(key, {
+      reason: "workflow_pause",
+      created_at: now(),
+      message: interruption.message,
+    });
+
     this.store.remove("queue", key);
     this.store.remove("model_retry", key);
     this.store.remove("pending_model_retry", key);
     this.store.remove("transient_network_retry", key);
     this.transition(key, [w.state], "STOPPING", "stop");
-    if (w.run_id) await this.runtime?.stop(w.run_id);
+    await this.pauseActiveConversationTree(key);
+
+    let stopResult: any = { status: "confirmed_not_started" };
+    if (w.run_id && this.runtime) {
+      stopResult = await this.runtime.stop(w.run_id);
+    }
+
     await this.mergeRuns.get(key);
-    const next = this.transition(key, ["STOPPING"], "STOPPED", "stopped");
-    this.store.event(key, w.project_id, "Stopped", {
-      ...interruption,
-      agent_stopped: true,
-      services_retained:
-        this.store.get<{ status: string }>("environment", key)?.status ===
-        "ready",
-    });
-    return next;
+
+    // CW2-F11 / §7 第 6 项: 只有 confirmed_exited 或 confirmed_not_started 才可进入 STOPPED，否则保持 STOPPING
+    const isExited =
+      stopResult?.status === "confirmed_exited" ||
+      stopResult?.status === "confirmed_not_started";
+
+    if (isExited) {
+      const next = this.transition(key, ["STOPPING"], "STOPPED", "stopped");
+      this.store.event(key, w.project_id, "Stopped", {
+        ...interruption,
+        agent_stopped: true,
+        services_retained:
+          this.store.get<{ status: string }>("environment", key)?.status ===
+          "ready",
+      });
+      return next;
+    } else {
+      // 保持在 STOPPING 状态并标记 writer_state 为 unknown
+      const currentControl = this.store.get<any>("workflow_dispatch_control", key);
+      if (currentControl) {
+        this.store.put("workflow_dispatch_control", key, key, {
+          ...currentControl,
+          writer_state: "unknown",
+          updated_at: now(),
+        });
+      }
+      return this.get(key);
+    }
+  }
+  private async pauseActiveConversationTree(key: string) {
+    if (!this.pauseTree) return;
+    const tree = new ConversationService(this.store).getTree(key);
+    const rootId = tree.active_root_id;
+    if (!rootId) return;
+    const generation =
+      tree.attempts
+        .filter((item) => item.conversation_id === rootId)
+        .sort((a, b) => a.generation - b.generation)
+        .at(-1)?.generation ?? 0;
+    try {
+      await this.pauseTree(key, {
+        request_id: `stop:${key}:${rootId}:${generation}`,
+        action: "pause",
+        root_id: rootId,
+        expected_generation: generation,
+      });
+    } catch {
+      return;
+    }
   }
   async exclusive<T>(key: string, fn: () => Promise<T>): Promise<T> {
     requireCondition(
@@ -2227,6 +2315,14 @@ export class Engine {
           this.store.jobStatus(job.id, "delivered");
           continue;
         }
+
+        // CW2-F08: outbox 冲突派发前必须先校验调度开关与占用状态，防止绕过停用
+        const dispatchMgr = new CliDispatchManager(this.store);
+        const eligibility = dispatchMgr.checkDispatchEligibility(w.id);
+        if (!eligibility.allowed) {
+          continue;
+        }
+
         if (this.runtime && (this.runtime as any).resolveMergeConflict) {
           const pending: Promise<void> = (this.runtime as any)
             .resolveMergeConflict(w, run, request)
@@ -2669,15 +2765,46 @@ export class Engine {
         this.store,
         this.config.storage_root,
       ).publishDocument(w.id, "plan", normalized, w.plan_revision + 1);
+
+      // CW2-D03 / CW3-F11 / CW4-F03: 通过 Locator 定位并写入项目工作区，发布后将真实 material ID/locator 关联到规划版本记录
+      let locator: any;
+      try {
+        locator = resolveMaterialLocator({
+          store: this.store,
+          workflowId: w.id,
+          kind: "plan",
+          revision: w.plan_revision + 1,
+          run_id: runId,
+        });
+        publishProjectMaterialSafely({
+          store: this.store,
+          locator,
+          content: normalized,
+          cachePath: doc.path,
+        });
+      } catch {}
+
       await this.submitValidatedPlan(
         w.id,
         plan,
         this.get(w.id).version,
         "planning-" + runId,
       );
+      const planRev = this.get(w.id).plan_revision;
+      const currentPlan = this.store.get<PlanRecord>("plan", `${w.id}-${planRev}`);
+      if (currentPlan && locator) {
+        this.store.put("plan", currentPlan.id, w.id, {
+          ...currentPlan,
+          material_id: locator.material_id,
+          material_path: locator.relative_path,
+          run_id: runId,
+        });
+      }
       this.store.put("planning_document", w.id, w.id, {
         document_id: doc.id,
-        plan_revision: this.get(w.id).plan_revision,
+        plan_revision: planRev,
+        material_id: locator?.material_id,
+        run_id: runId,
       });
       this.store.put("run", runId, w.id, {
         ...this.store.must<Run>("run", runId),
@@ -2719,6 +2846,10 @@ export class Engine {
         attempted.add(item.id);
         last = item.project;
         const w = this.get(item.id);
+        const dispatchControl = this.store.get<any>("workflow_dispatch_control", w.id);
+        if (dispatchControl && dispatchControl.dispatch_enabled === false) {
+          continue;
+        }
         if (!["QUEUED", "REVIEW_QUEUED", "PLANNING"].includes(w.state)) {
           this.store.remove("queue", w.id);
           continue;
@@ -3331,10 +3462,25 @@ export class Engine {
     );
     if (body.trim()) {
       try {
-        new DocumentService(
+        const doc = new DocumentService(
           this.store,
           this.config.storage_root,
         ).publishDocument(w.id, "repair_plan", body, w.plan_revision);
+
+        // CW2-D03 / CW3-F11: 通过 Locator 定位并写入项目工作区整改原件，包含真实 run_id/revision
+        const locator = resolveMaterialLocator({
+          store: this.store,
+          workflowId: w.id,
+          kind: "repair",
+          revision: w.plan_revision,
+          run_id: w.run_id,
+        });
+        publishProjectMaterialSafely({
+          store: this.store,
+          locator,
+          content: body,
+          cachePath: doc.path,
+        });
       } catch {}
     }
     return this.get(w.id);
@@ -4354,80 +4500,84 @@ export class Engine {
     this.scheduler.suspectExpired(0);
   }
   exportDocuments(key: string) {
-    const w = this.get(key);
-    if (!w.plan_revision) return;
-    const p = this.plan(key);
-    const root = join(
-      this.config.storage_root,
-      "documents",
-      key,
-      `r${w.plan_revision}`,
-    );
-    mkdirSync(root, { recursive: true });
-    atomicWrite(join(root, "计划.md"), p.plan.markdown ?? "");
-    const planCheck = this.planSelfCheck.current(key);
-    if (planCheck) {
-      const revision =
-        planCheck.delivery_revision_id &&
-        this.store.get<DeliveryRevision>(
-          "delivery_revision",
-          planCheck.delivery_revision_id,
-        );
-      const report =
-        revision &&
-        this.store.get<Delivery>("delivery", revision.delivery_id)?.manifest
-          .plan_self_check;
-      atomicWrite(
-        join(root, "执行模型计划复核.md"),
-        `# 执行模型正式计划复核\n\n本文件为执行事实记录，不是实施计划。状态：${planCheck.status}；计划版本：${planCheck.plan_revision}。\n\n` +
-          `请求：${planCheck.id}；源交付：${planCheck.source_delivery_revision_id}；复核轮次：${planCheck.run_id ?? "待调度"}。\n\n` +
-          (report
-            ? report.checks
-                .map(
-                  (c) =>
-                    `- ${c.check_id}：${c.status}；${c.evidence.join("；")}`,
-                )
-                .join("\n")
-            : "尚无通过的逐项复核报告。") +
-          "\n",
+    try {
+      const w = this.get(key);
+      if (!w.plan_revision) return;
+      const p = this.plan(key);
+      const root = join(
+        this.config.storage_root,
+        "documents",
+        key,
+        `r${w.plan_revision}`,
       );
-    }
-    const allEvidence = [
-      ...this.store.list<Evidence>("evidence", key),
-      ...this.store.list<Evidence>("development_evidence", key),
-    ];
-    const progress = testProgress(p.plan, allEvidence, w);
-    const tasks = this.taskStatus(key)
-      .map((t) => {
-        const definition = p.plan.tasks.find((task) => task.id === t.id)!;
-        return `### ${t.id} ${t.title}\n\n-[${t.development_status === "completed" ? "x" : " "}] 开发完成：${({ completed: "已完成", active: "进行中", needs_changes: "需修改", check_failed: "自检未通过", pending_check: "待检查", pending: "未开始" } as Record<string, string>)[t.development_status] ?? t.development_status}\n\n- [${t.validation_status === "passed" ? "x" : " "}] 验证完成：${({ passed: "已通过", failed: "未通过", stale: "需重测", not_run: "未验证" } as Record<string, string>)[t.validation_status]}\n\n修改位置：${definition.repo_id ?? "默认仓库"} / ${definition.paths.join("、")}\n\n输入：${definition.inputs}\n\n核心实现：${definition.implementation}\n\n保持行为：${definition.preserve}\n\n完成标准：${definition.completion}\n\n前置任务：${definition.depends_on.join("、") || "无"}；关联测试：${definition.test_ids.join("、")}\n\n停止条件：${definition.stop_conditions}\n\n实际声明：${t.summary || "尚未提交"}\n`;
-      })
-      .join("\n");
-    const tests = p.plan.tests
-      .map((t) => {
-        const e = latestEvidence(allEvidence, t.id, w);
-        return `### ${t.id} / ${t.layer}\n\n-[${e?.status === "passed" && progressEvidence(e, w) ? "x" : " "}] ${e?.status ?? "not_run"}\n\n关联任务：${t.task_ids.join("、")}；用例清单：\n${progress.cases
-          .filter((c) => c.test_id === t.id)
-          .map(
-            (c) =>
-              `- [${c.status === "passed" ? "x" : " "}] ${c.id} · ${({ passed: "已通过", failed: "未通过", skipped: "已跳过", stale: "需重测", not_run: "未运行", missing: "缺少结果" } as Record<string, string>)[c.status]}`,
-          )
-          .join(
+      mkdirSync(root, { recursive: true });
+      atomicWrite(join(root, "计划.md"), p.plan.markdown ?? "");
+      const planCheck = this.planSelfCheck.current(key);
+      if (planCheck) {
+        const revision =
+          planCheck.delivery_revision_id &&
+          this.store.get<DeliveryRevision>(
+            "delivery_revision",
+            planCheck.delivery_revision_id,
+          );
+        const report =
+          revision &&
+          this.store.get<Delivery>("delivery", revision.delivery_id)?.manifest
+            .plan_self_check;
+        atomicWrite(
+          join(root, "执行模型计划复核.md"),
+          `# 执行模型正式计划复核\n\n本文件为执行事实记录，不是实施计划。状态：${planCheck.status}；计划版本：${planCheck.plan_revision}。\n\n` +
+            `请求：${planCheck.id}；源交付：${planCheck.source_delivery_revision_id}；复核轮次：${planCheck.run_id ?? "待调度"}。\n\n` +
+            (report
+              ? report.checks
+                  .map(
+                    (c) =>
+                      `- ${c.check_id}：${c.status}；${c.evidence.join("；")}`,
+                  )
+                  .join("\n")
+              : "尚无通过的逐项复核报告。") +
             "\n",
-          )}\n\n操作步骤：\n${t.steps.map((step, i) => `${i + 1}. ${step}`).join("\n")}\n\n断言：\n${t.assertions.map((a) => "- " + a).join("\n")}\n\n${e ? `证据：${e.id}\n\n快照：${e.snapshot_id}；环境：${e.environment_revision}\n\n结果：发现 ${e.discovered}，通过 ${e.passed}，失败 ${e.failed}，跳过 ${e.skipped}，退出码 ${e.exit_code}\n\n原始文件：\n${e.files.map((f) => "- " + f.path + " / SHA-256 " + f.hash).join("\n")}` : "尚无运行证据。"}\n`;
-      })
-      .join("\n");
-    if (p.plan.complexity === "complex") {
-      atomicWrite(
-        join(root, "开发进度.md"),
-        `# 开发进度\n\n计划哈希：${p.hash}\n状态：${w.state}\n\n${tasks}\n`,
-      );
-      atomicWrite(join(root, "测试进度.md"), `# 测试进度\n\n${tests}\n`);
-    } else
-      atomicWrite(
-        join(root, "计划.md"),
-        `${p.plan.markdown}\n\n## 开发进度\n\n${tasks}\n\n## 测试进度\n\n${tests}\n`,
-      );
+        );
+      }
+      const allEvidence = [
+        ...this.store.list<Evidence>("evidence", key),
+        ...this.store.list<Evidence>("development_evidence", key),
+      ];
+      const progress = testProgress(p.plan, allEvidence, w);
+      const tasks = this.taskStatus(key)
+        .map((t) => {
+          const definition = p.plan.tasks.find((task) => task.id === t.id)!;
+          return `### ${t.id} ${t.title}\n\n-[${t.development_status === "completed" ? "x" : " "}] 开发完成：${({ completed: "已完成", active: "进行中", needs_changes: "需修改", check_failed: "自检未通过", pending_check: "待检查", pending: "未开始" } as Record<string, string>)[t.development_status] ?? t.development_status}\n\n- [${t.validation_status === "passed" ? "x" : " "}] 验证完成：${({ passed: "已通过", failed: "未通过", stale: "需重测", not_run: "未验证" } as Record<string, string>)[t.validation_status]}\n\n修改位置：${definition.repo_id ?? "默认仓库"} / ${definition.paths.join("、")}\n\n输入：${definition.inputs}\n\n核心实现：${definition.implementation}\n\n保持行为：${definition.preserve}\n\n完成标准：${definition.completion}\n\n前置任务：${definition.depends_on.join("、") || "无"}；关联测试：${definition.test_ids.join("、")}\n\n停止条件：${definition.stop_conditions}\n\n实际声明：${t.summary || "尚未提交"}\n`;
+        })
+        .join("\n");
+      const tests = p.plan.tests
+        .map((t) => {
+          const e = latestEvidence(allEvidence, t.id, w);
+          return `### ${t.id} / ${t.layer}\n\n-[${e?.status === "passed" && progressEvidence(e, w) ? "x" : " "}] ${e?.status ?? "not_run"}\n\n关联任务：${t.task_ids.join("、")}；用例清单：\n${progress.cases
+            .filter((c) => c.test_id === t.id)
+            .map(
+              (c) =>
+                `- [${c.status === "passed" ? "x" : " "}] ${c.id} · ${({ passed: "已通过", failed: "未通过", skipped: "已跳过", stale: "需重测", not_run: "未运行", missing: "缺少结果" } as Record<string, string>)[c.status]}`,
+            )
+            .join(
+              "\n",
+            )}\n\n操作步骤：\n${t.steps.map((step, i) => `${i + 1}. ${step}`).join("\n")}\n\n断言：\n${t.assertions.map((a) => "- " + a).join("\n")}\n\n${e ? `证据：${e.id}\n\n快照：${e.snapshot_id}；环境：${e.environment_revision}\n\n结果：发现 ${e.discovered}，通过 ${e.passed}，失败 ${e.failed}，跳过 ${e.skipped}，退出码 ${e.exit_code}\n\n原始文件：\n${e.files.map((f) => "- " + f.path + " / SHA-256 " + f.hash).join("\n")}` : "尚无运行证据。"}\n`;
+        })
+        .join("\n");
+      if (p.plan.complexity === "complex") {
+        atomicWrite(
+          join(root, "开发进度.md"),
+          `# 开发进度\n\n计划哈希：${p.hash}\n状态：${w.state}\n\n${tasks}\n`,
+        );
+        atomicWrite(join(root, "测试进度.md"), `# 测试进度\n\n${tests}\n`);
+      } else
+        atomicWrite(
+          join(root, "计划.md"),
+          `${p.plan.markdown}\n\n## 开发进度\n\n${tasks}\n\n## 测试进度\n\n${tests}\n`,
+        );
+    } catch {
+      // 资料导出与缓存失败不阻塞调度流程
+    }
   }
   // Read-only presentation: keep runner case names in review evidence, but use
   // the submitted plan scene IDs when counting the plan's displayed results.
@@ -4484,17 +4634,29 @@ export class Engine {
     return { revision, delivery };
   }
   deliveryReportFiles(delivery: Delivery): { path: string; hash: string }[] {
+    const w = this.store.get<Workflow>("workflow", delivery.workflow_id);
+    const workspaces = w ? this.store.list<Workspace>("workspace", w.id) : [];
+    const primaryWs = workspaces.find((ws: any) => ws.primary || ws.is_primary) || workspaces[0];
+
     return Object.entries(delivery.report_hashes ?? {}).map(
-      ([relPath, hash]) => ({
-        path: join(
-          this.config.storage_root,
-          "deliveries",
-          delivery.id,
-          "reports",
-          relPath,
-        ),
-        hash,
-      }),
+      ([relPath, hash]) => {
+        if (primaryWs && primaryWs.root) {
+          const projectReportPath = join(primaryWs.root, relPath);
+          if (existsSync(projectReportPath)) {
+            return { path: projectReportPath, hash };
+          }
+        }
+        return {
+          path: join(
+            this.config.storage_root,
+            "deliveries",
+            delivery.id,
+            "reports",
+            relPath,
+          ),
+          hash,
+        };
+      },
     );
   }
   reviewDeliveryMaterials(key: string) {

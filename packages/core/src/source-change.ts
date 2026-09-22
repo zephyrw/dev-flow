@@ -7,7 +7,7 @@ import {
   type Workflow,
 } from "../../contracts/src/index.js";
 import { git, repositoryInfo } from "../../git/src/git.js";
-import { WorkspaceFingerprintService } from "../../workspace/src/fingerprint.js";
+import { WorkspaceFingerprintService, resolveExcludedRelativePaths } from "../../workspace/src/fingerprint.js";
 import type { Engine } from "./engine.js";
 import { DocumentService } from "./document-service.js";
 import { FeedbackService } from "./feedback-service.js";
@@ -92,7 +92,16 @@ async function capture(engine: Engine, key: string): Promise<SourceVersion[]> {
       const indexHash = () =>
         existsSync(index) ? hash(readFileSync(index)) : "missing";
       const beforeIndex = indexHash();
-      const fingerprint = WorkspaceFingerprintService.compute(root).fingerprint;
+      const allWorkspaces = engine.store.list<any>("workspace");
+      const { registeredWorktrees, backupSubtrees } = resolveExcludedRelativePaths(root, {
+        knownWorkspaces: allWorkspaces,
+        currentWorkspaceRoot: root,
+      });
+      const scanOptions = {
+        registeredWorktrees,
+        backupSubtrees,
+      };
+      const fingerprint = WorkspaceFingerprintService.compute(root, scanOptions).fingerprint;
       const [local, commits, files, head] = await Promise.all([
         readGit([
           "-c",
@@ -116,7 +125,7 @@ async function capture(engine: Engine, key: string): Promise<SourceVersion[]> {
       requireCondition(
         head === info.head &&
           indexHash() === beforeIndex &&
-          fingerprint === WorkspaceFingerprintService.compute(root).fingerprint,
+          fingerprint === WorkspaceFingerprintService.compute(root, scanOptions).fingerprint,
         "SOURCE_CHANGED",
         "读取期间项目代码又有变化，请重新查看代码更新",
         409,

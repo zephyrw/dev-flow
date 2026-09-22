@@ -45,7 +45,7 @@ export function CreateWorkflowModal({
   const [workspaceRoot, setWorkspaceRoot] = useState(defaultWorkspaceRoot);
   const [workspaceMode, setWorkspaceMode] = useState<
     "new_worktree" | "existing_workspace"
-  >("new_worktree");
+  >("existing_workspace");
   const [planner, setPlanner] = useState<ToolProfile>(
     blankProfile("planner", "codex"),
   );
@@ -329,19 +329,25 @@ export function CreateWorkflowModal({
           })}
         </details>
         <div>
-          <label>工作区方式</label>
-          <div className="ms-inline">
-            <label>
-              <input
-                type="radio"
-                name="workspaceMode"
-                value="new_worktree"
-                checked={workspaceMode === "new_worktree"}
-                onChange={() => setWorkspaceMode("new_worktree")}
-              />
-              独立工作树 (推荐，自动吸收最新提交后合回)
-            </label>
-            <label>
+          <label
+            style={{
+              display: "block",
+              fontSize: "12px",
+              fontWeight: 500,
+              marginBottom: "4px",
+            }}
+          >
+            工作区方式
+          </label>
+          <div style={{ display: "flex", flexDirection: "column", gap: "8px", fontSize: "13px" }}>
+            <label
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "4px",
+                cursor: "pointer",
+              }}
+            >
               <input
                 type="radio"
                 name="workspaceMode"
@@ -349,8 +355,38 @@ export function CreateWorkflowModal({
                 checked={workspaceMode === "existing_workspace"}
                 onChange={() => setWorkspaceMode("existing_workspace")}
               />
-              主工作区直接执行
+              现有工作区 (默认，直接在项目当前目录执行，保留修改)
             </label>
+            <label
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "4px",
+                cursor: "pointer",
+              }}
+            >
+              <input
+                type="radio"
+                name="workspaceMode"
+                value="new_worktree"
+                checked={workspaceMode === "new_worktree"}
+                onChange={() => setWorkspaceMode("new_worktree")}
+              />
+              独立工作树 (在项目 .worktrees/ 下创建隔离工作树)
+            </label>
+            {workspaceMode === "new_worktree" && (
+              <div
+                style={{
+                  fontSize: "12px",
+                  color: "#57606a",
+                  padding: "4px 8px",
+                  background: "#f6f8fa",
+                  borderRadius: "4px",
+                }}
+              >
+                路径位置：将按项目约定缺省在 <code>{workspaceRoot || "<source_root>"}/.worktrees/&lt;任务ID&gt;/main</code> 下创建，自动通过 Git 本地 exclude 忽略，任务完成不自动删除。
+              </div>
+            )}
           </div>
         </div>
         <div>

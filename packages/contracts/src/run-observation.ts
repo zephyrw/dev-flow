@@ -27,9 +27,13 @@ export interface RunObservation {
   purpose?: string;
   requested_model?: string;
   actual_model?: string;
+  requested_effort?: string;
+  actual_effort?: string;
   effort?: string;
   model_source?: "native_event" | "native_session";
   conversation_id?: string;
+  conversation_attempt_id?: string;
+  root_conversation_id?: string;
   status:
     | "starting"
     | "responding"

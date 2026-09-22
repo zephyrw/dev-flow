@@ -11,7 +11,11 @@ import {
   resolveTaskModel,
 } from "../../contracts/src/index.js";
 import type { Store } from "../../store/src/store.js";
-import { WorkspaceFingerprintService } from "../../workspace/src/fingerprint.js";
+import {
+  WorkspaceFingerprintService,
+  resolveExcludedRelativePaths,
+  resolveScanContext,
+} from "../../workspace/src/fingerprint.js";
 import { readFileSync, existsSync } from "node:fs";
 import { hash } from "../../core/src/util.js";
 import { join, basename } from "node:path";
@@ -140,8 +144,14 @@ export class CurrentDeliveryReader {
             reason: `交付记录中缺少仓库 '${ws.repo_id}' 的输入指纹`,
           };
         }
+        const { registeredWorktrees, backupSubtrees } = resolveScanContext(ws.root, {
+          store: (options as any)?.store ?? (this as any).store,
+          knownWorkspaces: workspaces,
+          currentWorkspaceRoot: ws.root,
+        });
         const currentFp = WorkspaceFingerprintService.compute(
           ws.root,
+          { registeredWorktrees, backupSubtrees },
         ).fingerprint;
         if (currentFp !== recordedFp) {
           return {

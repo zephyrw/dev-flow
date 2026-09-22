@@ -1,0 +1,4 @@
+{"type":"system","subtype":"init","apiKeySource":"login","cwd":"/tmp/cursor-demo","session_id":"chat-root-001","model":"Composer 1.5","permissionMode":"default"}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"请查看本次图片"}]},"session_id":"chat-root-001"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"已读取图片内容"}]},"session_id":"chat-root-001","timestamp_ms":1735689640000}
+{"type":"result","subtype":"success","is_error":false,"duration_ms":500,"duration_api_ms":400,"result":"图片已作为 --image 传入","session_id":"chat-root-001","request_id":"req-attach-001"}

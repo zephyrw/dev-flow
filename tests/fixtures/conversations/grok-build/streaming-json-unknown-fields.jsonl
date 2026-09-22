@@ -1,0 +1,6 @@
+{"type":"quantum_flux","supported":true,"discovery":"native","stop":"native","file_input":{"binary":true}}
+{"type":"thought","data":"internal reasoning must stay out of public events"}
+{"type":"tool_call","toolCallId":"call_other","toolName":"not_a_subagent","rawInput":{"subagent_type":"explore","description":"fake child"}}
+{"type":"tool_call","toolCallId":"call_unknown_type","toolName":"spawn_subagent","rawInput":{"description":"Mystery child","subagent_type":"mystery-type","file_input_binary":true,"stop":"native","native_abort":true}}
+{"type":"tool_call_update","toolCallId":"call_unknown_type","status":"completed","rawOutput":{"subagent_id":"sa-mystery","quantum_resume":true}}
+{"type":"max_turns_reached","sessionId":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeee0"}

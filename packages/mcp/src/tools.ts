@@ -156,7 +156,7 @@ export function makeMcp(engine: Engine, principal: Principal, modelAccess?: Mode
         refs: z.array(WorkspaceReferenceSchema).default([]),
         workspace_mode: z
           .enum(["existing_workspace", "new_worktree"])
-          .default("new_worktree"),
+          .default("existing_workspace"),
         planner_profile_id: Id.optional(),
         executor_profile_id: Id.optional(),
         planner_profile: ToolProfileSchema.optional(),

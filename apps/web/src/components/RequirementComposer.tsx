@@ -19,6 +19,142 @@ export interface RequirementComposerProps {
   extraActions?: React.ReactNode;
 }
 
+export function activeReferenceQuery(
+  text: string,
+  cursorPos: number,
+): { atIndex: number; query: string } | undefined {
+  const textBeforeCursor = text.slice(0, cursorPos);
+  const lastAtIndex = textBeforeCursor.lastIndexOf("@");
+  if (lastAtIndex === -1) return undefined;
+  const query = textBeforeCursor.slice(lastAtIndex + 1);
+  if (query.includes(" ") || query.includes("\n")) return undefined;
+  return { atIndex: lastAtIndex, query };
+}
+
+export function nextReferencePopupState(
+  text: string,
+  cursorPos: number,
+  popupOpen: boolean,
+): { open: boolean; query: string } {
+  const active = activeReferenceQuery(text, cursorPos);
+  if (!active) return { open: false, query: "" };
+  if (active.atIndex === cursorPos - 1) return { open: true, query: "" };
+  if (popupOpen) return { open: true, query: active.query };
+  return { open: false, query: "" };
+}
+
+export function startWorkspaceReferenceDraft(
+  text: string,
+  cursorPos: number,
+): { text: string; cursor: number } {
+  return {
+    text: text.slice(0, cursorPos) + "@" + text.slice(cursorPos),
+    cursor: cursorPos + 1,
+  };
+}
+
+export function insertWorkspaceReference(
+  text: string,
+  cursorPos: number,
+  item: ReferenceItem,
+): { text: string; cursor: number } {
+  const textBeforeCursor = text.slice(0, cursorPos);
+  const lastAtIndex = textBeforeCursor.lastIndexOf("@");
+  const atIndex = lastAtIndex === -1 ? cursorPos : lastAtIndex;
+  const nextText =
+    text.slice(0, atIndex) + `@${item.relative_path} ` + text.slice(cursorPos);
+  return {
+    text: nextText,
+    cursor: atIndex + item.relative_path.length + 2,
+  };
+}
+
+export function addWorkspaceReference(
+  refs: ReferenceItem[],
+  item: ReferenceItem,
+): ReferenceItem[] {
+  if (
+    refs.some(
+      (ref) =>
+        ref.relative_path === item.relative_path && ref.repo_id === item.repo_id,
+    )
+  ) {
+    return refs;
+  }
+  return [...refs, item];
+}
+
+export function ReferenceCandidatePopup({
+  candidates,
+  selectedIndex,
+  position,
+  onSelect,
+}: {
+  candidates: ReferenceItem[];
+  selectedIndex: number;
+  position: React.CSSProperties;
+  onSelect: (item: ReferenceItem) => void;
+}) {
+  if (!candidates.length) return null;
+  return createPortal(
+    <div
+      className="reference-popup"
+      style={{
+        ...position,
+        overflowY: "auto",
+        background: "var(--color-canvas-overlay, #ffffff)",
+        border: "1px solid var(--color-border, #d0d7de)",
+        borderRadius: "6px",
+        boxShadow: "0 4px 12px rgba(0, 0, 0, 0.15)",
+        zIndex: 10000,
+        marginBottom: "4px",
+      }}
+    >
+      <div
+        style={{
+          padding: "4px 8px",
+          fontSize: "11px",
+          color: "#6c757d",
+          borderBottom: "1px solid #f1f3f5",
+        }}
+      >
+        按 ↑↓ 选择，Enter 确认，Esc 取消
+      </div>
+      {candidates.map((candidate, index) => (
+        <div
+          key={`${candidate.repo_id}:${candidate.relative_path}`}
+          onClick={() => onSelect(candidate)}
+          style={{
+            padding: "6px 10px",
+            fontSize: "12px",
+            cursor: "pointer",
+            background:
+              index === selectedIndex
+                ? "var(--color-accent-muted, #e7f5ff)"
+                : "transparent",
+            display: "flex",
+            alignItems: "center",
+            gap: "6px",
+          }}
+        >
+          <span>{candidate.kind === "directory" ? "📁" : "📄"}</span>
+          <span
+            style={{
+              flex: 1,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {candidate.relative_path}
+          </span>
+        </div>
+      ))}
+    </div>,
+    document.body,
+  );
+}
+
 export function RequirementComposer({
   placeholder = "输入需求或反馈... 输入 @ 引用工作区文件或目录",
   onSubmit,
@@ -71,24 +207,11 @@ export function RequirementComposer({
   const handleTextChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const val = e.target.value;
     setText(val);
-
-    const cursorPos = e.target.selectionStart;
-    const textBeforeCursor = val.slice(0, cursorPos);
-    const lastAtIndex = textBeforeCursor.lastIndexOf("@");
-
-    if (lastAtIndex !== -1 && lastAtIndex === cursorPos - 1) {
-      setShowPopup(true);
-      setQuery("");
-      setSelectedIndex(0);
-    } else if (lastAtIndex !== -1 && showPopup) {
-      const currentQuery = textBeforeCursor.slice(lastAtIndex + 1);
-      if (currentQuery.includes(" ") || currentQuery.includes("\n")) {
-        setShowPopup(false);
-      } else {
-        setQuery(currentQuery);
-      }
-    } else {
-      setShowPopup(false);
+    const next = nextReferencePopupState(val, e.target.selectionStart, showPopup);
+    setShowPopup(next.open);
+    if (next.open) {
+      setQuery(next.query);
+      if (next.query === "") setSelectedIndex(0);
     }
   };
 
@@ -115,36 +238,19 @@ export function RequirementComposer({
     (item: ReferenceItem) => {
       if (!textareaRef.current) return;
       const cursorPos = textareaRef.current.selectionStart;
-      const textBeforeCursor = text.slice(0, cursorPos);
-      const lastAtIndex = textBeforeCursor.lastIndexOf("@");
-      const textAfterCursor = text.slice(cursorPos);
-
-      const newText =
-        text.slice(0, lastAtIndex) +
-        `@${item.relative_path} ` +
-        textAfterCursor;
-      setText(newText);
+      const inserted = insertWorkspaceReference(text, cursorPos, item);
+      setText(inserted.text);
       setShowPopup(false);
-
-      if (
-        !refs.some(
-          (r) =>
-            r.relative_path === item.relative_path &&
-            r.repo_id === item.repo_id,
-        )
-      ) {
-        setRefs((prev) => [...prev, item]);
-      }
+      setRefs((prev) => addWorkspaceReference(prev, item));
 
       setTimeout(() => {
         if (textareaRef.current) {
-          const nextPos = lastAtIndex + item.relative_path.length + 2;
-          textareaRef.current.setSelectionRange(nextPos, nextPos);
+          textareaRef.current.setSelectionRange(inserted.cursor, inserted.cursor);
           textareaRef.current.focus();
         }
       }, 10);
     },
-    [text, refs],
+    [text],
   );
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -291,65 +397,14 @@ export function RequirementComposer({
           }}
         />
 
-        {showPopup &&
-          candidates.length > 0 &&
-          createPortal(
-            <div
-              className="reference-popup"
-              style={{
-                ...popupPosition,
-                overflowY: "auto",
-                background: "var(--color-canvas-overlay, #ffffff)",
-                border: "1px solid var(--color-border, #d0d7de)",
-                borderRadius: "6px",
-                boxShadow: "0 4px 12px rgba(0, 0, 0, 0.15)",
-                zIndex: 10000,
-                marginBottom: "4px",
-              }}
-            >
-              <div
-                style={{
-                  padding: "4px 8px",
-                  fontSize: "11px",
-                  color: "#6c757d",
-                  borderBottom: "1px solid #f1f3f5",
-                }}
-              >
-                按 ↑↓ 选择，Enter 确认，Esc 取消
-              </div>
-              {candidates.map((c, i) => (
-                <div
-                  key={`${c.repo_id}:${c.relative_path}`}
-                  onClick={() => selectCandidate(c)}
-                  style={{
-                    padding: "6px 10px",
-                    fontSize: "12px",
-                    cursor: "pointer",
-                    background:
-                      i === selectedIndex
-                        ? "var(--color-accent-muted, #e7f5ff)"
-                        : "transparent",
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "6px",
-                  }}
-                >
-                  <span>{c.kind === "directory" ? "📁" : "📄"}</span>
-                  <span
-                    style={{
-                      flex: 1,
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                      whiteSpace: "nowrap",
-                    }}
-                  >
-                    {c.relative_path}
-                  </span>
-                </div>
-              ))}
-            </div>,
-            document.body,
-          )}
+        {showPopup && (
+          <ReferenceCandidatePopup
+            candidates={candidates}
+            selectedIndex={selectedIndex}
+            position={popupPosition}
+            onSelect={selectCandidate}
+          />
+        )}
       </div>
 
       <div className="composer-actions">

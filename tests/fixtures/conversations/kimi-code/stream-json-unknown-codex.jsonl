@@ -1,0 +1,4 @@
+{"type":"session_meta","thread_id":"codex-thread-should-not-bind","sandbox_mode":"read-only","effort":"high"}
+{"type":"item.started","item":{"id":"item-1","type":"command_execution","command":"echo hi"}}
+{"role":"assistant","content":"普通主会话输出，不含子代理标识"}
+{"type":"agent.status.updated","model":"kimi-code/k3","thinkingEffort":"max","planMode":true}

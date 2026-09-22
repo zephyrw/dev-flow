@@ -1,6 +1,8 @@
 import { startTask } from "../../packages/core/src/progress.js";
 import {
   existsSync,
+  unlinkSync,
+  readdirSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -8,7 +10,13 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { setup, repository, project, plan } from "../helpers.js";
+import {
+  assertTestPortAvailable,
+  ensureTestInstanceDirs,
+  loadTestInstanceConfig,
+} from "../helpers/test-isolation.js";
 import { Engine, type Runtime } from "../../packages/core/src/engine.js";
 import { LocalRuntime } from "../../packages/runtime/src/runtime.js";
 import { now, objectHash, atomicWrite } from "../../packages/core/src/util.js";
@@ -336,10 +344,18 @@ function dirnameOfStore(store: ReturnType<typeof setup>["store"]) {
   return store.file.replace(/[\\/][^\\/]+$/, "");
 }
 
+const instance = loadTestInstanceConfig();
+ensureTestInstanceDirs(instance);
+for (const file of [
+  instance.sqliteFile,
+  `${instance.sqliteFile}-wal`,
+  `${instance.sqliteFile}-shm`,
+]) {
+  if (existsSync(file)) unlinkSync(file);
+}
 const s = setup();
-const e2ePort = Number(process.env.E2E_PORT || 14811);
-s.config.server.port = e2ePort;
-s.config.server.human_origin = `http://localhost:${e2ePort}`;
+s.config.server.port = instance.port;
+s.config.server.human_origin = instance.humanOrigin;
 s.config.host.required = true;
 s.config.host.executable = resolve(
   "dist/host/" +
@@ -358,7 +374,14 @@ writeFileSync(
   `const test=require('node:test');const assert=require('node:assert/strict');const fs=require('node:fs');test('updates content',()=>assert.equal(fs.readFileSync('app.txt','utf8'),'after\\n'));`,
 );
 await git(repo.repo, ["add", "verify.cjs"]);
-await git(repo.repo, ["commit", "-m", "test fixture"]);
+const verifyDirty = await git(repo.repo, [
+  "status",
+  "--porcelain",
+  "--",
+  "verify.cjs",
+]);
+if (verifyDirty.trim())
+  await git(repo.repo, ["commit", "-m", "test fixture"]);
 repo.baseline = await git(repo.repo, ["rev-parse", "HEAD"]);
 const p = project(repo.repo);
 p.commands[0]!.args = [
@@ -501,6 +524,7 @@ engine.runtime = {
     feedbackExecutions.delete(run);
     await runtime.stop(run);
   },
+  stopConversation: (target: any) => (runtime as any).stopConversation(target),
   check: (flow, test, principal) => runtime.check(flow, test, principal),
   close: () => runtime.close(),
 } satisfies Runtime;
@@ -510,7 +534,7 @@ Object.assign(engine.runtime, {
 });
 const shutdownToken = crypto.randomUUID();
 atomicWrite(
-  resolve(".cache/e2e-state.json"),
+  instance.stateFile,
   JSON.stringify({
     shutdownToken,
     workflow_id: w.id,
@@ -519,6 +543,11 @@ atomicWrite(
     nativeRepo: nativeRepo.repo,
     probeCli: PROBE_CLI,
     probeLogDir,
+    port: instance.port,
+    humanOrigin: instance.humanOrigin,
+    stateFile: instance.stateFile,
+    sqliteFile: join(s.config.storage_root, "devflow.sqlite"),
+    runDir: instance.usesCustomRunDir ? instance.runDirResolved : undefined,
   }),
 );
 // Account routes share this full server, but must never reach the host's
@@ -538,7 +567,9 @@ if (
 )
   throw new Error("Model E2E fixture must keep account management disabled");
 const app = await buildServer(engine, {
-  webRoot: process.env.DEVFLOW_E2E_WEB_ROOT,
+  webRoot:
+    process.env.DEVFLOW_E2E_WEB_ROOT ||
+    resolve(fileURLToPath(new URL("../../dist/web", import.meta.url))),
   accountService: accountEnvironment.service,
 });
 app.addHook("onClose", () => accountEnvironment.service.close());
@@ -555,6 +586,39 @@ function assertFixtureToken(request: { body?: unknown }) {
 app.post("/__fixture/source-change", async (request, reply) => {
   if (!assertFixtureToken(request)) return reply.code(403).send({ ok: false });
   return seedSourceChange(engine, s.root);
+});
+function writeNativeFixtureFile(dir: string, payload: string) {
+  try {
+    writeFileSync(join(dir, ".devflow-test-fixture.json"), payload);
+  } catch {}
+}
+
+function syncNativeFixtureOptions(options: unknown) {
+  const payload = JSON.stringify(options);
+  writeNativeFixtureFile(nativeRepo.repo, payload);
+  const worktrees = instance.workspaceRoot;
+  if (!existsSync(worktrees)) return;
+  for (const name of readdirSync(worktrees)) {
+    writeNativeFixtureFile(join(worktrees, name), payload);
+  }
+}
+
+app.post("/__fixture/native-options", async (request, reply) => {
+  if ((request.body as { token?: string })?.token !== shutdownToken)
+    return reply.code(403).send({ ok: false });
+  const options = (request.body as { options?: unknown }).options ?? {};
+  syncNativeFixtureOptions(options);
+  const target = join(nativeRepo.repo, ".devflow-test-fixture.json");
+  await git(nativeRepo.repo, ["add", "-f", ".devflow-test-fixture.json"]);
+  const dirty = await git(nativeRepo.repo, [
+    "status",
+    "--porcelain",
+    "--",
+    ".devflow-test-fixture.json",
+  ]);
+  if (dirty.trim())
+    await git(nativeRepo.repo, ["commit", "-m", "test fixture options"]);
+  return { ok: true, path: target };
 });
 app.post("/__fixture/probe-count", async (request, reply) => {
   if (!assertFixtureToken(request)) return reply.code(403).send({ ok: false });
@@ -1176,8 +1240,9 @@ app.post("/__fixture/shutdown", async (request, reply) => {
   );
   return { ok: true };
 });
-await app.listen({ host: "127.0.0.1", port: e2ePort });
-console.log(`Fixture listening on ${e2ePort}`);
+await assertTestPortAvailable(instance.port);
+await app.listen({ host: "127.0.0.1", port: instance.port });
+console.log("Fixture listening on " + instance.port);
 process.once(
   "SIGTERM",
   () =>

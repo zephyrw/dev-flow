@@ -23,6 +23,9 @@ export {
   readNativeIdentity,
   readNativeIdentitySync,
 } from "./native-identity.js";
+export * from "./conversation-source.js";
+export * from "./resume-instructions.js";
+export * from "./identity.js";
 
 import { AdapterRegistry } from "./registry.js";
 import { CodexNativeAdapter } from "../../codex/src/adapter.js";

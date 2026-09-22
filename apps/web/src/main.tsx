@@ -21,6 +21,22 @@ import {
 } from "./components/PlanReviewDialog.js";
 import { AgyAccountsDrawer } from "./components/AgyAccountsDrawer.js";
 import { AgyAccountsPage } from "./components/AgyAccountsPage.js";
+import {
+  SubagentWorkCard,
+  readWorkCardPreference,
+} from "./components/SubagentWorkCard.js";
+import { ConversationBreadcrumb } from "./components/ConversationBreadcrumb.js";
+import {
+  ConversationRequestGuard,
+  useConversationView,
+} from "./use-conversation-view.js";
+import {
+  unknownSubagentCapabilities,
+  type ConversationAttempt,
+  type ConversationNode,
+  type SubagentCapabilities,
+} from "../../../packages/contracts/src/conversation.js";
+import type { LogEntry } from "./logs.js";
 import React, { useEffect, useRef, useState } from "react";
 
 import { createRoot } from "react-dom/client";
@@ -75,6 +91,41 @@ async function api(path: string, body?: unknown, signal?: AbortSignal) {
   const result = await r.json();
   if (!r.ok) throw Error(result.error?.message ?? "请求失败");
   return result;
+}
+const PAUSE_CONTROL_POLL_MS = 1000;
+const PAUSE_CONTROL_POLL_LIMIT = 12;
+
+function pauseControlNotice(control: {
+  status?: string;
+  message?: string;
+} | null | undefined): string {
+  if (control?.status === "complete") return "主会话及子 Agent 已暂停";
+  if (control?.status === "partial") {
+    return control.message ?? "部分会话已暂停，仍有状态待确认";
+  }
+  return control?.message ?? "暂停已受理，尚未全部确认";
+}
+
+async function pollConversationControl(
+  workflowId: string,
+  controlId: string,
+  initial: { status?: string; message?: string },
+) {
+  let current = initial;
+  for (let attempt = 0; attempt < PAUSE_CONTROL_POLL_LIMIT; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, PAUSE_CONTROL_POLL_MS));
+    try {
+      current = await api(
+        `/workflows/${workflowId}/conversation-controls/${controlId}`,
+      );
+    } catch {
+      break;
+    }
+    if (current?.status === "complete" || current?.status === "partial") {
+      break;
+    }
+  }
+  return current;
 }
 const mermaidSvgCache = new Map<string, string>();
 
@@ -1665,7 +1716,10 @@ function App() {
   useEffect(() => {
     const url = new URL(location.href);
     if (selected) url.searchParams.set("workflow", selected);
-    else url.searchParams.delete("workflow");
+    else {
+      url.searchParams.delete("workflow");
+      url.searchParams.delete("conversation");
+    }
     if (showGuide) url.searchParams.set("view", "guide");
     else url.searchParams.delete("view");
     history.replaceState(null, "", url);
@@ -1683,6 +1737,10 @@ function App() {
   const [seen, setSeen] = useState<Record<string, number>>({});
   const [locate, setLocate] = useState<{ sequence: number; request: number }>();
   const [stopping, setStopping] = useState(false);
+  const [workCardExpanded, setWorkCardExpanded] = useState(false);
+  const [childEntries, setChildEntries] = useState<LogEntry[]>([]);
+  const [childHasMore, setChildHasMore] = useState(false);
+  const childGuard = useRef(new ConversationRequestGuard());
   const [updated, setUpdated] = useState(false);
   useEffect(() => {
     let alive = true;
@@ -1743,10 +1801,11 @@ function App() {
   const savedCursors = useRef(new Map<string, number>());
   const refresh = async () => {
     const key = selected;
-    const [p, f, next] = await Promise.all([
+    const [p, f, next, tree] = await Promise.all([
       api("/projects"),
       api("/workflows"),
       key ? api("/workflows/" + key) : Promise.resolve(null),
+      key ? loadConversationTree(key) : Promise.resolve(null),
     ]);
     setProjects(p);
     setFlows(f);
@@ -1756,6 +1815,7 @@ function App() {
         if (current?.workflow.version > next.workflow.version) return current;
         const merged = {
           ...next,
+          conversation_tree: tree ?? next.conversation_tree,
           events: mergeEvents(
             key,
             current?.events ?? [],
@@ -1796,11 +1856,14 @@ function App() {
       );
       const next = await api(`/workflows/${selected}`, undefined, abort.signal);
       if (abort.signal.aborted || selection.current !== selected) return;
+      const tree = await loadConversationTree(selected, abort.signal);
+      if (abort.signal.aborted || selection.current !== selected) return;
       setDetail((previous: any) => {
         const current = previous?.workflow.id === selected ? previous : null;
         if (current?.workflow.version > next.workflow.version) return current;
         const result = {
           ...next,
+          conversation_tree: tree ?? next.conversation_tree,
           events: mergeEvents(
             selected,
             current?.events ?? [],
@@ -1870,6 +1933,7 @@ function App() {
       ws = new WebSocket(
         `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/api/events?workflow_id=${selected}&after=${eventCursor.current}&tail=100`,
       );
+      (window as any).__eventWs = ws;
       ws.onopen = () => {
         if (!disposed) setConnected(true);
       };
@@ -1975,6 +2039,33 @@ function App() {
       .catch((e) => setError(String(e)))
       .finally(() => setStopping(false));
   };
+  const pauseAllConversations = async (
+    rootId: string,
+    generation: number,
+  ) => {
+    if (!selected || !rootId) return;
+    setStopping(true);
+    try {
+      const control = await api(`/workflows/${selected}/conversation-controls`, {
+        request_id: crypto.randomUUID(),
+        action: "pause",
+        root_id: rootId,
+        expected_generation: generation,
+      });
+      const controlId = control?.control_id ?? control?.control?.id;
+      const settled =
+        control?.status === "pending" && controlId
+          ? await pollConversationControl(selected, controlId, control)
+          : control;
+      setNotice(pauseControlNotice(settled));
+      await api(`/workflows/${selected}/stop`, {}).catch(() => {});
+      await refresh();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setStopping(false);
+    }
+  };
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
@@ -2064,6 +2155,56 @@ function App() {
   const timeline = w
     ? userFacingLogs(readableLogs(detail.events, selected), w.run_id)
     : [];
+  const conversationTree = detail?.conversation_tree;
+  const conversationView = useConversationView({
+    workflowId: selected,
+    nodes: (conversationTree?.nodes ?? []) as ConversationNode[],
+    attempts: (conversationTree?.attempts ?? []) as ConversationAttempt[],
+    activeRootConversationId: conversationTree?.active_root_id,
+    entries: timeline,
+    search: location.search,
+  });
+  useEffect(() => {
+    if (!selected || !conversationView.rootConversationId) {
+      setWorkCardExpanded(false);
+      return;
+    }
+    setWorkCardExpanded(
+      readWorkCardPreference(selected, conversationView.rootConversationId) ===
+        "expanded",
+    );
+  }, [selected, conversationView.rootConversationId]);
+  useEffect(() => {
+    if (
+      !selected ||
+      !conversationView.isChildView ||
+      !conversationView.selectedConversationId
+    ) {
+      setChildEntries([]);
+      setChildHasMore(false);
+      return;
+    }
+    const req = childGuard.current.start(
+      selected,
+      conversationView.selectedConversationId,
+    );
+    void api(
+      `/workflows/${selected}/conversations/${conversationView.selectedConversationId}/activities?limit=100`,
+    )
+      .then((page) => {
+        if (!req.accept()) return;
+        setChildEntries(asConversationLogEntries(page.items));
+        setChildHasMore(Boolean(page.has_more));
+      })
+      .catch(() => {
+        if (req.accept()) setChildEntries([]);
+      });
+  }, [
+    selected,
+    conversationView.isChildView,
+    conversationView.selectedConversationId,
+    conversationTree?.cursor,
+  ]);
   const phaseStart =
     [...(detail?.events ?? [])]
       .reverse()
@@ -2761,30 +2902,97 @@ function App() {
                       detail={detail}
                       send={api}
                       refresh={refresh}
+                      selectedConversationId={
+                        conversationView.selectedConversationId
+                      }
+                      rootConversationId={conversationView.rootConversationId}
+                      expectedGeneration={latestConversationGeneration(
+                        conversationTree?.attempts,
+                        conversationView.rootConversationId,
+                      )}
                     />
                   }
-                  loadHistory={
-                    detail.history_cursor === null
-                      ? undefined
-                      : async () => {
-                          const oldest =
-                            detail.history_cursor ??
-                            detail.events?.[0]?.event_seq;
-                          if (!oldest) return;
-                          await attempt(async () => {
-                            const history = await api(
-                              `/workflows/${selected}/history?before=${oldest}&limit=100`,
-                            );
-                            if (selection.current === selected)
-                              setDetail((previous: any) => ({
-                                ...previous,
-                                history_cursor: history.next_before,
-                                events: [...history.events, ...previous.events],
-                              }));
-                          });
+                  footer={
+                    conversationView.rootConversationId ? (
+                      <SubagentWorkCard
+                        workflowId={selected}
+                        rootConversationId={conversationView.rootConversationId}
+                        expanded={workCardExpanded}
+                        nodes={conversationTree?.nodes ?? []}
+                        attempts={conversationTree?.attempts ?? []}
+                        capabilities={
+                          (conversationTree?.capabilities as
+                            | SubagentCapabilities
+                            | undefined) ?? unknownSubagentCapabilities()
                         }
+                        onToggle={() => setWorkCardExpanded(true)}
+                        onCollapse={() => setWorkCardExpanded(false)}
+                        onSelect={conversationView.selectConversation}
+                        onPauseAll={() =>
+                          void pauseAllConversations(
+                            conversationView.rootConversationId,
+                            latestConversationGeneration(
+                              conversationTree?.attempts,
+                              conversationView.rootConversationId,
+                            ),
+                          )
+                        }
+                      />
+                    ) : undefined
                   }
-                  entries={timeline}
+                  breadcrumb={
+                    <ConversationBreadcrumb
+                      items={conversationView.breadcrumb}
+                      onSelect={conversationView.selectConversation}
+                    />
+                  }
+                  viewedRuntime={conversationView.viewedRuntimeText}
+                  notice={conversationView.notice}
+                  workflowId={selected}
+                  conversationId={conversationView.selectedConversationId}
+                  isChildView={conversationView.isChildView}
+                  loadHistory={
+                    conversationView.isChildView
+                      ? childHasMore
+                        ? async () => {
+                            const oldest = childEntries[0]?.sequence;
+                            if (!oldest || !conversationView.selectedConversationId)
+                              return;
+                            const page = await api(
+                              `/workflows/${selected}/conversations/${conversationView.selectedConversationId}/activities?before_seq=${oldest}&limit=100`,
+                            );
+                            setChildEntries((previous) => [
+                              ...asConversationLogEntries(page.items),
+                              ...previous,
+                            ]);
+                            setChildHasMore(Boolean(page.has_more));
+                          }
+                        : undefined
+                      : detail.history_cursor === null
+                        ? undefined
+                        : async () => {
+                            const oldest =
+                              detail.history_cursor ??
+                              detail.events?.[0]?.event_seq;
+                            if (!oldest) return;
+                            await attempt(async () => {
+                              const history = await api(
+                                `/workflows/${selected}/history?before=${oldest}&limit=100`,
+                              );
+                              if (selection.current === selected)
+                                setDetail((previous: any) => ({
+                                  ...previous,
+                                  history_cursor: history.next_before,
+                                  events: [...history.events, ...previous.events],
+                                }));
+                            });
+                          }
+                  }
+                  entries={
+                    conversationView.isChildView
+                      ? childEntries
+                      : (conversationView.entries as LogEntry[])
+                  }
                   connected={connected}
                   width={sidebarWidth}
                   resize={resizeSidebar}
@@ -2985,6 +3193,63 @@ function App() {
       />
     </div>
   );
+}
+
+async function loadConversationTree(workflowId: string, signal?: AbortSignal) {
+  try {
+    return await api(
+      `/workflows/${workflowId}/conversations`,
+      undefined,
+      signal,
+    );
+  } catch {
+    return null;
+  }
+}
+
+function latestConversationGeneration(
+  attempts: ConversationAttempt[] | undefined,
+  rootId?: string,
+): number {
+  if (!attempts?.length || !rootId) return 0;
+  return (
+    attempts
+      .filter((item) => item.conversation_id === rootId)
+      .sort((a, b) => a.generation - b.generation)
+      .at(-1)?.generation ?? 0
+  );
+}
+
+function asConversationLogEntries(items: unknown): LogEntry[] {
+  if (!Array.isArray(items)) return [];
+  return items
+    .filter((item) => item && typeof item === "object")
+    .map((item) => {
+      const row = item as Record<string, unknown>;
+      return {
+        key: String(row.key ?? `${row.conversation_id}:${row.sequence}`),
+        sequence: Number(row.sequence ?? 0),
+        created_at: String(row.created_at ?? ""),
+        title: String(row.title ?? "会话活动"),
+        text: String(row.text ?? ""),
+        raw: [row],
+        kind:
+          row.kind === "tool" ||
+          row.kind === "message" ||
+          row.kind === "event" ||
+          row.kind === "diagnostic"
+            ? row.kind
+            : "event",
+        status:
+          row.status === "active" ||
+          row.status === "done" ||
+          row.status === "error" ||
+          row.status === "interrupted"
+            ? row.status
+            : undefined,
+        command: typeof row.command === "string" ? row.command : undefined,
+      } satisfies LogEntry;
+    });
 }
 
 const root = createRoot(document.getElementById("root")!);

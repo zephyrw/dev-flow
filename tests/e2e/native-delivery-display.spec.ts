@@ -221,3 +221,31 @@ test("真实附件归档完成后通过事件自动刷新，并在刷新页面�
   await expect(page.getByLabel("附件归档状态")).toContainText("已归档");
   await expect(page.getByLabel("附件归档状态")).toContainText("文件缺失");
 });
+
+test("SA-E24 native delivery still completes without requiring subagent observation", async ({
+  page,
+}) => {
+  test.setTimeout(180000);
+  const { createNative, approvePlan, setNativeFixture, testInstance } =
+    await import("./native-helper.js");
+  await setNativeFixture(page, {});
+  const id = await createNative(
+    page,
+    "E24 无子观察也可交付",
+    "existing_workspace",
+  );
+  await approvePlan(page);
+  await expect(page.locator(".header-title-wrapper .badge")).toContainText(
+    "等待你的验收",
+    { timeout: 90000 },
+  );
+  const detail = await (await page.request.get(`/api/workflows/${id}`)).json();
+  expect(detail.workflow.state).toBe("HUMAN_PENDING");
+  const tree = await (
+    await page.request.get(`/api/workflows/${id}/conversations`)
+  ).json();
+  expect(Array.isArray(tree.nodes)).toBe(true);
+  const instance = testInstance();
+  expect(instance.port).not.toBe(4810);
+  expect(page.url()).toContain(String(instance.port));
+});

@@ -550,9 +550,10 @@ export class QualityCoordinator {
     };
   }
   private finishReplay(transfer: QualityTransfer, raced: EvalDedup) {
+    if (!transfer.result) return transfer;
     const replayed = this.replayTransfer(
       transfer.workflow_id,
-      transfer.result ?? QualityReviewResultSchema.parse({ run_id: transfer.review_run_id }),
+      transfer.result,
       raced,
     );
     if (replayed.write === "backfill") this.persistBackfill(replayed);

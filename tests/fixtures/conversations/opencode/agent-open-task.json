@@ -1,0 +1,12 @@
+{
+  "agent": {
+    "devflow-review": {
+      "mode": "primary",
+      "permission": {
+        "*": "deny",
+        "read": "allow",
+        "task": "allow"
+      }
+    }
+  }
+}

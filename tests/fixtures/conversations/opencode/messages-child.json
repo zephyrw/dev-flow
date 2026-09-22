@@ -1,0 +1,30 @@
+[
+  {
+    "info": {
+      "id": "msg_c1",
+      "sessionID": "ses_child1",
+      "role": "assistant",
+      "agent": "devflow-review",
+      "time": { "created": 1774000000550 }
+    },
+    "parts": [
+      {
+        "id": "prt_child_read",
+        "sessionID": "ses_child1",
+        "type": "tool",
+        "tool": "read",
+        "callID": "call_read1",
+        "state": {
+          "status": "completed",
+          "input": { "path": "C:/tmp/devflow-opencode/fixed.txt" }
+        }
+      },
+      {
+        "id": "prt_child_text",
+        "sessionID": "ses_child1",
+        "type": "text",
+        "text": "已读取固定文件"
+      }
+    ]
+  }
+]
