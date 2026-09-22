@@ -11,10 +11,7 @@ import { buildServer } from "./server.js";
 import { archiveLogs } from "../../../packages/runtime/src/maintenance.js";
 import { acquireControllerLock } from "../../../packages/process/src/controller-lock.js";
 const config = loadConfig(process.env.DEVFLOW_CONFIG);
-const unlock = await acquireControllerLock(
-  config.host.executable,
-  config.storage_root,
-);
+const unlock = await acquireControllerLock(config.storage_root);
 import { bootstrapAccountService } from "./account-service-bootstrap.js";
 
 const store = new Store(join(config.storage_root, "devflow.sqlite"));

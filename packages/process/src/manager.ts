@@ -4,10 +4,7 @@ import {
   type ChildProcessWithoutNullStreams,
 } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { existsSync } from "node:fs";
 import { FlowError, requireCondition } from "../../contracts/src/index.js";
-import { JsonLines } from "../../adapters/agy/src/protocol.js";
-import { id } from "../../core/src/util.js";
 
 function killProcessTree(pid?: number) {
   if (!pid) return;
@@ -100,8 +97,6 @@ export class ProcessManager {
   private stopHistory = new Map<string, ProcessStopResult>();
   private closing = false;
   constructor(
-    private hostExecutable: string,
-    private requireHost = true,
     private lifecycle?: (
       spec: ProcessSpec,
       event: Record<string, unknown>,
@@ -117,22 +112,11 @@ export class ProcessManager {
     }
     const existing = this.active.get(spec.id);
     if (existing) return existing;
-    const isWindows = process.platform === "win32";
-    requireCondition(
-      !this.requireHost || existsSync(this.hostExecutable),
-      "HOST_REQUIRED",
-      "Process Host 尚未安装，不能执行受管进程",
-      503,
-    );
-    const useHost = existsSync(this.hostExecutable);
     this.admission?.(spec);
     this.lifecycle?.(spec, { status: "starting", job_id: spec.id });
     const events = new EventEmitter() as ManagedProcess;
     events.id = spec.id;
-    let child: ChildProcessWithoutNullStreams;
-    const inherited: Record<string, string> = {
-      DOTNET_ROOT: process.env.DOTNET_ROOT ?? process.cwd() + "/.cache/dotnet",
-    };
+    const inherited: Record<string, string> = {};
     for (const key of [
       "SystemRoot",
       "WINDIR",
@@ -146,8 +130,6 @@ export class ProcessManager {
       "CODEX_HOME",
       "APPDATA",
       "LOCALAPPDATA",
-      // Windows shells need these to resolve and execute .cmd/.bat programs.
-      // Keep an explicit runtime allowlist; do not inherit tokens or secrets.
       "ComSpec",
       "PATHEXT",
       "SystemDrive",
@@ -161,30 +143,14 @@ export class ProcessManager {
       "M2_HOME",
     ])
       if (process.env[key]) inherited[key] = process.env[key]!;
-    if (useHost) {
-      child = spawn(this.hostExecutable, ["run"], {
-        windowsHide: true,
-        stdio: "pipe",
-        env: inherited,
-      });
-      feedChildStdin(
-        child,
-        JSON.stringify({
-          ...spec,
-          env: { ...inherited, ...spec.env },
-        }) + "\n",
-        false,
-      );
-    } else {
-      child = spawn(spec.executable, spec.args, {
-        cwd: spec.cwd,
-        env: { ...inherited, ...spec.env },
-        windowsHide: true,
-        shell: false,
-        stdio: "pipe",
-      });
-      feedChildStdin(child, spec.stdin, true);
-    }
+    const child = spawn(spec.executable, spec.args, {
+      cwd: spec.cwd,
+      env: { ...inherited, ...spec.env },
+      windowsHide: true,
+      shell: false,
+      stdio: "pipe",
+    });
+    feedChildStdin(child, spec.stdin, true);
     events.pid = child.pid;
     events.pauseOutput = () => {
       child.stdout.pause();
@@ -203,7 +169,6 @@ export class ProcessManager {
       const settle = (
         code: number | null,
         signal?: string,
-        confirmed = false,
       ) => {
         if (settled) return;
         settled = true;
@@ -219,7 +184,6 @@ export class ProcessManager {
         this.lifecycle?.(spec, {
           status: "exited",
           code,
-          confirmed,
           ...(termination_reason ? { termination_reason } : {}),
         });
         resolve({
@@ -239,44 +203,12 @@ export class ProcessManager {
           pid: events.pid,
         });
         settled = true;
-        this.lifecycle?.(spec, { status: "failed", confirmed: false });
+        this.lifecycle?.(spec, { status: "failed" });
         reject(e);
       });
-      if (useHost) {
-        const lines = new JsonLines((e) => {
-          if (e.type === "stdout" || e.type === "stderr")
-            events.emit(e.type, Buffer.from(String(e.data), "base64"));
-          else if (e.type === "exit") settle(Number(e.code), undefined, true);
-          else if (e.type === "error") {
-            events.emit("diagnostic", String(e.message));
-            settle(-1);
-          } else {
-            if (e.type === "started" && Number.isSafeInteger(e.pid))
-              events.pid = Number(e.pid);
-            this.lifecycle?.(spec, { ...e, status: "running" });
-            events.emit("host", e);
-          }
-        });
-        child.stdout.on("data", (b: Buffer) => {
-          try {
-            lines.push(b);
-          } catch (err) {
-            events.emit("diagnostic", String(err));
-            child.kill();
-          }
-        });
-        child.stderr.on("data", (b) => events.emit("stderr", b));
-        child.on("close", (code, signal) => {
-          try {
-            lines.finish();
-          } catch {}
-          settle(code === 0 ? -1 : code, signal ?? undefined);
-        });
-      } else {
-        child.stdout.on("data", (b) => events.emit("stdout", b));
-        child.stderr.on("data", (b) => events.emit("stderr", b));
-        child.on("close", (code, signal) => settle(code, signal ?? undefined));
-      }
+      child.stdout.on("data", (b) => events.emit("stdout", b));
+      child.stderr.on("data", (b) => events.emit("stderr", b));
+      child.on("close", (code, signal) => settle(code, signal ?? undefined));
     });
     events.completion = done;
     events.stop = async (reason = "manual") => {
@@ -284,13 +216,6 @@ export class ProcessManager {
       if (!termination_reason || reason === "manual") {
         termination_reason = reason;
         events.termination_reason = reason;
-      }
-      if (useHost) {
-        try {
-          if (child.stdin?.writable) {
-            child.stdin.write(JSON.stringify({ action: "stop" }) + "\n");
-          }
-        } catch {}
       }
       killProcessTree(child.pid);
       await done;

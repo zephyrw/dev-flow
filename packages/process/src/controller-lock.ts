@@ -1,63 +1,77 @@
-import { spawn } from "node:child_process";
 import { resolve } from "node:path";
 import { hash } from "../../core/src/util.js";
-import { requireCondition } from "../../contracts/src/index.js";
-export async function acquireControllerLock(host: string, root: string) {
-  requireCondition(
-    !!host,
-    "HOST_REQUIRED",
-    "控制器需要 Process Host 以独占状态目录",
-  );
-  const child = spawn(
-    host,
-    ["controller-lock", hash(resolve(root).toLowerCase())],
-    {
-      windowsHide: true,
-      stdio: "pipe",
-      env: {
-        ...process.env,
-        DOTNET_ROOT: process.env.DOTNET_ROOT ?? resolve(".cache/dotnet"),
-      },
-    },
-  );
-  child.stderr.resume();
-  let acquired = false;
-  await new Promise<void>((done, fail) => {
-    const timer = setTimeout(() => {
-      child.stdin.end();
-      fail(Error("Controller lock timeout"));
-    }, 10000);
-    child.on("error", (e) => {
-      clearTimeout(timer);
-      fail(e);
-    });
-    let output = "";
-    child.stdout.on("data", (b) => {
-      output += b;
-      const line = output.split("\n")[0];
-      if (!output.includes("\n")) return;
-      try {
-        const value = JSON.parse(line!);
-        clearTimeout(timer);
-        if (value.locked) {
-          acquired = true;
-          done();
-        } else fail(Error(value.message ?? "Controller lock failed"));
-      } catch (e) {
-        clearTimeout(timer);
-        fail(e);
-      }
-    });
-    child.once("exit", (code) => {
-      clearTimeout(timer);
-      if (!acquired) fail(Error("Controller lock rejected: " + code));
-    });
-  });
+
+/**
+ * Acquire an in-process controller lock for the given root directory.
+ *
+ * Platform behaviour:
+ * - Windows: named Mutex `Local\DevFlow.<hash>` via koffi Win32 API
+ * - POSIX:   exclusive flock file at `<root>/.devflow-controller.lock`
+ *
+ * @returns A release function (idempotent) that frees the lock when called.
+ */
+export async function acquireControllerLock(
+  root: string,
+): Promise<() => Promise<void>> {
+  const lockHash = hash(resolve(root).toLowerCase());
+
+  if (process.platform === "win32") {
+    return acquireWindowsLock(lockHash);
+  }
+  return acquirePosixLock(resolve(root, ".devflow-controller.lock"));
+}
+
+// ── Windows ─────────────────────────────────────────────────────────────────
+
+async function acquireWindowsLock(
+  lockHash: string,
+): Promise<() => Promise<void>> {
+  // Dynamic require to avoid loading koffi on POSIX
+  const { getNative } = require("./native/index.js") as typeof import("./native/index.js");
+  const native = getNative();
+
+  const mutexName = `Local\\DevFlow.${lockHash}`;
+  const mutex = native.createMutex!(mutexName, true);
+  if (!mutex) {
+    throw new Error(`Failed to create controller mutex: ${mutexName}`);
+  }
+
+  const result = native.waitForMutex!(mutex, 10_000);
+  if (result !== "acquired") {
+    native.closeHandle!(mutex);
+    if (result === "timeout") {
+      throw new Error(
+        `Controller lock timeout after 10s: ${mutexName}`,
+      );
+    }
+    throw new Error(
+      `Controller lock failed (${result}): ${mutexName}`,
+    );
+  }
+
+  let released = false;
   return async () => {
-    if (child.exitCode !== null) return;
-    await new Promise<void>((done) => {
-      child.once("exit", () => done());
-      child.stdin.end("\n");
-    });
+    if (released) return;
+    released = true;
+    native.releaseMutex!(mutex);
+    native.closeHandle!(mutex);
+  };
+}
+
+// ── POSIX ───────────────────────────────────────────────────────────────────
+
+async function acquirePosixLock(
+  lockPath: string,
+): Promise<() => Promise<void>> {
+  // Dynamic require to avoid loading koffi on POSIX
+  const { acquireFlock, releaseFlock } = require("./native/posix.js") as typeof import("./native/posix.js");
+
+  const handle = acquireFlock(lockPath);
+
+  let released = false;
+  return async () => {
+    if (released) return;
+    released = true;
+    releaseFlock(handle);
   };
 }
