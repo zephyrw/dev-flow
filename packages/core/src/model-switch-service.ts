@@ -25,6 +25,7 @@ export type SwitchRequest = {
   role_overrides: RoleOverrides;
   expected_workflow_version: number;
   expected_run_id: string | null;
+  resume_after_switch?: boolean;
 };
 
 export type SwitchOperation = {
@@ -94,6 +95,7 @@ export class ModelSwitchService {
         body.expected_run_id === null
           ? null
           : z.string().min(1).parse(body.expected_run_id),
+      resume_after_switch: body.resume_after_switch === true,
     };
   }
 
@@ -242,10 +244,23 @@ export class ModelSwitchService {
         500,
       );
     }
-    return this.complete(current, {
+    const receipt = this.complete(current, {
       ...specReceipt,
       effective_from: "stopped-awaiting-resume",
     });
+
+    if (req.resume_after_switch) {
+      try {
+        const { resumeApproved } = await import("../../runtime/src/recovery.js");
+        resumeApproved(engine, current.entity_id, "user_resume");
+        void engine.dispatch();
+      } catch (resumeError) {
+        // 保存成功但续行失败保留已保存配置和原恢复点
+        return receipt;
+      }
+    }
+
+    return receipt;
   }
 
   private async ensureStopped(

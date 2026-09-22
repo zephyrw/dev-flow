@@ -9,8 +9,8 @@ import guideText from "../../../docs/guide/使用指南.md?raw";
 import { TaskTree, TestResults } from "./panels.js";
 import { useNativeProgress } from "./native-progress.js";
 import { CreateWorkflowModal } from "./components/CreateWorkflowModal.js";
-import { ToolModelDrawer } from "./components/ToolModelDrawer.js";
-import { ModelSettingsDrawer } from "./components/ModelSettingsDrawer.js";
+import { ToolModelDialog } from "./components/ToolModelDialog.js";
+import { ModelSettingsDialog } from "./components/ModelSettingsDialog.js";
 import { CurrentRuntime } from "./components/CurrentRuntime.js";
 import { useEventCatchup } from "./use-event-catchup.js";
 import { RequirementComposer } from "./components/RequirementComposer.js";
@@ -19,7 +19,7 @@ import {
   PlanReviewDialog,
   type PlanReviewTarget,
 } from "./components/PlanReviewDialog.js";
-import { AgyAccountsDrawer } from "./components/AgyAccountsDrawer.js";
+import { AgyAccountsDialog } from "./components/AgyAccountsDialog.js";
 import { AgyAccountsPage } from "./components/AgyAccountsPage.js";
 import {
   SubagentWorkCard,
@@ -2365,6 +2365,16 @@ function App() {
             </span>{" "}
             使用指南
           </button>
+          <button
+            className={"nav " + (isSettingsOpen ? "active" : "")}
+            aria-label="全局模型设置"
+            onClick={() => setIsSettingsOpen(true)}
+          >
+            <span className="nav-icon" aria-hidden="true">
+              ⚙️
+            </span>{" "}
+            设置
+          </button>
           <div className="connection-status">
             <span className={"dot " + (connected ? "COMMITTED" : "")} />{" "}
             <span className="connection-status-text">
@@ -2418,13 +2428,6 @@ function App() {
             </div>
           </div>
           <div className="header-aside">
-            <button
-              type="button"
-              className="header-settings-btn"
-              onClick={() => setIsSettingsOpen(true)}
-            >
-              设置
-            </button>
             {w && !showGuide && (
               <CurrentRuntime
                 detail={detail}
@@ -3172,7 +3175,7 @@ function App() {
           }
         }}
       />
-      <ToolModelDrawer
+      <ToolModelDialog
         isOpen={isToolDrawerOpen}
         onClose={() => {
           setIsToolDrawerOpen(false);
@@ -3183,11 +3186,11 @@ function App() {
         focusRole={toolDrawerFocus}
         onSpecUpdated={() => void refresh()}
       />
-      <ModelSettingsDrawer
+      <ModelSettingsDialog
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
       />
-      <AgyAccountsDrawer
+      <AgyAccountsDialog
         isOpen={isAgyAccountsDrawerOpen}
         onClose={() => setIsAgyAccountsDrawerOpen(false)}
       />

@@ -7,7 +7,11 @@ import {
   RequirementComposer,
   type ReferenceItem,
 } from "./RequirementComposer.js";
-import { ModelProfileEditor } from "./ModelProfileEditor.js";
+import {
+  ModelConfigTabs,
+  type ConfigTabId,
+  type ConfigTabItem,
+} from "./ModelConfigTabs.js";
 import {
   blankProfile,
   cloneProfile,
@@ -58,6 +62,7 @@ export function CreateWorkflowModal({
   const [stale, setStale] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<ConfigTabId>("planner");
   const [moreOpen, setMoreOpen] = useState(false);
   const requestId = useRef(newRequestId());
   const panelAbort = useRef<AbortController | null>(null);
@@ -255,79 +260,20 @@ export function CreateWorkflowModal({
             onChange={(e) => setWorkspaceRoot(e.target.value)}
           />
         </div>
-        <section className="ms-card">
-          <h4>规划配置</h4>
-          <ModelProfileEditor
-            profile={planner}
-            toolLabel="规划工具"
-            onChange={changePlanner}
+        <div style={{ margin: "16px 0" }}>
+          <ModelConfigTabs
+            tabs={[
+              { id: "planner", label: "规划" },
+              { id: "executor", label: "执行" },
+            ]}
+            activeTab={activeTab}
+            onTabChange={setActiveTab}
+            plannerProfile={planner}
+            executorProfile={executor}
+            onPlannerChange={changePlanner}
+            onExecutorChange={changeExecutor}
           />
-        </section>
-        <section className="ms-card">
-          <h4>执行配置</h4>
-          <ModelProfileEditor
-            profile={executor}
-            toolLabel="执行工具"
-            onChange={changeExecutor}
-          />
-        </section>
-        <button
-          type="button"
-          className="ms-btn-secondary"
-          onClick={() => loadDefaults(true)}
-        >
-          恢复系统默认
-        </button>
-        <details
-          open={moreOpen}
-          onToggle={(event) =>
-            setMoreOpen((event.target as HTMLDetailsElement).open)
-          }
-        >
-          <summary>更多角色配置</summary>
-          {OVERRIDE_ROLES.map((role) => {
-            const binding = overrides[role];
-            const inheritText = inheritSummary(role, planner, executor);
-            return (
-              <div className="ms-role-row" key={role}>
-                <strong>{roleTitle(role)}</strong>
-                <label>
-                  <input
-                    type="radio"
-                    name={`override-${role}`}
-                    aria-label={`${roleTitle(role)}跟随默认`}
-                    checked={binding.mode === "inherit"}
-                    onChange={() => setOverrideMode(role, false)}
-                  />
-                  跟随默认（{inheritText}）
-                </label>
-                <label>
-                  <input
-                    type="radio"
-                    name={`override-${role}`}
-                    aria-label={`${roleTitle(role)}单独指定`}
-                    checked={binding.mode === "explicit"}
-                    onChange={() => setOverrideMode(role, true)}
-                  />
-                  单独指定
-                </label>
-                {binding.mode === "explicit" && (
-                  <ModelProfileEditor
-                    profile={binding.profile}
-                    toolLabel={roleTitle(role)}
-                    onChange={(profile) => {
-                      setDirty(true);
-                      setOverrides((current) => ({
-                        ...current,
-                        [role]: { mode: "explicit", profile },
-                      }));
-                    }}
-                  />
-                )}
-              </div>
-            );
-          })}
-        </details>
+        </div>
         <div>
           <label
             style={{

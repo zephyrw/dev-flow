@@ -77,3 +77,21 @@ export const operationLabels: Record<string, string> = {
   blocked: "需要处理",
   consumer_unavailable: "请在完整服务中继续",
 };
+
+export async function setAutomationEnabled(
+  enabled: boolean,
+  expectedRevision?: number,
+) {
+  return agyApi<{ enabled: boolean; service_state: string; revision: number }>(
+    "/automation",
+    {
+      method: "PUT",
+      body: requestBody({
+        enabled,
+        ...(expectedRevision !== undefined
+          ? { expected_revision: expectedRevision }
+          : {}),
+      }),
+    },
+  );
+}

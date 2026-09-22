@@ -1,15 +1,18 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
-  EFFORT_LABELS,
   TOOL_DISPLAY_ORDER,
   type ModelEntry,
   type SupportedAdapterId,
   type ToolProfile,
 } from "../../../../packages/contracts/src/index.js";
 import {
-  accessStatusLabel,
+  formatToolName,
+  formatModelName,
+  buildModelChoices,
+  type ModelChoice,
+} from "../../../../packages/presentation/src/model-display.js";
+import {
   cloneProfile,
-  effortCaption,
   formatApiError,
   getAdapterModels,
   refreshAdapterModels,
@@ -29,62 +32,6 @@ export interface ModelProfileEditorProps {
   reloadToken?: number;
 }
 
-const VISIBLE_MODEL_LIMIT = 80;
-
-function listedEntries(entries: ModelEntry[]): ModelEntry[] {
-  return entries.filter(
-    (entry) => !entry.hidden && entry.availability !== "unavailable",
-  );
-}
-
-function matchesQuery(entry: ModelEntry, query: string): boolean {
-  if (!query) return true;
-  const hay = [entry.label, entry.nativeId, entry.providerId, entry.familyId]
-    .filter(Boolean)
-    .join(" ")
-    .toLowerCase();
-  return hay.includes(query.toLowerCase());
-}
-
-function effortChoices(entry?: ModelEntry | null): string[] {
-  if (!entry) return [];
-  if (
-    entry.effort.status === "unknown" ||
-    entry.effort.status === "unsupported"
-  ) {
-    return [];
-  }
-  return entry.effort.values;
-}
-
-function nextReasoning(
-  previous: ToolProfile["reasoning"],
-  entry: ModelEntry | undefined,
-): ToolProfile["reasoning"] {
-  const values = effortChoices(entry);
-  const previousValue =
-    previous?.mode === "explicit" ? previous.value : undefined;
-  if (previousValue && values.includes(previousValue)) {
-    return { mode: "explicit", value: previousValue };
-  }
-  if (
-    entry?.effort.defaultValue &&
-    values.includes(entry.effort.defaultValue)
-  ) {
-    return { mode: "explicit", value: entry.effort.defaultValue };
-  }
-  if (entry?.effort.fixedValue && values.includes(entry.effort.fixedValue)) {
-    return { mode: "explicit", value: entry.effort.fixedValue };
-  }
-  if (entry?.effort.status === "unsupported") {
-    return { mode: "not-applicable" };
-  }
-  if (entry?.effort.status === "unknown") {
-    return undefined;
-  }
-  return undefined;
-}
-
 export function ModelProfileEditor({
   profile,
   onChange,
@@ -95,68 +42,49 @@ export function ModelProfileEditor({
   reloadToken = 0,
 }: ModelProfileEditorProps) {
   const [query, setQuery] = useState("");
-  const [rawModelId, setRawModelId] = useState(profile.modelId ?? "");
-  const [rawExecutable, setRawExecutable] = useState(
-    profile.executableRef ?? "",
-  );
-  const [rawNativeConfig, setRawNativeConfig] = useState(
-    profile.nativeConfigProfile ?? "",
-  );
   const [openList, setOpenList] = useState(false);
-  const [advanced, setAdvanced] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(-1);
   const [entries, setEntries] = useState<ModelEntry[]>([]);
-  const [catalogStatus, setCatalogStatus] = useState("");
   const [loading, setLoading] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [access, setAccess] = useState<AccessState | null>(null);
-  const [verifying, setVerifying] = useState(false);
   const generation = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
   const verifyGen = useRef(0);
   const verifyAbort = useRef<AbortController | null>(null);
+  const listRef = useRef<HTMLUListElement | null>(null);
+  const comboboxRef = useRef<HTMLDivElement | null>(null);
 
   const adapter = profile.adapterId;
-  const currentEntry = useMemo(
-    () =>
-      entries.find(
-        (entry) =>
-          entry.nativeId === profile.modelId ||
-          entry.entryId === profile.modelId,
-      ),
-    [entries, profile.modelId],
-  );
-  const missingCurrent =
-    Boolean(profile.modelId) &&
-    profile.modelSelection === "explicit" &&
-    !currentEntry;
 
-  const visibleModels = useMemo(() => {
-    const filtered = listedEntries(entries).filter((entry) =>
-      matchesQuery(entry, query),
+  const choices = useMemo(() => buildModelChoices(entries), [entries]);
+
+  // 当前选中的 ModelChoice
+  const currentChoice = useMemo(() => {
+    if (!profile.modelId) return null;
+    return (
+      choices.find(
+        (c) =>
+          c.choiceId === profile.modelId ||
+          c.nativeId === profile.modelId ||
+          c.entryIds.some((id) => id.endsWith(`/${profile.modelId}`)) ||
+          Object.values(c.variantByEffort).includes(profile.modelId!),
+      ) ?? null
     );
-    return filtered.slice(0, VISIBLE_MODEL_LIMIT);
-  }, [entries, query]);
-  const hiddenCount = Math.max(
-    0,
-    listedEntries(entries).filter((entry) => matchesQuery(entry, query))
-      .length - visibleModels.length,
-  );
-  const effortValues = effortChoices(currentEntry);
-  const unknownEffort = currentEntry?.effort.status === "unknown";
-  const unsupportedEffort = currentEntry?.effort.status === "unsupported";
-  const currentEffort =
-    profile.reasoning?.mode === "explicit" ? profile.reasoning.value : "";
-  const effortMissing =
-    Boolean(currentEffort) &&
-    effortValues.length > 0 &&
-    !effortValues.includes(currentEffort);
+  }, [choices, profile.modelId]);
 
-  const emitAccess = (state: AccessState | null) => {
-    setAccess(state);
-    onAccessChange?.(state);
-  };
+  // 过滤后的模型列表
+  const visibleChoices = useMemo(() => {
+    if (!query.trim()) return choices;
+    const lower = query.toLowerCase().trim();
+    return choices.filter(
+      (c) =>
+        c.label.toLowerCase().includes(lower) ||
+        c.choiceId.toLowerCase().includes(lower),
+    );
+  }, [choices, query]);
 
-  const loadCatalog = (nextAdapter: string) => {
+  const loadCatalog = (nextAdapter: string, doRefresh = false) => {
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
@@ -164,15 +92,28 @@ export function ModelProfileEditor({
     const token = generation.current;
     setLoading(true);
     setLoadError(null);
-    getAdapterModels(nextAdapter, controller.signal)
-      .then(async (result) => {
-        if (result.status === "missing" && !disabled) {
-          await refreshAdapterModels(nextAdapter, controller.signal);
-          result = await getAdapterModels(nextAdapter, controller.signal);
-        }
+
+    const run = async () => {
+      if (doRefresh) {
+        setRefreshing(true);
+        await refreshAdapterModels(nextAdapter, controller.signal);
+      }
+      let result = await getAdapterModels(nextAdapter, controller.signal);
+      if (
+        (result.discoveryStatus === "missing" || result.status === "missing") &&
+        !disabled &&
+        !doRefresh
+      ) {
+        await refreshAdapterModels(nextAdapter, controller.signal);
+        result = await getAdapterModels(nextAdapter, controller.signal);
+      }
+      return result;
+    };
+
+    run()
+      .then((result) => {
         if (token !== generation.current) return;
         setEntries(result.entries);
-        setCatalogStatus(result.status ?? "");
       })
       .catch((error) => {
         if (controller.signal.aborted || token !== generation.current) return;
@@ -180,7 +121,10 @@ export function ModelProfileEditor({
         setLoadError(formatApiError(error));
       })
       .finally(() => {
-        if (token === generation.current) setLoading(false);
+        if (token === generation.current) {
+          setLoading(false);
+          setRefreshing(false);
+        }
       });
   };
 
@@ -191,7 +135,7 @@ export function ModelProfileEditor({
 
   const runVerify = (candidate: ToolProfile, force = false) => {
     if (disabled || !autoVerify || !candidate.modelId) {
-      emitAccess(null);
+      onAccessChange?.(null);
       return;
     }
     verifyAbort.current?.abort();
@@ -199,24 +143,21 @@ export function ModelProfileEditor({
     verifyAbort.current = controller;
     verifyGen.current += 1;
     const token = verifyGen.current;
-    setVerifying(true);
-    emitAccess({ status: "checking", message: "正在验证访问" });
+
+    onAccessChange?.({ status: "checking", message: "正在验证" });
     verifyModelAccess(candidate, controller.signal, force)
       .then((state) => {
         if (token !== verifyGen.current) return;
-        emitAccess(state);
+        onAccessChange?.(state);
       })
       .catch((error) => {
         if (controller.signal.aborted || token !== verifyGen.current) return;
         if (isVerifyAbort(error)) return;
         const api = error as ApiError;
-        emitAccess({
+        onAccessChange?.({
           status: api.code || "failed",
           message: formatApiError(error),
         });
-      })
-      .finally(() => {
-        if (token === verifyGen.current) setVerifying(false);
       });
   };
 
@@ -226,88 +167,149 @@ export function ModelProfileEditor({
   }, [
     profile.adapterId,
     profile.modelId,
+    profile.reasoning?.mode,
+    profile.reasoning && "value" in profile.reasoning ? profile.reasoning.value : undefined,
     profile.nativeConfigProfile,
     profile.executableRef,
     disabled,
   ]);
 
-  useEffect(
-    () => setRawModelId(profile.modelId ?? ""),
-    [profile.adapterId, profile.modelId],
-  );
-  useEffect(
-    () => setRawExecutable(profile.executableRef ?? ""),
-    [profile.adapterId, profile.executableRef],
-  );
-  useEffect(
-    () => setRawNativeConfig(profile.nativeConfigProfile ?? ""),
-    [profile.adapterId, profile.nativeConfigProfile],
-  );
+  // 点击外部关闭下拉列表
+  useEffect(() => {
+    function handleDocumentClick(e: MouseEvent) {
+      if (
+        comboboxRef.current &&
+        !comboboxRef.current.contains(e.target as Node)
+      ) {
+        setOpenList(false);
+      }
+    }
+    if (openList) {
+      document.addEventListener("mousedown", handleDocumentClick);
+      return () => document.removeEventListener("mousedown", handleDocumentClick);
+    }
+  }, [openList]);
 
   const update = (patch: Partial<ToolProfile>) => {
-    onChange(
-      cloneProfile({ ...profile, ...patch, revision: profile.revision }),
-    );
+    onChange(cloneProfile({ ...profile, ...patch, revision: profile.revision }));
   };
 
   const changeTool = (next: SupportedAdapterId) => {
     setQuery("");
     setOpenList(false);
-    emitAccess(null);
+    onAccessChange?.(null);
     onChange({
       ...blankKeepId(profile.id, next),
-      executableRef: undefined,
-      nativeConfigProfile: undefined,
+      executableRef: profile.executableRef,
+      nativeConfigProfile: profile.nativeConfigProfile,
     });
   };
 
-  const changeModel = (entry: ModelEntry | null, rawId?: string) => {
-    const modelId = entry?.nativeId ?? rawId ?? "";
-    const reasoning = nextReasoning(profile.reasoning, entry ?? undefined);
+  const selectChoice = (choice: ModelChoice) => {
+    // 判断思考强度
+    let nextEffort =
+      profile.reasoning && "value" in profile.reasoning
+        ? profile.reasoning.value
+        : undefined;
+    if (nextEffort && !choice.effortValues.includes(nextEffort)) {
+      nextEffort = choice.defaultEffort;
+    } else if (!nextEffort && choice.defaultEffort) {
+      nextEffort = choice.defaultEffort;
+    }
+
+    let targetModelId = choice.nativeId;
+    if (nextEffort && choice.variantByEffort[nextEffort]) {
+      targetModelId = choice.variantByEffort[nextEffort]!;
+    }
+
+    const reasoning = nextEffort
+      ? { mode: "explicit" as const, value: nextEffort }
+      : choice.effortValues.length === 0
+        ? { mode: "not-applicable" as const }
+        : undefined;
+
     setOpenList(false);
     setQuery("");
     update({
       modelSelection: "explicit",
-      modelId: modelId || undefined,
-      selectionKind:
-        entry?.selectionKind === "native-router" ? "native-router" : "fixed",
+      modelId: targetModelId,
+      selectionKind: "fixed",
       reasoning,
     });
   };
 
-  const changeEffort = (value: string) => {
-    if (!value) {
-      update({ reasoning: undefined });
+  const changeEffort = (effortValue: string) => {
+    if (!effortValue || effortValue === "default") {
+      // 原生默认或清空
+      const targetModelId =
+        (currentChoice && currentChoice.variantByEffort["high"]) ||
+        currentChoice?.nativeId ||
+        profile.modelId;
+      update({
+        modelId: targetModelId,
+        reasoning: effortValue === "default" ? { mode: "native-default" } : undefined,
+      });
       return;
     }
-    update({ reasoning: { mode: "explicit", value } });
+
+    let targetModelId = profile.modelId;
+    if (currentChoice && currentChoice.variantByEffort[effortValue]) {
+      targetModelId = currentChoice.variantByEffort[effortValue];
+    }
+
+    update({
+      modelId: targetModelId,
+      reasoning: { mode: "explicit", value: effortValue },
+    });
   };
 
-  const commitRawModel = () => {
-    const rawId = rawModelId.trim();
-    if (rawId === (profile.modelId ?? "")) return;
-    const match =
-      entries.find(
-        (item) => item.nativeId === rawId || item.entryId === rawId,
-      ) ?? null;
-    changeModel(match, rawId);
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (!openList) {
+      if (e.key === "ArrowDown" || e.key === "Enter") {
+        e.preventDefault();
+        setOpenList(true);
+      }
+      return;
+    }
+
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setActiveIndex((prev) =>
+        prev < visibleChoices.length - 1 ? prev + 1 : 0,
+      );
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setActiveIndex((prev) =>
+        prev > 0 ? prev - 1 : visibleChoices.length - 1,
+      );
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      if (activeIndex >= 0 && activeIndex < visibleChoices.length) {
+        selectChoice(visibleChoices[activeIndex]!);
+      }
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      setOpenList(false);
+    }
   };
 
-  const commitAdvanced = (
-    field: "executableRef" | "nativeConfigProfile",
-    raw: string,
-  ) => {
-    const value = raw.trim() || undefined;
-    if (value !== profile[field]) update({ [field]: value });
-  };
+  const currentModelLabel = currentChoice
+    ? currentChoice.label
+    : profile.modelId
+      ? formatModelName(adapter, profile.modelId)
+      : "";
 
-  const modelDisplay =
-    currentEntry?.label && currentEntry.label !== profile.modelId
-      ? `${currentEntry.label} · ${profile.modelId}`
-      : profile.modelId || "请选择模型";
+  const availableEfforts = currentChoice?.effortValues ?? [];
+  const currentEffort =
+    profile.reasoning?.mode === "explicit"
+      ? profile.reasoning.value
+      : profile.reasoning?.mode === "native-default"
+        ? "default"
+        : "";
 
   return (
     <div className="ms-editor">
+      {/* 工具选择 */}
       <div className="ms-field">
         <label htmlFor={`ms-tool-${profile.id}`}>{toolLabel}</label>
         <select
@@ -315,205 +317,133 @@ export function ModelProfileEditor({
           aria-label={toolLabel}
           disabled={disabled}
           value={adapter}
-          onChange={(event) =>
-            changeTool(event.target.value as SupportedAdapterId)
-          }
+          onChange={(e) => changeTool(e.target.value as SupportedAdapterId)}
         >
           {TOOL_DISPLAY_ORDER.map((item) => (
             <option key={item.adapterId} value={item.adapterId}>
-              {item.label}（{item.adapterId}）
+              {formatToolName(item.adapterId)}
             </option>
           ))}
         </select>
       </div>
 
-      <div className="ms-field">
-        <label htmlFor={`ms-model-${profile.id}`}>模型</label>
-        <input
-          id={`ms-model-${profile.id}`}
-          aria-label={`${toolLabel}模型搜索`}
-          disabled={disabled || loading}
-          value={openList ? query : modelDisplay}
-          placeholder={loading ? "正在加载模型目录…" : "搜索模型"}
-          onFocus={() => {
-            setOpenList(true);
-            setQuery("");
-          }}
-          onBlur={() => setTimeout(() => setOpenList(false), 120)}
-          onChange={(event) => {
-            setOpenList(true);
-            setQuery(event.target.value);
-          }}
-        />
-        {openList && !disabled && (
-          <ul className="ms-model-list" role="listbox" aria-label="模型列表">
-            {visibleModels.map((entry) => (
-              <li key={entry.entryId}>
-                <button
-                  type="button"
-                  role="option"
-                  onMouseDown={(event) => event.preventDefault()}
-                  onClick={() => changeModel(entry)}
-                >
-                  <strong>{entry.label}</strong>
-                  <span>{entry.nativeId}</span>
-                  {entry.providerId ? <em>{entry.providerId}</em> : null}
-                </button>
-              </li>
-            ))}
-            {missingCurrent && (
-              <li>
-                <button
-                  type="button"
-                  role="option"
-                  onMouseDown={(event) => event.preventDefault()}
-                  onClick={() => changeModel(null, profile.modelId)}
-                >
-                  <strong>{profile.modelId}</strong>
-                  <span>当前配置，目录未列出</span>
-                </button>
-              </li>
-            )}
-            {!loading && visibleModels.length === 0 && !missingCurrent && (
-              <li className="ms-empty">没有匹配的模型</li>
-            )}
-            {hiddenCount > 0 && (
-              <li className="ms-empty">还有 {hiddenCount} 项，请缩小搜索</li>
-            )}
-          </ul>
-        )}
-        {missingCurrent && !openList && (
-          <p className="ms-hint">当前配置，目录未列出</p>
-        )}
-      </div>
-
-      <div className="ms-field">
-        <label htmlFor={`ms-effort-${profile.id}`}>思考强度</label>
-        {unknownEffort ? (
-          <p className="ms-hint" role="status">
-            该模型未提供可用的思考强度元数据，不能猜测档位
-          </p>
-        ) : unsupportedEffort ? (
-          <p className="ms-hint" role="status">
-            该模型不支持独立思考强度
-          </p>
-        ) : (
-          <select
-            id={`ms-effort-${profile.id}`}
-            aria-label={`${toolLabel}思考强度`}
-            disabled={disabled || !currentEntry}
-            value={currentEffort}
-            onChange={(event) => changeEffort(event.target.value)}
-          >
-            <option value="">请选择</option>
-            {effortMissing && currentEffort && (
-              <option value={currentEffort}>
-                {effortCaption(currentEffort)}（当前配置，目录未列出）
-              </option>
-            )}
-            {effortValues.map((value) => (
-              <option key={value} value={value}>
-                {effortOptionLabel(value)}
-              </option>
-            ))}
-          </select>
-        )}
-      </div>
-
-      <div className="ms-access" role="status">
-        <span>访问状态：{accessStatusLabel(access)}</span>
-        {profile.modelId && (
+      {/* 模型选择（可搜索 combobox） */}
+      <div className="ms-field" ref={comboboxRef}>
+        <div className="ms-field-header">
+          <label htmlFor={`ms-model-${profile.id}`}>模型</label>
           <button
             type="button"
-            className="ms-link"
-            disabled={disabled || verifying}
-            onClick={() => runVerify(profile, true)}
+            className="ms-icon-button"
+            title="刷新模型目录"
+            disabled={disabled || loading || refreshing}
+            onClick={() => loadCatalog(adapter, true)}
           >
-            {verifying ? "正在验证…" : "重新验证"}
+            {refreshing ? "…" : "↻"}
           </button>
-        )}
-      </div>
-
-      {loadError && (
-        <p className="ms-error" role="alert">
-          {loadError}
-          <button
-            type="button"
-            className="ms-link"
-            onClick={() => loadCatalog(adapter)}
-          >
-            重试
-          </button>
-        </p>
-      )}
-      {catalogStatus === "stale" && (
-        <p className="ms-hint">目录可能已过期，可在工具状态中刷新</p>
-      )}
-
-      <details
-        className="ms-advanced"
-        open={advanced}
-        onToggle={(event) =>
-          setAdvanced((event.target as HTMLDetailsElement).open)
-        }
-      >
-        <summary>高级选项</summary>
-        <div className="ms-field">
-          <label htmlFor={`ms-cli-${profile.id}`}>实际 CLI</label>
-          <input
-            id={`ms-cli-${profile.id}`}
-            aria-label={`${toolLabel}实际 CLI`}
-            disabled={disabled}
-            value={rawExecutable}
-            onChange={(event) => setRawExecutable(event.target.value)}
-            onBlur={() => commitAdvanced("executableRef", rawExecutable)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") {
-                event.preventDefault();
-                commitAdvanced("executableRef", rawExecutable);
-              }
-            }}
-            placeholder="仅在明确指定路径时填写"
-          />
         </div>
-        <div className="ms-field">
-          <label htmlFor={`ms-native-${profile.id}`}>原生命名配置</label>
+
+        <div className="ms-combobox-container">
           <input
-            id={`ms-native-${profile.id}`}
-            aria-label={`${toolLabel}原生命名配置`}
+            id={`ms-model-${profile.id}`}
+            type="text"
+            role="combobox"
+            aria-expanded={openList}
+            aria-autocomplete="list"
             disabled={disabled}
-            value={rawNativeConfig}
-            onChange={(event) => setRawNativeConfig(event.target.value)}
-            onBlur={() =>
-              commitAdvanced("nativeConfigProfile", rawNativeConfig)
+            value={openList ? query : currentModelLabel}
+            placeholder={
+              loading
+                ? "正在读取目录…"
+                : currentModelLabel || "点击展开或输入搜索模型"
             }
-            onKeyDown={(event) => {
-              if (event.key === "Enter") {
-                event.preventDefault();
-                commitAdvanced("nativeConfigProfile", rawNativeConfig);
-              }
+            onFocus={() => {
+              setOpenList(true);
+              setQuery("");
+              setActiveIndex(-1);
             }}
-            placeholder="已有配置名，不是凭据"
+            onChange={(e) => {
+              setQuery(e.target.value);
+              setOpenList(true);
+              setActiveIndex(0);
+            }}
+            onKeyDown={handleKeyDown}
           />
+
+          {openList && !disabled && (
+            <ul
+              className="ms-model-list"
+              role="listbox"
+              ref={listRef}
+              aria-label="模型选项列表"
+            >
+              {visibleChoices.map((choice, idx) => {
+                const isSelected =
+                  currentChoice?.choiceId === choice.choiceId;
+                const isFocused = activeIndex === idx;
+                return (
+                  <li
+                    key={choice.choiceId}
+                    role="option"
+                    aria-selected={isSelected}
+                    className={`ms-model-option ${
+                      isSelected ? "is-selected" : ""
+                    } ${isFocused ? "is-focused" : ""}`}
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      selectChoice(choice);
+                    }}
+                  >
+                    <span className="ms-option-label">{choice.label}</span>
+                    {isSelected && <span className="ms-option-check">✓</span>}
+                  </li>
+                );
+              })}
+
+              {!loading && visibleChoices.length === 0 && (
+                <li className="ms-empty">没有匹配的模型</li>
+              )}
+            </ul>
+          )}
         </div>
+
+        {loadError && (
+          <p className="ms-error" role="alert">
+            {loadError}
+            <button
+              type="button"
+              className="ms-link-retry"
+              onClick={() => loadCatalog(adapter, true)}
+            >
+              重试
+            </button>
+          </p>
+        )}
+      </div>
+
+      {/* 思考强度选择（按需显示） */}
+      {availableEfforts.length > 0 && (
         <div className="ms-field">
-          <label htmlFor={`ms-raw-${profile.id}`}>原始模型 ID</label>
-          <input
-            id={`ms-raw-${profile.id}`}
-            aria-label={`${toolLabel}原始模型 ID`}
-            disabled={disabled}
-            value={rawModelId}
-            onChange={(event) => setRawModelId(event.target.value)}
-            onBlur={commitRawModel}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") {
-                event.preventDefault();
-                commitRawModel();
-              }
-            }}
-          />
+          <label htmlFor={`ms-effort-${profile.id}`}>思考强度</label>
+          {availableEfforts.length === 1 ? (
+            <div className="ms-fixed-value">{availableEfforts[0]}</div>
+          ) : (
+            <select
+              id={`ms-effort-${profile.id}`}
+              aria-label="思考强度"
+              disabled={disabled}
+              value={currentEffort}
+              onChange={(e) => changeEffort(e.target.value)}
+            >
+              <option value="default">默认</option>
+              {availableEfforts.map((effort) => (
+                <option key={effort} value={effort}>
+                  {effort}
+                </option>
+              ))}
+            </select>
+          )}
         </div>
-      </details>
+      )}
     </div>
   );
 }
@@ -527,9 +457,4 @@ function blankKeepId(id: string, adapterId: SupportedAdapterId): ToolProfile {
     selectionKind: "fixed",
     options: {},
   };
-}
-
-function effortOptionLabel(value: string): string {
-  const known = EFFORT_LABELS[value as keyof typeof EFFORT_LABELS];
-  return known ? `${known} · ${value}` : value;
 }

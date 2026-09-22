@@ -224,23 +224,9 @@ export function WorkflowActivity({
       setError(formatApiError(e));
     }
   }
-  if (!issues.length && !runs.length && !error) return null;
+  if (!issues.length && !error) return null;
   return (
     <div aria-label="任务反馈记录">
-      {runs.length > 0 && (
-        <details open>
-          <summary>运行模型记录</summary>
-          {runs
-            .slice()
-            .reverse()
-            .map((run: any) => (
-              <article key={run.id} className="ms-card">
-                <p>{runSnapshotText(run)}</p>
-                {runObservedText(run)}
-              </article>
-            ))}
-        </details>
-      )}
       {issues.length > 0 && (
         <details open>
           <summary>功能问题与复测</summary>
@@ -366,50 +352,7 @@ function issuePickerVisible(issue: any, workflow: any): boolean {
   return true;
 }
 
-function runSnapshotText(run: any): string {
-  const binding = run.model_binding;
-  const profile = binding?.effective_invocation
-    ? {
-        adapterId: binding.effective_invocation.adapterId,
-        modelId: binding.effective_invocation.modelId,
-        reasoning: binding.effective_invocation.reasoning,
-      }
-    : run.profile;
-  const adapter = profile?.adapterId ?? run.adapter;
-  const model = profile?.modelId ?? "未记录模型";
-  const effort =
-    profile?.reasoning?.mode === "explicit"
-      ? effortCaption(profile.reasoning.value)
-      : profile?.reasoning?.mode === "native-default"
-        ? "原生默认"
-        : "";
-  const round = purposeRoundLabel(
-    run.purpose,
-    run.routing_role ?? binding?.routing_role,
-  );
-  const role = (run.routing_role ??
-    binding?.routing_role ??
-    "executor") as keyof typeof ROLE_LABELS;
-  const revision =
-    run.execution_spec_revision ?? binding?.execution_spec_revision ?? 0;
-  const source = ROLE_LABELS[role] ?? role;
-  return `本轮${round}由 ${toolLabel(adapter)} / ${model}${effort ? " / " + effort : ""} 执行，来自任务${source}配置 r${revision}`;
-}
 
-function runObservedText(run: any) {
-  const observedModel = run.model_binding?.observed_model ?? run.observed_model;
-  const observedEffort =
-    run.model_binding?.observed_effort ?? run.observed_effort;
-  if (!observedModel && !observedEffort) {
-    return <p className="ms-observed">实际观察：尚未从运行报告确认</p>;
-  }
-  return (
-    <p className="ms-observed">
-      实际观察：{observedModel ?? "未报告模型"}
-      {observedEffort ? ` / ${observedEffort}` : ""}
-    </p>
-  );
-}
 
 function fixerLabel(issue: any, view?: FunctionalIssueView): string {
   const profile =

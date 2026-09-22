@@ -357,28 +357,43 @@ export async function getModelTools(
 export async function getAdapterModels(
   adapter: string,
   signal?: AbortSignal,
-): Promise<{ entries: ModelEntry[]; catalog?: any; status?: string }> {
+  scopeId?: string,
+): Promise<{
+  entries: ModelEntry[];
+  catalog?: any;
+  status?: string;
+  discoveryStatus?: string;
+  parserRevision?: string;
+}> {
+  const query = scopeId ? `?scope_id=${encodeURIComponent(scopeId)}` : "";
   const data = await requestJson(
-    `/api/model-tools/${encodeURIComponent(adapter)}/models`,
+    `/api/model-tools/${encodeURIComponent(adapter)}/models${query}`,
     { signal },
   );
-  const entries = data.entries ?? data.catalog?.entries ?? data.models ?? [];
+  const catalog = data.catalog ?? data;
+  const entries = data.entries ?? catalog?.entries ?? data.models ?? [];
   return {
     entries: Array.isArray(entries) ? entries : [],
-    catalog: data.catalog ?? data,
-    status: data.status ?? data.catalog?.status,
+    catalog,
+    status: data.status ?? catalog?.status,
+    discoveryStatus: data.discoveryStatus ?? catalog?.discoveryStatus,
+    parserRevision: data.parserRevision ?? catalog?.parserRevision,
   };
 }
 
 export async function refreshAdapterModels(
   adapter: string,
   signal?: AbortSignal,
+  scopeId?: string,
 ): Promise<any> {
   const operation = await requestJson(
     `/api/model-tools/${encodeURIComponent(adapter)}/models/refresh`,
     {
       method: "POST",
-      body: JSON.stringify({ request_id: newRequestId() }),
+      body: JSON.stringify({
+        request_id: newRequestId(),
+        ...(scopeId ? { scope_id: scopeId } : {}),
+      }),
       signal,
     },
   );
@@ -678,6 +693,7 @@ export async function postModelSwitch(
     planner_profile: ToolProfile;
     executor_profile: ToolProfile;
     role_overrides: RoleOverrides;
+    resume_after_switch?: boolean;
   },
 ): Promise<any> {
   return requestJson(

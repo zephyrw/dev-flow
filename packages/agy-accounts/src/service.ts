@@ -1217,10 +1217,17 @@ export class AgyAccountService {
           throw new AccountServiceError(
             "interactive_login_capability_unverified",
           );
+        const isManualOneShot =
+          input.kind === "enroll" ||
+          input.kind === "delete" ||
+          input.kind === "probe" ||
+          input.kind === "reauth" ||
+          (input.kind === "switch" && input.selection?.mode === "explicit");
         if (
-          realm.service_state !== "running" ||
-          !realm.desired_enabled ||
-          !this.authHost.isDomainLockHeld(input.realm_id)
+          !isManualOneShot &&
+          (realm.service_state !== "running" ||
+            !realm.desired_enabled ||
+            !this.authHost.isDomainLockHeld(input.realm_id))
         )
           throw new AccountServiceError("account_service_not_running");
         if (
@@ -1578,13 +1585,20 @@ export class AgyAccountService {
 
   private assertOperation(op: AgyAccountOperation, signal?: AbortSignal): void {
     const realm = this.repository.getRealm(op.realm_id)!;
+    const isManualOneShot =
+      op.kind === "enroll" ||
+      op.kind === "delete" ||
+      op.kind === "probe" ||
+      op.kind === "reauth" ||
+      (op.kind === "switch" && op.selection?.mode === "explicit");
+
     if (!this.authHost.isDomainLockHeld(op.realm_id))
       throw new AccountServiceError("domain_lock_lost");
     if (
       !realm ||
       realm.pending_operation_id !== op.operation_id ||
       realm.control_generation !== op.control_generation ||
-      realm.service_state !== "running" ||
+      (!isManualOneShot && realm.service_state !== "running") ||
       this.repository.getOperation(op.operation_id)?.cancel_requested ||
       signal?.aborted
     )
@@ -1613,6 +1627,22 @@ export class AgyAccountService {
     this.activeAbort = new AbortController();
     const signal = this.activeAbort.signal;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let temporaryLockRelease: (() => Promise<void>) | undefined;
+
+    const isManualOneShot =
+      op.kind === "enroll" ||
+      op.kind === "delete" ||
+      op.kind === "probe" ||
+      op.kind === "reauth" ||
+      (op.kind === "switch" && op.selection?.mode === "explicit");
+
+    if (isManualOneShot && !this.authHost.isDomainLockHeld(op.realm_id)) {
+      const lockRes = await this.authHost.acquireDomainLock(op.realm_id);
+      if (lockRes.acquired && lockRes.release) {
+        temporaryLockRelease = lockRes.release;
+      }
+    }
+
     if (op.deadline_at)
       timer = setTimeout(
         () => this.activeAbort?.abort(),
@@ -1777,6 +1807,9 @@ export class AgyAccountService {
     } finally {
       if (timer) clearTimeout(timer);
       this.activeAbort = undefined;
+      if (temporaryLockRelease) {
+        await temporaryLockRelease().catch(() => {});
+      }
     }
   }
 

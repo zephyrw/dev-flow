@@ -29,6 +29,17 @@ const TERMINAL_STATES = new Set([
   "CLEANUP_PENDING",
 ]);
 
+export const SpecTabItemSchema = z
+  .object({
+    id: z.string(),
+    label: z.string(),
+    role: z.string(),
+    inheritable: z.boolean(),
+    defaultSource: z.enum(["planner", "executor"]).optional(),
+  })
+  .strict();
+export type SpecTabItem = z.infer<typeof SpecTabItemSchema>;
+
 export const HttpExecutionSpecGetResponseSchema = z
   .object({
     workflow_id: Id,
@@ -57,6 +68,8 @@ export const HttpExecutionSpecGetResponseSchema = z
     repair_assignments: z.array(RepairModelAssignmentSchema),
     can_edit: z.boolean(),
     resume_target: ResumeTargetSchema.nullable(),
+    configured_tabs: z.array(SpecTabItemSchema).optional(),
+    active_tab_role: z.string().optional(),
   })
   .strict();
 
@@ -221,6 +234,41 @@ export function buildExecutionSpecResponse(
     "interruption",
     workflowId,
   );
+
+  const configuredTabs: SpecTabItem[] = [
+    { id: "planner", label: "规划", role: "planner", inheritable: false },
+    { id: "executor", label: "执行", role: "executor", inheritable: false },
+  ];
+  if (workflow.quality_policy_version !== 2 && view.spec.roleOverrides) {
+    if (view.spec.roleOverrides.reviewer?.mode === "explicit") {
+      configuredTabs.push({
+        id: "reviewer",
+        label: "代码审查",
+        role: "reviewer",
+        inheritable: true,
+        defaultSource: "planner",
+      });
+    }
+    if (view.spec.roleOverrides.review_fixer?.mode === "explicit") {
+      configuredTabs.push({
+        id: "review_fixer",
+        label: "审查修复",
+        role: "review_fixer",
+        inheritable: true,
+        defaultSource: "executor",
+      });
+    }
+    if (view.spec.roleOverrides.functional_fixer?.mode === "explicit") {
+      configuredTabs.push({
+        id: "functional_fixer",
+        label: "功能修复",
+        role: "functional_fixer",
+        inheritable: true,
+        defaultSource: "executor",
+      });
+    }
+  }
+
   return HttpExecutionSpecGetResponseSchema.parse({
     workflow_id: workflow.id,
     workflow_version: workflow.version,
@@ -233,5 +281,7 @@ export function buildExecutionSpecResponse(
     repair_assignments: assignments,
     can_edit: !TERMINAL_STATES.has(workflow.state),
     resume_target: toResumeTarget(workflow, interruption),
+    configured_tabs: configuredTabs,
+    active_tab_role: active?.role ?? "planner",
   });
 }

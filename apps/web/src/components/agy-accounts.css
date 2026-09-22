@@ -1,201 +1,528 @@
-.agy-accounts-container {
-  padding: 20px;
-  background: var(--bg-primary, #1e1e2e);
-  color: var(--text-primary, #cdd6f4);
-  font-family: system-ui, -apple-system, sans-serif;
-  height: 100%;
-  box-sizing: border-box;
-  overflow-y: auto;
-}
+/* AGY 极简账号管理组件样式 - 统一专业白色风格 */
 
-.agy-accounts-header {
+.agy-minimal-panel {
   display: flex;
-  justify-content: space-between;
-  align-items: center;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-  padding-bottom: 16px;
-  margin-bottom: 20px;
-}
-
-.agy-header-actions {
-  display: flex;
-  gap: 10px;
-}
-
-.agy-btn {
-  padding: 6px 14px;
-  border-radius: 6px;
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  background: rgba(255, 255, 255, 0.05);
-  color: inherit;
-  cursor: pointer;
+  flex-direction: column;
+  gap: 16px;
+  color: #1e293b;
   font-size: 13px;
-  transition: background 0.2s;
+  line-height: 1.5;
 }
 
-.agy-btn:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.12);
+/* 顶部控制栏 */
+.agy-top-control-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 16px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
 }
 
-.agy-btn-primary {
-  background: #3b82f6;
-  border-color: #2563eb;
-  color: white;
+.agy-automation-switch-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
-.agy-btn-primary:hover:not(:disabled) {
+.agy-switch-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.agy-switch-input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.agy-switch-slider {
+  position: relative;
+  width: 36px;
+  height: 20px;
+  background: #cbd5e1;
+  border-radius: 20px;
+  transition: all 0.2s ease;
+  flex-shrink: 0;
+}
+
+.agy-switch-slider::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  background: #ffffff;
+  border-radius: 50%;
+  transition: all 0.2s ease;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+}
+
+.agy-switch-input:checked + .agy-switch-slider {
   background: #2563eb;
 }
 
-.agy-btn-danger {
-  background: #ef4444;
-  border-color: #dc2626;
-  color: white;
+.agy-switch-input:checked + .agy-switch-slider::after {
+  transform: translateX(16px);
 }
 
-.agy-notice {
-  background: rgba(59, 130, 246, 0.1);
-  border-left: 3px solid #3b82f6;
-  padding: 10px 14px;
-  margin-bottom: 16px;
-  font-size: 13px;
-  border-radius: 0 6px 6px 0;
-}
-
-.agy-notice-warning {
-  background: rgba(245, 158, 11, 0.1);
-  border-left-color: #f59e0b;
-}
-
-.agy-notice-danger {
-  background: rgba(239, 68, 68, 0.1);
-  border-left-color: #ef4444;
-}
-
-.agy-accounts-table {
-  width: 100%;
-  border-collapse: collapse;
-  margin-bottom: 20px;
-}
-
-.agy-accounts-table th,
-.agy-accounts-table td {
-  padding: 12px 14px;
-  text-align: left;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-}
-
-.agy-accounts-table th {
-  background: rgba(255, 255, 255, 0.03);
+.agy-switch-text {
+  font-size: 13.5px;
   font-weight: 600;
+  color: #0f172a;
+}
+
+.agy-switch-desc {
+  font-size: 11.5px;
+  color: #64748b;
+  padding-left: 46px;
+}
+
+/* 按钮基础 */
+.agy-primary-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 14px;
+  background: #2563eb;
+  color: #ffffff;
+  border: 1px solid #1d4ed8;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.agy-primary-btn:hover:not(:disabled) {
+  background: #1d4ed8;
+}
+
+.agy-primary-btn:disabled {
+  background: #94a3b8;
+  border-color: #cbd5e1;
+  cursor: not-allowed;
+}
+
+.agy-secondary-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 5px 12px;
+  background: #ffffff;
+  color: #334155;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.agy-secondary-btn:hover:not(:disabled) {
+  background: #f1f5f9;
+  border-color: #94a3b8;
+  color: #0f172a;
+}
+
+.agy-icon-btn {
+  padding: 4px 8px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  color: #64748b;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.agy-icon-btn:hover {
+  background: #f1f5f9;
+  color: #0f172a;
+}
+
+.agy-icon-btn.danger:hover {
+  background: #fef2f2;
+  color: #ef4444;
+}
+
+.agy-text-btn {
+  background: transparent;
+  border: none;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 4px;
+}
+
+.agy-text-btn.danger {
+  color: #dc2626;
+}
+
+.agy-text-btn.danger:hover {
+  text-decoration: underline;
+}
+
+/* 操作状态卡片 */
+.agy-active-op-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  border-radius: 6px;
+  color: #1e40af;
+  font-size: 12.5px;
+}
+
+.agy-active-op-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.agy-op-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid #bfdbfe;
+  border-top-color: #2563eb;
+  border-radius: 50%;
+  animation: agy-spin 0.8s linear infinite;
+}
+
+@keyframes agy-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* 提示通知 */
+.agy-alert-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 6px;
+  color: #b91c1c;
+  font-size: 12.5px;
+}
+
+.agy-alert-error button {
+  background: transparent;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.agy-alert-success {
+  padding: 8px 12px;
+  background: #ecfdf5;
+  border: 1px solid #a7f3d0;
+  border-radius: 6px;
+  color: #065f46;
+  font-size: 12.5px;
+}
+
+/* 账号列表 */
+.agy-accounts-list-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.agy-list-header {
+  font-size: 12px;
+  font-weight: 600;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 0 4px;
+}
+
+.agy-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 20px;
+  border: 1px dashed #cbd5e1;
+  border-radius: 8px;
+  background: #f8fafc;
+  gap: 12px;
+  text-align: center;
+}
+
+.agy-empty-icon {
+  font-size: 32px;
+}
+
+.agy-empty-state p {
+  margin: 0;
+  color: #64748b;
   font-size: 13px;
 }
 
-.agy-progress-bar-wrap {
-  width: 140px;
-  height: 8px;
-  background: rgba(255, 255, 255, 0.1);
-  border-radius: 4px;
-  overflow: hidden;
-  margin-bottom: 4px;
+.agy-accounts-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
-.agy-progress-bar-fill {
-  height: 100%;
-  transition: width 0.3s ease;
+.agy-account-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  transition: all 0.15s ease;
 }
 
-.agy-progress-bar-fill.normal {
-  background: #10b981;
+.agy-account-row:hover {
+  border-color: #cbd5e1;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.03);
 }
 
-.agy-progress-bar-fill.warning {
-  background: #f59e0b;
+.agy-account-row.is-active-account {
+  border-color: #93c5fd;
+  background: #f8fbff;
 }
 
-.agy-progress-bar-fill.danger {
-  background: #ef4444;
+.agy-account-main-info {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
 }
 
-.agy-progress-bar-fill.unknown {
-  background: #6b7280;
+.agy-account-title-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
-.agy-progress-subtext {
-  font-size: 11px;
-  color: rgba(255, 255, 255, 0.6);
+.agy-account-email {
+  font-weight: 600;
+  color: #0f172a;
+  font-size: 13.5px;
+}
+
+.agy-account-alias {
+  color: #64748b;
+  font-size: 12.5px;
 }
 
 .agy-badge {
-  display: inline-block;
-  padding: 2px 8px;
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
   border-radius: 12px;
   font-size: 11px;
   font-weight: 500;
 }
 
-.agy-badge-active {
-  background: rgba(16, 185, 129, 0.2);
-  color: #34d399;
-  border: 1px solid rgba(16, 185, 129, 0.4);
+.agy-badge.active {
+  background: #dcfce7;
+  color: #15803d;
+  border: 1px solid #bbf7d0;
 }
 
-.agy-badge-waiting {
-  background: rgba(245, 158, 11, 0.2);
-  color: #fbbf24;
+.agy-badge.ready {
+  background: #f1f5f9;
+  color: #475569;
 }
 
-.agy-badge-disabled {
-  background: rgba(107, 114, 128, 0.2);
-  color: #9ca3af;
-}
-
-.agy-modal-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: rgba(0, 0, 0, 0.6);
+.agy-account-quotas {
   display: flex;
   align-items: center;
-  justify-content: center;
-  z-index: 9999;
+  gap: 16px;
+  flex-wrap: wrap;
 }
 
-.agy-modal {
-  background: #181825;
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  border-radius: 8px;
-  padding: 24px;
-  width: 460px;
-  max-width: 90vw;
+.agy-compact-quota {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: #64748b;
 }
 
-.agy-form-group {
-  margin-bottom: 16px;
-}
-
-.agy-form-label {
-  display: block;
-  font-size: 13px;
-  margin-bottom: 6px;
+.agy-quota-lbl {
   font-weight: 500;
 }
 
-.agy-form-input {
-  width: 100%;
-  padding: 8px 12px;
-  border-radius: 6px;
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  background: rgba(255, 255, 255, 0.05);
-  color: inherit;
-  font-size: 14px;
-  box-sizing: border-box;
+.agy-quota-track {
+  width: 60px;
+  height: 6px;
+  background: #e2e8f0;
+  border-radius: 3px;
+  overflow: hidden;
 }
 
-.agy-header-actions { flex-wrap: wrap; }
-.agy-modal { max-height: 88vh; overflow-y: auto; }
-.agy-accounts-container section { margin: 20px 0; }
-.agy-accounts-header { flex-wrap: wrap; gap: 16px; }
-.agy-accounts-table small { display: block; padding: 8px 0; }
+.agy-quota-fill {
+  height: 100%;
+  border-radius: 3px;
+}
+
+.agy-quota-num {
+  font-weight: 600;
+  color: #334155;
+  font-variant-numeric: tabular-nums;
+}
+
+.agy-no-quota {
+  font-size: 11.5px;
+  color: #94a3b8;
+}
+
+.agy-account-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+/* 录入弹窗 */
+.agy-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.45);
+  backdrop-filter: blur(2px);
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+
+.agy-modal-content {
+  width: 100%;
+  max-width: 480px;
+  background: #ffffff;
+  border-radius: 12px;
+  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.08);
+  border: 1px solid #e2e8f0;
+  overflow: hidden;
+}
+
+.agy-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.agy-modal-header h3 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.agy-modal-close-btn {
+  background: transparent;
+  border: none;
+  color: #64748b;
+  font-size: 16px;
+  cursor: pointer;
+  padding: 4px;
+}
+
+.agy-enroll-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 20px;
+}
+
+.agy-form-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.agy-form-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: #334155;
+}
+
+.agy-form-input {
+  padding: 8px 12px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  font-size: 13px;
+  outline: none;
+}
+
+.agy-form-input:focus {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.12);
+}
+
+.agy-radio-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.agy-radio-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.agy-radio-card:hover {
+  border-color: #cbd5e1;
+  background: #f8fafc;
+}
+
+.agy-radio-card.is-selected {
+  border-color: #2563eb;
+  background: #eff6ff;
+}
+
+.agy-radio-card input {
+  margin-top: 3px;
+}
+
+.agy-radio-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.agy-radio-meta strong {
+  font-size: 13px;
+  color: #0f172a;
+}
+
+.agy-radio-meta span {
+  font-size: 11.5px;
+  color: #64748b;
+}
+
+.agy-modal-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 8px;
+}

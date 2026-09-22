@@ -8,7 +8,6 @@ import {
 } from "../../../../packages/presentation/src/run-observation.js";
 import type { RunObservation } from "../../../../packages/contracts/src/run-observation.js";
 import { CONVERSATION_SEARCH_PARAM } from "../use-conversation-view.js";
-import { ToolModelDrawer } from "./ToolModelDrawer.js";
 import type { FileInputCapability } from "./ConversationAttachments.js";
 
 export const DEFAULT_ADAPTER_FILE_INPUT: Record<string, FileInputCapability> = {
@@ -394,33 +393,17 @@ export function useWorkflowComposerRuntime(workflowId: string): ComposerRuntimeM
 }
 
 export function ConversationStatusBar({
-  workflowId,
   model,
 }: {
   workflowId: string;
   model: ComposerRuntimeModel;
 }) {
-  const [drawerOpen, setDrawerOpen] = useState(false);
+  if (!model.workText) return null;
   return (
     <div className="conversation-composer-status-bar">
       <p className="conversation-composer-work" title={model.workText}>
         {model.workText}
       </p>
-      <button
-        type="button"
-        className="conversation-composer-runtime"
-        aria-label="打开工具与模型配置"
-        title={model.modelButtonText}
-        onClick={() => setDrawerOpen(true)}
-      >
-        {model.modelButtonText}
-      </button>
-      <ToolModelDrawer
-        isOpen={drawerOpen}
-        onClose={() => setDrawerOpen(false)}
-        workflowId={workflowId}
-        workflowState={model.workflowState}
-      />
     </div>
   );
 }
