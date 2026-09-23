@@ -17,6 +17,7 @@ import { loadConfig } from "../../contracts/src/config.js";
 import { Store } from "../../store/src/store.js";
 import { Auth } from "../../core/src/auth.js";
 import { atomicWrite, hash } from "../../core/src/util.js";
+import { cleanProcessEnvironment } from "../../process/src/manager.js";
 
 // Resolve the installation, never the business repository that invoked Codex.
 const moduleDirectory = dirname(fileURLToPath(import.meta.url));
@@ -69,6 +70,16 @@ async function running(mode: "full" | "accounts") {
       "DevFlow 端口已被其他程序或旧版本服务占用。请先关闭本安装的旧服务；不会终止无关进程。",
     );
   assertServiceMode(status, mode);
+  const canonical = (path: string) =>
+    process.platform === "win32" ? resolve(path).toLowerCase() : resolve(path);
+  if (
+    status.runtime_backend !== "node-v1" ||
+    typeof status.runtime_root !== "string" ||
+    canonical(status.runtime_root) !== canonical(installation)
+  )
+    throw new Error(
+      "本端口运行的是另一版本安装，请先停止旧服务再启动当前版本。",
+    );
   return true;
 }
 
@@ -147,7 +158,7 @@ export async function ensureService(mode: "full" | "accounts" = "full") {
         detached: true,
         windowsHide: true,
         stdio: ["ignore", output, errors],
-        env: { ...process.env, DEVFLOW_CONFIG: configurationFile },
+        env: cleanProcessEnvironment({ DEVFLOW_CONFIG: configurationFile }),
       });
       await new Promise<void>((yes, no) => {
         child.once("spawn", yes);

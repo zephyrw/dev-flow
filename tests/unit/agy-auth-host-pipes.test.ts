@@ -1,59 +1,147 @@
 import { EventEmitter } from "node:events";
-import { PassThrough } from "node:stream";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
+import type { ProcessSpec } from "../../packages/process/src/manager.js";
 import { DevFlowAuthHost } from "../../packages/agy-accounts/src/auth-host.js";
 
-const mocks = vi.hoisted(() => ({ spawn: vi.fn() }));
-vi.mock("node:child_process", async (original) => ({
-  ...(await original<typeof import("node:child_process")>()), spawn: mocks.spawn,
+const mocks = vi.hoisted(() => ({ start: vi.fn() }));
+vi.mock("../../packages/process/src/manager.js", () => ({
+  ProcessManager: class {
+    start(spec: ProcessSpec) {
+      return mocks.start(spec);
+    }
+    async close() {}
+  },
 }));
-
+vi.mock("node:fs", async (original) => {
+  const fs = await original<typeof import("node:fs")>();
+  return {
+    ...fs,
+    existsSync: (path: string) =>
+      String(path).endsWith("credential-worker.js") || fs.existsSync(path),
+  };
+});
+type Request = { id: string; action: string; generation: string };
 function daemon() {
+  let resolveCompletion!: (value: { code: number }) => void;
+  const requests: Request[] = [];
   const child = Object.assign(new EventEmitter(), {
-    stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(),
-    exitCode: null as number | null, killed: false,
-    kill: vi.fn(() => { child.killed = true; return true; }),
+    id: "synthetic-managed-worker",
+    ready: Promise.resolve(),
+    completion: new Promise<{ code: number }>((resolve) => {
+      resolveCompletion = resolve;
+    }),
+    writeStdin: vi.fn((line: string) => requests.push(JSON.parse(line))),
+    endStdin: vi.fn(),
+    stop: vi.fn(async () => {
+      resolveCompletion({ code: -1 });
+    }),
   });
-  const requests: Array<{ id: string; action: string }> = [];
-  child.stdin.on("data", (data: Buffer) => requests.push(JSON.parse(data.toString())));
-  return { child, requests };
+  return { child, requests, generation: "" };
 }
-function host() {
-  const value = new DevFlowAuthHost("synthetic-helper-never-executed");
-  vi.spyOn(value, "capabilities").mockResolvedValue({ supported: true, platform: "win32", version: "2.0.0", dpapi_available: true, cred_manager_available: true, named_mutex_available: true });
-  return value;
+function reply(
+  instance: ReturnType<typeof daemon>,
+  index: number,
+  data: unknown,
+) {
+  instance.child.emit(
+    "stdout",
+    Buffer.from(
+      JSON.stringify({
+        id: instance.requests[index]!.id,
+        generation: instance.generation,
+        ok: true,
+        data,
+      }) + "\n",
+    ),
+  );
 }
-async function acquire(value: DevFlowAuthHost, instance: ReturnType<typeof daemon>) {
-  mocks.spawn.mockReturnValueOnce(instance.child);
+async function acquire(
+  value: DevFlowAuthHost,
+  instance: ReturnType<typeof daemon>,
+) {
+  mocks.start.mockImplementationOnce((spec: ProcessSpec) => {
+    instance.generation = spec.args
+      .find((arg) => arg.startsWith("--generation="))!
+      .slice(13);
+    queueMicrotask(() =>
+      instance.child.emit(
+        "stdout",
+        Buffer.from(
+          JSON.stringify({
+            id: "ready",
+            generation: instance.generation,
+            ok: true,
+            data: { version: "3.0.0-node", pid: 123 },
+          }) + "\n",
+        ),
+      ),
+    );
+    return instance.child;
+  });
   const result = value.acquireDomainLock("realm");
   await vi.waitFor(() => expect(instance.requests.length).toBe(1));
-  instance.child.stdout.write(JSON.stringify({ id: instance.requests[0]!.id, ok: true, data: { acquired: true, lock_id: "synthetic-lock" } }) + "\n");
-  expect((await result).acquired).toBe(true);
+  reply(instance, 0, {
+    acquired: true,
+    lock_id: "11111111-1111-4111-8111-111111111111",
+  });
+  const lock = await result;
+  expect(lock.acquired).toBe(true);
+  return lock;
 }
-afterEach(() => vi.restoreAllMocks());
-describe("AuthHost pipe loss without a real helper", () => {
-  it.each(["stdin", "stdout", "stderr"] as const)("fails closed on %s errors without an unhandled event", async (pipe) => {
-    const value = host(), instance = daemon();
+beforeEach(() => {
+  vi.stubGlobal(
+    "process",
+    Object.create(process, { platform: { value: "win32" } }),
+  );
+  mocks.start.mockReset();
+});
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
+describe("AuthHost managed channel loss without a real credential worker", () => {
+  it("invalidates the lock and rejects pending RPCs on channel failure", async () => {
+    const value = new DevFlowAuthHost(),
+      instance = daemon();
     await acquire(value, instance);
-    const lost = vi.fn(); value.onLockLost(lost);
+    const lost = vi.fn();
+    value.onLockLost(lost);
     const pending = value.inspectActive("realm");
     const rejection = expect(pending).rejects.toThrow("auth_host_disconnected");
-    expect(() => instance.child[pipe].emit("error", new Error("synthetic EPIPE"))).not.toThrow();
+    expect(() => instance.child.emit("channel_error")).not.toThrow();
     await rejection;
     expect(value.isDomainLockHeld("realm")).toBe(false);
     expect(lost).toHaveBeenCalledTimes(1);
-    await expect(value.captureActive("realm", "a")).rejects.toThrow("domain_lock_not_held");
+    await expect(value.captureActive("realm", "a")).rejects.toThrow(
+      "domain_lock_not_held",
+    );
+    expect(instance.child.stop).toHaveBeenCalledTimes(1);
+    await value.close();
   });
-  it("ignores late old-daemon pipe, exit and malformed output events", async () => {
-    const value = host(), old = daemon(), current = daemon();
+  it("ignores late output and channel failures from a previous generation", async () => {
+    const value = new DevFlowAuthHost(),
+      old = daemon(),
+      current = daemon();
     await acquire(value, old);
-    old.child.stdin.emit("error", new Error("synthetic disconnect"));
+    old.child.emit("channel_error");
     await acquire(value, current);
-    old.child.stderr.emit("error", new Error("synthetic late error"));
-    old.child.stdout.write("invalid late response\n");
-    old.child.emit("exit", 1);
+    old.child.emit("channel_error");
+    old.child.emit("stdout", Buffer.from("invalid late response\n"));
     expect(value.isDomainLockHeld("realm")).toBe(true);
-    expect(current.child.kill).not.toHaveBeenCalled();
-    current.child.stdin.emit("error", new Error("synthetic cleanup"));
+    expect(current.child.stop).not.toHaveBeenCalled();
+    await value.close();
+  });
+  it("settles concurrent capability requests when releasing the owner", async () => {
+    const value = new DevFlowAuthHost(),
+      instance = daemon();
+    const lock = await acquire(value, instance);
+    const released = lock.release();
+    const capability = value.capabilities();
+    await vi.waitFor(() => expect(instance.requests.length).toBe(3));
+    reply(instance, 1, {});
+    await released;
+    expect((await capability).supported).toBe(false);
+    expect(value.isDomainLockHeld("realm")).toBe(false);
+    await value.close();
   });
 });

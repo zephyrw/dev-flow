@@ -48,13 +48,7 @@ async function main() {
   if (command === "init") {
     const file = resolve("devflow.yaml");
     requireCondition(!existsSync(file), "EXISTS", "配置文件已存在");
-    const c = ConfigSchema.parse({
-      host: {
-        executable: resolve(
-          "host/DevFlow.WinHost/bin/Release/net10.0-windows/DevFlow.WinHost.exe",
-        ),
-      },
-    });
+    const c = ConfigSchema.parse({ schema_version: 2 });
     atomicWrite(file, stringify(c));
     console.log(file);
     return;
@@ -154,11 +148,18 @@ async function main() {
     console.log(JSON.stringify(restoreBackup(args[1], args[2])));
     return;
   }
+  const unlock = ["recover", "retry-commit"].includes(command)
+    ? await (
+        await import("../../process/src/controller-lock.js")
+      ).acquireControllerLock(config.storage_root)
+    : undefined;
   const store = new Store(join(config.storage_root, "devflow.sqlite"));
   const engine = new Engine(store, config);
   try {
     if (command === "pair") {
-      console.log(`DevFlow 已取消登录和配对，直接打开 ${config.server.human_origin} 即可。`);
+      console.log(
+        `DevFlow 已取消登录和配对，直接打开 ${config.server.human_origin} 即可。`,
+      );
     } else if (command === "planner-token") {
       const token = engine.auth.issue({ role: "planner" }, 365 * 86400000);
       const file = join(config.storage_root, "codex-planner-token.txt");
@@ -220,6 +221,7 @@ async function main() {
     } else throw new Error("未知命令。运行 pnpm run cli help");
   } finally {
     store.close();
+    await unlock?.();
   }
 }
 main().catch((e) => {

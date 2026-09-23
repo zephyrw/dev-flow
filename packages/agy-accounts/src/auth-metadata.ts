@@ -1,67 +1,63 @@
-import { createHash } from "node:crypto";
+import type { AgyAccountAuth } from "../../contracts/src/agy-account.js";
 
-/**
- * Compute a fingerprint of a secret reference for comparison purposes.
- * This is NOT the secret itself - it's a hash that can be compared
- * to verify two references point to the same secret.
- */
-export function fingerprintSecretRef(secretRef: string): string {
-  return createHash("sha256").update(secretRef).digest("hex").slice(0, 32);
-}
-
-/**
- * Extract safe metadata from a credential entry.
- * Only returns fields that are safe to log/transmit - no raw secrets.
- */
-export function extractCredentialMetadata(entry: {
-  username?: string;
-  secret?: Buffer | string;
-  comment?: string;
-  targetAlias?: string;
-  attributes?: Record<string, unknown>;
-}): {
-  username?: string;
-  has_secret: boolean;
-  secret_fingerprint?: string;
-  comment?: string;
-  target_alias?: string;
-  attribute_keys: string[];
-} {
-  const hasSecret = entry.secret != null &&
-    (Buffer.isBuffer(entry.secret) ? entry.secret.length > 0 : entry.secret.length > 0);
-
-  return {
-    username: entry.username || undefined,
-    has_secret: hasSecret,
-    secret_fingerprint: hasSecret && entry.secret
-      ? fingerprintSecretRef(
-          Buffer.isBuffer(entry.secret)
-            ? entry.secret.toString("base64")
-            : entry.secret
-        )
-      : undefined,
-    comment: entry.comment || undefined,
-    target_alias: entry.targetAlias || undefined,
-    attribute_keys: entry.attributes ? Object.keys(entry.attributes) : [],
+/** Extract only the old host's explicit expiry/presence fields, never token contents. */
+export function extractSafeAuthMetadata(
+  secret: Buffer,
+): Partial<AgyAccountAuth> {
+  const result: Partial<AgyAccountAuth> = {
+    has_refresh_credential: null,
+    metadata_status: "unrecognized",
+    refresh_expiry_source: "not_provided",
   };
-}
-
-/**
- * Validate that a credential target name matches the expected format.
- * Returns true if the target is a valid DevFlow credential target.
- */
-export function isValidCredentialTarget(target: string): boolean {
-  return /^DevFlow[_A-Za-z0-9.-]{1,200}$/.test(target);
-}
-
-/**
- * Compute the credential target name for a given realm and account.
- * Uses the same hash algorithm as the old C# implementation.
- */
-export function computeCredentialTarget(realmId: string, accountId: string): string {
-  const hash = createHash("sha256")
-    .update(`${realmId}:${accountId}`)
-    .digest("hex")
-    .slice(0, 16);
-  return `DevFlow.agy.${hash}`;
+  let parsed: Record<string, unknown>;
+  try {
+    const value: unknown = JSON.parse(secret.toString("utf8"));
+    if (!value || typeof value !== "object" || Array.isArray(value))
+      return result;
+    parsed = value as Record<string, unknown>;
+  } catch {
+    return result;
+  }
+  const date = (value: unknown): string | undefined => {
+    if (typeof value === "string" && /^\d+(?:\.\d+)?$/.test(value))
+      value = Number(value);
+    if (typeof value !== "string" && typeof value !== "number")
+      return undefined;
+    if (typeof value === "number" && (!Number.isFinite(value) || value <= 0))
+      return undefined;
+    if (
+      typeof value === "string" &&
+      !/^\d{4}-\d\d-\d\dT.*(?:Z|[+-]\d\d:\d\d)$/.test(value)
+    )
+      return undefined;
+    const ms =
+      typeof value === "number"
+        ? value > 1e11
+          ? value
+          : value * 1000
+        : Date.parse(value);
+    return Number.isFinite(ms) && !Number.isNaN(new Date(ms).getTime())
+      ? new Date(ms).toISOString()
+      : undefined;
+  };
+  if (typeof parsed.refresh_token === "string")
+    result.has_refresh_credential = parsed.refresh_token.length > 0;
+  const access =
+    (typeof parsed.expiry === "string" ? date(parsed.expiry) : undefined) ??
+    date(parsed.expires_at);
+  const refresh = date(parsed.refresh_expires_at);
+  if (access) result.access_expires_at = access;
+  if (refresh) {
+    result.refresh_expires_at = refresh;
+    result.refresh_expiry_source = "provider_reported";
+  }
+  if (
+    ((typeof parsed.access_token === "string" &&
+      parsed.access_token.length > 0) ||
+      (typeof parsed.token_type === "string" &&
+        parsed.token_type.length > 0)) &&
+    (access || result.has_refresh_credential === true)
+  )
+    result.metadata_status = "verified";
+  return result;
 }

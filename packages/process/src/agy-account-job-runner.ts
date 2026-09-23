@@ -1,21 +1,19 @@
-import { spawn, type ChildProcess } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { randomUUID } from "node:crypto";
+import { ProcessManager, type ManagedProcess } from "./manager.js";
 import type { OwnedLoginJobPort } from "../../agy-accounts/src/ports.js";
 import type { InteractiveLoginJobPort } from "../../agy-accounts/src/login.js";
 import type { AgyAuxiliaryLease } from "../../contracts/src/agy-account.js";
 
 export class ProcessStopUnconfirmedError extends Error {
   readonly code = "PROCESS_STOP_UNCONFIRMED";
-  readonly jobId: string;
-  constructor(jobId: string, message?: string) {
-    super(message ?? `Process stop unconfirmed for job: ${jobId}`);
+  constructor(readonly jobId: string) {
+    super(`Process stop unconfirmed: ${jobId}`);
     this.name = "ProcessStopUnconfirmedError";
-    this.jobId = jobId;
   }
 }
-
 export interface AuxJobOptions {
   executable: string;
   args: string[];
@@ -23,313 +21,158 @@ export interface AuxJobOptions {
   timeoutMs?: number;
   signal?: AbortSignal;
 }
-
-/**
- * R04 修复：
- * - 所有子进程通过 runner-entry.js 管理，确保 Job 绑定和进程所有权
- * - start() 在中止/错误时必须确认进程停止，不返回 fully_stopped:true
- * - Windows 交互登录使用 CREATE_SUSPENDED | CREATE_NEW_CONSOLE
- */
-export class AgyAccountJobRunner implements OwnedLoginJobPort, InteractiveLoginJobPort {
-  private activeJobs = new Map<string, { child: ChildProcess; cwd: string; jobId: string }>();
-
+export class AgyAccountJobRunner
+  implements OwnedLoginJobPort, InteractiveLoginJobPort
+{
   constructor(
-    private agyExecutable: string = "agy",
+    private agyExecutable = "agy",
+    private processes = new ProcessManager(),
   ) {}
-
+  private async create(
+    executable: string,
+    args: string[],
+    interactive: boolean,
+    timeoutMs: number,
+    signal?: AbortSignal,
+  ) {
+    signal?.throwIfAborted();
+    const cwd = await mkdtemp(
+      join(tmpdir(), interactive ? "devflow-agy-login-" : "devflow-agy-aux-"),
+    );
+    let process: ManagedProcess;
+    try {
+      signal?.throwIfAborted();
+      process = this.processes.start({
+        id: `agy_${randomUUID()}`,
+        executable,
+        args,
+        cwd,
+        env: {},
+        timeout_ms: timeoutMs,
+        interactive,
+      });
+    } catch (error) {
+      await rm(cwd, { recursive: true, force: true });
+      throw error;
+    }
+    const abort = () => {
+      void process.stop().catch(() => {});
+    };
+    signal?.addEventListener("abort", abort, { once: true });
+    if (signal?.aborted) abort();
+    const completion = process.completion.finally(async () => {
+      signal?.removeEventListener("abort", abort);
+      if (
+        (await this.processes.observe(process.id)).state === "confirmed_exited"
+      )
+        await rm(cwd, { recursive: true, force: true });
+    });
+    void completion.catch(() => {});
+    return { process, completion };
+  }
   async startLoginJob(options: {
     realmId: string;
     operationId: string;
     timeoutMs?: number;
     signal?: AbortSignal;
-  }): Promise<{
-    jobId: string;
-    waitForCompletion: () => Promise<{ success: boolean; error?: string }>;
-    cancel: () => Promise<void>;
-  }> {
-    options.signal?.throwIfAborted();
-    const jobId = `login_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-    const tempCwd = await mkdtemp(join(tmpdir(), "devflow-agy-login-"));
-
-    // R04 修复：通过 runner-entry.js 启动，确保进程所有权和 Job 绑定
-    const runnerEntry = require.resolve("./runner-entry.js");
-    const child = spawn(process.execPath, [runnerEntry, this.agyExecutable, "login"], {
-      cwd: tempCwd,
-      windowsHide: false, // Interactive login needs visible window
-      stdio: ["pipe", "pipe", "pipe", "ipc"],
-    });
-
-    this.activeJobs.set(jobId, { child, cwd: tempCwd, jobId });
-
-    // R04 修复：通过 IPC 发送 start 消息
-    const sendStart = () => {
-      try {
-        child.send?.({
-          type: "start",
-          executable: this.agyExecutable,
-          args: ["login"],
-          cwd: tempCwd,
-          env: {},
-        });
-      } catch {}
-    };
-    child.once("spawn", sendStart);
-    if (child.pid) sendStart();
-
-    const cancel = async () => {
-      if (!this.activeJobs.has(jobId)) return;
-      try {
-        // R04 修复：通过 IPC 发送 stop 消息，等待确认
-        child.send?.({ type: "stop", reason: "login_cancelled" });
-        // 等待进程退出
-        await new Promise<void>((resolve) => {
-          const timer = setTimeout(() => {
-            try { child.kill("SIGKILL"); } catch {}
-            resolve();
-          }, 5000);
-          child.once("close", () => {
-            clearTimeout(timer);
-            resolve();
-          });
-        });
-      } catch {}
-      try {
-        await rm(tempCwd, { recursive: true, force: true });
-      } catch {}
-      this.activeJobs.delete(jobId);
-    };
-
-    const waitForCompletion = async (): Promise<{ success: boolean; error?: string }> => {
-      const timeoutMs = options.timeoutMs ?? 900000;
-      let timer: NodeJS.Timeout | undefined;
-
-      return new Promise((resolve) => {
-        const onAbort = async () => {
-          await cancel();
-          resolve({ success: false, error: "login_cancelled" });
-        };
-
-        if (options.signal) {
-          options.signal.addEventListener("abort", onAbort, { once: true });
-        }
-
-        timer = setTimeout(async () => {
-          await cancel();
-          resolve({ success: false, error: "login_timeout" });
-        }, timeoutMs);
-
-        child.on("exit", async (code) => {
-          if (timer) clearTimeout(timer);
-          if (options.signal) {
-            options.signal.removeEventListener("abort", onAbort);
-          }
-          this.activeJobs.delete(jobId);
-          try {
-            await rm(tempCwd, { recursive: true, force: true });
-          } catch {}
-          if (code === 0) {
-            resolve({ success: true });
-          } else {
-            resolve({ success: false, error: `Login exited with code ${code}` });
-          }
-        });
-
-        child.on("error", async (err) => {
-          if (timer) clearTimeout(timer);
-          this.activeJobs.delete(jobId);
-          try {
-            await rm(tempCwd, { recursive: true, force: true });
-          } catch {}
-          resolve({ success: false, error: err.message });
-        });
-      });
-    };
-
+  }) {
+    const { process, completion } = await this.create(
+      this.agyExecutable,
+      ["login"],
+      true,
+      options.timeoutMs ?? 900000,
+      options.signal,
+    );
+    const result = completion.then((value) => ({
+      success:
+        value.code === 0 &&
+        !value.termination_reason &&
+        !options.signal?.aborted,
+      ...(value.code !== 0 ||
+      value.termination_reason ||
+      options.signal?.aborted
+        ? { error: value.termination_reason ?? "login_failed" }
+        : {}),
+    }));
+    void result.catch(() => {});
     return {
-      jobId,
-      waitForCompletion,
-      cancel,
+      jobId: process.id,
+      waitForCompletion: () => result,
+      cancel: async () => {
+        const stopped = await this.processes.stop(process.id);
+        if (
+          stopped.status !== "confirmed_exited" &&
+          stopped.status !== "confirmed_not_started"
+        )
+          throw new ProcessStopUnconfirmedError(process.id);
+      },
     };
   }
-
-  async runAuxiliaryProbe(options: AuxJobOptions): Promise<{ code: number | null; stdout: string; stderr: string }> {
-    options.signal?.throwIfAborted();
-    if (!options.lease || !options.lease.lease_id || !options.lease.operation_id) {
+  async runAuxiliaryProbe(
+    options: AuxJobOptions,
+  ): Promise<{ code: number | null; stdout: string; stderr: string }> {
+    if (!options.lease?.lease_id || !options.lease.operation_id)
       throw new Error("invalid_auxiliary_lease");
-    }
-
-    const tempCwd = await mkdtemp(join(tmpdir(), "devflow-agy-aux-"));
-    const timeoutMs = options.timeoutMs ?? 30000;
-
-    try {
-      // R04 修复：通过 runner-entry.js 启动，确保进程所有权
-      const runnerEntry = require.resolve("./runner-entry.js");
-      return await new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve, reject) => {
-        let stdout = "";
-        let stderr = "";
-        let resolved = false;
-        let timer: NodeJS.Timeout | undefined;
-
-        const cleanupAndFinish = (res: { code: number | null; stdout: string; stderr: string }) => {
-          if (resolved) return;
-          resolved = true;
-          if (timer) clearTimeout(timer);
-          if (options.signal) {
-            options.signal.removeEventListener("abort", onAbort);
-          }
-          resolve(res);
-        };
-
-        const onAbort = () => {
-          if (resolved) return;
-          if (timer) clearTimeout(timer);
-          try {
-            // R04 修复：通过 IPC 发送 stop 消息
-            child.send?.({ type: "stop", reason: "probe_aborted" });
-          } catch {}
-          cleanupAndFinish({ code: -1, stdout, stderr: `${stderr}\nCancelled by signal` });
-        };
-
-        if (options.signal) {
-          if (options.signal.aborted) {
-            void onAbort();
-            return;
-          }
-          options.signal.addEventListener("abort", onAbort, { once: true });
-        }
-
-        const child = spawn(process.execPath, [runnerEntry, options.executable, ...options.args], {
-          cwd: tempCwd,
-          windowsHide: true,
-          stdio: ["pipe", "pipe", "pipe", "ipc"],
-        });
-
-        // R04 修复：通过 IPC 发送 start 消息
-        const sendStart = () => {
-          try {
-            child.send?.({
-              type: "start",
-              executable: options.executable,
-              args: [...options.args],
-              cwd: tempCwd,
-              env: {},
-            });
-          } catch {}
-        };
-        child.once("spawn", sendStart);
-        if (child.pid) sendStart();
-
-        timer = setTimeout(() => {
-          if (resolved) return;
-          try {
-            child.send?.({ type: "stop", reason: "probe_timeout" });
-          } catch {}
-          cleanupAndFinish({ code: -1, stdout, stderr: `${stderr}\nTimeout after ${timeoutMs}ms` });
-        }, timeoutMs);
-
-        child.stdout?.on("data", (chunk) => {
-          stdout += chunk.toString();
-        });
-        child.stderr?.on("data", (chunk) => {
-          stderr += chunk.toString();
-        });
-
-        child.on("close", (code) => {
-          cleanupAndFinish({ code, stdout, stderr });
-        });
-
-        child.on("error", (err) => {
-          if (timer) clearTimeout(timer);
-          if (options.signal) options.signal.removeEventListener("abort", onAbort);
-          reject(err);
-        });
-      });
-    } finally {
-      try {
-        await rm(tempCwd, { recursive: true, force: true });
-      } catch {}
-    }
+    const { process, completion } = await this.create(
+      options.executable,
+      options.args,
+      false,
+      options.timeoutMs ?? 30000,
+      options.signal,
+    );
+    const stdout: Buffer[] = [],
+      stderr: Buffer[] = [];
+    let size = 0,
+      overflow = false;
+    const collect = (chunks: Buffer[]) => (value: Buffer) => {
+      size += value.length;
+      if (size > 1024 * 1024) {
+        overflow = true;
+        void process.stop().catch(() => {});
+        return;
+      }
+      chunks.push(value);
+    };
+    process.on("stdout", collect(stdout));
+    process.on("stderr", collect(stderr));
+    const result = await completion;
+    if (overflow) throw new Error("AGY_PROBE_OUTPUT_LIMIT");
+    return {
+      code:
+        options.signal?.aborted || result.termination_reason ? -1 : result.code,
+      stdout: Buffer.concat(stdout).toString("utf8"),
+      stderr: Buffer.concat(stderr).toString("utf8"),
+    };
   }
-
   async start(input: {
     executable: string;
     args: readonly string[];
     signal: AbortSignal;
-  }): Promise<{
-    exit_code: number | null;
-    fully_stopped: boolean;
-  }> {
-    input.signal?.throwIfAborted();
-    const tempCwd = await mkdtemp(join(tmpdir(), "devflow-agy-login-"));
-
+  }): Promise<{ exit_code: number | null; fully_stopped: boolean }> {
+    const { process, completion } = await this.create(
+      input.executable,
+      [...input.args],
+      true,
+      900000,
+      input.signal,
+    );
     try {
-      // R04 修复：通过 runner-entry.js 启动，确保进程所有权
-      const runnerEntry = require.resolve("./runner-entry.js");
-      return await new Promise((resolvePromise) => {
-        const child = spawn(process.execPath, [runnerEntry, input.executable, ...input.args], {
-          cwd: tempCwd,
-          windowsHide: false, // Interactive needs visible window
-          stdio: ["pipe", "pipe", "pipe", "ipc"],
-        });
-
-        // R04 修复：通过 IPC 发送 start 消息
-        const sendStart = () => {
-          try {
-            child.send?.({
-              type: "start",
-              executable: input.executable,
-              args: [...input.args],
-              cwd: tempCwd,
-              env: {},
-            });
-          } catch {}
-        };
-        child.once("spawn", sendStart);
-        if (child.pid) sendStart();
-
-        let isStopped = false;
-        const confirmAndFinish = (code: number | null, fullyStopped: boolean) => {
-          if (isStopped) return;
-          isStopped = true;
-          // R04 修复：不再默认返回 fully_stopped:true
-          // 必须确认进程确实退出
-          resolvePromise({
-            exit_code: code,
-            fully_stopped: fullyStopped,
-          });
-        };
-
-        const onAbort = () => {
-          try {
-            // R04 修复：通过 IPC 发送 stop 消息
-            child.send?.({ type: "stop", reason: "aborted" });
-          } catch {}
-          // R04 修复：中止时等待确认退出，不立即返回 fully_stopped:true
-          const confirmTimer = setTimeout(() => {
-            // 超时后仍未退出，标记为未确认
-            confirmAndFinish(-1, false);
-          }, 5000);
-          child.once("close", (code) => {
-            clearTimeout(confirmTimer);
-            confirmAndFinish(code, true);
-          });
-        };
-
-        input.signal?.addEventListener("abort", onAbort, { once: true });
-        child.once("close", (code) => {
-          input.signal?.removeEventListener("abort", onAbort);
-          confirmAndFinish(code, true);
-        });
-        child.once("error", () => {
-          input.signal?.removeEventListener("abort", onAbort);
-          // R04 修复：错误时标记为未确认停止
-          confirmAndFinish(-1, false);
-        });
-      });
-    } finally {
-      try {
-        await rm(tempCwd, { recursive: true, force: true });
-      } catch {}
+      const result = await completion;
+      return {
+        exit_code:
+          input.signal.aborted || result.termination_reason ? -1 : result.code,
+        fully_stopped: true,
+      };
+    } catch {
+      return {
+        exit_code: -1,
+        fully_stopped:
+          (await this.processes.observe(process.id)).state ===
+          "confirmed_exited",
+      };
     }
+  }
+  close() {
+    return this.processes.close();
   }
 }

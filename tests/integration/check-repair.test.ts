@@ -7,13 +7,6 @@ it("IT-10 failed real test reopens scoped repair and invalidates all old evidenc
   const s = setup(),
     r = await repository(s.root),
     p = project(r.repo);
-  s.config.host = {
-    required: true,
-
-    executable: resolve(
-      "host/DevFlow.WinHost/bin/Release/net10.0-windows/DevFlow.WinHost.exe",
-    ),
-  };
   p.commands[0]!.args = [
     "--test-reporter=junit",
     "--test-reporter-destination=${DEVFLOW_REPORT_PATH}",

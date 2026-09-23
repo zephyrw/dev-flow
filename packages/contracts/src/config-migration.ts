@@ -1,43 +1,15 @@
-/**
- * Config schema migration v1 → v2.
- *
- * Removes host-related fields that are no longer needed with Node runtime:
- *   - host.executable (C# host binary path)
- *   - host.required (whether host binary is required)
- *   - agy_accounts.auth_host_executable (C# auth host path)
- *
- * Preserves all other fields, comments, and field order.
- *
- * R08 修复：
- * - 使用 YAML parseDocument 保留注释
- * - apply 必须重新运行 dry-run 验证
- * - 统一使用 ConfigSchema，不创建平行 schema
- */
-
-import { z } from "zod";
-import { readFileSync, writeFileSync, existsSync, copyFileSync } from "node:fs";
-import { resolve } from "node:path";
-import { createHash } from "node:crypto";
-import { parse, stringify, parseDocument } from "yaml";
-import { ConfigSchema } from "./config.js";
-
-// ── Known host paths (built-in C#/Go binaries) ──────────────────────────────
-
-const KNOWN_HOST_PATHS = [
-  "dist/host/devflow-host.exe",
-  "dist/host/devflow-auth-host.exe",
-  "dist/host/DevFlow.WinHost.exe",
-];
-
-function isKnownHostPath(path: string): boolean {
-  return KNOWN_HOST_PATHS.some((known) => path.includes(known));
-}
-
-function isCustomHostPath(path: string): boolean {
-  return !isKnownHostPath(path) && path.length > 0;
-}
-
-// ── Migration result types ───────────────────────────────────────────────────
+import {
+  readFileSync,
+  writeFileSync,
+  openSync,
+  closeSync,
+  fsyncSync,
+  renameSync,
+  unlinkSync,
+} from "node:fs";
+import { randomUUID, createHash } from "node:crypto";
+import { parseDocument } from "yaml";
+import { ConfigSchema, loadConfig, normalizeLegacyConfig } from "./config.js";
 
 export interface MigrationResult {
   success: boolean;
@@ -49,166 +21,138 @@ export interface MigrationResult {
   errors: string[];
   can_apply: boolean;
   reason?: string;
+  backup_path?: string;
 }
-
-// ── Migration functions ─────────────────────────────────────────────────────
-
 export function fileHash(content: string): string {
   return createHash("sha256").update(content, "utf8").digest("hex");
 }
 
-/**
- * Dry-run migration: analyze what would change without modifying the file.
- */
-export function dryRunMigration(configPath: string): MigrationResult {
-  const content = readFileSync(configPath, "utf8");
-  const inputHash = fileHash(content);
-  const config = parse(content);
-
+/** One transformation for dry-run, apply, setup and installer; mutate YAML nodes to retain comments. */
+export function planConfigMigration(content: string): {
+  result: MigrationResult;
+  output?: string;
+} {
   const result: MigrationResult = {
     success: false,
-    input_hash: inputHash,
+    input_hash: fileHash(content),
     removed_fields: [],
     preserved_fields: [],
     warnings: [],
     errors: [],
     can_apply: false,
   };
-
-  // Check schema_version
-  if (config.schema_version !== 1) {
-    result.errors.push(`期望 schema_version=1，实际为 ${config.schema_version}`);
-    return result;
-  }
-
-  // Check host.executable
-  if (config.host?.executable) {
-    if (isCustomHostPath(config.host.executable)) {
-      result.warnings.push(`检测到自定义 Host 路径: ${config.host.executable}`);
-      result.errors.push("LEGACY_CUSTOM_HOST_UNSUPPORTED: 自定义 Host 路径需要人工核对");
-      result.can_apply = false;
-      result.reason = "存在自定义 Host 路径，需要人工核对";
-      return result;
-    }
-    result.removed_fields.push("host.executable");
-  }
-
-  // Check host.required
-  if (config.host?.required !== undefined) {
-    result.removed_fields.push("host.required");
-  }
-
-  // Check agy_accounts.auth_host_executable
-  if (config.agy_accounts?.auth_host_executable) {
-    if (isCustomHostPath(config.agy_accounts.auth_host_executable)) {
-      result.warnings.push(`检测到自定义 Auth Host 路径: ${config.agy_accounts.auth_host_executable}`);
-      result.errors.push("LEGACY_CUSTOM_HOST_UNSUPPORTED: 自定义 Auth Host 路径需要人工核对");
-      result.can_apply = false;
-      result.reason = "存在自定义 Auth Host 路径，需要人工核对";
-      return result;
-    }
-    result.removed_fields.push("agy_accounts.auth_host_executable");
-  }
-
-  // R08 修复：使用 ConfigSchema 验证迁移后的配置
-  const migrated = { ...config };
-  migrated.schema_version = 2;
-  delete migrated.host;
-  if (migrated.agy_accounts) {
-    delete migrated.agy_accounts.auth_host_executable;
-  }
-
-  // Count preserved fields
-  const allFields = Object.keys(config);
-  result.preserved_fields = allFields.filter((f) => !["host"].includes(f));
-
-  // R08 修复：用 ConfigSchema 验证迁移后的配置
   try {
-    ConfigSchema.parse(migrated);
-  } catch (err) {
-    result.errors.push(`迁移后配置验证失败: ${err instanceof Error ? err.message : String(err)}`);
-    result.can_apply = false;
-    result.reason = "迁移后配置验证失败";
-    return result;
+    const document = parseDocument(content);
+    if (document.errors.length) throw new Error("INVALID_CONFIG_YAML");
+    const raw: unknown = document.toJS();
+    const normalized = normalizeLegacyConfig(raw) as Record<string, unknown>;
+    ConfigSchema.parse(raw); // Includes the same legacy/custom-path validation as the runtime loader.
+    if (document.has("host")) {
+      const host = document.get("host", true);
+      for (const key of ["executable", "required"])
+        if (document.hasIn(["host", key]))
+          result.removed_fields.push("host." + key);
+      if (
+        host &&
+        typeof host === "object" &&
+        "commentBefore" in host &&
+        host.commentBefore
+      )
+        document.commentBefore = [document.commentBefore, host.commentBefore]
+          .filter(Boolean)
+          .join("\n");
+      document.delete("host");
+    }
+    if (document.hasIn(["agy_accounts", "auth_host_executable"])) {
+      document.deleteIn(["agy_accounts", "auth_host_executable"]);
+      result.removed_fields.push("agy_accounts.auth_host_executable");
+    }
+    document.set("schema_version", 2);
+    result.preserved_fields = Object.keys(normalized).filter(
+      (key) => key !== "schema_version",
+    );
+    const output =
+      result.removed_fields.length === 0 &&
+      (raw as Record<string, unknown>).schema_version === 2
+        ? content
+        : document.toString();
+    ConfigSchema.parse(parseDocument(output).toJS());
+    result.success = result.can_apply = true;
+    result.output_hash = fileHash(output);
+    return { result, output };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "";
+    result.errors.push(
+      /^[A-Z_]{1,80}$/.test(message) ? message : "INVALID_CONFIG",
+    );
+    return { result };
   }
-
-  result.output_hash = fileHash(stringify(migrated));
-  result.success = true;
-  result.can_apply = true;
-  result.reason = "可以安全迁移";
-
-  return result;
+}
+export function dryRunMigration(path: string): MigrationResult {
+  return planConfigMigration(readFileSync(path, "utf8")).result;
 }
 
-/**
- * Apply migration: modify config file in place with backup.
- * R08 修复：apply 必须重新运行 dry-run 验证
- */
-export function applyMigration(configPath: string, expectedHash: string): MigrationResult {
-  const content = readFileSync(configPath, "utf8");
-  const currentHash = fileHash(content);
-
-  if (currentHash !== expectedHash) {
+/** Caller owns the controller lock. The short file lock serializes migration writers. */
+export function applyMigration(
+  path: string,
+  expectedHash: string,
+): MigrationResult {
+  const content = readFileSync(path, "utf8");
+  const { result, output } = planConfigMigration(content);
+  if (result.input_hash !== expectedHash) {
     return {
+      ...result,
       success: false,
-      input_hash: currentHash,
-      removed_fields: [],
-      preserved_fields: [],
-      warnings: [],
-      errors: ["CONFIG_CHANGED: 配置文件已变更，请重新 dry-run"],
       can_apply: false,
-      reason: "配置文件已变更",
+      errors: ["CONFIG_CHANGED"],
     };
   }
-
-  // R08 修复：重新运行 dry-run 验证
-  const dryRun = dryRunMigration(configPath);
-  if (!dryRun.can_apply) {
-    return dryRun;
+  if (!result.can_apply || output === undefined || output === content)
+    return result;
+  const lockPath = path + ".migration.lock";
+  const fd = openSync(lockPath, "wx", 0o600);
+  const temp = path + ".tmp." + randomUUID();
+  try {
+    if (fileHash(readFileSync(path, "utf8")) !== expectedHash)
+      throw new Error("CONFIG_CHANGED");
+    const backup = path + ".backup." + randomUUID();
+    const backupFd = openSync(backup, "wx", 0o600);
+    try {
+      writeFileSync(backupFd, content);
+      fsyncSync(backupFd);
+    } finally {
+      closeSync(backupFd);
+    }
+    const outputFd = openSync(temp, "wx", 0o600);
+    try {
+      writeFileSync(outputFd, output);
+      fsyncSync(outputFd);
+    } finally {
+      closeSync(outputFd);
+    }
+    if (fileHash(readFileSync(path, "utf8")) !== expectedHash)
+      throw new Error("CONFIG_CHANGED");
+    renameSync(temp, path);
+    return { ...result, backup_path: backup };
+  } catch (error) {
+    return {
+      ...result,
+      success: false,
+      can_apply: false,
+      errors: [
+        error instanceof Error && error.message === "CONFIG_CHANGED"
+          ? "CONFIG_CHANGED"
+          : "CONFIG_MIGRATION_FAILED",
+      ],
+    };
+  } finally {
+    closeSync(fd);
+    unlinkSync(lockPath);
+    try {
+      unlinkSync(temp);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
   }
-
-  // Create backup
-  const backupPath = configPath + ".backup." + Date.now();
-  copyFileSync(configPath, backupPath);
-
-  // R08 修复：使用 YAML parseDocument 保留注释
-  const doc = parseDocument(content);
-  const docObj = doc.toJS();
-
-  // Apply migration
-  docObj.schema_version = 2;
-  if (docObj.host) {
-    delete docObj.host;
-  }
-  if (docObj.agy_accounts?.auth_host_executable) {
-    delete docObj.agy_accounts.auth_host_executable;
-  }
-
-  // R08 修复：使用 YAML stringify 保留格式
-  const migratedContent = stringify(docObj);
-  writeFileSync(configPath, migratedContent, "utf8");
-
-  return {
-    success: true,
-    input_hash: currentHash,
-    output_hash: fileHash(migratedContent),
-    removed_fields: ["host.executable", "host.required", "agy_accounts.auth_host_executable"],
-    preserved_fields: Object.keys(docObj).filter((f) => !["host"].includes(f)),
-    warnings: [`备份已保存到: ${backupPath}`],
-    errors: [],
-    can_apply: true,
-    reason: "迁移完成",
-  };
 }
-
-/**
- * Load config with v1/v2 compatibility.
- * R08 修复：统一使用 ConfigSchema，不再需要独立的 ConfigSchemaV2
- */
-export function loadConfigCompat(file?: string): z.infer<typeof ConfigSchema> {
-  file ??= existsSync("devflow.yaml") ? resolve("devflow.yaml") : undefined;
-  const raw = file ? parse(readFileSync(file, "utf8")) : {};
-
-  // R08 修复：ConfigSchema 已通过 transform 自动处理 v1 字段
-  return ConfigSchema.parse(raw);
-}
+export const loadConfigCompat = loadConfig;

@@ -1,3 +1,5 @@
+import { observeProcessRecord } from "./process-protocol.js";
+import { getNativeAsync } from "./native/index.js";
 import { basename, resolve } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -13,6 +15,8 @@ type RecordEntry = {
   id: string;
   pid?: number;
   status?: string;
+  confirmed?: boolean;
+  identity?: import("./process-protocol.js").ProcessIdentity;
   agy_account?: {
     realm_id: string;
     account_id: string;
@@ -36,7 +40,11 @@ type ProcessEntry = {
  * - unknown:        无法确定状态（异常），必须阻塞切换
  * - not_owned:      进程不属于当前管理器
  */
-type StopConfirmationStatus = "running" | "confirmed_exited" | "unknown" | "not_owned";
+type StopConfirmationStatus =
+  | "running"
+  | "confirmed_exited"
+  | "unknown"
+  | "not_owned";
 
 /** Local process facts only. Failure to establish ownership must block switching. */
 export class AgyAccountProcessHost implements ProcessHostPort {
@@ -52,63 +60,33 @@ export class AgyAccountProcessHost implements ProcessHostPort {
   }
 
   async assertCapabilities() {
-    // With Node native module, capabilities are always available
-    // (koffi on Windows, built-in on POSIX)
-    return;
+    await getNativeAsync();
   }
-
-  /**
-   * R03 修复：确认单个进程记录的停止状态。
-   * 返回四态：running | confirmed_exited | unknown | not_owned
-   * 不再吞掉异常导致活进程返回 stopped=true
-   */
-  private async confirmRecordStopped(record: RecordEntry): Promise<StopConfirmationStatus> {
-    if (!record.pid) {
-      // 无 PID 记录视为已确认退出
-      return "confirmed_exited";
-    }
-
-    // 检查是否由当前管理器拥有
-    const managedProcess = this.options.processManager?.get(record.id);
-    if (managedProcess && managedProcess.pid !== record.pid) {
-      // PID 不匹配，说明管理器已重启，旧进程不属于当前管理器
+  private async confirmRecordStopped(
+    record: RecordEntry,
+  ): Promise<StopConfirmationStatus> {
+    const managed = this.options.processManager?.get(record.id);
+    if (
+      managed?.identity &&
+      record.identity?.attempt_id !== managed.identity.attempt_id
+    )
       return "not_owned";
-    }
-
-    try {
-      if (process.platform === "win32") {
-        const { getNativeAsync } = await import("./native/index.js");
-        const native = await getNativeAsync();
-        const h = native.openProcess(record.pid);
-        if (h) {
-          native.closeHandle(h);
-          return "running";
-        }
-        // openProcess 返回 null，进程不存在
-        return "confirmed_exited";
-      } else {
-        // POSIX：使用 signal 0 探测
-        process.kill(record.pid, 0);
-        return "running";
-      }
-    } catch (err: unknown) {
-      // R03 修复：不再吞掉异常，返回 unknown 阻塞切换
-      if (isErrnoException(err) && err.code === "ESRCH") {
-        // ESRCH 明确表示进程不存在
-        return "confirmed_exited";
-      }
-      // 其他异常（EPERM 等）视为未知状态
-      return "unknown";
-    }
+    return (
+      await observeProcessRecord(record as unknown as Record<string, unknown>)
+    ).state;
   }
 
   async confirmJobsStopped(ids: string[]): Promise<boolean> {
     for (const id of ids) {
       if (!/^[A-Za-z0-9_-]{1,150}$/.test(id)) return false;
-      const record = this.records().find(r => r.id === id);
-      if (!record) continue;
+      const record = this.records().find((r) => r.id === id);
+      if (!record) return false;
       const status = await this.confirmRecordStopped(record);
-      if (status === "running" || status === "unknown" || status === "not_owned") {
+      if (
+        status === "running" ||
+        status === "unknown" ||
+        status === "not_owned"
+      ) {
         return false;
       }
     }
@@ -123,13 +101,9 @@ export class AgyAccountProcessHost implements ProcessHostPort {
     )) {
       const status = await this.confirmRecordStopped(r);
       if (status === "confirmed_exited") continue;
-      if (status === "unknown") {
+      if (status === "unknown" || status === "not_owned") {
         // R03 修复：unknown 状态必须抛出错误，阻塞切换
         throw new Error("AGY_MANAGED_PROCESS_IDENTITY_UNKNOWN");
-      }
-      if (status === "not_owned") {
-        // 不属于当前管理器的进程不加入列表
-        continue;
       }
       if (!Number.isSafeInteger(r.pid) || r.pid! <= 0)
         throw new Error("AGY_MANAGED_PROCESS_IDENTITY_UNKNOWN");
@@ -168,22 +142,36 @@ export class AgyAccountProcessHost implements ProcessHostPort {
   async findExternalAgyProcesses(): Promise<ExternalProcessInfo[]> {
     await this.assertCapabilities();
     const rows = await this.inventory();
-    const owned = new Set(
-      this.records()
-        .filter((r) => r.agy_account && this.options.processManager?.get(r.id))
-        .map((r) => r.pid)
-        .filter((p): p is number => !!p),
-    );
-    let changed = true;
-    while (changed) {
-      changed = false;
-      for (const r of rows)
-        if (owned.has(r.parent) && !owned.has(r.pid)) {
-          owned.add(r.pid);
-          changed = true;
-        }
-    }
     const configuredName = basename(this.options.agyExecutable).toLowerCase();
+    const candidates = rows.filter(
+      (r) =>
+        !!r.sid &&
+        (r.name.toLowerCase() === configuredName ||
+          /agy|antigravity|language_server/i.test(r.name)),
+    );
+    const owned = new Set<number>();
+    const native = await getNativeAsync();
+    if (!("openJob" in native))
+      throw new Error("AGY_PROCESS_INVENTORY_UNSUPPORTED");
+    for (const record of this.records().filter(
+      (r) => r.agy_account && this.options.processManager?.get(r.id),
+    )) {
+      const managed = this.options.processManager!.get(record.id)!;
+      if (
+        !record.identity?.job_name ||
+        record.identity.attempt_id !== managed.identity?.attempt_id
+      )
+        throw new Error("AGY_MANAGED_PROCESS_IDENTITY_UNKNOWN");
+      const job = native.openJob(record.identity.job_name);
+      if (!job) continue;
+      try {
+        for (const candidate of candidates)
+          if (native.isProcessInJob(candidate.pid, job))
+            owned.add(candidate.pid);
+      } finally {
+        native.closeHandle(job);
+      }
+    }
     return rows
       .filter(
         (r) =>

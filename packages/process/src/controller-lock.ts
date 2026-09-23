@@ -1,89 +1,84 @@
-import { resolve } from "node:path";
+import { resolve, join } from "node:path";
+import { mkdirSync, realpathSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { hash } from "../../core/src/util.js";
+import { getNativeAsync, getWindowsNative } from "./native/index.js";
 
-/**
- * Acquire an in-process controller lock for the given root directory.
- *
- * Platform behaviour:
- * - Windows: named Mutex `Global\DevFlowAuth_<hash>` via koffi Win32 API
- * - POSIX:   exclusive flock file at `<root>/.devflow-controller.lock`
- *
- * R07 修复：
- * - Windows Mutex 名称与旧版本兼容：Global\DevFlowAuth_<hash>
- * - initialOwner=false 避免递归持有
- * - ESM 兼容：使用动态 import() 替代 require()
- *
- * @returns A release function (idempotent) that frees the lock when called.
- */
+// Windows mutex ownership is recursive on the same OS thread.
+const heldRoots = new Set<string>();
 export async function acquireControllerLock(
   root: string,
 ): Promise<() => Promise<void>> {
-  const lockHash = hash(resolve(root).toLowerCase());
-
-  if (process.platform === "win32") {
-    return acquireWindowsLock(lockHash);
-  }
-  return acquirePosixLock(resolve(root, ".devflow-controller.lock"));
-}
-
-// ── Windows ─────────────────────────────────────────────────────────────────
-
-async function acquireWindowsLock(
-  lockHash: string,
-): Promise<() => Promise<void>> {
-  // R07 修复：使用动态 import() 替代 require()（ESM 兼容）
-  const { getNativeAsync } = await import("./native/index.js");
-  const native = await getNativeAsync();
-
-  // R07 修复：Mutex 名称与旧版本兼容
-  // 旧 C# 使用: Local\DevFlowController.<hash>
-  // 旧 Go 使用: Global\<hash>
-  // 统一为: Global\DevFlowAuth_<hash>（Global 命名空间，跨会话互斥）
-  const mutexName = `Global\\DevFlowAuth_${lockHash}`;
-
-  // R07 修复：initialOwner=false，避免创建者立即持有导致递归
-  const mutex = native.createMutex(mutexName, false);
-  if (!mutex) {
-    throw new Error(`Failed to create controller mutex: ${mutexName}`);
-  }
-
-  // 单次等待获取互斥锁
-  const result = native.waitForMutex(mutex, 10_000);
-  if (result !== "acquired") {
-    native.closeHandle(mutex);
-    if (result === "timeout") {
-      throw new Error(
-        `Controller lock timeout after 10s: ${mutexName}`,
-      );
+  const absolute = resolve(root);
+  mkdirSync(absolute, { recursive: true });
+  let canonical = realpathSync.native(absolute);
+  if (process.platform === "win32") canonical = canonical.toLowerCase();
+  if (heldRoots.has(canonical)) throw new Error("CONTROLLER_ALREADY_ACTIVE");
+  heldRoots.add(canonical);
+  const release: Array<() => void> = [];
+  try {
+    await getNativeAsync();
+    const hashes = [
+      ...new Set([hash(absolute.toLowerCase()), hash(canonical)]),
+    ].sort();
+    if (process.platform === "win32") {
+      const native = await getWindowsNative();
+      for (const key of hashes) {
+        for (const name of [
+          `Local\\DevFlowController.${key}`,
+          `Global\\${key}`,
+          key,
+          `Local\\DevFlow.${key}`,
+          `Global\\DevFlowAuth_${key}`,
+        ]) {
+          const mutex = native.createMutex(name, false);
+          if (!mutex) throw new Error("CONTROLLER_LOCK_UNAVAILABLE");
+          const result = native.waitForMutex(mutex, 0);
+          if (result !== "acquired" && result !== "abandoned") {
+            native.closeHandle(mutex);
+            throw new Error("CONTROLLER_ALREADY_ACTIVE");
+          }
+          release.push(() => {
+            try {
+              if (!native.releaseMutex(mutex))
+                throw new Error("CONTROLLER_UNLOCK_FAILED");
+            } finally {
+              native.closeHandle(mutex);
+            }
+          });
+        }
+      }
+    } else {
+      const native = await import("./native/posix.js");
+      for (const key of hashes) {
+        const handle = native.acquireFlock(
+          join(tmpdir(), `devflow-${key}.lock`),
+        );
+        release.push(() => native.releaseFlock(handle));
+      }
     }
-    throw new Error(
-      `Controller lock failed (${result}): ${mutexName}`,
-    );
+  } catch (error) {
+    for (const unlock of release.reverse()) {
+      try {
+        unlock();
+      } catch {}
+    }
+    heldRoots.delete(canonical);
+    throw error;
   }
-
   let released = false;
   return async () => {
     if (released) return;
     released = true;
-    native.releaseMutex(mutex);
-    native.closeHandle(mutex);
-  };
-}
-
-// ── POSIX ───────────────────────────────────────────────────────────────────
-
-async function acquirePosixLock(
-  lockPath: string,
-): Promise<() => Promise<void>> {
-  // R07 修复：使用动态 import() 替代 require()（ESM 兼容）
-  const { acquireFlock, releaseFlock } = await import("./native/posix.js");
-
-  const handle = acquireFlock(lockPath);
-
-  let released = false;
-  return async () => {
-    if (released) return;
-    released = true;
-    releaseFlock(handle);
+    let failure: unknown;
+    for (const unlock of release.reverse()) {
+      try {
+        unlock();
+      } catch (error) {
+        failure ??= error;
+      }
+    }
+    heldRoots.delete(canonical);
+    if (failure) throw failure;
   };
 }

@@ -51,7 +51,7 @@ it("IT-15 named job reconciliation distinguishes active process trees from termi
   const s = setup(),
     manager = new ProcessManager(),
     key = "recovery-" + crypto.randomUUID();
-  const process = manager.start({
+  const managedProcess = manager.start({
     id: key,
     executable: globalThis.process.execPath,
     args: ["-e", "setInterval(()=>{},1000)"],
@@ -60,10 +60,10 @@ it("IT-15 named job reconciliation distinguishes active process trees from termi
     timeout_ms: 15000,
   });
   try {
-    // Wait for process to start
-    await new Promise<void>((r) => setTimeout(r, 100));
-    expect(process.pid).toBeDefined();
-    await process.stop();
+    // Wait for process to be ready (pid assigned after runner starts tool)
+    await managedProcess.ready;
+    expect(managedProcess.pid).toBeDefined();
+    await managedProcess.stop();
   } finally {
     await manager.close();
     s.store.close();

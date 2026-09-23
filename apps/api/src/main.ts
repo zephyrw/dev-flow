@@ -19,8 +19,7 @@ const engine = new Engine(store, config);
 const runtime = new LocalRuntime(engine);
 engine.runtime = runtime;
 
-const accountService = bootstrapAccountService(store, {
-  authHostExecutable: config.agy_accounts.auth_host_executable,
+const accountService = await bootstrapAccountService(store, {
   agyCliPath: config.models.agy_executable,
   processManager: runtime.processes,
   settings: config.agy_accounts,

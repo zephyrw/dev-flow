@@ -1,9 +1,22 @@
+import { observeProcessRecordSync } from "../../process/src/process-protocol.js";
 import type { Engine } from "../../core/src/engine.js";
-import { CONVERSATION_ENTITY, FlowError, requireCondition, type ConversationNode } from "../../contracts/src/index.js";
+import {
+  CONVERSATION_ENTITY,
+  FlowError,
+  requireCondition,
+  type ConversationNode,
+} from "../../contracts/src/index.js";
 import type { Lease } from "../../scheduler/src/scheduler.js";
 import { now } from "../../core/src/util.js";
 import type { OperationRequest } from "../../core/src/interactions.js";
-import { assertAccountModelRetryAccess, stageModelRunRetry, isQuotaRetryBlocked, isRetryBatchCurrent, readRetryBatch, type ModelRetry } from "../../core/src/model-retry.js";
+import {
+  assertAccountModelRetryAccess,
+  stageModelRunRetry,
+  isQuotaRetryBlocked,
+  isRetryBatchCurrent,
+  readRetryBatch,
+  type ModelRetry,
+} from "../../core/src/model-retry.js";
 import type { LocalRuntime } from "./runtime.js";
 import { prepareRepairResume } from "../../core/src/repair.js";
 import {
@@ -25,7 +38,6 @@ import {
 import type { WaitingContext } from "../../core/src/waiting-context.js";
 import type { Workflow } from "../../contracts/src/index.js";
 
-
 type InterruptionRecord = {
   prior_state?: string;
   prior_stage?: string;
@@ -45,15 +57,17 @@ export function resolveResumeTarget(engine: Engine, key: string) {
       ? engine.store.get<InterruptionRecord>("run_stop", w.run_id)
       : undefined);
   const run = interruption?.prior_run_id
-    ? engine.store.get<{ purpose?: string; stage?: string; repair_batch_id?: string }>(
-        "run",
-        interruption.prior_run_id,
-      )
+    ? engine.store.get<{
+        purpose?: string;
+        stage?: string;
+        repair_batch_id?: string;
+      }>("run", interruption.prior_run_id)
     : w.run_id
-      ? engine.store.get<{ purpose?: string; stage?: string; repair_batch_id?: string }>(
-          "run",
-          w.run_id,
-        )
+      ? engine.store.get<{
+          purpose?: string;
+          stage?: string;
+          repair_batch_id?: string;
+        }>("run", w.run_id)
       : undefined;
   const priorState = interruption?.prior_state;
   const purpose = interruption?.prior_purpose ?? run?.purpose;
@@ -62,14 +76,22 @@ export function resolveResumeTarget(engine: Engine, key: string) {
     interruption?.review_phase ??
     engine.store.get<{ phase?: string }>("plan_check_review_intent", key)
       ?.phase;
-  if (priorState === "HUMAN_PENDING" || stage === "functional_retest" || stage === "accept") {
+  if (
+    priorState === "HUMAN_PENDING" ||
+    stage === "functional_retest" ||
+    stage === "accept"
+  ) {
     return {
       state: "HUMAN_PENDING" as const,
       stage: stage || "accept",
       enqueue: false,
     };
   }
-  if (priorState === "PLANNING" || purpose === "planning" || stage === "planning") {
+  if (
+    priorState === "PLANNING" ||
+    purpose === "planning" ||
+    stage === "planning"
+  ) {
     return { state: "PLANNING" as const, stage: "planning", enqueue: true };
   }
   if (purpose === "plan_self_check" || stage === PLAN_SELF_CHECK_STAGE) {
@@ -86,9 +108,14 @@ export function resolveResumeTarget(engine: Engine, key: string) {
     stage === "review" ||
     stage === BEFORE_HUMAN_REVIEW_STAGE
   ) {
-    const phase = reviewPhase === "after_human" ? "after_human" : "before_human";
+    const phase =
+      reviewPhase === "after_human" ? "after_human" : "before_human";
     engine.store.put("plan_check_review_intent", key, key, {
-      ...engine.store.get<Record<string, unknown>>("plan_check_review_intent", key), phase,
+      ...engine.store.get<Record<string, unknown>>(
+        "plan_check_review_intent",
+        key,
+      ),
+      phase,
     });
     return {
       state: "REVIEW_QUEUED" as const,
@@ -117,7 +144,11 @@ export function resolveResumeTarget(engine: Engine, key: string) {
   if (["QUEUED", "REVIEW_QUEUED", "PLANNING"].includes(w.state)) {
     return { state: w.state, stage: w.stage, enqueue: true };
   }
-  if (w.state === "BLOCKED" || w.state === "STOPPED" || w.state === "RECOVERY_REQUIRED") {
+  if (
+    w.state === "BLOCKED" ||
+    w.state === "STOPPED" ||
+    w.state === "RECOVERY_REQUIRED"
+  ) {
     if (stage === "review" || stage === BEFORE_HUMAN_REVIEW_STAGE) {
       return {
         state: "REVIEW_QUEUED" as const,
@@ -163,7 +194,6 @@ const noopStopPort: StopPort = {
   },
 };
 
-
 const resuming = new WeakMap<Engine, Set<string>>();
 export async function resumeModelWaits(engine: Engine, at = Date.now()) {
   let active = resuming.get(engine);
@@ -202,7 +232,8 @@ export async function resumeModelWaits(engine: Engine, at = Date.now()) {
       await runtime?.environments?.stop(retry.id);
       if (!valid()) continue;
       if (isQuotaRetryBlocked(engine.store, retry)) continue;
-      if (retry.run_id) stageModelRunRetry(engine.store, retry.id, retry.run_id);
+      if (retry.run_id)
+        stageModelRunRetry(engine.store, retry.id, retry.run_id);
       resumeApproved(engine, retry.id, "quota_retry");
       engine.store.remove("model_retry", retry.id);
       engine.store.event(
@@ -220,7 +251,7 @@ export async function resumeModelWaits(engine: Engine, at = Date.now()) {
     }
   }
 }
-export async function reconcileProcesses(engine: Engine, key: string) {
+export function reconcileProcesses(engine: Engine, key: string) {
   const w = engine.get(key);
   requireCondition(
     [
@@ -239,59 +270,21 @@ export async function reconcileProcesses(engine: Engine, key: string) {
     status: string;
     confirmed?: boolean;
     pid?: number;
+    identity?: import("../../process/src/process-protocol.js").ProcessIdentity;
   }>("process_record", key);
-  const results = await Promise.all(
-    records
-      .filter((record) => !(record.status === "exited" && record.confirmed))
-      .map(async (record) => {
-        // R03 修复：使用异步 import() 替代 require()，四态确认
-        // running / confirmed_exited / unknown / not_owned
-        let status: "running" | "confirmed_exited" | "unknown" = "unknown";
-        if (record.pid && record.pid > 0) {
-          try {
-            if (process.platform === "win32") {
-              const { getNativeAsync } = await import("../../process/src/native/index.js");
-              const native = await getNativeAsync();
-              const h = native.openProcess(record.pid);
-              if (h) {
-                status = "running";
-                native.closeHandle(h);
-              } else {
-                status = "confirmed_exited";
-              }
-            } else {
-              process.kill(record.pid, 0);
-              status = "running";
-            }
-          } catch (err: unknown) {
-            // R03 修复：区分 ESRCH（进程不存在）和其他异常
-            if (isNodeErrnoException(err) && err.code === "ESRCH") {
-              status = "confirmed_exited";
-            } else {
-              // 其他异常保持 unknown，不释放资源
-              status = "unknown";
-            }
-          }
-        } else {
-          // 无 PID 记录视为已确认退出
-          status = "confirmed_exited";
-        }
-        requireCondition(
-          status !== "running",
-          "PROCESS_STILL_ACTIVE",
-          `受管进程 ${record.id} 尚未退出`,
-        );
-        if (status === "unknown") {
-          // R03 修复：unknown 状态必须抛出错误，阻塞资源释放
-          throw new FlowError(
-            "PROCESS_STATE_UNKNOWN",
-            `受管进程 ${record.id} 状态未知，无法安全释放资源`,
-            409,
-          );
-        }
-        return { id: record.id, alive: false };
-      }),
-  );
+  const results = records.map((record) => {
+    const observation = observeProcessRecordSync(
+      record as unknown as Record<string, unknown>,
+    );
+    requireCondition(
+      observation.state === "confirmed_exited",
+      observation.state === "running"
+        ? "PROCESS_STILL_ACTIVE"
+        : "PROCESS_STATE_UNKNOWN",
+      `受管进程 ${record.id} 未确认完全停止，不能释放资源`,
+    );
+    return { id: record.id, alive: false };
+  });
   const leases = engine.store.list<Lease>("lease", key);
   requireCondition(
     !leases.some((l) => l.id === "browser:shared"),
@@ -347,9 +340,19 @@ export async function reconcileProcesses(engine: Engine, key: string) {
 export function resumeApproved(
   engine: Engine,
   key: string,
-  sourceOrOptions: "user_resume" | "quota_retry" | "manual_handoff" | "migration" | { autoRetry?: boolean } = "user_resume",
+  sourceOrOptions:
+    | "user_resume"
+    | "quota_retry"
+    | "manual_handoff"
+    | "migration"
+    | { autoRetry?: boolean } = "user_resume",
 ) {
-  const source = typeof sourceOrOptions === "string" ? sourceOrOptions : sourceOrOptions.autoRetry ? "quota_retry" : "user_resume";
+  const source =
+    typeof sourceOrOptions === "string"
+      ? sourceOrOptions
+      : sourceOrOptions.autoRetry
+        ? "quota_retry"
+        : "user_resume";
   reconcileProcesses(engine, key);
   const w = engine.get(key);
   requireCondition(
@@ -367,7 +370,10 @@ export function resumeApproved(
   if (source !== "quota_retry") {
     // A missing authorization pauses account recovery without changing its model.
     // Explicit user stop/model-switch already removes this pending retry.
-    if (!w.run_id || !assertAccountModelRetryAccess(engine.store, key, w.run_id))
+    if (
+      !w.run_id ||
+      !assertAccountModelRetryAccess(engine.store, key, w.run_id)
+    )
       engine.store.remove("pending_model_retry", key);
     engine.store.remove("transient_network_retry", key);
   }
@@ -392,13 +398,28 @@ export function resumeApproved(
     409,
   );
   if (!control.dispatch_enabled) {
-    const reasons = control.reasons.map((r) => r.message || r.reason).join("; ");
-    throw new FlowError("DISPATCH_DISABLED", `无法恢复执行: ${reasons || "调度已停用"}`, 409);
+    const reasons = control.reasons
+      .map((r) => r.message || r.reason)
+      .join("; ");
+    throw new FlowError(
+      "DISPATCH_DISABLED",
+      `无法恢复执行: ${reasons || "调度已停用"}`,
+      409,
+    );
   }
 
-  const arranged = target.state === "HUMAN_PENDING" ? undefined : arrangeConversationRecovery(
-    engine, key, source === "quota_retry" ? "quota_retry" : source === "user_resume" ? "user_resume" : "service_recovery",
-  );
+  const arranged =
+    target.state === "HUMAN_PENDING"
+      ? undefined
+      : arrangeConversationRecovery(
+          engine,
+          key,
+          source === "quota_retry"
+            ? "quota_retry"
+            : source === "user_resume"
+              ? "user_resume"
+              : "service_recovery",
+        );
   engine.store.remove("model_retry", key);
   const resumedWaiting = resumeWaitingIfCurrent(engine, key, w, waiting);
   if (resumedWaiting) return resumedWaiting;
@@ -475,7 +496,11 @@ function resumeWaitingIfCurrent(
   }
   if (!belongs && !planningSource) return;
   assertResumePreconditions(engine, key, {
-    state: isPlanningWaiting(waiting) ? "PLANNING" : waiting.purpose === "review" ? "REVIEW_QUEUED" : "QUEUED",
+    state: isPlanningWaiting(waiting)
+      ? "PLANNING"
+      : waiting.purpose === "review"
+        ? "REVIEW_QUEUED"
+        : "QUEUED",
     stage: waiting.purpose,
     enqueue: true,
   });
@@ -579,8 +604,12 @@ function isPlanningRecovery(
     waiting &&
     isPlanningWaiting(waiting) &&
     isCurrentPlanningSource({
-      handoff: readPlanningHandoff(engine.store, key), waiting,
-      state: w.state, blockerCode: w.blocker?.code, runId: w.run_id, run,
+      handoff: readPlanningHandoff(engine.store, key),
+      waiting,
+      state: w.state,
+      blockerCode: w.blocker?.code,
+      runId: w.run_id,
+      run,
     })
   )
     return true;

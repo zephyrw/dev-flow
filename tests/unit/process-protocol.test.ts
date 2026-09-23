@@ -16,18 +16,23 @@ import {
   type ProcessIdentity,
 } from '../../packages/process/src/process-protocol.js';
 
+// 新协议使用 UUID 格式 attempt_id
+const VALID_ATT_1 = '80766c70-8e32-4e3c-9cf9-3203cf6ea5f4';
+const VALID_ATT_2 = '06db9c33-9411-4771-acd6-1f573af22b48';
+const VALID_ATT_3 = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+
 describe('process-protocol', () => {
   describe('generateJobName', () => {
     it('should generate valid job name with default prefix', () => {
       const name = generateJobName();
       expect(isValidJobName(name)).toBe(true);
-      expect(name).toMatch(/^DevFlow\./);
+      expect(name).toMatch(/^Local\\DevFlow\./);
     });
 
     it('should generate valid job name with custom prefix', () => {
       const name = generateJobName('Test');
       expect(isValidJobName(name)).toBe(true);
-      expect(name).toMatch(/^Test\./);
+      expect(name).toMatch(/^Local\\Test\./);
     });
 
     it('should generate unique names', () => {
@@ -49,28 +54,30 @@ describe('process-protocol', () => {
   });
 
   describe('isValidAttemptId', () => {
-    it('should accept valid format', () => {
-      expect(isValidAttemptId('att_1234567890_abcdefgh')).toBe(true);
+    it('should accept valid UUID format', () => {
+      expect(isValidAttemptId(VALID_ATT_1)).toBe(true);
+      expect(isValidAttemptId(VALID_ATT_2)).toBe(true);
     });
 
     it('should reject invalid formats', () => {
       expect(isValidAttemptId('')).toBe(false);
       expect(isValidAttemptId('invalid')).toBe(false);
       expect(isValidAttemptId('att_123')).toBe(false);
-      expect(isValidAttemptId('att_123_short')).toBe(false);
+      expect(isValidAttemptId('att_1234567890_abcdefgh')).toBe(false);
     });
   });
 
   describe('isValidJobName', () => {
     it('should accept valid format', () => {
-      expect(isValidJobName('DevFlow.abc123.xyz789')).toBe(true);
-      expect(isValidJobName('Test.abc.defghi')).toBe(true);
+      expect(isValidJobName(`Local\\DevFlow.${VALID_ATT_1}`)).toBe(true);
+      expect(isValidJobName(`Local\\Test.${VALID_ATT_2}`)).toBe(true);
     });
 
     it('should reject invalid formats', () => {
       expect(isValidJobName('')).toBe(false);
       expect(isValidJobName('invalid')).toBe(false);
-      expect(isValidJobName('DevFlow.abc')).toBe(false);
+      expect(isValidJobName(`DevFlow.${VALID_ATT_1}`)).toBe(false);
+      expect(isValidJobName('Local\\DevFlow.abc')).toBe(false);
     });
   });
 
@@ -79,7 +86,7 @@ describe('process-protocol', () => {
       const identity: ProcessIdentity = {
         backend: 'node-v1',
         id: 'test-123',
-        attempt_id: 'att_1234567890_abcdefgh',
+        attempt_id: VALID_ATT_1,
         pid: 1234,
       };
       const record = { identity, other: 'data' };
@@ -96,7 +103,18 @@ describe('process-protocol', () => {
         identity: {
           backend: 'wrong',
           id: 'test',
-          attempt_id: 'att_1234567890_abcdefgh',
+          attempt_id: VALID_ATT_1,
+        },
+      };
+      expect(extractIdentity(record)).toBeNull();
+    });
+
+    it('should return null for invalid attempt_id', () => {
+      const record = {
+        identity: {
+          backend: 'node-v1',
+          id: 'test',
+          attempt_id: 'att_invalid',
         },
       };
       expect(extractIdentity(record)).toBeNull();
@@ -109,7 +127,7 @@ describe('process-protocol', () => {
       const identity: ProcessIdentity = {
         backend: 'node-v1',
         id: 'test-123',
-        attempt_id: 'att_1234567890_abcdefgh',
+        attempt_id: VALID_ATT_1,
         pid: 1234,
       };
       const merged = mergeIdentity(record, identity);
@@ -123,12 +141,12 @@ describe('process-protocol', () => {
       const oldIdentity: ProcessIdentity = {
         backend: 'node-v1',
         id: 'old',
-        attempt_id: 'att_old_oldoldold',
+        attempt_id: VALID_ATT_1,
       };
       const newIdentity: ProcessIdentity = {
         backend: 'node-v1',
         id: 'new',
-        attempt_id: 'att_new_newnewnew',
+        attempt_id: VALID_ATT_2,
       };
       const record = { identity: oldIdentity };
       const merged = mergeIdentity(record, newIdentity);
@@ -141,24 +159,24 @@ describe('process-protocol', () => {
       const identity: ProcessIdentity = {
         backend: 'node-v1',
         id: 'test',
-        attempt_id: 'att_1234567890_abcdefgh',
+        attempt_id: VALID_ATT_1,
       };
       const record = { identity };
-      expect(isCurrentAttempt(record, 'att_1234567890_abcdefgh')).toBe(true);
+      expect(isCurrentAttempt(record, VALID_ATT_1)).toBe(true);
     });
 
     it('should reject different attempt', () => {
       const identity: ProcessIdentity = {
         backend: 'node-v1',
         id: 'test',
-        attempt_id: 'att_1234567890_abcdefgh',
+        attempt_id: VALID_ATT_1,
       };
       const record = { identity };
-      expect(isCurrentAttempt(record, 'att_9999999999_xyzxyzxy')).toBe(false);
+      expect(isCurrentAttempt(record, VALID_ATT_2)).toBe(false);
     });
 
     it('should reject when no identity', () => {
-      expect(isCurrentAttempt({}, 'att_1234567890_abcdefgh')).toBe(false);
+      expect(isCurrentAttempt({}, VALID_ATT_1)).toBe(false);
     });
   });
 });

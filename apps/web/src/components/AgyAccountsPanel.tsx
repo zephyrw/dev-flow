@@ -20,7 +20,7 @@ import {
   serviceLabels,
   type AccountOperationView,
 } from "./agy-api.js";
-type Settings = Omit<AgyAccountSettings, "auth_host_executable">;
+type Settings = AgyAccountSettings;
 interface Realm {
   revision: number;
   control_generation: number;

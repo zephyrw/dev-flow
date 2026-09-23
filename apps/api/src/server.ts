@@ -127,8 +127,7 @@ export async function buildServer(
   });
   const accountService =
     options.accountService ||
-    bootstrapAccountService(engine.store, {
-      authHostExecutable: engine.config.agy_accounts.auth_host_executable,
+    await bootstrapAccountService(engine.store, {
       agyCliPath: engine.config.models.agy_executable,
       settings: engine.config.agy_accounts,
     });

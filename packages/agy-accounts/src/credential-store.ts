@@ -1,354 +1,195 @@
-/**
- * Credential vault (envelope v2 format) for AGY accounts.
- *
- * Reads/writes encrypted credential files in the old Go format.
- * Vault location: %LOCALAPPDATA%/DevFlow/agy-accounts/<realm>/
- * Files: sec_<hash>.bin, bak_<hash>.bin, each with a companion .revision file.
- *
- * The `encrypt` callback is injected so the store does not depend on DPAPI
- * directly — the caller decides the encryption backend.
- */
-
+import { z } from "zod";
 import {
-  existsSync,
-  readFileSync,
-  writeFileSync,
-  mkdirSync,
-  unlinkSync,
-  renameSync,
-  fsyncSync,
-  openSync,
-  closeSync,
   lstatSync,
+  readFileSync,
+  mkdirSync,
+  openSync,
+  writeFileSync,
+  fsyncSync,
+  closeSync,
+  renameSync,
+  unlinkSync,
 } from "node:fs";
 import { join } from "node:path";
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 
-// ── Types ────────────────────────────────────────────────────────────────────
-
-export interface VaultEnvelope {
-  /** Envelope version — always 2 */
-  Version: number;
-  RealmID: string;
-  AccountID: string;
-  Revision: number;
-  Credential: VaultCredential;
+const integer = z.number().int().min(0).max(0xffffffff);
+const base64 = z
+  .string()
+  .max(24 * 1024 * 1024)
+  .refine((value) => Buffer.from(value, "base64").toString("base64") === value)
+  .nullable();
+export const VaultCredentialSchema = z
+  .object({
+    Exists: z.boolean(),
+    Flags: integer,
+    Username: z.string(),
+    Comment: z.string(),
+    Persist: integer,
+    TargetAlias: z.string(),
+    Attributes: z
+      .array(
+        z
+          .object({ Keyword: z.string(), Flags: integer, Value: base64 })
+          .strict(),
+      )
+      .max(64)
+      .nullable(),
+    Secret: base64,
+  })
+  .strict();
+export type VaultCredential = z.infer<typeof VaultCredentialSchema>;
+const EnvelopeSchema = z
+  .object({
+    Version: z.literal(2),
+    RealmID: z.string(),
+    AccountID: z.string(),
+    Revision: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    Credential: VaultCredentialSchema,
+  })
+  .strict();
+export type VaultEnvelope = z.infer<typeof EnvelopeSchema>;
+export interface VaultNative {
+  protectData(data: Buffer): Buffer;
+  unprotectData(data: Buffer): Buffer;
+  restrictPath(path: string): void;
+  assertSafePath(path: string): void;
 }
-
-export interface VaultCredential {
-  Exists: boolean;
-  Flags: number;
-  Username: string;
-  Comment: string;
-  Persist: number;
-  TargetAlias: string;
-  Attributes: Record<string, unknown>;
-  /** Base64-encoded bytes (Go JSON `[]byte` format) */
-  Secret: string;
+export function validateRealm(value: string): void {
+  if (!/^[A-Za-z0-9_-]{1,150}$/.test(value)) throw new Error("invalid_realm");
 }
-
-export interface VaultPaths {
-  /** `%LOCALAPPDATA%/DevFlow/agy-accounts/<realm>/` */
-  baseDir: string;
-  /** `sec_<hash>.bin` — active credential file */
-  activeFile: string;
-  /** `bak_<hash>.bin` — backup credential file */
-  backupFile: string;
-  /** `sec_<hash>.bin.revision` — companion revision for active file */
-  revisionFile: string;
-  /** `bak_<hash>.bin.revision` — companion revision for backup file */
-  backupRevisionFile: string;
+export function validateReference(value: string): void {
+  if (!/^(sec|bak)_[a-f0-9]{32}$/.test(value))
+    throw new Error("invalid_reference");
 }
-
-// ── Hashing ──────────────────────────────────────────────────────────────────
-
-/**
- * Compute the hash used in vault filenames.
- *
- * SHA-256 of `realmId + ":" + accountId`, hex-encoded, truncated to 16 chars.
- */
-export function hashVaultTarget(realmId: string, accountId: string): string {
-  const digest = createHash("sha256")
-    .update(`${realmId}:${accountId}`)
-    .digest("hex");
-  return digest.slice(0, 16);
+export function newReference(prefix: "sec" | "bak"): string {
+  return `${prefix}_${randomBytes(16).toString("hex")}`;
 }
-
-// ── Paths ────────────────────────────────────────────────────────────────────
-
-/**
- * Derive all vault file paths for a given realm/account pair.
- *
- * The base directory is `%LOCALAPPDATA%/DevFlow/agy-accounts/<realm>/`.
- * The hash portion is the first 16 hex chars of SHA-256(realm:account).
- */
-export function getVaultPaths(realmId: string, accountId: string): VaultPaths {
-  const localAppData =
-    process.env.LOCALAPPDATA ??
-    join(process.env.HOME ?? "", "AppData", "Local");
-  const baseDir = join(localAppData, "DevFlow", "agy-accounts", realmId);
-  const hash = hashVaultTarget(realmId, accountId);
-  const activeName = `sec_${hash}.bin`;
-  const backupName = `bak_${hash}.bin`;
-
-  return {
-    baseDir,
-    activeFile: join(baseDir, activeName),
-    backupFile: join(baseDir, backupName),
-    revisionFile: join(baseDir, `${activeName}.revision`),
-    backupRevisionFile: join(baseDir, `${backupName}.revision`),
-  };
+export function equalCredential(
+  a: VaultCredential,
+  b: VaultCredential,
+): boolean {
+  return (
+    a.Exists === b.Exists &&
+    a.Flags === b.Flags &&
+    a.Username === b.Username &&
+    a.Comment === b.Comment &&
+    a.Persist === b.Persist &&
+    a.TargetAlias === b.TargetAlias &&
+    (a.Secret ?? "") === (b.Secret ?? "") &&
+    JSON.stringify(a.Attributes ?? []) === JSON.stringify(b.Attributes ?? [])
+  );
 }
-
-// ── Reparse-point guard ─────────────────────────────────────────────────────
-
-/**
- * Throw if `filePath` exists and is a reparse point (symlink / junction).
- *
- * This prevents an attacker from redirecting a vault write to an arbitrary
- * location via a planted symlink.
- */
-function assertNotReparsePoint(filePath: string): void {
-  if (!existsSync(filePath)) return;
-
-  let st;
-  try {
-    st = lstatSync(filePath);
-  } catch {
-    // If lstat fails the file disappeared — that is fine.
-    return;
-  }
-
-  if (st.isSymbolicLink()) {
-    throw new Error(
-      `Refusing to write: ${filePath} is a reparse point (symlink/junction)`
-    );
-  }
-}
-
-// ── Read ─────────────────────────────────────────────────────────────────────
-
-/**
- * Read and parse the active vault file.
- *
- * Returns the parsed `VaultEnvelope`, or `null` when the file does not exist
- * or cannot be read.
- */
-export function readVaultEnvelope(paths: VaultPaths): VaultEnvelope | null {
-  if (!existsSync(paths.activeFile)) return null;
-
-  let raw: Buffer;
-  try {
-    raw = readFileSync(paths.activeFile);
-  } catch {
-    return null;
-  }
-
-  if (raw.length === 0) return null;
-
-  try {
-    const text = raw.toString("utf-8");
-    const envelope: VaultEnvelope = JSON.parse(text);
-
-    // Basic shape validation
-    if (envelope.Version !== 2) {
-      throw new Error(
-        `Unexpected envelope version ${envelope.Version} (expected 2)`
-      );
-    }
-    if (
-      typeof envelope.RealmID !== "string" ||
-      typeof envelope.AccountID !== "string" ||
-      typeof envelope.Revision !== "number" ||
-      !envelope.Credential
-    ) {
-      throw new Error("Malformed vault envelope");
-    }
-
-    return envelope;
-  } catch {
-    // Corrupt / unparseable file — treat as missing.
-    return null;
-  }
-}
-
-// ── Write ────────────────────────────────────────────────────────────────────
-
-/**
- * Atomically write an encrypted vault envelope to the active file.
- *
- * Procedure:
- * 1. Ensure the base directory exists.
- * 2. Reject reparse points on the active file and its revision companion.
- * 3. Serialize the envelope, call the injected `encrypt` callback.
- * 4. Write to a temporary file (random suffix) in the same directory.
- * 5. `fsync` the temporary file to flush data to disk.
- * 6. Atomically `rename` the temp file over the active file.
- * 7. Rotate the previous active file to the backup position.
- *
- * The `encrypt` callback receives the plaintext buffer and must return the
- * ciphertext buffer.  The caller decides the encryption backend (DPAPI, etc.).
- */
-export function writeVaultEnvelope(
-  paths: VaultPaths,
-  envelope: VaultEnvelope,
-  encrypt: (data: Buffer) => Buffer
-): void {
-  // 1. Ensure directory
-  mkdirSync(paths.baseDir, { recursive: true });
-
-  // 2. Reparse-point checks
-  assertNotReparsePoint(paths.activeFile);
-  assertNotReparsePoint(paths.revisionFile);
-
-  // 3. Serialize and encrypt
-  const plaintext = Buffer.from(JSON.stringify(envelope), "utf-8");
-  const ciphertext = encrypt(plaintext);
-
-  // 4. Rotate current active -> backup (best-effort)
-  if (existsSync(paths.activeFile)) {
+// This object is used only by the credential worker while its OS domain mutex is held.
+export class CredentialVault {
+  constructor(
+    private native: VaultNative,
+    private localAppData = process.env.LOCALAPPDATA,
+  ) {}
+  private exists(path: string): boolean {
     try {
-      // Remove existing backup first
-      if (existsSync(paths.backupFile)) {
-        assertNotReparsePoint(paths.backupFile);
-        unlinkSync(paths.backupFile);
+      if (lstatSync(path).isSymbolicLink())
+        throw new Error("vault_reparse_path");
+      this.native.assertSafePath(path);
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+      throw error;
+    }
+  }
+  private directory(realm: string): string {
+    validateRealm(realm);
+    if (!this.localAppData) throw new Error("local_appdata_unavailable");
+    this.native.assertSafePath(this.localAppData);
+    let path = this.localAppData;
+    for (const part of ["DevFlow", "agy-accounts", realm]) {
+      path = join(path, part);
+      if (!this.exists(path)) mkdirSync(path);
+      if (!lstatSync(path).isDirectory())
+        throw new Error("vault_directory_invalid");
+      this.native.restrictPath(path);
+    }
+    return path;
+  }
+  private path(realm: string, ref: string): string {
+    validateReference(ref);
+    return join(this.directory(realm), ref + ".bin");
+  }
+  private writeAtomic(path: string, bytes: Buffer) {
+    this.exists(path); // Reject reparse targets; propagate access errors.
+    const temp = path + ".tmp." + randomBytes(16).toString("hex");
+    let fd: number | undefined;
+    try {
+      fd = openSync(temp, "wx", 0o600);
+      this.native.restrictPath(temp);
+      writeFileSync(fd, bytes);
+      fsyncSync(fd);
+      closeSync(fd);
+      fd = undefined;
+      this.exists(path);
+      renameSync(temp, path);
+    } finally {
+      if (fd !== undefined) closeSync(fd);
+      try {
+        unlinkSync(temp);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       }
-      if (existsSync(paths.backupRevisionFile)) {
-        assertNotReparsePoint(paths.backupRevisionFile);
-        unlinkSync(paths.backupRevisionFile);
+    }
+  }
+  allocateRevision(realm: string): number {
+    const path = join(this.directory(realm), "revision");
+    let previous = 0;
+    if (this.exists(path)) {
+      const text = readFileSync(path, "utf8");
+      if (!/^\d+$/.test(text)) throw new Error("invalid_vault_revision");
+      previous = Number(text);
+      if (!Number.isSafeInteger(previous) || previous < 0)
+        throw new Error("invalid_vault_revision");
+    }
+    if (previous >= Number.MAX_SAFE_INTEGER)
+      throw new Error("vault_revision_exhausted");
+    const next = Math.max(Date.now(), previous + 1);
+    this.writeAtomic(path, Buffer.from(String(next)));
+    return next;
+  }
+  save(realm: string, ref: string, envelope: VaultEnvelope): void {
+    const path = this.path(realm, ref);
+    if (this.exists(path)) throw new Error("vault_reference_exists");
+    const checked = EnvelopeSchema.safeParse(envelope);
+    if (!checked.success || envelope.RealmID !== realm)
+      throw new Error("invalid_vault_envelope");
+    const plain = Buffer.from(JSON.stringify(checked.data));
+    try {
+      this.writeAtomic(path, this.native.protectData(plain));
+    } finally {
+      plain.fill(0);
+    }
+  }
+  load(realm: string, ref: string): VaultEnvelope {
+    const path = this.path(realm, ref);
+    if (!this.exists(path)) throw new Error("vault_item_missing");
+    if (lstatSync(path).size > 16 * 1024 * 1024)
+      throw new Error("vault_item_too_large");
+    const plain = this.native.unprotectData(readFileSync(path));
+    try {
+      let value: unknown;
+      try {
+        value = JSON.parse(plain.toString("utf8"));
+      } catch {
+        throw new Error("invalid_vault_envelope");
       }
-      renameSync(paths.activeFile, paths.backupFile);
-      // Rotate companion revision if present
-      if (existsSync(paths.revisionFile)) {
-        renameSync(paths.revisionFile, paths.backupRevisionFile);
-      }
-    } catch {
-      // Rotation is best-effort; a failure here is not fatal.
+      const parsed = EnvelopeSchema.safeParse(value);
+      if (!parsed.success || parsed.data.RealmID !== realm)
+        throw new Error("incompatible_vault_envelope");
+      return parsed.data;
+    } finally {
+      plain.fill(0);
     }
   }
-
-  // 5. Write to temp file in same directory
-  const tmpSuffix = randomBytes(8).toString("hex");
-  const tmpFile = `${paths.activeFile}.tmp.${tmpSuffix}`;
-
-  try {
-    writeFileSync(tmpFile, ciphertext);
-    fsyncFile(tmpFile);
-
-    // 6. Atomic rename over active file
-    renameSync(tmpFile, paths.activeFile);
-  } catch (err) {
-    // Clean up temp file on failure
-    try {
-      if (existsSync(tmpFile)) unlinkSync(tmpFile);
-    } catch {
-      // Ignore cleanup failure
-    }
-    throw err;
-  } finally {
-    // Zero out plaintext from memory (best-effort)
-    plaintext.fill(0);
-  }
-}
-
-// ── Revision management ──────────────────────────────────────────────────────
-
-/**
- * Read the current revision number from the `.revision` companion file.
- *
- * Returns `0` when the file does not exist or cannot be parsed.
- */
-export function readRevision(paths: VaultPaths): number {
-  if (!existsSync(paths.revisionFile)) return 0;
-
-  try {
-    const text = readFileSync(paths.revisionFile, "utf-8").trim();
-    const n = Number(text);
-    return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 0;
-  } catch {
-    return 0;
-  }
-}
-
-/**
- * Atomically allocate the next revision number.
- *
- * Reads the current value from disk, increments by one, writes the new value
- * to a temporary file, fsyncs, and renames over the `.revision` file.
- *
- * **Must be called under the domain lock** — concurrent callers would race on
- * the read-modify-write sequence.
- */
-export function allocateRevision(paths: VaultPaths): number {
-  const current = readRevision(paths);
-  const next = current + 1;
-
-  // Ensure directory
-  mkdirSync(paths.baseDir, { recursive: true });
-
-  // Reparse-point guard
-  assertNotReparsePoint(paths.revisionFile);
-
-  // Atomic write: tmp -> fsync -> rename
-  const tmpSuffix = randomBytes(8).toString("hex");
-  const tmpFile = `${paths.revisionFile}.tmp.${tmpSuffix}`;
-
-  try {
-    writeFileSync(tmpFile, String(next), "utf-8");
-    fsyncFile(tmpFile);
-    renameSync(tmpFile, paths.revisionFile);
-  } catch (err) {
-    try {
-      if (existsSync(tmpFile)) unlinkSync(tmpFile);
-    } catch {
-      // Ignore cleanup failure
-    }
-    throw err;
-  }
-
-  return next;
-}
-
-// ── Deletion ─────────────────────────────────────────────────────────────────
-
-/**
- * Remove all vault files for an account (active, backup, and revisions).
- *
- * Each removal is individually guarded — a missing file is silently skipped.
- * Reparse points are checked before deletion to avoid following symlinks.
- */
-export function deleteVault(paths: VaultPaths): void {
-  const files = [
-    paths.activeFile,
-    paths.backupFile,
-    paths.revisionFile,
-    paths.backupRevisionFile,
-  ];
-
-  for (const file of files) {
-    if (!existsSync(file)) continue;
-    assertNotReparsePoint(file);
-    try {
-      unlinkSync(file);
-    } catch {
-      // Best-effort; file may have been removed concurrently.
-    }
-  }
-}
-
-// ── Internal helpers ─────────────────────────────────────────────────────────
-
-/**
- * Open a file, call fsync on it, then close the descriptor.
- *
- * This is extracted so callers do not need to manage file descriptors
- * manually — `fsyncSync` requires a numeric fd, not a path.
- */
-function fsyncFile(filePath: string): void {
-  const fd = openSync(filePath, "r+");
-  try {
-    fsyncSync(fd);
-  } finally {
-    closeSync(fd);
+  delete(realm: string, ref: string): void {
+    const path = this.path(realm, ref);
+    if (!this.exists(path)) return;
+    unlinkSync(path);
   }
 }

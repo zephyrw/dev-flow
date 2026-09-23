@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { mkdtempSync, rmSync, existsSync, openSync, closeSync } from "node:fs";
 import { fork, spawn, execFileSync, type ChildProcess } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import koffi from "koffi";
 
 const isWindows = process.platform === "win32";
@@ -543,18 +544,20 @@ describe("node-native-primitives", () => {
   describe("Runner entry IPC", () => {
     function forkRunner() {
       const runnerEntry = resolveRunnerEntry();
-      return fork(runnerEntry, [], {
+      const attemptId = randomUUID();
+      const child = fork(runnerEntry, [attemptId], {
         cwd: tmpDir,
         env: cleanedEnv(),
         execArgv: [],
         stdio: ["pipe", "pipe", "pipe", "ipc"],
       });
+      return { child, attemptId };
     }
 
-    function sendStart(child: ChildProcess, args: string[], extraEnv: Record<string, string> = {}) {
+    function sendStart(child: ChildProcess, attemptId: string, args: string[], extraEnv: Record<string, string> = {}) {
       child.send?.({
         type: "start",
-        attempt_id: `att_${testSuffix}`,
+        attempt_id: attemptId,
         executable: process.execPath,
         args,
         cwd: tmpDir,
@@ -563,13 +566,13 @@ describe("node-native-primitives", () => {
     }
 
     it("spawn runner, receive ready, send start, receive started and exited", async () => {
-      const child = forkRunner();
+      const { child, attemptId } = forkRunner();
       const inbox = collectIpc(child);
       try {
         const ready = await waitForMessage(inbox, "ready");
         expect(ready.type).toBe("ready");
 
-        sendStart(child, ["-e", "process.exit(0)"]);
+        sendStart(child, attemptId, ["-e", "process.exit(0)"]);
         const started = await waitForMessage(inbox, "started");
         expect(started.pid).toBeTypeOf("number");
         expect(started.pid).toBeGreaterThan(0);
@@ -583,17 +586,17 @@ describe("node-native-primitives", () => {
     });
 
     it("stop via IPC terminates the tool and the runner observes exit", async () => {
-      const child = forkRunner();
+      const { child, attemptId } = forkRunner();
       const inbox = collectIpc(child);
       let toolPid: number | undefined;
       try {
         await waitForMessage(inbox, "ready");
-        sendStart(child, ["-e", "setTimeout(() => {}, 60000)"]);
+        sendStart(child, attemptId, ["-e", "setTimeout(() => {}, 60000)"]);
         const started = await waitForMessage(inbox, "started");
         toolPid = started.pid;
         expect(toolPid).toBeTypeOf("number");
 
-        child.send?.({ type: "stop", attempt_id: `att_${testSuffix}` });
+        child.send?.({ type: "stop", attempt_id: attemptId });
 
         const exited = await waitForMessage(inbox, "exited", 15000);
         expect(exited).toBeDefined();
@@ -608,12 +611,12 @@ describe("node-native-primitives", () => {
     });
 
     it("IPC disconnect kills the tool", async () => {
-      const child = forkRunner();
+      const { child, attemptId } = forkRunner();
       const inbox = collectIpc(child);
       let toolPid: number | undefined;
       try {
         await waitForMessage(inbox, "ready");
-        sendStart(child, ["-e", "setTimeout(() => {}, 60000)"]);
+        sendStart(child, attemptId, ["-e", "setTimeout(() => {}, 60000)"]);
         const started = await waitForMessage(inbox, "started");
         toolPid = started.pid;
         expect(toolPid).toBeTypeOf("number");

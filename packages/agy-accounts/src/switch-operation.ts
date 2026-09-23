@@ -126,7 +126,6 @@ export class SwitchOperationExecutor {
         auto_network_check: false,
       },
       updated_at: this.clock.toISOString(),
-      auth_host_executable: "dist/host/devflow-auth-host.exe",
     };
 
     // 1. CAS 校验 epoch

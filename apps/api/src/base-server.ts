@@ -2,6 +2,7 @@ import Fastify from "fastify";
 import staticPlugin from "@fastify/static";
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import {
   requireCondition,
@@ -131,6 +132,8 @@ export function createBaseServer(options: BaseServerOptions) {
   app.get("/api/health", async () => ({
     ok: true,
     version: "0.2.0",
+    runtime_backend: "node-v1",
+    runtime_root: fileURLToPath(new URL("../../../../", import.meta.url)),
     mode: options.mode,
     features: { workflows: options.mode === "full", agy_accounts: true },
     service: "devflow",

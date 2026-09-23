@@ -35,7 +35,7 @@ try {
   $node=Join-Path $Source "runtime\node.exe"
   if (-not (Test-Path -LiteralPath $node)) {$node=(Get-Command node -ErrorAction Stop).Source}
   $entry=Join-Path $Source "dist\packages\installer\src\main.js"
-  if (-not (Test-Path -LiteralPath $entry)) { throw "源码需要先执行 pnpm install --frozen-lockfile、pnpm build 和 pnpm build:host" }
+  if (-not (Test-Path -LiteralPath $entry)) { throw "源码需要先执行 pnpm install --frozen-lockfile 和 pnpm build" }
   $nodeArgs = @($entry, '--source', $Source, '--install-dir', $InstallDir, '--tools', $SelectedTool)
   if ($PlannerTool) { $nodeArgs += @('--planner-tool', $PlannerTool) }
   if ($PlannerModel) { $nodeArgs += @('--planner-model', $PlannerModel) }

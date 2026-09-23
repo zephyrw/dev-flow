@@ -30,6 +30,9 @@ function previewProject(s: Awaited<ReturnType<typeof prepared>>) {
 function exited(id: string, message: string, code = 2) {
   const proc = Object.assign(new EventEmitter(), {
     id,
+    ready: Promise.resolve(),
+    writeStdin: vi.fn(),
+    endStdin: vi.fn(),
     stop: vi.fn(async () => {}),
     completion: Promise.resolve({ code }),
   });
@@ -165,7 +168,7 @@ it("manual stop while preparing stays stopped and is not relabeled as a build fa
       await s.engine.stop(s.workflow.id);
       throw new FlowError("RUN_REVOKED", "执行已暂停");
     },
-    stop: async () => {},
+    stop: async () => ({ status: "confirmed_not_started" }),
   } as any;
   try {
     s.engine.claimTask(

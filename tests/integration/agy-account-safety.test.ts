@@ -22,7 +22,7 @@ async function fixture() {
   const auth: AuthHostPort = {
     isDomainLockHeld: () => state.held,
     compareActive: async (_realm, ref) => state.active === ref,
-    capabilities: async () => ({ supported: true, platform: "win32", dpapi_available: true, cred_manager_available: true, named_mutex_available: true, version: "2.0.0" }),
+    capabilities: async () => ({ supported: true, platform: "win32", dpapi_available: true, cred_manager_available: true, named_mutex_available: true, version: "3.0.0-node" }),
     acquireDomainLock: async () => { state.held = state.acquire; return { acquired: state.acquire, release: async () => { state.held = false; state.releases++; } }; },
     inspectActive: async () => ({ exists: state.active !== "absent", account_id: state.active.replace("saved_", ""), secret_ref: state.active }),
     captureActive: async () => ({ secret_ref: state.active, credential_revision: 1 }),

@@ -8,6 +8,7 @@ import {
 } from "../../contracts/src/execution-spec.js";
 import {
   migrateAccountConfiguration,
+  UpgradeManager,
   writeAccountsLauncher,
 } from "./upgrade.js";
 import {
@@ -40,6 +41,8 @@ import { promisify } from "node:util";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
+import { acquireControllerLock } from "../../process/src/controller-lock.js";
+import { cleanProcessEnvironment } from "../../process/src/manager.js";
 const exec = promisify(execFile);
 
 export interface InstallerRoleInputs {
@@ -131,7 +134,10 @@ function executableRefFor(
   return undefined;
 }
 
-function catalogForProfile(store: Store, profile: ToolProfile): ModelCatalog | undefined {
+function catalogForProfile(
+  store: Store,
+  profile: ToolProfile,
+): ModelCatalog | undefined {
   const native = resolveModelIdentity(store, profile);
   return new ModelCatalogService(store).readCached({
     adapterId: profile.adapterId,
@@ -146,16 +152,24 @@ function catalogForProfile(store: Store, profile: ToolProfile): ModelCatalog | u
 function catalogEntryFor(store: Store, profile: ToolProfile) {
   if (!profile.modelId) return undefined;
   return catalogForProfile(store, profile)?.entries.find(
-    (entry) => entry.nativeId === profile.modelId || entry.entryId === profile.modelId,
+    (entry) =>
+      entry.nativeId === profile.modelId || entry.entryId === profile.modelId,
   );
 }
 
-function catalogEffortDefault(store: Store, profile: ToolProfile): string | undefined {
+function catalogEffortDefault(
+  store: Store,
+  profile: ToolProfile,
+): string | undefined {
   const entry = catalogEntryFor(store, profile);
   return entry?.effort.defaultValue ?? entry?.effort.fixedValue;
 }
 
-function assertCatalogEffortAllowed(store: Store, profile: ToolProfile, effort: string) {
+function assertCatalogEffortAllowed(
+  store: Store,
+  profile: ToolProfile,
+  effort: string,
+) {
   const entry = catalogEntryFor(store, profile);
   if (!entry) return;
   if (entry.effort.status === "unsupported") {
@@ -169,7 +183,11 @@ function assertCatalogEffortAllowed(store: Store, profile: ToolProfile, effort: 
   }
 }
 
-function effortAllowed(store: Store, profile: ToolProfile, effort: string): boolean {
+function effortAllowed(
+  store: Store,
+  profile: ToolProfile,
+  effort: string,
+): boolean {
   const entry = catalogEntryFor(store, profile);
   if (!entry) return true;
   if (entry.effort.status === "unsupported") return false;
@@ -180,12 +198,19 @@ function effortAllowed(store: Store, profile: ToolProfile, effort: string): bool
   return true;
 }
 
-function explicitEffort(store: Store, profile: ToolProfile, effort: string): ToolProfile["reasoning"] {
+function explicitEffort(
+  store: Store,
+  profile: ToolProfile,
+  effort: string,
+): ToolProfile["reasoning"] {
   assertCatalogEffortAllowed(store, profile, effort);
   return { mode: "explicit", value: effort };
 }
 
-function catalogOrNativeDefault(store: Store, profile: ToolProfile): ToolProfile["reasoning"] {
+function catalogOrNativeDefault(
+  store: Store,
+  profile: ToolProfile,
+): ToolProfile["reasoning"] {
   const catalogDefault = catalogEffortDefault(store, profile);
   if (catalogDefault) return { mode: "explicit", value: catalogDefault };
   return { mode: "native-default" };
@@ -207,7 +232,11 @@ function overlayRoleProfile(
   const nextAdapter = patch.tool ? parseAdapterId(patch.tool) : base.adapterId;
   const toolChanged = nextAdapter !== base.adapterId;
   if (toolChanged && !patch.model) {
-    return { ok: false, reason: "incomplete", message: "改工具时必须指定合法模型" };
+    return {
+      ok: false,
+      reason: "incomplete",
+      message: "改工具时必须指定合法模型",
+    };
   }
   if (toolChanged) {
     const next: ToolProfile = {
@@ -233,16 +262,19 @@ function overlayRoleProfile(
   const modelChanged = Boolean(patch.model && patch.model !== base.modelId);
   const next: ToolProfile = {
     ...base,
-    ...(patch.model ? {
-      modelSelection: "explicit" as const,
-      modelId: patch.model,
-      selectionKind: "fixed" as const,
-    } : {}),
+    ...(patch.model
+      ? {
+          modelSelection: "explicit" as const,
+          modelId: patch.model,
+          selectionKind: "fixed" as const,
+        }
+      : {}),
   };
   if (patch.effort) {
     next.reasoning = explicitEffort(store, next, patch.effort);
   } else if (modelChanged) {
-    const oldEffort = base.reasoning?.mode === "explicit" ? base.reasoning.value : undefined;
+    const oldEffort =
+      base.reasoning?.mode === "explicit" ? base.reasoning.value : undefined;
     if (oldEffort && !effortAllowed(store, next, oldEffort)) {
       throw new InstallerDefaultsError("当前模型不支持该思考强度");
     }
@@ -446,23 +478,39 @@ export async function runInstaller(
   const root = resolve(
     options.installRoot ?? join(homedir(), ".local", "share", "devflow"),
   );
-  const source = resolve(options.sourceDir ?? process.cwd()),
-    version = "0.2.0";
+  const source = resolve(options.sourceDir ?? process.cwd());
   const state = new InstallationStateManager(join(root, "state.json"));
   const tools = options.targetTools ?? ["codex"];
   const roleInputs = options.roleInputs ?? {};
   let code: number = INSTALL_EXIT_CODES.DOWNLOAD_VERIFICATION_FAILED;
+  let releaseController: (() => Promise<void>) | undefined;
+  let originalConfig: string | undefined;
+  let originalPointer: string | undefined;
+  let configurationChanged = false;
+  let writableStateStarted = false;
   try {
     if (
       !tools.length ||
       tools.some((t) => !SupportedAdapters.includes(t as SupportedAdapterId))
     )
       return INSTALL_EXIT_CODES.CONFIGURATION_CONFLICT;
+    const sourcePackage = JSON.parse(
+      readFileSync(join(source, "package.json"), "utf8"),
+    );
+    const version: string = sourcePackage.version;
+    if (
+      sourcePackage.name !== "devflow" ||
+      typeof version !== "string" ||
+      !/^\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$/.test(version)
+    )
+      throw new Error("安装包身份或版本不符");
     const required = [
       "dist/apps/api/src/main.js",
       "dist/apps/api/src/accounts-main.js",
       "dist/packages/agy-accounts/src/service.js",
       "dist/packages/agy-accounts/src/credential-worker.js",
+      "dist/packages/process/src/runner-entry.js",
+      "dist/packages/process/src/native/index.js",
       "dist/packages/service/src/open.js",
       ...(process.platform === "win32"
         ? ["dist/packages/agy-accounts/src/credential-windows.js"]
@@ -472,6 +520,7 @@ export async function runInstaller(
       "dist/packages/service/src/launcher.js",
       "package.json",
       "node_modules/better-sqlite3/package.json",
+      "node_modules/koffi/package.json",
       ...[
         "devflow",
         "devflow-project-onboard",
@@ -484,11 +533,6 @@ export async function runInstaller(
     for (const path of required)
       if (!existsSync(join(source, path)))
         throw new Error("安装包不完整：" + path);
-    const sourcePackage = JSON.parse(
-      readFileSync(join(source, "package.json"), "utf8"),
-    );
-    if (sourcePackage.name !== "devflow" || sourcePackage.version !== version)
-      throw new Error("安装包身份或版本不符");
     // The version directory is immutable once activated; never overwrite a running installation.
     const target = join(root, "versions", version);
     const digest = hash(
@@ -555,15 +599,62 @@ export async function runInstaller(
     )
       throw new Error("Node 版本不满足要求");
     state.updateComponent("node", nodeVersion, "VERIFIED");
+    // This preflight loads installed native libraries without touching the live database or credentials.
+    await exec(
+      node,
+      [
+        "--input-type=module",
+        "-e",
+        "const n=await import(process.argv[1]);await n.getNativeAsync();const m=await import(process.argv[2]);const db=new m.default(':memory:');db.close();",
+        pathToFileURL(join(target, "dist/packages/process/src/native/index.js"))
+          .href,
+        pathToFileURL(join(target, "node_modules/better-sqlite3/lib/index.js"))
+          .href,
+      ],
+      {
+        cwd: target,
+        env: cleanProcessEnvironment(),
+        windowsHide: true,
+        timeout: 15000,
+      },
+    );
     // Verify credential worker exists (replaces old C# host binary)
-    const credentialWorker = join(target, "dist", "packages", "agy-accounts", "src", "credential-worker.js");
-    if (!existsSync(credentialWorker))
-      throw new Error("凭据 Worker 不存在");
+    const credentialWorker = join(
+      target,
+      "dist",
+      "packages",
+      "agy-accounts",
+      "src",
+      "credential-worker.js",
+    );
+    if (!existsSync(credentialWorker)) throw new Error("凭据 Worker 不存在");
     state.updateComponent("credential-worker", "node-module", "VERIFIED");
     state.updateComponent("service", version, "INSTALLED");
     code = INSTALL_EXIT_CODES.CONFIGURATION_CONFLICT;
     const config = join(root, "devflow.yaml");
     const currentPointer = join(root, "current.json");
+    const upgrade = new UpgradeManager({
+      installDir: root,
+      targetVersion: version,
+    });
+    if (existsSync(config)) {
+      originalConfig = readFileSync(config, "utf8");
+      const previous = loadConfig(config);
+      releaseController = await acquireControllerLock(previous.storage_root);
+      const sqlite = join(previous.storage_root, "devflow.sqlite");
+      await upgrade.assertQuiescent(sqlite);
+      await upgrade.backupData(sqlite);
+    } else {
+      releaseController = await acquireControllerLock(join(root, "state"));
+    }
+    if (existsSync(currentPointer)) {
+      originalPointer = readFileSync(currentPointer, "utf8");
+      atomicWrite(
+        join(root, "backup", "current-" + randomUUID() + ".json"),
+        originalPointer,
+      );
+    }
+    configurationChanged = true;
     if (!existsSync(config))
       atomicWrite(
         config,
@@ -583,10 +674,10 @@ export async function runInstaller(
       );
     else migrateAccountConfiguration(config);
     const configured = loadConfig(config);
-    // Node credential worker is always available on supported platforms
+    // File presence and native loading do not prove real account capabilities.
     let accountPrerequisite = "unsupported_platform";
     if (process.platform === "win32") {
-      accountPrerequisite = "node_credential_worker_ready";
+      accountPrerequisite = "credential_capability_unverified";
     }
     state.updateComponent(
       "credential-worker",
@@ -627,6 +718,12 @@ export async function runInstaller(
     state.updateComponent("service", version, "CONFIGURED");
     code = INSTALL_EXIT_CODES.CONFIGURATION_CONFLICT;
     const loaded = loadConfig(config);
+    atomicWrite(
+      currentPointer,
+      JSON.stringify({ version, root: target, config, node }, null, 2),
+    );
+    // Store construction may migrate/write data. Never automatically roll a database back after this point.
+    writableStateStarted = true;
     const defaultsResult = applyInstallerModelDefaultsFromConfigFile(
       config,
       roleInputs,
@@ -635,6 +732,8 @@ export async function runInstaller(
     code = INSTALL_EXIT_CODES.SERVICE_UNHEALTHY;
     // A subprocess loads the installed config without contaminating the installer's own module cache.
     const launcher = join(target, "dist/packages/service/src/launcher.js");
+    await releaseController();
+    releaseController = undefined;
     await exec(
       node,
       [
@@ -645,7 +744,7 @@ export async function runInstaller(
       ],
       {
         cwd: target,
-        env: { ...process.env, DEVFLOW_CONFIG: config },
+        env: cleanProcessEnvironment({ DEVFLOW_CONFIG: config }),
         windowsHide: true,
         timeout: 150000,
       },
@@ -697,11 +796,23 @@ export async function runInstaller(
       ? INSTALL_EXIT_CODES.NEEDS_USER_ACTION
       : INSTALL_EXIT_CODES.SUCCESS;
   } catch (e) {
+    if (configurationChanged && !writableStateStarted) {
+      if (originalConfig !== undefined)
+        atomicWrite(join(root, "devflow.yaml"), originalConfig);
+      if (originalPointer !== undefined)
+        atomicWrite(join(root, "current.json"), originalPointer);
+    }
     const saved = state.load();
     saved.last_exit_code = code;
     state.save(saved);
     console.error("[DevFlow 安装未完成] " + String(e));
+    if (writableStateStarted)
+      console.error(
+        "新版本可能已写入状态；保留当前配置、版本指针及数据库备份，禁止直接降级或覆盖数据库。",
+      );
     return code;
+  } finally {
+    await releaseController?.();
   }
 }
 if (

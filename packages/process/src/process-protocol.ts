@@ -1,112 +1,111 @@
-/**
- * 进程协议类型定义
- *
- * 定义 ProcessIdentity 和 StopObservation 类型，用于统一进程管理。
- * 这些类型追加进已有 process_record JSON，不新增数据表或另一个持久化进程注册中心。
- */
-
-/**
- * 进程身份信息
- * 记录实际启动的系统级身份，用于确认进程归属和清理。
- */
+import { randomUUID } from "node:crypto";
+import { getNative, getNativeAsync } from "./native/index.js";
 export interface ProcessIdentity {
-  /** 固定为 'node-v1'，标识后端实现版本 */
-  backend: 'node-v1';
-  /** 原 spec.id，保留已有业务关联 */
+  backend: "node-v1";
   id: string;
-  /** 每次实际启动新生成，防止迟到消息覆盖下一次运行 */
   attempt_id: string;
-  /** 模型/命令实际根进程 PID，不填启动器 PID */
   pid?: number;
-  /** 启动器进程 PID */
   launcher_pid?: number;
-  /** 可验证的 OS 创建身份，不能拿 Date.now 冒充 */
   creation_time?: string;
-  /** Windows Job 名称，每个实际启动唯一 */
+  launcher_creation_time?: string;
   job_name?: string;
-  /** POSIX 进程组 ID */
   pgid?: number;
 }
-
-/**
- * 停止观测状态
- * 用于报告进程停止的确认程度。
- */
 export interface StopObservation {
-  /** 进程状态 */
-  state: 'running' | 'confirmed_exited' | 'unknown' | 'not_owned';
-  /** 活跃进程数（仅 Windows Job 有意义） */
+  state: "running" | "confirmed_exited" | "unknown" | "not_owned";
   active_processes?: number;
-  /** 状态描述或失败原因 */
   reason?: string;
 }
-
-/**
- * 生成唯一的 Job 名称
- * 使用固定前缀和启动随机标识，不能单靠可复用 PID 或业务 ID。
- */
-export function generateJobName(prefix: string = 'DevFlow'): string {
-  const timestamp = Date.now().toString(36);
-  const random = Math.random().toString(36).slice(2, 8);
-  return `${prefix}.${timestamp}.${random}`;
-}
-
-/**
- * 生成唯一的 attempt_id
- * 用于区分同 spec.id 的不同实际启动。
- */
 export function generateAttemptId(): string {
-  return `att_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+  return randomUUID();
 }
-
-/**
- * 验证 attempt_id 格式
- */
-export function isValidAttemptId(id: string): boolean {
-  return /^att_\d+_[a-z0-9]{8}$/.test(id);
+export function generateJobName(prefix = "DevFlow"): string {
+  return `Local\\${prefix}.${randomUUID()}`;
 }
-
-/**
- * 验证 Job 名称格式
- */
-export function isValidJobName(name: string): boolean {
-  return /^[A-Za-z0-9_-]+\.[a-z0-9]+\.[a-z0-9]{6}$/.test(name);
+export function isValidAttemptId(value: string): boolean {
+  return /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value);
 }
-
-/**
- * 从 process_record 中提取 ProcessIdentity
- * 如果记录中没有 identity 字段，返回 null。
- */
-export function extractIdentity(record: Record<string, unknown>): ProcessIdentity | null {
-  const identity = record.identity as ProcessIdentity | undefined;
-  if (!identity || identity.backend !== 'node-v1') return null;
-  return identity;
+export function isValidJobName(value: string): boolean {
+  return /^Local\\[A-Za-z0-9_-]+\.[a-f0-9-]{36}$/.test(value);
 }
-
-/**
- * 合并 ProcessIdentity 到 process_record
- * 保留已有的业务字段，追加或更新 identity。
- */
+export function extractIdentity(
+  record: Record<string, unknown>,
+): ProcessIdentity | null {
+  const value = record.identity as ProcessIdentity | undefined;
+  if (
+    !value ||
+    value.backend !== "node-v1" ||
+    !isValidAttemptId(value.attempt_id) ||
+    typeof value.id !== "string"
+  )
+    return null;
+  return value;
+}
 export function mergeIdentity(
   record: Record<string, unknown>,
   identity: ProcessIdentity,
 ): Record<string, unknown> {
-  return {
-    ...record,
-    identity,
-    updated_at: new Date().toISOString(),
-  };
+  return { ...record, identity, updated_at: new Date().toISOString() };
 }
-
-/**
- * 检查迟到的退出/取消/输出事件
- * 如果事件的 attempt_id 与当前记录不匹配，应忽略。
- */
 export function isCurrentAttempt(
   record: Record<string, unknown>,
-  eventAttemptId: string,
+  attempt: string,
 ): boolean {
+  return extractIdentity(record)?.attempt_id === attempt;
+}
+export async function observeProcessRecord(
+  record: Record<string, unknown>,
+): Promise<StopObservation> {
+  try {
+    await getNativeAsync();
+  } catch {
+    return { state: "unknown", reason: "NATIVE_UNAVAILABLE" };
+  }
+  return observeProcessRecordSync(record);
+}
+export function observeProcessRecordSync(
+  record: Record<string, unknown>,
+): StopObservation {
+  // Only records written after whole-tree observation may use this terminal marker.
+  if (
+    (record.status === "exited" || record.status === "failed") &&
+    record.confirmed === true
+  )
+    return { state: "confirmed_exited" };
   const identity = extractIdentity(record);
-  if (!identity) return false;
-  return identity.attempt_id === eventAttemptId;
+  if (!identity)
+    return { state: "unknown", reason: "PROCESS_IDENTITY_MISSING" };
+  try {
+    const native = getNative();
+    if ("createJob" in native) {
+      if (identity.job_name !== `Local\\DevFlow.${identity.attempt_id}`)
+        return { state: "unknown", reason: "JOB_IDENTITY_INVALID" };
+      const job = native.openJob(identity.job_name);
+      if (!job) return { state: "confirmed_exited", active_processes: 0 };
+      try {
+        const count = native.queryJobActiveCount(job);
+        if (count < 0) return { state: "unknown", reason: "JOB_QUERY_FAILED" };
+        return {
+          state: count === 0 ? "confirmed_exited" : "running",
+          active_processes: count,
+        };
+      } finally {
+        native.closeHandle(job);
+      }
+    }
+    if (
+      !identity.pgid ||
+      identity.pgid !== identity.launcher_pid ||
+      !identity.launcher_creation_time
+    )
+      return { state: "unknown", reason: "GROUP_IDENTITY_MISSING" };
+    if (!native.isProcessGroupAlive(identity.pgid))
+      return { state: "confirmed_exited" };
+    const current = native.getProcessCreationTime(identity.launcher_pid);
+    if (current && current !== identity.launcher_creation_time)
+      return { state: "not_owned" };
+    return { state: "running" };
+  } catch {
+    return { state: "unknown", reason: "PROCESS_QUERY_FAILED" };
+  }
 }
