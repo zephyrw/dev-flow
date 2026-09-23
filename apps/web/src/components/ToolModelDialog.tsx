@@ -65,6 +65,35 @@ function specProfiles(data: ExecutionSpecPayload): {
   };
 }
 
+type ModelSwitchBody = Parameters<typeof postModelSwitch>[1];
+
+function configurationTabs(data: ExecutionSpecPayload | null): ConfigTabItem[] {
+  if (data?.configured_tabs) {
+    return data.configured_tabs
+      .filter((tab) => ["planner", "executor", ...OVERRIDE_ROLES].includes(tab.id))
+      .map((tab) => ({
+        id: tab.id as ConfigTabId,
+        label: tab.label,
+        inheritable: tab.inheritable,
+        defaultInheritSource: tab.defaultSource,
+      }));
+  }
+  const tabs: ConfigTabItem[] = [
+    { id: "planner", label: "规划" },
+    { id: "executor", label: "执行" },
+  ];
+  const labels = { reviewer: "代码审查", review_fixer: "审查修复", functional_fixer: "功能修复" };
+  for (const role of OVERRIDE_ROLES) {
+    if (data?.spec.roleOverrides?.[role]?.mode === "explicit" || data?.active_run?.role === role) {
+      tabs.push({
+        id: role, label: labels[role], inheritable: true,
+        defaultInheritSource: role === "reviewer" ? "planner" : "executor",
+      });
+    }
+  }
+  return tabs;
+}
+
 export function ToolModelDialog({
   isOpen,
   onClose,
@@ -88,6 +117,7 @@ export function ToolModelDialog({
   const [workflowVersion, setWorkflowVersion] = useState(0);
   const [activeTab, setActiveTab] = useState<ConfigTabId>("planner");
   const [isDirty, setIsDirty] = useState(false);
+  const [pendingSwitch, setPendingSwitch] = useState<ModelSwitchBody | null>(null);
 
   const initialProfilesRef = useRef<{
     planner: ToolProfile;
@@ -101,71 +131,45 @@ export function ToolModelDialog({
   const readonly =
     isTerminalState(workflowState) || payload?.can_edit === false;
 
-  // 根据任务实际情况确定 Tab 列表
-  const tabs: ConfigTabItem[] = useMemo(() => {
-    const baseTabs: ConfigTabItem[] = [
-      { id: "planner", label: "规划" },
-      { id: "executor", label: "执行" },
-    ];
-
-    const currentOverrides = payload?.spec.roleOverrides;
-    const activeRole = payload?.active_run?.role;
-
-    if (activeRole === "reviewer" || currentOverrides?.reviewer?.mode === "explicit") {
-      baseTabs.push({
-        id: "reviewer",
-        label: "代码审查",
-        inheritable: true,
-        defaultInheritSource: "planner",
-      });
-    }
-    if (activeRole === "review_fixer" || currentOverrides?.review_fixer?.mode === "explicit") {
-      baseTabs.push({
-        id: "review_fixer",
-        label: "审查修复",
-        inheritable: true,
-        defaultInheritSource: "executor",
-      });
-    }
-    if (activeRole === "functional_fixer" || currentOverrides?.functional_fixer?.mode === "explicit") {
-      baseTabs.push({
-        id: "functional_fixer",
-        label: "功能修复",
-        inheritable: true,
-        defaultInheritSource: "executor",
-      });
-    }
-
-    return baseTabs;
-  }, [payload]);
+  const tabs = useMemo(() => configurationTabs(payload), [payload]);
 
   const applySpec = (data: ExecutionSpecPayload, keepDraft: boolean) => {
     setPayload(data);
     setWorkflowVersion(data.workflow_version);
-    if (keepDraft) return;
-
     const next = specProfiles(data);
-    setPlanner(next.planner);
-    setExecutor(next.executor);
-    setOverrides(next.overrides);
+    const initial = initialProfilesRef.current;
+    if (keepDraft && initial) {
+      if (!isProfileChanged(initial.planner, planner)) setPlanner(next.planner);
+      if (!isProfileChanged(initial.executor, executor)) setExecutor(next.executor);
+      setOverrides((draft) => {
+        const merged = { ...draft };
+        for (const role of OVERRIDE_ROLES) {
+          if (JSON.stringify(draft[role]) === JSON.stringify(initial.overrides[role])) {
+            merged[role] = next.overrides[role];
+          }
+        }
+        return merged;
+      });
+    } else {
+      setPlanner(next.planner);
+      setExecutor(next.executor);
+      setOverrides(next.overrides);
+    }
     setRevision(next.revision);
     initialProfilesRef.current = {
       planner: cloneProfile(next.planner),
       executor: cloneProfile(next.executor),
       overrides: JSON.parse(JSON.stringify(next.overrides)),
     };
-    setIsDirty(false);
+    if (!keepDraft) setIsDirty(false);
+    setPendingSwitch(null);
     requestId.current = newRequestId();
 
-    // 确定初始 Tab
-    const activeRole = data.active_run?.role;
-    if (focusRole && (focusRole === "planner" || focusRole === "executor" || OVERRIDE_ROLES.includes(focusRole as any))) {
-      setActiveTab(focusRole as ConfigTabId);
-    } else if (activeRole && (activeRole === "planner" || activeRole === "executor")) {
-      setActiveTab(activeRole as ConfigTabId);
-    } else {
-      setActiveTab("planner");
-    }
+    const requestedRole = focusRole ?? data.active_tab_role ?? data.active_run?.role ?? "planner";
+    const available = configurationTabs(data);
+    const desiredTab = available.find((tab) => tab.id === requestedRole)?.id
+      ?? (requestedRole === "reviewer" ? "planner" : requestedRole === "review_fixer" || requestedRole === "functional_fixer" ? "executor" : "planner");
+    setActiveTab(desiredTab);
   };
 
   const load = (keepStatus = false, keepDraft = false) => {
@@ -230,23 +234,28 @@ export function ToolModelDialog({
   };
 
   const handleSave = async (resumeAfterSwitch = false) => {
+    if (saving || loading || readonly) return;
     setSaving(true);
     setError(null);
     try {
-      await verifyDraft();
+      if (!pendingSwitch) await verifyDraft();
       if (resumeAfterSwitch) {
-        const receipt = await postModelSwitch(workflowId, {
+        const switchRequest: ModelSwitchBody = pendingSwitch ?? {
           ...writeBody(),
           expected_workflow_version: workflowVersion,
           expected_run_id: payload?.active_run?.run_id ?? null,
           resume_after_switch: true,
-        });
+        };
+        setPendingSwitch(switchRequest);
+        const receipt = await postModelSwitch(workflowId, switchRequest);
         if (receipt.resume_status === "failed") {
-          setError(`已保存新配置，但恢复执行未完成：${receipt.resume_error ?? "未知错误"}。原恢复点已保留，请核实后继续。`);
+          setError(`已保存，继续失败：${receipt.resume_error ?? "请重试"}`);
+          setRevision(receipt.entity_revision);
           setIsDirty(false);
           onSpecUpdated?.();
           return;
         }
+        setPendingSwitch(null);
       } else {
         await postExecutionSpec(workflowId, writeBody());
       }
@@ -257,11 +266,15 @@ export function ToolModelDialog({
       const api = err as ApiError;
       if (api.code === "SPEC_VERSION_CONFLICT") {
         setError("配置版本已变化。当前草稿已保留，请重新载入后核对。");
+        setPendingSwitch(null);
         requestId.current = newRequestId();
         return;
       }
       setError(formatApiError(err));
-      if (api.status === 409) requestId.current = newRequestId();
+      if (["VERSION_CONFLICT", "ACTIVE_RUN_CHANGED", "IDEMPOTENCY_CONFLICT"].includes(api.code ?? "")) {
+        setPendingSwitch(null);
+        requestId.current = newRequestId();
+      }
     } finally {
       setSaving(false);
     }
@@ -334,14 +347,7 @@ export function ToolModelDialog({
     );
   };
 
-  const initialEffective = initialProfilesRef.current
-    ? resolveEffective(
-        activeRole,
-        initialProfilesRef.current.planner,
-        initialProfilesRef.current.executor,
-        initialProfilesRef.current.overrides,
-      )
-    : null;
+  const initialEffective = payload?.active_run?.profile ?? null;
   const currentEffective = resolveEffective(activeRole, planner, executor, overrides);
   const isEditingActiveRole = hasActiveRun && isProfileChanged(initialEffective, currentEffective);
 
@@ -367,23 +373,23 @@ export function ToolModelDialog({
         {readonly ? "关闭" : "取消"}
       </button>
 
-      {!readonly && isEditingActiveRole ? (
+      {!readonly && (pendingSwitch || isEditingActiveRole) ? (
         <>
-          <button
+          {!pendingSwitch && <button
             type="button"
             className="btn btn-secondary"
             disabled={saving || loading}
             onClick={() => handleSave(false)}
           >
             {saving ? "正在保存…" : "保存供后续使用"}
-          </button>
+          </button>}
           <button
             type="button"
             className="btn btn-primary"
             disabled={saving || loading}
             onClick={() => handleSave(true)}
           >
-            {saving ? "正在切换…" : "切换并继续"}
+            {saving ? "正在切换…" : pendingSwitch ? "重试继续" : "切换并继续"}
           </button>
         </>
       ) : !readonly ? (
@@ -408,7 +414,7 @@ export function ToolModelDialog({
       isDirty={isDirty}
       footer={footer}
     >
-      {error && !error.includes("配置版本已变化") && (
+      {error && (
         <div className="ms-error-bar" role="alert">
           {error}
         </div>
@@ -433,7 +439,7 @@ export function ToolModelDialog({
             setExecutor(p);
           }}
           onOverrideChange={handleOverrideChange}
-          disabled={readonly || saving}
+          disabled={readonly || saving || Boolean(pendingSwitch)}
         />
       )}
     </AppDialog>

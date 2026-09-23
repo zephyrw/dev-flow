@@ -218,18 +218,20 @@ export function ModelProfileEditor({
       targetModelId = choice.variantByEffort[nextEffort]!;
     }
 
-    const reasoning = nextEffort
-      ? { mode: "explicit" as const, value: nextEffort }
-      : profile.reasoning?.mode === "not-applicable"
-        ? { mode: "not-applicable" as const }
-        : undefined;
+    const reasoning = choice.effortStatus === "unknown" && choice.nativeId === profile.modelId
+      ? profile.reasoning?.mode === "explicit" ? profile.reasoning : undefined
+      : nextEffort
+        ? { mode: "explicit" as const, value: nextEffort }
+        : choice.effortStatus === "unsupported"
+          ? { mode: "not-applicable" as const }
+          : undefined;
 
     setOpenList(false);
     setQuery("");
     update({
       modelSelection: "explicit",
       modelId: targetModelId,
-      selectionKind: "fixed",
+      selectionKind: choice.selectionKind,
       reasoning,
     });
   };
@@ -374,11 +376,11 @@ export function ModelProfileEditor({
             >
               {visibleChoices.map((choice, idx) => {
                 const isSelected =
-                  currentChoice?.choiceId === choice.choiceId;
+                  currentChoice === choice;
                 const isFocused = activeIndex === idx;
                 return (
                   <li
-                    key={choice.choiceId}
+                    key={choice.entryIds.join("|")}
                     role="option"
                     aria-selected={isSelected}
                     className={`ms-model-option ${

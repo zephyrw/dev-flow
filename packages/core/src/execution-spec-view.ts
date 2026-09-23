@@ -240,7 +240,7 @@ export function buildExecutionSpecResponse(
     { id: "executor", label: "执行", role: "executor", inheritable: false },
   ];
   if (workflow.quality_policy_version !== 2 && view.spec.roleOverrides) {
-    if (view.spec.roleOverrides.reviewer?.mode === "explicit") {
+    if (view.spec.roleOverrides.reviewer?.mode === "explicit" || active?.role === "reviewer") {
       configuredTabs.push({
         id: "reviewer",
         label: "代码审查",
@@ -249,7 +249,7 @@ export function buildExecutionSpecResponse(
         defaultSource: "planner",
       });
     }
-    if (view.spec.roleOverrides.review_fixer?.mode === "explicit") {
+    if (view.spec.roleOverrides.review_fixer?.mode === "explicit" || active?.role === "review_fixer") {
       configuredTabs.push({
         id: "review_fixer",
         label: "审查修复",
@@ -258,7 +258,7 @@ export function buildExecutionSpecResponse(
         defaultSource: "executor",
       });
     }
-    if (view.spec.roleOverrides.functional_fixer?.mode === "explicit") {
+    if (view.spec.roleOverrides.functional_fixer?.mode === "explicit" || active?.role === "functional_fixer") {
       configuredTabs.push({
         id: "functional_fixer",
         label: "功能修复",

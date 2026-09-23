@@ -117,11 +117,12 @@ export function AgyAccountsPanel({ onDismiss }: { onDismiss?: () => void }) {
     setError("");
     try {
       const next = !isAutomationOn;
-      await setAutomationEnabled(next, view?.settings?.revision);
+      const result = await setAutomationEnabled(next, view?.settings?.revision);
       await refresh();
-      setNotice(next ? "已开启自动切号" : "已关闭自动切号");
+      setNotice(result.enabled ? "已开启自动切号" : "已关闭自动切号");
       setTimeout(() => setNotice(""), 3000);
     } catch (e) {
+      await refresh();
       setError(e instanceof Error ? e.message : "更新自动切号状态失败");
     } finally {
       setTogglingAutomation(false);
@@ -134,7 +135,8 @@ export function AgyAccountsPanel({ onDismiss }: { onDismiss?: () => void }) {
       await agyApi<AccountOperationView>("/switch", {
         method: "POST",
         body: requestBody({
-          account_id: accountId,
+          selection: { mode: "explicit", account_id: accountId },
+          expected_epoch: service?.auth_epoch ?? 0,
         }),
       });
       await refresh();
@@ -143,13 +145,14 @@ export function AgyAccountsPanel({ onDismiss }: { onDismiss?: () => void }) {
     }
   };
 
-  const handleReauth = async (accountId: string) => {
+  const handleReauth = async (account: AgyAccountDto) => {
     setError("");
     try {
-      await agyApi<AccountOperationView>("/reauth", {
+      await agyApi<AccountOperationView>(`/${encodeURIComponent(account.id)}/reauth`, {
         method: "POST",
         body: requestBody({
-          account_id: accountId,
+          expected_account_revision: account.revision,
+          expected_identity: account.identity.email,
         }),
       });
       await refresh();
@@ -340,7 +343,7 @@ export function AgyAccountsPanel({ onDismiss }: { onDismiss?: () => void }) {
                     <button
                       type="button"
                       className="agy-icon-btn"
-                      onClick={() => handleReauth(account.id)}
+                      onClick={() => handleReauth(account)}
                       title="重新登录验证"
                     >
                       重新登录

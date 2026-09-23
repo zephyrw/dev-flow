@@ -56,6 +56,14 @@ export type DefaultsSnapshot = {
 };
 
 export type ExecutionSpecPayload = {
+  configured_tabs?: Array<{
+    id: string;
+    label: string;
+    role: string;
+    inheritable: boolean;
+    defaultSource?: "planner" | "executor";
+  }>;
+  active_tab_role?: string;
   workflow_id: string;
   workflow_version: number;
   spec_revision: number;

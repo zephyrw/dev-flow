@@ -258,4 +258,103 @@ describe("independent account server", () => {
     }
     expect(fixture.probeCalls()).toBe(0);
   });
+
+  it("场景5：取消操作缺少 expected_revision 返回 422 拒绝", async () => {
+    const payload = {
+      request_id: crypto.randomUUID(),
+      selection: { mode: "explicit" as const, account_id: "b" },
+      expected_epoch: 0,
+      expected_settings_revision: 1,
+    };
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/agy-accounts/switch",
+      headers,
+      payload,
+    });
+    const opId = res.json().operation_id;
+    const cancelWithoutRev = await app.inject({
+      method: "POST",
+      url: `/api/agy-accounts/operations/${opId}/cancel`,
+      headers,
+      payload: {
+        request_id: crypto.randomUUID(),
+      },
+    });
+    expect(cancelWithoutRev.statusCode).toBe(422);
+  });
+
+  it("场景7：首个账号在无账号域且 expected_realm_revision=0 时成功添加，有操作进行中时拒绝开启开关", async () => {
+    // 首次无账号域时，直接添加首个账号，expected_realm_revision=0 成功返回 202
+    const addFirst = await app.inject({
+      method: "POST",
+      url: "/api/agy-accounts/enroll",
+      headers,
+      payload: {
+        request_id: crypto.randomUUID(),
+        expected_realm_revision: 0,
+        alias: "第一个账号",
+        mode: "capture_current",
+      },
+    });
+    expect(addFirst.statusCode).toBe(202);
+    const opId = addFirst.json().operation_id;
+
+    // 进行中的账号操作时开启开关，被正确拒绝（409 operation_in_progress）
+    const autoWhileBusy = await app.inject({
+      method: "PUT",
+      url: "/api/agy-accounts/automation",
+      headers,
+      payload: {
+        request_id: crypto.randomUUID(),
+        enabled: true,
+      },
+    });
+    expect(autoWhileBusy.statusCode).toBe(409);
+
+    // 取消该操作收尾
+    const op = await app.inject({
+      method: "GET",
+      url: `/api/agy-accounts/operations/${opId}`,
+      headers,
+    });
+    await app.inject({
+      method: "POST",
+      url: `/api/agy-accounts/operations/${opId}/cancel`,
+      headers,
+      payload: {
+        request_id: crypto.randomUUID(),
+        expected_revision: op.json().revision,
+      },
+    });
+  });
+
+  it("场景6：无进行中操作时自动化开关开启与关闭正常执行", async () => {
+    // 自动化开关开启
+    const autoOn = await app.inject({
+      method: "PUT",
+      url: "/api/agy-accounts/automation",
+      headers,
+      payload: {
+        request_id: crypto.randomUUID(),
+        enabled: true,
+      },
+    });
+    expect(autoOn.statusCode).toBe(200);
+    expect(autoOn.json().enabled).toBe(true);
+
+    // 自动化开关关闭
+    const autoOff = await app.inject({
+      method: "PUT",
+      url: "/api/agy-accounts/automation",
+      headers,
+      payload: {
+        request_id: crypto.randomUUID(),
+        enabled: false,
+      },
+    });
+    expect(autoOff.statusCode).toBe(200);
+    expect(autoOff.json().enabled).toBe(false);
+  });
 });
+

@@ -10,6 +10,8 @@ export type ModelChoice = {
   nativeId: string;
   providerId?: string;
   source: string;
+  effortStatus: ModelEntry["effort"]["status"];
+  selectionKind: ModelEntry["selectionKind"];
 };
 
 const KNOWN_MODEL_LABELS: Record<string, string> = {
@@ -124,31 +126,27 @@ export function buildModelChoices(entries: ModelEntry[]): ModelChoice[] {
   const choicesMap = new Map<string, ModelChoice>();
 
   for (const entry of entries) {
-    if (entry.hidden) continue;
+    if (entry.hidden || entry.availability === "unavailable") continue;
 
-    // 只有在具备可信变体结构元数据时才进行归组：
-    // 1. entry 显式声明了 familyId
-    // 2. entry 显式声明了非空的 effort.variants
-    // 3. entry 的 effort.transport === "variant-id" 且声明了 effort.fixedValue
-    const hasTrustedVariants = Boolean(
-      entry.familyId ||
-      (entry.effort.variants && Object.keys(entry.effort.variants).length > 0) ||
-      (entry.effort.transport === "variant-id" && entry.effort.fixedValue)
-    );
-
+    // A family label alone does not prove that distinct IDs are effort variants.
+    const variants = entry.effort.variants ?? {};
+    const mappedEffort = Object.entries(variants).find(([, id]) => id === entry.nativeId)?.[0];
+    const fixedEffort = entry.effort.fixedValue ?? mappedEffort;
+    const hasTrustedVariants = entry.effort.status === "supported" && Boolean(fixedEffort);
     const familyKey = hasTrustedVariants
-      ? (entry.familyId || (entry.adapterId === "agy" ? detectAgyFamily(entry.nativeId) : undefined))
+      ? entry.familyId || (entry.adapterId === "agy" ? detectAgyFamily(entry.nativeId) : undefined)
       : undefined;
+    const scope = `${entry.adapterId}/${entry.providerId ?? ""}/`;
 
     if (familyKey) {
-      const existing = choicesMap.get(familyKey);
+      const existing = choicesMap.get(scope + familyKey);
       const variants: Record<string, string> = {
         ...(existing?.variantByEffort ?? {}),
         ...(entry.effort.variants ?? {}),
       };
 
-      if (entry.effort.fixedValue) {
-        variants[entry.effort.fixedValue] = entry.nativeId;
+      if (fixedEffort) {
+        variants[fixedEffort] = entry.nativeId;
       }
 
       const effortValues = Array.from(
@@ -166,7 +164,7 @@ export function buildModelChoices(entries: ModelEntry[]): ModelChoice[] {
         variants["low"] ||
         entry.nativeId;
 
-      choicesMap.set(familyKey, {
+      choicesMap.set(scope + familyKey, {
         choiceId: familyKey,
         label,
         entryIds: [...(existing?.entryIds ?? []), entry.entryId],
@@ -179,12 +177,14 @@ export function buildModelChoices(entries: ModelEntry[]): ModelChoice[] {
         nativeId: defaultNative,
         providerId: entry.providerId,
         source: entry.source,
+        effortStatus: entry.effort.status,
+        selectionKind: entry.selectionKind,
       });
     } else {
       const choiceId = entry.nativeId;
       const label = formatModelName(entry.adapterId, entry.label || entry.nativeId);
       const effortValues = [...entry.effort.values];
-      choicesMap.set(choiceId, {
+      choicesMap.set(scope + choiceId, {
         choiceId,
         label,
         entryIds: [entry.entryId],
@@ -194,6 +194,8 @@ export function buildModelChoices(entries: ModelEntry[]): ModelChoice[] {
         nativeId: entry.nativeId,
         providerId: entry.providerId,
         source: entry.source,
+        effortStatus: entry.effort.status,
+        selectionKind: entry.selectionKind,
       });
     }
   }

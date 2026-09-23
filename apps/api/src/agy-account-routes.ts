@@ -87,8 +87,7 @@ export function registerAgyAccountRoutes(
     const realm = view.realm && "realm_id" in view.realm ? view.realm : null;
     const serviceState = realm?.service_state ?? "stopped";
     const isAutomationEnabled = Boolean(
-      serviceState === "running" ||
-        (realm?.desired_enabled && settings?.workflow_auto_switch),
+      realm?.desired_enabled && settings?.workflow_auto_switch,
     );
     return {
       realm_id: realmId,
@@ -127,63 +126,15 @@ export function registerAgyAccountRoutes(
       .strict()
       .parse(req.body);
 
-    const view = service.getPresentation(realmId);
-    const realm = view.realm && "realm_id" in view.realm ? view.realm : null;
-    const currentlyRunning = realm?.service_state === "running";
-    const currentSettings = service.initializeSettings(realmId);
-    const expectedSettingsRev = body.expected_revision ?? currentSettings.revision;
-
-    if (body.enabled) {
-      const updatedSettings = service.updateSettings(
-        realmId,
-        { workflow_auto_switch: true },
-        expectedSettingsRev,
-        body.request_id,
-      );
-      if (!currentlyRunning) {
-        try {
-          await service.start({
-            realmId,
-            requestId: body.request_id,
-            expectedRevision: updatedSettings.revision,
-          });
-        } catch (startErr) {
-          try {
-            service.updateSettings(
-              realmId,
-              { workflow_auto_switch: false },
-              updatedSettings.revision,
-              body.request_id + "-rollback",
-            );
-          } catch {}
-          throw startErr;
-        }
-      }
-    } else {
-      service.updateSettings(
-        realmId,
-        { workflow_auto_switch: false },
-        expectedSettingsRev,
-        body.request_id,
-      );
-      if (currentlyRunning) {
-        await service.stop({
-          realmId,
-          requestId: body.request_id,
-          expectedControlGeneration: realm?.control_generation,
-        });
-      }
-    }
-
-    const updated = service.getPresentation(realmId);
-    const updatedRealm =
-      updated.realm && "realm_id" in updated.realm ? updated.realm : null;
-    return reply.code(200).send({
+    const result = await service.setAutomation({
+      realmId,
+      requestId: body.request_id,
+      expectedRevision: body.expected_revision,
       enabled: body.enabled,
-      service_state: updatedRealm?.service_state ?? "stopped",
-      revision: updatedRealm?.revision ?? 0,
     });
+    return reply.code(200).send(result);
   });
+
   app.post("/api/agy-accounts/service/start", async (req, reply) => {
     human(req);
     const body = z
@@ -311,7 +262,7 @@ export function registerAgyAccountRoutes(
     human(req);
     const { id } = z.object({ id: ref }).parse(req.params);
     const body = z
-      .object({ request_id: requestId, expected_revision: revision.optional() })
+      .object({ request_id: requestId, expected_revision: revision })
       .strict()
       .parse(req.body);
     return reply

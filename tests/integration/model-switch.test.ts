@@ -817,3 +817,80 @@ it("重放未完成切换不能覆盖另一个已结束 Run", async () => {
     .rejects.toMatchObject({ code: "ACTIVE_RUN_CHANGED" });
   expect(s.store.list<any>("execution_spec", stopped.id)).toHaveLength(1);
 });
+
+it("场景1&2：切换并继续携带 resume_after_switch，成功恢复并派发", async () => {
+  const s = await prepared();
+  closeStore = () => s.store.close();
+  putSpec(s.store, s.workflow.id, 1);
+  seedVerifiedAccess(s.store, planner());
+  seedVerifiedAccess(s.store, executor("switched"));
+  const switches = new ModelSwitchService(
+    s.store,
+    new ExecutionSpecService(s.store, s.config),
+  );
+  s.engine.runtime = idleRuntime();
+  s.engine.waitForIdle = async () => {};
+  let dispatched = false;
+  s.engine.dispatch = async () => {
+    dispatched = true;
+  };
+  const receipt = await switches.applyAfterPause(s.engine, s.workflow.id, {
+    request_id: randomUUID(),
+    expected_spec_revision: 1,
+    planner_profile: planner(),
+    executor_profile: executor("switched"),
+    role_overrides: inheritRoleOverrides(),
+    expected_workflow_version: s.engine.get(s.workflow.id).version,
+    expected_run_id: s.engine.get(s.workflow.id).run_id,
+    resume_after_switch: true,
+  });
+  expect(receipt.status).toBe("committed");
+  expect(receipt.effective_from).toBe("next-run");
+  expect(receipt.resume_status).toBe("completed");
+  expect(dispatched).toBe(true);
+  const current = s.engine.get(s.workflow.id);
+  expect(current.state).toBe("QUEUED");
+});
+
+it("场景2：切换并继续派发失败返回可重试回执，重试不重复恢复", async () => {
+  const s = await prepared();
+  closeStore = () => s.store.close();
+  putSpec(s.store, s.workflow.id, 1);
+  seedVerifiedAccess(s.store, planner());
+  seedVerifiedAccess(s.store, executor("switched"));
+  const switches = new ModelSwitchService(
+    s.store,
+    new ExecutionSpecService(s.store, s.config),
+  );
+  s.engine.runtime = idleRuntime();
+  s.engine.waitForIdle = async () => {};
+  let dispatchAttempts = 0;
+  s.engine.dispatch = async () => {
+    dispatchAttempts += 1;
+    if (dispatchAttempts === 1) {
+      throw new Error("网络瞬断");
+    }
+  };
+  const requestId = randomUUID();
+  const req = {
+    request_id: requestId,
+    expected_spec_revision: 1,
+    planner_profile: planner(),
+    executor_profile: executor("switched"),
+    role_overrides: inheritRoleOverrides(),
+    expected_workflow_version: s.engine.get(s.workflow.id).version,
+    expected_run_id: s.engine.get(s.workflow.id).run_id,
+    resume_after_switch: true,
+  };
+  const failReceipt = await switches.applyAfterPause(s.engine, s.workflow.id, req);
+  expect(failReceipt.status).toBe("retryable");
+  expect(failReceipt.resume_status).toBe("failed");
+  expect(failReceipt.resume_error).toBe("网络瞬断");
+
+  // 重试同一请求：不应重复停止，直接成功完成补派发
+  const retryReceipt = await switches.applyAfterPause(s.engine, s.workflow.id, req);
+  expect(retryReceipt.status).toBe("committed");
+  expect(retryReceipt.resume_status).toBe("completed");
+  expect(dispatchAttempts).toBe(2);
+});
+

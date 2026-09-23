@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react";
+import type { QuotaBucket } from "../../../../packages/contracts/src/run-observation.js";
 import { visibleRunObservation } from "../../../../packages/presentation/src/run-observation.js";
 import { formatRuntimeDisplay } from "../../../../packages/presentation/src/model-display.js";
 import { QuotaPopover, QuotaWindowData } from "./QuotaPopover.js";
@@ -31,20 +32,20 @@ export function CurrentRuntime({
 
   const quota = runtime.quota;
 
-  // 确定当前运行对应的模型/账号额度来源，避免多桶覆盖或顺序影响
-  let matchedBucket: any = null;
-  if (quota?.buckets && quota.buckets.length > 0) {
-    matchedBucket =
-      quota.buckets.find((b: any) => (model && (b.model === model || b.id === model))) ??
-      quota.buckets.find((b: any) => b.is_shared === true || b.id === runtime.adapter || (runtime.adapter === "codex" && b.id === "codex")) ??
-      null;
-  }
-
-  const isBucketShared = Boolean(
-    matchedBucket?.is_shared === true ||
-    matchedBucket?.id === "codex" ||
-    (matchedBucket && model && matchedBucket.model !== model && matchedBucket.id !== model)
-  );
+  const modelBuckets = quota?.buckets.filter((bucket) =>
+    model && (bucket.model ? bucket.model === model : bucket.id === model),
+  ) ?? [];
+  // "codex" without a model is the account-wide bucket from the Codex API.
+  // An adapter name or a mismatching model is not evidence of a shared limit.
+  const sharedBuckets = runtime.adapter === "codex"
+    ? quota?.buckets.filter((bucket) => bucket.id === "codex" && !bucket.model) ?? []
+    : [];
+  const matchedBucket: QuotaBucket | undefined = modelBuckets.length === 1
+    ? modelBuckets[0]
+    : modelBuckets.length === 0 && sharedBuckets.length === 1
+      ? sharedBuckets[0]
+      : undefined;
+  const isBucketShared = Boolean(matchedBucket && sharedBuckets.includes(matchedBucket));
 
   const stale =
     !quota ||
@@ -65,10 +66,10 @@ export function CurrentRuntime({
 
   if (matchedBucket?.windows) {
     for (const window of matchedBucket.windows) {
-      const winMins = window.window_minutes ?? window.duration_minutes;
+      const winMins = window.window_minutes;
       const remainingPercent =
         typeof window.used_percent === "number" &&
-        !Number.isNaN(window.used_percent)
+        Number.isFinite(window.used_percent)
           ? Math.max(0, Math.min(100, 100 - window.used_percent))
           : null;
       const data: QuotaWindowData = {
@@ -113,7 +114,7 @@ export function CurrentRuntime({
         weeklyData={weeklyData}
         fiveHourData={fiveHourData}
         isStale={Boolean(stale)}
-        isShared={runtime.adapter === "codex"}
+        isShared={isBucketShared}
       />
     </section>
   );

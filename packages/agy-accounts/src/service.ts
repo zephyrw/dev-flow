@@ -151,6 +151,7 @@ export class AgyAccountService {
   private consumerIds = new Map<AccountConsumerPort, string>();
   private activeAbort?: AbortController;
   private capabilitySnapshot?: any;
+  private automationRealms = new Set<string>();
   private workflowWaitValidator?: (ref: WorkflowWaitReference) => boolean;
   private workflowWaitDiscarded?: (ref: WorkflowWaitReference) => void;
 
@@ -303,6 +304,8 @@ export class AgyAccountService {
       requestId,
       { allowed, expectedRevision },
       () => {
+        if (this.automationRealms.has(realmId))
+          throw new AccountServiceError("automation_change_in_progress");
         const current = this.initializeSettings(realmId);
         if (current.revision !== expectedRevision)
           throw new AccountServiceError("settings_revision_conflict");
@@ -455,6 +458,80 @@ export class AgyAccountService {
     this.capabilitySnapshot = snapshot;
   }
 
+  async setAutomation(input: ServiceControlRequest & { enabled: boolean }): Promise<{
+    enabled: boolean;
+    service_state: string;
+    revision: number;
+  }> {
+    const key = `automation:${input.realmId}:${input.requestId}`;
+    const digest = createHash("sha256").update(JSON.stringify(input)).digest("hex");
+    const replay = this.repository.getRecord<{
+      digest: string;
+      result: { enabled: boolean; service_state: string; revision: number };
+    }>("agy_request", key);
+    if (replay) {
+      if (replay.digest !== digest) throw new AccountServiceError("request_id_conflict");
+      return replay.result;
+    }
+    // Stop can cancel a credential job before waiting for its queue slot.
+    // Replayed or stale requests must not cancel a newer operation.
+    const settings = this.initializeSettings(input.realmId);
+    if (!input.enabled &&
+        (input.expectedRevision === undefined || input.expectedRevision === settings.revision)) {
+      this.activeAbort?.abort();
+    }
+    return this.coordinator.enqueue(async () => {
+      if (this.closing) throw new AccountServiceError("account_service_closing");
+      const previous = this.repository.getRecord<{
+        digest: string;
+        result: { enabled: boolean; service_state: string; revision: number };
+      }>("agy_request", key);
+      if (previous) {
+        if (previous.digest !== digest) throw new AccountServiceError("request_id_conflict");
+        return previous.result;
+      }
+      const before = this.initializeSettings(input.realmId);
+      if (input.expectedRevision !== undefined && input.expectedRevision !== before.revision)
+        throw new AccountServiceError("settings_revision_conflict");
+      const realm = this.repository.getRealm(input.realmId);
+      if (input.enabled && (realm?.service_state === "stopping" || realm?.pending_operation_id))
+        throw new AccountServiceError("operation_in_progress");
+
+      this.automationRealms.add(input.realmId);
+      try {
+        if (input.enabled) {
+          await this.startOwned({ ...input, expectedRevision: before.revision });
+        } else {
+          await this.stopOwned({ ...input, expectedControlGeneration: realm?.control_generation });
+        }
+        // Do not change the setting before start succeeds. This avoids a
+        // rollback revision that permanently invalidates the original request.
+        return this.repository.transaction(() => {
+          const current = this.initializeSettings(input.realmId);
+          if (current.revision !== before.revision)
+            throw new AccountServiceError("settings_revision_conflict");
+          const updated = AgyAccountSettingsSchema.parse({
+            ...current,
+            workflow_auto_switch: input.enabled,
+            revision: current.revision + 1,
+            updated_at: this.clock.toISOString(),
+          });
+          this.repository.saveSettings(updated);
+          const actual = this.repository.getRealm(input.realmId);
+          const result = {
+            enabled: Boolean(actual?.desired_enabled && updated.workflow_auto_switch),
+            service_state: actual?.service_state ?? "stopped",
+            revision: updated.revision,
+          };
+          this.repository.putRecord("agy_request", key, input.realmId, { digest, result });
+          return result;
+        });
+      } finally {
+        this.automationRealms.delete(input.realmId);
+      }
+    });
+  }
+
   // 模块启动
   async start(input: ServiceControlRequest): Promise<OperationReceipt> {
     return this.coordinator.enqueue(async () => {
@@ -519,17 +596,18 @@ export class AgyAccountService {
     await this.processHost.listManagedProcesses(input.realmId);
     await this.processHost.findExternalAgyProcesses();
 
-    // 1. 取得认证域锁
-    const lockRes = await this.authHost.acquireDomainLock(input.realmId);
-    if (lockRes.acquired) {
+    // A retained one-shot lease is already ours and must not be reacquired.
+    if (!this.authHost.isDomainLockHeld(input.realmId)) {
+      const lockRes = await this.authHost.acquireDomainLock(input.realmId);
+      if (!lockRes.acquired) {
+        realm.service_state = "blocked";
+        realm.last_error = "domain_owned_elsewhere";
+        this.repository.saveRealm(realm);
+        throw new AccountServiceError("domain_owned_elsewhere");
+      }
       this.domainLockRelease = lockRes.release;
-      this.ownedRealms.add(input.realmId);
-    } else {
-      realm.service_state = "blocked";
-      realm.last_error = "domain_owned_elsewhere";
-      this.repository.saveRealm(realm);
-      throw new AccountServiceError("domain_owned_elsewhere");
     }
+    this.ownedRealms.add(input.realmId);
 
     // 2. 回读本地活动项
     const inspection = await this.authHost.inspectActive(input.realmId);
@@ -582,6 +660,8 @@ export class AgyAccountService {
 
   // 模块停止
   async stop(input: ServiceControlRequest): Promise<OperationReceipt> {
+    if (this.automationRealms.has(input.realmId))
+      return this.coordinator.enqueue(() => this.stop(input));
     const previous = this.controlReceipt(input, "stop");
     if (previous) return previous;
     const receipt = await this.stopOwned(input);
@@ -1161,6 +1241,8 @@ export class AgyAccountService {
     trusted?: WorkflowAccountOperationRequest,
   ): OperationReceipt {
     if (this.closing) throw new AccountServiceError("account_service_closing");
+    if (this.automationRealms.has(input.realm_id))
+      throw new AccountServiceError("automation_change_in_progress");
     return this.deduplicate(
       `operation:${input.realm_id}`,
       input.request_id,
@@ -1173,6 +1255,7 @@ export class AgyAccountService {
           input.kind === "reauth" ||
           (input.kind === "switch" && input.selection?.mode === "explicit");
         let realm = this.repository.getRealm(input.realm_id);
+        const expectedRealmRevision = realm?.revision ?? 0;
         if (!realm) {
           if (isManualOneShot) {
             realm = {
@@ -1254,7 +1337,7 @@ export class AgyAccountService {
           throw new AccountServiceError("epoch_conflict");
         if (
           input.expected_revision !== undefined &&
-          input.expected_revision !== realm.revision
+          input.expected_revision !== expectedRealmRevision
         )
           throw new AccountServiceError("realm_revision_conflict");
         const settings = this.initializeSettings(input.realm_id);
@@ -1388,11 +1471,22 @@ export class AgyAccountService {
             .listOperations(realm.realm_id)
             .some((op) => op.phase !== "completed" && op.phase !== "failed" && op.phase !== "cancelled");
           if (hasResidual) {
-            const lock = await this.authHost.acquireDomainLock(realm.realm_id);
-            try {
-              await this.reconciler.reconcileStartup(realm.realm_id);
-            } finally {
-              await lock.release();
+            if (!this.authHost.isDomainLockHeld(realm.realm_id)) {
+              const lock = await this.authHost.acquireDomainLock(realm.realm_id);
+              if (!lock.acquired) throw new AccountServiceError("domain_owned_elsewhere");
+              this.domainLockRelease = lock.release;
+            }
+            this.ownedRealms.add(realm.realm_id);
+            await this.reconciler.reconcileStartup(realm.realm_id);
+            const cleaned = this.repository.getRealm(realm.realm_id)!;
+            if (!cleaned.pending_operation_id && cleaned.phase !== "blocked") {
+              await this.domainLockRelease?.();
+              this.domainLockRelease = undefined;
+              this.ownedRealms.delete(realm.realm_id);
+              cleaned.service_state = "stopped";
+              cleaned.last_error = undefined;
+              cleaned.revision++;
+              this.repository.saveRealm(cleaned);
             }
           }
           const current = this.repository.getRealm(realm.realm_id)!;
@@ -1468,6 +1562,20 @@ export class AgyAccountService {
           const operation = this.repository.getOperation(
             realm.pending_operation_id,
           );
+          if (operation?.phase === "blocked" && operation.cancel_requested && !realm.desired_enabled) {
+            await this.coordinator.enqueue(async () => {
+              await this.reconciler.reconcileStartup(realm.realm_id);
+              const cleaned = this.repository.getRealm(realm.realm_id)!;
+              if (!cleaned.pending_operation_id && cleaned.phase !== "blocked") {
+                cleaned.service_state = "stopping";
+                cleaned.last_error = undefined;
+                cleaned.revision++;
+                this.repository.saveRealm(cleaned);
+              }
+            });
+            // The existing stopping branch releases the lease on the next tick.
+            continue;
+          }
           if (operation?.phase === "waiting" && !operation.cancel_requested) {
             const reason = this.waitInvalidReason(realm.realm_id, realm.control_generation, {
               original_operation_id: operation.original_operation_id ?? operation.operation_id,
@@ -1658,14 +1766,18 @@ export class AgyAccountService {
         const lockRes = await this.authHost.acquireDomainLock(op.realm_id);
         if (lockRes.acquired && lockRes.release) {
           temporaryLockRelease = lockRes.release;
+          this.domainLockRelease = lockRes.release;
+          this.ownedRealms.add(op.realm_id);
         } else {
           op.error = "domain_lock_acquire_failed";
           this.finishOperation(op, "failed");
+          this.activeAbort = undefined;
           return;
         }
       } catch (err) {
         op.error = err instanceof Error ? err.message : "domain_lock_acquire_failed";
         this.finishOperation(op, "failed");
+        this.activeAbort = undefined;
         return;
       }
     }
@@ -1842,7 +1954,22 @@ export class AgyAccountService {
           latestRealm?.phase === "blocked" ||
           latestRealm?.service_state === "blocked";
         if (!isBlocked) {
-          await temporaryLockRelease().catch(() => {});
+          try {
+            await temporaryLockRelease();
+            if (this.domainLockRelease === temporaryLockRelease) {
+              this.domainLockRelease = undefined;
+              this.ownedRealms.delete(op.realm_id);
+            }
+          } catch {
+            // Keep ownership so stop/close can retry releasing the same lease.
+            if (latestRealm) {
+              latestRealm.service_state = "blocked";
+              latestRealm.phase = "blocked";
+              latestRealm.last_error = "domain_lock_release_failed";
+              latestRealm.revision++;
+              this.repository.saveRealm(latestRealm);
+            }
+          }
         }
       }
     }
@@ -2421,6 +2548,19 @@ export class AgyAccountService {
         throw new AccountServiceError("managed_processes_not_stopped");
     }
     await this.coordinator.enqueue(async () => {});
+    for (const realmId of this.ownedRealms) {
+      const realm = this.repository.getRealm(realmId);
+      if (realm && !realm.desired_enabled && realm.pending_operation_id) {
+        await this.reconciler.reconcileStartup(realmId);
+        const cleaned = this.repository.getRealm(realmId)!;
+        if (cleaned.pending_operation_id || cleaned.phase === "blocked")
+          throw new AccountServiceError("account_cleanup_incomplete");
+        cleaned.service_state = "stopped";
+        cleaned.last_error = undefined;
+        cleaned.revision++;
+        this.repository.saveRealm(cleaned);
+      }
+    }
     if (this.domainLockRelease) {
       await this.domainLockRelease();
       this.domainLockRelease = undefined;
