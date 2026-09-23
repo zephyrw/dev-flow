@@ -29,6 +29,15 @@ type ProcessEntry = {
   create_time?: number;
 };
 
+/**
+ * R03 修复：四态确认模型
+ * - running:        进程仍在运行
+ * - confirmed_exited: 已确认退出（进程不存在）
+ * - unknown:        无法确定状态（异常），必须阻塞切换
+ * - not_owned:      进程不属于当前管理器
+ */
+type StopConfirmationStatus = "running" | "confirmed_exited" | "unknown" | "not_owned";
+
 /** Local process facts only. Failure to establish ownership must block switching. */
 export class AgyAccountProcessHost implements ProcessHostPort {
   constructor(
@@ -41,49 +50,94 @@ export class AgyAccountProcessHost implements ProcessHostPort {
   private records() {
     return this.options.store.list<RecordEntry>("process_record");
   }
+
   async assertCapabilities() {
     // With Node native module, capabilities are always available
     // (koffi on Windows, built-in on POSIX)
     return;
   }
-  async confirmJobsStopped(ids: string[]) {
+
+  /**
+   * R03 修复：确认单个进程记录的停止状态。
+   * 返回四态：running | confirmed_exited | unknown | not_owned
+   * 不再吞掉异常导致活进程返回 stopped=true
+   */
+  private async confirmRecordStopped(record: RecordEntry): Promise<StopConfirmationStatus> {
+    if (!record.pid) {
+      // 无 PID 记录视为已确认退出
+      return "confirmed_exited";
+    }
+
+    // 检查是否由当前管理器拥有
+    const managedProcess = this.options.processManager?.get(record.id);
+    if (managedProcess && managedProcess.pid !== record.pid) {
+      // PID 不匹配，说明管理器已重启，旧进程不属于当前管理器
+      return "not_owned";
+    }
+
+    try {
+      if (process.platform === "win32") {
+        const { getNativeAsync } = await import("./native/index.js");
+        const native = await getNativeAsync();
+        const h = native.openProcess(record.pid);
+        if (h) {
+          native.closeHandle(h);
+          return "running";
+        }
+        // openProcess 返回 null，进程不存在
+        return "confirmed_exited";
+      } else {
+        // POSIX：使用 signal 0 探测
+        process.kill(record.pid, 0);
+        return "running";
+      }
+    } catch (err: unknown) {
+      // R03 修复：不再吞掉异常，返回 unknown 阻塞切换
+      if (isErrnoException(err) && err.code === "ESRCH") {
+        // ESRCH 明确表示进程不存在
+        return "confirmed_exited";
+      }
+      // 其他异常（EPERM 等）视为未知状态
+      return "unknown";
+    }
+  }
+
+  async confirmJobsStopped(ids: string[]): Promise<boolean> {
     for (const id of ids) {
       if (!/^[A-Za-z0-9_-]{1,150}$/.test(id)) return false;
-      // Check if the process is still alive using native module
       const record = this.records().find(r => r.id === id);
-      if (!record || !record.pid) continue;
-      try {
-        if (process.platform === "win32") {
-          const { getNative } = require("./native/index.js") as typeof import("./native/index.js");
-          const native = getNative();
-          const h = native.openProcess?.(record.pid);
-          if (h) {
-            native.closeHandle?.(h);
-            return false; // Process still alive
-          }
-        } else {
-          process.kill(record.pid, 0);
-          return false; // Process still alive
-        }
-      } catch {
-        // Process gone
+      if (!record) continue;
+      const status = await this.confirmRecordStopped(record);
+      if (status === "running" || status === "unknown" || status === "not_owned") {
+        return false;
       }
     }
     return true;
   }
+
   async listManagedProcesses(realmId: string) {
     await this.assertCapabilities();
     const out = [];
     for (const r of this.records().filter(
       (r) => r.agy_account?.realm_id === realmId,
     )) {
-      if (await this.confirmJobsStopped([r.id])) continue;
+      const status = await this.confirmRecordStopped(r);
+      if (status === "confirmed_exited") continue;
+      if (status === "unknown") {
+        // R03 修复：unknown 状态必须抛出错误，阻塞切换
+        throw new Error("AGY_MANAGED_PROCESS_IDENTITY_UNKNOWN");
+      }
+      if (status === "not_owned") {
+        // 不属于当前管理器的进程不加入列表
+        continue;
+      }
       if (!Number.isSafeInteger(r.pid) || r.pid! <= 0)
         throw new Error("AGY_MANAGED_PROCESS_IDENTITY_UNKNOWN");
       out.push({ pid: r.pid!, ...r.agy_account });
     }
     return out;
   }
+
   private async inventory(): Promise<ProcessEntry[]> {
     if (process.platform !== "win32")
       throw new Error("AGY_PROCESS_INVENTORY_UNSUPPORTED");
@@ -167,4 +221,13 @@ export class AgyAccountProcessHost implements ProcessHostPort {
     if (selected.some((r) => !r)) return false;
     return this.confirmJobsStopped(selected.map((r) => r!.id));
   }
+}
+
+function isErrnoException(error: unknown): error is NodeJS.ErrnoException {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    typeof (error as NodeJS.ErrnoException).code === "string"
+  );
 }

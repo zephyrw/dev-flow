@@ -1,6 +1,6 @@
 import {
   spawn,
-  type ChildProcessWithoutNullStreams,
+  type ChildProcess,
 } from "node:child_process";
 import { resolve, join, dirname } from "node:path";
 import { existsSync } from "node:fs";
@@ -55,7 +55,7 @@ function resolveCredentialWorker(): string {
  */
 export class DevFlowAuthHost implements AuthHostPort {
   private readonly workerScript: string;
-  private child?: ChildProcessWithoutNullStreams;
+  private child?: ChildProcess;
   private pending = new Map<string, Pending>();
   private counter = 0;
   private realm?: string;
@@ -78,7 +78,7 @@ export class DevFlowAuthHost implements AuthHostPort {
       !this.child.killed
     );
   }
-  private disconnected(error: Error, child: ChildProcessWithoutNullStreams) {
+  private disconnected(error: Error, child: ChildProcess) {
     // Pipes and exit callbacks can arrive after a replacement daemon is started.
     if (this.child !== child) return;
     const held = !!this.lockId;
@@ -111,15 +111,55 @@ export class DevFlowAuthHost implements AuthHostPort {
     });
     if (process.platform !== "win32") return unavailable("unsupported");
     if (!existsSync(this.workerScript)) return unavailable("missing_worker");
-    // Node credential worker is always available if the script exists
-    return {
-      supported: true,
-      platform: "win32",
-      dpapi_available: true,
-      cred_manager_available: true,
-      named_mutex_available: true,
-      version: "3.0.0-node",
-    };
+
+    // R06 修复：实际探测原生能力，而非仅检查文件存在
+    try {
+      // 尝试加载 koffi 和原生模块
+      const { createCredentialWindows } = await import("./credential-windows.js");
+      const win = createCredentialWindows();
+
+      // 测试 DPAPI 是否可用
+      let dpapiAvailable = false;
+      try {
+        const testData = Buffer.from("test");
+        const encrypted = win.protectData(testData);
+        const decrypted = win.unprotectData(encrypted);
+        dpapiAvailable = decrypted.equals(testData);
+      } catch {
+        dpapiAvailable = false;
+      }
+
+      // 测试 Credential Manager 是否可用
+      let credManagerAvailable = false;
+      try {
+        // 尝试读取一个不存在的凭据，看是否能正常调用
+        win.readCredential("__devflow_capability_test__");
+        credManagerAvailable = true;
+      } catch {
+        // 如果抛出异常（而非返回 null），说明 API 不可用
+        credManagerAvailable = false;
+      }
+
+      // 测试是否能获取用户 SID（需要 OpenProcessToken）
+      let namedMutexAvailable = false;
+      try {
+        const sid = win.getCurrentUserSid();
+        namedMutexAvailable = typeof sid === "string" && sid.length > 0;
+      } catch {
+        namedMutexAvailable = false;
+      }
+
+      return {
+        supported: dpapiAvailable && credManagerAvailable,
+        platform: "win32",
+        dpapi_available: dpapiAvailable,
+        cred_manager_available: credManagerAvailable,
+        named_mutex_available: namedMutexAvailable,
+        version: "3.0.0-node",
+      };
+    } catch {
+      return unavailable("native_load_failed");
+    }
   }
   private async ensureDaemon(): Promise<void> {
     if (this.child) return;
@@ -128,24 +168,38 @@ export class DevFlowAuthHost implements AuthHostPort {
       if (!(await this.capabilities()).supported)
         throw new Error("auth_host_capability_unavailable");
 
-      // Spawn Node credential worker as isolated subprocess
-      // Uses process.execPath (node) to run the worker script
+      // R06 修复：通过 runner-entry.js 启动 worker，确保 Job 绑定
+      const runnerEntry = require.resolve("./runner-entry.js");
       const isTypeScript = this.workerScript.endsWith(".ts");
-      const child = isTypeScript
-        ? spawn("node", ["--import", "tsx", this.workerScript], {
-            windowsHide: true,
-            stdio: ["pipe", "pipe", "pipe"],
-          })
-        : spawn(process.execPath, [this.workerScript], {
-            windowsHide: true,
-            stdio: ["pipe", "pipe", "pipe"],
+      const workerArgs = isTypeScript
+        ? ["--import", "tsx", this.workerScript]
+        : [this.workerScript];
+
+      const child = spawn(process.execPath, [runnerEntry, ...workerArgs], {
+        windowsHide: true,
+        stdio: ["pipe", "pipe", "pipe", "ipc"], // R06: 添加 IPC 通道
+      });
+
+      // R06 修复：通过 IPC 发送 start 消息
+      const sendStart = () => {
+        try {
+          child.send?.({
+            type: "start",
+            executable: process.execPath,
+            args: workerArgs,
+            cwd: process.cwd(),
+            env: {},
           });
+        } catch {}
+      };
+      child.once("spawn", sendStart);
+      if (child.pid) sendStart();
       this.child = child;
       const pipeError = () => this.disconnected(new Error("auth_host_disconnected"), child);
-      child.stdin.on("error", pipeError);
-      child.stdout.on("error", pipeError);
-      child.stderr.on("error", pipeError);
-      const lines = createInterface({ input: child.stdout });
+      child.stdin?.on("error", pipeError);
+      child.stdout?.on("error", pipeError);
+      child.stderr?.on("error", pipeError);
+      const lines = createInterface({ input: child.stdout! });
       lines.on("error", pipeError);
       lines.on("line", (line) => {
         if (this.child !== child) return;
@@ -181,7 +235,7 @@ export class DevFlowAuthHost implements AuthHostPort {
         }
       });
       // Stderr is deliberately not forwarded into logs/HTTP.
-      child.stderr.resume();
+      child.stderr?.resume();
       child.once("error", () => {
         if (this.child === child)
           this.disconnected(new Error("auth_host_disconnected"), child);
@@ -219,7 +273,7 @@ export class DevFlowAuthHost implements AuthHostPort {
         reject,
         timer,
       });
-      try { child.stdin.write(
+      try { child.stdin?.write(
         JSON.stringify({ id, action, args }) + "\n",
         (error) => {
           if (error) {
@@ -254,7 +308,7 @@ export class DevFlowAuthHost implements AuthHostPort {
         if (child)
           await new Promise<void>((resolvePromise) => {
             child.once("exit", () => resolvePromise());
-            child.stdin.end();
+            child.stdin?.end();
           });
       },
     };

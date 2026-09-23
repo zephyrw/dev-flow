@@ -4,6 +4,11 @@
  * Uses koffi to call Win32 APIs for credential storage and data protection.
  * All koffi.load() calls are lazy (inside createCredentialWindows) so the
  * module is only loaded when actually required on win32.
+ *
+ * R06 修复：
+ * - GetCurrentProcessToken 是宏（返回伪句柄 -4），改用 GetCurrentProcess + OpenProcessToken
+ * - CREDENTIALW 结构体正确处理指针字段
+ * - Mutex 函数从 kernel32.dll 正确加载
  */
 
 import koffi from 'koffi';
@@ -25,6 +30,8 @@ const ERROR_SUCCESS = 0;
 const ERROR_NOT_FOUND = 1168;
 const ERROR_NO_SUCH_LOGON_SESSION = 1312;
 const ERROR_INVALID_FLAGS = 1004;
+
+const TOKEN_QUERY = 0x0008;
 
 // ── Structures ─────────────────────────────────────────────────────────────
 
@@ -105,8 +112,16 @@ export function createCredentialWindows() {
 
   // ── advapi32.dll: User SID ──────────────────────────────────────────────
 
-  const GetCurrentProcessToken: () => HANDLE =
-    kernel32.func('__stdcall', 'GetCurrentProcessToken', 'void *', []);
+  // R06 修复：GetCurrentProcessToken 是宏（返回伪句柄 -4），
+  // 改用 GetCurrentProcess() + OpenProcessToken() 获取实际 token
+  const GetCurrentProcess: () => HANDLE =
+    kernel32.func('__stdcall', 'GetCurrentProcess', 'void *', []);
+
+  const OpenProcessToken: (
+    ProcessHandle: HANDLE, DesiredAccess: DWORD, TokenHandle: any
+  ) => BOOL =
+    advapi32.func('__stdcall', 'OpenProcessToken', 'int',
+      ['void *', 'uint32', 'void *']);
 
   const GetTokenInformation: (
     TokenHandle: HANDLE, TokenInformationClass: DWORD,
@@ -160,6 +175,25 @@ export function createCredentialWindows() {
   /** Best-effort zero fill a Buffer */
   function secureZero(buf: Buffer): void {
     buf.fill(0);
+  }
+
+  /**
+   * R06 修复：正确读取 CREDENTIALW 结构体。
+   * 关键：先解码指针为 CREDENTIALW 结构体，再从结构体中读取字符串指针。
+   */
+  function decodeCredentialString(ptr: unknown): string {
+    if (ptr === null || ptr === 0) return '';
+    const chars: number[] = [];
+    let byteOffset = 0;
+    while (true) {
+      const decoded = (koffi.decode as (ptr: unknown, type: string, count: number, offset?: number) => number[])(ptr, 'uint16', 1, byteOffset);
+      const ch = decoded[0] ?? 0;
+      if (ch === 0) break;
+      chars.push(ch);
+      byteOffset += 2;
+      if (chars.length > 1024) break;
+    }
+    return String.fromCharCode(...chars);
   }
 
   // ── Implementation ──────────────────────────────────────────────────────
@@ -222,7 +256,7 @@ export function createCredentialWindows() {
         throw new Error(`CredReadW failed with Win32 error ${err}`);
       }
 
-      // Dereference the pointer to CREDENTIALW
+      // R06 修复：正确解码 CREDENTIALW 结构体指针
       const credPtr = koffi.decode(ppCredential, 'void *', 1)[0];
       koffi.free(ppCredential);
 
@@ -230,27 +264,11 @@ export function createCredentialWindows() {
         return null;
       }
 
+      // 先解码为 CREDENTIALW 结构体
       const cred = koffi.decode(credPtr, CREDENTIALW);
 
-      // Decode UserName (null-terminated UTF-16LE string)
-      let username = '';
-      if (cred.UserName !== null && cred.UserName !== 0) {
-        // Read the UTF-16LE string from native memory
-        // koffi.decode with str16 reads a null-terminated UTF-16LE string
-        const strPtr = cred.UserName;
-        const chars: number[] = [];
-        let byteOffset = 0;
-        while (true) {
-          const decoded = (koffi.decode as (ptr: unknown, type: string, count: number, offset?: number) => number[])(strPtr, 'uint16', 1, byteOffset);
-          const ch = decoded[0] ?? 0;
-          if (ch === 0) break;
-          chars.push(ch);
-          byteOffset += 2;
-          // Safety limit
-          if (chars.length > 1024) break;
-        }
-        username = String.fromCharCode(...chars);
-      }
+      // 从结构体中读取字符串指针
+      const username = decodeCredentialString(cred.UserName);
 
       // Decode CredentialBlob
       let secret: Buffer;
@@ -281,7 +299,6 @@ export function createCredentialWindows() {
       }
 
       // Allocate UTF-16LE buffers for strings
-      // Use Buffer to encode UTF-16LE
       const targetBuf = Buffer.from(target + '\0', 'utf16le');
       const usernameBuf = Buffer.from(username + '\0', 'utf16le');
       const commentBuf = Buffer.from('\0', 'utf16le');
@@ -342,10 +359,22 @@ export function createCredentialWindows() {
 
     /**
      * Get the current Windows user SID as a string (e.g., "S-1-5-21-...").
+     * R06 修复：使用 GetCurrentProcess + OpenProcessToken 替代宏 GetCurrentProcessToken
      */
     getCurrentUserSid(): string {
-      const TOKEN_QUERY = 0x0008;
-      const token = GetCurrentProcessToken();
+      // R06 修复：GetCurrentProcessToken 是宏，改用 GetCurrentProcess + OpenProcessToken
+      const hProcess = GetCurrentProcess();
+      const pToken = koffi.alloc('void *', 1);
+      const ok = OpenProcessToken(hProcess, TOKEN_QUERY, pToken);
+      if (!ok) {
+        throwWin32Error('OpenProcessToken');
+      }
+      const token = koffi.decode(pToken, 'void *', 1)[0];
+      koffi.free(pToken);
+
+      if (token === null || token === 0) {
+        throw new Error('OpenProcessToken returned null token');
+      }
 
       // First call to get required buffer size
       const returnLengthBuf = koffi.alloc('uint32', 1);
@@ -362,11 +391,11 @@ export function createCredentialWindows() {
 
       // Allocate and get TOKEN_USER
       const tokenUserBuf = koffi.alloc('uint8', requiredSize);
-      const ok = GetTokenInformation(
+      const ok2 = GetTokenInformation(
         token, TokenUser, tokenUserBuf, requiredSize, returnLengthBuf
       );
 
-      if (!ok) {
+      if (!ok2) {
         koffi.free(returnLengthBuf);
         koffi.free(tokenUserBuf);
         throwWin32Error('GetTokenInformation');
@@ -399,17 +428,7 @@ export function createCredentialWindows() {
 
       if (stringPtr !== null && stringPtr !== 0) {
         // Read null-terminated UTF-16LE string
-        const chars: number[] = [];
-        let byteOffset = 0;
-        while (true) {
-          const decoded = (koffi.decode as (ptr: unknown, type: string, count: number, offset?: number) => number[])(stringPtr, 'uint16', 1, byteOffset);
-          const ch = decoded[0] ?? 0;
-          if (ch === 0) break;
-          chars.push(ch);
-          byteOffset += 2;
-          if (chars.length > 256) break;
-        }
-        sidString = String.fromCharCode(...chars);
+        sidString = decodeCredentialString(stringPtr);
       }
 
       // Free the string allocated by ConvertSidToStringSidW (uses LocalAlloc)

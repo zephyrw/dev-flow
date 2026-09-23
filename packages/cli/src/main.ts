@@ -95,10 +95,6 @@ async function main() {
       node: process.version,
       platform: process.platform,
       storage: config.storage_root,
-      host: {
-        path: config.host.executable,
-        exists: existsSync(config.host.executable),
-      },
       checks: [],
     };
     for (const [name, exe, argv] of [
@@ -120,22 +116,6 @@ async function main() {
         result.checks.push({ name, ok: false, message: String(e) });
       }
     }
-    if (result.host.exists)
-      try {
-        result.host.report = JSON.parse(
-          execFileSync(config.host.executable, ["doctor"], {
-            encoding: "utf8",
-            windowsHide: true,
-            timeout: 10000,
-            env: {
-              ...process.env,
-              DOTNET_ROOT: process.env.DOTNET_ROOT ?? resolve(".cache/dotnet"),
-            },
-          }),
-        );
-      } catch (e) {
-        result.host.error = String(e);
-      }
     console.log(JSON.stringify(result, null, 2));
     return;
   }

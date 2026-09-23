@@ -30,12 +30,7 @@ s.config.opentabs.secret_file = join(
   homedir(),
   ".opentabs/extension/auth.json",
 );
-const processes = new ProcessManager(
-    resolve(
-      "host/DevFlow.WinHost/bin/Release/net10.0-windows/DevFlow.WinHost.exe",
-    ),
-    true,
-  ),
+const processes = new ProcessManager(),
   environments = new Environments(s.engine, processes),
   browser = new BrowserGateway(s.engine),
   flows: any[] = [],

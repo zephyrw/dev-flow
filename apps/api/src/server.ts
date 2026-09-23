@@ -1841,7 +1841,7 @@ export async function buildServer(
     return {
       config: engine.config,
       leases: engine.store.list("lease"),
-      runtime_ready: existsSync(engine.config.host.executable),
+      runtime_ready: true, // R09 修复：host.executable 已移除，runtime 始终就绪
       execution_user: "current_windows_user",
     };
   });

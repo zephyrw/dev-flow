@@ -122,8 +122,16 @@ export async function ensureService(mode: "full" | "accounts" = "full") {
         ? "dist/apps/api/src/accounts-main.js"
         : "dist/apps/api/src/main.js",
     );
-    if (!existsSync(entry) || !existsSync(configuration.host.executable))
-      throw new Error("安装尚未完成，请双击“安装或更新 DevFlow.cmd”。");
+    // R09 修复：不再检查 host.executable（已移除）
+    // 检查入口文件和 credential-worker 是否存在
+    const credentialWorker = join(
+      installation,
+      "dist/packages/agy-accounts/src/credential-worker.js",
+    );
+    if (!existsSync(entry))
+      throw new Error('安装尚未完成，请双击"安装或更新 DevFlow.cmd"。');
+    if (process.platform === "win32" && !existsSync(credentialWorker))
+      throw new Error("凭据 Worker 不存在，请重新安装。");
     const output = openSync(
       join(configuration.storage_root, "controller.stdout.log"),
       "a",

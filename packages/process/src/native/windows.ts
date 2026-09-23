@@ -29,6 +29,9 @@ const JobObjectExtendedLimitInformation = 9;
 
 const PROCESS_SYNCHRONIZE = 0x00100000;
 const PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
+// R01 修复：assignProcessToJob 需要 PROCESS_SET_QUOTA | PROCESS_TERMINATE 才能成功绑定
+const PROCESS_SET_QUOTA = 0x0100;
+const PROCESS_TERMINATE = 0x0001;
 
 const WAIT_OBJECT_0 = 0;
 const WAIT_ABANDONED = 0x80;
@@ -209,9 +212,10 @@ export function createWindowsNative() {
       return job;
     },
 
+    // R01 修复：AssignProcessToJobObject 需要 PROCESS_SET_QUOTA | PROCESS_TERMINATE
     assignProcessToJob(job: HANDLE, pid: number): boolean {
       const hProcess = OpenProcess(
-        PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, 0, pid
+        PROCESS_SET_QUOTA | PROCESS_TERMINATE | PROCESS_SYNCHRONIZE, 0, pid
       );
       if (isNull(hProcess)) return false;
       const ok = AssignProcessToJobObject(job, hProcess);

@@ -1,7 +1,7 @@
 import {
   spawn,
   execFileSync,
-  type ChildProcessWithoutNullStreams,
+  type ChildProcess,
 } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { FlowError, requireCondition } from "../../contracts/src/index.js";
@@ -39,7 +39,7 @@ export interface ProcessSpec {
 }
 
 function feedChildStdin(
-  child: ChildProcessWithoutNullStreams,
+  child: ChildProcess,
   payload: string | undefined,
   closeAfterWrite: boolean,
 ) {
@@ -143,20 +143,24 @@ export class ProcessManager {
       "M2_HOME",
     ])
       if (process.env[key]) inherited[key] = process.env[key]!;
-    const child = spawn(spec.executable, spec.args, {
+
+    // R02 修复：使用 runner-entry.js 作为唯一入口点
+    // runner-entry.js 会处理 IPC 协议、Job 绑定、工具进程启动
+    const runnerEntry = require.resolve("./runner-entry.js");
+    const child = spawn(process.execPath, [runnerEntry], {
       cwd: spec.cwd,
       env: { ...inherited, ...spec.env },
       windowsHide: true,
       shell: false,
-      stdio: "pipe",
+      stdio: ["pipe", "pipe", "pipe", "ipc"],
     });
     feedChildStdin(child, spec.stdin, true);
     events.pid = child.pid;
     events.pauseOutput = () => {
-      child.stdout.pause();
+      child.stdout?.pause();
     };
     events.resumeOutput = () => {
-      child.stdout.resume();
+      child.stdout?.resume();
     };
     let settled = false;
     let termination_reason: ProcessStopReason | undefined;
@@ -206,8 +210,8 @@ export class ProcessManager {
         this.lifecycle?.(spec, { status: "failed" });
         reject(e);
       });
-      child.stdout.on("data", (b) => events.emit("stdout", b));
-      child.stderr.on("data", (b) => events.emit("stderr", b));
+      child.stdout?.on("data", (b) => events.emit("stdout", b));
+      child.stderr?.on("data", (b) => events.emit("stderr", b));
       child.on("close", (code, signal) => settle(code, signal ?? undefined));
     });
     events.completion = done;

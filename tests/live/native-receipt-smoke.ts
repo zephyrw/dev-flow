@@ -44,12 +44,7 @@ const observer = new NativeExecutionObserver({
 });
 const events: Record<string, number> = {};
 const tools: Record<string, number> = {};
-const manager = new ProcessManager(
-  resolve(
-    "host/DevFlow.WinHost/bin/Release/net10.0-windows/DevFlow.WinHost.exe",
-  ),
-  true,
-);
+const manager = new ProcessManager();
 const prompt =
   (asynchronous
     ? "Set WaitMsBeforeAsync to 500 so the terminal command is asynchronous; poll command_status until it exits. "

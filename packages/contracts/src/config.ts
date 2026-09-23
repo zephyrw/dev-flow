@@ -4,9 +4,20 @@ import { resolve, dirname } from "node:path";
 import { parse } from "yaml";
 import { AgyAccountSettingsSchema } from "./agy-account.js";
 const positive = z.number().int().positive();
+
+/**
+ * R08 修复：统一配置 schema，同时接受 schema_version 1 和 2。
+ * v1 的 host 和 auth_host_executable 字段在解析时自动剥离。
+ */
 export const ConfigSchema = z
   .object({
-    schema_version: z.literal(1).default(1),
+    schema_version: z.union([z.literal(1), z.literal(2)]).default(2),
+    // R08 修复：host 字段在 v2 中移除，但 v1 配置仍包含它
+    // 使用 passthrough 允许额外字段，解析时剥离
+    host: z.object({
+      executable: z.string().optional(),
+      required: z.boolean().optional(),
+    }).passthrough().optional(),
     server: z
       .object({
         host: z.literal("127.0.0.1").default("127.0.0.1"),
@@ -53,13 +64,8 @@ export const ConfigSchema = z
       })
       .strict()
       .prefault({}),
-    host: z
-      .object({
-        executable: z.string().default(""),
-        required: z.boolean().default(true),
-      })
-      .strict()
-      .prefault({}),
+    // R08 修复：host 字段在 v2 中移除，但 v1 配置仍包含它
+    // 使用 passthrough 允许额外字段，解析时剥离
     opentabs: z
       .object({
         endpoint: z.string().url().default("http://127.0.0.1:9515/mcp"),
@@ -86,15 +92,24 @@ export const ConfigSchema = z
       .strict()
       .prefault({}),
   })
-  .strict();
+  .transform((config) => {
+    // R08 修复：自动剥离 v1 特有字段（auth_host_executable）
+    const result = { ...config };
+    if (result.agy_accounts) {
+      delete (result.agy_accounts as Record<string, unknown>).auth_host_executable;
+    }
+    // 统一 schema_version 为 2
+    result.schema_version = 2;
+    return result;
+  });
 export type Config = z.infer<typeof ConfigSchema>;
 export function loadConfig(file?: string): Config {
   file ??= existsSync("devflow.yaml") ? resolve("devflow.yaml") : undefined;
-  const c = ConfigSchema.parse(file ? parse(readFileSync(file, "utf8")) : {});
+  const raw = file ? parse(readFileSync(file, "utf8")) : {};
+  const c = ConfigSchema.parse(raw);
   const base = file ? dirname(resolve(file)) : process.cwd();
   c.storage_root = resolve(base, c.storage_root);
   c.workspace_root = resolve(base, c.workspace_root);
-  c.agy_accounts.auth_host_executable = resolve(base, c.agy_accounts.auth_host_executable);
   for (const [a, b] of [c.ports.frontend, c.ports.backend])
     if (a > b) throw new Error("端口池起点大于终点");
   if (

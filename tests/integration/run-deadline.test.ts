@@ -60,7 +60,7 @@ it("DF-STAGE-I01 policy rejects at shared deadline before token expiry", async (
 });
 
 it("DF-STAGE-I02 process timeout and manual stop remain distinct", async () => {
-  const pm = new ProcessManager("", false);
+  const pm = new ProcessManager();
 
   const pTimeout = pm.start({
     id: "i02-timeout",

@@ -17,7 +17,9 @@ export function requiredAccountReleaseInputs(platform = process.platform) {
     "dist/apps/api/src/accounts-main.js",
     "dist/packages/service/src/open.js",
     "dist/packages/agy-accounts/src/service.js",
-    ...(platform === "win32" ? ["dist/host/devflow-auth-host.exe"] : []),
+    // R09 修复：使用 credential-worker 替代 auth-host.exe
+    "dist/packages/agy-accounts/src/credential-worker.js",
+    ...(platform === "win32" ? ["dist/packages/agy-accounts/src/credential-windows.js"] : []),
   ];
 }
 export function validateAccountReleaseInputs(
@@ -46,11 +48,11 @@ export function generateReleaseBundle() {
   const root = mkdtempSync(join(tmpdir(), "devflow-release-")),
     payload = join(root, "devflow");
   mkdirSync(payload, { recursive: true });
+  // R09 修复：移除 dist/host（已用 Node 原生模块替代）
   for (const file of [
     "dist/apps",
     "dist/web",
     "dist/packages",
-    "dist/host",
     "packages/skills",
     "package.json",
     "pnpm-lock.yaml",

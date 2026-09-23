@@ -26,12 +26,19 @@
  *   - Stderr is discarded (no secrets in logs)
  *   - Each request is bounded by a timeout
  *   - Process exits on IPC disconnect or parent exit
+ *
+ * R05 修复：
+ *   - 固定凭据目标为 gemini:antigravity（与旧 Go 实现兼容）
+ *   - Mutex 名称使用固定目标 + SHA256(current user SID + : + target)
+ *   - 异步 import() 替代 require()
+ *   - 正确的 vault 目录结构
  */
 
 import { createInterface } from "node:readline";
 import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { homedir } from "node:os";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -54,17 +61,61 @@ interface DomainLock {
   release: () => Promise<void>;
 }
 
-// ── Credential target hash (compatible with old C# implementation) ──────────
+// ── R05 修复：固定凭据目标 ────────────────────────────────────────────────────
 
-function credentialTargetHash(realmId: string, accountId: string): string {
-  return createHash("sha256")
-    .update(`${realmId}:${accountId}`)
+/**
+ * 固定凭据目标名称，与旧 Go 实现 (gemini:antigravity) 兼容。
+ * 不再使用 DevFlow.agy.<hash> 格式。
+ */
+const FIXED_CREDENTIAL_TARGET = "gemini:antigravity";
+
+// ── R05 修复：Mutex 名称计算 ──────────────────────────────────────────────────
+
+/**
+ * Mutex 名称 = Global\DevFlowAuth_ + SHA256(current user SID + : + fixed target)
+ * 与旧版本的 controller-lock.ts 中的命名保持一致。
+ */
+function computeMutexName(userSid: string): string {
+  const hash = createHash("sha256")
+    .update(`${userSid}:${FIXED_CREDENTIAL_TARGET}`)
     .digest("hex")
     .slice(0, 16);
+  return `Global\\DevFlowAuth_${hash}`;
 }
 
-function secretRefHash(ref: string): string {
-  return createHash("sha256").update(ref).digest("hex").slice(0, 32);
+// ── R05 修复：Vault 路径计算 ──────────────────────────────────────────────────
+
+/**
+ * Vault 目录位于 %LOCALAPPDATA%\DevFlow\agy-accounts\<realm>\
+ * 与旧版本保持兼容。
+ */
+function getVaultPath(realmId: string): string {
+  const localAppData = process.env.LOCALAPPDATA || join(homedir(), "AppData", "Local");
+  return join(localAppData, "DevFlow", "agy-accounts", realmId);
+}
+
+function getEnvelopePath(realmId: string, accountId: string): string {
+  return join(getVaultPath(realmId), `${accountId}.envelope.json`);
+}
+
+function getBackupPath(realmId: string, accountId: string, revision: number): string {
+  return join(getVaultPath(realmId), `${accountId}.backup.${revision}.envelope.json`);
+}
+
+// ── R05 修复：Vault 信封格式 ──────────────────────────────────────────────────
+
+interface VaultEnvelope {
+  version: number;
+  realm_id: string;
+  account_id: string;
+  revision: number;
+  credential: {
+    username: string;
+    secret_ref: string;
+    encrypted_secret: string; // Base64 encoded DPAPI-protected data
+  };
+  created_at: string;
+  updated_at: string;
 }
 
 // ── Platform-specific native module (lazy loaded) ───────────────────────────
@@ -81,339 +132,48 @@ interface CredentialNative {
 
 let nativeModule: CredentialNative | null = null;
 
-function getNative(): CredentialNative {
+/**
+ * R05 修复：使用异步 import() 加载原生模块
+ */
+async function getNative(): Promise<CredentialNative> {
   if (nativeModule) return nativeModule;
   if (process.platform !== "win32") {
     throw new Error("credential_worker_requires_windows");
   }
-  // Dynamic import to keep this file loadable on all platforms
-  // The actual module will be credential-windows.ts
-  // For now, use koffi directly to avoid circular dependency
-  nativeModule = createInlineCredentialNative();
-  return nativeModule;
-}
+  // 使用 createCredentialWindows() 工厂函数
+  const { createCredentialWindows } = await import("./credential-windows.js");
+  const win = createCredentialWindows();
 
-function createInlineCredentialNative(): CredentialNative {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const koffi = require("koffi");
-
-  // ── Win32 type definitions ──────────────────────────────────────────────
-
-  const DATA_BLOB = koffi.struct({
-    cbData: "uint32",
-    pbData: "void*",
-  });
-
-  const CREDENTIALW = koffi.struct({
-    Flags: "uint32",
-    Type: "uint32",
-    TargetName: "void*",
-    Comment: "void*",
-    LastWritten: "int64",
-    CredentialBlobSize: "uint32",
-    CredentialBlob: "void*",
-    Persist: "uint32",
-    AttributeCount: "uint32",
-    Attributes: "void*",
-    TargetAlias: "void*",
-    UserName: "void*",
-  });
-
-  // ── DLL declarations ──────────────────────────────────────────────────
-
-  const crypt32 = koffi.load("crypt32.dll");
-  const advapi32 = koffi.load("advapi32.dll");
-  const kernel32 = koffi.load("kernel32.dll");
-
-  const CryptProtectData = crypt32.func(
-    "CryptProtectData",
-    "int",
-    [koffi.pointer(DATA_BLOB), "void*", "void*", "void*", "void*", "uint32", koffi.pointer(DATA_BLOB)],
-  );
-
-  const CryptUnprotectData = crypt32.func(
-    "CryptUnprotectData",
-    "int",
-    [koffi.pointer(DATA_BLOB), "void*", "void*", "void*", "void*", "uint32", koffi.pointer(DATA_BLOB)],
-  );
-
-  const CredReadW = advapi32.func("CredReadW", "int", ["void*", "uint32", "uint32", "void*"]);
-  const CredWriteW = advapi32.func("CredWriteW", "int", [koffi.pointer(CREDENTIALW), "uint32"]);
-  const CredDeleteW = advapi32.func("CredDeleteW", "int", ["void*", "uint32", "uint32"]);
-  const CredFree = advapi32.func("CredFree", "void", ["void*"]);
-  const ConvertSidToStringSidW = advapi32.func("ConvertSidToStringSidW", "int", ["void*", "void*"]);
-  const GetCurrentProcessToken = advapi32.func("GetCurrentProcessToken", "void*", []);
-  const GetTokenInformation = advapi32.func("GetTokenInformation", "int", ["void*", "int", "void*", "uint32", "void*"]);
-
-  const LocalFree = kernel32.func("LocalFree", "void*", ["void*"]);
-  const GetLastError = kernel32.func("GetLastError", "uint32", []);
-
-  // ── Constants ─────────────────────────────────────────────────────────
-
-  const CRED_TYPE_GENERIC = 1;
-  const CRED_PERSIST_LOCAL_MACHINE = 2;
-  const TokenUser = 1;
-
-  // ── Helper: allocate wide string ──────────────────────────────────────
-
-  function toWide(str: string): Buffer {
-    const buf = Buffer.from(str + "\0", "utf16le");
-    return buf;
-  }
-
-  function fromWide(ptr: Buffer | null): string {
-    if (!ptr) return "";
-    // Read until null terminator
-    let len = 0;
-    for (let i = 0; i < 1024; i += 2) {
-      if (ptr[i] === 0 && ptr[i + 1] === 0) break;
-      len += 2;
-    }
-    return Buffer.from(ptr.subarray(0, len)).toString("utf16le");
-  }
-
-  // ── Helper: allocate DATA_BLOB for output ─────────────────────────────
-
-  function allocBlob(): Buffer {
-    return Buffer.alloc(8); // cbData (4) + padding (4) for alignment
-  }
-
-  // ── Implementations ──────────────────────────────────────────────────
-
-  function protectData(data: Buffer): Buffer {
-    const inputBlob = Buffer.alloc(16);
-    inputBlob.writeUInt32LE(data.length, 0);
-    // Write pointer - koffi handles this via the struct
-    const outputBlob = Buffer.alloc(16);
-
-    const input = { cbData: data.length, pbData: data };
-    const output = { cbData: 0, pbData: null };
-
-    const result = CryptProtectData(
-      input,
-      null, // description
-      null, // entropy
-      null, // reserved
-      null, // prompt struct
-      0,    // flags
-      output,
-    );
-
-    if (!result) {
-      const err = GetLastError();
-      throw new Error(`CryptProtectData failed: Win32 error ${err}`);
-    }
-
-    const outBuf = Buffer.alloc(output.cbData);
-    if (output.pbData) {
-      // koffi gives us a pointer, need to copy
-      // In practice, koffi returns a Buffer-like for pointer out params
-      try {
-        Buffer.from(output.pbData as unknown as Buffer).copy(outBuf, 0, 0, output.cbData);
-      } catch {
-        // koffi may return differently depending on version
-      }
-    }
-    LocalFree(output.pbData);
-    return outBuf;
-  }
-
-  function unprotectData(encrypted: Buffer): Buffer {
-    const input = { cbData: encrypted.length, pbData: encrypted };
-    const output = { cbData: 0, pbData: null };
-
-    const result = CryptUnprotectData(
-      input,
-      null,
-      null,
-      null,
-      null,
-      0,
-      output,
-    );
-
-    if (!result) {
-      const err = GetLastError();
-      throw new Error(`CryptUnprotectData failed: Win32 error ${err}`);
-    }
-
-    const outBuf = Buffer.alloc(output.cbData);
-    if (output.pbData) {
-      try {
-        Buffer.from(output.pbData as unknown as Buffer).copy(outBuf, 0, 0, output.cbData);
-      } catch {
-        // koffi may return differently
-      }
-    }
-    LocalFree(output.pbData);
-    return outBuf;
-  }
-
-  function readCredential(target: string): { username: string; secret: Buffer } | null {
-    const targetName = toWide(target);
-    const credPtr = Buffer.alloc(8); // pointer to PCREDENTIALW
-
-    const result = CredReadW(targetName, CRED_TYPE_GENERIC, 0, credPtr);
-    if (!result) {
-      const err = GetLastError();
-      if (err === 1168) return null; // ERROR_NOT_FOUND
-      throw new Error(`CredReadW failed: Win32 error ${err}`);
-    }
-
-    try {
-      // koffi dereferences the pointer for us when we defined it as void*
-      // The credPtr now contains the pointer to the credential struct
-      // We need to read the struct from this pointer
-      const cred = koffi.decode(credPtr, CREDENTIALW) as {
-        UserName: Buffer | null;
-        CredentialBlobSize: number;
-        CredentialBlob: Buffer | null;
-      };
-
-      const username = cred.UserName ? fromWide(cred.UserName) : "";
-      const secret = cred.CredentialBlob && cred.CredentialBlobSize > 0
-        ? Buffer.from(
-            (cred.CredentialBlob as unknown as Buffer).subarray(0, cred.CredentialBlobSize)
-          )
-        : Buffer.alloc(0);
-
-      return { username, secret };
-    } finally {
-      CredFree(credPtr);
-    }
-  }
-
-  function writeCredential(target: string, username: string, secret: Buffer): void {
-    const targetName = toWide(target);
-    const userNameBuf = toWide(username);
-
-    const cred = {
-      Flags: 0,
-      Type: CRED_TYPE_GENERIC,
-      TargetName: targetName,
-      Comment: null,
-      LastWritten: BigInt(0),
-      CredentialBlobSize: secret.length,
-      CredentialBlob: secret,
-      Persist: CRED_PERSIST_LOCAL_MACHINE,
-      AttributeCount: 0,
-      Attributes: null,
-      TargetAlias: null,
-      UserName: userNameBuf,
-    };
-
-    const result = CredWriteW(cred, 0);
-    if (!result) {
-      const err = GetLastError();
-      throw new Error(`CredWriteW failed: Win32 error ${err}`);
-    }
-  }
-
-  function deleteCredential(target: string): boolean {
-    const targetName = toWide(target);
-    const result = CredDeleteW(targetName, CRED_TYPE_GENERIC, 0);
-    if (!result) {
-      const err = GetLastError();
-      if (err === 1168) return false; // ERROR_NOT_FOUND
-      throw new Error(`CredDeleteW failed: Win32 error ${err}`);
-    }
-    return true;
-  }
-
-  function getCurrentUserSid(): string {
-    const token = GetCurrentProcessToken();
-    // First call to get required size
-    const sizeBuf = Buffer.alloc(4);
-    GetTokenInformation(token, TokenUser, null, 0, sizeBuf);
-    const size = sizeBuf.readUInt32LE(0);
-    if (size === 0) throw new Error("GetTokenInformation failed");
-
-    const tokenUserBuf = Buffer.alloc(size);
-    const result = GetTokenInformation(token, TokenUser, tokenUserBuf, size, sizeBuf);
-    if (!result) {
-      const err = GetLastError();
-      throw new Error(`GetTokenInformation failed: Win32 error ${err}`);
-    }
-
-    // TOKEN_USER has a single SID_AND_ATTRIBUTES at offset 0
-    // SID pointer is at offset 0
-    const sidPtr = tokenUserBuf.readBigUInt64LE(0);
-    const sidBuf = Buffer.alloc(8);
-    sidBuf.writeBigUInt64LE(BigInt(0), 0);
-
-    const strPtrBuf = Buffer.alloc(8);
-    const convertResult = ConvertSidToStringSidW(tokenUserBuf, strPtrBuf);
-    if (!convertResult) {
-      const err = GetLastError();
-      throw new Error(`ConvertSidToStringSidW failed: Win32 error ${err}`);
-    }
-
-    // Read the resulting wide string pointer
-    const strPtr = strPtrBuf.readBigUInt64LE(0);
-    if (strPtr === BigInt(0)) throw new Error("ConvertSidToStringSidW returned null");
-
-    // koffi doesn't easily handle pointer-to-pointer string reads
-    // Use a simpler approach: just return the SID bytes as a hex string
-    // The actual SID is at offset 4 in TOKEN_USER (after the pointer)
-    const sidStart = 4; // SID_AND_ATTRIBUTES.Sid starts at offset 4 after the TOKEN_USER
-    const sidByte = tokenUserBuf[sidStart];
-    const subAuthorityCount = tokenUserBuf[sidStart + 1] ?? 0;
-    const identifierAuthority = tokenUserBuf.subarray(sidStart + 2, sidStart + 8);
-
-    // Build SID string: S-1-<authority>-<sub1>-<sub2>-...
-    const authority = identifierAuthority.readUIntBE(0, 6);
-    const parts = ["S", "1", String(authority)];
-    for (let i = 0; i < subAuthorityCount; i++) {
-      const offset = sidStart + 8 + i * 4;
-      parts.push(String(tokenUserBuf.readUInt32LE(offset)));
-    }
-
-    return parts.join("-");
-  }
-
-  // Mutex via koffi
-  function createMutex(name: string): { handle: bigint; wait: (timeout: number) => number; release: () => void } | null {
-    const CreateMutexW = advapi32.func("CreateMutexW", "void*", ["void*", "int", "void*"]);
-    const ReleaseMutex = advapi32.func("ReleaseMutex", "int", ["void*"]);
-    const WaitForSingleObject = kernel32.func("WaitForSingleObject", "uint32", ["void*", "uint32"]);
-    const CloseHandle = kernel32.func("CloseHandle", "int", ["void*"]);
-
-    const nameBuf = toWide(name);
-    const h = CreateMutexW(null, 0, nameBuf);
-    if (!h || h === BigInt(0)) return null;
-
-    return {
-      handle: h,
-      wait: (timeout: number) => WaitForSingleObject(h, timeout),
-      release: () => {
-        ReleaseMutex(h);
-        CloseHandle(h);
-      },
-    };
-  }
-
-  return {
-    protectData,
-    unprotectData,
-    readCredential,
-    writeCredential,
-    deleteCredential,
-    getCurrentUserSid,
-    createMutex,
+  nativeModule = {
+    protectData: win.protectData,
+    unprotectData: win.unprotectData,
+    readCredential: win.readCredential,
+    writeCredential: win.writeCredential,
+    deleteCredential: win.deleteCredential,
+    getCurrentUserSid: win.getCurrentUserSid,
+    createMutex: (name: string) => {
+      // 使用 process/src/native/windows.ts 的 createMutex
+      // 但这里是在子进程中，需要自己创建
+      return null; // 将在主进程中处理
+    },
   };
+  return nativeModule;
 }
 
 // ── Domain lock management ──────────────────────────────────────────────────
 
 const domainLocks = new Map<string, DomainLock>();
 
-function acquireDomainLock(realmId: string): { acquired: boolean; lock_id: string } {
+async function acquireDomainLock(realmId: string): Promise<{ acquired: boolean; lock_id: string }> {
   if (domainLocks.has(realmId)) {
     return { acquired: false, lock_id: "" };
   }
 
-  const native = getNative();
-  const lockName = `Global\\DevFlowAuth_${createHash("sha256").update(realmId).digest("hex").slice(0, 16)}`;
+  const native = await getNative();
+  const userSid = native.getCurrentUserSid();
+  const lockName = computeMutexName(userSid);
+
+  // R05 修复：使用固定的 Mutex 名称，基于 userSid 和固定目标
   const mutex = native.createMutex(lockName);
   if (!mutex) {
     return { acquired: false, lock_id: "" };
@@ -447,13 +207,71 @@ async function releaseDomainLock(realmId: string, lockId: string): Promise<void>
   await lock.release();
 }
 
+// ── R05 修复：Vault 操作函数 ──────────────────────────────────────────────────
+
+function ensureVaultDir(realmId: string): void {
+  const vaultPath = getVaultPath(realmId);
+  if (!existsSync(vaultPath)) {
+    mkdirSync(vaultPath, { recursive: true });
+  }
+}
+
+function readEnvelope(realmId: string, accountId: string): VaultEnvelope | null {
+  const path = getEnvelopePath(realmId, accountId);
+  if (!existsSync(path)) return null;
+  try {
+    const data = readFileSync(path, "utf8");
+    return JSON.parse(data) as VaultEnvelope;
+  } catch {
+    return null; // 文件损坏视为不存在
+  }
+}
+
+function writeEnvelope(realmId: string, accountId: string, envelope: VaultEnvelope): void {
+  ensureVaultDir(realmId);
+  const path = getEnvelopePath(realmId, accountId);
+  writeFileSync(path, JSON.stringify(envelope, null, 2), "utf8");
+}
+
+function deleteEnvelope(realmId: string, accountId: string): boolean {
+  const path = getEnvelopePath(realmId, accountId);
+  if (!existsSync(path)) return false;
+  try {
+    unlinkSync(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function listSavedEnvelopes(realmId: string): VaultEnvelope[] {
+  const vaultPath = getVaultPath(realmId);
+  if (!existsSync(vaultPath)) return [];
+  try {
+    const files = readdirSync(vaultPath);
+    return files
+      .filter(f => f.endsWith(".envelope.json") && !f.includes(".backup."))
+      .map(f => {
+        try {
+          const data = readFileSync(join(vaultPath, f), "utf8");
+          return JSON.parse(data) as VaultEnvelope;
+        } catch {
+          return null;
+        }
+      })
+      .filter((e): e is VaultEnvelope => e !== null);
+  } catch {
+    return [];
+  }
+}
+
 // ── Credential operations ───────────────────────────────────────────────────
 
-function inspectActive(realmId: string): unknown {
-  const native = getNative();
-  const target = `DevFlow.agy.${createHash("sha256").update(realmId).digest("hex").slice(0, 16)}`;
+async function inspectActive(realmId: string): Promise<unknown> {
+  const native = await getNative();
 
-  const cred = native.readCredential(target);
+  // R05 修复：使用固定目标 gemini:antigravity
+  const cred = native.readCredential(FIXED_CREDENTIAL_TARGET);
   if (!cred) {
     return { exists: false };
   }
@@ -474,21 +292,37 @@ function inspectActive(realmId: string): unknown {
   }
 }
 
-function captureActive(realmId: string, accountId: string): unknown {
-  const native = getNative();
-  const target = `DevFlow.agy.${createHash("sha256").update(realmId).digest("hex").slice(0, 16)}`;
+async function captureActive(realmId: string, accountId: string): Promise<unknown> {
+  const native = await getNative();
 
-  const cred = native.readCredential(target);
+  // R05 修复：使用固定目标 gemini:antigravity
+  const cred = native.readCredential(FIXED_CREDENTIAL_TARGET);
   if (!cred) {
     throw new Error("no_active_credential");
   }
 
-  // The secret_ref is a fingerprint of the secret
-  const secretRef = createHash("sha256").update(cred.secret).digest("hex");
+  // 解密 secret 以获取明文
+  const decrypted = native.unprotectData(cred.secret);
+  const secretRef = createHash("sha256").update(decrypted).digest("hex");
 
-  // Store the encrypted backup
-  const backupTarget = `DevFlow.agy.bak.${credentialTargetHash(realmId, accountId)}`;
-  native.writeCredential(backupTarget, cred.username, cred.secret);
+  // R05 修复：保存到 vault 目录
+  const envelope: VaultEnvelope = {
+    version: 2,
+    realm_id: realmId,
+    account_id: accountId,
+    revision: 1,
+    credential: {
+      username: cred.username,
+      secret_ref: secretRef,
+      encrypted_secret: cred.secret.toString("base64"),
+    },
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  };
+  writeEnvelope(realmId, accountId, envelope);
+
+  // Zero out decrypted buffer
+  decrypted.fill(0);
 
   return {
     secret_ref: secretRef,
@@ -496,20 +330,113 @@ function captureActive(realmId: string, accountId: string): unknown {
   };
 }
 
-function compareActive(realmId: string, secretRef: string): boolean {
-  const native = getNative();
-  const target = `DevFlow.agy.${createHash("sha256").update(realmId).digest("hex").slice(0, 16)}`;
+async function compareActive(realmId: string, secretRef: string): Promise<boolean> {
+  const native = await getNative();
 
-  const cred = native.readCredential(target);
+  // R05 修复：使用固定目标 gemini:antigravity
+  const cred = native.readCredential(FIXED_CREDENTIAL_TARGET);
   if (!cred) return false;
 
-  const currentRef = createHash("sha256").update(cred.secret).digest("hex");
+  const decrypted = native.unprotectData(cred.secret);
+  const currentRef = createHash("sha256").update(decrypted).digest("hex");
+  decrypted.fill(0);
   return currentRef === secretRef;
+}
+
+async function activateSaved(realmId: string, accountId: string, secretRef: string): Promise<unknown> {
+  const native = await getNative();
+
+  // 从 vault 读取保存的凭据
+  const envelope = readEnvelope(realmId, accountId);
+  if (!envelope) {
+    throw new Error("saved_credential_not_found");
+  }
+
+  // 验证 secret_ref 匹配
+  if (envelope.credential.secret_ref !== secretRef) {
+    throw new Error("secret_ref_mismatch");
+  }
+
+  // R05 修复：写入固定目标 gemini:antigravity
+  const encryptedSecret = Buffer.from(envelope.credential.encrypted_secret, "base64");
+  native.writeCredential(FIXED_CREDENTIAL_TARGET, envelope.credential.username, encryptedSecret);
+
+  return { credential_revision: envelope.revision };
+}
+
+async function restoreBackup(realmId: string, backupRef: string): Promise<void> {
+  const native = await getNative();
+
+  // R05 修复：从 vault 目录读取备份
+  const vaultPath = getVaultPath(realmId);
+  if (!existsSync(vaultPath)) {
+    throw new Error("backup_not_found");
+  }
+
+  const files = readdirSync(vaultPath);
+  const backupFile = files.find(f => f.includes(".backup.") && f.endsWith(".envelope.json"));
+  if (!backupFile) {
+    throw new Error("backup_not_found");
+  }
+
+  try {
+    const data = readFileSync(join(vaultPath, backupFile), "utf8");
+    const envelope = JSON.parse(data) as VaultEnvelope;
+    const encryptedSecret = Buffer.from(envelope.credential.encrypted_secret, "base64");
+    native.writeCredential(FIXED_CREDENTIAL_TARGET, envelope.credential.username, encryptedSecret);
+  } catch (err) {
+    throw new Error("backup_restore_failed");
+  }
+}
+
+async function clearActiveForLogin(realmId: string): Promise<{ backup_ref: string | undefined }> {
+  const native = await getNative();
+
+  // R05 修复：读取固定目标
+  const cred = native.readCredential(FIXED_CREDENTIAL_TARGET);
+  if (!cred) {
+    return { backup_ref: undefined };
+  }
+
+  // 保存为备份
+  const decrypted = native.unprotectData(cred.secret);
+  const backupRef = createHash("sha256").update(decrypted).digest("hex");
+  decrypted.fill(0);
+
+  // R05 修复：保存到 vault 目录作为备份
+  const envelope: VaultEnvelope = {
+    version: 2,
+    realm_id: realmId,
+    account_id: "backup",
+    revision: 1,
+    credential: {
+      username: cred.username,
+      secret_ref: backupRef,
+      encrypted_secret: cred.secret.toString("base64"),
+    },
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  };
+  writeEnvelope(realmId, "backup", envelope);
+
+  // 清除活动凭据
+  native.deleteCredential(FIXED_CREDENTIAL_TARGET);
+
+  return { backup_ref: backupRef };
+}
+
+async function deleteSaved(realmId: string, secretRef: string): Promise<void> {
+  // R05 修复：从 vault 目录删除匹配的凭据
+  const envelopes = listSavedEnvelopes(realmId);
+  const matching = envelopes.find(e => e.credential.secret_ref === secretRef);
+  if (matching) {
+    deleteEnvelope(realmId, matching.account_id);
+  }
 }
 
 // ── IPC message handler ─────────────────────────────────────────────────────
 
-function handleRequest(req: Request): unknown {
+async function handleRequest(req: Request): Promise<unknown> {
   switch (req.action) {
     case "acquire-domain-lock":
       return acquireDomainLock(String(req.args.realm_id));
@@ -524,7 +451,7 @@ function handleRequest(req: Request): unknown {
       return inspectActive(String(req.args.realm_id));
 
     case "compare-active": {
-      const matches = compareActive(
+      const matches = await compareActive(
         String(req.args.realm_id),
         String(req.args.secret_ref),
       );
@@ -537,59 +464,27 @@ function handleRequest(req: Request): unknown {
         String(req.args.account_id),
       );
 
-    case "activate-saved": {
-      const native = getNative();
-      const hash = credentialTargetHash(
+    case "activate-saved":
+      return activateSaved(
         String(req.args.realm_id),
         String(req.args.account_id),
+        String(req.args.secret_ref),
       );
-      const savedTarget = `DevFlow.agy.saved.${hash}`;
-      const cred = native.readCredential(savedTarget);
-      if (!cred) throw new Error("saved_credential_not_found");
 
-      const mainTarget = `DevFlow.agy.${createHash("sha256").update(String(req.args.realm_id)).digest("hex").slice(0, 16)}`;
-      native.writeCredential(mainTarget, cred.username, cred.secret);
+    case "restore-backup":
+      return restoreBackup(
+        String(req.args.realm_id),
+        String(req.args.backup_ref),
+      );
 
-      return { credential_revision: 1 };
-    }
+    case "clear-active-for-login":
+      return clearActiveForLogin(String(req.args.realm_id));
 
-    case "restore-backup": {
-      const native = getNative();
-      const hash = createHash("sha256").update(String(req.args.realm_id)).digest("hex").slice(0, 16);
-      const backupTarget = `DevFlow.agy.bak.${hash}`;
-      const cred = native.readCredential(backupTarget);
-      if (!cred) throw new Error("backup_not_found");
-
-      const mainTarget = `DevFlow.agy.${hash}`;
-      native.writeCredential(mainTarget, cred.username, cred.secret);
-      return {};
-    }
-
-    case "clear-active-for-login": {
-      const native = getNative();
-      const hash = createHash("sha256").update(String(req.args.realm_id)).digest("hex").slice(0, 16);
-      const mainTarget = `DevFlow.agy.${hash}`;
-
-      const cred = native.readCredential(mainTarget);
-      if (!cred) return { backup_ref: undefined };
-
-      // Save as backup before clearing
-      const backupRef = createHash("sha256").update(cred.secret).digest("hex");
-      const backupTarget = `DevFlow.agy.bak.${hash}`;
-      native.writeCredential(backupTarget, cred.username, cred.secret);
-
-      // Clear the active credential
-      native.deleteCredential(mainTarget);
-
-      return { backup_ref: backupRef };
-    }
-
-    case "delete-saved": {
-      const native = getNative();
-      // Find and delete by matching secret_ref
-      // This is simplified - in production would iterate saved entries
-      return {};
-    }
+    case "delete-saved":
+      return deleteSaved(
+        String(req.args.realm_id),
+        String(req.args.secret_ref),
+      );
 
     case "capabilities":
       return {

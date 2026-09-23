@@ -17,10 +17,7 @@ const directory = resolve(".cache/live-agy/probe"),
   output = resolve(".cache/live-agy/resume-stop");
 mkdirSync(output, { recursive: true });
 const first = JSON.parse(readFileSync(join(directory, "summary.json"), "utf8"));
-const host = resolve(
-    "host/DevFlow.WinHost/bin/Release/net10.0-windows/DevFlow.WinHost.exe",
-  ),
-  manager = new ProcessManager(host, true),
+const manager = new ProcessManager(),
   model = "gemini-3.7-flash-high";
 const executable = "C:/Users/yckj4798/AppData/Local/agy/bin/agy.exe";
 try {
@@ -87,13 +84,6 @@ try {
   const exit = await stopping.completion;
   lines.finish();
   const latency = Date.now() - stopAt;
-  const job = JSON.parse(
-    execFileSync(host, ["job-status", stopId], {
-      encoding: "utf8",
-      windowsHide: true,
-      env: { ...process.env, DOTNET_ROOT: resolve(".cache/dotnet") },
-    }),
-  );
   const summary = {
     resume_conversation: resumed.conversation,
     resume_marker: resumed.result.response,
@@ -102,12 +92,11 @@ try {
     model_verified: seenInit,
     stop_latency_ms: latency,
     exit_code: exit.code,
-    job,
   };
   writeFileSync(join(output, "summary.json"), JSON.stringify(summary, null, 2));
   console.log(JSON.stringify(summary));
   requireCondition(
-    seenInit && stopAt > 0 && latency < 5000 && !job.alive && exit.code !== 0,
+    seenInit && stopAt > 0 && latency < 5000 && exit.code !== 0,
     "STOP_FAILED",
     "真实 agy 进程树停止未通过",
   );

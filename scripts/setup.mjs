@@ -35,7 +35,7 @@ run(process.execPath, [
   "--config",
   "apps/web/vite.config.ts",
 ]);
-run(process.execPath, ["scripts/build-host.mjs"]);
+// R09 修复：不再调用 Go builder，Node 原生模块已替代 Go Host
 const configPath = join(root, "devflow.yaml");
 const configDocument = parseDocument(
   existsSync(configPath) ? readFileSync(configPath, "utf8") : "{}",
@@ -43,24 +43,17 @@ const configDocument = parseDocument(
 if (configDocument.errors.length) throw configDocument.errors[0];
 if (existsSync(configPath))
   copyFileSync(configPath, join(root, ".cache", `devflow-${stamp}.yaml`));
-if (!configDocument.getIn(["host", "executable"])) {
-  configDocument.setIn(
-    ["host", "executable"],
-    join(
-      root,
-      "dist/host",
-      process.platform === "win32" ? "devflow-host.exe" : "devflow-host",
-    ),
-  );
-  configDocument.setIn(["host", "required"], true);
+// R09 修复：移除 host.executable 和 auth_host_executable 字段
+// Node 原生模块已替代 C# Host
+if (configDocument.get("host")) {
+  configDocument.delete("host");
 }
 if (configDocument.getIn(["agy_accounts", "enabled"]) === undefined)
   configDocument.setIn(["agy_accounts", "enabled"], false);
-if (!configDocument.getIn(["agy_accounts", "auth_host_executable"]))
-  configDocument.setIn(
-    ["agy_accounts", "auth_host_executable"],
-    join(root, "dist/host/devflow-auth-host.exe"),
-  );
+if (configDocument.getIn(["agy_accounts", "auth_host_executable"]))
+  configDocument.deleteIn(["agy_accounts", "auth_host_executable"]);
+// 确保 schema_version 为 2
+configDocument.set("schema_version", 2);
 if (!configDocument.get("opentabs")) {
   const existing = join(homedir(), ".opentabs/extension/auth.json");
   configDocument.set("opentabs", {

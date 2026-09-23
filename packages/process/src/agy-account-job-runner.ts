@@ -24,6 +24,12 @@ export interface AuxJobOptions {
   signal?: AbortSignal;
 }
 
+/**
+ * R04 修复：
+ * - 所有子进程通过 runner-entry.js 管理，确保 Job 绑定和进程所有权
+ * - start() 在中止/错误时必须确认进程停止，不返回 fully_stopped:true
+ * - Windows 交互登录使用 CREATE_SUSPENDED | CREATE_NEW_CONSOLE
+ */
 export class AgyAccountJobRunner implements OwnedLoginJobPort, InteractiveLoginJobPort {
   private activeJobs = new Map<string, { child: ChildProcess; cwd: string; jobId: string }>();
 
@@ -45,27 +51,47 @@ export class AgyAccountJobRunner implements OwnedLoginJobPort, InteractiveLoginJ
     const jobId = `login_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
     const tempCwd = await mkdtemp(join(tmpdir(), "devflow-agy-login-"));
 
-    // Direct spawn - no host executable
-    const child = spawn(this.agyExecutable, ["login"], {
+    // R04 修复：通过 runner-entry.js 启动，确保进程所有权和 Job 绑定
+    const runnerEntry = require.resolve("./runner-entry.js");
+    const child = spawn(process.execPath, [runnerEntry, this.agyExecutable, "login"], {
       cwd: tempCwd,
       windowsHide: false, // Interactive login needs visible window
-      stdio: "inherit",
+      stdio: ["pipe", "pipe", "pipe", "ipc"],
     });
 
     this.activeJobs.set(jobId, { child, cwd: tempCwd, jobId });
 
+    // R04 修复：通过 IPC 发送 start 消息
+    const sendStart = () => {
+      try {
+        child.send?.({
+          type: "start",
+          executable: this.agyExecutable,
+          args: ["login"],
+          cwd: tempCwd,
+          env: {},
+        });
+      } catch {}
+    };
+    child.once("spawn", sendStart);
+    if (child.pid) sendStart();
+
     const cancel = async () => {
       if (!this.activeJobs.has(jobId)) return;
       try {
-        if (child.pid) {
-          if (process.platform === "win32") {
-            try {
-              child.kill();
-            } catch {}
-          } else {
-            child.kill("SIGTERM");
-          }
-        }
+        // R04 修复：通过 IPC 发送 stop 消息，等待确认
+        child.send?.({ type: "stop", reason: "login_cancelled" });
+        // 等待进程退出
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(() => {
+            try { child.kill("SIGKILL"); } catch {}
+            resolve();
+          }, 5000);
+          child.once("close", () => {
+            clearTimeout(timer);
+            resolve();
+          });
+        });
       } catch {}
       try {
         await rm(tempCwd, { recursive: true, force: true });
@@ -136,6 +162,8 @@ export class AgyAccountJobRunner implements OwnedLoginJobPort, InteractiveLoginJ
     const timeoutMs = options.timeoutMs ?? 30000;
 
     try {
+      // R04 修复：通过 runner-entry.js 启动，确保进程所有权
+      const runnerEntry = require.resolve("./runner-entry.js");
       return await new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve, reject) => {
         let stdout = "";
         let stderr = "";
@@ -156,9 +184,8 @@ export class AgyAccountJobRunner implements OwnedLoginJobPort, InteractiveLoginJ
           if (resolved) return;
           if (timer) clearTimeout(timer);
           try {
-            if (child && child.pid) {
-              child.kill("SIGKILL");
-            }
+            // R04 修复：通过 IPC 发送 stop 消息
+            child.send?.({ type: "stop", reason: "probe_aborted" });
           } catch {}
           cleanupAndFinish({ code: -1, stdout, stderr: `${stderr}\nCancelled by signal` });
         };
@@ -171,19 +198,31 @@ export class AgyAccountJobRunner implements OwnedLoginJobPort, InteractiveLoginJ
           options.signal.addEventListener("abort", onAbort, { once: true });
         }
 
-        // Direct spawn - no host executable
-        const child = spawn(options.executable, options.args, {
+        const child = spawn(process.execPath, [runnerEntry, options.executable, ...options.args], {
           cwd: tempCwd,
           windowsHide: true,
-          stdio: ["ignore", "pipe", "pipe"],
+          stdio: ["pipe", "pipe", "pipe", "ipc"],
         });
+
+        // R04 修复：通过 IPC 发送 start 消息
+        const sendStart = () => {
+          try {
+            child.send?.({
+              type: "start",
+              executable: options.executable,
+              args: [...options.args],
+              cwd: tempCwd,
+              env: {},
+            });
+          } catch {}
+        };
+        child.once("spawn", sendStart);
+        if (child.pid) sendStart();
 
         timer = setTimeout(() => {
           if (resolved) return;
           try {
-            if (child && child.pid) {
-              child.kill("SIGKILL");
-            }
+            child.send?.({ type: "stop", reason: "probe_timeout" });
           } catch {}
           cleanupAndFinish({ code: -1, stdout, stderr: `${stderr}\nTimeout after ${timeoutMs}ms` });
         }, timeoutMs);
@@ -224,41 +263,67 @@ export class AgyAccountJobRunner implements OwnedLoginJobPort, InteractiveLoginJ
     const tempCwd = await mkdtemp(join(tmpdir(), "devflow-agy-login-"));
 
     try {
+      // R04 修复：通过 runner-entry.js 启动，确保进程所有权
+      const runnerEntry = require.resolve("./runner-entry.js");
       return await new Promise((resolvePromise) => {
-        // Direct spawn - no host executable
-        const child = spawn(input.executable, [...input.args], {
+        const child = spawn(process.execPath, [runnerEntry, input.executable, ...input.args], {
           cwd: tempCwd,
           windowsHide: false, // Interactive needs visible window
-          stdio: "inherit",
+          stdio: ["pipe", "pipe", "pipe", "ipc"],
         });
 
+        // R04 修复：通过 IPC 发送 start 消息
+        const sendStart = () => {
+          try {
+            child.send?.({
+              type: "start",
+              executable: input.executable,
+              args: [...input.args],
+              cwd: tempCwd,
+              env: {},
+            });
+          } catch {}
+        };
+        child.once("spawn", sendStart);
+        if (child.pid) sendStart();
+
         let isStopped = false;
-        const confirmAndFinish = (code: number | null) => {
+        const confirmAndFinish = (code: number | null, fullyStopped: boolean) => {
           if (isStopped) return;
           isStopped = true;
+          // R04 修复：不再默认返回 fully_stopped:true
+          // 必须确认进程确实退出
           resolvePromise({
             exit_code: code,
-            fully_stopped: true,
+            fully_stopped: fullyStopped,
           });
         };
 
         const onAbort = () => {
           try {
-            if (child.pid) {
-              child.kill("SIGTERM");
-            }
+            // R04 修复：通过 IPC 发送 stop 消息
+            child.send?.({ type: "stop", reason: "aborted" });
           } catch {}
-          confirmAndFinish(-1);
+          // R04 修复：中止时等待确认退出，不立即返回 fully_stopped:true
+          const confirmTimer = setTimeout(() => {
+            // 超时后仍未退出，标记为未确认
+            confirmAndFinish(-1, false);
+          }, 5000);
+          child.once("close", (code) => {
+            clearTimeout(confirmTimer);
+            confirmAndFinish(code, true);
+          });
         };
 
         input.signal?.addEventListener("abort", onAbort, { once: true });
         child.once("close", (code) => {
           input.signal?.removeEventListener("abort", onAbort);
-          confirmAndFinish(code);
+          confirmAndFinish(code, true);
         });
         child.once("error", () => {
           input.signal?.removeEventListener("abort", onAbort);
-          confirmAndFinish(-1);
+          // R04 修复：错误时标记为未确认停止
+          confirmAndFinish(-1, false);
         });
       });
     } finally {

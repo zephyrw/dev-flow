@@ -220,7 +220,7 @@ export async function resumeModelWaits(engine: Engine, at = Date.now()) {
     }
   }
 }
-export function reconcileProcesses(engine: Engine, key: string) {
+export async function reconcileProcesses(engine: Engine, key: string) {
   const w = engine.get(key);
   requireCondition(
     [
@@ -240,39 +240,58 @@ export function reconcileProcesses(engine: Engine, key: string) {
     confirmed?: boolean;
     pid?: number;
   }>("process_record", key);
-  const results = records
-    .filter((record) => !(record.status === "exited" && record.confirmed))
-    .map((record) => {
-      // Use native module to check process status instead of host executable
-      // For Windows: check if the job still has active processes
-      // For POSIX: check if the process is still alive
-      let alive = false;
-      if (record.pid && record.pid > 0) {
-        try {
-          if (process.platform === "win32") {
-            const { getNative } = require("../../process/src/native/index.js") as typeof import("../../process/src/native/index.js");
-            const native = getNative();
-            // Try to open the process to check if it's alive
-            const h = native.openProcess?.(record.pid);
-            if (h) {
-              alive = true;
-              native.closeHandle?.(h);
+  const results = await Promise.all(
+    records
+      .filter((record) => !(record.status === "exited" && record.confirmed))
+      .map(async (record) => {
+        // R03 修复：使用异步 import() 替代 require()，四态确认
+        // running / confirmed_exited / unknown / not_owned
+        let status: "running" | "confirmed_exited" | "unknown" = "unknown";
+        if (record.pid && record.pid > 0) {
+          try {
+            if (process.platform === "win32") {
+              const { getNativeAsync } = await import("../../process/src/native/index.js");
+              const native = await getNativeAsync();
+              const h = native.openProcess(record.pid);
+              if (h) {
+                status = "running";
+                native.closeHandle(h);
+              } else {
+                status = "confirmed_exited";
+              }
+            } else {
+              process.kill(record.pid, 0);
+              status = "running";
             }
-          } else {
-            process.kill(record.pid, 0);
-            alive = true;
+          } catch (err: unknown) {
+            // R03 修复：区分 ESRCH（进程不存在）和其他异常
+            if (isNodeErrnoException(err) && err.code === "ESRCH") {
+              status = "confirmed_exited";
+            } else {
+              // 其他异常保持 unknown，不释放资源
+              status = "unknown";
+            }
           }
-        } catch {
-          alive = false;
+        } else {
+          // 无 PID 记录视为已确认退出
+          status = "confirmed_exited";
         }
-      }
-      requireCondition(
-        !alive,
-        "PROCESS_STILL_ACTIVE",
-        `受管进程 ${record.id} 尚未退出`,
-      );
-      return { id: record.id, alive: false };
-    });
+        requireCondition(
+          status !== "running",
+          "PROCESS_STILL_ACTIVE",
+          `受管进程 ${record.id} 尚未退出`,
+        );
+        if (status === "unknown") {
+          // R03 修复：unknown 状态必须抛出错误，阻塞资源释放
+          throw new FlowError(
+            "PROCESS_STATE_UNKNOWN",
+            `受管进程 ${record.id} 状态未知，无法安全释放资源`,
+            409,
+          );
+        }
+        return { id: record.id, alive: false };
+      }),
+  );
   const leases = engine.store.list<Lease>("lease", key);
   requireCondition(
     !leases.some((l) => l.id === "browser:shared"),
@@ -611,4 +630,13 @@ function routeArrangedResume(
     engine.store.enqueue(key, "dispatch", {});
     return next;
   }
+}
+
+function isNodeErrnoException(error: unknown): error is NodeJS.ErrnoException {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    typeof (error as NodeJS.ErrnoException).code === "string"
+  );
 }
