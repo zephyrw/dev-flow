@@ -19,7 +19,9 @@ import {
   redact,
   id,
 } from "../../core/src/util.js";
-import { executionScopeInstructions } from "../../core/src/role-boundaries.js";
+import { executionScopeInstructions, executionScopeWithoutTests, roleBoundaryInstructionsFor } from "../../core/src/role-boundaries.js";
+import { usesPolicyV2 } from "../../core/src/quality-policy-migration.js";
+import { composeRoleGuidance, type RecoveryGuidanceRole } from "../../core/src/conversation-guidance.js";
 import {
   ATTACHMENT_HANDOFF_NOTICE,
   CONVERSATION_ENTITY,
@@ -443,12 +445,18 @@ export class ProfileRuntime {
   }
   private executeMaterials(w: Workflow, run: Run) {
     const plan = this.engine.plan(w.id);
+    const policy2 = usesPolicyV2({ quality_policy_version: run.quality_policy_version ?? w.quality_policy_version });
+    const purpose = run.purpose ?? "implement";
+    const roleSpecific = policy2 && purpose !== "implement";
+    const assignment = this.engine.store.get<any>("repair_assignment", w.id);
+    const repair = !policy2 || (assignment && assignment.assignment_id === run.assignment_id)
+      ? assignment : null;
     return this.continuationMaterials(
       {
-        instructions:
-          executionScopeInstructions +
-          "严格按原始正式计划和批准的整改正文完成全部开发任务及测试代码，主动识别补齐同一需求内必需的相关代码和测试，再由多个子 Agent 并行运行独立的单元、集成和 E2E 目标，各自修复并重跑。不得另建或执行替代计划。发现计划矛盾应报告阻塞。完成后说明本轮结果，直接交代码审查。报告可附，不为调用 ID、清单或 hash 重跑测试。不得自行提交 Git 或宣布人工验收通过。",
-        execution_order: batchExecutionInstructions,
+        instructions: roleSpecific
+          ? (purpose === "planner_commit" ? "" : executionScopeWithoutTests) + roleBoundaryInstructionsFor(purpose)
+          : executionScopeInstructions + "完成本轮开发或整改及必要测试后交代码复核，不自行提交 Git，不代替人工验收。",
+        ...(roleSpecific ? {} : { execution_order: batchExecutionInstructions }),
         workflow: w,
         run,
         plan,
@@ -457,14 +465,16 @@ export class ProfileRuntime {
         functional_issues: this.engine.store.list("functional_issue", w.id),
         project: this.engine.project(w.project_id),
         workspaces: this.workspaces(w),
-        repair_assignment:
-          this.engine.store.get("repair_assignment", w.id) ?? null,
-        repair_instructions:
-          this.engine.store.get<any>("repair_state", w.id)?.instructions ??
-          this.engine.store.get<any>("repair_assignment", w.id)?.instructions ??
-          null,
-        completion_instruction:
-          "最终输出 JSON {status, summary, notes, artifacts}。status 只能是 completed、need_planner 或 need_user。未知状态不会被当成完成。",
+        repair_assignment: repair,
+        repair_instructions: policy2 ? repair?.instructions ?? null :
+          this.engine.store.get<any>("repair_state", w.id)?.instructions ?? repair?.instructions ?? null,
+        previous_completion: run.dispatch_context?.source_run_id
+          ? this.engine.store.get("execution_completion", run.dispatch_context.source_run_id) ?? null : null,
+        integration_repair: policy2 && purpose === "planner_takeover"
+          ? this.engine.store.get("planner_integration_repair", w.id) ?? null : null,
+        completion_instruction: purpose === "planner_commit" && policy2
+          ? "完成实际提交后输出 JSON {status, summary, repositories: [{repo_id, commit}]}；无须新提交时在摘要说明。需要代码修复报告 need_planner；需要用户协助报告 need_user。"
+          : "最终输出 JSON {status, summary, notes, artifacts}。status 只能是 completed、need_planner 或 need_user。未知状态不会被当成完成。",
       },
       run,
     );
@@ -1676,7 +1686,7 @@ export function readRoleRecoveryGuidance(
   workflow: Workflow,
   run: Pick<
     Run,
-    "id" | "purpose" | "stage" | "adapter" | "conversation_id"
+    "id" | "purpose" | "stage" | "adapter" | "conversation_id" | "quality_policy_version"
   > & { profile?: Run["profile"] },
   extra?: RecoveryGuidanceOptions,
 ): string | undefined {
@@ -1771,7 +1781,7 @@ function latestRecoveryManifest(
 }
 
 function guidanceForRunPurpose(
-  run: Pick<Run, "purpose" | "stage">,
+  run: Pick<Run, "purpose" | "stage" | "quality_policy_version">,
   workflow: Workflow,
   engine: Engine,
   manifest: RecoveryManifest,
@@ -1779,6 +1789,9 @@ function guidanceForRunPurpose(
   extra?: RecoveryGuidanceOptions,
 ) {
   const purpose = run.purpose ?? run.stage ?? "";
+  if (usesPolicyV2({ quality_policy_version: run.quality_policy_version ?? workflow.quality_policy_version }) &&
+      ["planner_takeover", "executor_test", "planner_commit", "functional_fix"].includes(purpose))
+    return composeRoleGuidance(purpose as RecoveryGuidanceRole, manifest, capabilities, extra);
   if (purpose === "planning" || purpose === "planner_takeover")
     return planningRecoveryGuidance(manifest, capabilities, extra);
   if (purpose === "aside")

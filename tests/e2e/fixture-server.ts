@@ -523,6 +523,7 @@ engine.runtime = {
     feedbackExecutions.get(run)?.();
     feedbackExecutions.delete(run);
     await runtime.stop(run);
+    return { status: "confirmed_exited" as const };
   },
   stopConversation: (target: any) => (runtime as any).stopConversation(target),
   check: (flow, test, principal) => runtime.check(flow, test, principal),

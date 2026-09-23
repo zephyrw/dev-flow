@@ -129,10 +129,26 @@ export async function createNative(
   await page.getByRole("button", { name: "+ 新建", exact: true }).click();
   const modal = page.locator(".modal-backdrop").last();
   await modal.getByLabel("工作区真实路径").fill(state.nativeRepo);
-  await modal.getByLabel("规划工具").selectOption("codex");
-  await modal.getByLabel("执行工具").selectOption("codex");
+  // ModelConfigTabs 每个职责 tab 只渲染一个「工具」选择器
+  const pickModel = async (query: string) => {
+    const search = modal.getByLabel("模型", { exact: true });
+    await expect(search).toBeEnabled({ timeout: 20000 });
+    await search.click();
+    await search.fill(query);
+    const option = modal
+      .locator('[aria-label="模型选项列表"] [role="option"]')
+      .first();
+    await expect(option).toBeVisible({ timeout: 15000 });
+    await option.click();
+  };
+  await modal.getByRole("tab", { name: "规划", exact: true }).click();
+  await modal.getByLabel("工具", { exact: true }).selectOption("codex");
+  await pickModel("Astra");
+  await modal.getByRole("tab", { name: "执行", exact: true }).click();
+  await modal.getByLabel("工具", { exact: true }).selectOption("codex");
+  await pickModel("Astra");
   if (mode === "existing_workspace")
-    await modal.getByRole("radio", { name: "主工作区直接执行" }).check();
+    await modal.locator('input[name="workspaceMode"][value="existing_workspace"]').check();
   await modal.locator("textarea").fill(title);
   const created = page.waitForResponse(
     (r) =>

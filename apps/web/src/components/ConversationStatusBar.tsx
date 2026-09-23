@@ -15,6 +15,7 @@ export const DEFAULT_ADAPTER_FILE_INPUT: Record<string, FileInputCapability> = {
   "claude-code": { text: true, image: true, binary: false },
   "kimi-code": { text: true, image: true, binary: false },
   opencode: { text: true, image: true, binary: false },
+  "mimo-code": { text: true, image: false, binary: false },
   qoder: { text: true, image: false, binary: false },
   "cursor-agent": { text: false, image: true, binary: false },
   "grok-build": { text: false, image: false, binary: false },

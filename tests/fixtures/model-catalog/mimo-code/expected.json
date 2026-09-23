@@ -1,42 +1,42 @@
 {
   "adapterId": "mimo-code",
   "visibleNativeIds": [
-    "mimo/mimo-v2.6-pro",
-    "mimo/mimo-v2.6-flash",
-    "xiaomi/legacy-mimo-v2.5"
+    "xiaomi/mimo-v2.6-flash",
+    "xiaomi/mimo-v2.6-pro",
+    "xiaomi/mimo-v2.5"
   ],
   "rejectedLabels": [
     "mimo-v2.6-pro",
     "mimo-v2.6-flash"
   ],
   "entries": {
-    "mimo/mimo-v2.6-pro": {
-      "nativeId": "mimo/mimo-v2.6-pro",
+    "xiaomi/mimo-v2.6-pro": {
+      "nativeId": "xiaomi/mimo-v2.6-pro",
       "hidden": false,
-      "label": "MiMo V2.6 Pro",
+      "label": "MiMo-V2.6-Pro",
       "effort": {
         "status": "supported",
         "transport": "variant-flag",
-        "values": ["thinking", "non-thinking"]
+        "values": ["low", "medium", "high"]
       }
     },
-    "mimo/mimo-v2.6-flash": {
-      "nativeId": "mimo/mimo-v2.6-flash",
+    "xiaomi/mimo-v2.6-flash": {
+      "nativeId": "xiaomi/mimo-v2.6-flash",
       "hidden": false,
-      "label": "MiMo V2.6 Flash",
+      "label": "MiMo-V2.6-Flash",
       "effort": {
         "status": "supported",
         "transport": "variant-flag",
-        "values": ["high"]
+        "values": ["low", "medium", "high"]
       }
     },
-    "xiaomi/legacy-mimo-v2.5": {
-      "nativeId": "xiaomi/legacy-mimo-v2.5",
+    "xiaomi/mimo-v2.5": {
+      "nativeId": "xiaomi/mimo-v2.5",
       "hidden": false,
       "effort": {
-        "status": "unknown",
-        "transport": "none",
-        "values": []
+        "status": "supported",
+        "transport": "variant-flag",
+        "values": ["low", "medium", "high"]
       }
     }
   }

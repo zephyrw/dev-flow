@@ -40,14 +40,17 @@ export const runtimeToolNames: Record<string, string> = {
   "kimi-code": "Kimi Code",
   qoder: "Qoder",
   opencode: "OpenCode",
+  "mimo-code": "MiMo Code",
   "cursor-agent": "Cursor Agent",
 };
 export const runtimePurposeNames: Record<string, string> = {
   planning: "规划模型 · 制定计划",
   implement: "执行模型 · 开发实施",
-  planner_takeover: "规划模型 · 接手修复",
-  quality_review: "规划模型 · 代码质量审查",
-  functional_fix: "功能修复",
+  planner_takeover: "规划模型 · 质量修复",
+  quality_review: "规划模型 · 代码质量复核",
+  executor_test: "执行模型 · 测试",
+  planner_commit: "规划模型 · 提交代码",
+  functional_fix: "执行模型 · 功能修复",
   aside: "临时提问",
   merge_conflict: "解决合并冲突",
 };

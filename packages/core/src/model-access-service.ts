@@ -435,6 +435,41 @@ function writeProbeWorkspace(adapterId: SupportedAdapterId, cwd: string) {
   }
 }
 
+function buildMimoProbe(
+  selection: ResolvedSelection,
+  executable: string,
+  cwd: string,
+): PreparedInvocation {
+  const args = ["run", "--format", "json", "--agent", "devflow-review"];
+  if (selection.modelToken) args.push("--model", selection.modelToken);
+  args.push(...selection.effortArgs);
+  return {
+    executable,
+    args,
+    cwd,
+    env: {
+      ...selection.effortEnv,
+      MIMOCODE_CONFIG_CONTENT: JSON.stringify({
+        agent: {
+          "devflow-review": {
+            mode: "primary",
+            description: "DevFlow read-only probe",
+            permission: {
+              "*": "deny",
+              read: "allow",
+              glob: "allow",
+              grep: "allow",
+              list: "allow",
+            },
+          },
+        },
+      }),
+      MIMOCODE_DISABLE_AUTOUPDATE: "1",
+    },
+    stdin: ACCESS_PROBE_PROMPT,
+  };
+}
+
 function fallbackAccessProbe(
   selection: ResolvedSelection,
   executable: string,
@@ -457,6 +492,8 @@ function fallbackAccessProbe(
       return buildQoderProbe(selection, executable, cwd);
     case "opencode":
       return buildOpenCodeProbe(selection, executable, cwd);
+    case "mimo-code":
+      return buildMimoProbe(selection, executable, cwd);
     default:
       throw new FlowError(
         "CLI_PARAMETER_UNSUPPORTED",

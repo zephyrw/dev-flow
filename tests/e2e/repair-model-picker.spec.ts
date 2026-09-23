@@ -182,7 +182,7 @@ test("E2E-U14 历史记录看当时绑定不被当前默认污染", async ({ pag
     .first();
   await expect(history).toContainText("historical-bound-model");
   await expect(history).toContainText("本轮审查");
-  await page.getByRole("button", { name: "设置", exact: true }).click();
+  await page.getByRole("button", { name: "全局模型设置" }).click();
   const drawer = page.getByRole("dialog", { name: "工具与模型" });
   await pickListedModel(drawer, "规划工具", "gpt-5.6-sol");
   await waitAccessStatus(drawer.locator(".ms-editor").first(), "已验证可访问");

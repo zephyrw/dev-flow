@@ -37,6 +37,7 @@ import { ModelCatalogService } from "./model-catalog-service.js";
 import { ModelAccessService } from "./model-access-service.js";
 import { assertAccountModelRetryAccess, type PendingModelRetry } from "./model-retry.js";
 import { id, objectHash } from "./util.js";
+import { usesPolicyV2 } from "./quality-policy-migration.js";
 
 export type RunPurpose =
   | "planning"
@@ -505,14 +506,34 @@ function previewFromFrozenRun(
   };
 }
 
+/** 策略 2 不使用历史 reviewer/review_fixer/functional_fixer 角色覆盖。 */
+function policy2RoleOverride(purpose: string): RoutingRole | undefined {
+  switch (purpose) {
+    case "quality_review":
+    case "planner_takeover":
+    case "planner_commit":
+      return "planner";
+    case "implement":
+    case "functional_fix":
+    case "executor_test":
+      return "executor";
+    default:
+      return undefined;
+  }
+}
+
 function resolveFreshPreview(
   store: Store,
   workflowId: string,
   context: DispatchContext,
   view: ExecutionSpecView,
 ): Omit<RoutingPreview, "semanticHash"> {
-  const naturalRole = resolveRoutingRole(context);
-  const assignment = canUseUserRepair(context)
+  const w = store.get<{ quality_policy_version?: number }>("workflow", workflowId);
+  const isPolicy2 = usesPolicyV2(w ?? {});
+  const naturalRole = isPolicy2
+    ? (policy2RoleOverride(context.purpose) ?? resolveRoutingRole(context))
+    : resolveRoutingRole(context);
+  const assignment = !isPolicy2 && canUseUserRepair(context)
     ? matchingRepairAssignment(store, workflowId, context.repair_batch_id!)
     : undefined;
   if (assignment) {
@@ -528,7 +549,9 @@ function resolveFreshPreview(
       assignment_id: assignment.id,
     };
   }
-  if (canUsePlannerTakeover(store, workflowId, context, naturalRole)) {
+  // 策略 2 的 planner_takeover/planner_commit 已由 naturalRole 处理，
+  // 不需要 canUsePlannerTakeover 的额外检查。
+  if (!isPolicy2 && canUsePlannerTakeover(store, workflowId, context, naturalRole)) {
     return {
       purpose: context.purpose,
       routing_role: "planner",
@@ -547,6 +570,7 @@ function resolveFreshPreview(
     profile: resolved.profile,
     routing_source: resolved.source,
     inherited_from: resolved.inherited_from,
+    assignment_id: context.assignment_id,
     execution_spec_id: persistedSpecId(view),
     execution_spec_revision: view.spec.revision,
     logical_round_id: context.logical_round_id ?? id("round"),
@@ -792,11 +816,15 @@ function repairDispatchContext(
   if (purpose === "plan_self_check") {
     return planSelfCheckDispatch(store, workflowId);
   }
+  if (purpose === "executor_test" || purpose === "planner_commit") {
+    const flow = store.get<{ phase?: "before_human" | "after_human" }>("quality_flow", workflowId);
+    return { review_phase: flow?.phase };
+  }
   if (purpose === "implement" || purpose === "functional_fix") {
     const functional = functionalFixDispatch(store, workflowId);
     if (functional) return functional;
   }
-  const takeover = store.get<{ planner?: boolean; source?: string }>(
+  const takeover = store.get<{ planner?: boolean; source?: string; assignment_id?: string; phase?: "before_human" | "after_human" }>(
     "repair_assignment",
     workflowId,
   );
@@ -806,12 +834,16 @@ function repairDispatchContext(
       planner_takeover: true,
       repair_kind: "quality",
       repair_batch_id: qualityBatchId,
+      assignment_id: takeover?.assignment_id,
+      review_phase: takeover?.phase,
     };
   }
   if (qualityBatchId || takeover?.source === "quality_review") {
     return {
       repair_kind: "quality",
       repair_batch_id: qualityBatchId,
+      assignment_id: takeover?.assignment_id,
+      review_phase: takeover?.phase,
     };
   }
   return {};

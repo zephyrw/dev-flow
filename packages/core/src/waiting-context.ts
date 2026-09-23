@@ -32,6 +32,8 @@ export interface ExecutionCompletion {
   source_review_id?: string;
   phase?: string;
   summary?: string;
+  /** 规划提交结果中的仓库/commit 信息，供 Git 集成使用。 */
+  repositories?: Array<{ repo_id: string; commit: string }>;
   recorded_at: string;
 }
 

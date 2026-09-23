@@ -107,6 +107,9 @@ describe("质量审查生产调度闭环", { timeout: 1500000 }, () => {
           unresolved_questions: ["需要用户确认"],
         };
       },
+      async stop() {
+        return { status: "confirmed_exited" };
+      },
     };
     try {
       await until(s, ["WAITING_INPUT", "BLOCKED"]);

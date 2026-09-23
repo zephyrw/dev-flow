@@ -57,7 +57,7 @@ export function CurrentRuntime({
       "EXECUTING",
       "REVIEWING",
       "INTEGRATING",
-      "PLANNER_TAKEOVER",
+      "QUEUED",
     ].includes(detail?.workflow?.state);
 
   // 解析周额度（严格 10080 分钟）与 5 小时额度（严格 300 分钟），缺失不展示其他周期
@@ -95,7 +95,12 @@ export function CurrentRuntime({
           ? "reviewer"
           : runtime.purpose === "functional_fix"
             ? "functional_fixer"
-            : undefined),
+            : runtime.purpose === "executor_test"
+              ? "executor"
+              : runtime.purpose === "planner_commit" ||
+                  runtime.purpose === "planner_takeover"
+                ? "planner"
+                : undefined),
     );
   };
 

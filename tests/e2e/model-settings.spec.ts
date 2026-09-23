@@ -15,7 +15,7 @@ test.describe.configure({ mode: "serial" });
 test("E2E-U01 无任务也可打开全局设置并编辑两套默认", async ({ page }) => {
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "工作流总览" })).toBeVisible();
-  await page.getByRole("button", { name: "设置", exact: true }).click();
+  await page.getByRole("button", { name: "全局模型设置" }).click();
   const drawer = page.getByRole("dialog", { name: "工具与模型" });
   await expect(drawer).toBeVisible();
   await expect(drawer).toContainText("此处修改只影响以后新建的任务");
@@ -34,7 +34,7 @@ test("E2E-U02 修改全局默认后新建任务预填新值", async ({ page }) =
   expect(initial.ok(), await initial.text()).toBeTruthy();
   const before = (await initial.json()).defaults;
   await page.goto("/");
-  await page.getByRole("button", { name: "设置", exact: true }).click();
+  await page.getByRole("button", { name: "全局模型设置" }).click();
   const drawer = page.getByRole("dialog", { name: "工具与模型" });
   await exactLabel(drawer, "规划工具").selectOption("codex");
   await pickListedModel(drawer, "规划工具", "gpt-5.6-sol");
@@ -81,7 +81,7 @@ test("E2E-U04 高级项只改 reviewer 时其余保持继承", async ({ page }) 
 
 test("E2E-U12 快速切换工具会清掉旧模型", async ({ page }) => {
   await page.goto("/");
-  await page.getByRole("button", { name: "设置", exact: true }).click();
+  await page.getByRole("button", { name: "全局模型设置" }).click();
   const drawer = page.getByRole("dialog", { name: "工具与模型" });
   const planner = exactLabel(drawer, "规划工具");
   await planner.selectOption("codex");
@@ -92,7 +92,7 @@ test("E2E-U12 快速切换工具会清掉旧模型", async ({ page }) => {
 
 test("E2E-U13 历史模型不在目录时保留并标注", async ({ page }) => {
   await page.goto("/");
-  await page.getByRole("button", { name: "设置", exact: true }).click();
+  await page.getByRole("button", { name: "全局模型设置" }).click();
   const drawer = page.getByRole("dialog", { name: "工具与模型" });
   await drawer.getByText("高级选项").first().click();
   await drawer
@@ -123,7 +123,7 @@ test("E2E-U15 设置抽屉可键盘操作并显示错误重试", async ({ page }
     },
   );
   await page.goto("/");
-  await page.getByRole("button", { name: "设置", exact: true }).focus();
+  await page.getByRole("button", { name: "全局模型设置" }).focus();
   await page.keyboard.press("Enter");
   const drawer = page.getByRole("dialog", { name: "工具与模型" });
   await expect(drawer).toBeVisible();
@@ -152,7 +152,9 @@ test("E2E-U03 新建当场改工具/模型/强度且后台 Run 参数一致", as
   await page.getByRole("button", { name: "+ 新建", exact: true }).click();
   const modal = page.locator(".modal-backdrop").last();
   await modal.getByLabel("工作区真实路径").fill(state.nativeRepo);
-  await modal.getByRole("radio", { name: "主工作区直接执行" }).check();
+  await modal
+    .getByRole("radio", { name: /现有工作区/ })
+    .check();
   const plannerCard = modal.locator(".ms-card").filter({ hasText: "规划配置" });
   await pickListedModel(plannerCard, "规划工具", "gpt-5.6-sol");
   await exactLabel(plannerCard, "规划工具思考强度").selectOption("xhigh");
@@ -202,7 +204,7 @@ test("E2E-U03 新建当场改工具/模型/强度且后台 Run 参数一致", as
 test("E2E-U09 再次使用已验证模型无登录弹窗且探测不增加", async ({ page }) => {
   await page.goto("/");
   const before = await fixtureProbeCount(page);
-  await page.getByRole("button", { name: "设置", exact: true }).click();
+  await page.getByRole("button", { name: "全局模型设置" }).click();
   const drawer = page.getByRole("dialog", { name: "工具与模型" });
   await expect(drawer).toBeVisible();
   await pickListedModel(drawer, "规划工具", "gpt-6-astra");
@@ -221,7 +223,7 @@ test("E2E-U10 首次验证失败准确错误与草稿不丢", async ({ page }) =
     adapterId: "codex",
   });
   await page.goto("/");
-  await page.getByRole("button", { name: "设置", exact: true }).click();
+  await page.getByRole("button", { name: "全局模型设置" }).click();
   const drawer = page.getByRole("dialog", { name: "工具与模型" });
   const planner = drawer.locator(".ms-editor").first();
   await planner.getByText("高级选项").click();
@@ -249,7 +251,7 @@ test("E2E-U10 首次验证失败准确错误与草稿不丢", async ({ page }) =
 
 test("E2E-R23 编辑后刷新目录草稿保持", async ({ page }) => {
   await page.goto("/");
-  await page.getByRole("button", { name: "设置", exact: true }).click();
+  await page.getByRole("button", { name: "全局模型设置" }).click();
   const drawer = page.getByRole("dialog", { name: "工具与模型" });
   await expect(drawer).toBeVisible();
   await pickListedModel(drawer, "规划工具", "gpt-5.6-sol");
@@ -286,7 +288,7 @@ test("E2E-R23 其他页面改了默认时提示冲突不覆盖草稿", async ({ 
   });
   await fixturePost(page, "/__fixture/restore-access");
   await page.goto("/");
-  await page.getByRole("button", { name: "设置", exact: true }).click();
+  await page.getByRole("button", { name: "全局模型设置" }).click();
   const drawer = page.getByRole("dialog", { name: "工具与模型" });
   await pickListedModel(drawer, "规划工具", "gpt-5.6-sol");
   const origin = `http://localhost:${process.env.E2E_PORT || "14811"}`;
@@ -355,7 +357,7 @@ test("E2E-R22 长验证不在 16 秒误报失败", async ({ page }) => {
     delayMs: 20000,
   });
   await page.goto("/");
-  await page.getByRole("button", { name: "设置", exact: true }).click();
+  await page.getByRole("button", { name: "全局模型设置" }).click();
   const drawer = page.getByRole("dialog", { name: "工具与模型" });
   const planner = drawer.locator(".ms-editor").first();
   await planner.getByText("高级选项").click();
@@ -383,7 +385,7 @@ test("E2E-R24 verified 后重新验证 force=true，普通再保存不重复探�
     delayMs: 0,
   });
   await page.goto("/");
-  await page.getByRole("button", { name: "设置", exact: true }).click();
+  await page.getByRole("button", { name: "全局模型设置" }).click();
   const drawer = page.getByRole("dialog", { name: "工具与模型" });
   const planner = drawer.locator(".ms-editor").first();
   await pickListedModel(drawer, "规划工具", "gpt-6-astra");
@@ -416,7 +418,7 @@ test("E2E-R24 verified 后重新验证 force=true，普通再保存不重复探�
 
 test("手工输入只在确认完整模型 ID 后验证", async ({ page }) => {
   await page.goto("/");
-  await page.getByRole("button", { name: "设置", exact: true }).click();
+  await page.getByRole("button", { name: "全局模型设置" }).click();
   const drawer = page.getByRole("dialog", { name: "工具与模型" });
   const planner = drawer.locator(".ms-editor").first();
   await expect(planner.getByLabel("规划工具模型搜索")).toBeEnabled();
@@ -463,7 +465,7 @@ test("安装待验证草稿会预填设置并明确标注", async ({ page }) => 
     route.fulfill({ json: { status: "verified" } }),
   );
   await page.goto("/");
-  await page.getByRole("button", { name: "设置", exact: true }).click();
+  await page.getByRole("button", { name: "全局模型设置" }).click();
   const drawer = page.getByRole("dialog", { name: "工具与模型" });
   await expect(drawer).toContainText("已载入安装时选择的待验证配置");
   await expect(

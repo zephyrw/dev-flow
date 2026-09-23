@@ -24,7 +24,8 @@ import {
   waitingBelongsToRun,
 } from "../../core/src/waiting-context.js";
 import type { WaitingContext } from "../../core/src/waiting-context.js";
-import type { Workflow } from "../../contracts/src/index.js";
+import type { Run, Workflow } from "../../contracts/src/index.js";
+import type { DispatchContext } from "../../contracts/src/model-routing.js";
 
 
 type InterruptionRecord = {
@@ -46,12 +47,12 @@ export function resolveResumeTarget(engine: Engine, key: string) {
       ? engine.store.get<InterruptionRecord>("run_stop", w.run_id)
       : undefined);
   const run = interruption?.prior_run_id
-    ? engine.store.get<{ purpose?: string; stage?: string; repair_batch_id?: string }>(
+    ? engine.store.get<Run>(
         "run",
         interruption.prior_run_id,
       )
     : w.run_id
-      ? engine.store.get<{ purpose?: string; stage?: string; repair_batch_id?: string }>(
+      ? engine.store.get<Run>(
           "run",
           w.run_id,
         )
@@ -61,8 +62,21 @@ export function resolveResumeTarget(engine: Engine, key: string) {
   const stage = interruption?.prior_stage ?? run?.stage ?? w.stage;
   const reviewPhase =
     interruption?.review_phase ??
+    run?.dispatch_context?.review_phase ??
     engine.store.get<{ phase?: string }>("plan_check_review_intent", key)
       ?.phase;
+  if (["COMMITTING", "INTEGRATING", "COMMIT_PARTIAL"].includes(priorState ?? w.state) &&
+      engine.store.get("planner_commit_handoff", key)) {
+    return { state: "COMMIT_PARTIAL" as const, stage: "commit_recovery", enqueue: false };
+  }
+  const pending = engine.store.get<Partial<DispatchContext>>("pending_dispatch_purpose", key);
+  if (run?.status === "completed" && pending?.source_run_id === run.id && pending.purpose &&
+      ["QUEUED", "REVIEW_QUEUED", "PLANNER_TAKEOVER", "COMMITTING"].includes(priorState ?? w.state)) {
+    const phase = pending.review_phase === "after_human" ? "after_human" : "before_human";
+    return { state: pending.purpose === "quality_review" ? "REVIEW_QUEUED" as const : "QUEUED" as const,
+      stage: pending.purpose === "quality_review" ? (phase === "before_human" ? BEFORE_HUMAN_REVIEW_STAGE : "review")
+        : pending.purpose === "implement" ? "execute" : pending.purpose, enqueue: true };
+  }
   if (priorState === "HUMAN_PENDING" || stage === "functional_retest" || stage === "accept") {
     return {
       state: "HUMAN_PENDING" as const,
@@ -105,7 +119,10 @@ export function resolveResumeTarget(engine: Engine, key: string) {
     purpose === "implement" ||
     purpose === "functional_fix" ||
     purpose === "executor_test" ||
-    purpose === "planner_takeover"
+    purpose === "planner_takeover" ||
+    purpose === "planner_commit" ||
+    stage === "planner_commit" ||
+    w.state === "COMMITTING"
   ) {
     return {
       state: "QUEUED" as const,
@@ -116,15 +133,12 @@ export function resolveResumeTarget(engine: Engine, key: string) {
             ? "executor_test"
             : purpose === "functional_fix"
               ? "functional_fix"
-              : "execute",
+              : purpose === "planner_commit" || stage === "planner_commit"
+                ? "planner_commit"
+                : "execute",
       enqueue: true,
-    };
-  }
-  if (purpose === "planner_commit" || stage === "planner_commit" || w.state === "COMMITTING") {
-    return {
-      state: "COMMITTING" as const,
-      stage: "planner_commit",
-      enqueue: true,
+      purpose: purpose as string | undefined,
+      review_phase: reviewPhase,
     };
   }
   if (["QUEUED", "REVIEW_QUEUED", "PLANNING"].includes(w.state)) {
@@ -378,9 +392,23 @@ export function resumeApproved(
     throw new FlowError("DISPATCH_DISABLED", `无法恢复执行: ${reasons || "调度已停用"}`, 409);
   }
 
+  if (target.state === "COMMIT_PARTIAL") {
+    engine.transition(key, [w.state], target.state, target.stage, { blocker: undefined });
+    return engine.get(key);
+  }
+  const scheduled = engine.store.get<Partial<DispatchContext>>("pending_dispatch_purpose", key);
+  const completedRun = w.run_id ? engine.store.get<Run>("run", w.run_id) : undefined;
+  if ((target.state === "QUEUED" || target.state === "REVIEW_QUEUED") && scheduled?.purpose &&
+      scheduled.source_run_id === completedRun?.id && completedRun?.status === "completed") {
+    // A completed round already selected its successor; do not recover its old role.
+    engine.transition(key, [w.state], target.state, target.stage, { blocker: undefined });
+    engine.scheduler.enqueue(key, w.project_id);
+    return engine.get(key);
+  }
   const arranged = target.state === "HUMAN_PENDING" ? undefined : arrangeConversationRecovery(
     engine, key, source === "quota_retry" ? "quota_retry" : source === "user_resume" ? "user_resume" : "service_recovery",
   );
+  if (target.state === "QUEUED") engine.restoreDispatchContext(key);
   engine.store.remove("model_retry", key);
   const resumedWaiting = resumeWaitingIfCurrent(engine, key, w, waiting);
   if (resumedWaiting) return resumedWaiting;

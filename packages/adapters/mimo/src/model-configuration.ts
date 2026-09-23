@@ -120,8 +120,9 @@ function mergeRow(target: Map<string, MimoRow>, row: MimoRow): void {
   for (const variant of row.variants) {
     if (!existing.variants.includes(variant)) existing.variants.push(variant);
   }
-  if (!existing.label && row.label) existing.label = row.label;
-  if (!existing.providerId && row.providerId) existing.providerId = row.providerId;
+  // JSON 元数据中的 name 优先于行级 fallback 标签。
+  if (row.label) existing.label = row.label;
+  if (row.providerId) existing.providerId = row.providerId;
   target.set(row.base, existing);
 }
 

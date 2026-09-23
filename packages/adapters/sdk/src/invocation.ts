@@ -217,6 +217,17 @@ export function clientInvocation(
       args.push("run", "--format", "json");
       if (resume) args.push("--session", resume);
       pushFrozenSelection(args, env, input);
+      // 按用途显式选择原生 agent，确保只读权限由原生实现。
+      if (readonly) {
+        args.push("--agent", "devflow-review");
+      } else if (
+        input.purpose === "planner_takeover" ||
+        input.purpose === "planner_commit"
+      ) {
+        args.push("--agent", "devflow-planner");
+      } else {
+        args.push("--agent", "devflow-executor");
+      }
       // Role/permission config is scoped to this managed subprocess only.
       env.MIMOCODE_CONFIG_CONTENT = JSON.stringify(
         readonly

@@ -6,6 +6,7 @@ import {
 } from "../../contracts/src/index.js";
 import { recoveryGuidanceText } from "../../runtime/src/conversation-recovery.js";
 import { readOnlyPurpose } from "../../adapters/sdk/src/invocation.js";
+import { roleBoundaryInstructionsFor } from "./role-boundaries.js";
 import {
   CURSOR_NO_CHILD_REASON,
   cursorSubagentCapabilities,
@@ -35,6 +36,10 @@ export type RecoveryGuidanceRole =
   | "execute"
   | "review"
   | "repair"
+  | "planner_takeover"
+  | "executor_test"
+  | "planner_commit"
+  | "functional_fix"
   | "aside";
 
 export interface RecoveryGuidanceAttachment {
@@ -104,7 +109,7 @@ export function reviewBridgeInstructions(
   return roleCapabilityGuidance("review", capabilities, extra);
 }
 
-function composeRoleGuidance(
+export function composeRoleGuidance(
   role: RecoveryGuidanceRole,
   manifest: RecoveryManifest,
   capabilities: SubagentCapabilities,
@@ -148,6 +153,8 @@ function purposeForRole(role: RecoveryGuidanceRole): string {
 }
 
 function roleWorkHint(role: RecoveryGuidanceRole): string {
+  if (["planner_takeover", "executor_test", "planner_commit", "functional_fix"].includes(role))
+    return roleBoundaryInstructionsFor(role);
   if (role === "planning")
     return "继续原规划用途：只调查和规划，不修改产品代码，不自行批准或启动执行。";
   if (role === "execute")

@@ -8,7 +8,8 @@ import {
   publishProjectMaterialSafely,
   readProjectMaterialByLocator,
 } from "./project-materials.js";
-import { bindProfile, buildDispatchContext, isLegacyProtocol } from "./run-profile.js";
+import { bindProfile, buildDispatchContext, isLegacyProtocol, type RunPurpose } from "./run-profile.js";
+import type { DispatchContext } from "../../contracts/src/model-routing.js";
 import { bindRepairAssignment, closeOpenRepairBatches } from "./repair-model-service.js";
 import { QualityCoordinator } from "./quality-coordinator.js";
 import { DocumentService } from "./document-service.js";
@@ -78,6 +79,7 @@ import {
   usesPolicyV2,
   routeQualityEvent,
   ensureQualityFlow,
+  migrateWorkflowQualityPolicy,
 } from "./quality-policy-migration.js";
 import { GitManager, repositoryInfo, git } from "../../git/src/git.js";
 import { Scheduler } from "../../scheduler/src/scheduler.js";
@@ -885,7 +887,22 @@ export class Engine {
     );
     if (scope === "within_plan") {
       this.scheduler.enqueue(key, w.project_id);
-      this.store.enqueue(key, "dispatch", {});
+      // 功能反馈派发 functional_fix；其他按 implement 处理。
+      const feedbackKind = this.store
+        .list<{ text: string; kind?: string; status: string }>(
+          "feedback_message",
+          key,
+        )
+        .filter((m) => m.status === "pending" && m.text === text)
+        .map((m) => m.kind)[0];
+      const purpose =
+        feedbackKind === "functional" || w.state === "HUMAN_PENDING" || this.store.get("functional_fix_intent", key)
+          ? "functional_fix"
+          : "implement";
+      this.store.enqueue(key, "dispatch_run", {
+        purpose,
+        repair_kind: purpose === "functional_fix" ? "functional" : "quality",
+      });
     }
     return next;
   }
@@ -1464,6 +1481,18 @@ export class Engine {
     if (supersedeHandoff && isOpenPlanningHandoff(handoff))
       savePlanningHandoff(this.store, key, { ...handoff, status: "superseded" });
   }
+  restoreDispatchContext(key: string, sourceRunId = this.get(key).run_id) {
+    const run = sourceRunId ? this.store.get<Run>("run", sourceRunId) : undefined;
+    if (!run || run.workflow_id !== key || run.plan_revision !== this.get(key).plan_revision || !run.purpose) return;
+    const pending = this.store.get<Partial<DispatchContext>>("pending_dispatch_purpose", key);
+    if (run.status === "completed" && pending?.source_run_id === run.id && pending.purpose) return;
+    this.store.put("pending_dispatch_purpose", key, key, {
+      ...buildDispatchContext(this.store, key, run.purpose),
+      ...run.dispatch_context, purpose: run.purpose, logical_round_id: run.logical_round_id,
+      assignment_id: run.assignment_id, source_run_id: run.dispatch_context?.source_run_id,
+      retry_run_id: this.store.get<PendingModelRetry>("pending_model_retry", key)?.retry_run_id,
+    });
+  }
   stageExecuteContinuation(key: string) {
     const w = this.get(key);
     const run = w.run_id ? this.store.get<Run>("run", w.run_id) : undefined;
@@ -1621,6 +1650,7 @@ export class Engine {
         { blocker: undefined },
       );
     } else {
+      this.restoreDispatchContext(key, context.run_id);
       this.transition(key, [this.get(key).state], "QUEUED", context.stage, {
         blocker: undefined,
       });
@@ -1796,18 +1826,19 @@ export class Engine {
       };
 
       if (validation.passed) {
-        const assignment = this.store.get<QualityRepairAssignment>(
-          "repair_assignment",
-          key,
-        );
+        const currentAssignment = this.store.get<QualityRepairAssignment>("repair_assignment", key);
+        const assignment = !usesPolicyV2(w) || (currentAssignment?.assignment_id === run.assignment_id &&
+          (run.purpose === "implement" || run.purpose === "planner_takeover"))
+          ? currentAssignment : undefined;
         recordExecutionCompletion(this.store, {
           run_id: run.id,
           workflow_id: key,
           intent: "completed",
           assignment_id: assignment?.assignment_id,
           source_review_id: assignment?.source_review_id,
-          phase: assignment?.phase,
+          phase: run.dispatch_context?.review_phase ?? assignment?.phase,
           summary: payload.summary,
+          repositories: payload.repositories as Array<{ repo_id: string; commit: string }> | undefined,
           recorded_at: now(),
         });
         if (assignment && !assignment.consumed_completion_run_id)
@@ -1966,7 +1997,7 @@ export class Engine {
   }
   /**
    * 策略 2：规划模型已实际 git commit 后，调用 integrateCommittedDelivery
-   * 完成已授权本地集成与清理；不生成第二次候选提交。
+   * 完成已授权本地集成并保留工作树；不生成第二次候选提交。
    */
   private async completePlannerCommit(
     key: string,
@@ -1974,40 +2005,52 @@ export class Engine {
     completion: { summary?: string; repositories?: Array<{ repo_id: string; commit: string }> },
   ) {
     const w = this.get(key);
-    const commits = Array.isArray(completion.repositories)
-      ? completion.repositories
-      : [];
-    this.transition(key, ["EXECUTING", "VERIFYING"], "COMMITTING", "planner_commit");
+    requireCondition(w.run_id === runId, "RUN_REVOKED", "提交运行已被替代");
+    this.store.transaction(() => {
+      this.store.put("planner_commit_handoff", key, key, { ...completion, run_id: runId });
+      this.transition(key, ["EXECUTING", "VERIFYING", "COMMIT_PARTIAL"], "COMMITTING", "planner_commit", { blocker: undefined });
+    });
     try {
-      const outcome = await this.withWorkspaceWrite(key, id("integrate"), () =>
-        new GitDeliveryCoordinator(
-          this.store,
-          this.config.workspace_root,
-          this.git,
-        ).integrateCommittedDelivery(key, commits),
-      );
-      this.store.event(
-        key,
-        w.project_id,
-        "PlannerCommitIntegrated",
-        {
-          run_id: runId,
-          integrations: outcome.integrations.map((i) => ({
-            repo_id: i.repo_id,
-            commit: i.candidate_commit,
-            status: i.status,
-          })),
-        },
-        runId,
-      );
-    } catch (e) {
-      // 集成冲突/部分失败：保留成功结果，只恢复未完成操作；不回质量整改计数。
-      this.transition(key, ["COMMITTING"], "COMMIT_PARTIAL", "planner_commit", {
-        blocker: {
-          code: "INTEGRATE_FAILED",
-          message: String(e),
-        },
-      });
+      const workspaces = this.store.list<Workspace>("workspace", key);
+      const roots = workspaces.flatMap((ws) => [ws.root, ...(w.workspace_mode === "new_worktree"
+        ? [ws.source_root ?? this.project(w.project_id).repositories.find((r) => r.id === ws.repo_id)?.path].filter((v): v is string => !!v) : [])]);
+      const keys = [...new Set(roots.map((root) => "write:" + root.toLowerCase()))];
+      const acquired = keys.filter((lock) => !this.store.get("lease", lock));
+      requireCondition(this.scheduler.acquire(key, runId, keys), "WORKSPACE_BUSY", "提交涉及的工作区正在使用");
+      let outcome: Awaited<ReturnType<GitDeliveryCoordinator["integrateCommittedDelivery"]>>;
+      try {
+        outcome = await new GitDeliveryCoordinator(this.store, this.config.workspace_root, this.git)
+          .integrateCommittedDelivery(key, Array.isArray(completion.repositories) ? completion.repositories : []);
+      } finally {
+        this.scheduler.release(key, runId, acquired, true);
+      }
+      if (this.get(key).run_id !== runId || this.store.get("run_stop", runId)) return;
+      const repairInstructions = outcome.repairInstructions;
+      if (repairInstructions && this.get(key).state === "COMMIT_PARTIAL") {
+        this.store.transaction(() => {
+          this.store.put("planner_integration_repair", key, key, { instructions: repairInstructions, source_run_id: runId });
+          this.assignPolicy2Repair(this.get(key), repairInstructions, true, "after_human");
+          const flow = ensureQualityFlow(this.store, key);
+          this.store.put("quality_flow", key, key, { ...flow, phase: "after_human", planner_repairs_only: true });
+          this.applyPolicy2Action(key, runId, { kind: "planner_repair" }, "after_human");
+        });
+        return;
+      }
+      if (outcome.integrations.every((item) => item.status === "success")) {
+        this.store.remove("planner_integration_repair", key);
+        closeOpenRepairBatches(this.store, key);
+      }
+      this.store.event(key, w.project_id, "PlannerCommitIntegrated", {
+        run_id: runId, integrations: outcome.integrations.map((item) => ({
+          repo_id: item.repo_id, commit: item.candidate_commit, status: item.status,
+        })),
+      }, runId);
+    } catch (error) {
+      const current = this.get(key);
+      if (current.run_id === runId && ["COMMITTING", "INTEGRATING", "COMMIT_PARTIAL"].includes(current.state))
+        this.transition(key, [current.state], "COMMIT_PARTIAL", "planner_commit", {
+          blocker: { code: "INTEGRATE_FAILED", message: String(error) },
+        });
     }
   }
 
@@ -2023,6 +2066,7 @@ export class Engine {
   ) {
     const purpose = active?.purpose;
     const flow = ensureQualityFlow(this.store, key);
+    if (flow.phase !== phase) this.store.put("quality_flow", key, key, { ...flow, phase });
     if (purpose === "planner_takeover") {
       const { action } = routeQualityEvent(this.store, key, {
         type: "planner_repair_completed",
@@ -2050,8 +2094,16 @@ export class Engine {
       this.scheduler.enqueue(key, this.get(key).project_id);
       return;
     }
-    const isQualityRepair =
-      flow.executor_repair_completed || flow.planner_repairs_only;
+    // 通过 Run 的 assignment 关联判断是否质量整改，而非仅依赖 flow 标记。
+    const assignment = this.store.get<QualityRepairAssignment>(
+      "repair_assignment",
+      key,
+    );
+    const isQualityRepair = active?.purpose === "implement" &&
+      assignment?.source === "quality_review" && assignment.planner === false &&
+      assignment.current_attempt_run_id === runId && assignment.assignment_id === active.assignment_id;
+    if (isQualityRepair)
+      this.store.put("repair_assignment", key, key, { ...assignment, consumed_completion_run_id: runId });
     const { action } = routeQualityEvent(this.store, key, {
       type: "implement_completed",
       is_quality_repair: isQualityRepair,
@@ -2065,118 +2117,44 @@ export class Engine {
     action: { kind: string; phase?: string; reason?: string },
     phase: "before_human" | "after_human",
   ) {
-    const w = this.get(key);
-    switch (action.kind) {
-      case "quality_review":
-        this.transition(
-          key,
-          ["EXECUTING", "VERIFYING", "REVIEW_QUEUED"],
-          "REVIEW_QUEUED",
-          phase === "before_human" ? BEFORE_HUMAN_REVIEW_STAGE : "review",
-        );
-        this.store.event(
-          key,
-          w.project_id,
-          "NativeDeliveryReadyForReview",
-          { run_id: runId },
-          runId,
-        );
-        this.scheduler.enqueue(key, w.project_id);
-        this.store.enqueue(key, "dispatch", {});
+    this.store.transaction(() => {
+      const w = this.get(key);
+      this.patchReviewPointer(key, { phase });
+      if (action.kind === "human") {
+        this.store.remove("pending_dispatch_purpose", key);
+        this.transition(key, [w.state], "HUMAN_PENDING", "accept", { blocker: undefined });
+        this.store.event(key, w.project_id, "ReadyForHumanFunctionalReview", { run_id: runId }, runId);
         return;
-      case "human":
-        this.transition(
-          key,
-          ["EXECUTING", "VERIFYING"],
-          "HUMAN_PENDING",
-          "accept",
-        );
-        this.store.event(
-          key,
-          w.project_id,
-          "ReadyForHumanFunctionalReview",
-          { run_id: runId },
-          runId,
-        );
-        this.scheduler.enqueue(key, w.project_id);
-        return;
-      case "executor_test":
-        this.transition(
-          key,
-          ["EXECUTING", "VERIFYING", "PLANNER_TAKEOVER"],
-          "QUEUED",
-          "executor_test",
-        );
-        this.scheduler.enqueue(key, w.project_id);
-        this.store.enqueue(key, "dispatch_run", {
-          purpose: "executor_test",
-          review_phase: phase,
+      }
+      const purposes: Record<string, RunPurpose> = {
+        quality_review: "quality_review", executor_repair: "implement",
+        planner_repair: "planner_takeover", executor_test: "executor_test",
+        functional_fix: "functional_fix", planner_commit: "planner_commit",
+      };
+      const purpose = purposes[action.kind];
+      if (!purpose) {
+        this.transition(key, [w.state], "WAITING_INPUT", w.stage, {
+          blocker: { code: "NEED_USER", message: action.reason ?? "需要用户输入" },
         });
         return;
-      case "planner_repair":
-        this.transition(
-          key,
-          ["EXECUTING", "VERIFYING", "REVIEW_QUEUED", "REVIEWING"],
-          "PLANNER_TAKEOVER",
-          "planner_takeover",
-        );
-        this.scheduler.enqueue(key, w.project_id);
-        this.store.enqueue(key, "dispatch_run", {
-          purpose: "planner_takeover",
-          review_phase: phase,
-          planner_takeover: true,
-        });
-        return;
-      case "executor_repair":
-        this.transition(
-          key,
-          ["EXECUTING", "VERIFYING", "REVIEW_QUEUED"],
-          "QUEUED",
-          "execute",
-        );
-        this.scheduler.enqueue(key, w.project_id);
-        this.store.enqueue(key, "dispatch_run", {
-          purpose: "implement",
-          review_phase: phase,
-          repair_kind: "quality",
-        });
-        return;
-      case "functional_fix":
-        this.transition(
-          key,
-          ["HUMAN_PENDING", "EXECUTING", "VERIFYING"],
-          "QUEUED",
-          "execute",
-        );
-        this.scheduler.enqueue(key, w.project_id);
-        this.store.enqueue(key, "dispatch_run", {
-          purpose: "functional_fix",
-          review_phase: phase,
-        });
-        return;
-      case "planner_commit":
-        this.transition(
-          key,
-          ["EXECUTING", "VERIFYING", "REVIEWING", "REVIEW_QUEUED"],
-          "COMMITTING",
-          "planner_commit",
-        );
-        this.scheduler.enqueue(key, w.project_id);
-        this.store.enqueue(key, "dispatch_run", {
-          purpose: "planner_commit",
-          review_phase: phase,
-        });
-        return;
-      case "wait":
-      default:
-        this.transition(key, ["EXECUTING", "VERIFYING"], "WAITING_INPUT", "execute", {
-          blocker: {
-            code: "NEED_USER",
-            message: action.reason ?? "需要用户输入",
-          },
-        });
-        return;
-    }
+      }
+      const assignment = this.store.get<QualityRepairAssignment>("repair_assignment", key);
+      const context = {
+        purpose, review_phase: phase, source_run_id: runId,
+        ...(action.kind === "executor_repair" || action.kind === "planner_repair"
+          ? { repair_kind: "quality" as const, assignment_id: assignment?.assignment_id }
+          : purpose === "functional_fix" ? { repair_kind: "functional" as const } : {}),
+      };
+      this.transition(
+        key, [w.state], purpose === "quality_review" ? "REVIEW_QUEUED" : "QUEUED",
+        purpose === "quality_review" ? (phase === "before_human" ? BEFORE_HUMAN_REVIEW_STAGE : "review")
+          : purpose === "implement" ? "execute" : purpose,
+        { blocker: undefined },
+      );
+      this.store.put("pending_dispatch_purpose", key, key, context);
+      this.scheduler.enqueue(key, w.project_id);
+      this.store.enqueue(key, "dispatch_run", { ...context, expected_version: this.get(key).version });
+    });
   }
 
   async finalizeNativeDelivery(key: string, runId: string) {
@@ -2186,18 +2164,20 @@ export class Engine {
     const completion = readExecutionCompletion(this.store, runId);
     if (!completion || completion.intent !== "completed") return;
     const active = this.store.get<Run>("run", runId);
+    // 统一任务/Run 归属、停止及失败状态处理，不因用途绕过。
+    if (
+      w.run_id !== runId || !active || active.workflow_id !== key ||
+      completion.workflow_id !== key ||
+      (active.status &&
+        !["running", "completed"].includes(active.status)) ||
+      (active?.exit_code !== undefined && active.exit_code !== 0)
+    )
+      return;
     // 策略 2：规划提交完成后直接本地集成，不走质量复核。
     if (active?.purpose === "planner_commit" && usesPolicyV2(w)) {
       await this.completePlannerCommit(key, runId, completion);
       return;
     }
-    if (
-      w.run_id !== runId ||
-      (active?.status &&
-        !["running", "completed"].includes(active.status)) ||
-      (active?.exit_code !== undefined && active.exit_code !== 0)
-    )
-      return;
     let rev = this.store
       .list<DeliveryRevision>("delivery_revision", key)
       .reverse()
@@ -2281,10 +2261,8 @@ export class Engine {
       }
       if (this.store.get("functional_fix_intent", key))
         this.store.put("functional_retest_ready", key, key, { run_id: runId });
-      const phase: "before_human" | "after_human" =
-        this.reviewPointer(key).phase === "after_human"
-          ? "after_human"
-          : "before_human";
+      const phase: "before_human" | "after_human" = active?.dispatch_context?.review_phase ??
+        (this.reviewPointer(key).phase === "after_human" ? "after_human" : "before_human");
       this.recordImplementationCompletion(key, runId);
       this.patchReviewPointer(key, { phase });
       // 策略 2：按 Run 用途与 quality_flow 路由，不总是进质量复核。
@@ -2526,6 +2504,8 @@ export class Engine {
         "quality_review",
         "planner_takeover",
         "functional_fix",
+        "executor_test",
+        "planner_commit",
         "aside",
         "spec_switch",
         "feedback_interrupt",
@@ -2748,6 +2728,22 @@ export class Engine {
       }
       this.store.transaction(() => {
         const w = this.get(job.workflow_id);
+        // 保存派发用途，供 run() 读取；策略 2 的 executor_test/planner_commit/functional_fix 不能被写死成 implement。
+        if (payload.expected_version !== undefined && payload.expected_version !== w.version) {
+          this.store.jobStatus(job.id, "cancelled");
+          return;
+        }
+        if (purpose && ["QUEUED", "REVIEW_QUEUED", "PLANNING"].includes(w.state)) {
+          const context = {
+            purpose, review_phase: payload.review_phase, repair_kind: payload.repair_kind,
+            planner_takeover: payload.planner_takeover, source_run_id: payload.source_run_id,
+            assignment_id: payload.assignment_id, logical_round_id: payload.logical_round_id,
+            repair_batch_id: payload.repair_batch_id, functional_fix_intent: payload.functional_fix_intent,
+            associated_run_id: payload.associated_run_id, retry_run_id: payload.retry_run_id,
+          };
+          this.store.put("pending_dispatch_purpose", job.workflow_id, job.workflow_id,
+            Object.fromEntries(Object.entries(context).filter(([, value]) => value !== undefined)));
+        }
         if (["QUEUED", "REVIEW_QUEUED", "PLANNING"].includes(w.state)) {
           if (!this.store.get("queue", w.id))
             this.scheduler.enqueue(w.id, w.project_id);
@@ -3086,7 +3082,12 @@ export class Engine {
         if (!item) break;
         attempted.add(item.id);
         last = item.project;
-        const w = this.get(item.id);
+        let w = this.get(item.id);
+        // 只迁移尚未开始的派发，不修改正在执行的冻结 Run。
+        if (!this.running.has(w.id) && !usesPolicyV2(w)) {
+          migrateWorkflowQualityPolicy(this.store, w.id);
+          w = this.get(item.id);
+        }
         const dispatchControl = this.store.get<any>("workflow_dispatch_control", w.id);
         if (dispatchControl && dispatchControl.dispatch_enabled === false) {
           continue;
@@ -3267,14 +3268,21 @@ export class Engine {
         );
         leases.push(...keys);
       }
-      const takeover = this.store.get<{ planner: boolean }>(
-        "repair_assignment",
-        key,
-      )?.planner;
-      const purpose = review
-        ? "quality_review"
-        : takeover ? "planner_takeover" : "implement";
-      const dispatchContext = buildDispatchContext(this.store, key, purpose);
+      const pendingPurpose = this.store.get<Partial<DispatchContext>>("pending_dispatch_purpose", key);
+      const retryRunId = this.store.get<PendingModelRetry>("pending_model_retry", key)?.retry_run_id;
+      const retryRun = retryRunId ? this.store.get<Run>("run", retryRunId) : undefined;
+      const assignment = this.store.get<QualityRepairAssignment>("repair_assignment", key);
+      const purpose: RunPurpose = review ? "quality_review"
+        : retryRun?.purpose ?? pendingPurpose?.purpose ??
+          (w.stage === "planner_commit" || w.stage === "executor_test" || w.stage === "functional_fix" || w.stage === "planner_takeover"
+            ? w.stage : assignment?.planner ? "planner_takeover" : "implement");
+      const dispatchContext = {
+        ...buildDispatchContext(this.store, key, purpose),
+        ...pendingPurpose,
+        ...(retryRun?.dispatch_context ?? {}),
+        ...(retryRunId ? { retry_run_id: retryRunId } : {}),
+        purpose,
+      };
       const profileBinding = bindProfile(
         this.store,
         this.config,
@@ -3282,36 +3290,13 @@ export class Engine {
         purpose,
         dispatchContext,
       );
-      w = this.transition(
-        key,
-        [review ? "REVIEW_QUEUED" : "QUEUED"],
-        review ? "REVIEWING" : "EXECUTING",
-        review
-          ? this.store.get<{ phase: string }>("plan_check_review_intent", key)
-              ?.phase === "before_human"
-            ? BEFORE_HUMAN_REVIEW_STAGE
-            : "review"
-          : this.store.get<{ planner: boolean }>("repair_assignment", key)
-                ?.planner
-            ? "planner_takeover"
-            : "execute",
-        {
-          run_id: runId,
-          review_request_id: review ? id("review") : w.review_request_id,
-          blocker: undefined,
-        },
-      );
-      activated = true;
-      this.store.remove("queue_wait", key);
+      const stage = review
+        ? dispatchContext.review_phase === "before_human" ? BEFORE_HUMAN_REVIEW_STAGE : "review"
+        : purpose === "implement" ? "execute" : purpose;
       const pendingRetry = this.store.get<PendingModelRetry>("pending_model_retry", key);
       const deadline = this.accountRecoveryDeadline(pendingRetry, this.config.timeouts.agent_minutes * 60000);
       const continuationPurpose = review ? "review" : "execute";
-      const role = review
-        ? "planner"
-        : this.store.get<{ planner?: boolean }>("repair_assignment", key)
-            ?.planner
-          ? "planner"
-          : "executor";
+      const role = profileBinding.routing_role === "planner" || profileBinding.routing_role === "reviewer" ? "planner" : "executor";
       const continuation = this.consumeContinuation(key, continuationPurpose, role);
       let run: Run = {
         ...profileBinding,
@@ -3319,7 +3304,9 @@ export class Engine {
         workflow_id: key,
         plan_revision: w.plan_revision,
         adapter: profileBinding.profile.adapterId,
-        stage: w.stage,
+        stage,
+        dispatch_context: dispatchContext,
+        quality_policy_version: retryRun?.quality_policy_version ?? w.quality_policy_version ?? 1,
         status: "running",
         started_at: now(),
         deadline_at: deadline,
@@ -3331,6 +3318,11 @@ export class Engine {
         protocol: "lightweight",
       };
       this.store.transaction(() => {
+        w = this.transition(key, [review ? "REVIEW_QUEUED" : "QUEUED"], review ? "REVIEWING" : "EXECUTING", stage, {
+          run_id: runId, review_request_id: review ? id("review") : w.review_request_id, blocker: undefined,
+        });
+        this.store.remove("pending_dispatch_purpose", key);
+        this.store.remove("queue_wait", key);
         if (continuation)
           run = this.persistBoundContinuation(key, runId, run, continuation);
         else this.store.put("run", runId, key, run);
@@ -3342,7 +3334,7 @@ export class Engine {
             "repair_assignment",
             key,
           );
-          if (assignment)
+          if (assignment && (!usesPolicyV2(w) || assignment.assignment_id === run.assignment_id))
             this.store.put("repair_assignment", key, key, {
               ...assignment,
               current_attempt_run_id: runId,
@@ -3356,6 +3348,7 @@ export class Engine {
         if (profileBinding.assignment_id) bindRepairAssignment(this.store, key, profileBinding.assignment_id);
         this.store.remove("pending_model_retry", key);
       });
+      activated = true;
       for (const msg of this.store
         .list<any>("feedback_message", key)
         .filter((m) => m.status === "pending"))
@@ -3706,7 +3699,7 @@ export class Engine {
         const doc = new DocumentService(
           this.store,
           this.config.storage_root,
-        ).publishDocument(w.id, "repair_plan", body, w.plan_revision);
+        ).publishDocument(w.id, "repair_plan", body, usesPolicyV2(w) ? undefined : w.plan_revision);
 
         // CW2-D03 / CW3-F11: 通过 Locator 定位并写入项目工作区整改原件，包含真实 run_id/revision
         const locator = resolveMaterialLocator({
@@ -3799,55 +3792,42 @@ export class Engine {
       review_id: quality.run_id,
     });
   }
+  private assignPolicy2Repair(w: Workflow, body: string, planner: boolean, phase: "before_human" | "after_human") {
+    const assignment: QualityRepairAssignment = {
+      assignment_id: id("assignment"), planner, phase, source: "quality_review",
+      source_review_id: w.run_id!, plan_revision: w.plan_revision, plan_hash: w.plan_hash, instructions: body,
+    };
+    this.store.put("repair_assignment", w.id, w.id, assignment);
+    this.store.put("quality_repair_assignment", assignment.assignment_id!, w.id, assignment);
+    return assignment;
+  }
+
   private commitPolicy2RepairDecision(
     w: Workflow,
-    review: Review,
+    _review: Review,
     quality: { verdict?: string; summary?: string; repair_document?: string },
     body: string,
     withinScope: boolean,
   ) {
-    const phase: "before_human" | "after_human" =
-      this.reviewPointer(w.id).phase === "after_human"
-        ? "after_human"
-        : "before_human";
+    const phase = this.reviewPointer(w.id).phase === "after_human" ? "after_human" : "before_human";
+    const stored = ensureQualityFlow(this.store, w.id);
+    this.store.put("quality_flow", w.id, w.id, { ...stored, phase });
     const { flow, action } = routeQualityEvent(this.store, w.id, {
       type: "quality_review",
-      result: {
-        verdict:
-          quality.verdict === "passed" || quality.verdict === "changes_required"
-            ? quality.verdict
-            : "need_user",
-        summary: quality.summary,
-        repair_document: quality.repair_document,
-      },
+      result: { verdict: quality.verdict === "passed" || quality.verdict === "changes_required" ? quality.verdict : "need_user",
+        summary: quality.summary, repair_document: body },
     });
-    this.patchReviewPointer(w.id, { phase: flow.phase });
     if (action.kind === "wait") {
       this.queueUnclearFollowup(w.id, {
-        purpose: "review",
-        role: "planner",
-        phase: flow.phase,
-        run_id: w.run_id,
-        conversation_id: w.run_id
-          ? this.store.get<Run>("run", w.run_id)?.conversation_id
-          : undefined,
-        source_execution_run_id: this.reviewPointer(w.id).completion_run_id,
-        original_text: action.reason ?? "审查结论不明确",
-        stage: flow.phase === "before_human" ? BEFORE_HUMAN_REVIEW_STAGE : "review",
+        purpose: "review", role: "planner", phase, run_id: w.run_id,
+        original_text: action.reason, stage: phase === "before_human" ? BEFORE_HUMAN_REVIEW_STAGE : "review",
       });
       return;
     }
-    if (body.trim()) {
-      try {
-        new DocumentService(
-          this.store,
-          this.config.storage_root,
-        ).publishDocument(w.id, "repair_plan", body, w.plan_revision);
-      } catch {}
-    }
     this.clearCurrentImplementationIntent(w.id);
     if (withinScope) {
-      // 复用统一动作派发：executor_repair / planner_repair / human / planner_commit
+      if (action.kind === "executor_repair" || action.kind === "planner_repair")
+        this.assignPolicy2Repair(w, body, action.kind === "planner_repair", flow.phase);
       this.dispatchPolicy2AfterReview(w.id, action, flow.phase);
     }
   }
@@ -3857,51 +3837,7 @@ export class Engine {
     action: { kind: string; phase?: string; reason?: string },
     phase: "before_human" | "after_human",
   ) {
-    const w = this.get(key);
-    switch (action.kind) {
-      case "executor_repair":
-        this.transition(key, ["REVIEWING"], "QUEUED", "execute");
-        this.scheduler.enqueue(key, w.project_id);
-        this.store.enqueue(key, "dispatch_run", {
-          purpose: "implement",
-          review_phase: phase,
-          repair_kind: "quality",
-        });
-        return;
-      case "planner_repair":
-        this.transition(key, ["REVIEWING"], "PLANNER_TAKEOVER", "planner_takeover");
-        this.scheduler.enqueue(key, w.project_id);
-        this.store.enqueue(key, "dispatch_run", {
-          purpose: "planner_takeover",
-          review_phase: phase,
-          planner_takeover: true,
-        });
-        return;
-      case "human":
-        this.transition(key, ["REVIEWING"], "HUMAN_PENDING", "manual_acceptance");
-        this.scheduler.enqueue(key, w.project_id);
-        return;
-      case "planner_commit":
-        this.transition(key, ["REVIEWING"], "COMMITTING", "planner_commit");
-        this.scheduler.enqueue(key, w.project_id);
-        this.store.enqueue(key, "dispatch_run", {
-          purpose: "planner_commit",
-          review_phase: phase,
-        });
-        return;
-      case "quality_review":
-        this.transition(
-          key,
-          ["REVIEWING"],
-          "REVIEW_QUEUED",
-          phase === "before_human" ? BEFORE_HUMAN_REVIEW_STAGE : "review",
-        );
-        this.scheduler.enqueue(key, w.project_id);
-        this.store.enqueue(key, "dispatch", {});
-        return;
-      default:
-        return;
-    }
+    this.applyPolicy2Action(key, this.get(key).run_id ?? "", action, phase);
   }
 
   private commitNativeRepairDecision(
@@ -4196,6 +4132,16 @@ export class Engine {
       return this.get(key);
     }
     const passed = reviewIntent.intent === "passed";
+    if (passed && usesPolicyV2(w)) {
+      this.store.transaction(() => {
+        const phase = this.reviewPointer(key).phase === "after_human" ? "after_human" : "before_human";
+        const flow = ensureQualityFlow(this.store, key);
+        this.store.put("quality_flow", key, key, { ...flow, phase });
+        const { action } = routeQualityEvent(this.store, key, { type: "quality_review", result: { verdict: "passed" } });
+        this.applyPolicy2Action(key, w.run_id!, action, phase);
+      });
+      return this.get(key);
+    }
     if (!passed) {
       if (!isLegacyProtocol(this.store.get<Run>("run", w.run_id!), this.plan(key).plan))
         return this.applyNativeRepairReview(w, review);
@@ -4245,15 +4191,6 @@ export class Engine {
       approvedPlan.plan,
     );
     this.transition(key, ["REVIEWING"], "COMMITTING", "planner_commit");
-    // 策略 2：派发 planner_commit，由规划模型实际 git commit；平台不代做候选提交。
-    if (usesPolicyV2(w)) {
-      this.scheduler.enqueue(key, w.project_id);
-      this.store.enqueue(key, "dispatch_run", {
-        purpose: "planner_commit",
-        review_phase: this.reviewPointer(key).phase ?? "after_human",
-      });
-      return this.get(key);
-    }
     try {
       if (lightweight) {
         const outcome = await this.withWorkspaceWrite(key, id("commit"), () =>
@@ -4330,6 +4267,13 @@ export class Engine {
       "INVALID_STATE",
       "当前不是部分提交恢复",
     );
+    if (usesPolicyV2(w)) {
+      const handoff = this.store.get<{ run_id: string; summary?: string; repositories?: Array<{ repo_id: string; commit: string }> }>("planner_commit_handoff", key) ??
+        (w.run_id ? readExecutionCompletion(this.store, w.run_id) : undefined);
+      requireCondition(handoff && handoff.run_id === w.run_id, "COMMIT_CONTEXT_MISSING", "缺少原规划提交上下文；保留现场");
+      await this.completePlannerCommit(key, handoff.run_id, handoff);
+      return this.get(key);
+    }
     const review = this.store.must<Review>("review", w.review_request_id!);
     requireCondition(
       normalizeReviewIntent(review).intent === "passed",
@@ -4451,6 +4395,16 @@ export class Engine {
   ): RoundResult {
     const run = this.store.get<Run>("run", runId);
     const conversationId = run?.conversation_id;
+    const plannerRole = run?.routing_role === "planner" || run?.purpose === "planner_takeover" || run?.purpose === "planner_commit";
+    if (normalized.intent === "need_planner" && usesPolicyV2(this.get(key)) &&
+        (run?.purpose === "executor_test" || run?.purpose === "planner_commit")) {
+      const phase = run.dispatch_context?.review_phase ?? ensureQualityFlow(this.store, key).phase;
+      this.store.transaction(() => {
+        this.assignPolicy2Repair(this.get(key), [normalized.summary, normalized.notes].filter(Boolean).join("\n"), true, phase);
+        this.applyPolicy2Action(key, runId, { kind: "planner_repair" }, phase);
+      });
+      return { status: "need_planner", summary: normalized.summary };
+    }
     if (normalized.intent === "need_planner") {
       const questions = textQuestions(
         (normalized.payload as { unresolved_questions?: unknown })
@@ -4488,7 +4442,8 @@ export class Engine {
     if (normalized.intent === "unclear") {
       this.queueUnclearFollowup(key, {
         purpose: "execute",
-        role: "executor",
+        role: plannerRole ? "planner" : "executor",
+        phase: run?.dispatch_context?.review_phase,
         run_id: runId,
         conversation_id: conversationId,
         source_execution_run_id: runId,
@@ -4497,13 +4452,14 @@ export class Engine {
           (normalized.payload as { unresolved_questions?: unknown })
             .unresolved_questions,
         ),
-        stage: "execute",
+        stage: run?.stage ?? "execute",
       });
       return { status: "unclear", summary: normalized.summary };
     }
     saveWaitingContext(this.store, key, {
       purpose: "execute",
-      role: "executor",
+      role: plannerRole ? "planner" : "executor",
+      phase: run?.dispatch_context?.review_phase,
       run_id: runId,
       conversation_id: conversationId,
       source_execution_run_id: runId,
@@ -4514,7 +4470,7 @@ export class Engine {
       ),
       intent: normalized.intent,
     });
-    this.transition(key, ["EXECUTING", "VERIFYING"], "WAITING_INPUT", "execute", {
+    this.transition(key, ["EXECUTING", "VERIFYING"], "WAITING_INPUT", run?.stage ?? "execute", {
       blocker: {
         code:
           normalized.intent === "need_user"
@@ -4653,7 +4609,9 @@ export class Engine {
       this.store.enqueue(key, "dispatch_run", { purpose: "planning" });
       return next;
     }
-    const next = this.transition(key, [w.state], "QUEUED", "execute", {
+    this.restoreDispatchContext(key, waiting.run_id);
+    const sourceRun = waiting.run_id ? this.store.get<Run>("run", waiting.run_id) : undefined;
+    const next = this.transition(key, [w.state], "QUEUED", sourceRun?.stage ?? "execute", {
       feedback,
       blocker: undefined,
     });
@@ -5242,7 +5200,7 @@ export class Engine {
         let payload: { purpose?: string; aside_id?: string; run_id?: string };
         try { payload = JSON.parse(job.data); } catch { continue; }
         if (aside ? payload.aside_id === aside.id :
-            !payload.aside_id && [undefined, "planning", "implement", "quality_review", "plan_self_check", "functional_fix", "planner_takeover"].includes(payload.purpose) &&
+            !payload.aside_id && [undefined, "planning", "implement", "quality_review", "plan_self_check", "functional_fix", "planner_takeover", "executor_test", "planner_commit"].includes(payload.purpose) &&
               (!payload.run_id || payload.run_id === sourceRunId)) {
           this.store.jobStatus(job.id, "cancelled");
         }

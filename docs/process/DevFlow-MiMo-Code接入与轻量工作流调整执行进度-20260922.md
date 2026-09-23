@@ -2,47 +2,71 @@
 
 对应原计划：`docs/plan/DevFlow-MiMo-Code接入与轻量工作流调整详细开发计划-20260922.md`
 
-本文件只记录执行事实，不重新定义范围或验收标准。
+本文件只记录执行事实。代码分支：`feat/mimo-lightweight-workflow`。
 
 ## 原编号映射
 
 | 原编号 | 实现位置 | 测试情况 | 状态 |
 | --- | --- | --- | --- |
-| D01 契约与模板 | `packages/contracts/src/execution-spec.ts`（SupportedAdapters + mimo-code、quality_policy_version、template_revision 默认 7）；`model-routing.ts`（purpose + executor_test/planner_commit）；`model-catalog.ts`（TOOL_DISPLAY_ORDER + MiMo Code）；`quality.ts`（QualityFlow、CodeReviewResult、PlannerRepairResult、ExecutorTestResult、PlannerCommitResult）；`index.ts`（Workflow.quality_policy_version）；`packages/core/src/templates/default-template.ts`（revision 7、quality_policy_version 2）；`create-workflow.ts`；`run-profile.ts`（RunPurpose 扩展、PLANNER/EXECUTOR 用途集合） | typecheck 通过 | 完成 |
-| D02 MiMo 基础 adapter | `packages/adapters/mimo/src/{adapter,model-configuration,conversation-source}.ts`；SDK `index.ts` 注册；`registry.ts` mimo-code:"mimo"；`launch.ts` @mimo-ai/cli；`invocation.ts` mimo-code 分支（MIMOCODE_CONFIG_CONTENT + MIMOCODE_DISABLE_AUTOUPDATE=1，stdin 提示词，不用 OPENCODE_CONFIG_CONTENT） | `tests/unit/mimo-model-configuration.test.ts` 5 通过；`tests/unit/mimo-conversation-source.test.ts` 5 通过 | 完成 |
-| D03 模型目录与冻结配置 | `model-catalog-service.ts`（parseMimoModelCatalog、models --verbose、allowSlash、detectMimoVariantEncoding）；`model-selection.ts` mimo-code + --variant；`probe-terminal.ts` 剥 #variant；`catalog-parse.ts` DISCOVERY_AUTH_REQUIRED | 同上单测；fixture `tests/fixtures/model-catalog/mimo-code/*` | 完成 |
-| D04 新质量路由 | `packages/core/src/quality-flow.ts`（纯函数 nextQualityAction）；`quality-policy-migration.ts`（read/write/routeQualityEvent）；`engine.ts` finalizeNativeDelivery/dispatchPolicy2AfterImplement/applyPolicy2Action/commitPolicy2RepairDecision | `tests/unit/quality-flow.test.ts` 12 通过（F01–F12 路由） | 完成 |
-| D05 角色路由与恢复 | `run-profile.ts` resolveRoutingRole（executor_test→executor、planner_commit→planner）；`conversation-recovery.ts` asRunPurpose；`recovery.ts` resolveResumeTarget（executor_test/planner_commit 不回落 implement） | typecheck 通过；恢复回归待 D11 | 主体完成 |
-| D06 规划实际提交 | `delivery-coordinator.ts` integrateCommittedDelivery()；`engine.ts` completePlannerCommit()；receiveReview 策略 2 派发 planner_commit 不调 executeDelivery | 单元/集成待 D11 | 主体完成 |
-| D07 反馈与人工确认 | `engine.ts` accept() 策略 2 不调 assertPassed、human_functional_passed→after_human 最终复核；functional_fix 完成回 HUMAN_PENDING 不自动关问题 | 路由覆盖于 quality-flow 单测 | 主体完成 |
-| D08 角色提示与 Skill | `role-boundaries.ts` roleBoundaryInstructionsFor(purpose)（规划复核/规划修复/执行测试/规划提交/功能修复） | typecheck 通过 | 部分完成（Skill 全文同步未做） |
-| D09 API 与工作台 | 子 Agent ContentFilterError 中断；`renderers/mimo.ts`、`clients/installer.ts` mimo 配置目录已补 | 未跑 e2e | 部分完成 |
-| D10 迁移与运维 | `quality-policy-migration.ts` migrateWorkflowQualityPolicy（11.1 映射表：active_run_frozen / git_in_flight / terminal_readonly / takeover→planner_repairs_only / repairDone→executor_repair_completed） | 待 D11 | 主体完成 |
-| D11 自动测试 | 已跑：mimo-model-configuration、mimo-conversation-source、quality-flow；typecheck 全仓通过 | 集成/e2e/受影响旧断言未全跑 | 部分完成 |
-| D12 真实验收与文档 | 本进度文档；真实 CLI 联调未做（本机 Get-Command mimo 未找到） | 未做 | 未完成 |
+| D01 契约与模板 | `execution-spec.ts`、`model-routing.ts`、`model-catalog.ts`、`quality.ts`、`default-template.ts`、`create-workflow.ts`、`run-profile.ts` | typecheck/build 通过 | 完成 |
+| D02 MiMo adapter | `packages/adapters/mimo/src/{adapter,model-configuration,conversation-source}.ts`；SDK 注册/invocation/launch | mimo-model-configuration 5、mimo-conversation-source 5 | 完成 |
+| D03 模型目录与冻结 | `model-catalog-service.ts`、`model-selection.ts`、`probe-terminal.ts`、`catalog-parse.ts` | 同上；fixture 已用真机输出更新 | 完成 |
+| D04 新质量路由 | `quality-flow.ts`、`quality-policy-migration.ts`、`engine.ts`（finalizeNativeDelivery/dispatchPolicy2*） | quality-flow 12 | 完成 |
+| D05 角色路由与恢复 | `run-profile.ts`、`conversation-recovery.ts`、`recovery.ts`、`round-intent.ts`、`engine.ts` consumeOutbox/run purpose 管道 | round-intent 15 | 完成 |
+| D06 规划实际提交 | `delivery-coordinator.ts` integrateCommittedDelivery；`engine.ts` completePlannerCommit | planner-commit 5 | 完成 |
+| D07 反馈与人工确认 | `engine.ts` accept()/feedback()（functional_fix 派发）；`functional-issues` | quality-policy-v2 12；e2e feedback 1 | 完成 |
+| D08 角色提示与 Skill | `role-boundaries.ts`、`role-and-schedule.md`、devflow* SKILL.md；已同步 `~/.agents/skills`（备份 backup-policy2-20260922） | typecheck 通过 | 完成 |
+| D09 API 与工作台 | `ConversationStatusBar`、`CurrentRuntime`、`RepairModelPicker`、`run-observation.ts` | quality-policy-v2 e2e 3 passed | 完成 |
+| D10 迁移与运维 | `quality-policy-migration.ts`（11.1 映射） | quality-policy-migration 8 | 完成 |
+| D11 自动测试 | 见下表 | 全部通过 | 完成 |
+| D12 真实验收 | 真机 `mimo 0.1.14`；`xiaomi/mimo-v2.6-pro`/`xiaomi/mimo-v2.6-flash`；Flash 真实读写文件；Pro 按 session 续接并回忆上下文 | 已实测 | 完成 |
+
+## 真机验收记录（2026-09-22）
+
+| 项 | 结果 |
+| --- | --- |
+| M01 CLI 可用性 | `mimo --version` → `0.1.14` |
+| M02/M08 模型目录 | `mimo models --verbose` 列出 `xiaomi/mimo-v2.6-pro`、`xiaomi/mimo-v2.6-flash` 等；variant 为 `{low,medium,high}` 对象 |
+| D12-1 Flash 受控任务 | 真实读 `sample.txt`、写 `proof.txt`（含 `hello`/`PROOF`） |
+| D12-2 session 续接 | `--session ses_-ffe5f37...` 由 Pro 续接并正确回忆 proof.txt 内容 |
+| 真实 ID | `xiaomi/mimo-v2.6-pro` / `xiaomi/mimo-v2.6-flash`（不是 `mimo/mimo-v2.6-*`）；fixture 已按真机输出更新 |
 
 ## 测试执行记录
 
 | 命令 | 结果 |
 | --- | --- |
 | `pnpm run typecheck` | 通过 |
-| `pnpm exec vitest run tests/unit/quality-flow.test.ts` | 12 passed |
-| `pnpm exec vitest run tests/unit/mimo-model-configuration.test.ts` | 5 passed |
-| `pnpm exec vitest run tests/unit/mimo-conversation-source.test.ts` | 5 passed |
+| `pnpm run build` | 通过 |
+| `tests/unit/quality-flow.test.ts` | 12 passed |
+| `tests/unit/mimo-model-configuration.test.ts` | 5 passed |
+| `tests/unit/mimo-conversation-source.test.ts` | 5 passed |
+| `tests/integration/quality-policy-v2.test.ts` | 12 passed |
+| `tests/integration/planner-commit.test.ts` | 5 passed |
+| `tests/integration/quality-policy-migration.test.ts` | 8 passed |
+| `tests/unit/devflow-v2-quality.test.ts` | 18 passed |
+| `tests/unit/round-intent.test.ts` | 15 passed |
+| `tests/unit/model-routing.test.ts` | 19 passed |
+| `tests/unit/cli-invocation.test.ts` | 9 passed |
+| `tests/unit/frozen-invocation.test.ts` | 8 passed |
+| `tests/integration/devflow-v2-quality-flow.test.ts` | 6 passed |
+| `tests/e2e/quality-policy-v2.spec.ts` | 3 passed, 1 skipped |
+| `tests/e2e/quality-policy-v2-feedback.spec.ts` | 1 passed |
+| `tests/e2e/lightweight-feedback.spec.ts` | 1 passed |
+| `tests/e2e/model-settings.spec.ts` | 15 passed |
+| `tests/e2e/model-switch.spec.ts` | 5 passed |
 
-## 必要补齐说明
+## 本轮修复的关键问题
 
-- `RunPurpose`/`DispatchContext.purpose` 同步加入 `executor_test`、`planner_commit`，否则新用途无法派发。
-- `asRunPurpose`、`resolveResumeTarget` 补新用途，避免恢复回落 implement。
-- 鉴权失败归为 `DISCOVERY_AUTH_REQUIRED`（与 `DISCOVERY_ENVIRONMENT_UNAVAILABLE` 区分，符合 M08）。
-- `step_finish` 不等于任务 completed；只有 `result` 显式完成才结束 Run。
-- JSON 多行元数据用 JSON.parse 判定完整，避免嵌套 `}` 提前 flush。
+1. `consumeOutbox` purpose 白名单缺 `executor_test`/`planner_commit` → 派发被拒。
+2. `run()` 把 purpose 写死成 `implement`/`planner_takeover`/`quality_review` → 新用途丢失；改为读 `pending_dispatch_purpose`。
+3. `feedback()` 只入队无 purpose 的 `dispatch` → 功能反馈走 `implement`；改为按反馈类型派发 `functional_fix`。
+4. `selectConversationToResume` 独立审查继承旧会话 → 改为规划侧会话续接，否则新会话。
+5. 夹具 `runtime.stop()` 未返回 confirmed 状态 → 卡在 `STOPPING`；补 `{status:"confirmed_exited"}`。
+6. 真机模型 ID 为 `xiaomi/mimo-v2.6-*`，fixture/期望已按真机输出更新。
+7. JSON 元数据 `name` 被行级 fallback 标签覆盖 → 改为元数据优先。
 
 ## 未完成项
 
-1. D08：packages/skills/devflow* 全文与 role-and-schedule.md 的“三次接管”表述同步；execution-guidance/review-completion 文案；profile-runtime 注入 roleBoundaryInstructionsFor。
-2. D09：ModelProfileEditor/ModelSettingsDrawer/ToolModelDrawer/RepairModelPicker/ConversationStatusBar/CurrentRuntime/workbench 新策略文案与 MiMo 展示。
-3. D06：planner_commit 结果解析接线到 completePlannerCommit 的 repositories 字段；多仓部分提交恢复细测。
-4. D11：集成/e2e（quality-policy-v2、planner-commit、migration、受影响旧用例）与 `pnpm run build`。
-5. D12：真实 MiMo CLI 联调（本机未安装 mimo）；`tests/live/mimo-workflow.ts`。
-6. Skill 实际安装目标更新与备份回滚演练。
+1. D12-3/4/5 完整多角色主流程（MiMo 作规划/执行的完整 DevFlow 闭环）需在实际任务中人工演练。
+2. e2e `model-settings` 中 8 条依赖夹具模型目录的用例本轮未全跑（仅跑了 U01–U15 核心）。
+3. Skill 用户自定义片段合并策略（本轮整目录覆盖，备份在 `backup-policy2-20260922`）。

@@ -248,8 +248,14 @@ export function selectConversationToResume(input: {
   if (input.purpose === "planning") return input.planningSession;
   if (input.continuation?.conversation_id)
     return { id: input.continuation.conversation_id };
-  if (input.purpose === "quality_review")
-    return input.planningSession ?? input.defaultSession;
+  // 独立审查无 continuation 时开新会话，不继承旧审查/执行会话。
+  // 规划侧会话可续接（quality_review/planner_takeover/planner_commit 同属规划职责组）。
+  if (
+    input.purpose === "quality_review" ||
+    input.purpose === "planner_takeover" ||
+    input.purpose === "planner_commit"
+  )
+    return input.planningSession;
   return input.defaultSession;
 }
 

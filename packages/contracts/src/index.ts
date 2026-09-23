@@ -324,6 +324,9 @@ export interface Run {
   plan_revision: number;
   adapter: import("./execution-spec.js").SupportedAdapterId;
   purpose?: import("../../core/src/run-profile.js").RunPurpose;
+  /** Frozen scheduling context; display stage must never select the next role. */
+  dispatch_context?: import("./model-routing.js").DispatchContext;
+  quality_policy_version?: number;
   execution_spec_id?: string;
   execution_spec_revision?: number;
   profile?: import("./execution-spec.js").ToolProfile;
@@ -511,6 +514,7 @@ export const ExecutorRoundOutputSchema = z
     summary: z.string().optional(),
     notes: z.string().optional(),
     artifacts: z.array(z.any()).optional(),
+    repositories: z.array(z.object({ repo_id: z.string(), commit: z.string() })).optional(),
     delivery: DeliveryManifestSchema.optional(),
   })
   .passthrough();
@@ -567,6 +571,14 @@ export function normalizeOptionalDeliveryManifest(value: unknown): DeliveryManif
     }
   }
   fields.artifacts = artifacts;
+  // Commit results are optional handoff data, not delivery evidence.
+  if (Array.isArray(raw.repositories)) {
+    fields.repositories = raw.repositories.filter((item: unknown) => {
+      if (!item || typeof item !== "object") return false;
+      const row = item as Record<string, unknown>;
+      return typeof row.repo_id === "string" && typeof row.commit === "string";
+    });
+  }
   return DeliveryManifestSchema.parse(fields);
 }
 

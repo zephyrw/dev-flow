@@ -85,8 +85,8 @@ describe("MiMo models --verbose 解析", () => {
       discoveredAt: DISCOVERED_AT,
       scopeHash: "mimo-logical",
     });
-    const pro = requireEntry(catalog, "mimo/mimo-v2.6-pro");
-    const flash = requireEntry(catalog, "mimo/mimo-v2.6-flash");
+    const pro = requireEntry(catalog, "xiaomi/mimo-v2.6-pro");
+    const flash = requireEntry(catalog, "xiaomi/mimo-v2.6-flash");
     // Logical names must not become native tokens.
     expect(catalog.entries.some((e) => e.nativeId === "mimo-v2.6-pro")).toBe(
       false,
@@ -95,11 +95,11 @@ describe("MiMo models --verbose 解析", () => {
       false,
     );
     // Display/seed labels stay logical.
-    expect(pro.label).toBe("MiMo V2.6 Pro");
-    expect(flash.label).toBe("MiMo V2.6 Flash");
+    expect(pro.label).toBe("MiMo-V2.6-Pro");
+    expect(flash.label).toBe("MiMo-V2.6-Flash");
     // Frozen/dispatch token is the full provider/model.
-    expect(pro.nativeId).toBe("mimo/mimo-v2.6-pro");
-    expect(flash.nativeId).toBe("mimo/mimo-v2.6-flash");
+    expect(pro.nativeId).toBe("xiaomi/mimo-v2.6-pro");
+    expect(flash.nativeId).toBe("xiaomi/mimo-v2.6-flash");
     expect(pro.familyId).toBe("mimo-v2.6-pro");
     expect(flash.familyId).toBe("mimo-v2.6-flash");
   });
