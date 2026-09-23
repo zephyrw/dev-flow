@@ -317,10 +317,14 @@ function ActiveComposer({
         onCiteWorkspace={() => setReferenceOpenTick((value) => value + 1)}
         onSubmit={submit}
       />
-      {payload.reason && !payload.canSend && (
-        <p className="conversation-composer-reason">{payload.reason}</p>
+      {payload.reason &&
+        !payload.canSend &&
+        payload.reason !== "请输入内容或添加附件" && (
+          <p className="conversation-composer-reason">{payload.reason}</p>
+        )}
+      {hint && hint !== "发送后调整当前任务" && (
+        <p className="conversation-composer-hint">{hint}</p>
       )}
-      {hint && <p className="conversation-composer-hint">{hint}</p>}
     </div>
   );
 }

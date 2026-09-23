@@ -183,7 +183,7 @@ export function conversationHandoverHint(params: {
 }): string | undefined {
   if (params.readonly || params.mode !== "formal") return undefined;
   if (params.receivedFormal) return "指导已接收，正在交接";
-  return "发送后调整当前任务";
+  return undefined;
 }
 
 export function resolveComposerSendPayload(params: {

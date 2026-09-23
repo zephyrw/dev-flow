@@ -25,6 +25,7 @@ export type SwitchRequest = {
   role_overrides: RoleOverrides;
   expected_workflow_version: number;
   expected_run_id: string | null;
+  resume_after_switch?: boolean;
 };
 
 export type SwitchOperation = {
@@ -48,6 +49,8 @@ export type SwitchOperation = {
   request: SwitchRequest;
   spec_receipt?: MutationReceipt;
   receipt?: MutationReceipt;
+  resume_status?: "completed" | "failed";
+  resume_error?: string;
 };
 
 function hasOwn(body: object, key: string): boolean {
@@ -55,6 +58,11 @@ function hasOwn(body: object, key: string): boolean {
 }
 
 export class ModelSwitchService {
+  private switchesInFlight = new Map<string, {
+    requestHash: string;
+    promise: Promise<MutationReceipt>;
+  }>();
+
   constructor(
     private store: Store,
     private specs: ExecutionSpecService,
@@ -94,6 +102,7 @@ export class ModelSwitchService {
         body.expected_run_id === null
           ? null
           : z.string().min(1).parse(body.expected_run_id),
+      resume_after_switch: body.resume_after_switch === true,
     };
   }
 
@@ -194,13 +203,35 @@ export class ModelSwitchService {
     workflowId: string,
     req: SwitchRequest,
   ): Promise<MutationReceipt> {
+    const requestHash = objectHash({ requestId: req.request_id, payload: switchPayloadHash(req) });
+    const pending = this.switchesInFlight.get(workflowId);
+    if (pending) {
+      if (pending.requestHash !== requestHash) {
+        throw new FlowError("MODEL_SWITCH_IN_PROGRESS", "模型正在切换，请稍后重试", 409);
+      }
+      return pending.promise;
+    }
+    const promise = this.applyOnce(engine, workflowId, req).finally(() => {
+      this.switchesInFlight.delete(workflowId);
+    });
+    this.switchesInFlight.set(workflowId, { requestHash, promise });
+    return promise;
+  }
+
+  private async applyOnce(
+    engine: Engine,
+    workflowId: string,
+    req: SwitchRequest,
+  ): Promise<MutationReceipt> {
     const payloadHash = switchPayloadHash(req);
     const existing = this.store.get<SwitchOperation>(
       OPERATION_KIND,
       switchOperationId(workflowId, req.request_id),
     );
     if (existing) {
-      if (existing.payload_hash !== payloadHash) {
+      const matchesLegacy = !req.resume_after_switch && !existing.request.resume_after_switch &&
+        existing.payload_hash === switchPayloadHash(req, false);
+      if (existing.payload_hash !== payloadHash && !matchesLegacy) {
         throw new FlowError(
           "IDEMPOTENCY_CONFLICT",
           "同一请求不能修改为不同内容",
@@ -224,27 +255,75 @@ export class ModelSwitchService {
     operation: SwitchOperation,
   ): Promise<MutationReceipt> {
     const req = operation.request;
-    assertProfilesVerified(this.store, collectExplicitProfiles(
-      req.planner_profile, req.executor_profile, req.role_overrides,
-    ));
     let current = operation;
-    current = await this.ensureStopped(engine, current);
-    if (!current.spec_receipt) {
-      const receipt = this.saveSpec(current.entity_id, req);
-      current = this.markSpecSaved(current, receipt);
+    // A dispatch retry must never stop or resume a workflow a second time.
+    if (current.resume_status !== "completed") {
+      assertProfilesVerified(this.store, collectExplicitProfiles(
+        req.planner_profile, req.executor_profile, req.role_overrides,
+      ));
+      current = await this.ensureStopped(engine, current);
+      if (!current.spec_receipt) {
+        current = this.markSpecSaved(current, this.saveSpec(current.entity_id, req));
+      }
+      this.assertTargetRunStopped(engine, current);
     }
-    this.assertTargetRunStopped(engine, current);
     const specReceipt = current.spec_receipt;
     if (!specReceipt) {
-      throw new FlowError(
-        "SWITCH_SPEC_MISSING",
-        "暂停切换尚未保存配置回执",
-        500,
-      );
+      throw new FlowError("SWITCH_SPEC_MISSING", "暂停切换尚未保存配置回执", 500);
     }
+    if (!req.resume_after_switch) {
+      return this.complete(current, {
+        ...specReceipt,
+        effective_from: "stopped-awaiting-resume",
+      });
+    }
+
+    try {
+      if (current.resume_status !== "completed") {
+        const { resumeApproved } = await import("../../runtime/src/recovery.js");
+        // Persist the restored workflow/queue and the resume marker together.
+        // A crash or a lost response then cannot repeat the resume transition.
+        current = this.store.transaction(() => {
+          this.assertTargetRunStopped(engine, current);
+          this.assertSpecRevision(current.entity_id, specReceipt.entity_revision);
+          resumeApproved(engine, current.entity_id, "user_resume");
+          return this.writeOperation({
+            ...current,
+            status: "spec_saved",
+            resume_status: "completed",
+            resume_error: undefined,
+            updated_at: now(),
+          });
+        });
+      } else if (["STOPPED", "STOPPING"].includes(engine.get(current.entity_id).state)) {
+        throw new FlowError("WORKFLOW_PAUSED", "任务已再次暂停，请重新载入后继续", 409);
+      }
+      await engine.dispatch();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "恢复执行失败";
+      const receipt = MutationReceiptSchema.parse({
+        ...specReceipt,
+        status: "retryable",
+        effective_from: current.resume_status === "completed" ? "next-run" : "stopped-awaiting-resume",
+        resume_status: "failed",
+        resume_error: message,
+      });
+      this.writeOperation({
+        ...current,
+        status: "spec_saved",
+        resume_status: current.resume_status === "completed" ? "completed" : "failed",
+        resume_error: message,
+        updated_at: now(),
+        receipt,
+      });
+      return receipt;
+    }
+
     return this.complete(current, {
       ...specReceipt,
-      effective_from: "stopped-awaiting-resume",
+      effective_from: "next-run",
+      resume_status: "completed",
+      resume_error: undefined,
     });
   }
 
@@ -303,7 +382,7 @@ function switchOperationId(workflowId: string, requestId: string) {
   ).slice(0, 80);
 }
 
-function switchPayloadHash(req: SwitchRequest) {
+function switchPayloadHash(req: SwitchRequest, includeResume = true) {
   return objectHash({
     expected_spec_revision: req.expected_spec_revision,
     planner_profile: req.planner_profile,
@@ -311,5 +390,6 @@ function switchPayloadHash(req: SwitchRequest) {
     role_overrides: req.role_overrides,
     expected_workflow_version: req.expected_workflow_version,
     expected_run_id: req.expected_run_id,
+    ...(includeResume ? { resume_after_switch: Boolean(req.resume_after_switch) } : {}),
   });
 }

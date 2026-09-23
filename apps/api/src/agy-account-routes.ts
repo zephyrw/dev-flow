@@ -83,6 +83,12 @@ export function registerAgyAccountRoutes(
   app.get("/api/agy-accounts/service", async (req) => {
     human(req);
     const view = service.getPresentation(realmId);
+    const settings = repo.getSettings(realmId);
+    const realm = view.realm && "realm_id" in view.realm ? view.realm : null;
+    const serviceState = realm?.service_state ?? "stopped";
+    const isAutomationEnabled = Boolean(
+      realm?.desired_enabled && settings?.workflow_auto_switch,
+    );
     return {
       realm_id: realmId,
       service_state: "stopped",
@@ -91,6 +97,15 @@ export function registerAgyAccountRoutes(
       revision: 0,
       control_generation: 0,
       ...view.realm,
+      automation: {
+        enabled: isAutomationEnabled,
+        service_state: serviceState,
+        can_toggle: true,
+        actions_available: {
+          enroll: true,
+          switch: true,
+        },
+      },
       settings: publicSettings(view.settings),
       capability: view.capability,
       operations: repo
@@ -100,6 +115,26 @@ export function registerAgyAccountRoutes(
         .map(publicAccountOperation),
     };
   });
+  app.put("/api/agy-accounts/automation", async (req, reply) => {
+    human(req);
+    const body = z
+      .object({
+        request_id: requestId,
+        enabled: z.boolean(),
+        expected_revision: revision.optional(),
+      })
+      .strict()
+      .parse(req.body);
+
+    const result = await service.setAutomation({
+      realmId,
+      requestId: body.request_id,
+      expectedRevision: body.expected_revision,
+      enabled: body.enabled,
+    });
+    return reply.code(200).send(result);
+  });
+
   app.post("/api/agy-accounts/service/start", async (req, reply) => {
     human(req);
     const body = z
@@ -147,8 +182,8 @@ export function registerAgyAccountRoutes(
         request_id: requestId,
         selection,
         model_id: z.string().min(1).max(200).optional(),
-        expected_epoch: revision,
-        expected_settings_revision: revision,
+        expected_epoch: revision.optional(),
+        expected_settings_revision: revision.optional(),
       })
       .strict()
       .parse(req.body);
@@ -167,7 +202,7 @@ export function registerAgyAccountRoutes(
     const body = z
       .object({
         request_id: requestId,
-        expected_realm_revision: revision,
+        expected_realm_revision: revision.optional(),
         alias: z.string().max(100).default(""),
         mode: z.enum(["login", "capture_current"]),
       })

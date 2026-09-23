@@ -5,30 +5,45 @@
   gap: 16px;
   flex-shrink: 0;
 }
+
 .workbench > main > header > div {
   min-width: 0;
 }
+
 .current-runtime {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   flex: 0 1 auto;
   min-width: 0;
-  max-width: 55%;
   margin: 0;
   padding: 0;
   border: 0;
   background: transparent;
-  color: var(--text-muted, #64748b);
-  font-size: 12px;
-  line-height: 20px;
+}
+
+.runtime-model-trigger {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 8px;
+  margin: 0;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: #334155;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
   white-space: nowrap;
 }
-.current-runtime > span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
+
+.runtime-model-trigger:hover {
+  background: #eff6ff;
+  color: #2563eb;
+  border-color: #bfdbfe;
 }
-.current-runtime .runtime-separator {
-  flex-shrink: 0;
+
+.runtime-model-name {
+  line-height: 20px;
 }

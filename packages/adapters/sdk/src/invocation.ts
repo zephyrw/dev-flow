@@ -195,7 +195,7 @@ export function clientInvocation(
       if (readonly) {
         args.push(
           "--tools",
-          "Read,Glob,Grep,Agent",
+          "Read,Glob,Grep",
           "--disallowed-tools",
           "Bash,Edit,Write,NotebookEdit,Task",
           "--agents",

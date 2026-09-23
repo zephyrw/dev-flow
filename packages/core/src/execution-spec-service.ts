@@ -244,15 +244,28 @@ export class ExecutionSpecService {
     const workflow = this.requireWorkflow(parsed.workflow_id);
     this.assertEditable(workflow);
     this.assertExpectedRevision(parsed.workflow_id, parsed.expected_spec_revision);
+    const currentView = this.readView(parsed.workflow_id);
+    const currentSpec = currentView.spec;
+    const candidates = collectExplicitProfiles(
+      parsed.planner_profile,
+      parsed.executor_profile,
+      parsed.role_overrides,
+    );
+    const changedProfiles = candidates.filter((candidate) => {
+      if (
+        !this.isSameProfile(candidate, currentSpec.plannerProfile) &&
+        !this.isSameProfile(candidate, currentSpec.executorProfile) &&
+        !Object.values(currentSpec.roleOverrides ?? {}).some(
+          (o) => o.mode === "explicit" && this.isSameProfile(candidate, o.profile),
+        )
+      ) {
+        return true;
+      }
+      return false;
+    });
+    const profilesToVerify = changedProfiles.length > 0 ? changedProfiles : candidates;
     try {
-      assertProfilesVerified(
-        this.store,
-        collectExplicitProfiles(
-          parsed.planner_profile,
-          parsed.executor_profile,
-          parsed.role_overrides,
-        ),
-      );
+      assertProfilesVerified(this.store, profilesToVerify);
     } catch (error) {
       if (isModelAccessError(error)) {
         this.recordAwaitingAccess(prior, operationId, parsed, requestHash);
@@ -486,6 +499,11 @@ export class ExecutionSpecService {
       receipt,
     );
     return receipt;
+  }
+
+  private isSameProfile(a?: ToolProfile, b?: ToolProfile): boolean {
+    if (!a || !b) return a === b;
+    return objectHash(semanticProfileSlice(a)) === objectHash(semanticProfileSlice(b));
   }
 
   private pendingRoles(

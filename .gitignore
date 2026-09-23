@@ -3,6 +3,7 @@ node_modules/
 dist/
 .cache/
 .devflow/
+.worktrees/
 test-results/
 playwright-report/
 coverage/

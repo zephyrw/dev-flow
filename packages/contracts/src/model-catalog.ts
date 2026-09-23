@@ -95,6 +95,15 @@ export const ModelInvocationCapabilitySchema = z.object({
 }).strict();
 export type ModelInvocationCapability = z.infer<typeof ModelInvocationCapabilitySchema>;
 
+export const ModelDiscoveryStatusSchema = z.enum([
+  "complete",
+  "partial",
+  "missing",
+]);
+export type ModelDiscoveryStatus = z.infer<typeof ModelDiscoveryStatusSchema>;
+
+export const PARSER_REVISION = "20260922";
+
 export const ModelCatalogSchema = z
   .object({
     adapterId: z.enum(SupportedAdapters),
@@ -105,6 +114,8 @@ export const ModelCatalogSchema = z
     nativeConfigProfile: z.string().optional(),
     invocationCapability: ModelInvocationCapabilitySchema.optional(),
     status: ModelCatalogStatusSchema,
+    discoveryStatus: ModelDiscoveryStatusSchema.optional(),
+    parserRevision: z.string().optional(),
     discoveredAt: z.string().min(1),
     staleAfter: z.string().min(1),
     entries: z.array(ModelEntrySchema),

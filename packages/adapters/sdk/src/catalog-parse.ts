@@ -1,8 +1,10 @@
 import {
   CATALOG_FRESH_MS,
   CATALOG_OUTPUT_LIMIT,
+  PARSER_REVISION,
   ModelCatalogSchema,
   type ModelCatalog,
+  type ModelDiscoveryStatus,
   type ModelEntry,
   type ModelSource,
 } from "../../../contracts/src/model-catalog.js";
@@ -168,6 +170,32 @@ export function visibleModelEntries(entries: ModelEntry[]): ModelEntry[] {
   return entries.filter((entry) => !entry.hidden);
 }
 
+export function inferDiscoveryStatus(
+  catalog: {
+    entries?: ModelEntry[];
+    status?: string;
+    discoveryStatus?: ModelDiscoveryStatus;
+    errorCode?: string;
+  },
+  truncated = false,
+): ModelDiscoveryStatus {
+  if (catalog.discoveryStatus) return catalog.discoveryStatus;
+  if (catalog.status === "failed" || catalog.status === "missing" || catalog.errorCode) {
+    return "missing";
+  }
+  if (!catalog.entries || catalog.entries.length === 0) {
+    return "missing";
+  }
+  const allManual = catalog.entries.every((entry) => entry.source === "manual");
+  if (allManual) {
+    return "missing";
+  }
+  if (truncated) {
+    return "partial";
+  }
+  return "complete";
+}
+
 export function failedModelCatalog(
   adapterId: SupportedAdapterId,
   input: CatalogParseInput,
@@ -182,6 +210,8 @@ export function failedModelCatalog(
     cliVersion?: string;
     nativeConfigScope?: string;
     status: "failed";
+    discoveryStatus: "missing";
+    parserRevision: string;
     discoveredAt: string;
     staleAfter: string;
     entries: [];
@@ -191,6 +221,8 @@ export function failedModelCatalog(
     adapterId,
     scopeHash: input.scopeHash ?? "unscoped",
     status: "failed",
+    discoveryStatus: "missing",
+    parserRevision: PARSER_REVISION,
     discoveredAt: clock.discoveredAt,
     staleAfter: clock.staleAfter,
     entries: [],
@@ -207,8 +239,17 @@ export function freshModelCatalog(
   adapterId: SupportedAdapterId,
   input: CatalogParseInput,
   entries: ModelEntry[],
+  options?: {
+    discoveryStatus?: ModelDiscoveryStatus;
+    parserRevision?: string;
+  },
 ): ModelCatalog {
   const clock = catalogClock(input.discoveredAt);
+  const discoveryStatus =
+    options?.discoveryStatus ??
+    inferDiscoveryStatus({ entries, status: "fresh" }, input.truncated === true);
+  const parserRevision = options?.parserRevision ?? PARSER_REVISION;
+
   const catalog: {
     adapterId: SupportedAdapterId;
     scopeHash: string;
@@ -216,6 +257,8 @@ export function freshModelCatalog(
     cliVersion?: string;
     nativeConfigScope?: string;
     status: "fresh";
+    discoveryStatus: ModelDiscoveryStatus;
+    parserRevision: string;
     discoveredAt: string;
     staleAfter: string;
     entries: ModelEntry[];
@@ -223,6 +266,8 @@ export function freshModelCatalog(
     adapterId,
     scopeHash: input.scopeHash ?? "unscoped",
     status: "fresh",
+    discoveryStatus,
+    parserRevision,
     discoveredAt: clock.discoveredAt,
     staleAfter: clock.staleAfter,
     entries,

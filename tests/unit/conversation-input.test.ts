@@ -401,7 +401,7 @@ describe("SA-D18 composer helpers", () => {
         readonly: false,
         receivedFormal: false,
       }),
-    ).toBe("发送后调整当前任务");
+    ).toBeUndefined();
     expect(
       conversationHandoverHint({
         mode: "formal",

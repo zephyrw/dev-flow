@@ -3,24 +3,21 @@ import "./agy-accounts.css";
 import {
   formatQuotaWindow,
   formatAccountStateLabel,
-  formatAuthHealthDisplay,
 } from "../../../../packages/presentation/src/agy-accounts.js";
 import type {
   AgyAccountDto,
-  AgyAccountSettings,
   AgyQuotaSnapshot,
 } from "../../../../packages/contracts/src/agy-account.js";
 import { AgyAccountEnrollment } from "./AgyAccountEnrollment.js";
-import { AgyMaintenancePanel } from "./AgyMaintenancePanel.js";
 import {
   agyApi,
   requestBody,
   terminalOperation,
   operationLabels,
-  serviceLabels,
+  setAutomationEnabled,
   type AccountOperationView,
 } from "./agy-api.js";
-type Settings = Omit<AgyAccountSettings, "auth_host_executable">;
+
 interface Realm {
   revision: number;
   control_generation: number;
@@ -29,762 +26,353 @@ interface Realm {
   service_state: string;
   desired_enabled: boolean;
 }
-interface DetailedCapabilities {
-  host_platform?: string;
-  host_version?: string;
-  dpapi_available?: boolean;
-  cred_manager_available?: boolean;
-  named_mutex_available?: boolean;
-  native_login_supported?: boolean;
-  quota_inspection_supported?: boolean;
-  cli_version?: string;
-  capabilities?: {
-    identity?: { status: string; reason?: string };
-    dual_quota?: { status: string; reason?: string };
-    interactive_login?: { status: string; reason?: string };
-    model_access?: { status: string; reason?: string };
-  };
-}
+
 interface AccountView {
   accounts: AgyAccountDto[];
   snapshots: AgyQuotaSnapshot[];
-  settings: Settings | null;
   realm: Realm | null;
-  model_id?: string | null;
-  required_pool_ids: string[];
-  candidates: Array<{
-    account_id: string;
-    projected_weekly: number;
-    is_projected_reset: boolean;
-  }>;
-  excluded_accounts: Array<{ account_id: string; reason: string }>;
+  settings?: { revision: number };
+  automation?: {
+    enabled: boolean;
+    service_state: string;
+    can_toggle: boolean;
+  };
   capability: {
     supported: boolean;
     reason?: string;
-    host_platform?: string;
-    host_version?: string;
-    dpapi_available?: boolean;
-    cred_manager_available?: boolean;
-    named_mutex_available?: boolean;
-    native_login_supported?: boolean;
-    quota_inspection_supported?: boolean;
-    cli_version?: string;
-    capabilities?: any;
   };
-  next_eligible_at?: string | null;
 }
+
 interface ServiceView extends Realm {
   operations: AccountOperationView[];
+  automation?: {
+    enabled: boolean;
+    service_state: string;
+    can_toggle: boolean;
+  };
 }
-const date = (value?: string | null) =>
-  value ? new Date(value).toLocaleString() : "未提供";
-function QuotaBar({
+
+function CompactQuotaBar({
   window,
 }: {
   window: AgyQuotaSnapshot["windows"][number] | undefined;
 }) {
+  if (!window) return null;
   const value = formatQuotaWindow(window);
+  const percent = value.fraction !== null ? Math.round(value.fraction * 100) : null;
+
   return (
-    <div>
-      <div
-        className="agy-progress-bar-wrap"
-        role="progressbar"
-        aria-label={value.label}
-        aria-valuemin={0}
-        aria-valuemax={100}
-        aria-valuenow={
-          value.fraction === null ? undefined : Math.round(value.fraction * 100)
-        }
-        aria-valuetext={`${value.percentageText}，${value.resetText}`}
-      >
+    <div className="agy-compact-quota" title={`${value.label}：${value.percentageText}，${value.resetText}`}>
+      <span className="agy-quota-lbl">{value.label}</span>
+      <div className="agy-quota-track">
         <div
-          className={`agy-progress-bar-fill ${value.statusClass}`}
-          style={{ width: `${(value.fraction ?? 0) * 100}%` }}
+          className="agy-quota-fill"
+          style={{
+            width: `${percent ?? 0}%`,
+            background: percent !== null && percent < 20 ? "#ef4444" : percent !== null && percent < 50 ? "#f59e0b" : "#10b981",
+          }}
         />
       </div>
-      <div className="agy-progress-subtext">
-        {value.percentageText} · {value.resetText}
-      </div>
-      <div>重置时间：{date(window?.reset_at)}</div>
+      <span className="agy-quota-num">{value.percentageText}</span>
     </div>
   );
 }
-export function AgyAccountsPanel() {
+
+export function AgyAccountsPanel({ onDismiss }: { onDismiss?: () => void }) {
   const [view, setView] = useState<AccountView | null>(null);
   const [service, setService] = useState<ServiceView | null>(null);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [enrollOpen, setEnrollOpen] = useState(false);
-  const [maintOpen, setMaintOpen] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [draft, setDraft] = useState<Settings | null>(null);
-  const [history, setHistory] = useState<AgyQuotaSnapshot[] | null>(null);
-  const [historyCursor, setHistoryCursor] = useState<string | null>(null);
+  const [togglingAutomation, setTogglingAutomation] = useState(false);
+  const [activeOperation, setActiveOperation] = useState<AccountOperationView | null>(null);
+
   const refresh = useCallback(async () => {
-    const [next, srv, caps] = await Promise.all([
-      agyApi<AccountView>(""),
-      agyApi<ServiceView>("/service"),
-      agyApi<DetailedCapabilities & { supported?: boolean; reason?: string }>("/capabilities").catch(() => null),
-    ]);
-    if (caps) {
-      next.capability = {
-        ...next.capability,
-        ...caps,
-      };
-    }
-    setView(next);
-    setService(srv);
-    setSelectedId((previous) =>
-      next.accounts.some((a) => a.id === previous)
-        ? previous
-        : (srv.active_account_id ?? next.accounts[0]?.id ?? null),
-    );
-  }, []);
-  useEffect(() => {
-    void refresh().catch((e) => setError(e.message));
-    const timer = setInterval(
-      () => void refresh().catch((e) => setError(e.message)),
-      15000,
-    );
-    return () => clearInterval(timer);
-  }, [refresh]);
-  const operations = service?.operations ?? [];
-  const activeOperation = operations.find((op) => !terminalOperation(op.phase));
-  useEffect(() => {
-    if (!activeOperation) return;
-    const timer = setInterval(
-      () => void refresh().catch((e) => setError(e.message)),
-      2000,
-    );
-    return () => clearInterval(timer);
-  }, [activeOperation?.operation_id, refresh]);
-  const running = service?.service_state === "running";
-  const canOperate = !!running && !busy && !activeOperation;
-  const selected = view?.accounts.find((a) => a.id === selectedId);
-  const pools = view?.required_pool_ids ?? [];
-  const snapFor = (id: string) =>
-    view?.snapshots.filter(
-      (s) =>
-        s.account_id === id &&
-        (pools.length ? pools.includes(s.pool_id) : false),
-    ) ?? [];
-  async function attempt(fn: () => Promise<unknown>) {
-    setBusy(true);
-    setError("");
     try {
-      await fn();
-      await refresh();
+      const [accountsData, serviceData] = await Promise.all([
+        agyApi<AccountView>(""),
+        agyApi<ServiceView>("/service"),
+      ]);
+      setView(accountsData);
+      setService(serviceData);
+
+      const runningOp = serviceData.operations.find(
+        (op) => !terminalOperation(op.phase),
+      );
+      setActiveOperation(runningOp ?? null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(false);
     }
-  }
-  const accepted = (op: AccountOperationView) => {
-    setNotice(
-      `操作已受理：${op.operation_id}。${operationLabels[op.phase] ?? op.phase}`,
-    );
-    void refresh().catch((e) => setError(e.message));
-  };
-  async function operate(path: string, value: object, method = "POST") {
-    accepted(
-      await agyApi<AccountOperationView>(path, {
-        method,
-        body: requestBody(value),
-      }),
-    );
-  }
-  function switchTo(accountId?: string) {
-    void attempt(() =>
-      operate("/switch", {
-        selection: accountId
-          ? { mode: "explicit", account_id: accountId }
-          : { mode: "auto" },
-        model_id: view?.settings?.standalone_model_id ?? undefined,
-        expected_epoch: service?.auth_epoch ?? 0,
-        expected_settings_revision: view?.settings?.revision ?? 0,
-      }),
-    );
-  }
-  async function loadHistory(more = false) {
-    if (!selected) return;
-    const result = await agyApi<{
-      items: AgyQuotaSnapshot[];
-      next_cursor: string | null;
-    }>(
-      `/${encodeURIComponent(selected.id)}/history?limit=50${more && historyCursor ? `&after=${encodeURIComponent(historyCursor)}` : ""}`,
-    );
-    setHistory((items) =>
-      more ? [...(items ?? []), ...result.items] : result.items,
-    );
-    setHistoryCursor(result.next_cursor);
-  }
+  }, []);
+
   useEffect(() => {
-    setHistory(null);
-    setHistoryCursor(null);
-  }, [selectedId]);
+    void refresh();
+    const timer = setInterval(() => void refresh(), 3000);
+    return () => clearInterval(timer);
+  }, [refresh]);
+
+  const handleToggleAutomation = async () => {
+    if (togglingAutomation || !service) return;
+    setTogglingAutomation(true);
+    setError("");
+    try {
+      const next = !isAutomationOn;
+      const result = await setAutomationEnabled(next, view?.settings?.revision);
+      await refresh();
+      setNotice(result.enabled ? "已开启自动切号" : "已关闭自动切号");
+      setTimeout(() => setNotice(""), 3000);
+    } catch (e) {
+      await refresh();
+      setError(e instanceof Error ? e.message : "更新自动切号状态失败");
+    } finally {
+      setTogglingAutomation(false);
+    }
+  };
+
+  const handleSwitchTo = async (accountId: string) => {
+    setError("");
+    try {
+      await agyApi<AccountOperationView>("/switch", {
+        method: "POST",
+        body: requestBody({
+          selection: { mode: "explicit", account_id: accountId },
+          expected_epoch: service?.auth_epoch ?? 0,
+        }),
+      });
+      await refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "切换账号失败");
+    }
+  };
+
+  const handleReauth = async (account: AgyAccountDto) => {
+    setError("");
+    try {
+      await agyApi<AccountOperationView>(`/${encodeURIComponent(account.id)}/reauth`, {
+        method: "POST",
+        body: requestBody({
+          expected_account_revision: account.revision,
+          expected_identity: account.identity.email,
+        }),
+      });
+      await refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "重新认证失败");
+    }
+  };
+
+  const handleDeleteAccount = async (account: AgyAccountDto) => {
+    if (!window.confirm(`确定要移除账号 ${account.alias || account.identity.email} 吗？`)) {
+      return;
+    }
+    setError("");
+    try {
+      await agyApi<AccountOperationView>(`/${encodeURIComponent(account.id)}`, {
+        method: "DELETE",
+        body: requestBody({
+          expected_revision: account.revision,
+        }),
+      });
+      await refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "移除账号失败");
+    }
+  };
+
+  const handleCancelOperation = async (op: AccountOperationView) => {
+    try {
+      await agyApi<AccountOperationView>(`/operations/${encodeURIComponent(op.operation_id)}/cancel`, {
+        method: "POST",
+        body: requestBody({
+          expected_revision: op.revision,
+        }),
+      });
+      await refresh();
+    } catch (e) {
+      await refresh();
+      setError(e instanceof Error ? e.message : "取消操作失败");
+    }
+  };
+
+  const isAutomationOn = Boolean(
+    service?.automation?.enabled ??
+    (service?.service_state === "running" || service?.desired_enabled)
+  );
+
+  const accounts = view?.accounts ?? [];
+  const activeAccountId = service?.active_account_id;
+
   return (
-    <div className="agy-accounts-container">
-      <div className="agy-accounts-header">
-        <div>
-          <h2>AGY 账号与额度管理</h2>
-          <p>
-            管理状态：
-            <strong>
-              {serviceLabels[service?.service_state ?? "stopped"] ??
-                service?.service_state}
-            </strong>{" "}
-            · 活动账号：
-            {view?.accounts.find((a) => a.id === service?.active_account_id)
-              ?.alias ?? "未激活"}
-          </p>
-          <p>
-            目标模型：
-            {view?.settings?.standalone_model_id ?? "请先配置目标模型"}
-          </p>
+    <div className="agy-minimal-panel">
+      {/* 顶部自动化控制栏 */}
+      <div className="agy-top-control-bar">
+        <div className="agy-automation-switch-group">
+          <label className="agy-switch-label">
+            <input
+              type="checkbox"
+              className="agy-switch-input"
+              checked={isAutomationOn}
+              disabled={togglingAutomation}
+              onChange={handleToggleAutomation}
+            />
+            <span className="agy-switch-slider" />
+            <span className="agy-switch-text">自动切换账号</span>
+          </label>
+          <span className="agy-switch-desc">
+            {isAutomationOn ? "额度耗尽时自动选择最佳账号" : "已停用自动切换，当前仅执行手动切换"}
+          </span>
         </div>
-        <div className="agy-header-actions">
-          <button
-            className="agy-btn"
-            disabled={busy}
-            onClick={() => {
-              setDraft(view?.settings ?? null);
-              setSettingsOpen(true);
-            }}
-          >
-            配置
-          </button>
-          {running ? (
-            <button
-              className="agy-btn"
-              disabled={busy}
-              onClick={() =>
-                void attempt(() =>
-                  operate("/service/stop", {
-                    expected_control_generation:
-                      service?.control_generation ?? 0,
-                  }),
-                )
-              }
-            >
-              停止管理
-            </button>
-          ) : (
-            <button
-              className="agy-btn agy-btn-primary"
-              disabled={busy || service?.service_state === "stopping"}
-              onClick={() =>
-                void attempt(() =>
-                  operate("/service/start", {
-                    expected_settings_revision: view?.settings?.revision ?? 0,
-                  }),
-                )
-              }
-            >
-              启动管理
-            </button>
-          )}
-          <button
-            className="agy-btn"
-            disabled={!canOperate}
-            onClick={() => setEnrollOpen(true)}
-          >
-            录入账号
-          </button>
-          <button className="agy-btn" onClick={() => setMaintOpen(true)}>
-            日间维护
-          </button>
-          <button
-            className="agy-btn agy-btn-primary"
-            disabled={
-              !canOperate ||
-              !view?.settings?.standalone_model_id ||
-              !view?.capability.supported
-            }
-            onClick={() => switchTo()}
-          >
-            自动选择并切换
-          </button>
-        </div>
+
+        <button
+          type="button"
+          className="agy-primary-btn"
+          onClick={() => setEnrollOpen(true)}
+        >
+          + 添加管理账号
+        </button>
       </div>
-      <p>
-        备用账号显示上次实测余额；浏览、刷新和倒计时不会联网探测备用账号。切换后新启动的
-        AGY CLI 使用新身份。
-      </p>
-      <p>
-        工作流自动切号：
-        {view?.settings?.workflow_auto_switch
-          ? "已启用，仅对受管工作流的可信额度/认证错误生效"
-          : "已停用"}
-        。手动切换
-        {view?.settings?.pause_managed_for_manual_switch
-          ? "可按原恢复策略暂时中断本模块管理的 AGY 任务"
-          : "遇受管任务占用时等待"}
-        ，外部 CLI 必须先退出。
-      </p>
-      {view && !view.capability.supported && (
-        <p className="agy-notice" role="status">
-          能力暂不可用：{view.capability.reason ?? "当前官方 CLI 能力尚未确认"}
-        </p>
-      )}
-      {view?.capability && (
-        <div style={{ margin: "8px 0", padding: "8px 12px", background: "var(--bg-subtle, #f5f5f5)", borderRadius: "4px", fontSize: "12px", display: "flex", gap: "12px", flexWrap: "wrap" }}>
-          <span>宿主平台：<strong>{view.capability.host_platform || "Windows"} (v{view.capability.host_version || "1.0"})</strong></span>
-          <span>DPAPI：<strong>{view.capability.dpapi_available ? "可用" : "不可用"}</strong></span>
-          <span>凭据管理器：<strong>{view.capability.cred_manager_available ? "可用" : "不可用"}</strong></span>
-          <span>跨进程互斥锁：<strong>{view.capability.named_mutex_available ? "可用" : "不可用"}</strong></span>
-          <span>原生登录：<strong>{view.capability.native_login_supported ? "支持" : "不支持"}</strong></span>
-          <span>全局双额度：<strong>{view.capability.quota_inspection_supported ? "支持" : "不支持"}</strong></span>
-        </div>
-      )}
-      {error && (
-        <div className="agy-notice agy-notice-danger" role="alert">
-          {error}
-        </div>
-      )}
-      {notice && <p role="status">{notice}</p>}
+
+      {/* 正在进行中的操作提示卡片 */}
       {activeOperation && (
-        <section aria-label="当前操作">
-          <h3>
-            当前操作：
-            {operationLabels[activeOperation.phase] ?? activeOperation.phase}
-          </h3>
-          <p>{activeOperation.operation_id}</p>
-          {activeOperation.deadline_at && (
-            <p>本次操作截止：{date(activeOperation.deadline_at)}</p>
-          )}
-          {activeOperation.external_processes?.map((p) => (
-            <p key={p.pid}>
-              请退出外部 AGY：PID {p.pid} · {p.exe_path}
-            </p>
-          ))}
+        <div className="agy-active-op-card">
+          <div className="agy-active-op-info">
+            <span className="agy-op-spinner" />
+            <span>
+              正在执行：{operationLabels[activeOperation.phase] ?? activeOperation.phase}
+            </span>
+          </div>
           <button
-            className="agy-btn"
-            disabled={
-              busy || activeOperation.phase === "cancellation_requested"
-            }
-            onClick={() =>
-              void attempt(() =>
-                operate(
-                  `/operations/${encodeURIComponent(activeOperation.operation_id)}/cancel`,
-                  { expected_revision: activeOperation.revision },
-                ),
-              )
-            }
+            type="button"
+            className="agy-text-btn danger"
+            onClick={() => handleCancelOperation(activeOperation)}
           >
-            取消当前操作
+            取消操作
           </button>
-        </section>
+        </div>
       )}
-      <table className="agy-accounts-table">
-        <thead>
-          <tr>
-            <th>账号 / 状态</th>
-            <th>目标池双额度（上次实测）</th>
-            <th>候选与排除原因</th>
-            <th>操作</th>
-          </tr>
-        </thead>
-        <tbody>
-          {view?.accounts.map((account) => {
-            const snapshots = snapFor(account.id);
-            const rank = view.candidates.findIndex(
-              (c) => c.account_id === account.id,
-            );
-            const excluded = view.excluded_accounts.find(
-              (c) => c.account_id === account.id,
-            );
-            return (
-              <tr
-                key={account.id}
-                onClick={() => setSelectedId(account.id)}
-                aria-selected={account.id === selectedId}
-              >
-                <td>
-                  <strong>{account.alias}</strong>
-                  <div>{account.identity.email}</div>
-                  <div>
-                    {account.id === service?.active_account_id
-                      ? "当前活动 · "
-                      : ""}
-                    {formatAccountStateLabel(account.state)}
-                  </div>
-                </td>
-                <td>
-                  {snapshots.length
-                    ? snapshots.map((s) => (
-                        <div key={s.id}>
-                          <div>额度池：{s.pool_id}</div>
-                          <strong>周额度</strong>
-                          <QuotaBar
-                            window={s.windows.find((w) => w.kind === "weekly")}
-                          />
-                          <strong>五小时额度</strong>
-                          <QuotaBar
-                            window={s.windows.find(
-                              (w) => w.kind === "five_hour",
-                            )}
-                          />
-                          <small>
-                            上次实测：{date(s.observed_at)} · {s.source}
-                            {Date.now() - Date.parse(s.observed_at) >
-                            (view.settings?.local_snapshot_stale_hours ?? 24) *
-                              3600000
-                              ? " · 记录陈旧，激活后核验"
-                              : ""}
-                          </small>
-                        </div>
-                      ))
-                    : "目标池待补测 / 尚未配置模型"}
-                </td>
-                <td>
-                  {rank >= 0
-                    ? `候选第 ${rank + 1} 名${view.candidates[rank]?.is_projected_reset ? "（预计已重置，待核验）" : ""}`
-                    : (excluded?.reason ?? "尚未具备候选资格")}
-                </td>
-                <td>
-                  <button
-                    className="agy-btn"
-                    disabled={
-                      !canOperate ||
-                      !view.settings?.standalone_model_id ||
-                      !!excluded ||
-                      !view.capability.supported
-                    }
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      switchTo(account.id);
-                    }}
-                  >
-                    切换到此账号
-                  </button>
-                  <button
-                    className="agy-btn"
-                    onClick={() => setSelectedId(account.id)}
-                  >
-                    查看详情
-                  </button>
-                </td>
-              </tr>
-            );
-          })}
-          {!view?.accounts.length && (
-            <tr>
-              <td colSpan={4}>
-                尚未录入账号。启动管理后可逐一录入，无需创建项目或工作流。
-              </td>
-            </tr>
-          )}
-        </tbody>
-      </table>
-      {view?.next_eligible_at && (
-        <p>
-          预计最早可核验：{date(view.next_eligible_at)}
-          。手动操作不会在到时后自行切换。
-        </p>
+
+      {/* 错误提示 */}
+      {error && (
+        <div className="agy-alert-error" role="alert">
+          <span>{error}</span>
+          <button type="button" onClick={() => setError("")}>✕</button>
+        </div>
       )}
-      {selected && (() => {
-        const health = formatAuthHealthDisplay(selected.auth);
-        return (
-          <section aria-label="账号详情">
-            <h3>账号详情：{selected.alias}</h3>
-            <p>
-              认证元数据：<strong>{selected.auth?.metadata_status === "verified" ? "官方已核验" : "未核验"}</strong> · 刷新凭据：<strong>{health.refreshPresenceText}</strong>
-            </p>
-            <p>
-              访问令牌到期：{health.accessExpiryText}，激活后由官方 CLI 按需刷新。
-            </p>
-            <p>
-              刷新授权到期：{health.refreshExpiryText}
-            </p>
-            <p>
-              最近访问成功：{health.lastAuthText}；最近刷新证实：{health.lastRefreshVerifiedText}
-            </p>
-            <div className="agy-header-actions">
+
+      {/* 成功反馈 */}
+      {notice && (
+        <div className="agy-alert-success" role="status">
+          {notice}
+        </div>
+      )}
+
+      {/* 账号列表 */}
+      <div className="agy-accounts-list-wrap">
+        <div className="agy-list-header">
+          <span>已管理账号 ({accounts.length})</span>
+        </div>
+
+        {accounts.length === 0 ? (
+          <div className="agy-empty-state">
+            <span className="agy-empty-icon">👥</span>
+            <p>暂无管理的 AGY 账号</p>
             <button
-              className="agy-btn"
-              disabled={!canOperate}
-              onClick={() =>
-                void attempt(() =>
-                  operate(`/${encodeURIComponent(selected.id)}/probe`, {
-                    expected_account_revision: selected.revision,
-                  }),
-                )
-              }
+              type="button"
+              className="agy-secondary-btn"
+              onClick={() => setEnrollOpen(true)}
             >
-              补测
-            </button>
-            <button
-              className="agy-btn"
-              disabled={!canOperate}
-              onClick={() =>
-                void attempt(() =>
-                  operate(`/${encodeURIComponent(selected.id)}/reauth`, {
-                    expected_account_revision: selected.revision,
-                    expected_identity: selected.identity.email,
-                  }),
-                )
-              }
-            >
-              重新认证
-            </button>
-            <button
-              className="agy-btn"
-              disabled={busy || !!activeOperation}
-              onClick={() =>
-                void attempt(() =>
-                  agyApi(`/${encodeURIComponent(selected.id)}`, {
-                    method: "PATCH",
-                    body: requestBody({
-                      expected_revision: selected.revision,
-                      enabled: selected.state === "disabled",
-                    }),
-                  }),
-                )
-              }
-            >
-              {selected.state === "disabled" ? "启用" : "停用"}
-            </button>
-            <button
-              className="agy-btn"
-              onClick={() => void attempt(() => loadHistory())}
-            >
-              历史
-            </button>
-            <button
-              className="agy-btn agy-btn-danger"
-              disabled={
-                !canOperate || selected.id === service?.active_account_id
-              }
-              onClick={() =>
-                void attempt(() =>
-                  operate(
-                    `/${encodeURIComponent(selected.id)}`,
-                    { expected_revision: selected.revision },
-                    "DELETE",
-                  ),
-                )
-              }
-            >
-              删除本地备用授权
+              立即添加第一个账号
             </button>
           </div>
-          {history && (
-            <div>
-              <h4>额度历史</h4>
-              {history.map((s) => (
-                <p key={s.id}>
-                  {date(s.observed_at)} · {s.pool_id} · 周{" "}
-                  {
-                    formatQuotaWindow(
-                      s.windows.find((w) => w.kind === "weekly"),
-                    ).percentageText
-                  }{" "}
-                  · 五小时{" "}
-                  {
-                    formatQuotaWindow(
-                      s.windows.find((w) => w.kind === "five_hour"),
-                    ).percentageText
-                  }
-                </p>
-              ))}
-              {historyCursor && (
-                <button
-                  className="agy-btn"
-                  onClick={() => void attempt(() => loadHistory(true))}
+        ) : (
+          <div className="agy-accounts-grid">
+            {accounts.map((account) => {
+              const isActive = account.id === activeAccountId;
+              const snapshot = view?.snapshots.find((s) => s.account_id === account.id);
+              const weeklyWindow = snapshot?.windows.find(
+                (w) => w.duration_minutes === 10080 || w.kind === "weekly",
+              );
+              const shortWindow = snapshot?.windows.find(
+                (w) => w.duration_minutes === 300 || w.kind === "five_hour",
+              );
+
+              return (
+                <div
+                  key={account.id}
+                  className={`agy-account-row ${isActive ? "is-active-account" : ""}`}
                 >
-                  更多历史
-                </button>
-              )}
-            </div>
-          )}
-        </section>
-        );
-      })()}
-      {!!operations.length && (
-        <section aria-label="操作历史">
-          <h3>操作历史</h3>
-          {operations.slice(0, 20).map((op) => (
-            <div key={op.operation_id}>
-              <strong>{operationLabels[op.phase] ?? op.phase}</strong> ·{" "}
-              {op.kind} · {op.trigger} · {date(op.created_at)} ·{" "}
-              {op.operation_id}
-              {(op.before_account_id || op.target_account_id) && (
-                <p>
-                  {view?.accounts.find((a) => a.id === op.before_account_id)
-                    ?.alias ??
-                    op.before_account_id ??
-                    "未激活"}{" "}
-                  →{" "}
-                  {view?.accounts.find((a) => a.id === op.target_account_id)
-                    ?.alias ??
-                    op.target_account_id ??
-                    "候选待定"}
-                </p>
-              )}
-              {op.error && <p role="alert">{op.error}</p>}
-              {op.result?.message && <p>{op.result.message}</p>}
-              {op.phase === "completed" && op.kind === "switch" && (
-                <p>
-                  活动身份已确认。新启动的 AGY CLI
-                  将使用该账号；外部会话不会自动恢复。
-                </p>
-              )}
-            </div>
-          ))}
-        </section>
-      )}
-      {settingsOpen && (
-        <div className="agy-modal-overlay">
-          <form
-            className="agy-modal"
-            aria-label="账号配置"
-            onSubmit={(e) => {
-              e.preventDefault();
-              if (!draft) return;
-              void attempt(async () => {
-                const {
-                  realm_id: _realm,
-                  revision,
-                  updated_at: _updated,
-                  ...patch
-                } = draft;
-                await agyApi("/settings", {
-                  method: "PUT",
-                  body: requestBody({ ...patch, expected_revision: revision }),
-                });
-                setSettingsOpen(false);
-              });
-            }}
-          >
-            <h3>账号管理配置</h3>
-            {draft ? (
-              <>
-                <label className="agy-form-label">
-                  目标模型
-                  <input
-                    className="agy-form-input"
-                    required
-                    value={draft.standalone_model_id ?? ""}
-                    onChange={(e) =>
-                      setDraft({
-                        ...draft,
-                        standalone_model_id: e.target.value,
-                      })
-                    }
-                  />
-                </label>
-                <p>
-                  填写官方 AGY 的模型标识。服务器只接受已核实的模型额度池映射。
-                </p>
-                <label>
-                  <input
-                    type="checkbox"
-                    checked={draft.workflow_auto_switch}
-                    onChange={(e) =>
-                      setDraft({
-                        ...draft,
-                        workflow_auto_switch: e.target.checked,
-                      })
-                    }
-                  />
-                  受管工作流自动切号
-                </label>
-                <label style={{ display: "block" }}>
-                  <input
-                    type="checkbox"
-                    checked={draft.pause_managed_for_manual_switch}
-                    onChange={(e) =>
-                      setDraft({
-                        ...draft,
-                        pause_managed_for_manual_switch: e.target.checked,
-                      })
-                    }
-                  />
-                  允许手动切号暂停受管 AGY 任务并按原策略恢复
-                </label>
-                {(
-                  [
-                    ["timezone", "时区"],
-                    ["local_report_time", "日间本地报告时间"],
-                    ["night_start", "夜间开始"],
-                    ["night_end", "夜间结束"],
-                  ] as const
-                ).map(([key, label]) => (
-                  <label key={key} className="agy-form-label">
-                    {label}
-                    <input
-                      className="agy-form-input"
-                      value={draft.maintenance[key]}
-                      onChange={(e) =>
-                        setDraft({
-                          ...draft,
-                          maintenance: {
-                            ...draft.maintenance,
-                            [key]: e.target.value,
-                          },
-                        })
-                      }
-                    />
-                  </label>
-                ))}
-                <label className="agy-form-label">
-                  刷新验证最长间隔（小时）
-                  <input
-                    className="agy-form-input"
-                    type="number"
-                    min={1}
-                    value={draft.maintenance.refresh_verified_max_age_hours}
-                    onChange={(e) =>
-                      setDraft({
-                        ...draft,
-                        maintenance: {
-                          ...draft.maintenance,
-                          refresh_verified_max_age_hours: Number(
-                            e.target.value,
-                          ),
-                        },
-                      })
-                    }
-                  />
-                </label>
-              </>
-            ) : (
-              <p>配置尚未加载，请稍后重试。</p>
-            )}
-            <div className="agy-header-actions">
-              <button
-                type="button"
-                className="agy-btn"
-                onClick={() => setSettingsOpen(false)}
-              >
-                关闭
-              </button>
-              <button
-                className="agy-btn agy-btn-primary"
-                disabled={busy || !draft}
-              >
-                保存配置
-              </button>
-            </div>
-            {error && <p role="alert">{error}</p>}
-          </form>
-        </div>
-      )}
+                  <div className="agy-account-main-info">
+                    <div className="agy-account-title-line">
+                      <span className="agy-account-email">{account.identity.email}</span>
+                      {account.alias && (
+                        <span className="agy-account-alias">({account.alias})</span>
+                      )}
+                      {isActive ? (
+                        <span className="agy-badge active">当前使用中</span>
+                      ) : (
+                        <span className="agy-badge ready">
+                          {formatAccountStateLabel(account.state)}
+                        </span>
+                      )}
+                    </div>
+
+                    {/* 紧凑额度条 */}
+                    <div className="agy-account-quotas">
+                      {weeklyWindow ? (
+                        <CompactQuotaBar window={weeklyWindow} />
+                      ) : (
+                        <span className="agy-no-quota">周额度待实测</span>
+                      )}
+                      {shortWindow ? (
+                        <CompactQuotaBar window={shortWindow} />
+                      ) : null}
+                    </div>
+                  </div>
+
+                  <div className="agy-account-actions">
+                    {!isActive && (
+                      <button
+                        type="button"
+                        className="agy-secondary-btn"
+                        onClick={() => handleSwitchTo(account.id)}
+                        title="切换为当前活动账号"
+                      >
+                        设为活动
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      className="agy-icon-btn"
+                      onClick={() => handleReauth(account)}
+                      title="重新登录验证"
+                    >
+                      重新登录
+                    </button>
+                    <button
+                      type="button"
+                      className="agy-icon-btn danger"
+                      onClick={() => handleDeleteAccount(account)}
+                      title="移除账号"
+                    >
+                      移除
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* 添加账号弹窗 */}
       <AgyAccountEnrollment
         isOpen={enrollOpen}
-        realmRevision={service?.revision ?? 0}
+        realmRevision={view?.realm?.revision ?? 0}
         onClose={() => setEnrollOpen(false)}
-        onOperation={accepted}
-      />
-      <AgyMaintenancePanel
-        isOpen={maintOpen}
-        realmRevision={service?.revision ?? 0}
-        canOperate={canOperate}
-        onClose={() => setMaintOpen(false)}
-        onOperation={accepted}
+        onOperation={(op) => {
+          setActiveOperation(op);
+          void refresh();
+        }}
       />
     </div>
   );

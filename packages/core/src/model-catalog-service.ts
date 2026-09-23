@@ -10,11 +10,13 @@ import {
   CATALOG_QUERY_CONCURRENCY,
   CATALOG_READ_TIMEOUT_MS,
   ModelCatalogSchema,
+  PARSER_REVISION,
   TOOL_DISPLAY_ORDER,
   TOOL_SCAN_CONCURRENCY,
   VERSION_HELP_TIMEOUT_MS,
   ModelEntrySchema,
   type ModelCatalog,
+  type ModelDiscoveryStatus,
   type ModelEntry,
   type ModelSource,
   type ModelInvocationCapability,
@@ -31,6 +33,7 @@ import { resolveAdapterExecutable } from "../../adapters/sdk/src/registry.js";
 import {
   failedModelCatalog,
   freshModelCatalog,
+  inferDiscoveryStatus,
   isDiscoveryEnvironmentError,
   makeEntryId,
 } from "../../adapters/sdk/src/catalog-parse.js";
@@ -621,9 +624,25 @@ function classifySpawnOrOutput(
 }
 
 function withFreshness(catalog: ModelCatalog): ModelCatalog {
-  if (catalog.status !== "fresh") return catalog;
-  if (Date.parse(catalog.staleAfter) > Date.now()) return catalog;
-  return ModelCatalogSchema.parse({ ...catalog, status: "stale" });
+  const discoveryStatus: ModelDiscoveryStatus =
+    catalog.discoveryStatus ?? inferDiscoveryStatus(catalog);
+  const parserRevision = catalog.parserRevision ?? PARSER_REVISION;
+  const isStale = catalog.status === "fresh" && Date.parse(catalog.staleAfter) <= Date.now();
+  const status = isStale ? "stale" : catalog.status;
+
+  if (
+    catalog.status === status &&
+    catalog.discoveryStatus === discoveryStatus &&
+    catalog.parserRevision === parserRevision
+  ) {
+    return catalog;
+  }
+  return ModelCatalogSchema.parse({
+    ...catalog,
+    status,
+    discoveryStatus,
+    parserRevision,
+  });
 }
 
 function missingCatalog(adapterId: SupportedAdapterId, scopeHash: string): ModelCatalog {
@@ -632,6 +651,8 @@ function missingCatalog(adapterId: SupportedAdapterId, scopeHash: string): Model
     adapterId,
     scopeHash,
     status: "missing",
+    discoveryStatus: "missing",
+    parserRevision: PARSER_REVISION,
     discoveredAt: clock,
     staleAfter: new Date(Date.parse(clock) + CATALOG_FRESH_MS).toISOString(),
     entries: [],
@@ -888,23 +909,31 @@ export class ModelCatalogService {
     if (existing) return existing;
     const entry = manualCandidateEntry(scope.adapterId, id);
     const clock = now();
+    const hasNonManual = previous?.entries.some((e) => e.source !== "manual") ?? false;
     const catalog = previous
       ? ModelCatalogSchema.parse({
           ...previous,
           entries: [...previous.entries, entry],
+          discoveryStatus: hasNonManual ? (previous.discoveryStatus ?? "complete") : "missing",
+          parserRevision: previous.parserRevision ?? PARSER_REVISION,
         })
-      : freshModelCatalog(
-          scope.adapterId,
-          {
-            stdout: "",
-            scopeHash: catalogEntityId(scope, "manual").slice(8),
-            cliPath: scope.executablePath,
-            nativeConfigScope: scope.nativeConfigScope ?? "default",
-            discoveredAt: clock,
-            source: "manual",
-          },
-          [entry],
-        );
+      : ModelCatalogSchema.parse({
+          ...freshModelCatalog(
+            scope.adapterId,
+            {
+              stdout: "",
+              scopeHash: catalogEntityId(scope, "manual").slice(8),
+              cliPath: scope.executablePath,
+              nativeConfigScope: scope.nativeConfigScope ?? "default",
+              discoveredAt: clock,
+              source: "manual",
+            },
+            [entry],
+          ),
+          status: "missing",
+          discoveryStatus: "missing",
+          parserRevision: PARSER_REVISION,
+        });
     if (scope.nativeConfigProfile) catalog.nativeConfigProfile = scope.nativeConfigProfile;
     const catalogId = previous
       ? "catalog:" + previous.scopeHash
@@ -1317,6 +1346,9 @@ export class ModelCatalogService {
       nativeConfigScope: scope.nativeConfigScope ?? "default",
       nativeConfigProfile: scope.nativeConfigProfile,
       status: "fresh",
+      discoveryStatus:
+        parsed.discoveryStatus ?? (parsed.entries.length > 0 ? "complete" : "missing"),
+      parserRevision: parsed.parserRevision ?? PARSER_REVISION,
     });
     this.writeCatalog(scope, entityId, stored);
     return stored;
@@ -1472,6 +1504,8 @@ export class ModelCatalogService {
       const kept = ModelCatalogSchema.parse({
         ...previous,
         status: "failed",
+        discoveryStatus: previous.discoveryStatus ?? inferDiscoveryStatus(previous),
+        parserRevision: previous.parserRevision ?? PARSER_REVISION,
         errorCode,
         errorMessage,
         cliVersion: previous.cliVersion ?? cliVersion,
