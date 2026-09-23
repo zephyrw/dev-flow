@@ -841,7 +841,7 @@ it("场景1&2：切换并继续携带 resume_after_switch，成功恢复并派�
     executor_profile: executor("switched"),
     role_overrides: inheritRoleOverrides(),
     expected_workflow_version: s.engine.get(s.workflow.id).version,
-    expected_run_id: s.engine.get(s.workflow.id).run_id,
+    expected_run_id: s.engine.get(s.workflow.id).run_id ?? null,
     resume_after_switch: true,
   });
   expect(receipt.status).toBe("committed");
@@ -879,7 +879,7 @@ it("场景2：切换并继续派发失败返回可重试回执，重试不重复
     executor_profile: executor("switched"),
     role_overrides: inheritRoleOverrides(),
     expected_workflow_version: s.engine.get(s.workflow.id).version,
-    expected_run_id: s.engine.get(s.workflow.id).run_id,
+    expected_run_id: s.engine.get(s.workflow.id).run_id ?? null,
     resume_after_switch: true,
   };
   const failReceipt = await switches.applyAfterPause(s.engine, s.workflow.id, req);
