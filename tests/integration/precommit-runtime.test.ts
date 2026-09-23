@@ -95,15 +95,10 @@ async function fixture(args: string[] = []) {
     "独立回归夹具提供确定的变更和验证对象",
   );
   await s.engine.freeze(w.id, principal);
-  s.config.host = {
-    required: true,
-
-    executable: resolve(
-      "host/DevFlow.WinHost/bin/Release/net10.0-windows/DevFlow.WinHost.exe",
-    ),
-  };
   const runtime = new LocalRuntime(s.engine);
   s.engine.runtime = runtime;
+  // R02 修复：mock stop 返回 confirmed 状态，使测试可以验证 STOPPED 转换
+  vi.spyOn(runtime, "stop").mockResolvedValue({ status: "confirmed_not_started" });
   const run: Run = {
     id: principal.run_id,
     workflow_id: w.id,

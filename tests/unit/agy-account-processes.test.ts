@@ -20,7 +20,6 @@ function fixture(actualPid?: number) {
         },
       ],
     } as unknown as Store,
-    hostExecutable: "unused-test-host",
     agyExecutable: "unused-agy",
     processManager: {
       get: () => (actualPid ? { pid: actualPid } : undefined),

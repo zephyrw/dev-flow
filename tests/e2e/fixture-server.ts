@@ -356,11 +356,6 @@ for (const file of [
 const s = setup();
 s.config.server.port = instance.port;
 s.config.server.human_origin = instance.humanOrigin;
-s.config.host.required = true;
-s.config.host.executable = resolve(
-  "dist/host/" +
-    (process.platform === "win32" ? "devflow-host.exe" : "devflow-host"),
-);
 const probeLogDir = join(s.root, "probe-log");
 mkdirSync(probeLogDir, { recursive: true });
 process.env.MODEL_PROBE_LOG_DIR = probeLogDir;

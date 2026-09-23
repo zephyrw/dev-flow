@@ -181,7 +181,6 @@ export class LocalRuntime implements Runtime {
       throw new Error("AGY_ACCOUNT_SERVICE_ALREADY_ATTACHED");
     const processHost = new AgyAccountProcessHost({
       store: this.engine.store,
-      hostExecutable: this.engine.config.host.executable,
       agyExecutable: executablePath(this.engine.config.models.agy_executable),
       processManager: this.processes,
     });
@@ -559,8 +558,6 @@ export class LocalRuntime implements Runtime {
   }
   constructor(private engine: Engine) {
     this.processes = new ProcessManager(
-      engine.config.host.executable,
-      engine.config.host.required,
       (spec, event) =>
         engine.store.put(
           "process_record",

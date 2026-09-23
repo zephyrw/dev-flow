@@ -22,7 +22,7 @@ const selection = z.discriminatedUnion("mode", [
 const settingsPatch = AgyAccountSettingsPatchSchema;
 function publicSettings(value: AgyAccountSettings | null | undefined) {
   if (!value) return null;
-  const { auth_host_executable: _privatePath, ...dto } = value;
+  const { auth_host_executable: _privatePath, ...dto } = value as typeof value & { auth_host_executable?: unknown };
   return dto;
 }
 export function publicAccountOperation(operation: AgyAccountOperation) {

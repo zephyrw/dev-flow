@@ -24,15 +24,10 @@ jobs:
           node-version: 22.23.2
           architecture: ${{ matrix.arch }}
           cache: pnpm
-      - uses: actions/setup-go@v5
-        with: { go-version: "1.24" }
       - run: pnpm install --frozen-lockfile
       - run: pnpm run typecheck
-      - run: pnpm run test:unit -- --maxWorkers=1
       - run: pnpm run build
-      - run: pnpm run build:host
-      - run: go test ./...
-        working-directory: host/devflow-host
+      - run: pnpm run test:unit -- --maxWorkers=1
       - run: node scripts/release/build-release.mjs
       - uses: actions/upload-artifact@v4
         with:

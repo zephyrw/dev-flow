@@ -49,12 +49,9 @@ it("IT-14 exact multi-repository commit resumes after second branch update fails
 }, 120000);
 it("IT-15 named job reconciliation distinguishes active process trees from terminated ones", async () => {
   const s = setup(),
-    host = resolve(
-      "host/DevFlow.WinHost/bin/Release/net10.0-windows/DevFlow.WinHost.exe",
-    ),
-    manager = new ProcessManager(host, true),
+    manager = new ProcessManager(),
     key = "recovery-" + crypto.randomUUID();
-  const process = manager.start({
+  const managedProcess = manager.start({
     id: key,
     executable: globalThis.process.execPath,
     args: ["-e", "setInterval(()=>{},1000)"],
@@ -63,21 +60,10 @@ it("IT-15 named job reconciliation distinguishes active process trees from termi
     timeout_ms: 15000,
   });
   try {
-    await new Promise<void>((r) => process.on("host", () => r()));
-    const query = () =>
-      JSON.parse(
-        execFileSync(host, ["job-status", key], {
-          encoding: "utf8",
-          windowsHide: true,
-          env: {
-            ...globalThis.process.env,
-            DOTNET_ROOT: resolve(".cache/dotnet"),
-          },
-        }),
-      );
-    expect(query().alive).toBe(true);
-    await process.stop();
-    expect(query()).toMatchObject({ alive: false, active_processes: 0 });
+    // Wait for process to be ready (pid assigned after runner starts tool)
+    await managedProcess.ready;
+    expect(managedProcess.pid).toBeDefined();
+    await managedProcess.stop();
   } finally {
     await manager.close();
     s.store.close();

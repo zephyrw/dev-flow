@@ -11,13 +11,22 @@ import {
 import { createHash } from "node:crypto";
 import { resolve, join } from "node:path";
 import { tmpdir } from "node:os";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 export function requiredAccountReleaseInputs(platform = process.platform) {
   return [
     "dist/apps/api/src/accounts-main.js",
     "dist/packages/service/src/open.js",
     "dist/packages/agy-accounts/src/service.js",
-    ...(platform === "win32" ? ["dist/host/devflow-auth-host.exe"] : []),
+    // R09 修复：使用 credential-worker 替代 auth-host.exe
+    "dist/packages/agy-accounts/src/credential-worker.js",
+    "dist/packages/agy-accounts/src/credential-store.js",
+    "dist/packages/process/src/runner-entry.js",
+    "dist/packages/process/src/native/index.js",
+    "dist/packages/process/src/native/windows.js",
+    "dist/packages/process/src/native/posix.js",
+    ...(platform === "win32"
+      ? ["dist/packages/agy-accounts/src/credential-windows.js"]
+      : []),
   ];
 }
 export function validateAccountReleaseInputs(
@@ -46,11 +55,11 @@ export function generateReleaseBundle() {
   const root = mkdtempSync(join(tmpdir(), "devflow-release-")),
     payload = join(root, "devflow");
   mkdirSync(payload, { recursive: true });
+  // R09 修复：移除 dist/host（已用 Node 原生模块替代）
   for (const file of [
     "dist/apps",
     "dist/web",
     "dist/packages",
-    "dist/host",
     "packages/skills",
     "package.json",
     "pnpm-lock.yaml",
@@ -84,6 +93,19 @@ export function generateReleaseBundle() {
       ],
       { cwd: payload, stdio: "inherit" },
     );
+  // Load packaged addons, not the builder's module cache; fail before emitting an archive.
+  execFileSync(
+    process.execPath,
+    [
+      "--input-type=module",
+      "-e",
+      "const k=await import(process.argv[1]);if(!k.default.load)throw Error('koffi missing');const s=await import(process.argv[2]);const db=new s.default(':memory:');db.close();",
+      pathToFileURL(join(payload, "node_modules/koffi/index.js")).href,
+      pathToFileURL(join(payload, "node_modules/better-sqlite3/lib/index.js"))
+        .href,
+    ],
+    { cwd: payload, stdio: "inherit", windowsHide: true },
+  );
   mkdirSync(join(payload, "runtime"), { recursive: true });
   cpSync(
     process.execPath,

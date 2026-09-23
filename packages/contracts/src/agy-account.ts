@@ -152,7 +152,6 @@ export const AgyAccountSettingsSchema = z.object({
   standalone_model_id: z.string().nullable().default(null),
   workflow_auto_switch: z.boolean().default(true),
   pause_managed_for_manual_switch: z.boolean().default(true),
-  auth_host_executable: z.string().default("dist/host/devflow-auth-host.exe"),
   switch_gap_seconds: z.number().int().positive().default(3),
   reset_clock_skew_seconds: z.number().int().nonnegative().default(60),
   probe_timeout_seconds: z.number().int().positive().default(30),

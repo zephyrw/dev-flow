@@ -1,6 +1,10 @@
-import { existsSync, mkdirSync, readFileSync, copyFileSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
-import { parseDocument } from "yaml";
+import {
+  applyMigration,
+  dryRunMigration,
+} from "../../contracts/src/config-migration.js";
+import { observeProcessRecord } from "../../process/src/process-protocol.js";
 import Database from "better-sqlite3";
 import { atomicWrite } from "../../core/src/util.js";
 export interface UpgradeOptions {
@@ -10,6 +14,36 @@ export interface UpgradeOptions {
 }
 export class UpgradeManager {
   constructor(private options: UpgradeOptions) {}
+  async assertQuiescent(sqlitePath: string): Promise<void> {
+    if (!existsSync(sqlitePath)) return;
+    const db = new Database(sqlitePath, {
+      readonly: true,
+      fileMustExist: true,
+    });
+    try {
+      const rows = db
+        .prepare("SELECT data FROM entities WHERE kind='process_record'")
+        .all() as { data: string }[];
+      for (const row of rows) {
+        const record = JSON.parse(row.data) as Record<string, unknown>;
+        if ((await observeProcessRecord(record)).state !== "confirmed_exited")
+          throw new Error(
+            "UPGRADE_PROCESS_STATE_UNKNOWN: 请先完成旧进程停止和恢复对账",
+          );
+      }
+      const leases = db
+        .prepare("SELECT data FROM entities WHERE kind='lease'")
+        .all() as { data: string }[];
+      if (
+        leases.some((row) =>
+          ["active", "suspect"].includes(JSON.parse(row.data).status),
+        )
+      )
+        throw new Error("UPGRADE_ACTIVE_LEASE: 请先完成任务停止和资源对账");
+    } finally {
+      db.close();
+    }
+  }
   async backupData(sqlitePath: string): Promise<string | undefined> {
     if (!existsSync(sqlitePath)) return undefined;
     const target = join(
@@ -41,41 +75,20 @@ export class UpgradeManager {
   }
 }
 
-/** Add only account defaults; preserve comments and all existing user choices. */
-export function migrateAccountConfiguration(
-  configPath: string,
-  authHost: string,
-  previousManagedHost?: string,
-) {
-  const original = readFileSync(configPath, "utf8");
-  const document = parseDocument(original);
-  if (document.errors.length) throw document.errors[0];
-  let changed = false;
-  if (document.getIn(["agy_accounts", "enabled"]) === undefined) {
-    document.setIn(["agy_accounts", "enabled"], false);
-    changed = true;
-  }
-  const configured = document.getIn(["agy_accounts", "auth_host_executable"]);
-  const oldManaged =
-    typeof configured === "string" &&
-    previousManagedHost &&
-    resolve(dirname(configPath), configured).toLowerCase() ===
-      resolve(previousManagedHost).toLowerCase();
-  const defaultRelative =
-    configured === "dist/host/devflow-auth-host.exe" ||
-    configured === join("dist", "host", "devflow-auth-host.exe");
-  if (!configured || oldManaged || defaultRelative) {
-    if (configured !== authHost) {
-      document.setIn(["agy_accounts", "auth_host_executable"], authHost);
-      changed = true;
-    }
-  }
-  if (!changed) return { changed: false, backup: undefined };
-  const backup =
-    configPath + ".agy-backup-" + Date.now() + "-" + crypto.randomUUID();
-  copyFileSync(configPath, backup);
-  atomicWrite(configPath, document.toString());
-  return { changed: true, backup };
+/**
+ * Migrate account configuration for Node runtime.
+ *
+ * Uses the same v1 validation and YAML transformation as the CLI.
+ */
+export function migrateAccountConfiguration(configPath: string) {
+  const preview = dryRunMigration(configPath);
+  if (!preview.can_apply) throw new Error(preview.errors.join(","));
+  const result = applyMigration(configPath, preview.input_hash);
+  if (!result.success) throw new Error(result.errors.join(","));
+  return {
+    changed: result.input_hash !== result.output_hash,
+    backup: result.backup_path,
+  };
 }
 
 /** This stable entry resolves current.json each time instead of pinning a version. */

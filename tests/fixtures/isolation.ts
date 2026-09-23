@@ -33,12 +33,13 @@ export function createIsolatedTestEnv(): IsolatedTestEnv {
 
   const dbPath = join(root, "devflow.sqlite");
   const store = new Store(dbPath);
+  const testPort = 10000 + Math.floor(Math.random() * 40000);
   const cfg = ConfigSchema.parse({
     storage_root: join(root, "state"),
     workspace_root: join(root, "worktrees"),
     server: {
-      port: 10000 + Math.floor(Math.random() * 40000),
-      human_origin: "http://localhost:14810",
+      port: testPort,
+      human_origin: `http://localhost:${testPort}`,
     },
     host: { required: false },
   });

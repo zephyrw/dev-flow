@@ -5,12 +5,9 @@ import { ProcessManager } from "../../packages/process/src/manager.js";
 import { setup } from "../helpers.js";
 import { acquireControllerLock } from "../../packages/process/src/controller-lock.js";
 import { vi } from "vitest";
-const host = resolve(
-  "host/DevFlow.WinHost/bin/Release/net10.0-windows/DevFlow.WinHost.exe",
-);
 it("managed PowerShell executes a batch program with Windows runtime variables while secrets stay excluded", async () => {
   const s = setup(),
-    manager = new ProcessManager(host, true);
+    manager = new ProcessManager();
   const batch = join(s.root, "probe.cmd");
   const shell =
     "C:/Users/yckj4798/.cache/codex-runtimes/codex-primary-runtime/dependencies/native/powershell/pwsh.exe";
@@ -42,9 +39,8 @@ it("managed PowerShell executes a batch program with Windows runtime variables w
   }
 });
 it("IT-08 Windows Host captures Unicode output and terminates job descendants on stop", async () => {
-  expect(existsSync(host)).toBe(true);
   const s = setup();
-  const manager = new ProcessManager(host, true);
+  const manager = new ProcessManager();
   const childScript = join(s.root, "child.cjs");
   writeFileSync(childScript, "setInterval(()=>{},1000);");
   const marker = join(s.root, "pid.txt");
@@ -94,19 +90,19 @@ it("IT-08 Windows Host captures Unicode output and terminates job descendants on
 }, 45000);
 it("IT-15 one controller owns each state directory and releases ownership on exit", async () => {
   const s = setup();
-  const release = await acquireControllerLock(host, s.root);
+  const release = await acquireControllerLock(s.root);
   try {
-    await expect(acquireControllerLock(host, s.root)).rejects.toThrow();
+    await expect(acquireControllerLock(s.root)).rejects.toThrow();
   } finally {
     await release();
   }
-  const again = await acquireControllerLock(host, s.root);
+  const again = await acquireControllerLock(s.root);
   await again();
   s.store.close();
 }, 20000);
 it("IT-09 Host preserves large Chinese JSON stdin and escaped Windows paths byte-for-byte", async () => {
   const s = setup(),
-    manager = new ProcessManager(host, true);
+    manager = new ProcessManager();
   const value = JSON.stringify({
     text: '中文"嵌套引号"\\路径\n'.repeat(10000),
     id: crypto.randomUUID(),

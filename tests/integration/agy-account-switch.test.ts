@@ -48,7 +48,7 @@ describe("AGY Account Switch Concurrency & CAS Integrity (AC-I04 & AC-I25)", () 
     repo = new AgyAccountRepository(store);
 
     const mockAuthHost: AuthHostPort = {
-      capabilities: async () => ({ supported: true, platform: "win32", version: "2.0.0", dpapi_available: true, cred_manager_available: true, named_mutex_available: true }),
+      capabilities: async () => ({ supported: true, platform: "win32", version: "3.0.0-node", dpapi_available: true, cred_manager_available: true, named_mutex_available: true }),
       isDomainLockHeld: () => true,
       compareActive: async () => true,
       acquireDomainLock: async () => ({ acquired: true, release: async () => {} }),

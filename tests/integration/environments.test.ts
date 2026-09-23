@@ -8,7 +8,7 @@ import { createServer } from "node:http";
 
 it("health checks report duplicate or foreign identity immediately and keep transient readiness retryable", async () => {
   const s = setup();
-  const manager = new ProcessManager("unused", false);
+  const manager = new ProcessManager();
   const environments = new Environments(s.engine, manager);
   let mode = "duplicate",
     requests = 0;
@@ -115,12 +115,7 @@ it("IT-06/07 three parallel environments use distinct ports, real frontend proxi
     repositories: [{ id: "main", path: other.repo }],
   };
   await s.engine.registerProject(q);
-  const manager = new ProcessManager(
-      resolve(
-        "host/DevFlow.WinHost/bin/Release/net10.0-windows/DevFlow.WinHost.exe",
-      ),
-      true,
-    ),
+  const manager = new ProcessManager(),
     environments = new Environments(s.engine, manager);
   // This test explicitly exercises three concurrent environments.
   s.config.scheduler.live_environments = 3;
@@ -209,12 +204,7 @@ it("IT-07 registered fixture receives only its workflow data namespace before en
   await s.engine.git.prepare(p, w.id, "existing_workspace", {
     main: r.baseline,
   });
-  const manager = new ProcessManager(
-      resolve(
-        "host/DevFlow.WinHost/bin/Release/net10.0-windows/DevFlow.WinHost.exe",
-      ),
-      true,
-    ),
+  const manager = new ProcessManager(),
     environments = new Environments(s.engine, manager);
   try {
     const env = await environments.ensure(w);

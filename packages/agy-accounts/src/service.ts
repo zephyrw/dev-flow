@@ -428,7 +428,7 @@ export class AgyAccountService {
       required_pool_ids: pools,
       model_id: settings.standalone_model_id,
       capability: {
-        supported: this.capabilitySnapshot?.supported ?? true,
+        supported: this.capabilitySnapshot?.supported ?? false,
         reason: this.capabilitySnapshot?.reason,
         snapshot: this.getCapabilitySnapshot(),
       },
@@ -439,10 +439,10 @@ export class AgyAccountService {
     if (this.capabilitySnapshot) return this.capabilitySnapshot;
     return {
       host_platform: process.platform,
-      host_version: "2.0.0",
-      dpapi_available: process.platform === "win32",
-      cred_manager_available: process.platform === "win32",
-      named_mutex_available: process.platform === "win32",
+      host_version: "unverified",
+      dpapi_available: false,
+      cred_manager_available: false,
+      named_mutex_available: false,
       capabilities: {
         identity: { status: "unverified", reason: "未执行能力核验" },
         dual_quota: { status: "unverified", reason: "未执行能力核验" },
@@ -586,7 +586,7 @@ export class AgyAccountService {
       !capability.dpapi_available ||
       !capability.cred_manager_available ||
       !capability.named_mutex_available ||
-      !capability.version.startsWith("2.")
+      capability.version !== "3.0.0-node"
     ) {
       realm.service_state = "blocked";
       realm.last_error = "auth_host_capability_unavailable";

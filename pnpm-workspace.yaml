@@ -5,3 +5,4 @@ allowBuilds:
   better-sqlite3@13.0.3: false
   esbuild: true
   fsevents: true
+  koffi: true

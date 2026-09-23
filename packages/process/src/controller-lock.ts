@@ -1,63 +1,84 @@
-import { spawn } from "node:child_process";
-import { resolve } from "node:path";
+import { resolve, join } from "node:path";
+import { mkdirSync, realpathSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { hash } from "../../core/src/util.js";
-import { requireCondition } from "../../contracts/src/index.js";
-export async function acquireControllerLock(host: string, root: string) {
-  requireCondition(
-    !!host,
-    "HOST_REQUIRED",
-    "控制器需要 Process Host 以独占状态目录",
-  );
-  const child = spawn(
-    host,
-    ["controller-lock", hash(resolve(root).toLowerCase())],
-    {
-      windowsHide: true,
-      stdio: "pipe",
-      env: {
-        ...process.env,
-        DOTNET_ROOT: process.env.DOTNET_ROOT ?? resolve(".cache/dotnet"),
-      },
-    },
-  );
-  child.stderr.resume();
-  let acquired = false;
-  await new Promise<void>((done, fail) => {
-    const timer = setTimeout(() => {
-      child.stdin.end();
-      fail(Error("Controller lock timeout"));
-    }, 10000);
-    child.on("error", (e) => {
-      clearTimeout(timer);
-      fail(e);
-    });
-    let output = "";
-    child.stdout.on("data", (b) => {
-      output += b;
-      const line = output.split("\n")[0];
-      if (!output.includes("\n")) return;
-      try {
-        const value = JSON.parse(line!);
-        clearTimeout(timer);
-        if (value.locked) {
-          acquired = true;
-          done();
-        } else fail(Error(value.message ?? "Controller lock failed"));
-      } catch (e) {
-        clearTimeout(timer);
-        fail(e);
+import { getNativeAsync, getWindowsNative } from "./native/index.js";
+
+// Windows mutex ownership is recursive on the same OS thread.
+const heldRoots = new Set<string>();
+export async function acquireControllerLock(
+  root: string,
+): Promise<() => Promise<void>> {
+  const absolute = resolve(root);
+  mkdirSync(absolute, { recursive: true });
+  let canonical = realpathSync.native(absolute);
+  if (process.platform === "win32") canonical = canonical.toLowerCase();
+  if (heldRoots.has(canonical)) throw new Error("CONTROLLER_ALREADY_ACTIVE");
+  heldRoots.add(canonical);
+  const release: Array<() => void> = [];
+  try {
+    await getNativeAsync();
+    const hashes = [
+      ...new Set([hash(absolute.toLowerCase()), hash(canonical)]),
+    ].sort();
+    if (process.platform === "win32") {
+      const native = await getWindowsNative();
+      for (const key of hashes) {
+        for (const name of [
+          `Local\\DevFlowController.${key}`,
+          `Global\\${key}`,
+          key,
+          `Local\\DevFlow.${key}`,
+          `Global\\DevFlowAuth_${key}`,
+        ]) {
+          const mutex = native.createMutex(name, false);
+          if (!mutex) throw new Error("CONTROLLER_LOCK_UNAVAILABLE");
+          const result = native.waitForMutex(mutex, 0);
+          if (result !== "acquired" && result !== "abandoned") {
+            native.closeHandle(mutex);
+            throw new Error("CONTROLLER_ALREADY_ACTIVE");
+          }
+          release.push(() => {
+            try {
+              if (!native.releaseMutex(mutex))
+                throw new Error("CONTROLLER_UNLOCK_FAILED");
+            } finally {
+              native.closeHandle(mutex);
+            }
+          });
+        }
       }
-    });
-    child.once("exit", (code) => {
-      clearTimeout(timer);
-      if (!acquired) fail(Error("Controller lock rejected: " + code));
-    });
-  });
+    } else {
+      const native = await import("./native/posix.js");
+      for (const key of hashes) {
+        const handle = native.acquireFlock(
+          join(tmpdir(), `devflow-${key}.lock`),
+        );
+        release.push(() => native.releaseFlock(handle));
+      }
+    }
+  } catch (error) {
+    for (const unlock of release.reverse()) {
+      try {
+        unlock();
+      } catch {}
+    }
+    heldRoots.delete(canonical);
+    throw error;
+  }
+  let released = false;
   return async () => {
-    if (child.exitCode !== null) return;
-    await new Promise<void>((done) => {
-      child.once("exit", () => done());
-      child.stdin.end("\n");
-    });
+    if (released) return;
+    released = true;
+    let failure: unknown;
+    for (const unlock of release.reverse()) {
+      try {
+        unlock();
+      } catch (error) {
+        failure ??= error;
+      }
+    }
+    heldRoots.delete(canonical);
+    if (failure) throw failure;
   };
 }

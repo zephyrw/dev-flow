@@ -11,10 +11,7 @@ import { buildServer } from "./server.js";
 import { archiveLogs } from "../../../packages/runtime/src/maintenance.js";
 import { acquireControllerLock } from "../../../packages/process/src/controller-lock.js";
 const config = loadConfig(process.env.DEVFLOW_CONFIG);
-const unlock = await acquireControllerLock(
-  config.host.executable,
-  config.storage_root,
-);
+const unlock = await acquireControllerLock(config.storage_root);
 import { bootstrapAccountService } from "./account-service-bootstrap.js";
 
 const store = new Store(join(config.storage_root, "devflow.sqlite"));
@@ -22,10 +19,8 @@ const engine = new Engine(store, config);
 const runtime = new LocalRuntime(engine);
 engine.runtime = runtime;
 
-const accountService = bootstrapAccountService(store, {
-  authHostExecutable: config.agy_accounts.auth_host_executable,
+const accountService = await bootstrapAccountService(store, {
   agyCliPath: config.models.agy_executable,
-  hostExecutable: config.host.executable,
   processManager: runtime.processes,
   settings: config.agy_accounts,
 });

@@ -1,10 +1,22 @@
-import { execFileSync } from "node:child_process";
+import { observeProcessRecordSync } from "../../process/src/process-protocol.js";
 import type { Engine } from "../../core/src/engine.js";
-import { CONVERSATION_ENTITY, FlowError, requireCondition, type ConversationNode } from "../../contracts/src/index.js";
+import {
+  CONVERSATION_ENTITY,
+  FlowError,
+  requireCondition,
+  type ConversationNode,
+} from "../../contracts/src/index.js";
 import type { Lease } from "../../scheduler/src/scheduler.js";
 import { now } from "../../core/src/util.js";
 import type { OperationRequest } from "../../core/src/interactions.js";
-import { assertAccountModelRetryAccess, stageModelRunRetry, isQuotaRetryBlocked, isRetryBatchCurrent, readRetryBatch, type ModelRetry } from "../../core/src/model-retry.js";
+import {
+  assertAccountModelRetryAccess,
+  stageModelRunRetry,
+  isQuotaRetryBlocked,
+  isRetryBatchCurrent,
+  readRetryBatch,
+  type ModelRetry,
+} from "../../core/src/model-retry.js";
 import type { LocalRuntime } from "./runtime.js";
 import { prepareRepairResume } from "../../core/src/repair.js";
 import {
@@ -26,7 +38,6 @@ import {
 import type { WaitingContext } from "../../core/src/waiting-context.js";
 import type { Run, Workflow } from "../../contracts/src/index.js";
 import type { DispatchContext } from "../../contracts/src/model-routing.js";
-
 
 type InterruptionRecord = {
   prior_state?: string;
@@ -84,7 +95,11 @@ export function resolveResumeTarget(engine: Engine, key: string) {
       enqueue: false,
     };
   }
-  if (priorState === "PLANNING" || purpose === "planning" || stage === "planning") {
+  if (
+    priorState === "PLANNING" ||
+    purpose === "planning" ||
+    stage === "planning"
+  ) {
     return { state: "PLANNING" as const, stage: "planning", enqueue: true };
   }
   if (purpose === "plan_self_check" || stage === PLAN_SELF_CHECK_STAGE) {
@@ -101,9 +116,14 @@ export function resolveResumeTarget(engine: Engine, key: string) {
     stage === "review" ||
     stage === BEFORE_HUMAN_REVIEW_STAGE
   ) {
-    const phase = reviewPhase === "after_human" ? "after_human" : "before_human";
+    const phase =
+      reviewPhase === "after_human" ? "after_human" : "before_human";
     engine.store.put("plan_check_review_intent", key, key, {
-      ...engine.store.get<Record<string, unknown>>("plan_check_review_intent", key), phase,
+      ...engine.store.get<Record<string, unknown>>(
+        "plan_check_review_intent",
+        key,
+      ),
+      phase,
     });
     return {
       state: "REVIEW_QUEUED" as const,
@@ -144,7 +164,11 @@ export function resolveResumeTarget(engine: Engine, key: string) {
   if (["QUEUED", "REVIEW_QUEUED", "PLANNING"].includes(w.state)) {
     return { state: w.state, stage: w.stage, enqueue: true };
   }
-  if (w.state === "BLOCKED" || w.state === "STOPPED" || w.state === "RECOVERY_REQUIRED") {
+  if (
+    w.state === "BLOCKED" ||
+    w.state === "STOPPED" ||
+    w.state === "RECOVERY_REQUIRED"
+  ) {
     if (stage === "review" || stage === BEFORE_HUMAN_REVIEW_STAGE) {
       return {
         state: "REVIEW_QUEUED" as const,
@@ -190,7 +214,6 @@ const noopStopPort: StopPort = {
   },
 };
 
-
 const resuming = new WeakMap<Engine, Set<string>>();
 export async function resumeModelWaits(engine: Engine, at = Date.now()) {
   let active = resuming.get(engine);
@@ -229,7 +252,8 @@ export async function resumeModelWaits(engine: Engine, at = Date.now()) {
       await runtime?.environments?.stop(retry.id);
       if (!valid()) continue;
       if (isQuotaRetryBlocked(engine.store, retry)) continue;
-      if (retry.run_id) stageModelRunRetry(engine.store, retry.id, retry.run_id);
+      if (retry.run_id)
+        stageModelRunRetry(engine.store, retry.id, retry.run_id);
       resumeApproved(engine, retry.id, "quota_retry");
       engine.store.remove("model_retry", retry.id);
       engine.store.event(
@@ -265,29 +289,22 @@ export function reconcileProcesses(engine: Engine, key: string) {
     id: string;
     status: string;
     confirmed?: boolean;
+    pid?: number;
+    identity?: import("../../process/src/process-protocol.js").ProcessIdentity;
   }>("process_record", key);
-  const results = records
-    .filter((record) => !(record.status === "exited" && record.confirmed))
-    .map((record) => {
-      const result = JSON.parse(
-        execFileSync(engine.config.host.executable, ["job-status", record.id], {
-          encoding: "utf8",
-          windowsHide: true,
-          timeout: 10000,
-          env: {
-            ...process.env,
-            DOTNET_ROOT:
-              process.env.DOTNET_ROOT ?? process.cwd() + "/.cache/dotnet",
-          },
-        }),
-      );
-      requireCondition(
-        result.id === record.id && !result.alive,
-        "PROCESS_STILL_ACTIVE",
-        `受管进程 ${record.id} 尚未退出`,
-      );
-      return result;
-    });
+  const results = records.map((record) => {
+    const observation = observeProcessRecordSync(
+      record as unknown as Record<string, unknown>,
+    );
+    requireCondition(
+      observation.state === "confirmed_exited",
+      observation.state === "running"
+        ? "PROCESS_STILL_ACTIVE"
+        : "PROCESS_STATE_UNKNOWN",
+      `受管进程 ${record.id} 未确认完全停止，不能释放资源`,
+    );
+    return { id: record.id, alive: false };
+  });
   const leases = engine.store.list<Lease>("lease", key);
   requireCondition(
     !leases.some((l) => l.id === "browser:shared"),
@@ -343,9 +360,19 @@ export function reconcileProcesses(engine: Engine, key: string) {
 export function resumeApproved(
   engine: Engine,
   key: string,
-  sourceOrOptions: "user_resume" | "quota_retry" | "manual_handoff" | "migration" | { autoRetry?: boolean } = "user_resume",
+  sourceOrOptions:
+    | "user_resume"
+    | "quota_retry"
+    | "manual_handoff"
+    | "migration"
+    | { autoRetry?: boolean } = "user_resume",
 ) {
-  const source = typeof sourceOrOptions === "string" ? sourceOrOptions : sourceOrOptions.autoRetry ? "quota_retry" : "user_resume";
+  const source =
+    typeof sourceOrOptions === "string"
+      ? sourceOrOptions
+      : sourceOrOptions.autoRetry
+        ? "quota_retry"
+        : "user_resume";
   reconcileProcesses(engine, key);
   const w = engine.get(key);
   requireCondition(
@@ -363,7 +390,10 @@ export function resumeApproved(
   if (source !== "quota_retry") {
     // A missing authorization pauses account recovery without changing its model.
     // Explicit user stop/model-switch already removes this pending retry.
-    if (!w.run_id || !assertAccountModelRetryAccess(engine.store, key, w.run_id))
+    if (
+      !w.run_id ||
+      !assertAccountModelRetryAccess(engine.store, key, w.run_id)
+    )
       engine.store.remove("pending_model_retry", key);
     engine.store.remove("transient_network_retry", key);
   }
@@ -388,8 +418,14 @@ export function resumeApproved(
     409,
   );
   if (!control.dispatch_enabled) {
-    const reasons = control.reasons.map((r) => r.message || r.reason).join("; ");
-    throw new FlowError("DISPATCH_DISABLED", `无法恢复执行: ${reasons || "调度已停用"}`, 409);
+    const reasons = control.reasons
+      .map((r) => r.message || r.reason)
+      .join("; ");
+    throw new FlowError(
+      "DISPATCH_DISABLED",
+      `无法恢复执行: ${reasons || "调度已停用"}`,
+      409,
+    );
   }
 
   if (target.state === "COMMIT_PARTIAL") {
@@ -485,7 +521,11 @@ function resumeWaitingIfCurrent(
   }
   if (!belongs && !planningSource) return;
   assertResumePreconditions(engine, key, {
-    state: isPlanningWaiting(waiting) ? "PLANNING" : waiting.purpose === "review" ? "REVIEW_QUEUED" : "QUEUED",
+    state: isPlanningWaiting(waiting)
+      ? "PLANNING"
+      : waiting.purpose === "review"
+        ? "REVIEW_QUEUED"
+        : "QUEUED",
     stage: waiting.purpose,
     enqueue: true,
   });
@@ -589,8 +629,12 @@ function isPlanningRecovery(
     waiting &&
     isPlanningWaiting(waiting) &&
     isCurrentPlanningSource({
-      handoff: readPlanningHandoff(engine.store, key), waiting,
-      state: w.state, blockerCode: w.blocker?.code, runId: w.run_id, run,
+      handoff: readPlanningHandoff(engine.store, key),
+      waiting,
+      state: w.state,
+      blockerCode: w.blocker?.code,
+      runId: w.run_id,
+      run,
     })
   )
     return true;
@@ -640,4 +684,13 @@ function routeArrangedResume(
     engine.store.enqueue(key, "dispatch", {});
     return next;
   }
+}
+
+function isNodeErrnoException(error: unknown): error is NodeJS.ErrnoException {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    typeof (error as NodeJS.ErrnoException).code === "string"
+  );
 }

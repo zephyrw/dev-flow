@@ -127,10 +127,8 @@ export async function buildServer(
   });
   const accountService =
     options.accountService ||
-    bootstrapAccountService(engine.store, {
-      authHostExecutable: engine.config.agy_accounts.auth_host_executable,
+    await bootstrapAccountService(engine.store, {
       agyCliPath: engine.config.models.agy_executable,
-      hostExecutable: engine.config.host.executable,
       settings: engine.config.agy_accounts,
     });
   const accessService = new ModelAccessService(engine.store, {
@@ -1842,7 +1840,7 @@ export async function buildServer(
     return {
       config: engine.config,
       leases: engine.store.list("lease"),
-      runtime_ready: existsSync(engine.config.host.executable),
+      runtime_ready: true, // R09 修复：host.executable 已移除，runtime 始终就绪
       execution_user: "current_windows_user",
     };
   });

@@ -1,27 +1,16 @@
-import {
-  spawn,
-  execFileSync,
-  type ChildProcessWithoutNullStreams,
-} from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
+import { randomUUID } from "node:crypto";
+import { fileURLToPath } from "node:url";
 import { existsSync } from "node:fs";
-import { FlowError, requireCondition } from "../../contracts/src/index.js";
-import { JsonLines } from "../../adapters/agy/src/protocol.js";
-import { id } from "../../core/src/util.js";
-
-function killProcessTree(pid?: number) {
-  if (!pid) return;
-  try {
-    if (process.platform === "win32") {
-      execFileSync("taskkill", ["/F", "/T", "/PID", String(pid)], {
-        windowsHide: true,
-        stdio: "ignore",
-      });
-      return;
-    }
-    process.kill(pid, "SIGTERM");
-  } catch {}
-}
+import { FlowError } from "../../contracts/src/index.js";
+import {
+  getNativeAsync,
+  type NativeModule,
+  type WindowsNative,
+} from "./native/index.js";
+import { observeProcessRecord } from "./process-protocol.js";
+import type { ProcessIdentity, StopObservation } from "./process-protocol.js";
 
 export interface ProcessSpec {
   id: string;
@@ -33,6 +22,8 @@ export interface ProcessSpec {
   timeout_ms: number;
   deadline_at?: number;
   stdin?: string;
+  interactive?: boolean;
+  keep_stdin_open?: boolean;
   agy_account?: {
     realm_id: string;
     account_id: string;
@@ -40,34 +31,11 @@ export interface ProcessSpec {
     permit_id: string;
   };
 }
-
-function feedChildStdin(
-  child: ChildProcessWithoutNullStreams,
-  payload: string | undefined,
-  closeAfterWrite: boolean,
-) {
-  let sent = false;
-  const send = () => {
-    if (sent || !child.stdin) return;
-    sent = true;
-    child.stdin.on("error", () => {});
-    if (!payload) {
-      if (closeAfterWrite) child.stdin.end();
-      return;
-    }
-    if (closeAfterWrite) child.stdin.end(payload);
-    else child.stdin.write(payload);
-  };
-  child.once("spawn", send);
-  if (child.pid) send();
-}
-
 export type ProcessStopReason = "timeout" | "manual" | "account_switch";
 export interface ProcessStopOptions {
   expectedPid?: number;
   checkNotStarted?: boolean;
 }
-
 export interface ProcessStopResult {
   status:
     | "confirmed_exited"
@@ -77,283 +45,543 @@ export interface ProcessStopResult {
     | "not_owned";
   pid?: number;
 }
-
+type Completion = {
+  code: number | null;
+  signal?: string;
+  termination_reason?: ProcessStopReason;
+};
 export interface ManagedProcess extends EventEmitter {
   id: string;
   pid?: number;
-  completion: Promise<{
-    code: number | null;
-    signal?: string;
-    termination_reason?: ProcessStopReason;
-  }>;
+  identity?: ProcessIdentity;
+  ready: Promise<void>;
+  completion: Promise<Completion>;
   stop: (reason?: ProcessStopReason) => Promise<void>;
   pauseOutput?: () => void;
   resumeOutput?: () => void;
   termination_reason?: ProcessStopReason;
+  writeStdin: (value: string) => void;
+  endStdin: () => void;
 }
+
+export function cleanProcessEnvironment(
+  extra: Record<string, string> = {},
+): Record<string, string> {
+  const allowed = new Set([
+    "SYSTEMROOT",
+    "WINDIR",
+    "PATH",
+    "TEMP",
+    "TMP",
+    "USERPROFILE",
+    "HOME",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "CODEX_HOME",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "COMSPEC",
+    "PATHEXT",
+    "SYSTEMDRIVE",
+    "PROGRAMFILES",
+    "PROGRAMFILES(X86)",
+    "PROGRAMW6432",
+    "PROGRAMDATA",
+    "JAVA_HOME",
+    "JDK_HOME",
+    "MAVEN_HOME",
+    "M2_HOME",
+    "LANG",
+    "LC_ALL",
+  ]);
+  const result: Record<string, string> = {};
+  for (const [key, value] of Object.entries(process.env))
+    if (value !== undefined && allowed.has(key.toUpperCase()))
+      result[key] = value;
+  for (const [key, value] of Object.entries(extra)) {
+    if (
+      /^NODE_(OPTIONS|PATH|DEBUG.*|REPL_EXTERNAL_MODULE|COMPILE_CACHE|TLS_REJECT_UNAUTHORIZED)$/i.test(
+        key,
+      )
+    )
+      continue;
+    if (key.includes("=") || key.includes("\0") || value.includes("\0"))
+      throw new Error("INVALID_PROCESS_ENV");
+    if (process.platform === "win32")
+      for (const existing of Object.keys(result))
+        if (existing.toUpperCase() === key.toUpperCase())
+          delete result[existing];
+    result[key] = value;
+  }
+  return result;
+}
+
 export class ProcessManager {
   private active = new Map<string, ManagedProcess>();
-  private admission?: (spec: ProcessSpec) => void;
-  setAdmissionGuard(guard?: (spec: ProcessSpec) => void) {
-    this.admission = guard;
-  }
   private stopHistory = new Map<string, ProcessStopResult>();
+  private admission?: (spec: ProcessSpec) => void;
   private closing = false;
   constructor(
-    private hostExecutable: string,
-    private requireHost = true,
     private lifecycle?: (
       spec: ProcessSpec,
       event: Record<string, unknown>,
     ) => void,
   ) {}
+  setAdmissionGuard(guard?: (spec: ProcessSpec) => void) {
+    this.admission = guard;
+  }
   start(spec: ProcessSpec): ManagedProcess {
-    if (this.closing) {
-      throw new FlowError(
-        "PROCESS_MANAGER_CLOSING",
-        "进程管理器正在关闭，拒绝启动新进程",
-        503,
-      );
-    }
+    if (this.closing)
+      throw new FlowError("PROCESS_MANAGER_CLOSING", "进程管理器正在关闭", 503);
     const existing = this.active.get(spec.id);
     if (existing) return existing;
-    const isWindows = process.platform === "win32";
-    requireCondition(
-      !this.requireHost || existsSync(this.hostExecutable),
-      "HOST_REQUIRED",
-      "Process Host 尚未安装，不能执行受管进程",
-      503,
-    );
-    const useHost = existsSync(this.hostExecutable);
     this.admission?.(spec);
-    this.lifecycle?.(spec, { status: "starting", job_id: spec.id });
+    const env = cleanProcessEnvironment(spec.env);
+    const identity: ProcessIdentity = {
+      backend: "node-v1",
+      id: spec.id,
+      attempt_id: randomUUID(),
+    };
     const events = new EventEmitter() as ManagedProcess;
     events.id = spec.id;
-    let child: ChildProcessWithoutNullStreams;
-    const inherited: Record<string, string> = {
-      DOTNET_ROOT: process.env.DOTNET_ROOT ?? process.cwd() + "/.cache/dotnet",
-    };
-    for (const key of [
-      "SystemRoot",
-      "WINDIR",
-      "PATH",
-      "TEMP",
-      "TMP",
-      "USERPROFILE",
-      "HOME",
-      "XDG_CONFIG_HOME",
-      "XDG_DATA_HOME",
-      "CODEX_HOME",
-      "APPDATA",
-      "LOCALAPPDATA",
-      // Windows shells need these to resolve and execute .cmd/.bat programs.
-      // Keep an explicit runtime allowlist; do not inherit tokens or secrets.
-      "ComSpec",
-      "PATHEXT",
-      "SystemDrive",
-      "ProgramFiles",
-      "ProgramFiles(x86)",
-      "ProgramW6432",
-      "ProgramData",
-      "JAVA_HOME",
-      "JDK_HOME",
-      "MAVEN_HOME",
-      "M2_HOME",
-    ])
-      if (process.env[key]) inherited[key] = process.env[key]!;
-    if (useHost) {
-      child = spawn(this.hostExecutable, ["run"], {
-        windowsHide: true,
-        stdio: "pipe",
-        env: inherited,
+    events.identity = identity;
+    let child: ChildProcess | undefined;
+    let native: NativeModule | undefined;
+    let job: bigint | undefined;
+    let interactive: ReturnType<WindowsNative["spawnInteractive"]> | undefined;
+    let timer: NodeJS.Timeout | undefined,
+      startupTimer: NodeJS.Timeout | undefined,
+      poll: NodeJS.Timeout | undefined;
+    let launchIssued = false;
+    let started = false,
+      finished = false,
+      stopRequested = false,
+      bound = false,
+      pipesClosed = false;
+    let finishing: Promise<void> | undefined;
+    let resolveDone!: (value: Completion) => void,
+      rejectDone!: (error: Error) => void;
+    let resolveReady!: () => void, rejectReady!: (error: Error) => void;
+    events.completion = new Promise((resolve, reject) => {
+      resolveDone = resolve;
+      rejectDone = reject;
+    });
+    events.ready = new Promise((resolve, reject) => {
+      resolveReady = resolve;
+      rejectReady = reject;
+    });
+    void events.completion.catch(() => {});
+    void events.ready.catch(() => {});
+    const notify = (event: Record<string, unknown>) =>
+      this.lifecycle?.(spec, {
+        ...event,
+        pid: identity.pid,
+        identity: { ...identity },
+        attempt_id: identity.attempt_id,
       });
-      feedChildStdin(
-        child,
-        JSON.stringify({
-          ...spec,
-          env: { ...inherited, ...spec.env },
-        }) + "\n",
-        false,
-      );
-    } else {
-      child = spawn(spec.executable, spec.args, {
-        cwd: spec.cwd,
-        env: { ...inherited, ...spec.env },
-        windowsHide: true,
-        shell: false,
-        stdio: "pipe",
+    const clearTimers = () => {
+      clearTimeout(timer);
+      clearTimeout(startupTimer);
+      if (poll) clearInterval(poll);
+    };
+    const send = (message: Record<string, unknown>) => {
+      if (!child?.connected) throw new Error("PROCESS_CHANNEL_CLOSED");
+      child.send({ ...message, attempt_id: identity.attempt_id }, (error) => {
+        if (error) void finish(-1, undefined, error);
       });
-      feedChildStdin(child, spec.stdin, true);
-    }
-    events.pid = child.pid;
-    events.pauseOutput = () => {
-      child.stdout.pause();
     };
-    events.resumeOutput = () => {
-      child.stdout.resume();
-    };
-    let settled = false;
-    let termination_reason: ProcessStopReason | undefined;
-    let timer: NodeJS.Timeout | undefined;
-    const done = new Promise<{
-      code: number | null;
-      signal?: string;
-      termination_reason?: ProcessStopReason;
-    }>((resolve, reject) => {
-      const settle = (
-        code: number | null,
-        signal?: string,
-        confirmed = false,
-      ) => {
-        if (settled) return;
-        settled = true;
-        if (timer) {
-          clearTimeout(timer);
-          timer = undefined;
+    const finish = (
+      code: number | null,
+      signal?: string,
+      failure?: Error,
+    ): Promise<void> => {
+      if (finished) return Promise.resolve();
+      if (finishing) return finishing;
+      finishing = (async () => {
+        clearTimers();
+        let confirmed = false;
+        try {
+          if (child?.pid && !bound) {
+            child.kill();
+            const deadline = Date.now() + 5000;
+            while (
+              child.exitCode === null &&
+              child.signalCode === null &&
+              Date.now() < deadline
+            )
+              await new Promise((resolve) => setTimeout(resolve, 25));
+            if (child.exitCode === null && child.signalCode === null)
+              throw new Error("RUNNER_STOP_UNCONFIRMED");
+          }
+          if (native && "createJob" in native && job) {
+            if (!native.terminateJob(job, code ?? 1))
+              throw new Error("JOB_TERMINATE_FAILED");
+            const deadline = Date.now() + 10000;
+            while (Date.now() < deadline) {
+              const count = native.queryJobActiveCount(job);
+              if (count < 0) throw new Error("JOB_QUERY_FAILED");
+              if (count === 0) {
+                confirmed = true;
+                break;
+              }
+              await new Promise((resolve) => setTimeout(resolve, 25));
+            }
+          } else if (native && "killProcessGroup" in native && identity.pgid) {
+            const current = native.getProcessCreationTime(identity.pgid);
+            if (
+              current &&
+              identity.launcher_creation_time &&
+              current !== identity.launcher_creation_time
+            )
+              throw new Error("PROCESS_NOT_OWNED");
+            const result = native.killProcessGroup(
+              identity.pgid,
+              stopRequested ? "SIGTERM" : "SIGKILL",
+            );
+            if (!result.success) throw new Error(result.error);
+            const deadline = Date.now() + 10000,
+              escalate = Date.now() + (stopRequested ? 5000 : 0);
+            let killed = !stopRequested;
+            while (Date.now() < deadline) {
+              if (!native.isProcessGroupAlive(identity.pgid)) {
+                confirmed = true;
+                break;
+              }
+              if (!killed && Date.now() >= escalate) {
+                const result = native.killProcessGroup(
+                  identity.pgid,
+                  "SIGKILL",
+                );
+                if (!result.success) throw new Error(result.error);
+                killed = true;
+              }
+              await new Promise((resolve) => setTimeout(resolve, 25));
+            }
+          } else if (child?.pid) {
+            // No start has been sent: this launcher cannot have created a tool.
+            child.kill();
+            const deadline = Date.now() + 5000;
+            while (
+              child.exitCode === null &&
+              child.signalCode === null &&
+              Date.now() < deadline
+            )
+              await new Promise((resolve) => setTimeout(resolve, 25));
+            confirmed = child.exitCode !== null || child.signalCode !== null;
+          } else confirmed = true;
+          if (confirmed && child?.pid) {
+            const deadline = Date.now() + 5000;
+            while (!pipesClosed && Date.now() < deadline)
+              await new Promise((resolve) => setTimeout(resolve, 10));
+            if (!pipesClosed) throw new Error("PROCESS_PIPES_STILL_OPEN");
+          }
+        } catch {
+          confirmed = false;
+        }
+        if (!confirmed) {
+          this.stopHistory.set(spec.id, { status: "unknown", pid: events.pid });
+          try {
+            notify({ status: "failed", confirmed: false });
+          } catch {}
+          const error = new FlowError(
+            "PROCESS_STOP_UNCONFIRMED",
+            "无法确认受管进程树已完全退出",
+            409,
+          );
+          rejectReady(error);
+          rejectDone(error);
+          throw error;
+        }
+        finished = true;
+        interactive?.close();
+        if (native && "createJob" in native && job) {
+          native.closeHandle(job);
+          job = undefined;
         }
         this.active.delete(spec.id);
         this.stopHistory.set(spec.id, {
-          status: "confirmed_exited",
+          status: launchIssued ? "confirmed_exited" : "confirmed_not_started",
           pid: events.pid,
         });
-        this.lifecycle?.(spec, {
-          status: "exited",
-          code,
-          confirmed,
-          ...(termination_reason ? { termination_reason } : {}),
-        });
-        resolve({
+        const result = {
           code,
           ...(signal ? { signal } : {}),
-          ...(termination_reason ? { termination_reason } : {}),
-        });
-      };
-      child.on("error", (e) => {
-        if (timer) {
-          clearTimeout(timer);
-          timer = undefined;
-        }
-        this.active.delete(spec.id);
-        this.stopHistory.set(spec.id, {
-          status: "confirmed_exited",
-          pid: events.pid,
-        });
-        settled = true;
-        this.lifecycle?.(spec, { status: "failed", confirmed: false });
-        reject(e);
-      });
-      if (useHost) {
-        const lines = new JsonLines((e) => {
-          if (e.type === "stdout" || e.type === "stderr")
-            events.emit(e.type, Buffer.from(String(e.data), "base64"));
-          else if (e.type === "exit") settle(Number(e.code), undefined, true);
-          else if (e.type === "error") {
-            events.emit("diagnostic", String(e.message));
-            settle(-1);
-          } else {
-            if (e.type === "started" && Number.isSafeInteger(e.pid))
-              events.pid = Number(e.pid);
-            this.lifecycle?.(spec, { ...e, status: "running" });
-            events.emit("host", e);
-          }
-        });
-        child.stdout.on("data", (b: Buffer) => {
-          try {
-            lines.push(b);
-          } catch (err) {
-            events.emit("diagnostic", String(err));
-            child.kill();
-          }
-        });
-        child.stderr.on("data", (b) => events.emit("stderr", b));
-        child.on("close", (code, signal) => {
-          try {
-            lines.finish();
-          } catch {}
-          settle(code === 0 ? -1 : code, signal ?? undefined);
-        });
-      } else {
-        child.stdout.on("data", (b) => events.emit("stdout", b));
-        child.stderr.on("data", (b) => events.emit("stderr", b));
-        child.on("close", (code, signal) => settle(code, signal ?? undefined));
-      }
-    });
-    events.completion = done;
-    events.stop = async (reason = "manual") => {
-      if (settled) return;
-      if (!termination_reason || reason === "manual") {
-        termination_reason = reason;
-        events.termination_reason = reason;
-      }
-      if (useHost) {
+          ...(events.termination_reason
+            ? { termination_reason: events.termination_reason }
+            : {}),
+        };
         try {
-          if (child.stdin?.writable) {
-            child.stdin.write(JSON.stringify({ action: "stop" }) + "\n");
-          }
-        } catch {}
-      }
-      killProcessTree(child.pid);
-      await done;
-    };
-    let timeoutDuration = spec.timeout_ms;
-    if (spec.deadline_at !== undefined) {
-      timeoutDuration = Math.max(0, spec.deadline_at - Date.now());
-    }
-    if (
-      timeoutDuration >= 0 &&
-      (spec.timeout_ms > 0 || spec.deadline_at !== undefined)
-    ) {
-      timer = setTimeout(() => {
-        if (!settled && !termination_reason) {
-          termination_reason = "timeout";
-          events.termination_reason = "timeout";
+          notify({
+            status: failure ? "failed" : "exited",
+            confirmed: true,
+            ...result,
+          });
+        } catch (error) {
+          failure = error as Error;
         }
-        void events.stop("timeout");
-      }, timeoutDuration);
-    }
+        if (!started) rejectReady(failure ?? new Error("PROCESS_NOT_STARTED"));
+        if (failure) rejectDone(failure);
+        else resolveDone(result);
+      })().finally(() => {
+        finishing = undefined;
+      });
+      void finishing.catch(() => {});
+      return finishing;
+    };
+    events.stop = async (reason = "manual") => {
+      if (finished) return;
+      stopRequested = true;
+      if (!events.termination_reason || reason === "manual")
+        events.termination_reason = reason;
+      // Initialization must observe cancellation before creating any OS resources.
+      if (!native) {
+        await events.completion.catch(() => {});
+        return;
+      }
+      await finish(-1);
+    };
+    events.pauseOutput = () => child?.stdout?.pause();
+    events.resumeOutput = () => child?.stdout?.resume();
+    events.writeStdin = (value) => {
+      if (!started || !child?.stdin?.writable)
+        throw new Error("PROCESS_STDIN_CLOSED");
+      child.stdin.write(value);
+    };
+    events.endStdin = () => child?.stdin?.end();
+    this.stopHistory.delete(spec.id);
     this.active.set(spec.id, events);
+    try {
+      notify({ status: "starting", confirmed: false });
+    } catch (error) {
+      this.active.delete(spec.id);
+      rejectReady(error as Error);
+      rejectDone(error as Error);
+      return events;
+    }
+    const timeout =
+      spec.deadline_at !== undefined
+        ? Math.max(0, spec.deadline_at - Date.now())
+        : spec.timeout_ms;
+    if (spec.deadline_at !== undefined || timeout > 0)
+      timer = setTimeout(() => {
+        void events.stop("timeout").catch(() => {});
+      }, timeout);
+    void (async () => {
+      try {
+        native = await getNativeAsync();
+        if (stopRequested) {
+          await finish(-1);
+          return;
+        }
+        if ("createJob" in native) {
+          identity.job_name = `Local\\DevFlow.${identity.attempt_id}`;
+          job = native.createJob(identity.job_name) ?? undefined;
+          if (!job) throw new Error("JOB_CREATE_FAILED");
+          if (spec.interactive) {
+            interactive = native.spawnInteractive(
+              spec.executable,
+              spec.args,
+              spec.cwd,
+              env,
+              job,
+            );
+            bound = true;
+            identity.pid = events.pid = interactive.pid;
+            identity.creation_time = native
+              .getProcessCreationTime(interactive.pid)
+              ?.toString();
+            if (!identity.creation_time)
+              throw new Error("PROCESS_IDENTITY_UNKNOWN");
+            notify({ status: "running", confirmed: false });
+            launchIssued = true;
+            interactive.resume();
+            started = true;
+            resolveReady();
+            const win = native;
+            poll = setInterval(() => {
+              try {
+                if (interactive && !win.isProcessRunning(interactive.handle))
+                  void finish(interactive.exitCode());
+              } catch (error) {
+                void finish(-1, undefined, error as Error);
+              }
+            }, 50);
+            return;
+          }
+        } else if (spec.interactive)
+          throw new Error("INTERACTIVE_LOGIN_UNSUPPORTED");
+        const runner = fileURLToPath(
+          new URL("./runner-entry.js", import.meta.url),
+        );
+        // Development also uses the single compiled artifact, never a second handwritten JS copy.
+        const entry = existsSync(runner)
+          ? runner
+          : fileURLToPath(
+              new URL(
+                "../../../dist/packages/process/src/runner-entry.js",
+                import.meta.url,
+              ),
+            );
+        if (!existsSync(entry)) throw new Error("RUNNER_BUILD_REQUIRED");
+        child = spawn(process.execPath, [entry, identity.attempt_id], {
+          cwd: spec.cwd,
+          env: cleanProcessEnvironment(),
+          windowsHide: true,
+          stdio: ["pipe", "pipe", "pipe", "ipc"],
+          detached: process.platform !== "win32",
+        });
+        const pipeError = (error: Error) => {
+          events.emit("channel_error");
+          void finish(-1, undefined, error);
+        };
+        child.stdin?.on("error", pipeError);
+        child.stdout?.on("error", pipeError);
+        child.stderr?.on("error", pipeError);
+        child.stdout?.on("data", (value) => events.emit("stdout", value));
+        child.stderr?.on("data", (value) => events.emit("stderr", value));
+        child.once("error", (error) => {
+          void finish(-1, undefined, error);
+        });
+        child.once("close", (code, signal) => {
+          pipesClosed = true;
+          void finish(
+            code,
+            signal ?? undefined,
+            finished || finishing
+              ? undefined
+              : new Error("RUNNER_DISCONNECTED"),
+          );
+        });
+        startupTimer = setTimeout(() => {
+          void finish(-1, undefined, new Error("RUNNER_START_TIMEOUT"));
+        }, 30000);
+        let armed = false;
+        child.on("message", (value) => {
+          if (finished || finishing) return;
+          try {
+            const message = value as Record<string, unknown>;
+            if (!message || message.attempt_id !== identity.attempt_id) return;
+            if (message.type === "ready") {
+              if (
+                armed ||
+                message.version !== "1.0.0" ||
+                message.pid !== child?.pid
+              )
+                throw new Error("RUNNER_PROTOCOL_INVALID");
+              identity.launcher_pid = child!.pid;
+              identity.launcher_creation_time = native!
+                .getProcessCreationTime(child!.pid!)
+                ?.toString();
+              if (!identity.launcher_creation_time)
+                throw new Error("RUNNER_IDENTITY_UNKNOWN");
+              if (native && "createJob" in native) {
+                if (!job || !native.assignProcessToJob(job, child!.pid!))
+                  throw new Error("JOB_ASSIGN_FAILED");
+              } else identity.pgid = child!.pid;
+              bound = true;
+              notify({ status: "starting", confirmed: false });
+              armed = true;
+              if (stopRequested) {
+                void finish(-1);
+                return;
+              }
+              launchIssued = true;
+              send({
+                type: "start",
+                executable: spec.executable,
+                args: spec.args,
+                cwd: spec.cwd,
+                env,
+              });
+            } else if (message.type === "started") {
+              if (
+                !armed ||
+                started ||
+                !Number.isSafeInteger(message.pid) ||
+                Number(message.pid) <= 0
+              )
+                throw new Error("RUNNER_PROTOCOL_INVALID");
+              identity.pid = events.pid = Number(message.pid);
+              identity.creation_time = native!
+                .getProcessCreationTime(identity.pid)
+                ?.toString();
+              notify({ status: "running", confirmed: false });
+              started = true;
+              clearTimeout(startupTimer);
+              resolveReady();
+              if (spec.stdin) child!.stdin!.write(spec.stdin);
+              if (!spec.keep_stdin_open) child!.stdin!.end();
+              events.emit("host", {
+                type: "started",
+                pid: events.pid,
+                attempt_id: identity.attempt_id,
+              });
+            } else if (message.type === "exited") {
+              if (message.code !== null && !Number.isInteger(message.code))
+                throw new Error("RUNNER_PROTOCOL_INVALID");
+              void finish(
+                message.code as number | null,
+                typeof message.signal === "string" ? message.signal : undefined,
+              );
+            } else throw new Error("RUNNER_PROTOCOL_INVALID");
+          } catch (error) {
+            void finish(-1, undefined, error as Error);
+          }
+        });
+      } catch (error) {
+        await finish(-1, undefined, error as Error);
+      }
+    })().catch(() => {});
     return events;
   }
   get(key: string) {
     return this.active.get(key);
   }
+  async observe(key: string): Promise<StopObservation> {
+    const active = this.active.get(key);
+    if (active) return observeProcessRecord({ identity: active.identity });
+    const result = this.stopHistory.get(key);
+    return {
+      state:
+        result?.status === "confirmed_exited" ||
+        result?.status === "confirmed_not_started"
+          ? "confirmed_exited"
+          : "unknown",
+    };
+  }
   async stop(
     key: string,
     reasonOrOptions: ProcessStopReason | ProcessStopOptions = "manual",
   ): Promise<ProcessStopResult> {
-    const reason = typeof reasonOrOptions === "string" ? reasonOrOptions : "manual";
-    const options = typeof reasonOrOptions === "string" ? undefined : reasonOrOptions;
-    const history = this.stopHistory.get(key);
-    if (
-      history &&
-      (history.status === "confirmed_exited" ||
-        history.status === "confirmed_not_started")
-    ) {
-      return history;
-    }
-    const p = this.active.get(key);
-    if (!p) {
-      if (options?.checkNotStarted) {
-        const res: ProcessStopResult = { status: "confirmed_not_started" };
-        this.stopHistory.set(key, res);
-        return res;
+    const options =
+      typeof reasonOrOptions === "string" ? undefined : reasonOrOptions;
+    const process = this.active.get(key);
+    if (process) {
+      if (options?.expectedPid && process.pid !== options.expectedPid)
+        return { status: "not_owned", pid: process.pid };
+      try {
+        await process.stop(
+          typeof reasonOrOptions === "string" ? reasonOrOptions : "manual",
+        );
+      } catch {
+        return { status: "unknown", pid: process.pid };
       }
-      return { status: "unknown" };
     }
-    if (options?.expectedPid && p.pid && p.pid !== options.expectedPid) {
-      return { status: "not_owned", pid: p.pid };
-    }
-    const pid = p.pid;
-    await p.stop(reason);
-    const result: ProcessStopResult = { status: "confirmed_exited", pid };
-    this.stopHistory.set(key, result);
-    return result;
+    const history = this.stopHistory.get(key);
+    if (history && options?.expectedPid && history.pid !== options.expectedPid)
+      return { status: "not_owned" };
+    // A missing record is not evidence that an earlier attempt never started.
+    return history ?? { status: "unknown" };
   }
   list() {
     return [...this.active.keys()];
   }
   async close() {
     this.closing = true;
-    await Promise.all([...this.active.values()].map((p) => p.stop()));
+    const results = await Promise.allSettled(
+      [...this.active.values()].map((process) => process.stop()),
+    );
+    if (results.some((result) => result.status === "rejected"))
+      throw new Error("PROCESS_STOP_UNCONFIRMED");
   }
 }

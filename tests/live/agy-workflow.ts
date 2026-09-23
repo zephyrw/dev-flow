@@ -32,10 +32,6 @@ mkdirSync(output, { recursive: true });
 const s = setup();
 s.config.server.port = 14812;
 s.config.server.human_origin = "http://localhost:14812";
-s.config.host.executable = resolve(
-  "host/DevFlow.WinHost/bin/Release/net10.0-windows/DevFlow.WinHost.exe",
-);
-s.config.host.required = true;
 s.config.models.agy_executable =
   "C:/Users/yckj4798/AppData/Local/agy/bin/agy.exe";
 s.config.timeouts.agent_minutes = 8;
@@ -76,7 +72,7 @@ contract.tasks[0]!.completion_checks = [{ path: "app.txt", contains: "after" }];
 contract.tests[0]!.expected_case_ids = ["test updates content"];
 contract.markdown += `\n\n本次联调标记：${marker}。先调用 devflow_start_task task_id=T01，再通过 devflow_worker MCP 完成修改、任务声明、冻结、检查和完成报告，并在中文完成摘要中原样报告此标记。`;
 engine.submitPlan(w.id, contract, w.version, "live-plan");
-const processes = new ProcessManager(s.config.host.executable, true);
+const processes = new ProcessManager();
 const checker = new LocalRuntime(engine);
 let liveResult: unknown;
 const started = Date.now();

@@ -1,18 +1,22 @@
+import { observeProcessRecord } from "./process-protocol.js";
+import { getNativeAsync } from "./native/index.js";
+import { basename, resolve } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { basename, resolve } from "node:path";
 import type { Store } from "../../store/src/store.js";
+
+const execFileAsync = promisify(execFile);
 import type {
   ProcessHostPort,
   ExternalProcessInfo,
 } from "../../agy-accounts/src/ports.js";
 import type { ProcessManager } from "./manager.js";
-
-const execute = promisify(execFile);
 type RecordEntry = {
   id: string;
   pid?: number;
   status?: string;
+  confirmed?: boolean;
+  identity?: import("./process-protocol.js").ProcessIdentity;
   agy_account?: {
     realm_id: string;
     account_id: string;
@@ -29,12 +33,24 @@ type ProcessEntry = {
   create_time?: number;
 };
 
+/**
+ * R03 修复：四态确认模型
+ * - running:        进程仍在运行
+ * - confirmed_exited: 已确认退出（进程不存在）
+ * - unknown:        无法确定状态（异常），必须阻塞切换
+ * - not_owned:      进程不属于当前管理器
+ */
+type StopConfirmationStatus =
+  | "running"
+  | "confirmed_exited"
+  | "unknown"
+  | "not_owned";
+
 /** Local process facts only. Failure to establish ownership must block switching. */
 export class AgyAccountProcessHost implements ProcessHostPort {
   constructor(
     private options: {
       store: Store;
-      hostExecutable: string;
       agyExecutable: string;
       processManager?: ProcessManager;
     },
@@ -42,47 +58,60 @@ export class AgyAccountProcessHost implements ProcessHostPort {
   private records() {
     return this.options.store.list<RecordEntry>("process_record");
   }
+
   async assertCapabilities() {
-    if (process.platform !== "win32")
-      throw new Error("AGY_PROCESS_HOST_UNSUPPORTED");
-    const { stdout } = await execute(this.options.hostExecutable, ["doctor"], {
-      windowsHide: true,
-      timeout: 5000,
-    });
-    const c = JSON.parse(stdout.trim());
-    if (c.suspended_spawn !== true || c.kill_on_close !== true)
-      throw new Error("AGY_PROCESS_HOST_CAPABILITY_MISSING");
+    await getNativeAsync();
   }
-  async confirmJobsStopped(ids: string[]) {
+  private async confirmRecordStopped(
+    record: RecordEntry,
+  ): Promise<StopConfirmationStatus> {
+    const managed = this.options.processManager?.get(record.id);
+    if (
+      managed?.identity &&
+      record.identity?.attempt_id !== managed.identity.attempt_id
+    )
+      return "not_owned";
+    return (
+      await observeProcessRecord(record as unknown as Record<string, unknown>)
+    ).state;
+  }
+
+  async confirmJobsStopped(ids: string[]): Promise<boolean> {
     for (const id of ids) {
       if (!/^[A-Za-z0-9_-]{1,150}$/.test(id)) return false;
-      try {
-        const { stdout } = await execute(
-          this.options.hostExecutable,
-          ["job-status", id],
-          { windowsHide: true, timeout: 5000 },
-        );
-        const status = JSON.parse(stdout.trim());
-        if (status.id !== id || status.alive !== false) return false;
-      } catch {
+      const record = this.records().find((r) => r.id === id);
+      if (!record) return false;
+      const status = await this.confirmRecordStopped(record);
+      if (
+        status === "running" ||
+        status === "unknown" ||
+        status === "not_owned"
+      ) {
         return false;
       }
     }
     return true;
   }
+
   async listManagedProcesses(realmId: string) {
     await this.assertCapabilities();
     const out = [];
     for (const r of this.records().filter(
       (r) => r.agy_account?.realm_id === realmId,
     )) {
-      if (await this.confirmJobsStopped([r.id])) continue;
+      const status = await this.confirmRecordStopped(r);
+      if (status === "confirmed_exited") continue;
+      if (status === "unknown" || status === "not_owned") {
+        // R03 修复：unknown 状态必须抛出错误，阻塞切换
+        throw new Error("AGY_MANAGED_PROCESS_IDENTITY_UNKNOWN");
+      }
       if (!Number.isSafeInteger(r.pid) || r.pid! <= 0)
         throw new Error("AGY_MANAGED_PROCESS_IDENTITY_UNKNOWN");
       out.push({ pid: r.pid!, ...r.agy_account });
     }
     return out;
   }
+
   private async inventory(): Promise<ProcessEntry[]> {
     if (process.platform !== "win32")
       throw new Error("AGY_PROCESS_INVENTORY_UNSUPPORTED");
@@ -96,7 +125,7 @@ export class AgyAccountProcessHost implements ProcessHostPort {
       "$p.Name -match '(?i)agy|antigravity|language_server'",
       `($p.Name -match '(?i)agy|antigravity|language_server' -or $p.Name -eq '${configuredName}')`,
     );
-    const { stdout } = await execute(
+    const { stdout } = await execFileAsync(
       "powershell.exe",
       [
         "-NoProfile",
@@ -113,22 +142,36 @@ export class AgyAccountProcessHost implements ProcessHostPort {
   async findExternalAgyProcesses(): Promise<ExternalProcessInfo[]> {
     await this.assertCapabilities();
     const rows = await this.inventory();
-    const owned = new Set(
-      this.records()
-        .filter((r) => r.agy_account && this.options.processManager?.get(r.id))
-        .map((r) => r.pid)
-        .filter((p): p is number => !!p),
-    );
-    let changed = true;
-    while (changed) {
-      changed = false;
-      for (const r of rows)
-        if (owned.has(r.parent) && !owned.has(r.pid)) {
-          owned.add(r.pid);
-          changed = true;
-        }
-    }
     const configuredName = basename(this.options.agyExecutable).toLowerCase();
+    const candidates = rows.filter(
+      (r) =>
+        !!r.sid &&
+        (r.name.toLowerCase() === configuredName ||
+          /agy|antigravity|language_server/i.test(r.name)),
+    );
+    const owned = new Set<number>();
+    const native = await getNativeAsync();
+    if (!("openJob" in native))
+      throw new Error("AGY_PROCESS_INVENTORY_UNSUPPORTED");
+    for (const record of this.records().filter(
+      (r) => r.agy_account && this.options.processManager?.get(r.id),
+    )) {
+      const managed = this.options.processManager!.get(record.id)!;
+      if (
+        !record.identity?.job_name ||
+        record.identity.attempt_id !== managed.identity?.attempt_id
+      )
+        throw new Error("AGY_MANAGED_PROCESS_IDENTITY_UNKNOWN");
+      const job = native.openJob(record.identity.job_name);
+      if (!job) continue;
+      try {
+        for (const candidate of candidates)
+          if (native.isProcessInJob(candidate.pid, job))
+            owned.add(candidate.pid);
+      } finally {
+        native.closeHandle(job);
+      }
+    }
     return rows
       .filter(
         (r) =>
@@ -166,4 +209,13 @@ export class AgyAccountProcessHost implements ProcessHostPort {
     if (selected.some((r) => !r)) return false;
     return this.confirmJobsStopped(selected.map((r) => r!.id));
   }
+}
+
+function isErrnoException(error: unknown): error is NodeJS.ErrnoException {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    typeof (error as NodeJS.ErrnoException).code === "string"
+  );
 }

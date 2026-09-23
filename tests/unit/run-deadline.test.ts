@@ -64,7 +64,7 @@ it("DF-STAGE-U03 credential grace never authorizes expired run", async () => {
 });
 
 it("DF-STAGE-U04 first termination reason wins", async () => {
-  const pm = new ProcessManager("", false);
+  const pm = new ProcessManager();
 
   const proc1 = pm.start({
     id: "proc-timeout",

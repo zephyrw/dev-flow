@@ -35,103 +35,160 @@ run(process.execPath, [
   "--config",
   "apps/web/vite.config.ts",
 ]);
-run(process.execPath, ["scripts/build-host.mjs"]);
 const configPath = join(root, "devflow.yaml");
-const configDocument = parseDocument(
-  existsSync(configPath) ? readFileSync(configPath, "utf8") : "{}",
+const configModule = await import(
+  pathToFileURL(join(root, "dist/packages/contracts/src/config.js")).href
 );
-if (configDocument.errors.length) throw configDocument.errors[0];
-if (existsSync(configPath))
-  copyFileSync(configPath, join(root, ".cache", `devflow-${stamp}.yaml`));
-if (!configDocument.getIn(["host", "executable"])) {
-  configDocument.setIn(
-    ["host", "executable"],
-    join(
-      root,
-      "dist/host",
-      process.platform === "win32" ? "devflow-host.exe" : "devflow-host",
-    ),
-  );
-  configDocument.setIn(["host", "required"], true);
-}
-if (configDocument.getIn(["agy_accounts", "enabled"]) === undefined)
-  configDocument.setIn(["agy_accounts", "enabled"], false);
-if (!configDocument.getIn(["agy_accounts", "auth_host_executable"]))
-  configDocument.setIn(
-    ["agy_accounts", "auth_host_executable"],
-    join(root, "dist/host/devflow-auth-host.exe"),
-  );
-if (!configDocument.get("opentabs")) {
-  const existing = join(homedir(), ".opentabs/extension/auth.json");
-  configDocument.set("opentabs", {
-    secret_file: existsSync(existing) ? existing : "",
-  });
-}
-writeFileSync(configPath, configDocument.toString());
-const codexHome = process.env.CODEX_HOME ?? join(homedir(), ".codex");
-const backups = join(codexHome, "devflow-backups", stamp);
+const migration = await import(
+  pathToFileURL(join(root, "dist/packages/contracts/src/config-migration.js"))
+    .href
+);
+const { acquireControllerLock } = await import(
+  pathToFileURL(join(root, "dist/packages/process/src/controller-lock.js")).href
+);
+const { UpgradeManager } = await import(
+  pathToFileURL(join(root, "dist/packages/installer/src/upgrade.js")).href
+);
+const { atomicWrite } = await import(
+  pathToFileURL(join(root, "dist/packages/core/src/util.js")).href
+);
+const storage = existsSync(configPath)
+  ? configModule.loadConfig(configPath).storage_root
+  : join(root, ".devflow");
+const unlock = await acquireControllerLock(storage);
 try {
-  const report = installCodexSkills(join(root, "packages/skills"), {
-    codexHome,
-    userHome: homedir(),
-    backupRoot: backups,
+  const upgrade = new UpgradeManager({
+    installDir: root,
+    targetVersion: JSON.parse(readFileSync(join(root, "package.json"), "utf8"))
+      .version,
   });
-  for (const result of report.results)
-    console.log("- " + result.name + ": " + result.status + " -> " + result.targetRoot + "; backup: " + result.backupRoot);
-} catch (err) {
-  console.error(`Skill update failed during setup: ${err.message}`);
-  if (err.report) {
-    console.error("Backup root: " + err.report.backupRoot);
-    for (const r of err.report.results) {
-      console.error("- Target " + r.name + ": status=" + r.status + " (partial: " + (r.partial ? "yes" : "no") + ") -> " + r.targetRoot + "; backup: " + r.backupRoot);
-      if (r.error) console.error("  " + (r.failureStage ?? "install") + ": " + (r.error.message ?? r.error));
+  await upgrade.assertQuiescent(join(storage, "devflow.sqlite"));
+  await upgrade.backupData(join(storage, "devflow.sqlite"));
+  if (existsSync(configPath)) {
+    const preview = migration.dryRunMigration(configPath);
+    if (!preview.can_apply) throw new Error(preview.errors.join(","));
+    const applied = migration.applyMigration(configPath, preview.input_hash);
+    if (!applied.success) throw new Error(applied.errors.join(","));
+  }
+  const configDocument = parseDocument(
+    existsSync(configPath) ? readFileSync(configPath, "utf8") : "{}",
+  );
+  if (configDocument.errors.length) throw configDocument.errors[0];
+  if (existsSync(configPath))
+    copyFileSync(configPath, join(root, ".cache", `devflow-${stamp}.yaml`));
+  if (configDocument.getIn(["agy_accounts", "enabled"]) === undefined)
+    configDocument.setIn(["agy_accounts", "enabled"], false);
+  // 确保 schema_version 为 2
+  configDocument.set("schema_version", 2);
+  if (!configDocument.get("opentabs")) {
+    const existing = join(homedir(), ".opentabs/extension/auth.json");
+    configDocument.set("opentabs", {
+      secret_file: existsSync(existing) ? existing : "",
+    });
+  }
+  configModule.ConfigSchema.parse(configDocument.toJS());
+  atomicWrite(configPath, configDocument.toString());
+  const codexHome = process.env.CODEX_HOME ?? join(homedir(), ".codex");
+  const backups = join(codexHome, "devflow-backups", stamp);
+  try {
+    const report = installCodexSkills(join(root, "packages/skills"), {
+      codexHome,
+      userHome: homedir(),
+      backupRoot: backups,
+    });
+    for (const result of report.results)
+      console.log(
+        "- " +
+          result.name +
+          ": " +
+          result.status +
+          " -> " +
+          result.targetRoot +
+          "; backup: " +
+          result.backupRoot,
+      );
+  } catch (err) {
+    console.error(`Skill update failed during setup: ${err.message}`);
+    if (err.report) {
+      console.error("Backup root: " + err.report.backupRoot);
+      for (const r of err.report.results) {
+        console.error(
+          "- Target " +
+            r.name +
+            ": status=" +
+            r.status +
+            " (partial: " +
+            (r.partial ? "yes" : "no") +
+            ") -> " +
+            r.targetRoot +
+            "; backup: " +
+            r.backupRoot,
+        );
+        if (r.error)
+          console.error(
+            "  " +
+              (r.failureStage ?? "install") +
+              ": " +
+              (r.error.message ?? r.error),
+          );
+      }
+    }
+    throw err;
+  }
+  const settingsPath = join(codexHome, "config.toml");
+  let settings = existsSync(settingsPath)
+    ? readFileSync(settingsPath, "utf8")
+    : "";
+  if (existsSync(settingsPath))
+    copyFileSync(settingsPath, join(backups, "config.toml"));
+  // Replace only this named server, preserving all unrelated settings.
+  settings = settings
+    .replace(
+      /^\[mcp_servers\.devflow(?:\.[^\]\r\n]+)?\][\s\S]*?(?=^\[|$(?![\s\S]))/gm,
+      "",
+    )
+    .trimEnd();
+  settings += `\n\n[mcp_servers.devflow]\ncommand = ${JSON.stringify(process.execPath)}\nargs = [${JSON.stringify(join(root, "dist/packages/bridge/src/planner.js"))}]\ncwd = ${JSON.stringify(root)}\nstartup_timeout_sec = 60\ntool_timeout_sec = 180\n`;
+  writeFileSync(settingsPath, settings);
+  console.log(
+    "账号模块默认关闭；构建成功不代表 Windows 凭据能力或官方双额度已验证，账号功能需要另行完成能力核验。",
+  );
+  const installer = await import(
+    pathToFileURL(join(root, "dist/packages/installer/src/main.js")).href
+  );
+  const parsed = installer.parseInstallerCliArgs(process.argv.slice(2));
+  let defaultsResult;
+  try {
+    defaultsResult = installer.applyInstallerModelDefaultsFromConfigFile(
+      configPath,
+      parsed.roleInputs,
+      parsed.targetTools,
+    );
+  } catch (error) {
+    if (error instanceof installer.InstallerDefaultsError) {
+      console.error(error.message);
+      process.exitCode = 30;
+    } else {
+      throw error;
     }
   }
-  process.exit(1);
-}
-const settingsPath = join(codexHome, "config.toml");
-let settings = existsSync(settingsPath)
-  ? readFileSync(settingsPath, "utf8")
-  : "";
-if (existsSync(settingsPath))
-  copyFileSync(settingsPath, join(backups, "config.toml"));
-// Replace only this named server, preserving all unrelated settings.
-settings = settings
-  .replace(
-    /^\[mcp_servers\.devflow(?:\.[^\]\r\n]+)?\][\s\S]*?(?=^\[|$(?![\s\S]))/gm,
-    "",
-  )
-  .trimEnd();
-settings += `\n\n[mcp_servers.devflow]\ncommand = ${JSON.stringify(process.execPath)}\nargs = [${JSON.stringify(join(root, "dist/packages/bridge/src/planner.js"))}]\ncwd = ${JSON.stringify(root)}\nstartup_timeout_sec = 60\ntool_timeout_sec = 180\n`;
-writeFileSync(settingsPath, settings);
-console.log(
-  "账号模块默认关闭；构建成功不代表认证宿主、进程宿主或官方双额度已验证。Go Host 未具备 doctor/job-status/suspended_spawn 时不能切号。",
-);
-const installer = await import(pathToFileURL(join(root, "dist/packages/installer/src/main.js")).href);
-const parsed = installer.parseInstallerCliArgs(process.argv.slice(2));
-let defaultsResult;
-try {
-  defaultsResult = installer.applyInstallerModelDefaultsFromConfigFile(
-    configPath,
-    parsed.roleInputs,
-    parsed.targetTools,
-  );
-} catch (error) {
-  if (error instanceof installer.InstallerDefaultsError) {
-    console.error(error.message);
-    process.exitCode = 30;
+  if (process.exitCode === 30) {
+    console.error("模型默认参数不合法，未写入新的默认配置。");
   } else {
-    throw error;
+    console.log(
+      "安装完成。当前 Windows 用户运行；未创建账户、未修改 ACL、未注册开机任务。",
+    );
+    console.log(
+      "重启 Codex 一次以加载新的入口；以后在业务项目说：用 DevFlow 帮我……",
+    );
+    console.log(
+      "需要控制台时双击“打开 DevFlow.vbs”。原项目、计划和日志继续保留。",
+    );
+    if (defaultsResult?.pending) {
+      console.log("模型设置待完成");
+      process.exitCode = 10;
+    }
   }
-}
-if (process.exitCode === 30) {
-  console.error("模型默认参数不合法，未写入新的默认配置。");
-} else {
-  console.log("安装完成。当前 Windows 用户运行；未创建账户、未修改 ACL、未注册开机任务。");
-  console.log("重启 Codex 一次以加载新的入口；以后在业务项目说：用 DevFlow 帮我……");
-  console.log("需要控制台时双击“打开 DevFlow.vbs”。原项目、计划和日志继续保留。");
-  if (defaultsResult?.pending) {
-    console.log("模型设置待完成");
-    process.exitCode = 10;
-  }
+} finally {
+  await unlock();
 }

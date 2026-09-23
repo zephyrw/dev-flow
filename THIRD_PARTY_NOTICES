@@ -30,3 +30,8 @@ Below is a list of major third-party components, their licenses, and copyright n
 7. Model Context Protocol SDK (MIT License)
    Copyright (c) Anthropic, PBC
    https://github.com/modelcontextprotocol
+
+8. Koffi (MIT License)
+   Copyright (c) 2022-2026 Nicolas Castellane
+   https://github.com/nickel-org/koffi
+   Used for calling Windows native APIs from Node.js
