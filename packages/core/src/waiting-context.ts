@@ -21,6 +21,7 @@ export interface WaitingContext {
   continuation?: boolean;
   intent: ExecutionIntent | ReviewIntent;
   questions?: string[];
+  interaction_id?: string;
   created_at: string;
 }
 

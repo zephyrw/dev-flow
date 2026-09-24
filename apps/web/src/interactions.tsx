@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { WorkflowActivity } from "./components/WorkflowActivity.js";
 import { AgyRecoveryPanel } from "./components/AgyRecoveryPanel.js";
 import { RepairModelPicker, defaultRepairPicker, type RepairPickerValue } from "./components/RepairModelPicker.js";
@@ -24,6 +24,9 @@ import {
   useProjectAsides,
   writeAsidePromoteDraft,
 } from "./use-project-asides.js";
+import { UserInteractionDialog } from "./components/UserInteractionDialog.js";
+import { getCurrentUserInteraction } from "./components/user-interaction-api.js";
+import type { UserInteractionRecord } from "../../../packages/contracts/src/user-interaction.js";
 import "./components/aside-popover.css";
 
 export function TaskInteraction({
@@ -80,6 +83,61 @@ export function TaskInteraction({
     window.addEventListener("devflow-open-guidance", focus);
     return () => window.removeEventListener("devflow-open-guidance", focus);
   }, [w.id]);
+
+  const [interaction, setInteraction] = useState<UserInteractionRecord | null>(null);
+  const [interactionOpen, setInteractionOpen] = useState(false);
+  const dismissedInteractionId = useRef("");
+  const [fetchError, setFetchError] = useState<string>("");
+  const activeWorkflow = useRef(w.id);
+  activeWorkflow.current = w.id;
+  const activeInteraction = useRef(interaction?.id);
+  activeInteraction.current = interaction?.id;
+  const requestSequence = useRef(0);
+  const requestController = useRef<AbortController | null>(null);
+  const fetchInteraction = useCallback(async () => {
+    const workflowId = w.id;
+    const sequence = ++requestSequence.current;
+    requestController.current?.abort();
+    const controller = new AbortController();
+    requestController.current = controller;
+    try {
+      const item = await getCurrentUserInteraction(workflowId, controller.signal);
+      if (controller.signal.aborted || activeWorkflow.current !== workflowId || sequence !== requestSequence.current) return;
+      setFetchError("");
+      setInteraction(item);
+      setInteractionOpen(Boolean(item?.status === "pending" && dismissedInteractionId.current !== item.id));
+    } catch {
+      if (controller.signal.aborted || activeWorkflow.current !== workflowId || sequence !== requestSequence.current) return;
+      setFetchError("获取待处理交互失败，点击重试");
+    } finally {
+      if (requestController.current === controller) requestController.current = null;
+    }
+  }, [w.id]);
+
+  useEffect(() => {
+    setInteraction(null);
+    setInteractionOpen(false);
+    setFetchError("");
+    dismissedInteractionId.current = "";
+  }, [w.id]);
+  useEffect(() => {
+    void fetchInteraction();
+    const handleActivity = () => void fetchInteraction();
+    window.addEventListener("devflow-activity", handleActivity);
+    window.addEventListener("focus", handleActivity);
+    window.addEventListener("online", handleActivity);
+    // Another window's cancellation does not change the workflow state.
+    const timer = w.state === "WAITING_INPUT" ? window.setInterval(() => {
+      if (!requestController.current) handleActivity();
+    }, 3000) : undefined;
+    return () => {
+      requestController.current?.abort();
+      window.clearInterval(timer);
+      window.removeEventListener("devflow-activity", handleActivity);
+      window.removeEventListener("focus", handleActivity);
+      window.removeEventListener("online", handleActivity);
+    };
+  }, [fetchInteraction, w.state]);
 
   useEffect(() => {
     if (w.state !== "HUMAN_PENDING") return;
@@ -228,6 +286,53 @@ export function TaskInteraction({
             继续自动排查
           </button>
         )}
+      {fetchError && (
+        <div className="user-interaction-error-banner">
+          <span>{fetchError}</span>
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm"
+            onClick={() => void fetchInteraction()}
+          >
+            重试
+          </button>
+        </div>
+      )}
+
+      {interaction && interaction.status === "pending" && !interactionOpen && (
+        <div className="user-interaction-pending-banner">
+          <span>模型请求协助：{interaction.request.title}</span>
+          <button
+            type="button"
+            className="btn btn-primary"
+            onClick={() => { dismissedInteractionId.current = ""; setInteractionOpen(true); }}
+          >
+            处理请求
+          </button>
+        </div>
+      )}
+
+      <UserInteractionDialog
+        workflowId={w.id}
+        interaction={interaction?.workflow_id === w.id ? interaction : null}
+        isOpen={interactionOpen}
+        onClose={() => {
+          if (activeWorkflow.current !== w.id || activeInteraction.current !== interaction?.id) return;
+          setInteractionOpen(false);
+          if (interaction) dismissedInteractionId.current = interaction.id;
+        }}
+        onResponded={async () => {
+          const targetId = w.id;
+          if (activeWorkflow.current !== targetId || activeInteraction.current !== interaction?.id) return;
+          setInteractionOpen(false);
+          setInteraction(null);
+          await refresh();
+          if (activeWorkflow.current === targetId) await fetchInteraction();
+        }}
+        rootConversationId={rootConversationId}
+        expectedGeneration={expectedGeneration}
+      />
+
       {requests.map((request: any) => (
         <AuthorizationCard
           key={request.id}

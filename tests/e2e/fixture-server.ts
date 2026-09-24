@@ -13,6 +13,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setup, repository, project, plan } from "../helpers.js";
 import {
+  assertSafeTestDatabaseCleanup,
   assertTestPortAvailable,
   ensureTestInstanceDirs,
   loadTestInstanceConfig,
@@ -365,6 +366,7 @@ function dirnameOfStore(store: ReturnType<typeof setup>["store"]) {
 
 const instance = loadTestInstanceConfig();
 ensureTestInstanceDirs(instance);
+assertSafeTestDatabaseCleanup(instance.sqliteFile, instance.runDirResolved);
 for (const file of [
   instance.sqliteFile,
   `${instance.sqliteFile}-wal`,

@@ -97,6 +97,11 @@ function hasSubmittedWork(rec: Record<string, unknown>) {
   );
 }
 
+import {
+  UserInteractionInputSchema,
+  type UserInteractionInput,
+} from "../../contracts/src/user-interaction.js";
+
 export type NormalizedExecution = {
   intent: ExecutionIntent;
   status?: string;
@@ -106,7 +111,10 @@ export type NormalizedExecution = {
   payload: Record<string, unknown>;
   intent_source: IntentSource;
   provided_intent_field: boolean;
+  user_interaction?: UserInteractionInput;
 };
+
+import { normalizeInteractionInput } from "./user-interaction-normalize.js";
 
 function withCopy(
   rec: Record<string, unknown>,
@@ -121,15 +129,35 @@ function withCopy(
     : Array.isArray(nested?.artifacts)
       ? nested.artifacts
       : undefined;
+  const summary = text(rec.summary) ?? text(nested?.summary);
+  const notes = text(rec.notes) ?? text(nested?.notes);
+  const questions = questionsOf(rec).concat(questionsOf(nested));
+  const rawInteraction = rec.user_interaction ?? nested?.user_interaction;
+
+  let user_interaction: UserInteractionInput | undefined = undefined;
+  if (intent === "need_user") {
+    user_interaction = normalizeInteractionInput(rawInteraction, {
+      summary,
+      notes,
+      questions,
+    });
+  } else if (rawInteraction && typeof rawInteraction === "object") {
+    const parsed = UserInteractionInputSchema.safeParse(rawInteraction);
+    if (parsed.success) {
+      user_interaction = parsed.data;
+    }
+  }
+
   return {
     intent,
     status,
-    summary: text(rec.summary) ?? text(nested?.summary),
-    notes: text(rec.notes) ?? text(nested?.notes),
+    summary,
+    notes,
     artifacts,
     payload: rec,
     intent_source,
     provided_intent_field,
+    user_interaction,
   };
 }
 

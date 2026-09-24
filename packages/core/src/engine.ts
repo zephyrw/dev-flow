@@ -123,6 +123,7 @@ import {
   saveWaitingContext,
   type WaitingContext,
 } from "./waiting-context.js";
+import { UserInteractionService, interactionConversationContext } from "./user-interaction-service.js";
 import type {
   QualityRepairAssignment,
   QualityTransfer,
@@ -922,6 +923,7 @@ export class Engine {
     )
       this.store.remove("repair_state", key);
     const waiting = readWaitingContext(this.store, key);
+    new UserInteractionService(this.store).supersedePendingInteractions(key);
     if (w.state === "WAITING_INPUT" && waiting && scope === "within_plan")
       return this.resumeFromWaiting(key, text, waiting);
     if (scope === "within_plan") {
@@ -4185,26 +4187,47 @@ export class Engine {
       return this.get(key);
     }
     if (reviewIntent.intent === "need_user") {
-      const phase = this.reviewPointer(key).phase ?? "before_human";
-      saveWaitingContext(this.store, key, {
-        purpose: "review",
-        role: "planner",
-        phase,
-        run_id: w.run_id,
-        conversation_id: this.store.get<Run>("run", w.run_id!)?.conversation_id,
-        source_execution_run_id: this.reviewPointer(key).completion_run_id,
-        original_text: review.summary ?? review.notes,
-        intent: "need_user",
-        questions: reviewIntent.questions,
+      return this.store.transaction(() => {
+        const phase = this.reviewPointer(key).phase ?? "before_human";
+        const currentW = this.get(key);
+        const interactionService = new UserInteractionService(this.store);
+        const conversationId = this.store.get<Run>("run", w.run_id!)?.conversation_id;
+        const convCtx = interactionConversationContext(this.store, key, w.run_id, conversationId);
+        const interaction = interactionService.createInteraction({
+          workflowId: key,
+          sourceRunId: w.run_id ?? "",
+          sourcePlanRevision: currentW.plan_revision ?? 1,
+          rootConversationId: convCtx.rootConversationId,
+          sourceGeneration: convCtx.sourceGeneration,
+          nativeSessionId: convCtx.nativeSessionId,
+          purpose: "review",
+          role: "planner",
+          rawInput: review.user_interaction,
+          fallbackSummary: review.summary ?? review.notes,
+          fallbackQuestions: reviewIntent.questions,
+          fallbackNotes: review.notes,
+        });
+        saveWaitingContext(this.store, key, {
+          purpose: "review",
+          role: "planner",
+          phase,
+          run_id: w.run_id,
+          conversation_id: conversationId,
+          source_execution_run_id: this.reviewPointer(key).completion_run_id,
+          original_text: review.summary ?? review.notes,
+          intent: "need_user",
+          questions: reviewIntent.questions,
+          interaction_id: interaction.id,
+        });
+        this.transition(key, ["REVIEWING"], "WAITING_INPUT", w.stage, {
+          blocker: {
+            code: "REVIEW_NEEDS_USER",
+            message:
+              reviewIntent.questions.join("；") || "审查需要用户输入",
+          },
+        });
+        return this.get(key);
       });
-      this.transition(key, ["REVIEWING"], "WAITING_INPUT", w.stage, {
-        blocker: {
-          code: "REVIEW_NEEDS_USER",
-          message:
-            reviewIntent.questions.join("；") || "审查需要用户输入",
-        },
-      });
-      return this.get(key);
     }
     const passed = reviewIntent.intent === "passed";
     if (passed && usesPolicyV2(w)) {
@@ -4531,34 +4554,59 @@ export class Engine {
       });
       return { status: "unclear", summary: normalized.summary };
     }
-    saveWaitingContext(this.store, key, {
-      purpose: "execute",
-      role: plannerRole ? "planner" : "executor",
-      phase: run?.dispatch_context?.review_phase,
-      run_id: runId,
-      conversation_id: conversationId,
-      source_execution_run_id: runId,
-      original_text: normalized.summary,
-      questions: textQuestions(
+    return this.store.transaction(() => {
+      let interactionId: string | undefined;
+      const questions = textQuestions(
         (normalized.payload as { unresolved_questions?: unknown })
           .unresolved_questions,
-      ),
-      intent: normalized.intent,
+      );
+      if (normalized.intent === "need_user") {
+        const currentW = this.get(key);
+        const interactionService = new UserInteractionService(this.store);
+        const convCtx = interactionConversationContext(this.store, key, runId, conversationId);
+        const interaction = interactionService.createInteraction({
+          workflowId: key,
+          sourceRunId: runId,
+          sourcePlanRevision: currentW.plan_revision ?? 1,
+          rootConversationId: convCtx.rootConversationId,
+          sourceGeneration: convCtx.sourceGeneration,
+          nativeSessionId: convCtx.nativeSessionId,
+          purpose: "execute",
+          role: plannerRole ? "planner" : "executor",
+          rawInput: normalized.user_interaction,
+          fallbackSummary: normalized.summary,
+          fallbackQuestions: questions,
+          fallbackNotes: normalized.notes,
+        });
+        interactionId = interaction.id;
+      }
+      saveWaitingContext(this.store, key, {
+        purpose: "execute",
+        role: plannerRole ? "planner" : "executor",
+        phase: run?.dispatch_context?.review_phase,
+        run_id: runId,
+        conversation_id: conversationId,
+        source_execution_run_id: runId,
+        original_text: normalized.summary,
+        questions,
+        intent: normalized.intent,
+        interaction_id: interactionId,
+      });
+      this.transition(key, ["EXECUTING", "VERIFYING"], "WAITING_INPUT", run?.stage ?? "execute", {
+        blocker: {
+          code:
+            normalized.intent === "need_user"
+              ? "NEED_USER"
+              : "EXECUTION_INTENT_UNCLEAR",
+          message:
+            normalized.summary ??
+            (normalized.intent === "need_user"
+              ? "执行需要用户输入"
+              : "未能辨认本轮结果。请说明：已完成、需要规划澄清，或需要用户输入。"),
+        },
+      });
+      return { status: normalized.intent, summary: normalized.summary };
     });
-    this.transition(key, ["EXECUTING", "VERIFYING"], "WAITING_INPUT", run?.stage ?? "execute", {
-      blocker: {
-        code:
-          normalized.intent === "need_user"
-            ? "NEED_USER"
-            : "EXECUTION_INTENT_UNCLEAR",
-        message:
-          normalized.summary ??
-          (normalized.intent === "need_user"
-            ? "执行需要用户输入"
-            : "未能辨认本轮结果。请说明：已完成、需要规划澄清，或需要用户输入。"),
-      },
-    });
-    return { status: normalized.intent, summary: normalized.summary };
   }
   restoreFailedRole(key: string, reason: string) {
     const current = this.get(key);
@@ -4638,6 +4686,7 @@ export class Engine {
       });
     }
   }
+
   resumeFromWaiting(
     key: string,
     text: string,
@@ -4654,8 +4703,11 @@ export class Engine {
       ...(userAnswer ? { answer: text } : {}),
     });
     saveRunContinuation(this.store, key, key, continuation);
+    const currentFeedback = Array.isArray(w.feedback) ? w.feedback : [];
     const feedback =
-      userAnswer || text !== "用户恢复执行" ? [...w.feedback, text] : w.feedback;
+      userAnswer || text !== "用户恢复执行"
+        ? [...currentFeedback, text]
+        : currentFeedback;
     if (waiting.purpose === "review") {
       this.patchReviewPointer(key, {
         phase: waiting.phase,

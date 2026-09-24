@@ -13,6 +13,8 @@ DevFlow 是一个面向现代 AI 编程助手（Codex、Antigravity CLI、Claude
 - **会话树展示**：执行过程底部列出当前主会话下的子 Agent；暂停全部只作用于该树。各客户端能力以探测结果为准，未知保持 unknown，不把八种工具都当成已完整支持子 Agent。
 - **附件上限**：单个文件 20MiB，普通 JSON 8MiB；文件正文仅专用上传接口接受 `application/octet-stream`。
 - **多客户端渲染与 Skill 白名单分发**：支持 8 大主流客户端的 MCP 配置解析与 6 个标准 DevFlow Skill（`devflow`, `devflow-project-onboard`, `devflow-plan`, `devflow-execute`, `devflow-test`, `devflow-review`）递归安全分发。
+- **前端真实浏览器核验与通用人机交互**：前端相关任务保留单元/集成/E2E 三层测试，执行模型额外使用原生 OpenTabs 操作真实浏览器进行仿人工核验，实际核对视觉截图与可见数据；本地场景优先免密开发会话；确需人工登录或决策时通过通用弹窗暂停，用户确认后无缝续接原执行上下文。
+- **worktree 本地环境与端口隔离**：每个独立 worktree 拥有独立的前端、后端、E2E 测试与调试端口，同步更新 API 代理与开发 Origin；临时端口清单与运行文件仅保存在本地忽略目录中，绝对不提交、不合并回主工作区。
 
 ## 快速开始
 

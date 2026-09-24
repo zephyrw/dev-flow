@@ -1,7 +1,7 @@
 import Fastify from "fastify";
 import staticPlugin from "@fastify/static";
 import { existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { basename, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import {
@@ -10,9 +10,11 @@ import {
 } from "../../../packages/contracts/src/index.js";
 import { AccountServiceError } from "../../../packages/agy-accounts/src/service.js";
 import { hash } from "../../../packages/core/src/util.js";
+import { developmentFrontendOrigin } from "./local-development.js";
 export interface BaseServerOptions {
   port: number;
   humanOrigin: string;
+  developmentFrontendOrigin?: string;
   mode: "accounts" | "full";
   features?: { workflows: boolean; agy_accounts: boolean };
   webRoot?: string;
@@ -24,6 +26,39 @@ export interface BaseServerOptions {
 export function createBaseServer(options: BaseServerOptions) {
   const app = Fastify({ logger: false, bodyLimit: 8 * 1024 * 1024 });
   const origin = new URL(options.humanOrigin);
+  const moduleRoot = fileURLToPath(new URL("../../../", import.meta.url));
+  const runtimeRoot = basename(moduleRoot) === "dist" ? resolve(moduleRoot, "..") : moduleRoot;
+  let devFrontendUrl: URL | undefined;
+  const verifiedDevOrigin = developmentFrontendOrigin(options);
+  if (verifiedDevOrigin) {
+    try {
+      const parsed = new URL(verifiedDevOrigin);
+      if (
+        (parsed.protocol === "http:" || parsed.protocol === "https:") &&
+        (parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost") &&
+        !parsed.username &&
+        !parsed.password &&
+        (parsed.pathname === "/" || parsed.pathname === "") &&
+        !parsed.search &&
+        !parsed.hash &&
+        parsed.port
+      ) {
+        devFrontendUrl = parsed;
+      }
+    } catch {
+      devFrontendUrl = undefined;
+    }
+  }
+
+  const allowedOrigins = new Set<string>([
+    origin.origin,
+    `http://127.0.0.1:${options.port}`,
+    `http://localhost:${options.port}`,
+  ]);
+  if (devFrontendUrl) {
+    allowedOrigins.add(devFrontendUrl.origin);
+  }
+
   // The console trusts the current local user. Model bearer tokens only belong
   // to MCP/worker routes; they must never authorize a console action.
   const human = (request: any) =>
@@ -33,31 +68,32 @@ export function createBaseServer(options: BaseServerOptions) {
       "模型令牌不能调用控制台操作",
       403,
     );
-  const isAllowedOrigin = (reqOrigin: string | undefined) =>
-    reqOrigin === origin.origin ||
-    reqOrigin === `http://127.0.0.1:${options.port}` ||
-    reqOrigin === `http://localhost:${options.port}`;
   app.addHook("onRequest", async (req, reply) => {
     const host = req.headers.host;
-    requireCondition(
+    const isAllowedHost =
       host === origin.host ||
-        host === `127.0.0.1:${options.port}` ||
-        host === `localhost:${options.port}`,
-      "HOST_DENIED",
-      "Host 不匹配",
-      403,
-    );
+      host === `127.0.0.1:${options.port}` ||
+      host === `localhost:${options.port}` ||
+      (devFrontendUrl && host === devFrontendUrl.host);
+    requireCondition(isAllowedHost, "HOST_DENIED", "Host 不匹配", 403);
     if (req.headers.origin)
       requireCondition(
-        isAllowedOrigin(req.headers.origin),
+        allowedOrigins.has(req.headers.origin),
         "ORIGIN_DENIED",
         "Origin 不匹配",
         403,
       );
     if (req.url.startsWith("/api/")) {
       const site = req.headers["sec-fetch-site"];
+      const reqOrigin = req.headers.origin;
+      const isAllowedDevOrigin = Boolean(
+        devFrontendUrl && reqOrigin && reqOrigin === devFrontendUrl.origin,
+      );
       requireCondition(
-        !site || site === "same-origin" || site === "none",
+        !site ||
+          site === "same-origin" ||
+          site === "none" ||
+          (isAllowedDevOrigin && (site === "same-site" || site === "cross-site")),
         "FETCH_SITE_DENIED",
         "控制台接口只接受本机同源访问",
         403,
@@ -65,7 +101,7 @@ export function createBaseServer(options: BaseServerOptions) {
     }
     if (req.headers.upgrade?.toLowerCase() === "websocket")
       requireCondition(
-        isAllowedOrigin(req.headers.origin),
+        allowedOrigins.has(req.headers.origin ?? ""),
         "ORIGIN_DENIED",
         "事件流需要同源连接",
         403,
@@ -76,7 +112,7 @@ export function createBaseServer(options: BaseServerOptions) {
       !req.url.startsWith("/api/worker/")
     )
       requireCondition(
-        isAllowedOrigin(req.headers.origin) &&
+        allowedOrigins.has(req.headers.origin ?? "") &&
           (options.writeContentTypeAllowed
             ? options.writeContentTypeAllowed(req.method, req.url, req.headers["content-type"])
             : req.headers["content-type"]?.startsWith("application/json")),
@@ -139,7 +175,7 @@ export function createBaseServer(options: BaseServerOptions) {
     ok: true,
     version: "0.2.0",
     runtime_backend: "node-v1",
-    runtime_root: fileURLToPath(new URL("../../../../", import.meta.url)),
+    runtime_root: runtimeRoot,
     mode: options.mode,
     features: { workflows: options.mode === "full", agy_accounts: true },
     service: "devflow",

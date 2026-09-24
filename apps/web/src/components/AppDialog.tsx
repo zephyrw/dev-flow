@@ -15,6 +15,25 @@ export interface AppDialogProps {
   className?: string;
 }
 
+// 模块级模态计数器，确保多弹窗并存时滚动锁安全恢复
+const openModals: HTMLElement[] = [];
+let initialBodyOverflow = "";
+const inertValues = new Map<HTMLElement, boolean>();
+
+function updateModalBackground() {
+  for (const [element, inert] of inertValues) element.inert = inert;
+  inertValues.clear();
+  const top = openModals.at(-1);
+  if (top) {
+    for (const child of Array.from(document.body.children)) {
+      if (child instanceof HTMLElement && !child.contains(top)) {
+        inertValues.set(child, child.inert);
+        child.inert = true;
+      }
+    }
+  }
+}
+
 export function AppDialog({
   isOpen,
   onClose,
@@ -27,31 +46,52 @@ export function AppDialog({
   footer,
   className = "",
 }: AppDialogProps) {
+  const generatedId = React.useId();
+  const titleId = `app-dialog-title-${generatedId.replace(/:/g, "")}`;
   const [showDiscardConfirm, setShowDiscardConfirm] = useState(false);
   const previousActiveElement = useRef<HTMLElement | null>(null);
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
 
   useEffect(() => {
-    if (isOpen) {
-      previousActiveElement.current = document.activeElement as HTMLElement | null;
+    const dialog = dialogRef.current;
+    if (isOpen && dialog) {
+      previousActiveElement.current =
+        document.activeElement as HTMLElement | null;
       setShowDiscardConfirm(false);
-      // 锁定背景滚动
-      document.body.style.overflow = "hidden";
-      // 打开时自动聚焦关闭按钮或标题
-      setTimeout(() => {
-        closeButtonRef.current?.focus();
-      }, 50);
-    } else {
-      document.body.style.overflow = "";
-      if (previousActiveElement.current) {
-        previousActiveElement.current.focus();
-        previousActiveElement.current = null;
+      if (!openModals.length) {
+        initialBodyOverflow = document.body.style.overflow;
+        document.body.style.overflow = "hidden";
       }
+      openModals.push(dialog);
+      updateModalBackground();
+      closeButtonRef.current?.focus();
+      const containFocus = (event: FocusEvent) => {
+        if (
+          openModals.at(-1) === dialog &&
+          !dialog.contains(event.target as Node)
+        )
+          dialog.focus();
+      };
+      document.addEventListener("focusin", containFocus);
+      return () => {
+        document.removeEventListener("focusin", containFocus);
+        const wasTop = openModals.at(-1) === dialog;
+        const index = openModals.indexOf(dialog);
+        if (index >= 0) openModals.splice(index, 1);
+        updateModalBackground();
+        if (!openModals.length)
+          document.body.style.overflow = initialBodyOverflow;
+        if (wasTop) {
+          const previous = previousActiveElement.current;
+          const top = openModals.at(-1);
+          if (previous?.isConnected && (!top || top.contains(previous)))
+            previous.focus();
+          else top?.focus();
+        }
+        previousActiveElement.current = null;
+      };
     }
-    return () => {
-      document.body.style.overflow = "";
-    };
   }, [isOpen]);
 
   const handleRequestClose = () => {
@@ -63,10 +103,12 @@ export function AppDialog({
     onClose();
   };
 
+  // F09: 键盘事件监听：Escape 关闭 + Tab / Shift+Tab 焦点陷阱
   useEffect(() => {
     if (!isOpen) return;
 
     function handleKeyDown(e: KeyboardEvent) {
+      if (e.defaultPrevented || openModals.at(-1) !== dialogRef.current) return;
       if (e.key === "Escape") {
         e.preventDefault();
         if (showDiscardConfirm) {
@@ -74,12 +116,55 @@ export function AppDialog({
         } else {
           handleRequestClose();
         }
+        return;
+      }
+
+      if (e.key === "Tab" && dialogRef.current) {
+        const scope = showDiscardConfirm
+          ? (dialogRef.current.querySelector(".app-dialog-discard-content") ??
+            dialogRef.current)
+          : dialogRef.current;
+        const focusableElements = Array.from(
+          scope.querySelectorAll<HTMLElement>(
+            'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+          ),
+        ).filter(
+          (element) =>
+            element.tabIndex >= 0 &&
+            !element.closest('[hidden], [inert], [aria-hidden="true"]'),
+        );
+        if (focusableElements.length === 0) {
+          e.preventDefault();
+          return;
+        }
+
+        const firstElement = focusableElements[0];
+        const lastElement = focusableElements[focusableElements.length - 1];
+        if (!firstElement || !lastElement) return;
+
+        if (e.shiftKey) {
+          if (
+            document.activeElement === firstElement ||
+            !scope.contains(document.activeElement)
+          ) {
+            e.preventDefault();
+            lastElement.focus();
+          }
+        } else {
+          if (
+            document.activeElement === lastElement ||
+            !scope.contains(document.activeElement)
+          ) {
+            e.preventDefault();
+            firstElement.focus();
+          }
+        }
       }
     }
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isOpen, isDirty, showDiscardConfirm]);
+  }, [isOpen, isDirty, showDiscardConfirm, onClose]);
 
   if (!isOpen) return null;
 
@@ -98,15 +183,16 @@ export function AppDialog({
       <div
         className={`app-dialog-container ${className}`}
         style={{ width: styleWidth }}
-        ref={dialogRef}
         role="dialog"
         aria-modal="true"
-        aria-labelledby="app-dialog-title"
+        aria-labelledby={titleId}
+        ref={dialogRef}
+        tabIndex={-1}
       >
         <div className="app-dialog-header">
           <div className="app-dialog-title-wrap">
             <div className="app-dialog-title-row">
-              <h2 id="app-dialog-title" className="app-dialog-title">
+              <h2 id={titleId} className="app-dialog-title">
                 {title}
               </h2>
               {titleExtra}
@@ -122,17 +208,19 @@ export function AppDialog({
             aria-label="关闭对话框"
             ref={closeButtonRef}
           >
-            ×
+            &times;
           </button>
         </div>
 
-        <div className="app-dialog-body">
-          {showDiscardConfirm ? (
-            <div className="app-dialog-confirm-discard">
-              <p className="app-dialog-confirm-text">
-                有未保存的修改，确定要放弃并退出吗？
-              </p>
-              <div className="app-dialog-confirm-actions">
+        <div className="app-dialog-body">{children}</div>
+
+        {footer && <div className="app-dialog-footer">{footer}</div>}
+
+        {showDiscardConfirm && (
+          <div className="app-dialog-discard-confirm">
+            <div className="app-dialog-discard-content">
+              <p>内容尚未保存，确定要放弃修改吗？</p>
+              <div className="app-dialog-discard-actions">
                 <button
                   type="button"
                   className="btn btn-secondary"
@@ -152,13 +240,7 @@ export function AppDialog({
                 </button>
               </div>
             </div>
-          ) : (
-            children
-          )}
-        </div>
-
-        {footer && !showDiscardConfirm && (
-          <div className="app-dialog-footer">{footer}</div>
+          </div>
         )}
       </div>
     </div>,

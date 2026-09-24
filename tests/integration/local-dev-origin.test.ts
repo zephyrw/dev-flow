@@ -1,0 +1,220 @@
+import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { FastifyInstance } from "fastify";
+import { createBaseServer } from "../../apps/api/src/base-server.js";
+
+describe("I04 — 本地开发前端 Origin 精确放行与安全边界", () => {
+  let app: FastifyInstance | undefined;
+  let runDir: string;
+  let storageInstance: string;
+  beforeEach(() => {
+    runDir = mkdtempSync(join(tmpdir(), "devflow-origin-review-"));
+    storageInstance = join(runDir, "state");
+    mkdirSync(storageInstance);
+    const config = join(runDir, "devflow.runtime.yaml");
+    const manifest = join(runDir, "instance.json");
+    writeFileSync(
+      config,
+      JSON.stringify({
+        server: { port: backendPort },
+        storage_root: storageInstance,
+      }),
+    );
+    writeFileSync(
+      manifest,
+      JSON.stringify({
+        instance_id: "origin-fixture",
+        instance_type: "dev",
+        worktree_path: process.cwd(),
+        ports: { backend: backendPort, frontend: 5174 },
+        origins: { frontend: allowedDevFrontend },
+        paths: {
+          instance_json: manifest,
+          runtime_config: config,
+          run_dir: runDir,
+          state_dir: storageInstance,
+          storage_root: storageInstance,
+        },
+      }),
+    );
+    vi.stubEnv("DEVFLOW_INSTANCE_ID", "origin-fixture");
+    vi.stubEnv("DEVFLOW_CONFIG", config);
+    vi.stubEnv("DEVFLOW_LOCAL_DEV", "1");
+  });
+
+  afterEach(async () => {
+    if (app) {
+      await app.close();
+      app = undefined;
+    }
+    vi.unstubAllEnvs();
+    rmSync(runDir, { recursive: true, force: true });
+  });
+
+  const backendPort = 24890;
+  const backendOrigin = `http://127.0.0.1:${backendPort}`;
+  const allowedDevFrontend = "http://127.0.0.1:5174";
+
+  it("在本地开发模式下，允许指定的开发前端 Origin 发送写请求", async () => {
+    const prevEnv = process.env.DEVFLOW_LOCAL_DEV;
+    process.env.DEVFLOW_LOCAL_DEV = "1";
+
+    try {
+      ({ app } = createBaseServer({
+        port: backendPort,
+        humanOrigin: backendOrigin,
+        mode: "full",
+        registerStatic: false,
+        developmentFrontendOrigin: allowedDevFrontend,
+        storageInstance,
+      }));
+
+      app.post("/api/test-action", async () => {
+        return { success: true };
+      });
+
+      // 1. 本实例开发前端 Origin 发起 POST 写请求：允许通过
+      const devResponse = await app.inject({
+        method: "POST",
+        url: "/api/test-action",
+        headers: {
+          host: "127.0.0.1:5174",
+          origin: allowedDevFrontend,
+          "content-type": "application/json",
+          "sec-fetch-site": "cross-site",
+        },
+        payload: { message: "来自开发前端的写操作" },
+      });
+
+      expect(devResponse.statusCode).toBe(200);
+      expect(devResponse.json()).toEqual({ success: true });
+    } finally {
+      process.env.DEVFLOW_LOCAL_DEV = prevEnv;
+    }
+  });
+
+  it("拒绝未允许的其他 Origin（兄弟实例或恶意域）发起的写请求", async () => {
+    const prevEnv = process.env.DEVFLOW_LOCAL_DEV;
+    process.env.DEVFLOW_LOCAL_DEV = "1";
+
+    try {
+      ({ app } = createBaseServer({
+        port: backendPort,
+        humanOrigin: backendOrigin,
+        mode: "full",
+        registerStatic: false,
+        developmentFrontendOrigin: allowedDevFrontend,
+        storageInstance,
+      }));
+
+      app.post("/api/test-action", async () => {
+        return { success: true };
+      });
+
+      // 尝试使用未授权的兄弟实例端口 Origin
+      const unauthResponse = await app.inject({
+        method: "POST",
+        url: "/api/test-action",
+        headers: {
+          host: `127.0.0.1:${backendPort}`,
+          origin: "http://127.0.0.1:9999",
+          "content-type": "application/json",
+        },
+        payload: { message: "未授权的写请求" },
+      });
+
+      expect(unauthResponse.statusCode).toBe(403);
+      expect(unauthResponse.json().error.code).toBe("ORIGIN_DENIED");
+    } finally {
+      process.env.DEVFLOW_LOCAL_DEV = prevEnv;
+    }
+  });
+
+  it("数据目录与实例清单不匹配时不能放行开发 Origin", async () => {
+    ({ app } = createBaseServer({
+      port: backendPort,
+      humanOrigin: backendOrigin,
+      mode: "full",
+      registerStatic: false,
+      developmentFrontendOrigin: allowedDevFrontend,
+      storageInstance: process.cwd(),
+    }));
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/health",
+      headers: { host: `127.0.0.1:${backendPort}`, origin: allowedDevFrontend },
+    });
+    expect(response.statusCode).toBe(403);
+  });
+
+  it("携带模型 bearer token 调用控制台路由时严格拒绝，返回 403", async () => {
+    const { app: localApp, humanCheck } = createBaseServer({
+      port: backendPort,
+      humanOrigin: backendOrigin,
+      mode: "full",
+      registerStatic: false,
+    });
+    app = localApp;
+
+    app.post("/api/test-action", async (req) => {
+      humanCheck(req);
+      return { success: true };
+    });
+
+    const bearerResponse = await app.inject({
+      method: "POST",
+      url: "/api/test-action",
+      headers: {
+        host: `127.0.0.1:${backendPort}`,
+        origin: backendOrigin,
+        "content-type": "application/json",
+        authorization: "Bearer mock-worker-token",
+      },
+      payload: {},
+    });
+
+    expect(bearerResponse.statusCode).toBe(403);
+    expect(bearerResponse.json().error.code).toBe("FORBIDDEN");
+  });
+
+  it("生产模式（NODE_ENV=production）下忽略开发前端 Origin 放行", async () => {
+    const prevNodeEnv = process.env.NODE_ENV;
+    const prevLocalDev = process.env.DEVFLOW_LOCAL_DEV;
+    process.env.NODE_ENV = "production";
+    process.env.DEVFLOW_LOCAL_DEV = "1";
+
+    try {
+      ({ app } = createBaseServer({
+        port: backendPort,
+        humanOrigin: backendOrigin,
+        mode: "full",
+        registerStatic: false,
+        developmentFrontendOrigin: allowedDevFrontend,
+        storageInstance,
+      }));
+
+      app.post("/api/test-action", async () => {
+        return { success: true };
+      });
+
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/test-action",
+        headers: {
+          host: "127.0.0.1:5174",
+          origin: allowedDevFrontend,
+          "content-type": "application/json",
+        },
+        payload: {},
+      });
+
+      // 生产模式下不会放行开发前端 Origin，返回 403 HOST_DENIED 或 ORIGIN_DENIED
+      expect(response.statusCode).toBe(403);
+    } finally {
+      process.env.NODE_ENV = prevNodeEnv;
+      process.env.DEVFLOW_LOCAL_DEV = prevLocalDev;
+    }
+  });
+});

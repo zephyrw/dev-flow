@@ -267,6 +267,7 @@ export const ReviewSchema = z
     coverage: ReviewCoverageSchema.optional(),
     findings: z.array(ReviewFindingSchema).optional().default([]),
     unresolved_questions: z.array(z.string()).optional().default([]),
+    user_interaction: z.unknown().optional(),
     repair_plan: PlanSchema.nullable().optional(),
     commit_message: z.string().max(500).optional(),
     quality: QualityReviewResultSchema.nullish(),
@@ -832,3 +833,4 @@ export * from "./review-output.js";
 export * from "./workflow-visibility.js";
 export * from "./plan-approval.js";
 export * from "./workflow-overview.js";
+export * from "./user-interaction.js";
