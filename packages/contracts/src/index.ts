@@ -352,6 +352,7 @@ export interface Run {
   exit_code?: number | null;
   package_hash: string;
   agy_account?: import("./agy-account.js").AgyRunBinding;
+  approval_ref?: import("./plan-approval.js").RunApprovalRef;
 }
 export interface Evidence {
   phase?: "development" | "delivery";
@@ -828,3 +829,6 @@ export * from "./conversation-guidance.js";
 export * from "./run-observation.js";
 export * from "./session-binding.js";
 export * from "./review-output.js";
+export * from "./workflow-visibility.js";
+export * from "./plan-approval.js";
+export * from "./workflow-overview.js";

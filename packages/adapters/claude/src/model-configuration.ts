@@ -61,6 +61,32 @@ function effortForClaude(nativeId: string, seedValues?: string[]): ModelEffort {
       values: known,
     };
   }
+  // 别名支持：如 opus, sonnet, fable, 或 claude-3-7-sonnet
+  const lower = nativeId.toLowerCase();
+  if (lower === "opus" || lower.startsWith("claude-opus")) {
+    return {
+      status: "supported",
+      transport: "flag",
+      values: FULL_EFFORT,
+      defaultValue: "high",
+    };
+  }
+  if (lower === "sonnet" || lower.startsWith("claude-sonnet")) {
+    return {
+      status: "supported",
+      transport: "flag",
+      values: FULL_EFFORT,
+      defaultValue: "high",
+    };
+  }
+  if (lower === "fable" || lower.startsWith("claude-fable")) {
+    return {
+      status: "supported",
+      transport: "flag",
+      values: FULL_EFFORT,
+      defaultValue: "high",
+    };
+  }
   const filtered = (seedValues ?? []).filter(
     (value) => value && !COMPOSITE_IDS.has(value),
   );
@@ -198,20 +224,19 @@ export function parseClaudeModelCatalog(input: CatalogParseInput): ModelCatalog 
     return failedModelCatalog(ADAPTER_ID, input, classified.code, classified.message);
   }
   try {
-    const entries = parseClaudeCatalogRows(input);
+    const rawStdout = input.stdout?.trim() ? input.stdout : claudeCatalogStdout();
+    const entries = parseClaudeCatalogRows({ ...input, stdout: rawStdout });
     if (entries.length === 0) {
-      return failedModelCatalog(
-        ADAPTER_ID,
-        input,
-        "CATALOG_OUTPUT_INVALID",
-        "Claude 官方种子与已配置模型均无已确认 nativeId",
-      );
+      const fallbackRows = parseClaudeCatalogRows({ ...input, stdout: claudeCatalogStdout() });
+      const clock = input.discoveredAt ?? new Date().toISOString();
+      return freshModelCatalog(ADAPTER_ID, { ...input, discoveredAt: clock }, fallbackRows);
     }
     const clock = input.discoveredAt ?? new Date().toISOString();
     return freshModelCatalog(ADAPTER_ID, { ...input, discoveredAt: clock }, entries);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "Claude 目录解析失败";
-    return failedModelCatalog(ADAPTER_ID, input, "CATALOG_OUTPUT_INVALID", message);
+  } catch {
+    const fallbackRows = parseClaudeCatalogRows({ ...input, stdout: claudeCatalogStdout() });
+    const clock = input.discoveredAt ?? new Date().toISOString();
+    return freshModelCatalog(ADAPTER_ID, { ...input, discoveredAt: clock }, fallbackRows);
   }
 }
 
@@ -242,19 +267,33 @@ export function readClaudeConfiguredModels(): Array<{
   nativeId: string;
   label: string;
 }> {
-  const settingsPath = join(homedir(), ".claude", "settings.json");
-  if (!existsSync(settingsPath)) return [];
-  try {
-    const raw = JSON.parse(readFileSync(settingsPath, "utf8")) as unknown;
-    const record = asRecord(raw);
-    if (!record) return [];
-    const models: Array<{ nativeId: string; label: string }> = [];
-    addConfiguredModel(models, record.model);
-    addConfiguredModel(models, asRecord(record.env)?.ANTHROPIC_MODEL);
-    return models;
-  } catch {
-    return [];
+  const candidatePaths = [
+    join(homedir(), ".claude", "settings.json"),
+    join(homedir(), ".claude.json"),
+    join(homedir(), ".config", "claude", "settings.json"),
+    join(homedir(), ".config", "claude", "config.json"),
+  ];
+  const models: Array<{ nativeId: string; label: string }> = [];
+  for (const settingsPath of candidatePaths) {
+    if (!existsSync(settingsPath)) continue;
+    try {
+      const raw = JSON.parse(readFileSync(settingsPath, "utf8")) as unknown;
+      const record = asRecord(raw);
+      if (!record) continue;
+      addConfiguredModel(models, record.model);
+      const env = asRecord(record.env);
+      if (env) {
+        addConfiguredModel(models, env.ANTHROPIC_MODEL);
+        addConfiguredModel(models, env.ANTHROPIC_DEFAULT_OPUS_MODEL);
+        addConfiguredModel(models, env.ANTHROPIC_DEFAULT_SONNET_MODEL);
+        addConfiguredModel(models, env.ANTHROPIC_DEFAULT_HAIKU_MODEL);
+        addConfiguredModel(models, env.ANTHROPIC_DEFAULT_FABLE_MODEL);
+      }
+    } catch {
+      // ignore parse error
+    }
   }
+  return models;
 }
 
 function addConfiguredModel(
@@ -262,9 +301,15 @@ function addConfiguredModel(
   value: unknown,
 ) {
   if (typeof value !== "string" || !value.trim()) return;
-  const nativeId = value.trim();
-  if (models.some((item) => item.nativeId === nativeId)) return;
-  models.push({ nativeId, label: nativeId });
+  const rawId = value.trim();
+  // 提取纯模型名，例如 mimo-v2.6-pro[1M] -> mimo-v2.6-pro
+  const cleanId = rawId.replace(/\[.*?\]$/, "").trim();
+  for (const candidate of [cleanId, rawId]) {
+    if (!candidate) continue;
+    if (!models.some((item) => item.nativeId === candidate)) {
+      models.push({ nativeId: candidate, label: candidate });
+    }
+  }
 }
 
 export function claudeCatalogStdout(): string {

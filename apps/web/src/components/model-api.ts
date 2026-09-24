@@ -6,6 +6,7 @@ import {
   type ModelEntry,
   type RepairBatchView,
   type RepairSelection,
+  type RoleBinding,
   type RoleOverrides,
   type SupportedAdapterId,
   type ToolProfile,
@@ -46,11 +47,13 @@ export type DefaultsSnapshot = {
   revision: number;
   plannerProfile: ToolProfile;
   executorProfile: ToolProfile;
+  reviewerBinding?: RoleBinding;
   updatedAt?: string;
   source?: string;
   pendingDraft?: {
     plannerProfile: ToolProfile;
     executorProfile: ToolProfile;
+    reviewerBinding?: RoleBinding;
     expected_defaults_revision: number;
   };
 };
@@ -330,12 +333,19 @@ export async function getModelDefaults(
       status: 500,
     } satisfies ApiError;
   }
+  const reviewer =
+    data.reviewerBinding ??
+    data.reviewer_binding ??
+    data.defaults?.reviewerBinding ??
+    data.defaults?.reviewer_binding ??
+    { mode: "inherit" as const };
   return {
     revision: Number(
       data.revision ?? data.defaults?.revision ?? data.defaults_revision ?? 0,
     ),
     plannerProfile: planner,
     executorProfile: executor,
+    reviewerBinding: reviewer,
     updatedAt: data.updated_at ?? data.defaults?.updated_at,
     source: data.source ?? data.defaults?.source,
     pendingDraft: data.pending_draft,
@@ -347,6 +357,7 @@ export async function putModelDefaults(body: {
   expected_defaults_revision: number;
   planner_profile: ToolProfile;
   executor_profile: ToolProfile;
+  reviewer_binding?: RoleBinding;
 }): Promise<any> {
   return requestJson("/api/settings/model-defaults", {
     method: "PUT",

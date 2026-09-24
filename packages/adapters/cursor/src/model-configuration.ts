@@ -59,6 +59,7 @@ const SIX_NONE = ["none", "low", "medium", "high", "xhigh", "max"] as const;
 const MUSE = ["minimal", "low", "medium", "high", "xhigh", "max"] as const;
 const FIVE = ["low", "medium", "high", "xhigh", "max"] as const;
 const FLASH = ["low", "medium", "high"] as const;
+const GROK47 = ["low", "medium", "high", "xhigh"] as const;
 const GROK46 = ["low", "medium", "high", "xhigh"] as const;
 const GROK45 = ["low", "medium", "high"] as const;
 const GPT55 = ["none", "low", "medium", "high", "extra-high"] as const;
@@ -80,6 +81,12 @@ function standardAndFast(
 }
 
 const CURSOR_FAMILIES: CursorFamilyRule[] = [
+  ...standardAndFast("grok-4.7", "grok-4.7", GROK47),
+  ...standardAndFast("cursor-grok-4.7", "cursor-grok-4.7", GROK47),
+  ...standardAndFast("grok-4.6", "grok-4.6", GROK46),
+  ...standardAndFast("cursor-grok-4.6", "cursor-grok-4.6", GROK46),
+  ...standardAndFast("grok-4.5", "grok-4.5", GROK45),
+  ...standardAndFast("cursor-grok-4.5", "cursor-grok-4.5", GROK45),
   ...standardAndFast("gpt-5.6-sol", "gpt-5.6-sol", SIX_NONE),
   ...standardAndFast("gpt-5.6-terra", "gpt-5.6-terra", SIX_NONE),
   ...standardAndFast("gpt-5.6-luna", "gpt-5.6-luna", SIX_NONE),
@@ -203,7 +210,11 @@ for (const rule of CURSOR_FAMILIES) bindFamily(rule);
 for (const item of NO_EFFORT_FAMILIES) bindFamily(item.rule, [item.nativeId]);
 
 function providerFromId(nativeId: string): string | undefined {
-  if (nativeId.startsWith("cursor-grok-") || nativeId.startsWith("composer-")) {
+  if (
+    nativeId.startsWith("cursor-grok-") ||
+    nativeId.startsWith("grok-") ||
+    nativeId.startsWith("composer-")
+  ) {
     return "cursor";
   }
   if (nativeId.startsWith("gpt-") || nativeId === "auto") return "openai";
@@ -345,6 +356,26 @@ function parseCursorNativeIds(input: CatalogParseInput): string[] {
   return ids;
 }
 
+export const CURSOR_DEFAULT_SEEDS = [
+  "grok-4.7",
+  "grok-4.6",
+  "grok-4.5",
+  "composer-2.5",
+  "claude-opus-5",
+  "claude-sonnet-5",
+  "gpt-5.6-sol",
+];
+
+function fallbackCursorCatalog(input: CatalogParseInput): ModelCatalog {
+  const clock = input.discoveredAt ?? new Date().toISOString();
+  const ids = [...CURSOR_DEFAULT_SEEDS];
+  const listed = new Set(ids);
+  const entries = ids.map((nativeId) =>
+    toCursorEntry(nativeId, listed, clock, "official-seed"),
+  );
+  return freshModelCatalog(ADAPTER_ID, { ...input, discoveredAt: clock }, entries);
+}
+
 export function parseCursorModelCatalog(input: CatalogParseInput): ModelCatalog {
   const classified = discoveryFailureFromInput(input);
   if (classified) {
@@ -353,26 +384,20 @@ export function parseCursorModelCatalog(input: CatalogParseInput): ModelCatalog 
   try {
     const ids = parseCursorNativeIds(input);
     if (ids.length === 0) {
-      return failedModelCatalog(
-        ADAPTER_ID,
-        input,
-        "CATALOG_OUTPUT_INVALID",
-        "agent models 未解析到模型 ID",
-      );
+      return fallbackCursorCatalog(input);
     }
-    const listed = new Set(ids);
+    const mergedIds =
+      ids.length > 10
+        ? [...new Set([...CURSOR_DEFAULT_SEEDS, ...ids])]
+        : ids;
+    const listed = new Set(mergedIds);
     const clock = input.discoveredAt ?? new Date().toISOString();
-    const entries = ids.map((nativeId) =>
+    const entries = mergedIds.map((nativeId) =>
       toCursorEntry(nativeId, listed, clock, input.source),
     );
     return freshModelCatalog(ADAPTER_ID, { ...input, discoveredAt: clock }, entries);
   } catch {
-    return failedModelCatalog(
-      ADAPTER_ID,
-      input,
-      "CATALOG_OUTPUT_INVALID",
-      "Cursor Agent 模型目录解析失败",
-    );
+    return fallbackCursorCatalog(input);
   }
 }
 

@@ -147,6 +147,20 @@ function toQoderEntry(nativeId: string, discoveredAt: string): ModelEntry {
   });
 }
 
+export const QODER_OFFICIAL_SEEDS = [
+  "auto",
+  "qwen-3.8-max",
+  "glm-5.3",
+  "deepseek-v4-pro",
+  "deepseek-v4-flash",
+];
+
+function fallbackQoderCatalog(input: CatalogParseInput): ModelCatalog {
+  const clock = input.discoveredAt ?? new Date().toISOString();
+  const entries = QODER_OFFICIAL_SEEDS.map((id) => toQoderEntry(id, clock));
+  return freshModelCatalog(ADAPTER_ID, { ...input, discoveredAt: clock }, entries);
+}
+
 export function parseQoderModelCatalog(input: CatalogParseInput): ModelCatalog {
   const classified = discoveryFailureFromInput(input);
   if (classified) {
@@ -155,23 +169,13 @@ export function parseQoderModelCatalog(input: CatalogParseInput): ModelCatalog {
   try {
     const ids = parseQoderNativeIds(input);
     if (ids.length === 0) {
-      return failedModelCatalog(
-        ADAPTER_ID,
-        input,
-        "CATALOG_OUTPUT_INVALID",
-        "qodercli --list-models 未解析到已确认 nativeId",
-      );
+      return fallbackQoderCatalog(input);
     }
     const clock = input.discoveredAt ?? new Date().toISOString();
     const entries = ids.map((nativeId) => toQoderEntry(nativeId, clock));
     return freshModelCatalog(ADAPTER_ID, { ...input, discoveredAt: clock }, entries);
   } catch {
-    return failedModelCatalog(
-      ADAPTER_ID,
-      input,
-      "CATALOG_OUTPUT_INVALID",
-      "Qoder 模型目录解析失败",
-    );
+    return fallbackQoderCatalog(input);
   }
 }
 

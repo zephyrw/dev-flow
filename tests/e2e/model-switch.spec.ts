@@ -28,7 +28,7 @@ test("E2E-U05 保存后续配置显示下次派发生效文案，且不默认勾
   await exactLabel(drawer, "规划工具").selectOption("codex");
   await pickListedModel(drawer, "规划工具", "gpt-5.6-luna");
   await exactLabel(drawer, "执行工具").selectOption("agy");
-  await pickListedModel(drawer, "执行工具", "gemini-3.7-flash-high");
+  await pickListedModel(drawer, "执行工具", "gemini-3.8-flash-high");
   await waitAccessStatus(drawer.locator(".ms-editor").first(), "已验证可访问");
   await waitAccessStatus(drawer.locator(".ms-editor").nth(1), "已验证可访问");
   await drawer.getByRole("button", { name: "保存，下次派发生效" }).click();
@@ -39,7 +39,7 @@ test("E2E-U05 保存后续配置显示下次派发生效文案，且不默认勾
   const saved = await executionSpec(page, id);
   expect(saved.spec_revision).toBe(before.spec_revision + 1);
   expect(saved.spec.plannerProfile.modelId).toBe("gpt-5.6-luna");
-  expect(saved.spec.executorProfile.modelId).toBe("gemini-3.7-flash-high");
+  expect(saved.spec.executorProfile.modelId).toBe("gemini-3.8-flash-high");
   const afterWorkflow = (await workflowDetail(page, id)).workflow;
   expect(afterWorkflow.state).toBe(initialWorkflow.state);
   expect(afterWorkflow.version).toBe(initialWorkflow.version);

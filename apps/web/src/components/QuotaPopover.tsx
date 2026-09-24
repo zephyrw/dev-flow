@@ -86,6 +86,36 @@ function ProgressRing({ percent }: { percent: number | null }) {
   );
 }
 
+/** 有真实数值才展示对应额度行；拿不到（如 20x Pro 无 5 小时限额）则整行隐藏。 */
+type QuotaWindowWithData = QuotaWindowData & { remainingPercent: number };
+
+function hasQuotaData(
+  data?: QuotaWindowData | null,
+): data is QuotaWindowWithData {
+  return (
+    !!data && typeof data.remainingPercent === "number" && Number.isFinite(data.remainingPercent)
+  );
+}
+
+function QuotaRow({ title, data }: { title: string; data: QuotaWindowWithData }) {
+  return (
+    <div className="quota-row">
+      <div className="quota-row-info">
+        <div className="quota-row-title">{title}</div>
+        <div className="quota-row-subtitle">
+          {data.resetsAt ? formatResetTime(data.resetsAt) : "正常生效中"}
+        </div>
+      </div>
+      <div className="quota-row-visual">
+        <span className="quota-percent-text">
+          {`${Math.round(data.remainingPercent)}%`}
+        </span>
+        <ProgressRing percent={data.remainingPercent} />
+      </div>
+    </div>
+  );
+}
+
 export function QuotaPopover({
   weeklyData,
   fiveHourData,
@@ -181,65 +211,16 @@ export function QuotaPopover({
 
       {isOpen && (
         <div className="quota-popover-content" ref={popoverRef} role="tooltip">
-          {/* 第一行：周额度 */}
-          <div className="quota-row">
-            <div className="quota-row-info">
-              <div className="quota-row-title">周额度剩余</div>
-              <div className="quota-row-subtitle">
-                {weeklyData?.resetsAt
-                  ? formatResetTime(weeklyData.resetsAt)
-                  : isStale
-                    ? "待更新"
-                    : weeklyData?.remainingPercent !== null && weeklyData?.remainingPercent !== undefined
-                      ? "正常生效中"
-                      : "暂不可用"}
-              </div>
-            </div>
-            <div className="quota-row-visual">
-              <span className="quota-percent-text">
-                {weeklyData?.remainingPercent !== null && weeklyData?.remainingPercent !== undefined
-                  ? `${Math.round(weeklyData.remainingPercent)}%`
-                  : "--"}
-              </span>
-              <ProgressRing
-                percent={
-                  weeklyData?.remainingPercent !== null && weeklyData?.remainingPercent !== undefined
-                    ? weeklyData.remainingPercent
-                    : null
-                }
-              />
-            </div>
-          </div>
-
-          {/* 第二行：5小时额度 */}
-          <div className="quota-row">
-            <div className="quota-row-info">
-              <div className="quota-row-title">5小时额度剩余</div>
-              <div className="quota-row-subtitle">
-                {fiveHourData?.resetsAt
-                  ? formatResetTime(fiveHourData.resetsAt)
-                  : isStale
-                    ? "待更新"
-                    : fiveHourData?.remainingPercent !== null && fiveHourData?.remainingPercent !== undefined
-                      ? "正常生效中"
-                      : "暂不可用"}
-              </div>
-            </div>
-            <div className="quota-row-visual">
-              <span className="quota-percent-text">
-                {fiveHourData?.remainingPercent !== null && fiveHourData?.remainingPercent !== undefined
-                  ? `${Math.round(fiveHourData.remainingPercent)}%`
-                  : "--"}
-              </span>
-              <ProgressRing
-                percent={
-                  fiveHourData?.remainingPercent !== null && fiveHourData?.remainingPercent !== undefined
-                    ? fiveHourData.remainingPercent
-                    : null
-                }
-              />
-            </div>
-          </div>
+          {/* 额度行：仅在拿到真实数据时渲染（20x Pro 无 5 小时限额 ⇒ 该行不出现） */}
+          {hasQuotaData(weeklyData) && (
+            <QuotaRow title="周额度剩余" data={weeklyData} />
+          )}
+          {hasQuotaData(fiveHourData) && (
+            <QuotaRow title="5小时额度剩余" data={fiveHourData} />
+          )}
+          {!hasQuotaData(weeklyData) && !hasQuotaData(fiveHourData) && (
+            <div className="quota-row-subtitle">暂无额度数据</div>
+          )}
 
           {/* 共享说明或状态提示 */}
           {isShared && (

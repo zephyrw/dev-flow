@@ -191,7 +191,10 @@ describe("model catalog operations", { timeout: 30000 }, () => {
     expect(env.catalog.loadForSelector(other).status).toBe("missing");
     const candidate = env.catalog.ensureManualCandidate(other, "gemini-3.7-flash-high");
     expect(candidate.source).toBe("manual");
-    expect(candidate.effort.status).toBe("unknown");
+    // 已知 AGY 家族的手工候补带思考强度合成（high/medium，不臆造 xhigh/max/ultra）
+    expect(candidate.effort.status).toBe("supported");
+    expect(candidate.effort.values).toEqual(["high", "medium"]);
+    expect(candidate.effort.fixedValue).toBe("high");
     expect(env.catalog.readCached(scope)?.entries[0]?.source).toBe("native-live");
     expect(env.catalog.readCached(other)?.entries).toEqual([candidate]);
   });

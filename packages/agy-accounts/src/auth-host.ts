@@ -25,6 +25,8 @@ const AuthSchema = z
     refresh_expiry_source: z
       .enum(["not_provided", "provider_reported"])
       .optional(),
+    email: z.string().optional(),
+    subject: z.string().optional(),
   })
   .strict();
 const ref = z.string().regex(/^(sec|bak)_[a-f0-9]{32}$/);

@@ -214,17 +214,29 @@ export class ProcessManager {
               throw new Error("RUNNER_STOP_UNCONFIRMED");
           }
           if (native && "createJob" in native && job) {
-            if (!native.terminateJob(job, code ?? 1))
-              throw new Error("JOB_TERMINATE_FAILED");
-            const deadline = Date.now() + 10000;
-            while (Date.now() < deadline) {
-              const count = native.queryJobActiveCount(job);
-              if (count < 0) throw new Error("JOB_QUERY_FAILED");
-              if (count === 0) {
-                confirmed = true;
-                break;
+            const initialCount = native.queryJobActiveCount(job);
+            if (initialCount === 0) {
+              confirmed = true;
+            } else {
+              if (!native.terminateJob(job, code ?? 1)) {
+                if (native.queryJobActiveCount(job) === 0) {
+                  confirmed = true;
+                } else {
+                  throw new Error("JOB_TERMINATE_FAILED");
+                }
               }
-              await new Promise((resolve) => setTimeout(resolve, 25));
+              if (!confirmed) {
+                const deadline = Date.now() + 10000;
+                while (Date.now() < deadline) {
+                  const count = native.queryJobActiveCount(job);
+                  if (count < 0) throw new Error("JOB_QUERY_FAILED");
+                  if (count === 0) {
+                    confirmed = true;
+                    break;
+                  }
+                  await new Promise((resolve) => setTimeout(resolve, 25));
+                }
+              }
             }
           } else if (native && "killProcessGroup" in native && identity.pgid) {
             const current = native.getProcessCreationTime(identity.pgid);

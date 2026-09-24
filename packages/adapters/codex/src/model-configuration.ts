@@ -1,6 +1,7 @@
 import {
   ModelEntrySchema,
   type ModelCatalog,
+  type ModelEffort,
   type ModelEntry,
   type ModelSource,
 } from "../../../contracts/src/model-catalog.js";
@@ -18,6 +19,40 @@ type JsonRecord = Record<string, unknown>;
 
 const ADAPTER_ID = "codex" as const;
 const PROVIDER_ID = "openai";
+
+// 已确认的 Codex 模型思考强度档位（与 CLI 发现结果同构）。
+// 思考强度严格按模型对齐（例如 GPT-6 Astra 为 low..ultra 六档），未知 ID 不臆造档位。
+const KNOWN_CODEX_EFFORTS: Record<
+  string,
+  { values: string[]; defaultValue?: string }
+> = {
+  "gpt-6-astra": {
+    values: ["low", "medium", "high", "xhigh", "max", "ultra"],
+    defaultValue: "medium",
+  },
+  "gpt-5.6-sol": {
+    values: ["low", "medium", "high", "xhigh", "max", "ultra"],
+    defaultValue: "low",
+  },
+  "gpt-5.6-luna": {
+    values: ["low", "medium", "high", "xhigh", "max"],
+  },
+};
+
+/**
+ * 为手工候补条目补全已知 Codex 模型的思考强度元数据。
+ * 仅覆盖 KNOWN_CODEX_EFFORTS 明确登记的 ID。
+ */
+export function knownCodexEffortFor(nativeId: string): ModelEffort | undefined {
+  const known = KNOWN_CODEX_EFFORTS[nativeId];
+  if (!known) return undefined;
+  return {
+    status: "supported",
+    transport: "config",
+    values: [...known.values],
+    ...(known.defaultValue ? { defaultValue: known.defaultValue } : {}),
+  };
+}
 
 function asRecord(value: unknown): JsonRecord | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;

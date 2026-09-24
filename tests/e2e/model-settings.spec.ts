@@ -39,7 +39,7 @@ test("E2E-U02 修改全局默认后新建任务预填新值", async ({ page }) =
   await exactLabel(drawer, "规划工具").selectOption("codex");
   await pickListedModel(drawer, "规划工具", "gpt-5.6-sol");
   await exactLabel(drawer, "执行工具").selectOption("agy");
-  await pickListedModel(drawer, "执行工具", "gemini-3.7-flash-high");
+  await pickListedModel(drawer, "执行工具", "gemini-3.8-flash-high");
   await waitAccessStatus(drawer.locator(".ms-editor").first(), "已验证可访问");
   await waitAccessStatus(drawer.locator(".ms-editor").nth(1), "已验证可访问");
   expect(before.plannerProfile.modelId).not.toBe("gpt-5.6-sol");
@@ -53,7 +53,7 @@ test("E2E-U02 修改全局默认后新建任务预填新值", async ({ page }) =
   const saved = (await response.json()).defaults;
   expect(saved.revision).toBe(before.revision + 1);
   expect(saved.plannerProfile.modelId).toBe("gpt-5.6-sol");
-  expect(saved.executorProfile.modelId).toBe("gemini-3.7-flash-high");
+  expect(saved.executorProfile.modelId).toBe("gemini-3.8-flash-high");
   await drawer.getByRole("button", { name: "关闭设置" }).click();
   await page.getByRole("button", { name: "+ 新建", exact: true }).click();
   const modal = page.locator(".modal-backdrop").last();
@@ -64,7 +64,7 @@ test("E2E-U02 修改全局默认后新建任务预填新值", async ({ page }) =
   );
   await expect(exactLabel(modal, "执行工具")).toHaveValue("agy");
   await expect(exactLabel(modal, "执行工具模型搜索")).toHaveValue(
-    /gemini-3\.7-flash-high/,
+    /gemini-3\.8-flash-high/,
   );
 });
 
@@ -79,7 +79,7 @@ test("E2E-U04 高级项只改 reviewer 时其余保持继承", async ({ page }) 
   await expect(modal.getByLabel("人工问题修复跟随默认")).toBeChecked();
 });
 
-test("E2E-U12 快速切换工具会清掉旧模型", async ({ page }) => {
+test("E2E-U12 快速切换工具会清掉旧模型并选中新工具默认模型", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("button", { name: "全局模型设置" }).click();
   const drawer = page.getByRole("dialog", { name: "工具与模型" });
@@ -87,7 +87,7 @@ test("E2E-U12 快速切换工具会清掉旧模型", async ({ page }) => {
   await planner.selectOption("codex");
   await planner.selectOption("agy");
   await planner.selectOption("cursor-agent");
-  await expect(drawer.getByLabel("规划工具模型搜索")).toHaveValue("请选择模型");
+  await expect(drawer.getByLabel("规划工具模型搜索")).toHaveValue("Grok 4.7");
 });
 
 test("E2E-U13 历史模型不在目录时保留并标注", async ({ page }) => {

@@ -1,6 +1,7 @@
 import {
   ModelEntrySchema,
   type ModelCatalog,
+  type ModelEffort,
   type ModelEntry,
 } from "../../../contracts/src/model-catalog.js";
 import {
@@ -31,7 +32,8 @@ const HEADER_TOKENS = new Set([
 
 // These exact families are confirmed by the model catalog contract. Unknown IDs
 // must not acquire an effort capability just because their name ends in -high.
-const AGY_VARIANTS: Record<string, Record<string, string>> = {
+// 注意：思考强度严格按家族对齐（例如 Gemini 3.8 Flash 最高只有 high，不存在 xhigh/max/ultra）。
+export const AGY_VARIANTS: Record<string, Record<string, string>> = {
   "gemini-3.8-flash": { high: "gemini-3.8-flash-high", medium: "gemini-3.8-flash-medium" },
   "gemini-3.7-flash": { high: "gemini-3.7-flash-high", medium: "gemini-3.7-flash-medium" },
   "gemini-3.6-flash": { high: "gemini-3.6-flash-high", medium: "gemini-3.6-flash-medium" },
@@ -68,6 +70,35 @@ function fixedEffort(nativeId: string): { value: string; family: string } | unde
     }
   }
   return undefined;
+}
+
+/**
+ * 为手工候补条目补全已知家族的思考强度元数据（与 toAgyEntry 同构）。
+ * 仅覆盖 AGY_VARIANTS 明确登记的 ID，未知 ID 不臆造档位。
+ */
+export function knownAgyEffortFor(nativeId: string): {
+  effort: ModelEffort;
+  familyId: string;
+  accessModelKey: string;
+  providerId?: string;
+} | undefined {
+  const fixed = fixedEffort(nativeId);
+  if (!fixed) return undefined;
+  const familyVariants = AGY_VARIANTS[fixed.family];
+  if (!familyVariants) return undefined;
+  const providerId = providerFromSlug(nativeId);
+  return {
+    effort: {
+      status: "supported",
+      transport: "none",
+      values: Object.keys(familyVariants),
+      fixedValue: fixed.value,
+      variants: familyVariants,
+    },
+    familyId: fixed.family,
+    accessModelKey: fixed.family,
+    ...(providerId ? { providerId } : {}),
+  };
 }
 
 function toAgyEntry(

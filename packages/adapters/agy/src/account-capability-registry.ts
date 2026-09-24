@@ -88,13 +88,20 @@ export async function inspectCliBinary(cliPath: string): Promise<{
 }
 
 export function evaluateCapabilitySnapshot(
-  cliInfo: { version?: string; sha256?: string } | null,
+  cliInfo: { version?: string; sha256?: string; path?: string } | null,
   hostCaps?: {
     platform?: string;
     version?: string;
     dpapi_available?: boolean;
     cred_manager_available?: boolean;
     named_mutex_available?: boolean;
+  },
+  evidence?: {
+    identityVerified?: boolean;
+    dualQuotaVerified?: boolean;
+    loginVerified?: boolean;
+    modelAccessVerified?: boolean;
+    evidenceKind?: string;
   },
 ): CapabilitySnapshot {
   const isWindows = (hostCaps?.platform ?? process.platform) === "win32";
@@ -108,13 +115,34 @@ export function evaluateCapabilitySnapshot(
   const sha256 = cliInfo?.sha256;
   const hasCli = !!cliInfo && version !== "unknown";
 
-  // 只要 CLI 存在且宿主环境就绪，直接支持全局身份与双额度，不增加无用注册表门禁 (Q01)
-  const identityStatus = hasCli ? "verified" : "unverified";
-  const quotaStatus = hasCli ? "verified" : "unverified";
-  const loginStatus = hostReady && hasCli ? "verified" : "unverified";
-  const modelStatus = hasCli ? "verified" : "unverified";
+  // 区分 detected / supported / verified (D02)
+  // 必须有真实核验证据才标记为 verified；仅检测到版本不能伪造 verified
+  const identityStatus = !hasCli
+    ? "unsupported"
+    : evidence?.identityVerified
+      ? "verified"
+      : "unverified";
 
-  const supported = identityStatus === "verified" && quotaStatus === "verified" && hostReady;
+  const quotaStatus = !hasCli
+    ? "unsupported"
+    : evidence?.dualQuotaVerified
+      ? "verified"
+      : "unverified";
+
+  const loginStatus = !isWindows || !hostReady || !hasCli
+    ? "unsupported"
+    : evidence?.loginVerified
+      ? "verified"
+      : "unverified";
+
+  const modelStatus = !hasCli
+    ? "unsupported"
+    : evidence?.modelAccessVerified
+      ? "verified"
+      : "unverified";
+
+  // 基础环境支持状态：宿主就绪且检测到可用 CLI，允许进入受管登录与录入向导，不形成循环依赖
+  const supported = hostReady && hasCli;
   const reason = !isWindows
     ? "AGY 账号轮换需要 Windows 凭据 API"
     : !hostReady
@@ -125,6 +153,7 @@ export function evaluateCapabilitySnapshot(
 
   const certified = hasCli ? lookupCertifiedAdapter(version, sha256) : undefined;
   return {
+    cli_path: cliInfo?.path,
     cli_version: version,
     cli_sha256: sha256,
     adapter_revision: certified?.adapterRevision,
@@ -136,19 +165,19 @@ export function evaluateCapabilitySnapshot(
     capabilities: {
       identity: {
         status: identityStatus,
-        reason: identityStatus === "verified" ? undefined : "身份解析未官方认证",
+        reason: identityStatus === "verified" ? undefined : (hasCli ? "待完成身份核验" : "未检测到 CLI"),
       },
       dual_quota: {
         status: quotaStatus,
-        reason: quotaStatus === "verified" ? undefined : "双额度解析规则未官方认证或缺失配额池",
+        reason: quotaStatus === "verified" ? undefined : (hasCli ? "待完成双额度核验" : "未检测到 CLI"),
       },
       interactive_login: {
         status: loginStatus,
-        reason: loginStatus === "verified" ? undefined : "原生登录合同或宿主隔离未就绪",
+        reason: loginStatus === "verified" ? undefined : (!isWindows ? "仅支持 Windows 环境" : !hostReady ? "凭据宿主未就绪" : "待执行登录核验"),
       },
       model_access: {
         status: modelStatus,
-        reason: modelStatus === "verified" ? undefined : "模型探测合同未官方认证",
+        reason: modelStatus === "verified" ? undefined : (hasCli ? "待完成模型访问核验" : "未检测到 CLI"),
       },
     },
     supported,

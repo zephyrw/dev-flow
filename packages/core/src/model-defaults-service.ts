@@ -6,10 +6,12 @@ import {
   MutationReceiptSchema,
   ModelDefaultsSchema,
   ToolProfileSchema,
+  RoleBindingSchema,
   parseStoredToolProfile,
   type ModelDefaults,
   type MutationReceipt,
   type ToolProfile,
+  type RoleBinding,
 } from "../../contracts/src/index.js";
 import { assertProfilesVerified } from "./access-guard.js";
 import { now, objectHash } from "./util.js";
@@ -18,13 +20,35 @@ const DEFAULTS_KIND = "model_defaults";
 const DEFAULTS_ID = "global";
 const OPERATION_KIND = "model_config_operation";
 const PREFILL_PLANNER_MODEL = "gpt-6-astra";
-const PREFILL_EXECUTOR_MODEL = "gemini-3.7-flash-high";
+// Gemini 3.8 Flash 思考强度最高只有 high；预填默认执行模型对齐产品要求（不再用 3.7）。
+const LEGACY_PREFILL_EXECUTOR_MODEL = "gemini-3.7-flash-high";
+const PREFILL_EXECUTOR_MODEL = "gemini-3.8-flash-high";
+
+/**
+ * 存量迁移：仅当 source 为 legacy-import 且执行模型恰为旧预填默认值 3.7 时升级到 3.8。
+ * 用户手动保存（source:"user"）的配置不强制覆盖。
+ */
+export function migrateLegacyExecutorModel(defaults: ModelDefaults): ModelDefaults {
+  if (defaults.source !== "legacy-import") return defaults;
+  if (defaults.executorProfile.modelId !== LEGACY_PREFILL_EXECUTOR_MODEL) {
+    return defaults;
+  }
+  return ModelDefaultsSchema.parse({
+    ...defaults,
+    executorProfile: {
+      ...defaults.executorProfile,
+      modelId: PREFILL_EXECUTOR_MODEL,
+    },
+  });
+}
 
 export type SaveModelDefaultsRequest = {
   request_id: string;
   expected_defaults_revision: number;
   plannerProfile: ToolProfile;
   executorProfile: ToolProfile;
+  reviewerBinding?: RoleBinding;
+  reviewer_binding?: RoleBinding;
   expected_version?: unknown;
   role_overrides?: unknown;
   roleOverrides?: unknown;
@@ -81,7 +105,18 @@ function parseDefaults(raw: unknown): ModelDefaults {
   if (input.executorProfile) {
     input.executorProfile = parseStoredToolProfile(input.executorProfile);
   }
-  return ModelDefaultsSchema.parse(input);
+  if (input.reviewerBinding) {
+    const rb = input.reviewerBinding as any;
+    if (rb.mode === "explicit" && rb.profile) {
+      input.reviewerBinding = {
+        mode: "explicit",
+        profile: parseStoredToolProfile(rb.profile),
+      };
+    }
+  } else {
+    input.reviewerBinding = { mode: "inherit" };
+  }
+  return migrateLegacyExecutorModel(ModelDefaultsSchema.parse(input));
 }
 
 function defaultsOperationId(requestId: string): string {
@@ -122,11 +157,16 @@ function parseSaveRequest(req: SaveModelDefaultsRequest) {
     .int()
     .nonnegative()
     .parse(req.expected_defaults_revision);
+  const rawBinding = req.reviewerBinding ?? req.reviewer_binding;
+  const reviewerBinding = rawBinding
+    ? RoleBindingSchema.parse(rawBinding)
+    : undefined;
   return {
     request_id: requestId,
     expected_defaults_revision: expected,
     plannerProfile: ToolProfileSchema.parse(req.plannerProfile),
     executorProfile: ToolProfileSchema.parse(req.executorProfile),
+    reviewerBinding,
   };
 }
 
@@ -134,11 +174,13 @@ function hashSaveRequest(parsed: {
   expected_defaults_revision: number;
   plannerProfile: ToolProfile;
   executorProfile: ToolProfile;
+  reviewerBinding?: RoleBinding;
 }) {
   return objectHash({
     expected_defaults_revision: parsed.expected_defaults_revision,
     plannerProfile: parsed.plannerProfile,
     executorProfile: parsed.executorProfile,
+    reviewerBinding: parsed.reviewerBinding,
   });
 }
 
@@ -164,8 +206,27 @@ export class ModelDefaultsService {
 
   getOrImport(config: Config): ModelDefaults {
     return this.store.transaction(() => {
-      const existing = this.readExisting();
-      if (existing) return existing;
+      const raw = this.store.get<unknown>(DEFAULTS_KIND, DEFAULTS_ID);
+      if (raw) {
+        const existing = parseDefaults(raw);
+        // parseDefaults 已做 legacy-import 3.7→3.8 迁移；若存储仍是旧值则回写。
+        const rawExecutor = (
+          (raw as Record<string, unknown>).executorProfile as
+            | Record<string, unknown>
+            | undefined
+        )?.modelId;
+        if (
+          rawExecutor === LEGACY_PREFILL_EXECUTOR_MODEL &&
+          existing.executorProfile.modelId === PREFILL_EXECUTOR_MODEL
+        ) {
+          this.store.put(DEFAULTS_KIND, DEFAULTS_ID, "global", existing);
+          this.store.event("global", "global", "model_defaults_migrated", {
+            revision: existing.revision,
+            executor: existing.executorProfile.modelId,
+          });
+        }
+        return existing;
+      }
       const imported = this.buildImported(config);
       this.store.put(DEFAULTS_KIND, DEFAULTS_ID, "global", imported);
       this.store.event("global", "global", "model_defaults_imported", {
@@ -192,10 +253,11 @@ export class ModelDefaultsService {
 
   private buildImported(config: Config): ModelDefaults {
     return ModelDefaultsSchema.parse({
-      schema_version: 1,
+      schema_version: 2,
       revision: 1,
       plannerProfile: plannerProfileFromConfig(config),
       executorProfile: executorProfileFromConfig(config),
+      reviewerBinding: { mode: "inherit" },
       updated_at: now(),
       source: "legacy-import",
     });
@@ -231,15 +293,36 @@ export class ModelDefaultsService {
         409,
       );
     }
-    assertProfilesVerified(this.store, [
+
+    const effectiveReviewerBinding =
+      parsed.reviewerBinding ?? current?.reviewerBinding ?? { mode: "inherit" };
+
+    const profilesToVerify = [
       parsed.plannerProfile,
       parsed.executorProfile,
-    ]);
+      ...(effectiveReviewerBinding.mode === "explicit" &&
+      effectiveReviewerBinding.profile
+        ? [effectiveReviewerBinding.profile]
+        : []),
+    ];
+    // 相同完整 profile 语义哈希只核验一次，按顺序执行
+    const seenHashes = new Set<string>();
+    const uniqueProfilesToVerify: ToolProfile[] = [];
+    for (const p of profilesToVerify) {
+      const pHash = objectHash(p);
+      if (!seenHashes.has(pHash)) {
+        seenHashes.add(pHash);
+        uniqueProfilesToVerify.push(p);
+      }
+    }
+    assertProfilesVerified(this.store, uniqueProfilesToVerify);
+
     const next = ModelDefaultsSchema.parse({
-      schema_version: 1,
+      schema_version: 2,
       revision: currentRevision + 1,
       plannerProfile: parsed.plannerProfile,
       executorProfile: parsed.executorProfile,
+      reviewerBinding: effectiveReviewerBinding,
       updated_at: now(),
       source: "user",
     });

@@ -32,7 +32,7 @@ import type {
   Workflow,
 } from "../../packages/contracts/src/index.js";
 import { inheritRoleOverrides } from "../../packages/contracts/src/index.js";
-import { CATALOG_FRESH_MS } from "../../packages/contracts/src/model-catalog.js";
+import { CATALOG_FRESH_MS, PARSER_REVISION } from "../../packages/contracts/src/model-catalog.js";
 import { ModelAccessService } from "../../packages/core/src/model-access-service.js";
 import {
   ModelCatalogService,
@@ -124,6 +124,22 @@ const CATALOG_MODELS: Array<{
   {
     adapterId: "agy",
     models: [
+      {
+        id: "gemini-3.8-flash-high",
+        label: "Gemini 3.8 Flash High",
+        values: ["high"],
+        defaultValue: "high",
+        fixedValue: "high",
+        transport: "none",
+      },
+      {
+        id: "gemini-3.8-flash-medium",
+        label: "Gemini 3.8 Flash Medium",
+        values: ["medium"],
+        defaultValue: "medium",
+        fixedValue: "medium",
+        transport: "none",
+      },
       {
         id: "gemini-3.7-flash-high",
         label: "Gemini 3.7 Flash High",
@@ -240,6 +256,9 @@ function seedCatalogs(store: ReturnType<typeof setup>["store"]) {
       ...seeded,
       cliVersion: "fixture-1.0",
       status: "fresh",
+      // 夹具模拟当前构建写库：带 parserRevision/discoveryStatus，避免被判定为需重发现
+      discoveryStatus: "complete",
+      parserRevision: PARSER_REVISION,
       discoveredAt,
       staleAfter,
       entries: group.models.map((model) =>

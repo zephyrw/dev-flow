@@ -376,6 +376,8 @@ aside .mark {
 .flow-nav {
   display: flex;
   align-items: center;
+  /* 全局 button 的 justify-content:center 会把侧栏菜单文字居中，这里显式覆盖 */
+  justify-content: flex-start;
   gap: 10px;
   border: 0;
   background: transparent;

@@ -97,7 +97,7 @@ const RuntimeConfigSchema = z
     workspace_root: z.string().default(".devflow/worktrees"),
     models: z
       .object({
-        executor: z.string().min(1).default("gemini-3.7-flash-high"),
+        executor: z.string().min(1).default("gemini-3.8-flash-high"),
         reviewer: z.string().min(1).default("gpt-6-astra"),
         effort: z.literal("high").default("high"),
         agy_executable: z.string().default("agy"),

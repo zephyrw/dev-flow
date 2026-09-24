@@ -20,6 +20,10 @@ import {
   id,
 } from "../../core/src/util.js";
 import { executionScopeInstructions, executionScopeWithoutTests, roleBoundaryInstructionsFor } from "../../core/src/role-boundaries.js";
+import {
+  verifyAndResolveExecutionInstructions,
+  formatExecutionInstructionsForPrompt,
+} from "../../core/src/execution-instructions.js";
 import { usesPolicyV2 } from "../../core/src/quality-policy-migration.js";
 import { composeRoleGuidance, type RecoveryGuidanceRole } from "../../core/src/conversation-guidance.js";
 import {
@@ -451,15 +455,29 @@ export class ProfileRuntime {
     const assignment = this.engine.store.get<any>("repair_assignment", w.id);
     const repair = !policy2 || (assignment && assignment.assignment_id === run.assignment_id)
       ? assignment : null;
+
+    const { instructions: extraInstructions, payload: extraPayload } =
+      verifyAndResolveExecutionInstructions(
+        this.engine.store,
+        w.id,
+        run,
+        w.plan_revision,
+        plan.hash,
+      );
+    const extraInstructionsPrompt =
+      formatExecutionInstructionsForPrompt(extraInstructions);
+    const baseInstructions = roleSpecific
+      ? (purpose === "planner_commit" ? "" : executionScopeWithoutTests) + roleBoundaryInstructionsFor(purpose)
+      : executionScopeInstructions + "完成本轮开发或整改及必要测试后交代码复核，不自行提交 Git，不代替人工验收。";
+
     return this.continuationMaterials(
       {
-        instructions: roleSpecific
-          ? (purpose === "planner_commit" ? "" : executionScopeWithoutTests) + roleBoundaryInstructionsFor(purpose)
-          : executionScopeInstructions + "完成本轮开发或整改及必要测试后交代码复核，不自行提交 Git，不代替人工验收。",
+        instructions: baseInstructions + extraInstructionsPrompt,
         ...(roleSpecific ? {} : { execution_order: batchExecutionInstructions }),
         workflow: w,
         run,
         plan,
+        ...(extraPayload ? { approved_execution_instructions: extraPayload } : {}),
         authorities: this.engine.planSelfCheck.authorities(w),
         feedback: this.engine.store.list("feedback_message", w.id),
         functional_issues: this.engine.store.list("functional_issue", w.id),
@@ -487,9 +505,22 @@ export class ProfileRuntime {
     const phase =
       w.stage === "quality_before_human" ? "before_human" : "after_human";
     const conflict_background = this.conflictReviewBackground(w.id);
+
+    const { instructions: extraInstructions, payload: extraPayload } =
+      verifyAndResolveExecutionInstructions(
+        this.engine.store,
+        w.id,
+        run,
+        w.plan_revision,
+        this.engine.plan(w.id).hash,
+      );
+    const reviewExtraNotice = extraInstructions?.text
+      ? `\n\n## 审批附加执行指令（只读验收依据）\n用户在批准计划时提出了以下附加执行约束，仅作为本次复核时的核验依据，不可越权修改代码：\n${extraInstructions.text}\n`
+      : "";
+
     return this.continuationMaterials(
       {
-        instructions: reviewInstructions,
+        instructions: reviewInstructions + reviewExtraNotice,
         skill_resources: reviewSkillResources(),
         review_contract: reviewContractContext(this.engine, w, run),
         workflow: w,
@@ -497,6 +528,7 @@ export class ProfileRuntime {
         phase,
         cycle: this.engine.quality.getOrCreateGate(w.id, phase).cycle,
         plan: this.engine.plan(w.id),
+        ...(extraPayload ? { approved_execution_instructions: extraPayload } : {}),
         authorities: this.engine.planSelfCheck.authorities(w),
         snapshot,
         diff: snapshot ? await this.engine.git.diff(snapshot) : "",

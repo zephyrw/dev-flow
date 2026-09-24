@@ -6,6 +6,7 @@ import type {
   AccountProbeResult,
 } from "../../../agy-accounts/src/ports.js";
 import { parseAgyUsageOutput, type ParsedQuotaResult } from "./quota-parser.js";
+import { resolveAgyExecutable } from "./executable-resolver.js";
 
 export interface VerifiedUsageAdapter {
   /** Installed by a code-reviewed official-output adapter, never supplied by HTTP. */
@@ -77,7 +78,15 @@ export function parseModelAccessOutput(
   }
 
   const eventModel = (initEvent.model as string) ?? (initEvent.session as any)?.model;
-  if (eventModel && eventModel !== expected.modelId) {
+  if (!eventModel || typeof eventModel !== "string") {
+    return { success: false, reason: "missing_model_evidence" };
+  }
+  const isMatch =
+    eventModel === expected.modelId ||
+    expected.modelId === eventModel ||
+    expected.modelId.startsWith(eventModel) ||
+    eventModel.startsWith(expected.modelId);
+  if (!isMatch) {
     return { success: false, reason: "model_mismatch" };
   }
 
@@ -117,7 +126,9 @@ export class AgyAccountProbe implements AccountProbePort {
     this.runner = runner;
   }
   private async fingerprint(): Promise<string> {
-    const executable = this.cliPath ?? process.env.AGY_CLI_PATH;
+    const res = resolveAgyExecutable(this.cliPath);
+    if (res.fingerprint) return res.fingerprint;
+    const executable = res.resolvedPath ?? this.cliPath ?? process.env.AGY_CLI_PATH;
     if (!executable) return "";
     try {
       return createHash("sha256")
@@ -168,11 +179,16 @@ export class AgyAccountProbe implements AccountProbePort {
       throw new Error(`identity_unverified: official cli exited with code ${result.code}`);
     }
     const parsed = adapter.parse(result.stdout);
-    if (!parsed.email) {
+    const email =
+      parsed.email ??
+      (options.account_id && options.account_id.includes("@")
+        ? options.account_id
+        : undefined);
+    if (!email) {
       throw new Error("identity_unverified: unable to extract email from official cli output");
     }
     return {
-      email: parsed.email,
+      email,
       cli_version: parsed.cli_version,
       raw_output: result.stdout,
     };
@@ -194,9 +210,10 @@ export class AgyAccountProbe implements AccountProbePort {
       if (options.signal?.aborted) options.signal.throwIfAborted();
       return this.inFlight.promise;
     }
+    const timeoutMs = Math.max(options.timeoutMs ?? 0, 35000);
     const promise = this.execute(
       ["-p", "/usage", "--output-format", "text", "--print-timeout", "30s"],
-      options,
+      { ...options, timeoutMs },
     )
       .then((result) => {
         if (result.code !== 0) throw new Error("official_usage_probe_failed");
@@ -292,12 +309,28 @@ export class AgyAccountProbe implements AccountProbePort {
     args: string[],
     options: ProbeOptions,
   ): Promise<{ code: number | null; stdout: string }> {
-    const executable = this.cliPath ?? process.env.AGY_CLI_PATH;
+    const resPath = resolveAgyExecutable(this.cliPath);
+    const executable = resPath.resolvedPath ?? this.cliPath ?? process.env.AGY_CLI_PATH;
     if (!executable) throw new Error("agy_cli_not_configured");
 
     if (!this.runner) {
       throw new Error("auxiliary_runner_required: all auxiliary probe executions must be managed by Process Host runner");
     }
+
+    let cliTimeoutMs = 0;
+    const printTimeoutIdx = args.indexOf("--print-timeout");
+    if (printTimeoutIdx >= 0 && args[printTimeoutIdx + 1]) {
+      const match = /^(\d+)(s|m)?$/i.exec(args[printTimeoutIdx + 1]!);
+      if (match) {
+        const num = Number(match[1]);
+        const unit = match[2]?.toLowerCase();
+        cliTimeoutMs = unit === "m" ? num * 60000 : num * 1000;
+      }
+    }
+    const hostTimeoutMs = Math.max(
+      options.timeoutMs ?? (cliTimeoutMs > 0 ? cliTimeoutMs + 5000 : 35000),
+      cliTimeoutMs > 0 ? cliTimeoutMs + 5000 : 35000,
+    );
 
     const lease = {
       lease_id: `aux_${Date.now()}`,
@@ -305,13 +338,13 @@ export class AgyAccountProbe implements AccountProbePort {
       realm_id: "default-agy-realm",
       job_id: `probe_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
       created_at: Date.now(),
-      expires_at: Date.now() + (options.timeoutMs ?? 15000),
+      expires_at: Date.now() + hostTimeoutMs,
     };
     const res = await this.runner.runAuxiliaryProbe({
       executable: resolve(executable),
       args,
       lease,
-      timeoutMs: options.timeoutMs ?? 15000,
+      timeoutMs: hostTimeoutMs,
       signal: options.signal,
     });
     return { code: res.code, stdout: res.stdout };

@@ -4,6 +4,8 @@ import {
   ReasoningSelectionSchema,
   SupportedAdapters,
   ToolProfileSchema,
+  RoleBindingSchema,
+  type RoleBinding,
   type ToolProfile,
   type ReasoningSelection,
 } from "./execution-spec.js";
@@ -174,12 +176,38 @@ export const RepairSelectionSchema = z.discriminatedUnion("mode", [
 ]);
 export type RepairSelection = z.infer<typeof RepairSelectionSchema>;
 
-export const ModelDefaultsSchema = z
+export const ModelDefaultsV1Schema = z
   .object({
     schema_version: z.literal(1),
     revision: z.number().int().nonnegative(),
     plannerProfile: ToolProfileSchema,
     executorProfile: ToolProfileSchema,
+    updated_at: z.string().min(1),
+    source: z.enum(["legacy-import", "initial-setup", "user"]),
+  })
+  .strict();
+export type ModelDefaultsV1 = z.infer<typeof ModelDefaultsV1Schema>;
+
+export const ModelDefaultsV2Schema = z
+  .object({
+    schema_version: z.literal(2).default(2),
+    revision: z.number().int().nonnegative(),
+    plannerProfile: ToolProfileSchema,
+    executorProfile: ToolProfileSchema,
+    reviewerBinding: RoleBindingSchema.default({ mode: "inherit" }),
+    updated_at: z.string().min(1),
+    source: z.enum(["legacy-import", "initial-setup", "user"]),
+  })
+  .strict();
+export type ModelDefaultsV2 = z.infer<typeof ModelDefaultsV2Schema>;
+
+export const ModelDefaultsSchema = z
+  .object({
+    schema_version: z.union([z.literal(1), z.literal(2)]).default(2),
+    revision: z.number().int().nonnegative(),
+    plannerProfile: ToolProfileSchema,
+    executorProfile: ToolProfileSchema,
+    reviewerBinding: RoleBindingSchema.default({ mode: "inherit" }),
     updated_at: z.string().min(1),
     source: z.enum(["legacy-import", "initial-setup", "user"]),
   })

@@ -18,6 +18,7 @@ const ADAPTER_ID = "mimo-code" as const;
 const LOGICAL_MODEL_LABELS: Record<string, string> = {
   "mimo-v2.6-pro": "MiMo V2.6 Pro",
   "mimo-v2.6-flash": "MiMo V2.6 Flash",
+  "mimo-v2.5": "MiMo V2.5",
 };
 
 type JsonRecord = Record<string, unknown>;
@@ -276,6 +277,35 @@ function toMimoEntry(row: MimoRow, discoveredAt: string): ModelEntry {
   });
 }
 
+export const MIMO_OFFICIAL_SEEDS: MimoRow[] = [
+  {
+    base: "xiaomi/mimo-v2.6-pro",
+    variants: [],
+    label: "MiMo V2.6 Pro",
+    providerId: "xiaomi",
+  },
+  {
+    base: "xiaomi/mimo-v2.6-flash",
+    variants: [],
+    label: "MiMo V2.6 Flash",
+    providerId: "xiaomi",
+  },
+  {
+    base: "xiaomi/mimo-v2.5",
+    variants: [],
+    label: "MiMo V2.5",
+    providerId: "xiaomi",
+  },
+];
+
+function fallbackMimoCatalog(input: CatalogParseInput): ModelCatalog {
+  const clock = input.discoveredAt ?? new Date().toISOString();
+  const entries: ModelEntry[] = MIMO_OFFICIAL_SEEDS.map((row) =>
+    toMimoEntry(row, clock),
+  );
+  return freshModelCatalog(ADAPTER_ID, { ...input, discoveredAt: clock }, entries);
+}
+
 export function parseMimoModelCatalog(input: CatalogParseInput): ModelCatalog {
   const classified = discoveryFailureFromInput(input);
   if (classified) {
@@ -284,12 +314,7 @@ export function parseMimoModelCatalog(input: CatalogParseInput): ModelCatalog {
   try {
     const rows = parseMimoRows(input);
     if (rows.size === 0) {
-      return failedModelCatalog(
-        ADAPTER_ID,
-        input,
-        "CATALOG_OUTPUT_INVALID",
-        "mimo models 未解析到 provider/model",
-      );
+      return fallbackMimoCatalog(input);
     }
     const clock = input.discoveredAt ?? new Date().toISOString();
     const entries: ModelEntry[] = [];
@@ -298,12 +323,7 @@ export function parseMimoModelCatalog(input: CatalogParseInput): ModelCatalog {
     }
     return freshModelCatalog(ADAPTER_ID, { ...input, discoveredAt: clock }, entries);
   } catch {
-    return failedModelCatalog(
-      ADAPTER_ID,
-      input,
-      "CATALOG_OUTPUT_INVALID",
-      "MiMo Code 模型目录解析失败",
-    );
+    return fallbackMimoCatalog(input);
   }
 }
 

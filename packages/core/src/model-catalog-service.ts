@@ -37,8 +37,14 @@ import {
   isDiscoveryEnvironmentError,
   makeEntryId,
 } from "../../adapters/sdk/src/catalog-parse.js";
-import { parseCodexModelCatalog } from "../../adapters/codex/src/model-configuration.js";
-import { parseAgyModelCatalog } from "../../adapters/agy/src/model-configuration.js";
+import {
+  parseCodexModelCatalog,
+  knownCodexEffortFor,
+} from "../../adapters/codex/src/model-configuration.js";
+import {
+  parseAgyModelCatalog,
+  knownAgyEffortFor,
+} from "../../adapters/agy/src/model-configuration.js";
 import { parseCursorModelCatalog } from "../../adapters/cursor/src/model-configuration.js";
 import {
   claudeCatalogStdout,
@@ -624,25 +630,59 @@ function classifySpawnOrOutput(
 }
 
 function withFreshness(catalog: ModelCatalog): ModelCatalog {
-  const discoveryStatus: ModelDiscoveryStatus =
-    catalog.discoveryStatus ?? inferDiscoveryStatus(catalog);
-  const parserRevision = catalog.parserRevision ?? PARSER_REVISION;
+  // 缺失或过期的 parserRevision 表示条目由旧解析器产物写入，必须重发现；
+  // 不得回填为当前值，否则「需要重发现」的信号会被抹掉。
+  const parserStale =
+    catalog.parserRevision === undefined ||
+    catalog.parserRevision !== PARSER_REVISION;
+  const discoveryStatus: ModelDiscoveryStatus = parserStale
+    ? "missing"
+    : (catalog.discoveryStatus ?? inferDiscoveryStatus(catalog));
   const isStale = catalog.status === "fresh" && Date.parse(catalog.staleAfter) <= Date.now();
   const status = isStale ? "stale" : catalog.status;
 
-  if (
-    catalog.status === status &&
-    catalog.discoveryStatus === discoveryStatus &&
-    catalog.parserRevision === parserRevision
-  ) {
+  if (catalog.status === status && catalog.discoveryStatus === discoveryStatus) {
     return catalog;
   }
   return ModelCatalogSchema.parse({
     ...catalog,
     status,
     discoveryStatus,
-    parserRevision,
   });
+}
+
+/**
+ * 为手工候补条目补全已知模型的思考强度元数据。
+ * 仅对明确登记的 ID 生效（AGY_VARIANTS / KNOWN_CODEX_EFFORTS），未知 ID 不臆造档位。
+ * 已有 effort（来自真实发现）的条目原样保留。
+ */
+export function enrichManualEntry(entry: ModelEntry): ModelEntry {
+  if (entry.source !== "manual") return entry;
+  if (entry.effort.status !== "unknown") return entry;
+  if (entry.adapterId === "agy") {
+    const known = knownAgyEffortFor(entry.nativeId);
+    if (!known) return entry;
+    return ModelEntrySchema.parse({
+      ...entry,
+      providerId: known.providerId ?? entry.providerId,
+      familyId: entry.familyId ?? known.familyId,
+      // 与 toAgyEntry 同构：已知家族的 accessModelKey 是家族名而非变体 ID
+      //（manualCandidateEntry 的 accessModelKey=nativeId 仅为占位，须被替换）。
+      accessModelKey: known.accessModelKey,
+      effort: known.effort,
+      capabilityRevision: `${entry.nativeId}:${known.effort.status}:${known.effort.values.join(",")}`,
+    });
+  }
+  if (entry.adapterId === "codex") {
+    const known = knownCodexEffortFor(entry.nativeId);
+    if (!known) return entry;
+    return ModelEntrySchema.parse({
+      ...entry,
+      effort: known,
+      capabilityRevision: `${entry.nativeId}:${known.status}:${known.values.join(",")}`,
+    });
+  }
+  return entry;
 }
 
 function missingCatalog(adapterId: SupportedAdapterId, scopeHash: string): ModelCatalog {
@@ -721,7 +761,7 @@ function manualCandidateEntry(
   nativeId: string,
 ): ModelEntry {
   const clock = now();
-  return ModelEntrySchema.parse({
+  const base = ModelEntrySchema.parse({
     entryId: makeEntryId(adapterId, "manual", nativeId),
     adapterId,
     nativeId,
@@ -739,6 +779,7 @@ function manualCandidateEntry(
     capabilityRevision: `${nativeId}:manual:unknown`,
     accessModelKey: nativeId,
   });
+  return enrichManualEntry(base);
 }
 
 function mergeManualEntries(
@@ -842,7 +883,37 @@ export class ModelCatalogService {
     const wanted = scopeId?.trim() ? scopeId.trim() : "default";
     const scope = this.scopeForRefresh(adapterId, wanted);
     const cached = scope ? this.readCached(scope) : undefined;
-    if (cached) return withFreshness(cached);
+    const freshCached = cached ? withFreshness(cached) : undefined;
+    if (
+      freshCached &&
+      freshCached.entries.length > 0 &&
+      freshCached.discoveryStatus !== "missing" &&
+      adapterId !== "claude-code"
+    ) {
+      return freshCached;
+    }
+    try {
+      const rawInput = adapterId === "claude-code" ? claudeCatalogStdout() : "";
+      const seedCatalog = parseAdapterCatalog(
+        adapterId,
+        rawInput,
+        "",
+        false,
+        scope ? pointerId(scope) : "seed",
+        scope?.executablePath ?? "",
+        "seed",
+        wanted,
+      );
+      if (seedCatalog.status === "fresh" && seedCatalog.entries.length > 0) {
+        if (scope) {
+          this.persistCatalog(scope, "seed", seedCatalog);
+        }
+        return withFreshness(seedCatalog);
+      }
+    } catch {
+      // ignore
+    }
+    if (freshCached) return freshCached;
     return missingCatalog(adapterId, wanted);
   }
 
@@ -906,7 +977,20 @@ export class ModelCatalogService {
     const id = assertManualNativeId(scope.adapterId, nativeId);
     const previous = this.readCached(scope);
     const existing = previous?.entries.find((entry) => entry.nativeId === id);
-    if (existing) return existing;
+    if (existing) {
+      // 存量手工条目可能仍是旧的 effort:unknown；若已知档位则就地升级并回写。
+      const enriched = enrichManualEntry(existing);
+      if (enriched !== existing) {
+        const catalog = ModelCatalogSchema.parse({
+          ...previous!,
+          entries: previous!.entries.map((e) =>
+            e.nativeId === id ? enriched : e,
+          ),
+        });
+        this.writeCatalog(scope, "catalog:" + previous!.scopeHash, catalog);
+      }
+      return enriched;
+    }
     const entry = manualCandidateEntry(scope.adapterId, id);
     const clock = now();
     const hasNonManual = previous?.entries.some((e) => e.source !== "manual") ?? false;
@@ -914,8 +998,11 @@ export class ModelCatalogService {
       ? ModelCatalogSchema.parse({
           ...previous,
           entries: [...previous.entries, entry],
+          // 全 manual 目录不算已发现；同时保留 previous.parserRevision（可能是旧值），
+          // 让 withFreshness 仍能判定需重发现，不得回填当前 PARSER_REVISION。
+          status: hasNonManual ? previous.status : "missing",
           discoveryStatus: hasNonManual ? (previous.discoveryStatus ?? "complete") : "missing",
-          parserRevision: previous.parserRevision ?? PARSER_REVISION,
+          parserRevision: previous.parserRevision,
         })
       : ModelCatalogSchema.parse({
           ...freshModelCatalog(
@@ -947,7 +1034,11 @@ export class ModelCatalogService {
     if (!pointer) return undefined;
     const raw = this.store.get<ModelCatalog>(CATALOG_KIND, pointer.catalogId);
     if (!raw) return undefined;
-    return withFreshness(ModelCatalogSchema.parse(raw));
+    const parsed = ModelCatalogSchema.parse(raw);
+    return withFreshness({
+      ...parsed,
+      entries: parsed.entries.map(enrichManualEntry),
+    });
   }
 
   loadForSelector(scope: CatalogScopeInput): ModelCatalog {
@@ -1081,6 +1172,29 @@ export class ModelCatalogService {
     const adapterId = asAdapter(operation.entity_id);
     const scope = this.scopeForRefresh(adapterId, operation.scope_id);
     if (!scope) {
+      const fallbackScope: CatalogScopeInput = {
+        adapterId,
+        executablePath: "",
+        nativeConfigScope: operation.scope_id ?? "default",
+      };
+      try {
+        const seedCatalog = parseAdapterCatalog(
+          adapterId,
+          "",
+          "",
+          false,
+          pointerId(fallbackScope),
+          "",
+          "seed",
+          operation.scope_id ?? "default",
+        );
+        if (seedCatalog.status === "fresh" && seedCatalog.entries.length > 0) {
+          this.persistCatalog(fallbackScope, "seed", seedCatalog);
+          return { status: "committed" };
+        }
+      } catch {
+        // ignore
+      }
       return {
         status: "failed",
         errorCode: "TOOL_NOT_FOUND",
@@ -1505,13 +1619,30 @@ export class ModelCatalogService {
         ...previous,
         status: "failed",
         discoveryStatus: previous.discoveryStatus ?? inferDiscoveryStatus(previous),
-        parserRevision: previous.parserRevision ?? PARSER_REVISION,
+        parserRevision: previous.parserRevision,
         errorCode,
         errorMessage,
         cliVersion: previous.cliVersion ?? cliVersion,
       });
       this.writeCatalog(scope, "catalog:" + previous.scopeHash, kept);
       return kept;
+    }
+    try {
+      const fallback = parseAdapterCatalog(
+        scope.adapterId,
+        "",
+        "",
+        false,
+        catalogEntityId(scope, cliVersion || "seed").slice(8),
+        scope.executablePath,
+        cliVersion || "seed",
+        scope.nativeConfigScope ?? "default",
+      );
+      if (fallback.status === "fresh" && fallback.entries.length > 0) {
+        return this.persistCatalog(scope, cliVersion || "seed", fallback);
+      }
+    } catch {
+      // ignore
     }
     const failed = failedModelCatalog(
       scope.adapterId,

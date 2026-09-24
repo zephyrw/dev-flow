@@ -1,6 +1,26 @@
 import type { AgyAccountAuth } from "../../contracts/src/agy-account.js";
 
-/** Extract only the old host's explicit expiry/presence fields, never token contents. */
+function tryExtractJwtClaims(token: string): { email?: string; subject?: string } {
+  try {
+    const parts = token.split(".");
+    if (parts.length !== 3 || !parts[1]) return {};
+    const payloadJson = Buffer.from(parts[1], "base64url").toString("utf8");
+    const payload = JSON.parse(payloadJson) as Record<string, unknown>;
+    if (!payload || typeof payload !== "object") return {};
+    const res: { email?: string; subject?: string } = {};
+    if (typeof payload.email === "string" && payload.email.includes("@")) {
+      res.email = payload.email.trim();
+    }
+    if (typeof payload.sub === "string" && payload.sub.length > 0) {
+      res.subject = payload.sub.trim();
+    }
+    return res;
+  } catch {
+    return {};
+  }
+}
+
+/** Extract only the old host's explicit expiry/presence fields and identity claims, never raw token contents. */
 export function extractSafeAuthMetadata(
   secret: Buffer,
 ): Partial<AgyAccountAuth> {
@@ -51,13 +71,40 @@ export function extractSafeAuthMetadata(
     result.refresh_expires_at = refresh;
     result.refresh_expiry_source = "provider_reported";
   }
+
+  let email: string | undefined;
+  let subject: string | undefined;
+  if (typeof parsed.email === "string" && parsed.email.includes("@")) {
+    email = parsed.email.trim();
+  }
+  if (typeof parsed.id_token === "string" && parsed.id_token.length > 0) {
+    const claims = tryExtractJwtClaims(parsed.id_token);
+    if (claims.email && !email) email = claims.email;
+    if (claims.subject && !subject) subject = claims.subject;
+  }
+  if (!email && typeof parsed.access_token === "string" && parsed.access_token.length > 0) {
+    const claims = tryExtractJwtClaims(parsed.access_token);
+    if (claims.email) email = claims.email;
+    if (claims.subject && !subject) subject = claims.subject;
+  }
+  if (email) result.email = email;
+  if (subject) result.subject = subject;
+
   if (
     ((typeof parsed.access_token === "string" &&
       parsed.access_token.length > 0) ||
+      (typeof parsed.token === "string" &&
+        parsed.token.length > 0) ||
+      (typeof parsed.id_token === "string" &&
+        parsed.id_token.length > 0) ||
       (typeof parsed.token_type === "string" &&
         parsed.token_type.length > 0)) &&
-    (access || result.has_refresh_credential === true)
+    (access ||
+      result.has_refresh_credential === true ||
+      typeof parsed.id_token === "string" ||
+      typeof parsed.token === "string")
   )
     result.metadata_status = "verified";
   return result;
 }
+

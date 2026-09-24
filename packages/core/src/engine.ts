@@ -2,6 +2,10 @@ import {
   PlanSelfCheckCoordinator,
   BEFORE_HUMAN_REVIEW_STAGE,
 } from "./plan-self-check.js";
+import { createApprovedExecutionInstructions } from "./execution-instructions.js";
+import { projectWorkflowOverview } from "./workflow-overview.js";
+import type { PlanApprovalRecordV2, RunApprovalRef } from "../../contracts/src/plan-approval.js";
+
 import {
   getPlanMaterialPath,
   resolveMaterialLocator,
@@ -355,39 +359,44 @@ export class Engine {
   }
   detail(key: string, verifyFiles = true) {
     const w = this.get(key);
-    return {
+    const planData = w.plan_revision
+      ? (() => {
+          const p = this.plan(key);
+          const body =
+            p.plan.markdown ??
+            this.store
+              .list<any>("project_document", key)
+              .find((d) => d.hash === p.plan.design_ref?.content_hash)
+              ?.content ??
+            "";
+          return { ...p, plan: { ...p.plan, markdown: body } };
+        })()
+      : null;
+    const evidenceList = w.plan_revision ? this.displayEvidence(key) : [];
+    const taskList = this.taskStatus(key, verifyFiles);
+    const testProg = testProgress(
+      planData ? planData.plan : null,
+      [
+        ...evidenceList,
+        ...(planData && planData.plan.task_model === "native-v2"
+          ? []
+          : this.store.list<Evidence>("development_evidence", key)),
+      ],
+      w,
+    );
+
+    const baseDetail = {
       workflow: w,
       runtime: currentRunObservation(this.store, w),
       human_accepted: this.displayHumanAccepted(key),
       attention: workflowAttention(this, key),
       executor_plan_check: this.planSelfCheck.current(key) ?? null,
-      plan: w.plan_revision
-        ? (() => {
-            const p = this.plan(key);
-            const body =
-              p.plan.markdown ??
-              this.store
-                .list<any>("project_document", key)
-                .find((d) => d.hash === p.plan.design_ref?.content_hash)
-                ?.content ??
-              "";
-            return { ...p, plan: { ...p.plan, markdown: body } };
-          })()
-        : null,
+      plan: planData,
       workspaces: this.store.list<Workspace>("workspace", key),
       runs: this.store.list<Run>("run", key),
-      evidence: w.plan_revision ? this.displayEvidence(key) : [],
-      tasks: this.taskStatus(key, verifyFiles),
-      test_progress: testProgress(
-        w.plan_revision ? this.plan(key).plan : null,
-        [
-          ...(w.plan_revision ? this.displayEvidence(key) : []),
-          ...(w.plan_revision && this.plan(key).plan.task_model === "native-v2"
-            ? []
-            : this.store.list<Evidence>("development_evidence", key)),
-        ],
-        w,
-      ),
+      evidence: evidenceList,
+      tasks: taskList,
+      test_progress: testProg,
       active_task:
         this.store.get<any>("task_activity", key)?.run_id === w.run_id &&
         this.store.get<any>("task_activity", key)?.plan_revision ===
@@ -425,6 +434,11 @@ export class Engine {
       development_evidence: this.store.list("development_evidence", key),
       event_cursor: this.store.eventCursor(key),
       history_cursor: Math.max(1, this.store.eventCursor(key) - 499),
+    };
+
+    return {
+      ...baseDetail,
+      overview: projectWorkflowOverview(baseDetail, this.store),
     };
   }
   async registerProject(input: unknown) {
@@ -718,11 +732,25 @@ export class Engine {
       extra,
     };
   }
-  approve(key: string, proof: string, binding: unknown) {
+  approve(
+    key: string,
+    proof: string,
+    binding: unknown,
+    options?: {
+      instructions?: { text?: string };
+      request_id?: string;
+      document_hash?: string | null;
+    },
+  ) {
     return this.store.transaction(() => {
       const w = this.get(key);
+      const bindingExtra = (binding as any)?.extra ?? {};
+      const expectedBindingWithExtra = this.binding(key, "approve", bindingExtra);
+      const expectedBindingDefault = this.binding(key, "approve", {});
+      const actualHash = objectHash(binding);
       requireCondition(
-        objectHash(binding) === objectHash(this.binding(key, "approve")),
+        actualHash === objectHash(expectedBindingWithExtra) ||
+          actualHash === objectHash(expectedBindingDefault),
         "BINDING_CHANGED",
         "计划已变化",
       );
@@ -732,12 +760,38 @@ export class Engine {
         "没有待批准计划",
       );
       this.auth.consumeProof(proof, "approve", binding);
-      this.store.put("approval", `${key}-${w.plan_revision}`, key, {
-        plan_hash: w.plan_hash,
+
+      const existingRecord = this.store.get<any>(
+        "approval",
+        `${key}-${w.plan_revision}`,
+      );
+      const instructions =
+        options?.instructions?.text !== undefined
+          ? createApprovedExecutionInstructions(options.instructions.text)
+          : existingRecord?.execution_instructions ??
+            createApprovedExecutionInstructions("");
+
+      const approvalRecord: PlanApprovalRecordV2 = {
+        schema_version: 2,
+        workflow_id: key,
+        plan_revision: w.plan_revision,
         revision: w.plan_revision,
+        plan_hash: w.plan_hash ?? "",
+        document_hash:
+          options?.document_hash ?? existingRecord?.document_hash ?? null,
+        request_id:
+          options?.request_id ?? existingRecord?.request_id ?? id("req_appr"),
         proof,
         approved_at: now(),
-      });
+        execution_instructions: instructions,
+      };
+
+      this.store.put(
+        "approval",
+        `${key}-${w.plan_revision}`,
+        key,
+        approvalRecord,
+      );
       this.clearCurrentImplementationIntent(key);
       this.supersedePendingContinuation(key);
       const updated = this.transition(key, [w.state], "QUEUED", "prepare");
@@ -1116,6 +1170,7 @@ export class Engine {
     const w = this.get(key);
     if (!w.plan_revision) return [];
     const plan = this.plan(key).plan;
+    if (!Array.isArray(plan?.tasks)) return [];
     const currentRun = w.run_id ? this.store.get<Run>("run", w.run_id) : undefined;
     if (!isLegacyProtocol(currentRun, plan)) {
       const intent = this.reviewPointer(key);
@@ -1457,7 +1512,7 @@ export class Engine {
       ...patch,
     });
   }
-  private clearCurrentImplementationIntent(key: string) {
+  public clearCurrentImplementationIntent(key: string) {
     this.patchReviewPointer(key, {
       implementation_run_id: undefined,
       completion_run_id: undefined,
@@ -1473,7 +1528,7 @@ export class Engine {
       source_run_id: undefined,
     });
   }
-  private supersedePendingContinuation(key: string, supersedeHandoff = true) {
+  public supersedePendingContinuation(key: string, supersedeHandoff = true) {
     this.clearNetworkRetryTimer(key);
     clearRunContinuation(this.store, key);
     clearWaitingContext(this.store, key);
@@ -3298,6 +3353,23 @@ export class Engine {
       const continuationPurpose = review ? "review" : "execute";
       const role = profileBinding.routing_role === "planner" || profileBinding.routing_role === "reviewer" ? "planner" : "executor";
       const continuation = this.consumeContinuation(key, continuationPurpose, role);
+
+      const approvalRecord = this.store.get<any>(
+        "approval",
+        `${key}-${w.plan_revision}`,
+      );
+      const approvalRef: RunApprovalRef | undefined = retryRun?.approval_ref ?? (
+        approvalRecord
+          ? {
+              approval_id: approvalRecord.approval_id ?? `${key}-${w.plan_revision}`,
+              plan_revision: approvalRecord.plan_revision ?? w.plan_revision,
+              plan_hash: approvalRecord.plan_hash ?? "",
+              instructions_hash:
+                approvalRecord.execution_instructions?.text_hash ?? "",
+            }
+          : undefined
+      );
+
       let run: Run = {
         ...profileBinding,
         id: runId,
@@ -3316,6 +3388,7 @@ export class Engine {
           snapshot: w.snapshot_id,
         }),
         protocol: "lightweight",
+        approval_ref: approvalRef,
       };
       this.store.transaction(() => {
         w = this.transition(key, [review ? "REVIEW_QUEUED" : "QUEUED"], review ? "REVIEWING" : "EXECUTING", stage, {

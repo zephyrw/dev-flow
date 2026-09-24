@@ -109,24 +109,17 @@ export class AgyEnrollmentService {
     if (!active.exists)
       return { success: false, error: "active_credential_missing" };
 
-    // 1. 独立核实身份
-    let email: string | undefined;
-    try {
-      const identityRes = await this.probe.probeIdentity({
-        signal: context.signal,
-      });
-      email = identityRes.email?.trim().toLowerCase();
-    } catch (err: any) {
-      if (err?.code === "PROCESS_STOP_UNCONFIRMED" || err?.name === "ProcessStopUnconfirmedError") {
-        throw err;
-      }
-      // 容错：尝试从 probeUsage 中获取 email
+    // 1. 核实身份（优先使用安全凭据 JWT 中已签名的身份邮箱，若无则通过 CLI 探测）
+    let email: string | undefined = active.auth?.email?.trim().toLowerCase();
+    if (!email) {
       try {
-        const usageRes = await this.probe.probeUsage({ signal: context.signal });
-        email = usageRes.email?.trim().toLowerCase();
-      } catch (usageErr: any) {
-        if (usageErr?.code === "PROCESS_STOP_UNCONFIRMED" || usageErr?.name === "ProcessStopUnconfirmedError") {
-          throw usageErr;
+        const identityRes = await this.probe.probeIdentity({
+          signal: context.signal,
+        });
+        email = identityRes.email?.trim().toLowerCase();
+      } catch (err: any) {
+        if (err?.code === "PROCESS_STOP_UNCONFIRMED" || err?.name === "ProcessStopUnconfirmedError") {
+          throw err;
         }
       }
     }
@@ -157,13 +150,14 @@ export class AgyEnrollmentService {
     this.requireContext(realmId, context);
 
     const now = new Date().toISOString();
+    const subject = captured.auth?.subject ?? active.auth?.subject ?? existing?.identity.subject;
     // 事务保存 pending 账号和操作 journal，避免后续取消或失败留下孤儿 secret
     const pendingAccount: AgyAccount = {
       id: accountId,
       realm_id: realmId,
       revision: (existing?.revision ?? 0) + 1,
       alias: alias || existing?.alias || email.split("@")[0]!,
-      identity: { email, verified_at: now },
+      identity: { email, ...(subject ? { subject } : {}), verified_at: now },
       secret_ref: captured.secret_ref,
       credential_revision: captured.credential_revision,
       state: existing?.state === "disabled" ? "disabled" : "pending_quota",
@@ -180,6 +174,8 @@ export class AgyEnrollmentService {
         last_authenticated_request_at: now,
         last_auth_error: undefined,
         last_refresh_verified_at: undefined,
+        email: captured.auth?.email ?? email,
+        ...(subject ? { subject } : {}),
       },
     };
     this.repository.transaction(() => {

@@ -178,15 +178,13 @@
   width: 100%;
 }
 
+/* 列表经 createPortal(document.body) 渲染为 position:fixed 浮层，
+   锚点坐标/宽度/最大高度由内联 style 提供（对话框 overflow/transform 无法再裁剪它） */
 .ms-model-list {
-  position: absolute;
-  top: calc(100% + 4px);
-  left: 0;
-  right: 0;
+  position: fixed;
   list-style: none;
   margin: 0;
   padding: 4px;
-  max-height: 240px;
   overflow-y: auto;
   border: 1px solid #cbd5e1;
   border-radius: 8px;
@@ -220,6 +218,15 @@
 
 .ms-option-label {
   flex: 1;
+}
+
+.ms-option-id {
+  margin-left: 8px;
+  font-size: 11px;
+  color: #94a3b8;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  word-break: break-all;
+  text-align: right;
 }
 
 .ms-option-check {

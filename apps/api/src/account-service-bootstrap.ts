@@ -12,6 +12,7 @@ import {
   lookupCertifiedAdapter,
   evaluateCapabilitySnapshot,
 } from "../../../packages/adapters/agy/src/account-capability-registry.js";
+import { resolveAgyExecutable } from "../../../packages/adapters/agy/src/executable-resolver.js";
 import { parseAgyUsageOutput } from "../../../packages/adapters/agy/src/quota-parser.js";
 import {
   AgyAccountService,
@@ -41,18 +42,8 @@ export async function bootstrapAccountService(
 
   let adapter: VerifiedUsageAdapter | undefined;
   let loginLauncher: AgyLoginLauncher | undefined;
-  let cliPath = options.agyCliPath ?? process.env.AGY_CLI_PATH;
-  if (!cliPath && process.platform === "win32" && process.env.LOCALAPPDATA) {
-    const defaultWinPath = join(
-      process.env.LOCALAPPDATA,
-      "agy",
-      "bin",
-      "agy.exe",
-    );
-    if (existsSync(defaultWinPath)) {
-      cliPath = defaultWinPath;
-    }
-  }
+  const resolution = resolveAgyExecutable(options.agyCliPath);
+  let cliPath = resolution.resolvedPath;
 
   const auxiliaryProcesses = new ProcessManager((spec, event) => {
     store.put("process_record", spec.id, spec.workflow_id ?? "system", {
@@ -145,17 +136,16 @@ export async function bootstrapAccountService(
     await authHost.close();
   };
   service.initializeSettings("default-agy-realm", options.settings ?? {});
+  const hostCaps = await authHost.capabilities();
   const capabilitySnapshot = evaluateCapabilitySnapshot(
     adapter
-      ? { version: adapter.cli_version, sha256: adapter.executable_fingerprint }
+      ? {
+          version: adapter.cli_version,
+          sha256: adapter.executable_fingerprint,
+          path: cliPath,
+        }
       : null,
-    {
-      platform: process.platform,
-      version: "unverified",
-      dpapi_available: false,
-      cred_manager_available: false,
-      named_mutex_available: false,
-    },
+    hostCaps,
   );
   service.setCapabilitySnapshot(capabilitySnapshot);
   return service;

@@ -1747,8 +1747,36 @@ export class AgyAccountService {
     this.repository.saveRealm(realm);
   }
 
+  triggerOperationImmediate(operationId: string): void {
+    setImmediate(() => {
+      void this.coordinator
+        .enqueue(async () => {
+          const op = this.repository.getOperation(operationId);
+          const realm = op ? this.repository.getRealm(op.realm_id) : undefined;
+          if (
+            op &&
+            realm &&
+            realm.pending_operation_id === op.operation_id &&
+            op.phase !== "blocked" &&
+            !op.completed_at
+          ) {
+            await this.driveOperation(op);
+          }
+        })
+        .catch(() => {});
+    });
+  }
+
   private async driveOperation(original: AgyAccountOperation): Promise<void> {
     let op = this.repository.getOperation(original.operation_id)!;
+    const initialRealm = op ? this.repository.getRealm(op.realm_id) : undefined;
+    if (
+      !op ||
+      op.completed_at ||
+      initialRealm?.pending_operation_id !== op.operation_id
+    ) {
+      return;
+    }
     this.activeAbort = new AbortController();
     const signal = this.activeAbort.signal;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -1805,14 +1833,20 @@ export class AgyAccountService {
           }
         }
         this.assertOperation(op, signal);
-        const external = await this.processHost.findExternalAgyProcesses();
-        if (external.length) {
-          op.external_processes = external.map(({ pid, exe_path }) => ({
-            pid,
-            exe_path,
-          }));
-          this.saveStep(op, "waiting_external_exit");
-          return;
+        const requiresExternalQuiesce =
+          op.kind === "switch" ||
+          (op.kind === "enroll" && op.mode !== "capture_current") ||
+          op.kind === "reauth";
+        if (requiresExternalQuiesce) {
+          const external = await this.processHost.findExternalAgyProcesses();
+          if (external.length) {
+            op.external_processes = external.map(({ pid, exe_path }) => ({
+              pid,
+              exe_path,
+            }));
+            this.saveStep(op, "waiting_external_exit");
+            return;
+          }
         }
         if (op.kind === "switch") {
           const result = await this.switchExecutor.execute({
@@ -2073,7 +2107,23 @@ export class AgyAccountService {
 
     for (const ref of op.consumer_refs) {
       if (ref.delivered) continue;
-      // 每次异步投递前执行 guard：核查 realm 状态与代次
+
+      // D03 修复：以真实参与者与恢复意图决定投递；无参与者直接收尾
+      const savedObj = ref.saved_ref as Record<string, unknown> | undefined;
+      const savedRuns = savedObj?.runs;
+      const hasActualWork =
+        Array.isArray(savedRuns)
+          ? savedRuns.length > 0
+          : !!savedObj && Object.keys(savedObj).length > 0;
+
+      // 如果该参与者没有受影响的恢复任务，直接收尾，不阻断手动 one-shot
+      if (!hasActualWork) {
+        ref.delivered = true;
+        this.saveStep(op, "recovering");
+        continue;
+      }
+
+      // 确有恢复任务时，严格核查 realm 状态与代次
       const currentRealm = this.repository.getRealm(op.realm_id);
       if (
         !currentRealm ||
@@ -2171,46 +2221,52 @@ export class AgyAccountService {
       this.saveStep(op, "committed");
       return;
     }
-    const occupancy = (
-      await Promise.all(this.consumers.map((c) => c.listOccupancy()))
-    ).flat();
-    if (
-      occupancy.some((o) => !o.can_pause) ||
-      (!this.initializeSettings(op.realm_id).pause_managed_for_manual_switch &&
-        occupancy.length)
-    )
-      throw new AccountServiceError("managed_busy");
-    this.saveStep(op, "quiescing");
-    for (const consumer of this.consumers) {
-      const { savedRef } = await consumer.prepareSwitch(op.operation_id);
-      op.consumer_refs.push({
-        consumer_id: this.consumerIds.get(consumer)!,
-        saved_ref: savedRef,
-        delivered: false,
-      });
+    const isReadOnlyEnrollOrProbe =
+      (op.kind === "enroll" && op.mode === "capture_current") ||
+      op.kind === "probe";
+    if (!isReadOnlyEnrollOrProbe) {
+      const occupancy = (
+        await Promise.all(this.consumers.map((c) => c.listOccupancy()))
+      ).flat();
+      if (
+        occupancy.some((o) => !o.can_pause) ||
+        (!this.initializeSettings(op.realm_id).pause_managed_for_manual_switch &&
+          occupancy.length)
+      )
+        throw new AccountServiceError("managed_busy");
       this.saveStep(op, "quiescing");
-      await consumer.quiesce(op.operation_id);
-      if (!(await consumer.confirmStopped(op.operation_id)))
+      for (const consumer of this.consumers) {
+        const { savedRef } = await consumer.prepareSwitch(op.operation_id);
+        op.consumer_refs.push({
+          consumer_id: this.consumerIds.get(consumer)!,
+          saved_ref: savedRef,
+          delivered: false,
+        });
+        this.saveStep(op, "quiescing");
+        await consumer.quiesce(op.operation_id);
+        if (!(await consumer.confirmStopped(op.operation_id)))
+          throw new AccountServiceError("managed_processes_not_stopped");
+      }
+      const processes = await this.processHost.listManagedProcesses(op.realm_id);
+      if (
+        processes.length &&
+        !(await this.processHost.confirmProcessesStopped(
+          processes.map((p) => p.pid),
+          30_000,
+        ))
+      )
         throw new AccountServiceError("managed_processes_not_stopped");
+      this.assertOperation(op, signal);
+      if ((await this.processHost.findExternalAgyProcesses()).length)
+        throw new AccountServiceError("external_change");
+      const checkRealm = this.repository.getRealm(op.realm_id)!;
+      if (
+        checkRealm.active_secret_ref &&
+        !(await this.authHost.compareActive(op.realm_id, checkRealm.active_secret_ref))
+      )
+        throw new AccountServiceError("external_change");
     }
-    const processes = await this.processHost.listManagedProcesses(op.realm_id);
-    if (
-      processes.length &&
-      !(await this.processHost.confirmProcessesStopped(
-        processes.map((p) => p.pid),
-        30_000,
-      ))
-    )
-      throw new AccountServiceError("managed_processes_not_stopped");
-    this.assertOperation(op, signal);
-    if ((await this.processHost.findExternalAgyProcesses()).length)
-      throw new AccountServiceError("external_change");
     const realm = this.repository.getRealm(op.realm_id)!;
-    if (
-      realm.active_secret_ref &&
-      !(await this.authHost.compareActive(op.realm_id, realm.active_secret_ref))
-    )
-      throw new AccountServiceError("external_change");
     this.assertOperation(op, signal);
     this.saveStep(op, "capturing");
     const backup = await this.authHost.captureActive(

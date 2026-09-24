@@ -9,9 +9,15 @@ import guideText from "../../../docs/guide/使用指南.md?raw";
 import { TaskTree, TestResults } from "./panels.js";
 import { useNativeProgress } from "./native-progress.js";
 import { CreateWorkflowModal } from "./components/CreateWorkflowModal.js";
-import { ToolModelDialog } from "./components/ToolModelDialog.js";
-import { ModelSettingsDialog } from "./components/ModelSettingsDialog.js";
+import {
+  SettingsDialog,
+  type SettingsTabId,
+} from "./components/SettingsDialog.js";
 import { CurrentRuntime } from "./components/CurrentRuntime.js";
+import { WorkflowAttentionBanner } from "./components/WorkflowAttentionBanner.js";
+import { WorkflowOverview } from "./components/WorkflowOverview.js";
+import { WorkflowArchiveAction } from "./components/WorkflowArchiveAction.js";
+import { formatWorkflowState } from "../../../packages/presentation/src/workflow-status.js";
 import { useEventCatchup } from "./use-event-catchup.js";
 import { RequirementComposer } from "./components/RequirementComposer.js";
 import { SourceChangeDialog } from "./components/SourceChangeDialog.js";
@@ -19,6 +25,7 @@ import {
   PlanReviewDialog,
   type PlanReviewTarget,
 } from "./components/PlanReviewDialog.js";
+import { PlanApprovalDialog } from "./components/PlanApprovalDialog.js";
 import { AgyAccountsDialog } from "./components/AgyAccountsDialog.js";
 import { AgyAccountsPage } from "./components/AgyAccountsPage.js";
 import {
@@ -1284,89 +1291,14 @@ const CentralWorkspace = React.memo(
           key={selected + tab}
         >
           {tab === "overview" && (
-            <div className="two-column">
-              {w.state === "COMMITTED" && (
-                <div
-                  className="banner committed-banner"
-                  style={{
-                    gridColumn: "1 / -1",
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "12px",
-                    background: "var(--color-success-bg, #f6ffed)",
-                    border: "1px solid var(--color-success-border, #b7eb8f)",
-                    borderRadius: "var(--radius-md, 8px)",
-                    padding: "14px 18px",
-                    color: "var(--color-success-text, #135200)",
-                  }}
-                >
-                  <span
-                    style={{
-                      display: "grid",
-                      placeItems: "center",
-                      width: "28px",
-                      height: "28px",
-                      borderRadius: "50%",
-                      background: "var(--color-success, #52c41a)",
-                      color: "#ffffff",
-                      fontSize: "16px",
-                      fontWeight: "bold",
-                      flexShrink: 0,
-                    }}
-                  >
-                    ✓
-                  </span>
-                  <div>
-                    <div
-                      style={{
-                        fontWeight: 700,
-                        fontSize: "14px",
-                        color: "var(--color-success-text, #135200)",
-                      }}
-                    >
-                      本工作流所有阶段已全部通过并已提交入库
-                    </div>
-                    <div
-                      style={{
-                        fontSize: "12px",
-                        color: "var(--text-secondary, #555)",
-                        marginTop: "3px",
-                      }}
-                    >
-                      需求调研、方案批准、开发实施、自动测试、人工验收、独立复核及本地提交均已完整交付。
-                    </div>
-                  </div>
-                </div>
-              )}
-              <section className="panel">
-                <h2>这次要解决什么</h2>
-                <p className="request">{w.title}</p>
-                <details>
-                  <summary>完整需求</summary>
-                  <p className="request">{w.request}</p>
-                </details>
-              </section>
-              <section className="panel">
-                <h2>任务记录</h2>
-                <details>
-                  <summary>执行历史与技术详情</summary>
-                  <p>任务编号：{w.id}</p>
-                  {detail.runs.map((r: any) => (
-                    <p key={r.id}>
-                      {new Date(r.started_at).toLocaleString()} ·{" "}
-                      {(
-                        {
-                          running: "执行中",
-                          failed: "失败",
-                          completed: "已结束",
-                          stopped: "已暂停",
-                        } as Record<string, string>
-                      )[r.status] ?? "已结束"}
-                    </p>
-                  ))}
-                </details>
-              </section>
-            </div>
+            <WorkflowOverview
+              workflow={w}
+              overview={detail.overview}
+              projectName={projects.find((p) => p.id === w.project_id)?.name}
+              onOpenPlan={() => setTab("plan")}
+              onOpenTasks={() => setTab("tasks")}
+              onOpenTests={() => setTab("tests")}
+            />
           )}
           {tab === "plan" && (
             <section
@@ -1416,7 +1348,7 @@ const CentralWorkspace = React.memo(
                   {w.plan_revision > 0 && (
                     <a
                       className="download-link"
-                      href={`/api/workflows/${selected}/documents/plan`}
+                      href={`/api/workflows/${selected}/documents/plan?format=markdown&download=1`}
                       target="_blank"
                       rel="noreferrer"
                     >
@@ -1705,12 +1637,14 @@ function App() {
     [diff, setDiff] = useState<any[]>([]);
   const detail = useNativeProgress(rawDetail);
   const [planReview, setPlanReview] = useState<PlanReviewTarget | null>(null);
+  const [planApprovalTarget, setPlanApprovalTarget] = useState<any | null>(null);
   const [sourceChange, setSourceChange] = useState<{
     workflowId: string;
     version: number;
   } | null>(null);
   useEffect(() => {
     setPlanReview(null);
+    setPlanApprovalTarget(null);
     setSourceChange(null);
   }, [selected]);
   useEffect(() => {
@@ -1775,6 +1709,7 @@ function App() {
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [isToolDrawerOpen, setIsToolDrawerOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [settingsTab, setSettingsTab] = useState<SettingsTabId>("models");
   const [toolDrawerFocus, setToolDrawerFocus] = useState<string | undefined>();
   const [resumeLabel, setResumeLabel] = useState<string | null>(null);
   const [isAgyAccountsDrawerOpen, setIsAgyAccountsDrawerOpen] = useState(false);
@@ -2009,11 +1944,18 @@ function App() {
       return next;
     });
   });
-  const approve = async (action: "approve" | "accept") => {
+  const approve = async (
+    action: "approve" | "accept",
+    instructionsText?: string,
+  ) => {
     const viewed = detail?.workflow;
     if (!viewed || viewed.id !== selected)
       throw Error("请先打开计划或验收内容。");
-    await api(`/workflows/${selected}/${action}`, {
+
+    const trimmed = instructionsText?.trim() ?? "";
+    const reqBody: any = {
+      schema_version: 2,
+      request_id: crypto.randomUUID(),
       binding: {
         workflow_id: selected,
         action,
@@ -2022,9 +1964,22 @@ function App() {
         plan_hash: viewed.plan_hash ?? null,
         snapshot_id: viewed.snapshot_id ?? null,
         environment_revision: viewed.environment_revision,
-        extra: {},
+        extra: trimmed
+          ? {
+              execution_instructions_hash: "", // 服务端以重新计算的结果为准
+            }
+          : {},
       },
-    });
+    };
+
+    if (trimmed) {
+      reqBody.execution_instructions = {
+        text: trimmed,
+        scope: "approved-plan",
+      };
+    }
+
+    await api(`/workflows/${selected}/${action}`, reqBody);
     await refresh();
     setNotice(
       action === "approve"
@@ -2367,8 +2322,11 @@ function App() {
           </button>
           <button
             className={"nav " + (isSettingsOpen ? "active" : "")}
-            aria-label="全局模型设置"
-            onClick={() => setIsSettingsOpen(true)}
+            aria-label="设置"
+            onClick={() => {
+              setSettingsTab("models");
+              setIsSettingsOpen(true);
+            }}
           >
             <span className="nav-icon" aria-hidden="true">
               ⚙️
@@ -2422,7 +2380,7 @@ function App() {
                       ? "等待模型额度"
                       : w.stage === "auto_repair"
                         ? "准备自动修复"
-                        : labels[w.state]}
+                        : formatWorkflowState(w.state)}
                 </span>
               )}
             </div>
@@ -2548,7 +2506,7 @@ function App() {
                           {projects.find((p) => p.id === f.project_id)?.name}
                         </span>
                         <span className={"badge " + f.state}>
-                          {labels[f.state]}
+                          {formatWorkflowState(f.state)}
                         </span>
                       </div>
                       <h3>{f.title}</h3>
@@ -2710,9 +2668,7 @@ function App() {
                                 <button
                                   className="primary"
                                   disabled={pending}
-                                  onClick={() =>
-                                    void attempt(() => approve("approve"))
-                                  }
+                                  onClick={() => setPlanApprovalTarget(w)}
                                 >
                                   批准当前计划
                                 </button>
@@ -2801,6 +2757,17 @@ function App() {
                               <span>🛠️</span>
                               <span>工具与模型</span>
                             </button>
+                            <WorkflowArchiveAction
+                              workflowId={w.id}
+                              workflowTitle={w.title}
+                              onArchived={() => {
+                                setSelected("");
+                                void refresh();
+                                setNotice(
+                                  "任务已移入归档，可在“设置 -> 归档”中随时查看或恢复。",
+                                );
+                              }}
+                            />
                           </div>
                           {!sidebarOpen && (
                             <button
@@ -2817,55 +2784,23 @@ function App() {
                       </div>
                     </div>
                   )}
-                  {attention &&
-                    attention.source !== "local_console" &&
-                    !attention.message?.includes("你在控制台暂停") && (
-                      <div
-                        className={"attention-strip " + attention.category}
-                        role="status"
-                      >
-                        <span className="attention-icon">⚠️</span>
-                        <span
-                          className="attention-message"
-                          title={attention.message}
-                        >
-                          {attention.message}
-                        </span>
-                        <time>
-                          {new Date(attention.at).toLocaleTimeString()}
-                        </time>
-                        <button
-                          className="btn-attention-action"
-                          onClick={() => {
-                            if (attention.category === "approval")
-                              setTab("plan");
-                            else if (attention.category === "source_change")
-                              setSourceChange({
-                                workflowId: w.id,
-                                version: w.version,
-                              });
-                            else if (attention.category === "acceptance")
-                              setTab("environment");
-                            else if (attention.category === "guidance") {
-                              toggleSidebar(true);
-                              window.dispatchEvent(
-                                new Event("devflow-open-guidance"),
-                              );
-                            } else if (
-                              document.getElementById(`runtime-failure-${w.id}`)
-                            ) {
-                              const card = document.getElementById(
-                                `runtime-failure-${w.id}`,
-                              )!;
-                              card.scrollIntoView({ block: "nearest" });
-                              card.focus();
-                            } else toggleSidebar(true);
-                          }}
-                        >
-                          {attention.action}
-                        </button>
-                      </div>
-                    )}
+                  <WorkflowAttentionBanner
+                    attention={attention}
+                    workflowId={w.id}
+                    workflowVersion={w.version}
+                    onOpenPlan={() => setTab("plan")}
+                    onOpenSourceChange={() =>
+                      setSourceChange({
+                        workflowId: w.id,
+                        version: w.version,
+                      })
+                    }
+                    onOpenEnvironment={() => setTab("environment")}
+                    onOpenGuidance={() => {
+                      toggleSidebar(true);
+                      window.dispatchEvent(new Event("devflow-open-guidance"));
+                    }}
+                  />
                 </div>
                 <RuntimeFailureNotice
                   key={w.id}
@@ -3152,6 +3087,28 @@ function App() {
           }}
         />
       )}
+      {planApprovalTarget && (
+        <PlanApprovalDialog
+          key={`${planApprovalTarget.id}:${planApprovalTarget.plan_revision}`}
+          isOpen={!!planApprovalTarget}
+          onClose={() => setPlanApprovalTarget(null)}
+          workflowId={planApprovalTarget.id}
+          workflowVersion={planApprovalTarget.version}
+          planRevision={planApprovalTarget.plan_revision}
+          planHash={planApprovalTarget.plan_hash}
+          planTitle={detail?.plan?.plan?.title}
+          planSummary={detail?.plan?.plan?.summary}
+          executorProfileDescription={
+            planApprovalTarget.role_overrides?.executor
+              ? `${planApprovalTarget.role_overrides.executor.tool} · ${planApprovalTarget.role_overrides.executor.model}`
+              : undefined
+          }
+          onApprove={async (instructionsText) => {
+            await approve("approve", instructionsText);
+            setPlanApprovalTarget(null);
+          }}
+        />
+      )}
       <CreateWorkflowModal
         isOpen={isCreateModalOpen}
         onClose={() => setIsCreateModalOpen(false)}
@@ -3186,9 +3143,16 @@ function App() {
         focusRole={toolDrawerFocus}
         onSpecUpdated={() => void refresh()}
       />
-      <ModelSettingsDialog
+      <SettingsDialog
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
+        initialTab={settingsTab}
+        onDefaultsUpdated={() => void refresh()}
+        onSelectWorkflow={(workflowId) => {
+          setSelected(workflowId);
+          setIsSettingsOpen(false);
+        }}
+        onWorkflowRestored={() => void refresh()}
       />
       <AgyAccountsDialog
         isOpen={isAgyAccountsDrawerOpen}

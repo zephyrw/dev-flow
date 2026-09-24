@@ -8,12 +8,14 @@ import {
   RepairBatchViewSchema,
   RepairSelectionSchema,
   RoleOverridesSchema,
+  RoleBindingSchema,
   SupportedAdapters,
   ToolProfileSchema,
   parseStoredToolProfile,
   type FunctionalIssue,
   type ModelDefaults,
   type MutationReceipt,
+  type RoleBinding,
   type RepairKind,
   type RepairModelAssignment,
   type RepairModelBatch,
@@ -145,6 +147,12 @@ function parseDefaultsWriteBody(body: Record<string, unknown>) {
   if (hasOwn(body, "role_overrides") || hasOwn(body, "roleOverrides")) {
     throw new FlowError("INVALID_REQUEST", "系统默认不接受角色覆盖", 422);
   }
+  const reviewerRaw = hasOwn(body, "reviewer_binding")
+    ? body.reviewer_binding
+    : hasOwn(body, "reviewerBinding")
+      ? body.reviewerBinding
+      : undefined;
+
   return {
     request_id: parseUuid(body.request_id),
     expected_defaults_revision: z
@@ -152,8 +160,16 @@ function parseDefaultsWriteBody(body: Record<string, unknown>) {
       .int()
       .nonnegative()
       .parse(body.expected_defaults_revision),
-    plannerProfile: ToolProfileSchema.parse(body.planner_profile),
-    executorProfile: ToolProfileSchema.parse(body.executor_profile),
+    plannerProfile: ToolProfileSchema.parse(
+      body.planner_profile ?? body.plannerProfile,
+    ),
+    executorProfile: ToolProfileSchema.parse(
+      body.executor_profile ?? body.executorProfile,
+    ),
+    reviewerBinding:
+      reviewerRaw !== undefined
+        ? RoleBindingSchema.parse(reviewerRaw)
+        : undefined,
   };
 }
 
@@ -161,9 +177,15 @@ function defaultsReadiness(
   access: ModelAccessService,
   defaults: ModelDefaults,
 ) {
+  const reviewerStatus =
+    defaults.reviewerBinding?.mode === "inherit" || !defaults.reviewerBinding
+      ? access.readiness(defaults.plannerProfile)
+      : access.readiness(defaults.reviewerBinding.profile);
+
   return {
     planner: { status: access.readiness(defaults.plannerProfile) },
     executor: { status: access.readiness(defaults.executorProfile) },
+    reviewer: { status: reviewerStatus },
   };
 }
 
@@ -228,10 +250,11 @@ export function registerModelRoutes(
     const current = defaults.getOrImport(engine.config);
     const draft = z
       .object({
-        schema_version: z.literal(1),
+        schema_version: z.union([z.literal(1), z.literal(2)]),
         expected_defaults_revision: z.number().int().nonnegative(),
         plannerProfile: ToolProfileSchema,
         executorProfile: ToolProfileSchema,
+        reviewerBinding: RoleBindingSchema.optional(),
         updated_at: z.string(),
       })
       .safeParse(engine.store.get("model_defaults_draft", "global"));

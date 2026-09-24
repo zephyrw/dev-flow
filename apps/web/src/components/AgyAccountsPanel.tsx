@@ -232,14 +232,34 @@ export function AgyAccountsPanel({ onDismiss }: { onDismiss?: () => void }) {
         </button>
       </div>
 
-      {/* 正在进行中的操作提示卡片 */}
-      {activeOperation && (
+      {/* 正在进行中的操作提示卡片（弹窗打开时由弹窗内向导独立展示，避免重复叠加） */}
+      {activeOperation && !enrollOpen && (
         <div className="agy-active-op-card">
           <div className="agy-active-op-info">
             <span className="agy-op-spinner" />
-            <span>
-              正在执行：{operationLabels[activeOperation.phase] ?? activeOperation.phase}
-            </span>
+            <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+              <span>
+                正在执行：{operationLabels[activeOperation.phase] ?? activeOperation.phase}
+              </span>
+              {activeOperation.phase === "waiting_external_exit" && (
+                <div style={{ fontSize: "12px", color: "#64748b" }}>
+                  {activeOperation.external_processes && activeOperation.external_processes.length > 0 ? (
+                    <div>
+                      <span>检测到外部 AGY 会话仍在运行，请先退出以下会话：</span>
+                      <ul style={{ margin: "4px 0 0 16px", padding: 0 }}>
+                        {activeOperation.external_processes.map((p) => (
+                          <li key={p.pid}>
+                            PID {p.pid}: {p.exe_path || p.executable || "agy"}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : (
+                    <span>请退出外部运行中的 AGY 终端会话，退出后本次操作将自动继续</span>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
           <button
             type="button"

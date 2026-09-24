@@ -54,6 +54,8 @@ export const AgyAccountAuthSchema = z.object({
   last_authenticated_request_at: z.string().optional(),
   last_refresh_verified_at: z.string().optional(),
   last_auth_error: z.string().optional(),
+  email: z.string().optional(),
+  subject: z.string().optional(),
 });
 export type AgyAccountAuth = z.infer<typeof AgyAccountAuthSchema>;
 

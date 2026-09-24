@@ -1,3 +1,6 @@
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import {
   ModelEntrySchema,
   type ModelCatalog,
@@ -28,6 +31,13 @@ const HEADER_TOKENS = new Set([
   "default",
 ]);
 
+export const GROK_OFFICIAL_SEEDS = [
+  "grok-4.7",
+  "grok-4.6",
+  "grok-4.5",
+  "grok-4",
+];
+
 type JsonRecord = Record<string, unknown>;
 
 function asRecord(value: unknown): JsonRecord | undefined {
@@ -35,7 +45,66 @@ function asRecord(value: unknown): JsonRecord | undefined {
   return value as JsonRecord;
 }
 
+export function readGrokConfiguredModels(): Array<{
+  nativeId: string;
+  label: string;
+}> {
+  const configPath = join(homedir(), ".grok", "config.toml");
+  if (!existsSync(configPath)) return [];
+  try {
+    const text = readFileSync(configPath, "utf8");
+    const models: Array<{ nativeId: string; label: string }> = [];
+    const lines = text.split(/\r?\n/);
+    let currentSection = "";
+    let currentName = "";
+    let currentModel = "";
+
+    const flushCurrent = () => {
+      if (currentSection.startsWith("model.") && currentSection.length > "model.".length) {
+        const sectionId = currentSection.slice("model.".length).replace(/^"+|"+$/g, "").trim();
+        const nativeId = sectionId || currentModel;
+        const label = currentName || currentModel || sectionId;
+        if (nativeId && !models.some((m) => m.nativeId === nativeId)) {
+          models.push({ nativeId, label });
+        }
+      }
+      currentName = "";
+      currentModel = "";
+    };
+
+    for (const rawLine of lines) {
+      const line = rawLine.replace(/#.*$/, "").trim();
+      if (!line) continue;
+      const sectionMatch = line.match(/^\[([^\]]+)\]$/);
+      if (sectionMatch) {
+        flushCurrent();
+        currentSection = sectionMatch[1]!.trim();
+        continue;
+      }
+      const eq = line.indexOf("=");
+      if (eq > 0) {
+        const key = line.slice(0, eq).trim();
+        const rawVal = line.slice(eq + 1).trim().replace(/^["']|["']$/g, "");
+        if (key === "name") currentName = rawVal;
+        if (key === "model") currentModel = rawVal;
+      }
+    }
+    flushCurrent();
+    return models;
+  } catch {
+    return [];
+  }
+}
+
 function grokEffort(nativeId: string): ModelEffort {
+  if (nativeId === "grok-4.7" || nativeId.startsWith("grok-4.7-")) {
+    return {
+      status: "supported",
+      transport: "flag",
+      values: ["low", "medium", "high", "xhigh"],
+      defaultValue: "high",
+    };
+  }
   if (nativeId === "grok-4.6" || nativeId.startsWith("grok-4.6-")) {
     return {
       status: "supported",
@@ -135,6 +204,7 @@ function toGrokEntry(
   nativeId: string,
   discoveredAt: string,
   source: ModelSource,
+  label?: string,
 ): ModelEntry {
   const effort = grokEffort(nativeId);
   const providerId = nativeId.startsWith("grok-") ? PROVIDER_ID : undefined;
@@ -142,7 +212,7 @@ function toGrokEntry(
     entryId: makeEntryId(ADAPTER_ID, providerId, nativeId),
     adapterId: ADAPTER_ID,
     nativeId,
-    label: nativeId,
+    label: label ?? nativeId,
     providerId,
     selectionKind: "fixed",
     effort,
@@ -154,6 +224,22 @@ function toGrokEntry(
   });
 }
 
+function fallbackGrokCatalog(input: CatalogParseInput): ModelCatalog {
+  const clock = input.discoveredAt ?? new Date().toISOString();
+  const configured = readGrokConfiguredModels();
+  const configEntries = configured.map((c) =>
+    toGrokEntry(c.nativeId, clock, "native-config", c.label),
+  );
+  const configIds = new Set(configured.map((c) => c.nativeId));
+  const seedEntries = GROK_OFFICIAL_SEEDS.filter((id) => !configIds.has(id)).map((id) =>
+    toGrokEntry(id, clock, "official-seed"),
+  );
+  return freshModelCatalog(ADAPTER_ID, { ...input, discoveredAt: clock }, [
+    ...configEntries,
+    ...seedEntries,
+  ]);
+}
+
 export function parseGrokModelCatalog(input: CatalogParseInput): ModelCatalog {
   const classified = discoveryFailureFromInput(input);
   if (classified) {
@@ -162,24 +248,42 @@ export function parseGrokModelCatalog(input: CatalogParseInput): ModelCatalog {
   try {
     const ids = parseGrokNativeIds(input);
     if (ids.length === 0) {
-      return failedModelCatalog(
-        ADAPTER_ID,
-        input,
-        "CATALOG_OUTPUT_INVALID",
-        "grok models 未解析到可调用模型 ID",
-      );
+      return fallbackGrokCatalog(input);
     }
     const clock = input.discoveredAt ?? new Date().toISOString();
     const source = detectSource(input, `${input.stdout}\n${input.stderr ?? ""}`);
+    const configured = readGrokConfiguredModels();
+    const configMap = new Map(configured.map((c) => [c.nativeId, c]));
+    const hasLocalConfigInOutput = ids.some((id) => configMap.has(id));
+
+    if (hasLocalConfigInOutput) {
+      const mergedEntries: ModelEntry[] = [];
+      const seen = new Set<string>();
+      for (const c of configured) {
+        seen.add(c.nativeId);
+        mergedEntries.push(toGrokEntry(c.nativeId, clock, "native-config", c.label));
+      }
+      for (const seedId of GROK_OFFICIAL_SEEDS) {
+        if (!seen.has(seedId)) {
+          seen.add(seedId);
+          const seedSource = ids.includes(seedId) ? source : "official-seed";
+          mergedEntries.push(toGrokEntry(seedId, clock, seedSource));
+        }
+      }
+      for (const id of ids) {
+        if (!seen.has(id)) {
+          seen.add(id);
+          mergedEntries.push(toGrokEntry(id, clock, source));
+        }
+      }
+      return freshModelCatalog(ADAPTER_ID, { ...input, discoveredAt: clock }, mergedEntries);
+    }
+
     const entries = ids.map((nativeId) => toGrokEntry(nativeId, clock, source));
     return freshModelCatalog(ADAPTER_ID, { ...input, discoveredAt: clock }, entries);
-  } catch {
-    return failedModelCatalog(
-      ADAPTER_ID,
-      input,
-      "CATALOG_OUTPUT_INVALID",
-      "Grok 模型目录解析失败",
-    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Grok 模型目录解析失败";
+    return failedModelCatalog(ADAPTER_ID, input, "CATALOG_OUTPUT_INVALID", message);
   }
 }
 

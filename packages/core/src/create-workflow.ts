@@ -71,9 +71,12 @@ function parseOptionalProfile(value: unknown): ToolProfile | undefined {
 function loadCreateDefaults(store: Store, config?: Config) {
   if (config) return new ModelDefaultsService(store).getOrImport(config);
   return {
+    schema_version: 2 as const,
     revision: 0,
     plannerProfile: plannerProfileFromConfig(),
     executorProfile: executorProfileFromConfig(),
+    reviewerBinding: { mode: "inherit" as const },
+    updated_at: new Date().toISOString(),
   };
 }
 
@@ -100,9 +103,18 @@ function resolveCreateProfiles(
       : usedSavedIds && input.planner_profile_id
         ? resolveProfile(store, input.planner_profile_id)
         : defaults.executorProfile);
-  const roleOverrides = input.role_overrides
-    ? RoleOverridesSchema.parse(input.role_overrides)
-    : inheritRoleOverrides();
+  let roleOverrides: RoleOverrides;
+  if (input.role_overrides) {
+    roleOverrides = RoleOverridesSchema.parse(input.role_overrides);
+  } else {
+    const baseOverrides = inheritRoleOverrides();
+    if (defaults.reviewerBinding) {
+      baseOverrides.reviewer = JSON.parse(
+        JSON.stringify(defaults.reviewerBinding),
+      );
+    }
+    roleOverrides = baseOverrides;
+  }
   const usedOnlySavedIds =
     usedSavedIds && !plannerFromBody && !executorFromBody;
   const sourceDefaultsRevision = usedOnlySavedIds

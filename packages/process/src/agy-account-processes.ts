@@ -116,7 +116,7 @@ export class AgyAccountProcessHost implements ProcessHostPort {
     if (process.platform !== "win32")
       throw new Error("AGY_PROCESS_INVENTORY_UNSUPPORTED");
     const script =
-      "$ErrorActionPreference='Stop'; $sid=[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value; $items=@(Get-CimInstance Win32_Process | ForEach-Object { $p=$_; if ($p.Name -match '(?i)agy|antigravity|language_server') { $owner=Invoke-CimMethod -InputObject $p -MethodName GetOwnerSid; if ($owner.ReturnValue -ne 0) { throw 'Cannot establish AGY process owner' }; if ($owner.Sid -eq $sid) { [PSCustomObject]@{pid=[int]$p.ProcessId;parent=[int]$p.ParentProcessId;exe_path=[string]$p.ExecutablePath;name=$p.Name;sid=$sid;create_time=([DateTimeOffset]$p.CreationDate).ToUnixTimeMilliseconds()} } } else { [PSCustomObject]@{pid=[int]$p.ProcessId;parent=[int]$p.ParentProcessId;exe_path='';name=$p.Name} } }); ConvertTo-Json -InputObject $items -Compress";
+      "$ErrorActionPreference='SilentlyContinue'; $sid=[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value; $items=@(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | ForEach-Object { $p=$_; if ($p.Name -match '(?i)agy|antigravity|language_server') { try { $owner=Invoke-CimMethod -InputObject $p -MethodName GetOwnerSid -ErrorAction Stop; if ($owner.ReturnValue -eq 0 -and $owner.Sid -eq $sid) { $cTime=0; try { $cTime=([DateTimeOffset]$p.CreationDate).ToUnixTimeMilliseconds() } catch {}; [PSCustomObject]@{pid=[int]$p.ProcessId;parent=[int]$p.ParentProcessId;exe_path=[string]$p.ExecutablePath;name=$p.Name;sid=$sid;create_time=$cTime} } } catch {} } else { [PSCustomObject]@{pid=[int]$p.ProcessId;parent=[int]$p.ParentProcessId;exe_path='';name=$p.Name} } }); ConvertTo-Json -InputObject $items -Compress";
     const configuredName = basename(this.options.agyExecutable).replace(
       /'/g,
       "''",
@@ -143,11 +143,20 @@ export class AgyAccountProcessHost implements ProcessHostPort {
     await this.assertCapabilities();
     const rows = await this.inventory();
     const configuredName = basename(this.options.agyExecutable).toLowerCase();
+    const isAgyCliProcess = (name: string) => {
+      const lower = name.toLowerCase();
+      if (/antigravity|language_server|code\.exe/i.test(lower)) {
+        return false;
+      }
+      return (
+        lower === configuredName ||
+        lower === configuredName.replace(/\.exe$/, "") ||
+        lower === "agy.exe" ||
+        lower === "agy"
+      );
+    };
     const candidates = rows.filter(
-      (r) =>
-        !!r.sid &&
-        (r.name.toLowerCase() === configuredName ||
-          /agy|antigravity|language_server/i.test(r.name)),
+      (r) => !!r.sid && isAgyCliProcess(r.name),
     );
     const owned = new Set<number>();
     const native = await getNativeAsync();
@@ -176,8 +185,7 @@ export class AgyAccountProcessHost implements ProcessHostPort {
       .filter(
         (r) =>
           !owned.has(r.pid) &&
-          (r.name.toLowerCase() === configuredName ||
-            /agy|antigravity|language_server/i.test(r.name)) &&
+          isAgyCliProcess(r.name) &&
           !!r.sid,
       )
       .map((r) => {

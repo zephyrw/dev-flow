@@ -46,9 +46,9 @@
       "type": "object",
       "properties": {
         "executor": {
-          "default": "gemini-3.7-flash-high",
+          "default": "gemini-3.8-flash-high",
           "type": "string",
-          "const": "gemini-3.7-flash-high"
+          "const": "gemini-3.8-flash-high"
         },
         "reviewer": {
           "default": "gpt-6-astra",

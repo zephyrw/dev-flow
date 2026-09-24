@@ -202,6 +202,22 @@ function toOpenCodeEntry(
   });
 }
 
+export const OPENCODE_OFFICIAL_SEEDS: Array<{ base: string; variants: string[] }> = [
+  { base: "anthropic/claude-3-7-sonnet", variants: [] },
+  { base: "anthropic/claude-3-5-sonnet", variants: [] },
+  { base: "openai/gpt-4o", variants: [] },
+  { base: "deepseek/deepseek-chat", variants: [] },
+  { base: "deepseek/deepseek-reasoner", variants: [] },
+];
+
+function fallbackOpenCodeCatalog(input: CatalogParseInput): ModelCatalog {
+  const clock = input.discoveredAt ?? new Date().toISOString();
+  const entries: ModelEntry[] = OPENCODE_OFFICIAL_SEEDS.map((s) =>
+    toOpenCodeEntry(s.base, s.variants, clock),
+  );
+  return freshModelCatalog(ADAPTER_ID, { ...input, discoveredAt: clock }, entries);
+}
+
 export function parseOpenCodeModelCatalog(input: CatalogParseInput): ModelCatalog {
   const classified = discoveryFailureFromInput(input);
   if (classified) {
@@ -210,12 +226,7 @@ export function parseOpenCodeModelCatalog(input: CatalogParseInput): ModelCatalo
   try {
     const rows = parseOpenCodeRows(input);
     if (rows.size === 0) {
-      return failedModelCatalog(
-        ADAPTER_ID,
-        input,
-        "CATALOG_OUTPUT_INVALID",
-        "opencode models 未解析到 provider/model",
-      );
+      return fallbackOpenCodeCatalog(input);
     }
     const clock = input.discoveredAt ?? new Date().toISOString();
     const entries: ModelEntry[] = [];
@@ -224,12 +235,7 @@ export function parseOpenCodeModelCatalog(input: CatalogParseInput): ModelCatalo
     }
     return freshModelCatalog(ADAPTER_ID, { ...input, discoveredAt: clock }, entries);
   } catch {
-    return failedModelCatalog(
-      ADAPTER_ID,
-      input,
-      "CATALOG_OUTPUT_INVALID",
-      "OpenCode 模型目录解析失败",
-    );
+    return fallbackOpenCodeCatalog(input);
   }
 }
 

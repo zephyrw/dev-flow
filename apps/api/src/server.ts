@@ -44,6 +44,11 @@ import { FunctionalIssueService } from "../../../packages/core/src/functional-is
 import { repositoryInfo, previewWorktreePath } from "../../../packages/git/src/git.js";
 import { GitDeliveryCoordinator } from "../../../packages/git/src/delivery-coordinator.js";
 import { DocumentService } from "../../../packages/core/src/document-service.js";
+import { PlanApprovalService } from "../../../packages/core/src/plan-approval-service.js";
+import { normalizeInstructionsText } from "../../../packages/contracts/src/plan-approval.js";
+import { WorkflowVisibilityService } from "../../../packages/core/src/workflow-visibility-service.js";
+import { workflowVisibilityPlugin } from "./routes/workflow-visibility.js";
+import { WorkflowVisibilityFilterSchema } from "../../../packages/contracts/src/workflow-visibility.js";
 import { FeedbackService } from "../../../packages/core/src/feedback-service.js";
 import { ModelAccessService } from "../../../packages/core/src/model-access-service.js";
 import { ModelCatalogService } from "../../../packages/core/src/model-catalog-service.js";
@@ -155,6 +160,8 @@ export async function buildServer(
     engine.config.storage_root,
   );
   const feedbackService = new FeedbackService(engine.store);
+  const planApprovalService = new PlanApprovalService(engine, documentService);
+  const visibilityService = new WorkflowVisibilityService(engine.store, engine);
   const modelServices = registerModelRoutes(app, engine, human, accessService);
   const conversations = conversationServiceOf(engine.store);
   const conversationFiles = new ConversationFileService(
@@ -213,9 +220,33 @@ export async function buildServer(
     human,
   });
 
+  const WorkflowsQuery = z.object({
+    visibility: WorkflowVisibilityFilterSchema.optional(),
+  });
+
   app.get("/api/workflows", async (req) => {
     human(req);
-    return engine.list();
+    const query = WorkflowsQuery.parse(req.query);
+    const all = engine.list();
+    if (!query.visibility || query.visibility === "all") {
+      return all;
+    }
+    return visibilityService.filterWorkflows(all, query.visibility);
+  });
+
+  await app.register(workflowVisibilityPlugin, {
+    visibilityService,
+    human,
+    broadcast: (event, payload: any) => {
+      const w = engine.store.get<any>("workflow", payload.workflow_id);
+      engine.store.emit("event", {
+        type: event,
+        workflow_id: payload.workflow_id,
+        project_id: w?.project_id,
+        archived: payload.archived,
+        revision: payload.revision,
+      });
+    },
   });
   app.post("/api/workspaces/preview", async (req) => {
     human(req);
@@ -1261,8 +1292,10 @@ export async function buildServer(
     human(req);
     const key = Id.parse((req.params as any).id);
     if ((req.query as any)?.view === "summary") {
+      const detail = engine.detail(key, false);
       return {
         ...engine.summary(key),
+        overview: detail.overview,
         conversation_tree: conversations.getTree(key),
       };
     }
@@ -1273,6 +1306,13 @@ export async function buildServer(
       attachment_status: listAttachmentRecords(engine.store, key),
       conversation_tree: conversations.getTree(key),
     };
+  });
+
+  app.get("/api/workflows/:id/overview", async (req) => {
+    human(req);
+    const key = Id.parse((req.params as any).id);
+    const detail = engine.detail(key, false);
+    return detail.overview;
   });
   app.get("/api/workflows/:id/attachments", async (req) => {
     human(req);
@@ -1372,35 +1412,105 @@ export async function buildServer(
         .send(readFileSync(file));
     }
 
+    const isMarkdownDownload =
+      q.format === "markdown" || q.download === "1" || q.download === "true";
+
+    const renderPlanAsMarkdown = (planObj: any): string => {
+      if (!planObj) return "";
+      if (typeof planObj === "string") return planObj;
+      if (typeof planObj.markdown === "string" && planObj.markdown.trim()) {
+        return planObj.markdown;
+      }
+      const lines: string[] = [];
+      lines.push(`# ${planObj.title ?? "实施计划"}`);
+      if (planObj.summary || planObj.design_ref?.summary) {
+        lines.push("", "## 背景与目标", String(planObj.design_ref?.summary ?? planObj.summary));
+      }
+      if (Array.isArray(planObj.work_items) && planObj.work_items.length > 0) {
+        lines.push("", "## 主要实施任务");
+        for (const item of planObj.work_items) {
+          lines.push(`- ${item.title ?? item.name ?? item.id}`);
+        }
+      } else if (Array.isArray(planObj.tasks) && planObj.tasks.length > 0) {
+        lines.push("", "## 主要实施任务");
+        for (const item of planObj.tasks) {
+          lines.push(`- ${item.title ?? item.name ?? item.id}`);
+        }
+      }
+      if (Array.isArray(planObj.acceptance_items) && planObj.acceptance_items.length > 0) {
+        lines.push("", "## 主要测试与验收");
+        for (const acc of planObj.acceptance_items) {
+          lines.push(`- ${acc.scenario ?? acc.title ?? acc.id}`);
+        }
+      } else if (Array.isArray(planObj.tests) && planObj.tests.length > 0) {
+        lines.push("", "## 主要测试与验收");
+        for (const tst of planObj.tests) {
+          lines.push(`- ${tst.scenario ?? tst.title ?? tst.id}`);
+        }
+      }
+      return lines.join("\n") + "\n";
+    };
+
     try {
       const doc = documentService.getDocument(key, documentId, revision);
+      if (isMarkdownDownload) {
+        return reply
+          .type("text/markdown; charset=utf-8")
+          .header(
+            "Content-Disposition",
+            `attachment; filename="${documentId}-${key}-r${doc.revision}.md"`,
+          )
+          .send(doc.content);
+      }
       return {
         ok: true,
         document: doc,
       };
-    } catch (err) {
+    } catch (err: any) {
+      // D07/D08 规范：文档 hash 不匹配属于需确认的真实错误，绝不静默降级退回
+      if (err?.code && String(err.code).includes("HASH_MISMATCH")) {
+        throw err;
+      }
       if (documentId === "plan") {
         const w = engine.get(key);
         requireCondition(w.plan_revision > 0, "PLAN_MISSING", "尚无计划", 404);
-        const planRecord = engine.store.get<any>(
-          "plan",
-          `${key}_r${w.plan_revision}`,
-        );
+        const targetRev = revision ?? w.plan_revision;
+        const planRecord =
+          engine.store.get<any>("plan", `${key}-${targetRev}`) ??
+          engine.store.get<any>("plan", `${key}_r${targetRev}`) ??
+          (targetRev === w.plan_revision ? engine.plan(key) : null);
+
         if (planRecord) {
+          const mdFromDoc = planRecord.plan?.design_ref?.content_hash
+            ? engine.store
+                .list<any>("project_document", key)
+                .find((d) => d.hash === planRecord.plan.design_ref.content_hash)
+                ?.content
+            : undefined;
+          const markdownContent =
+            mdFromDoc ?? renderPlanAsMarkdown(planRecord.plan);
+          const resolvedDoc = {
+            id: planRecord.id ?? `${key}-${targetRev}`,
+            workflow_id: key,
+            document_type: "plan",
+            revision: planRecord.revision ?? targetRev,
+            hash: planRecord.hash ?? w.plan_hash ?? "",
+            content: markdownContent,
+            approved_by_human: Boolean(planRecord.approved_by_human),
+          };
+
+          if (isMarkdownDownload) {
+            return reply
+              .type("text/markdown; charset=utf-8")
+              .header(
+                "Content-Disposition",
+                `attachment; filename="plan-${key}-r${resolvedDoc.revision}.md"`,
+              )
+              .send(resolvedDoc.content);
+          }
           return {
             ok: true,
-            document: {
-              id: planRecord.id,
-              workflow_id: key,
-              document_type: "plan",
-              revision: planRecord.revision,
-              hash: planRecord.hash,
-              content:
-                typeof planRecord.plan === "string"
-                  ? planRecord.plan
-                  : JSON.stringify(planRecord.plan, null, 2),
-              approved_by_human: Boolean(planRecord.approved_by_human),
-            },
+            document: resolvedDoc,
           };
         }
       }
@@ -1413,65 +1523,53 @@ export async function buildServer(
     human(req);
     const { id: key, documentId } = req.params as any;
     const body = (req.body || {}) as any;
-    const requestId = body.request_id || `req_${Date.now()}`;
+    const requestId = body.request_id || `req_doc_${Date.now()}`;
     const expectedVersion =
       body.expected_version !== undefined
         ? Number(body.expected_version)
         : undefined;
     const docRevision = Number(body.document_revision ?? 1);
     const docHash = String(body.hash || body.document_hash || "");
-    const feedbackCursor = Number(body.feedback_cursor ?? 0);
+    const instructionsText =
+      body.execution_instructions?.text ?? body.instructions_text ?? "";
 
-    const w = engine.get(key);
-    if (expectedVersion !== undefined) {
-      requireCondition(
-        w.version === expectedVersion,
-        "VERSION_CONFLICT",
-        `工作流版本冲突: 期望 v${expectedVersion}, 当前 v${w.version}`,
-        409,
+    const binding =
+      body.binding ??
+      engine.binding(
+        key,
+        "approve",
+        instructionsText
+          ? {
+              execution_instructions_hash: hash(
+                normalizeInstructionsText(instructionsText),
+              ),
+            }
+          : {},
       );
-    }
 
-    const approvalDocument = engine.store.must<any>(
-      "project_document",
-      documentId,
-    );
-    requireCondition(
-      approvalDocument.id === documentId &&
-        engine.plan(key).revision === docRevision &&
-        (engine.plan(key).plan.design_ref?.content_hash ??
-          hash(
-            (engine.plan(key).plan.markdown ?? "").replace(/\r\n/g, "\n"),
-          )) === docHash,
-      "DOCUMENT_BINDING_INVALID",
-      "批准文档不是当前正式计划",
-      409,
-    );
-    return engine.store.transaction(() => {
-      const approvedDoc = documentService.approveDocument(key, documentId, {
-        request_id: requestId,
-        expected_version: expectedVersion ?? w.version,
-        document_revision: docRevision,
-        document_hash: docHash,
-        feedback_cursor: feedbackCursor,
+    const receipt = engine.auth.recordConfirmation("approve", binding);
+    try {
+      const outcome = await planApprovalService.approve({
+        workflowId: key,
+        requestId,
+        binding,
+        executionInstructionsText: instructionsText,
+        documentId,
+        documentRevision: docRevision,
+        documentHash: docHash,
+        expectedVersion,
+        callerProof: receipt,
       });
-
-      const binding = engine.binding(key, "approve");
-      const receipt = engine.auth.recordConfirmation("approve", binding);
-      let engineResult;
-      try {
-        engineResult = engine.approve(key, receipt, binding);
-        void engine.dispatch();
-      } finally {
-        engine.store.remove("human_proof", receipt);
-      }
-
+      void engine.dispatch();
       return {
         ok: true,
-        document: approvedDoc,
-        workflow: engineResult,
+        document: outcome.document,
+        workflow: outcome.workflow,
+        approval: outcome.approval,
       };
-    });
+    } finally {
+      engine.store.remove("human_proof", receipt);
+    }
   });
 
   app.get(
@@ -1537,16 +1635,39 @@ export async function buildServer(
   });
   app.post("/api/workflows/:id/approve", async (req) => {
     human(req);
-    const b = z
-      .object({ binding: z.record(z.string(), z.unknown()) })
-      .strict()
-      .parse(req.body);
+    const bodySchema = z.union([
+      z.object({
+        schema_version: z.union([z.literal(1), z.literal(2)]).optional(),
+        request_id: z.string().optional(),
+        binding: z.record(z.string(), z.unknown()),
+        execution_instructions: z
+          .object({
+            text: z.string().max(20000).optional(),
+            scope: z.literal("approved-plan").optional(),
+          })
+          .optional(),
+      }),
+      z.object({
+        binding: z.record(z.string(), z.unknown()),
+      }),
+    ]);
+    const b = bodySchema.parse(req.body);
     const key = Id.parse((req.params as any).id);
+    const requestId =
+      (b as any).request_id || `req_appr_${Date.now()}`;
+    const instructionsText =
+      (b as any).execution_instructions?.text ?? "";
     const receipt = engine.auth.recordConfirmation("approve", b.binding);
     try {
-      const result = engine.approve(key, receipt, b.binding);
+      const outcome = await planApprovalService.approve({
+        workflowId: key,
+        requestId,
+        binding: b.binding,
+        executionInstructionsText: instructionsText,
+        callerProof: receipt,
+      });
       void engine.dispatch();
-      return result;
+      return outcome.workflow;
     } finally {
       engine.store.remove("human_proof", receipt);
     }
@@ -1884,6 +2005,7 @@ export async function buildServer(
           "StateChanged",
           "CheckCompleted",
           "PlanSubmitted",
+          "WorkflowVisibilityChanged",
         ].includes(event.type)
       ) {
         if (socket.bufferedAmount > 1024 * 1024) {

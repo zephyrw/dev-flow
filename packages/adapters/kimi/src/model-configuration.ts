@@ -186,6 +186,52 @@ function parseKimiEntries(input: CatalogParseInput): ModelEntry[] {
   return entries;
 }
 
+export const KIMI_OFFICIAL_SEEDS: Array<{
+  nativeId: string;
+  label: string;
+  effort?: { status: "supported"; transport: "env"; values: string[]; defaultValue?: string };
+}> = [
+  {
+    nativeId: "kimi-k3",
+    label: "Kimi K3",
+    effort: { status: "supported", transport: "env", values: ["low", "high", "max"], defaultValue: "high" },
+  },
+  {
+    nativeId: "kimi-k2.7-code",
+    label: "Kimi K2.7 Code",
+  },
+  {
+    nativeId: "kimi-k2.5",
+    label: "Kimi K2.5",
+  },
+  {
+    nativeId: "kimi-k2-thinking",
+    label: "Kimi K2 Thinking",
+    effort: { status: "supported", transport: "env", values: ["low", "medium", "high"], defaultValue: "high" },
+  },
+];
+
+function fallbackKimiCatalog(input: CatalogParseInput): ModelCatalog {
+  const clock = input.discoveredAt ?? new Date().toISOString();
+  const entries: ModelEntry[] = KIMI_OFFICIAL_SEEDS.map((seed) =>
+    ModelEntrySchema.parse({
+      entryId: makeEntryId(ADAPTER_ID, "kimi", seed.nativeId),
+      adapterId: ADAPTER_ID,
+      nativeId: seed.nativeId,
+      label: seed.label,
+      providerId: "kimi",
+      selectionKind: "fixed",
+      effort: seed.effort ?? { status: "unknown", transport: "none", values: [] },
+      source: "official-seed",
+      discoveredAt: clock,
+      hidden: false,
+      availability: "listed",
+      capabilityRevision: `${seed.nativeId}:${seed.effort?.status ?? "unknown"}`,
+    }),
+  );
+  return freshModelCatalog(ADAPTER_ID, { ...input, discoveredAt: clock }, entries);
+}
+
 export function parseKimiModelCatalog(input: CatalogParseInput): ModelCatalog {
   const classified = discoveryFailureFromInput(input);
   if (classified) {
@@ -194,22 +240,12 @@ export function parseKimiModelCatalog(input: CatalogParseInput): ModelCatalog {
   try {
     const entries = parseKimiEntries(input);
     if (entries.length === 0) {
-      return failedModelCatalog(
-        ADAPTER_ID,
-        input,
-        "CATALOG_OUTPUT_INVALID",
-        "Kimi config.toml 未解析到 models 元数据",
-      );
+      return fallbackKimiCatalog(input);
     }
     const clock = input.discoveredAt ?? new Date().toISOString();
     return freshModelCatalog(ADAPTER_ID, { ...input, discoveredAt: clock }, entries);
   } catch {
-    return failedModelCatalog(
-      ADAPTER_ID,
-      input,
-      "CATALOG_OUTPUT_INVALID",
-      "Kimi 模型目录解析失败",
-    );
+    return fallbackKimiCatalog(input);
   }
 }
 
