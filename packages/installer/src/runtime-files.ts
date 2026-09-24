@@ -12,13 +12,23 @@ export type RuntimeFileCategory =
   | "compliance"
   | "skills";
 
+export interface PlatformCondition {
+  os?: string | string[];
+  arch?: string | string[];
+  platforms?: string[];
+}
+
 export interface RuntimeFileEntry {
   path: string;
+  kind?: "file" | "directory";
   category: RuntimeFileCategory;
-  required: boolean | { platforms: string[] };
+  required: boolean | PlatformCondition;
+  any_of?: string[];
 }
 
 export interface RuntimeFilesManifest {
+  schema_version?: number;
+  description?: string;
   entries: RuntimeFileEntry[];
 }
 
@@ -47,6 +57,8 @@ export function parseRuntimeFilesManifest(raw: unknown): RuntimeFilesManifest {
     const path = item.path;
     const category = item.category;
     const required = item.required;
+    const kind = item.kind === "directory" ? "directory" : "file";
+    const any_of = Array.isArray(item.any_of) ? item.any_of : undefined;
     if (typeof path !== "string" || !path || path.includes("\0")) {
       throw new Error("安装包不完整：runtime-files.json 路径无效");
     }
@@ -57,12 +69,13 @@ export function parseRuntimeFilesManifest(raw: unknown): RuntimeFilesManifest {
       typeof required === "boolean" ||
       (required &&
         typeof required === "object" &&
-        Array.isArray(required.platforms) &&
-        required.platforms.every((p: unknown) => typeof p === "string"));
+        (Array.isArray(required.platforms) ||
+          required.os !== undefined ||
+          required.arch !== undefined));
     if (!validRequired) {
       throw new Error("安装包不完整：runtime-files.json required 无效：" + path);
     }
-    entries.push({ path, category, required });
+    entries.push({ path, kind, category, required, any_of });
   }
   if (!entries.length) {
     throw new Error("安装包不完整：runtime-files.json 为空");
@@ -73,6 +86,7 @@ export function parseRuntimeFilesManifest(raw: unknown): RuntimeFilesManifest {
 export function readRuntimeFilesManifest(
   packageRoot: string,
   platform = process.platform,
+  arch = process.arch,
 ): RuntimeFilesManifest {
   const file = join(packageRoot, "runtime-files.json");
   if (!existsSync(file)) {
@@ -87,7 +101,7 @@ export function readRuntimeFilesManifest(
   const manifest = parseRuntimeFilesManifest(parsed);
   return {
     entries: manifest.entries.filter((entry) =>
-      entryAppliesTo(entry, platform),
+      entryAppliesTo(entry, platform, arch),
     ),
   };
 }
@@ -95,24 +109,67 @@ export function readRuntimeFilesManifest(
 export function entryAppliesTo(
   entry: RuntimeFileEntry,
   platform = process.platform,
+  arch = process.arch,
 ): boolean {
-  if (entry.required === true) return true;
-  if (entry.required === false) return true;
-  return entry.required.platforms.includes(platform);
+  if (entry.required === true || entry.required === false) return true;
+  const req = entry.required as PlatformCondition;
+  if (Array.isArray(req.platforms)) {
+    if (
+      req.platforms.includes(platform) ||
+      req.platforms.includes(`${platform}-${arch}`)
+    ) {
+      return true;
+    }
+  }
+  if (req.os !== undefined) {
+    const osList = Array.isArray(req.os) ? req.os : [req.os];
+    if (!osList.includes(platform)) return false;
+    if (req.arch !== undefined) {
+      const archList = Array.isArray(req.arch) ? req.arch : [req.arch];
+      if (!archList.includes(arch)) return false;
+    }
+    return true;
+  }
+  return false;
 }
 
 export function requiredEntries(
   manifest: RuntimeFilesManifest,
   platform = process.platform,
+  arch = process.arch,
 ): RuntimeFileEntry[] {
-  return manifest.entries.filter(
-    (entry) =>
-      entryAppliesTo(entry, platform) &&
-      entry.required !== false &&
-      (entry.required === true ||
-        (typeof entry.required === "object" &&
-          entry.required.platforms.includes(platform))),
-  );
+  return manifest.entries.filter((entry) => {
+    if (!entryAppliesTo(entry, platform, arch)) return false;
+    if (entry.required === false) return false;
+    if (entry.required === true) return true;
+    const req = entry.required as PlatformCondition;
+    if (Array.isArray(req.platforms)) {
+      return (
+        req.platforms.includes(platform) ||
+        req.platforms.includes(`${platform}-${arch}`)
+      );
+    }
+    if (req.os !== undefined) {
+      const osList = Array.isArray(req.os) ? req.os : [req.os];
+      if (!osList.includes(platform)) return false;
+      if (req.arch !== undefined) {
+        const archList = Array.isArray(req.arch) ? req.arch : [req.arch];
+        return archList.includes(arch);
+      }
+      return true;
+    }
+    return false;
+  });
+}
+
+/** Resolve the actual candidate path on disk (respecting any_of fallback). */
+export function resolveEntryPath(sourceDir: string, entry: RuntimeFileEntry): string {
+  if (entry.any_of && entry.any_of.length > 0) {
+    for (const cand of entry.any_of) {
+      if (existsSync(join(sourceDir, cand))) return cand;
+    }
+  }
+  return entry.path;
 }
 
 /** Paths the installer must copy into the immutable version directory. */
@@ -126,6 +183,12 @@ export function copyListFromManifest(
     // Always carry explicit compliance metadata even when nested.
     if (entry.category === "compliance") tops.add(entry.path);
   }
+  // Ensure critical root files are explicitly copied
+  tops.add("package.json");
+  tops.add("pnpm-lock.yaml");
+  tops.add("pnpm-workspace.yaml");
+  tops.add("build-info.json");
+  tops.add("runtime-files.json");
   return [...tops];
 }
 

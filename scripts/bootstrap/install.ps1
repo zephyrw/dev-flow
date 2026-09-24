@@ -27,14 +27,17 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$script:DevflowReleaseTag = "__DEVFLOW_RELEASE_TAG__"
+$script:DevflowReleaseTag = "@DEVFLOW_TAG@"
 # First-release public matrix (plan §5.5). win32-arm64 / 32-bit rejected before download.
 $script:DevflowSupportedTargets = @("win32-x64")
 $script:ManifestMaxBytes = 65536
 
 function Test-DevflowPlaceholderTag {
   param([string]$Tag)
-  return [string]::IsNullOrEmpty($Tag) -or $Tag -eq "__DEVFLOW_RELEASE_TAG__"
+  if ([string]::IsNullOrWhiteSpace($Tag)) { return $true }
+  if ($Tag.StartsWith("@") -and $Tag.EndsWith("@")) { return $true }
+  if ($Tag.StartsWith("__") -and $Tag.EndsWith("__")) { return $true }
+  return $false
 }
 
 function Test-DevflowPrereleaseTag {
@@ -352,6 +355,8 @@ function Invoke-DevflowBootstrapMain {
     if ($ExecutorTool) { $nodeArgs += @("--executor-tool", $ExecutorTool) }
     if ($ExecutorModel) { $nodeArgs += @("--executor-model", $ExecutorModel) }
     if ($ExecutorEffort) { $nodeArgs += @("--executor-effort", $ExecutorEffort) }
+    if ($NoOpen) { $nodeArgs += @("--no-open") }
+    if ($RequireReady) { $nodeArgs += @("--require-ready") }
 
     $output = & $node @nodeArgs 2>&1 | ForEach-Object { "$_" }
     $code = $LASTEXITCODE

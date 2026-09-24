@@ -215,6 +215,13 @@
       "evidence": [],
       "roles": ["planner", "executor", "tester", "reviewer"],
       "modes": ["single", "composite"]
+    },
+    "mimo-code": {
+      "status": "adapter_implemented",
+      "live_workflow_verified": false,
+      "evidence": [],
+      "roles": ["planner", "executor", "tester", "reviewer"],
+      "modes": ["single", "composite"]
     }
   },
   "agy_accounts": {

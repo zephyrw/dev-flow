@@ -23,6 +23,7 @@ import {
   validateNoLegacyArtifacts,
   validateRuntimeFiles,
   MANIFEST_SCHEMA_VERSION,
+  resolveTarCommand,
 } from "./release-lib.mjs";
 
 export function requiredAccountReleaseInputs(platform = process.platform) {
@@ -176,7 +177,12 @@ export function generateReleaseBundle() {
   mkdirSync(output, { recursive: true });
   const asset = "devflow-" + tag + "-" + platform + ".tar.gz";
   const path = join(output, asset);
-  execFileSync("tar", ["-czf", path, "-C", root, "devflow"], {
+  const tar = resolveTarCommand();
+  const tarArgs = tar.forceLocal
+    ? ["--force-local", "-czf", path, "-C", root, "devflow"]
+    : ["-czf", path, "-C", root, "devflow"];
+  execFileSync(tar.command, tarArgs, {
+    stdio: "inherit",
     windowsHide: true,
   });
   const digest = createHash("sha256").update(readFileSync(path)).digest("hex");
@@ -184,16 +190,28 @@ export function generateReleaseBundle() {
 
   // 9. Generate bound bootstrap scripts (install.sh & install.ps1) with immutable tag
   const bootstrapDir = resolve("scripts/bootstrap");
-  if (existsSync(join(bootstrapDir, "install.sh"))) {
-    const rawSh = readFileSync(join(bootstrapDir, "install.sh"), "utf8");
-    const boundSh = injectReleaseBindings(rawSh, { tag, version });
-    writeFileSync(join(output, "install.sh"), boundSh.content);
+  const shPath = join(bootstrapDir, "install.sh");
+  const ps1Path = join(bootstrapDir, "install.ps1");
+  if (!existsSync(shPath)) throw new Error("Missing scripts/bootstrap/install.sh template");
+  if (!existsSync(ps1Path)) throw new Error("Missing scripts/bootstrap/install.ps1 template");
+
+  const rawSh = readFileSync(shPath, "utf8");
+  const boundSh = injectReleaseBindings(rawSh, { tag, version });
+  if (!boundSh.bindingsApplied || boundSh.unreplacedPlaceholders.length > 0) {
+    throw new Error(
+      `Failed to bind immutable release tag into install.sh: applied=${boundSh.bindingsApplied}, unreplaced=[${boundSh.unreplacedPlaceholders.join(", ")}]`,
+    );
   }
-  if (existsSync(join(bootstrapDir, "install.ps1"))) {
-    const rawPs1 = readFileSync(join(bootstrapDir, "install.ps1"), "utf8");
-    const boundPs1 = injectReleaseBindings(rawPs1, { tag, version });
-    writeFileSync(join(output, "install.ps1"), boundPs1.content);
+  writeFileSync(join(output, "install.sh"), boundSh.content);
+
+  const rawPs1 = readFileSync(ps1Path, "utf8");
+  const boundPs1 = injectReleaseBindings(rawPs1, { tag, version });
+  if (!boundPs1.bindingsApplied || boundPs1.unreplacedPlaceholders.length > 0) {
+    throw new Error(
+      `Failed to bind immutable release tag into install.ps1: applied=${boundPs1.bindingsApplied}, unreplaced=[${boundPs1.unreplacedPlaceholders.join(", ")}]`,
+    );
   }
+  writeFileSync(join(output, "install.ps1"), boundPs1.content);
 
   // 10. Platform manifest
   const manifest = {

@@ -37,6 +37,7 @@ import {
   renameSync,
   rmSync,
   lstatSync,
+  statSync,
 } from "node:fs";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -51,13 +52,14 @@ import {
   installBootstrapRuntime,
   writeCurrentPointer,
   writeStableEntry,
-  appendWindowsUserPath,
+  registerUserPathWindows,
   upsertShellPathBlock,
   type CurrentPointer,
 } from "./launchers.js";
 import {
   readRuntimeFilesManifest,
   requiredEntries,
+  resolveEntryPath,
   COMPLIANCE_BASENAMES,
 } from "./runtime-files.js";
 import { isWithinRoot, assertSafeArchiveEntry } from "./download.js";
@@ -526,11 +528,22 @@ export function computeContentDigest(
   sourceDir: string,
   paths: string[],
 ): string {
-  return hash(
-    paths
-      .map((p) => p + ":" + hash(readFileSync(join(sourceDir, p))))
-      .join("\n"),
-  );
+  const parts: string[] = [];
+  for (const p of paths) {
+    const abs = join(sourceDir, p);
+    if (!existsSync(abs)) continue;
+    try {
+      const stat = statSync(abs);
+      if (stat.isDirectory()) {
+        parts.push(p + ":dir");
+      } else {
+        parts.push(p + ":" + hash(readFileSync(abs)));
+      }
+    } catch {
+      // Ignore unreadable
+    }
+  }
+  return hash(parts.sort().join("\n"));
 }
 
 export interface InstallReceipt {
@@ -661,7 +674,8 @@ export async function runInstaller(
 
     state.updateResult({ software: { status: "verifying" } });
     const runtimeManifest = readRuntimeFilesManifest(source);
-    const requiredList = requiredEntries(runtimeManifest).map((e) => e.path);
+    const reqEntries = requiredEntries(runtimeManifest);
+    const requiredList = reqEntries.map((e) => resolveEntryPath(source, e));
     // Critical runtime gates (I-05): bundled Node, native, SQLite, worker, runner.
     const bundledNodeRelative =
       "runtime/" + (process.platform === "win32" ? "node.exe" : "node");
@@ -699,7 +713,15 @@ export async function runInstaller(
       ]),
     ];
     for (const path of critical) {
-      if (assertSafeArchiveEntry(source, path, "file").safe === false) {
+      const entryObj = reqEntries.find(
+        (e) => e.path === path || e.any_of?.includes(path),
+      );
+      const isDir =
+        entryObj?.kind === "directory" ||
+        (existsSync(join(source, path)) &&
+          statSync(join(source, path)).isDirectory());
+      const expectedType = isDir ? "directory" : "file";
+      if (assertSafeArchiveEntry(source, path, expectedType).safe === false) {
         throw new Error("安装包路径不安全：" + path);
       }
       if (!existsSync(join(source, path)))
@@ -746,6 +768,8 @@ export async function runInstaller(
         // Package root files: identity, compliance, runtime manifest.
         for (const file of [
           "package.json",
+          "pnpm-lock.yaml",
+          "pnpm-workspace.yaml",
           "build-info.json",
           "runtime-files.json",
           ...COMPLIANCE_BASENAMES,
@@ -1001,27 +1025,45 @@ export async function runInstaller(
     if (!options.skipSystemRegistration) {
       const stable = writeStableEntry(root);
       conflictHint = stable.conflicts;
+      let pathAdded: string | undefined = undefined;
       if (process.platform === "win32") {
         try {
-          appendWindowsUserPath(
-            root,
-            () => process.env.PATH,
-            () => {
-              /* registry write performed by bootstrap scripts; keep env-only in process */
-            },
-          );
+          const regResult = registerUserPathWindows(root);
+          if (regResult.conflictCommands.length > 0) {
+            conflictHint.push(...regResult.conflictCommands);
+          }
+          if (regResult.changed && regResult.addedPath) {
+            pathAdded = regResult.addedPath;
+          }
         } catch {
           /* PATH registration is best-effort; absolute entry still works */
         }
       } else {
         try {
-          upsertShellPathBlock(
-            join(homedir(), process.platform === "darwin" ? ".zshrc" : ".bashrc"),
-            join(root, "bin"),
-          );
+          const rc = join(homedir(), process.platform === "darwin" ? ".zshrc" : ".bashrc");
+          const shellResult = upsertShellPathBlock(rc, join(root, "bin"));
+          if (shellResult.changed) {
+            pathAdded = join(root, "bin");
+          }
         } catch {
           /* shell rc is best-effort */
         }
+      }
+
+      // Record installed entries in receipt for safe uninstall (DFP-R06 / R12)
+      try {
+        const receiptFile = join(target, "install-source.json");
+        if (existsSync(receiptFile)) {
+          const currentReceipt = JSON.parse(readFileSync(receiptFile, "utf8"));
+          currentReceipt.installed_entries = [
+            ...stable.binPaths.map((p) => ({ path: p, kind: "file" })),
+            ...stable.menuPaths.map((p) => ({ path: p, kind: "start_menu" })),
+          ];
+          if (pathAdded) currentReceipt.path_added = pathAdded;
+          atomicWrite(receiptFile, JSON.stringify(currentReceipt, null, 2));
+        }
+      } catch {
+        /* best-effort */
       }
     }
 
@@ -1035,7 +1077,7 @@ export async function runInstaller(
     const probeIds = [
       ...new Set([...tools, ...selectedRoleAdapters]),
     ] as SupportedAdapterId[];
-    let toolsReady = tools.length === 0;
+    let toolsReady = true;
     for (const adapterId of probeIds) {
       if (!SupportedAdapters.includes(adapterId)) continue;
       const probe = await registry.mustGet(adapterId).probe({

@@ -170,6 +170,7 @@ const CompatibilitySchema = z
         qoder: ToolSchema,
         opencode: ToolSchema,
         "cursor-agent": ToolSchema,
+        "mimo-code": ToolSchema,
       })
       .strict(),
     agy_accounts: z
@@ -370,7 +371,7 @@ describe("compatibility.json schema (DFP-08)", () => {
 
   it("UT-COMPAT-05: does not raise tool or platform verification levels", () => {
     const parsed = CompatibilitySchema.parse(doc);
-    expect(Object.keys(parsed.tools)).toHaveLength(8);
+    expect(Object.keys(parsed.tools)).toHaveLength(9);
     for (const tool of Object.values(parsed.tools)) {
       expect(tool.status).toBe("adapter_implemented");
       expect(tool.live_workflow_verified).toBe(false);

@@ -247,6 +247,7 @@ export class Engine {
     return new QualityCoordinator(this.store);
   }
   runtime?: Runtime;
+  maintenanceBlocked: boolean = false;
   pauseTree?: (
     workflowId: string,
     request: ConversationControlRequest,
@@ -259,6 +260,12 @@ export class Engine {
   private clearNetworkRetryTimer(key: string) {
     clearTimeout(this.networkRetryTimers.get(key));
     this.networkRetryTimers.delete(key);
+  }
+  hasActiveRuns(): boolean {
+    return this.running.size > 0;
+  }
+  getActiveWorkflowIds(): string[] {
+    return Array.from(this.running);
   }
   async waitForIdle(key: string) {
     const deadline = Date.now() + 30000;
@@ -3066,7 +3073,7 @@ export class Engine {
   }
 
   async dispatch() {
-    if (this.dispatching || !this.runtime) return;
+    if (this.maintenanceBlocked || this.dispatching || !this.runtime) return;
     this.dispatching = true;
     try {
       await this.consumeOutbox();

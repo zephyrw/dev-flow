@@ -21,15 +21,21 @@ import {
 } from "node:fs";
 import { dirname, join, resolve, sep, relative, isAbsolute, basename } from "node:path";
 import { homedir, tmpdir } from "node:os";
+import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { hash } from "../../core/src/util.js";
 import { getNativeAsync, getWindowsNative } from "../../process/src/native/index.js";
 import { atomicWrite } from "../../core/src/util.js";
 
-export const ENTRY_TEMPLATE_PATH = join(
-  dirname(fileURLToPath(import.meta.url)),
-  "entry-template.mjs",
-);
+export function resolveEntryTemplatePath(): string {
+  const distPath = join(dirname(fileURLToPath(import.meta.url)), "entry-template.mjs");
+  if (existsSync(distPath)) return distPath;
+  const srcPath = resolve("packages/installer/src/entry-template.mjs");
+  if (existsSync(srcPath)) return srcPath;
+  return distPath;
+}
+
+export const ENTRY_TEMPLATE_PATH = resolveEntryTemplatePath();
 
 export const PATH_BLOCK_START = "# >>> devflow managed PATH >>>";
 export const PATH_BLOCK_END = "# <<< devflow managed PATH <<<";
@@ -214,16 +220,18 @@ export function installBootstrapRuntime(
   try {
     const temp = targetNode + ".tmp-" + hash(String(Date.now())).slice(0, 8);
     copyFileSync(options.sourceNode, temp);
-    // Validate the copied binary is usable before swap.
+    let backupOld: string | null = null;
     if (existsSync(targetNode)) {
+      backupOld = targetNode + ".old-" + hash(String(Date.now())).slice(0, 8);
       try {
-        rmSync(targetNode, { force: true });
+        renameSync(targetNode, backupOld);
       } catch (error: any) {
         if (
           options.deferReplaceOnBusy &&
           ["EPERM", "EBUSY", "EACCES"].includes(error?.code)
         ) {
           deferred = true;
+          backupOld = null;
         } else {
           try {
             rmSync(temp, { force: true });
@@ -233,10 +241,41 @@ export function installBootstrapRuntime(
       }
     }
     if (!deferred) {
-      renameSync(temp, targetNode);
+      try {
+        renameSync(temp, targetNode);
+        if (backupOld && existsSync(backupOld)) {
+          try {
+            rmSync(backupOld, { force: true });
+          } catch {}
+        }
+      } catch (swapErr) {
+        // Rollback from backup if available
+        if (backupOld && existsSync(backupOld)) {
+          try {
+            renameSync(backupOld, targetNode);
+          } catch {}
+        }
+        try {
+          rmSync(temp, { force: true });
+        } catch {}
+        throw swapErr;
+      }
     } else {
-      atomicWrite(join(layout.bootstrapDir, "node-pending.bin"), "");
-      rmSync(temp, { force: true });
+      // Preserve candidate binary and metadata for safe deferred replacement
+      const candidatePath = join(layout.bootstrapDir, "node-candidate.bin");
+      renameSync(temp, candidatePath);
+      atomicWrite(
+        join(layout.bootstrapDir, "node-pending.json"),
+        JSON.stringify(
+          {
+            candidate: candidatePath,
+            target: targetNode,
+            created_at: new Date().toISOString(),
+          },
+          null,
+          2,
+        ),
+      );
     }
     if (process.platform !== "win32" && existsSync(targetNode)) {
       try {
@@ -347,23 +386,26 @@ export function writeStableEntry(
       }
     }
 
-    const appsDir = join(home, ".local", "share", "applications");
-    mkdirSync(appsDir, { recursive: true });
-    const desktop = join(appsDir, "devflow.desktop");
-    atomicWrite(
-      desktop,
-      [
-        "[Desktop Entry]",
-        "Type=Application",
-        "Name=DevFlow",
-        "Comment=DevFlow AI development workflow",
-        "Exec=" + shPath,
-        "Terminal=false",
-        "Categories=Development;",
-        "",
-      ].join("\n"),
-    );
-    menuPaths.push(desktop);
+    if (process.platform === "linux") {
+      const appsDir = join(home, ".local", "share", "applications");
+      mkdirSync(appsDir, { recursive: true });
+      const desktop = join(appsDir, "devflow.desktop");
+      const escapedShPath = shPath.includes(" ") ? `"${shPath}"` : shPath;
+      atomicWrite(
+        desktop,
+        [
+          "[Desktop Entry]",
+          "Type=Application",
+          "Name=DevFlow",
+          "Comment=DevFlow AI development workflow",
+          "Exec=" + escapedShPath,
+          "Terminal=false",
+          "Categories=Development;",
+          "",
+        ].join("\n"),
+      );
+      menuPaths.push(desktop);
+    }
   }
 
   return {
@@ -479,6 +521,62 @@ export interface WindowsPathUpdate {
   preservedEntries: number;
 }
 
+export function readWindowsUserPathFromRegistry(): string | undefined {
+  if (process.platform !== "win32") return undefined;
+  try {
+    const out = execFileSync(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "[Environment]::GetEnvironmentVariable('Path', 'User')",
+      ],
+      { encoding: "utf8", windowsHide: true, timeout: 5000 },
+    );
+    return out.trim();
+  } catch {
+    try {
+      const out = execFileSync(
+        "reg.exe",
+        ["query", "HKCU\\Environment", "/v", "Path"],
+        { encoding: "utf8", windowsHide: true, timeout: 5000 },
+      );
+      const match = out.match(/Path\s+REG_(?:EXPAND_)?SZ\s+(.*)/i);
+      return match && match[1] ? match[1].trim() : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+}
+
+export function writeWindowsUserPathToRegistry(newPath: string): void {
+  if (process.platform !== "win32") return;
+  try {
+    execFileSync(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        `[Environment]::SetEnvironmentVariable('Path', $args[0], 'User')`,
+        newPath,
+      ],
+      { encoding: "utf8", windowsHide: true, timeout: 8000 },
+    );
+  } catch {
+    try {
+      execFileSync(
+        "reg.exe",
+        ["add", "HKCU\\Environment", "/v", "Path", "/t", "REG_EXPAND_SZ", "/d", newPath, "/f"],
+        { encoding: "utf8", windowsHide: true, timeout: 5000 },
+      );
+    } catch {
+      /* best-effort */
+    }
+  }
+}
+
 /**
  * Append the managed bin to the user PATH (HKCU), preserving every existing
  * entry and never touching machine-level PATH.
@@ -500,7 +598,7 @@ export function appendWindowsUserPath(
   return {
     changed: result.changed,
     value: result.value,
-    preservedEntries: result.changed ? preservedEntries : preservedEntries,
+    preservedEntries,
   };
 }
 
@@ -510,7 +608,11 @@ export function appendWindowsUserPath(
  */
 export function registerUserPathWindows(
   installRoot: string,
-): { conflictCommands: string[]; changed: boolean } {
+  options?: {
+    readUserPath?: () => string | undefined;
+    writeUserPath?: (value: string) => void;
+  },
+): { conflictCommands: string[]; changed: boolean; addedPath?: string } {
   const binDir = resolveLayout(installRoot).binDir;
   const conflictCommands: string[] = [];
   const pathValue = process.env.PATH ?? "";
@@ -524,7 +626,16 @@ export function registerUserPathWindows(
       if (existsSync(c)) conflictCommands.push(c);
     }
   }
-  return { conflictCommands, changed: false };
+
+  const readFn = options?.readUserPath ?? readWindowsUserPathFromRegistry;
+  const writeFn = options?.writeUserPath ?? writeWindowsUserPathToRegistry;
+  const update = appendWindowsUserPath(binDir, readFn, writeFn);
+
+  return {
+    conflictCommands,
+    changed: update.changed,
+    addedPath: update.changed ? binDir : undefined,
+  };
 }
 
 // ── Install transaction ownership (two installers must not interleave) ──

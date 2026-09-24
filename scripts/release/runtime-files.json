@@ -139,12 +139,12 @@
     },
     {
       "path": "node_modules/koffi/package.json",
-      "category": "native",
+      "category": "app",
       "required": true
     },
     {
       "path": "node_modules/better-sqlite3/package.json",
-      "category": "native",
+      "category": "app",
       "required": true
     },
     {
@@ -264,28 +264,38 @@
       "required": true
     },
     {
+      "path": "dist/packages/installer/src/entry-template.mjs",
+      "category": "app",
+      "required": true
+    },
+    {
       "path": "dist/packages",
+      "kind": "directory",
       "category": "app",
       "required": true
     },
     {
       "path": "dist/apps",
+      "kind": "directory",
       "category": "app",
       "required": true
     },
     {
       "path": "dist/web",
+      "kind": "directory",
       "category": "app",
       "required": true
     },
     {
       "path": "packages/skills",
+      "kind": "directory",
       "category": "skills",
       "required": true
     },
     {
       "path": "node_modules",
-      "category": "native",
+      "kind": "directory",
+      "category": "app",
       "required": true
     }
   ]

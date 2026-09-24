@@ -1,16 +1,40 @@
 import { it, expect } from "vitest";
 import { resolve, join } from "node:path";
 import { existsSync, writeFileSync, readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { ProcessManager } from "../../packages/process/src/manager.js";
 import { setup } from "../helpers.js";
 import { acquireControllerLock } from "../../packages/process/src/controller-lock.js";
 import { vi } from "vitest";
+
+function resolvePowerShell(): string | null {
+  const checkPwsh = spawnSync("pwsh", ["-NoProfile", "-Command", "$PSVersionTable.PSVersion.Major"], { encoding: "utf8" });
+  if (!checkPwsh.error && checkPwsh.status === 0) return "pwsh";
+  if (process.platform === "win32") {
+    const localAppData = process.env.LOCALAPPDATA;
+    if (localAppData) {
+      const localPwsh = join(localAppData, "Programs", "PowerShell", "7", "pwsh.exe");
+      if (existsSync(localPwsh)) return localPwsh;
+    }
+    const programFiles = process.env.ProgramFiles;
+    if (programFiles) {
+      const pfPwsh = join(programFiles, "PowerShell", "7", "pwsh.exe");
+      if (existsSync(pfPwsh)) return pfPwsh;
+    }
+    const sysRoot = process.env.SystemRoot ?? "C:\\Windows";
+    const winPs = join(sysRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+    if (existsSync(winPs)) return winPs;
+    return "powershell.exe";
+  }
+  return null;
+}
+
 it("managed PowerShell executes a batch program with Windows runtime variables while secrets stay excluded", async () => {
+  const shell = resolvePowerShell();
+  if (!shell || process.platform !== "win32") return;
   const s = setup(),
     manager = new ProcessManager();
   const batch = join(s.root, "probe.cmd");
-  const shell =
-    "C:/Users/yckj4798/.cache/codex-runtimes/codex-primary-runtime/dependencies/native/powershell/pwsh.exe";
   writeFileSync(batch, "@echo off\r\necho batch-really-ran\r\nexit /b 7\r\n");
   vi.stubEnv("DEVFLOW_PRIVATE_SECRET", "must-not-leak");
   vi.stubEnv("JAVA_HOME", "C:\\synthetic-java-runtime");

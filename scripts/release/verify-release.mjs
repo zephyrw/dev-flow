@@ -25,6 +25,7 @@ import {
   validateRuntimeFiles,
   validateBootstrapAssets,
   sha256File,
+  resolveTarCommand,
 } from "./release-lib.mjs";
 
 export function verifyPackageDirectory(pkgDir, options = {}) {
@@ -64,7 +65,11 @@ export function verifyReleaseArchive(archivePath, options = {}) {
 
   const temp = mkdtempSync(join(tmpdir(), "devflow-verify-archive-"));
   try {
-    execFileSync("tar", ["-xzf", abs, "-C", temp], { windowsHide: true });
+    const tar = resolveTarCommand();
+    const tarArgs = tar.forceLocal
+      ? ["--force-local", "-xzf", abs, "-C", temp]
+      : ["-xzf", abs, "-C", temp];
+    execFileSync(tar.command, tarArgs, { windowsHide: true });
     const payload = join(temp, "devflow");
     const target = existsSync(payload) ? payload : temp;
     return verifyPackageDirectory(target, options);

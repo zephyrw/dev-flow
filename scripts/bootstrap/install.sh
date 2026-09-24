@@ -14,7 +14,7 @@
 #  50  SERVICE_UNHEALTHY
 set -eu
 
-DEVFLOW_RELEASE_TAG="__DEVFLOW_RELEASE_TAG__"
+DEVFLOW_RELEASE_TAG="@DEVFLOW_TAG@"
 # First-release public matrix (plan §5.5). Unknown / 32-bit / linux-arm64 rejected.
 DEVFLOW_SUPPORTED_TARGETS="darwin-x64 darwin-arm64 linux-x64"
 MANIFEST_MAX_BYTES=65536
@@ -164,7 +164,10 @@ assert_supported_target() {
 }
 
 is_placeholder_tag() {
-  [ "$1" = "__DEVFLOW_RELEASE_TAG__" ] || [ -z "$1" ]
+  case "$1" in
+    "" | *"@"*"@"* | *"__"*"__"*) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 is_prerelease_tag() {
@@ -486,6 +489,8 @@ run_installer_and_map_exit() {
   [ -n "$executor_tool" ] && set -- "$@" --executor-tool "$executor_tool"
   [ -n "$executor_model" ] && set -- "$@" --executor-model "$executor_model"
   [ -n "$executor_effort" ] && set -- "$@" --executor-effort "$executor_effort"
+  [ "$no_open" -eq 1 ] && set -- "$@" --no-open
+  [ "$require_ready" -eq 1 ] && set -- "$@" --require-ready
 
   set +e
   _out=$("$node_bin" "$_entry" "$@" 2>&1)

@@ -44,13 +44,13 @@ irm -ErrorAction Stop https://github.com/zephyrw/dev-flow/releases/latest/downlo
 
 ## 试试第一个任务
 
-当前已验证的使用入口是 **Codex**：在 Codex 中打开你要修改的项目，新建任务并输入：
+当前文档以 **Codex** 为流程示例入口：在 Codex 中打开你要修改的项目，新建任务并输入：
 
 > 用 DevFlow 帮我修复客户列表筛选的问题：选择负责人后，列表没有变化。请先给我计划，等我确认后再开始修改。
 
 在工作台确认计划后，继续查看开发与测试过程。发现问题可反馈修复，功能符合预期后再确认验收。
 
-更完整的步骤（计划审批、授权、暂停与反馈、验收、恢复）见 [使用指南](docs/guide/使用指南.md)。其他编程助手已有适配层，但真实工作流尚未逐项认证，详见 [客户端兼容性](docs/guide/客户端兼容性.md)；不要把未验证路线当成与 Codex 同级的完整可用入口。
+更完整的步骤（计划审批、授权、暂停与反馈、验收、恢复）见 [使用指南](docs/guide/使用指南.md)。其他编程助手已有适配层接入，但真实工作流尚未逐项全量认证，详见 [客户端兼容性](docs/guide/客户端兼容性.md)；不要把未验证路线当成与 Codex 同级的完整可用入口。
 
 ## 从需求到验收
 
@@ -81,7 +81,7 @@ flowchart LR
 
 ## 工具与系统支持
 
-**编程助手（八种）**：Codex、Antigravity CLI（agy）、Claude Code、Cursor Agent、Kimi Code、Grok Build、Qoder、OpenCode 均有适配已实现；**真实工作流未认证**（`live_workflow_verified: false`）。发现客户端 ≠ 已完成真实模型任务。当前文档以 **Codex** 为已验证入口。
+**编程助手支持（九种适配实现）**：Codex、Antigravity CLI（agy）、Claude Code、Cursor Agent、Kimi Code、MiMo Code、Grok Build、Qoder、OpenCode 均已实现适配接入；各工具的端到端真实任务执行需结合你的本地环境与官方登录进行核实（`live_workflow_verified` 状态以各平台回归为准）。发现客户端 ≠ 已授权访问 ≠ 已完成真实模型任务。文档示例默认以 **Codex** CLI 交互演示。
 
 **平台**：`win32-x64` 为本地回归已测（`local_regression_tested`）；`win32-arm64`、`darwin-x64`、`darwin-arm64`、`linux-x64`、`linux-arm64` 为 `unverified`。矩阵与证据类型见 [客户端兼容性](docs/guide/客户端兼容性.md) 与仓库根目录 `compatibility.json`。
 

@@ -251,9 +251,13 @@ function restoreOwnedFile(
 ): "restored" | "removed" | "user_modified_preserved" | "missing_backup" | "left" {
   const current = fileDigest(livePath);
   if (current === undefined) return "missing_backup";
-  const owned =
-    (ownedAfterHash && current === ownedAfterHash) ||
-    (created && beforeHash == null);
+  // Strict ownership: file must match recorded after-hash or match recorded state
+  let owned = false;
+  if (ownedAfterHash) {
+    owned = current === ownedAfterHash;
+  } else if (!created && beforeHash) {
+    owned = current === beforeHash;
+  }
   if (!owned) return "user_modified_preserved";
   if (backupPath && existsSync(backupPath)) {
     copyFileSync(backupPath, livePath);
@@ -493,7 +497,8 @@ export function planUninstallRetention(options: {
   for (const vault of options.accountVaultPaths ?? [])
     keep.push({ path: vault, reason: "account_vault_default_keep" });
   if (options.includeTaskData && options.storageRoot) {
-    keep.pop();
+    const idx = keep.findIndex((e) => e.path === options.storageRoot);
+    if (idx >= 0) keep.splice(idx, 1);
     consent.push({
       path: options.storageRoot,
       reason: "task_data_requires_explicit_consent",

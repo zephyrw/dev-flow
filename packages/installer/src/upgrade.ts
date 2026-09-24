@@ -4,6 +4,7 @@ import {
   mkdirSync,
   readFileSync,
   copyFileSync,
+  renameSync,
   rmSync,
   readdirSync,
   statSync,
@@ -126,6 +127,10 @@ export class UpgradeManager {
       "package.json",
       "build-info.json",
       "compatibility.json",
+      "dist/apps/api/src/main.js",
+      "dist/packages/process/src/runner-entry.js",
+      "dist/packages/service/src/launcher.js",
+      "dist/packages/cli/src/main.js",
     ];
     const present = identityFiles.filter((p) => existsSync(join(source, p)));
     if (!present.length)
@@ -158,21 +163,30 @@ export class UpgradeManager {
         "UPGRADE_TARGET_DIR_CONFLICT: 目标版本目录已存在但缺少收据，拒绝覆盖",
       );
 
-    mkdirSync(targetDir, { recursive: true });
-    copyTreeShallow(source, targetDir);
-    atomicWrite(
-      receiptPath,
-      JSON.stringify(
-        {
-          version: meta.targetVersion,
-          digest,
-          source: "prepareCandidate",
-          created_at: now(),
-        },
-        null,
-        2,
-      ),
-    );
+    const staging = targetDir + ".staging." + hash(String(Date.now())).slice(0, 8);
+    mkdirSync(staging, { recursive: true });
+    try {
+      copyTreeFull(source, staging);
+      atomicWrite(
+        join(staging, "install-source.json"),
+        JSON.stringify(
+          {
+            version: meta.targetVersion,
+            digest,
+            source: "prepareCandidate",
+            created_at: now(),
+          },
+          null,
+          2,
+        ),
+      );
+      renameSync(staging, targetDir);
+    } catch (error) {
+      try {
+        rmSync(staging, { recursive: true, force: true });
+      } catch {}
+      throw error;
+    }
     return { targetDir, digest };
   }
 
@@ -385,7 +399,10 @@ export class UpgradeManager {
           );
         }
       }
-      recordTransactionPhase(installRoot, tx.id, "migrating");
+      let config_digest_after = digestFile(configPath);
+      recordTransactionPhase(installRoot, tx.id, "migrating", {
+        config_digest_after,
+      });
 
       // Managed client changes (U-08): each with before/after hash + backup.
       const clientChanges: ManagedClientChange[] = [];
@@ -405,6 +422,10 @@ export class UpgradeManager {
           status: "applied",
           note: applied?.note,
         });
+        // Immediately persist client change progress so SafeAbort can restore partial changes (DFP-R10)
+        recordTransactionPhase(installRoot, tx.id, "migrating", {
+          managed_client_changes: [...clientChanges],
+        });
         // Leave no entry pointing at a nonexistent version (U-08).
         if (after_hash && targetDir && change.checkTargetRef) {
           const text = readFileSync(change.path, "utf8");
@@ -416,12 +437,21 @@ export class UpgradeManager {
       }
 
       // Pointer write: after this, business state may become writable.
+      let resolvedNode = options.nodePath;
+      if (!resolvedNode) {
+        const binName = process.platform === "win32" ? "node.exe" : "node";
+        const inVersion = join(targetDir, "runtime", binName);
+        const inBootstrap = join(installRoot, "bootstrap", "runtime", binName);
+        if (existsSync(inVersion)) resolvedNode = inVersion;
+        else if (existsSync(inBootstrap)) resolvedNode = inBootstrap;
+        else resolvedNode = process.execPath;
+      }
       const pointerMeta = {
         version: options.targetVersion,
         application_version: options.targetVersion,
         root: targetDir,
         config: configPath,
-        node: options.nodePath ?? join(targetDir, "node", "node.exe"),
+        node: resolvedNode,
         build_revision: digest,
         updated_at: now(),
       };
@@ -429,7 +459,7 @@ export class UpgradeManager {
         throw new Error("UPGRADE_POINTER_WRITE_FAILED");
       new_state_write_possible = true;
       const pointer_digest_after = digestFile(pointerPath);
-      const config_digest_after = digestFile(configPath);
+      config_digest_after = digestFile(configPath);
       recordTransactionPhase(installRoot, tx.id, "starting", {
         new_state_write_possible: true,
         managed_client_changes: clientChanges,
@@ -444,7 +474,7 @@ export class UpgradeManager {
       }
       if (options.startTargetService) {
         const started = await options.startTargetService();
-        if (!started.ok)
+        if (!started || !started.ok)
           throw new Error("UPGRADE_TARGET_START_FAILED: 目标版本服务启动失败");
         if (
           started.application_version &&
@@ -453,6 +483,33 @@ export class UpgradeManager {
           throw new Error(
             `UPGRADE_TARGET_VERSION_MISMATCH: 服务报告 ${started.application_version} != ${options.targetVersion}`,
           );
+      } else if (options.serviceOrigin) {
+        let verifiedHealth = false;
+        for (let i = 0; i < 20; i++) {
+          try {
+            const healthResp = await fetch(new URL("/api/health", options.serviceOrigin), {
+              signal: AbortSignal.timeout(1500),
+            });
+            if (healthResp.ok) {
+              const body = (await healthResp.json()) as Record<string, unknown>;
+              if (body.service === "devflow") {
+                const liveVersion = body.application_version ?? body.version;
+                if (liveVersion && liveVersion === options.targetVersion) {
+                  verifiedHealth = true;
+                  break;
+                }
+              }
+            }
+          } catch {
+            /* retry */
+          }
+          await new Promise((r) => setTimeout(r, 200));
+        }
+        if (!verifiedHealth) {
+          throw new Error(
+            `UPGRADE_TARGET_HEALTH_FAILED: 无法验证目标版本 ${options.targetVersion} 服务健康接口`,
+          );
+        }
       }
 
       phase = "verified";
@@ -599,7 +656,7 @@ shell.Run "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden
 // ---------------------------------------------------------------------------
 
 export interface UpgradeResult {
-  status: "verified" | "safe_abort" | "recovery_required";
+  status: "verified" | "safe_abort" | "recovery_required" | "no_update" | "blocked";
   transaction_id?: string;
   phase: UpgradePhase;
   target_version: string;
@@ -622,6 +679,7 @@ export interface UpgradeStateMachineOptions {
   configPath?: string;
   sqlitePath?: string;
   nodePath?: string;
+  serviceOrigin?: string;
   sourceVersion?: string;
   sourceDigest?: string;
   timeoutMs?: number;
@@ -733,16 +791,16 @@ export function listSafeOldVersions(
   return results;
 }
 
-function copyTreeShallow(source: string, target: string): void {
+function copyTreeFull(source: string, target: string): void {
   for (const name of readdirSync(source)) {
-    if (name === "node_modules" || name === ".git" || name === "versions")
+    if (name === ".git" || name === "versions" || name.startsWith(".tmp-") || name.endsWith(".staging"))
       continue;
     const from = join(source, name);
     const to = join(target, name);
     const st = statSync(from);
     if (st.isDirectory()) {
       mkdirSync(to, { recursive: true });
-      copyTreeShallow(from, to);
+      copyTreeFull(from, to);
     } else copyFileSync(from, to);
   }
 }

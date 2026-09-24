@@ -12,20 +12,27 @@ import { homedir } from "node:os";
 import type { z } from "zod";
 import { requireCondition } from "../../contracts/src/index.js";
 import { INSTALL_EXIT_CODES } from "../../installer/src/state.js";
+import {
+  resolveInstallationContext,
+  type InstallationContext,
+} from "../../installer/src/context.js";
 
 const args = process.argv.slice(2);
 const command = args[0] && !args[0].startsWith("-") ? args[0] : args[0] === "help" ? "help" : args[0];
 
-function installationRoot(): string {
-  if (process.env.DEVFLOW_INSTALL_ROOT) return resolve(process.env.DEVFLOW_INSTALL_ROOT);
-  // dist/packages/cli/src/main.js → version/package root
-  return resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
+let cachedContext: InstallationContext | null = null;
+function getInstallationContext(): InstallationContext {
+  if (!cachedContext) {
+    cachedContext = resolveInstallationContext();
+  }
+  return cachedContext;
 }
 
 function readBuildVersion(): string {
+  const ctx = getInstallationContext();
   try {
     const info = JSON.parse(
-      readFileSync(join(installationRoot(), "build-info.json"), "utf8"),
+      readFileSync(join(ctx.versionRoot, "build-info.json"), "utf8"),
     );
     if (info.application_version) return String(info.application_version);
   } catch {
@@ -33,17 +40,19 @@ function readBuildVersion(): string {
   }
   try {
     const pkg = JSON.parse(
-      readFileSync(join(installationRoot(), "package.json"), "utf8"),
+      readFileSync(join(ctx.versionRoot, "package.json"), "utf8"),
     );
     if (pkg.version) return String(pkg.version);
   } catch {
     /* fall through */
   }
   try {
-    const pkg = JSON.parse(
-      readFileSync(join(installationRoot(), "..", "package.json"), "utf8"),
+    const pointer = JSON.parse(
+      readFileSync(join(ctx.installRoot, "current.json"), "utf8"),
     );
-    if (pkg.version) return String(pkg.version);
+    if (pointer.application_version || pointer.version) {
+      return String(pointer.application_version ?? pointer.version);
+    }
   } catch {
     /* fall through */
   }
@@ -51,11 +60,20 @@ function readBuildVersion(): string {
 }
 
 function readBuildRevision(): string {
+  const ctx = getInstallationContext();
   try {
     const info = JSON.parse(
-      readFileSync(join(installationRoot(), "build-info.json"), "utf8"),
+      readFileSync(join(ctx.versionRoot, "build-info.json"), "utf8"),
     );
     if (info.build_revision) return String(info.build_revision);
+  } catch {
+    /* ignore */
+  }
+  try {
+    const pointer = JSON.parse(
+      readFileSync(join(ctx.installRoot, "current.json"), "utf8"),
+    );
+    if (pointer.build_revision) return String(pointer.build_revision);
   } catch {
     /* ignore */
   }
@@ -104,8 +122,9 @@ function printVersion(): void {
 }
 
 async function loadConfigSafe() {
+  const ctx = getInstallationContext();
   const { loadConfig } = await import("../../contracts/src/config.js");
-  return loadConfig(process.env.DEVFLOW_CONFIG);
+  return loadConfig(ctx.configPath);
 }
 
 async function commandOpen(): Promise<number> {
@@ -117,17 +136,14 @@ async function commandOpen(): Promise<number> {
 }
 
 async function commandStatus(): Promise<number> {
-  const root = installationRoot();
-  const installRoot =
-    process.env.DEVFLOW_INSTALL_ROOT ??
-    (existsSync(join(root, "current.json")) ? root : join(homedir(), ".local", "share", "devflow"));
+  const ctx = getInstallationContext();
   let installedVersion = "未安装";
   let runningVersion = "未运行";
   let setupStatus = "unknown";
   let runningRevision = "";
   try {
     const pointer = JSON.parse(
-      readFileSync(join(installRoot, "current.json"), "utf8"),
+      readFileSync(join(ctx.installRoot, "current.json"), "utf8"),
     );
     installedVersion = String(pointer.application_version ?? pointer.version ?? "unknown");
   } catch {
@@ -135,15 +151,14 @@ async function commandStatus(): Promise<number> {
   }
   try {
     const state = JSON.parse(
-      readFileSync(join(installRoot, "state.json"), "utf8"),
+      readFileSync(join(ctx.installRoot, "state.json"), "utf8"),
     );
     setupStatus = state?.result?.setup?.status ?? state?.result?.software?.status ?? "unknown";
   } catch {
     /* keep */
   }
   try {
-    const { loadConfig } = await import("../../contracts/src/config.js");
-    const config = loadConfig(process.env.DEVFLOW_CONFIG);
+    const config = await loadConfigSafe();
     const response = await fetch(
       `http://127.0.0.1:${config.server.port}/api/health`,
       { signal: AbortSignal.timeout(1200), redirect: "error" },
@@ -174,12 +189,14 @@ async function commandStatus(): Promise<number> {
 }
 
 async function commandDoctor(): Promise<number> {
-  const root = installationRoot();
+  const ctx = getInstallationContext();
   const result: Record<string, unknown> = {
     node: process.version,
     platform: process.platform,
     arch: process.arch,
-    installation: root,
+    install_root: ctx.installRoot,
+    version_root: ctx.versionRoot,
+    config_path: ctx.configPath,
     checks: [] as unknown[],
   };
   const checks = result.checks as unknown[];
@@ -200,14 +217,25 @@ async function commandDoctor(): Promise<number> {
     "dist/packages/cli/src/main.js",
   ];
   for (const file of requiredFiles) {
-    add("file:" + file, existsSync(join(root, file)));
+    add("file:" + file, existsSync(join(ctx.versionRoot, file)));
   }
   const bundledNode = join(
-    root,
+    ctx.versionRoot,
     "runtime",
     process.platform === "win32" ? "node.exe" : "node",
   );
-  add("bundled-node", existsSync(bundledNode), bundledNode);
+  const bootstrapNode = join(
+    ctx.installRoot,
+    "bootstrap",
+    "runtime",
+    process.platform === "win32" ? "node.exe" : "node",
+  );
+  const hasNode = existsSync(bundledNode) || existsSync(bootstrapNode);
+  add(
+    "bundled-node",
+    hasNode,
+    existsSync(bundledNode) ? bundledNode : existsSync(bootstrapNode) ? bootstrapNode : undefined,
+  );
 
   try {
     const native = await import("../../process/src/native/index.js");
@@ -228,8 +256,7 @@ async function commandDoctor(): Promise<number> {
 
   // Service health is read-only; never logs in, switches accounts, or probes quotas.
   try {
-    const { loadConfig } = await import("../../contracts/src/config.js");
-    const config = loadConfig(process.env.DEVFLOW_CONFIG);
+    const config = await loadConfigSafe();
     result.storage = config.storage_root;
     const response = await fetch(
       `http://127.0.0.1:${config.server.port}/api/health`,
@@ -304,16 +331,19 @@ function processAlive(pid: number): boolean {
 
 async function commandStop(): Promise<number> {
   // Only stop processes this installation owns. Never taskkill /IM node.exe.
+  const ctx = getInstallationContext();
   const config = await loadConfigSafe();
-  const root = installationRoot();
-  const record = readControllerRecord(config.storage_root);
+  const storageRoot = config?.storage_root
+    ? resolve(dirname(ctx.configPath), config.storage_root)
+    : ctx.storageRoot;
+  const record = readControllerRecord(storageRoot);
   if (!record) {
     console.log("没有正在运行的 DevFlow 服务记录。");
     return INSTALL_EXIT_CODES.SUCCESS;
   }
   const expectedEntries = [
-    join(root, "dist", "apps", "api", "src", "main.js"),
-    join(root, "dist", "apps", "api", "src", "accounts-main.js"),
+    join(ctx.versionRoot, "dist", "apps", "api", "src", "main.js"),
+    join(ctx.versionRoot, "dist", "apps", "api", "src", "accounts-main.js"),
   ].map((p) => resolve(p));
   const recordEntry = resolve(record.entry);
   if (!expectedEntries.includes(recordEntry)) {
@@ -327,24 +357,56 @@ async function commandStop(): Promise<number> {
   // Identity re-check: refuse recycled PIDs when creation time is known.
   try {
     const native = await import("../../process/src/native/index.js");
-    await native.getNativeAsync();
-    const mod = await import("../../process/src/native/index.js");
-    const anyNative = await mod.getNativeAsync();
+    const anyNative = await native.getNativeAsync();
     if ("getProcessCreationTime" in anyNative) {
       const creation = (anyNative as any).getProcessCreationTime(record.pid);
       if (creation != null && record.started) {
-        // Compare only when both sides provide comparable timestamps.
-        // A mismatch means the PID was reused — refuse to kill.
         const expected = String(record.started);
         if (creation && expected && !String(creation).includes(expected.slice(0, 10))) {
-          // Soft check: native creation formats differ across platforms; only
-          // refuse when we can positively detect reuse via executable path.
+          console.error("进程 PID 属于已复用的外部进程，拒绝停止。");
+          return INSTALL_EXIT_CODES.CONFIGURATION_CONFLICT;
         }
       }
     }
   } catch {
     /* native optional for stop */
   }
+
+  // Graceful stop via local protocol first
+  let stoppedGracefully = false;
+  try {
+    if (config?.server?.port) {
+      const shutdownResp = await fetch(
+        `http://127.0.0.1:${config.server.port}/api/maintenance/quiesce`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            origin: config.server.human_origin ?? `http://127.0.0.1:${config.server.port}`,
+          },
+          body: JSON.stringify({ on_active_tasks: "wait" }),
+          signal: AbortSignal.timeout(3000),
+        },
+      ).catch(() => undefined);
+      if (shutdownResp?.ok) {
+        for (let i = 0; i < 40; i++) {
+          if (!processAlive(record.pid)) {
+            stoppedGracefully = true;
+            break;
+          }
+          await new Promise((r) => setTimeout(r, 100));
+        }
+      }
+    }
+  } catch {
+    /* fallback to signal */
+  }
+
+  if (stoppedGracefully || !processAlive(record.pid)) {
+    console.log("DevFlow 服务已停止。");
+    return INSTALL_EXIT_CODES.SUCCESS;
+  }
+
   try {
     process.kill(record.pid, "SIGTERM");
     for (let i = 0; i < 30; i++) {
@@ -363,111 +425,182 @@ async function commandStop(): Promise<number> {
   }
 }
 
-/**
- * F-stream UpgradeManager maintenance surface. Methods may still be under
- * integration; missing methods fail with a clear alignment error.
- */
-function asUpgradeMaintenanceApi(manager: any): {
-  requestMaintenance(): Promise<unknown>;
-  waitForQuiescent(options: { onActiveTasks: "wait" | "error" }): Promise<unknown>;
-  prepareCandidate(input: {
-    sourceDir: string;
-    targetVersion: string;
-  }): Promise<{ targetDir: string; digest: string }>;
-  runUpgradeStateMachine(input: {
-    targetDir: string;
-    digest: string;
-  }): Promise<unknown>;
-} {
-  for (const name of [
-    "requestMaintenance",
-    "waitForQuiescent",
-    "prepareCandidate",
-    "runUpgradeStateMachine",
-  ] as const) {
-    if (typeof manager?.[name] !== "function") {
-      throw new Error(
-        "升级维护接口尚未对齐（缺少 " + name + "），请与维护交接流集成后再执行更新。",
-      );
+async function commandUpdate(): Promise<number> {
+  const ctx = getInstallationContext();
+  const { UpgradeManager } = await import("../../installer/src/upgrade.js");
+  const config = await loadConfigSafe();
+  const storageRoot = config?.storage_root
+    ? resolve(dirname(ctx.configPath), config.storage_root)
+    : ctx.storageRoot;
+  const serviceOrigin = config?.server?.human_origin ?? `http://127.0.0.1:${config?.server?.port ?? 4810}`;
+
+  let sourceDir = "";
+  let targetVersion = "";
+  for (let i = 1; i < args.length; i++) {
+    const val = args[i + 1];
+    if (args[i] === "--source" && typeof val === "string") {
+      sourceDir = resolve(val);
+      i++;
+    } else if (args[i] === "--version" && typeof val === "string") {
+      targetVersion = val;
+      i++;
     }
   }
-  return manager;
-}
 
-async function commandUpdate(): Promise<number> {
-  // Delegate to F-stream UpgradeManager maintenance protocol (§7).
-  const root = installationRoot();
-  const installRoot =
-    process.env.DEVFLOW_INSTALL_ROOT ??
-    (existsSync(join(root, "current.json")) ? root : join(homedir(), ".local", "share", "devflow"));
-  const { UpgradeManager } = await import("../../installer/src/upgrade.js");
-  let targetVersion = "unknown";
-  try {
-    const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
-    targetVersion = String(pkg.version);
-  } catch {
-    /* ignore */
+  const currentVersion = readBuildVersion();
+
+  if (!sourceDir) {
+    if (targetVersion && targetVersion === currentVersion) {
+      console.log(`当前已是目标版本 (${currentVersion})，无需更新。`);
+      return INSTALL_EXIT_CODES.SUCCESS;
+    }
+    if (!targetVersion) {
+      console.log(`当前已是最新版本 (${currentVersion})，未发现待安装的更新包。`);
+      return INSTALL_EXIT_CODES.SUCCESS;
+    }
+    throw new Error(`请使用 --source 指定更新包路径或通过正式安装脚本执行更新。`);
   }
+
+  if (!targetVersion) {
+    try {
+      const pkg = JSON.parse(readFileSync(join(sourceDir, "package.json"), "utf8"));
+      targetVersion = String(pkg.version);
+    } catch {
+      throw new Error(`候选目录缺少有效的 package.json: ${sourceDir}`);
+    }
+  }
+
   const manager = new UpgradeManager({
-    installDir: installRoot,
+    installDir: ctx.installRoot,
+    installRoot: ctx.installRoot,
+    storageRoot,
+    serviceOrigin,
     targetVersion,
   });
+
   try {
-    const api = asUpgradeMaintenanceApi(manager);
-    await api.requestMaintenance();
-    await api.waitForQuiescent({ onActiveTasks: "wait" });
-    const prepared = await api.prepareCandidate({
-      sourceDir: root,
+    const result = await manager.runUpgradeStateMachine({
+      sourceDir,
       targetVersion,
+      installRoot: ctx.installRoot,
+      storageRoot,
+      configPath: ctx.configPath,
+      nodePath: ctx.nodePath,
+      serviceOrigin,
+      onActiveTasks: "wait",
     });
-    await api.runUpgradeStateMachine({
-      targetDir: prepared.targetDir,
-      digest: prepared.digest,
-    });
-    console.log("更新完成。");
-    return INSTALL_EXIT_CODES.SUCCESS;
+
+    switch (result.status) {
+      case "verified":
+        console.log(`更新完成。已成功激活版本 ${result.target_version}。`);
+        return INSTALL_EXIT_CODES.SUCCESS;
+      case "no_update":
+        console.log(`当前已是最新版本 (${currentVersion})，无需更新。`);
+        return INSTALL_EXIT_CODES.SUCCESS;
+      case "blocked":
+        console.error(`更新被阻止：${result.error?.message ?? "存在运行中的活跃任务"}`);
+        return INSTALL_EXIT_CODES.NEEDS_USER_ACTION;
+      case "safe_abort":
+        console.error(`更新未完成并已安全撤销修改：${result.error?.message ?? "未知错误"}`);
+        return INSTALL_EXIT_CODES.DOWNLOAD_VERIFICATION_FAILED;
+      case "recovery_required":
+        console.error(`更新中断并保留现场，需进行恢复：${result.error?.message}`);
+        console.error("恢复动作建议：" + (result.recovery_actions.join(", ") || "请运行 devflow doctor"));
+        return INSTALL_EXIT_CODES.SERVICE_UNHEALTHY;
+      default:
+        console.error("更新返回未知状态。");
+        return INSTALL_EXIT_CODES.SERVICE_UNHEALTHY;
+    }
   } catch (error) {
-    console.error("更新未完成：" + String(error));
+    console.error("更新执行异常：" + String(error));
     return INSTALL_EXIT_CODES.DOWNLOAD_VERIFICATION_FAILED;
   }
 }
 
 async function commandUninstall(): Promise<number> {
-  // §7.6: remove app-owned entries only; keep projects, tasks, credentials.
-  const installRoot =
-    process.env.DEVFLOW_INSTALL_ROOT ??
-    join(homedir(), ".local", "share", "devflow");
+  const ctx = getInstallationContext();
+  const installRoot = ctx.installRoot;
   const binDir = join(installRoot, "bin");
+
   try {
-    if (process.platform === "win32") {
-      rmSync(join(binDir, "devflow.cmd"), { force: true });
-      const startMenu = join(
-        homedir(),
-        "AppData",
-        "Roaming",
-        "Microsoft",
-        "Windows",
-        "Start Menu",
-        "Programs",
-        "DevFlow",
-      );
-      rmSync(startMenu, { recursive: true, force: true });
-    } else {
-      rmSync(join(binDir, "devflow"), { force: true });
-      rmSync(join(homedir(), ".local", "bin", "devflow"), { force: true });
-      rmSync(
-        join(homedir(), ".local", "share", "applications", "devflow.desktop"),
-        { force: true },
-      );
-      const { removeShellPathBlock } = await import(
-        "../../installer/src/launchers.js"
-      );
-      const rc = join(
-        homedir(),
-        process.platform === "darwin" ? ".zshrc" : ".bashrc",
-      );
-      removeShellPathBlock(rc);
+    // 1. 先安全请求停机
+    await commandStop().catch(() => undefined);
+
+    // 2. 读取安装收据，仅移除收据记录的属于本实例的入口
+    let installedEntries: Array<{ path: string; kind?: string }> = [];
+    const currentPointerFile = join(installRoot, "current.json");
+    if (existsSync(currentPointerFile)) {
+      try {
+        const pointer = JSON.parse(readFileSync(currentPointerFile, "utf8"));
+        const versionRoot = pointer.root;
+        const receiptPath = join(versionRoot, "install-source.json");
+        if (existsSync(receiptPath)) {
+          const receipt = JSON.parse(readFileSync(receiptPath, "utf8"));
+          if (Array.isArray(receipt.installed_entries)) {
+            installedEntries = receipt.installed_entries;
+          }
+        }
+      } catch {
+        /* fallback */
+      }
     }
+
+    // 3. 移除属于本实例的入口
+    if (installedEntries.length > 0) {
+      for (const entry of installedEntries) {
+        if (existsSync(entry.path)) {
+          try {
+            rmSync(entry.path, { force: true, recursive: true });
+          } catch {}
+        }
+      }
+    } else {
+      if (process.platform === "win32") {
+        rmSync(join(binDir, "devflow.cmd"), { force: true });
+        const startMenu = join(
+          homedir(),
+          "AppData",
+          "Roaming",
+          "Microsoft",
+          "Windows",
+          "Start Menu",
+          "Programs",
+          "DevFlow",
+        );
+        rmSync(startMenu, { recursive: true, force: true });
+      } else {
+        rmSync(join(binDir, "devflow"), { force: true });
+        const localLink = join(homedir(), ".local", "bin", "devflow");
+        if (existsSync(localLink)) {
+          try {
+            const { realpathSync } = await import("node:fs");
+            const real = realpathSync(localLink);
+            if (real.startsWith(binDir)) {
+              rmSync(localLink, { force: true });
+            }
+          } catch {}
+        }
+        rmSync(
+          join(homedir(), ".local", "share", "applications", "devflow.desktop"),
+          { force: true },
+        );
+      }
+    }
+
+    // 4. 清理 PATH 环境变量块（Unix）
+    if (process.platform !== "win32") {
+      try {
+        const { removeShellPathBlock } = await import(
+          "../../installer/src/launchers.js"
+        );
+        const rc = join(
+          homedir(),
+          process.platform === "darwin" ? ".zshrc" : ".bashrc",
+        );
+        removeShellPathBlock(rc);
+      } catch {}
+    }
+
     console.log(
       "已移除 DevFlow 应用入口。项目、任务数据与用户凭据已保留（未删除）。",
     );

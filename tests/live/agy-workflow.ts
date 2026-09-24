@@ -32,8 +32,10 @@ mkdirSync(output, { recursive: true });
 const s = setup();
 s.config.server.port = 14812;
 s.config.server.human_origin = "http://localhost:14812";
-s.config.models.agy_executable =
-  "C:/Users/yckj4798/AppData/Local/agy/bin/agy.exe";
+const defaultAgy = process.env.LOCALAPPDATA
+  ? join(process.env.LOCALAPPDATA, "agy", "bin", "agy.exe")
+  : "agy";
+s.config.models.agy_executable = process.env.AGY_EXECUTABLE ?? defaultAgy;
 s.config.timeouts.agent_minutes = 8;
 const engine = new Engine(s.store, s.config),
   r = await repository(s.root);
@@ -119,7 +121,7 @@ engine.runtime = {
     const prompt = `This is a real authorized integration test. Use only devflow_worker MCP tools. First call devflow_execute_context with section=overview, then read section=plan, skill, tasks, tests, scope and feedback. Continue any non-null next_offset with the same section/id. The tool returns text chunks; NEVER read a local temp file. Query section=tool,id=the full tool name for exact parameter schemas. Implement the approved task, claim it with a detailed Chinese summary containing the exact random marker found ONLY in the plan, freeze, run approved checks, then finish. Report the marker and actual test results. Do not use native tools or create another plan. Approval was already recorded via DevFlow. If blocked, report the exact error and stop.`;
     const proc = processes.start({
       id: run.id,
-      executable: "C:/Users/yckj4798/AppData/Local/agy/bin/agy.exe",
+      executable: s.config.models.agy_executable,
       args: [
         ...agyArguments(
           "gemini-3.7-flash-high",

@@ -38,12 +38,13 @@ export const BUILD_INFO_SCHEMA_VERSION = 1;
  * these unreplaced tokens.
  */
 export const RELEASE_TAG_PLACEHOLDER = "@TAG@";
-export const RELEASE_VERSION_PLACEHOLDER = "@VERSION@";
 export const RELEASE_PLACEHOLDER_TOKENS = [
   "@TAG@",
   "@VERSION@",
   "@DEVFLOW_TAG@",
   "@DEVFLOW_VERSION@",
+  "__DEVFLOW_RELEASE_TAG__",
+  "__DEVFLOW_RELEASE_VERSION__",
 ];
 
 /**
@@ -194,7 +195,8 @@ export function validateRuntimeFiles(root, platformId, runtimeFiles = loadRuntim
       }
       if (hit && !/package\.json$/i.test(hit)) {
         try {
-          if (statSync(join(root, hit)).size <= 0)
+          const st = statSync(join(root, hit));
+          if (!st.isDirectory() && st.size <= 0)
             missing.push(`${hit} (native artifact is empty)`);
         } catch {
           missing.push(hit);
@@ -411,10 +413,12 @@ export function injectReleaseBindings(content, { tag, version }) {
   if (!tag || !version) throw new Error("injectReleaseBindings requires tag and version");
   const source = String(content);
   let out = source
+    .replaceAll("__DEVFLOW_RELEASE_TAG__", tag)
+    .replaceAll("__DEVFLOW_RELEASE_VERSION__", version)
     .replaceAll("@DEVFLOW_TAG@", tag)
     .replaceAll("@DEVFLOW_VERSION@", version)
     .replaceAll(RELEASE_TAG_PLACEHOLDER, tag)
-    .replaceAll(RELEASE_VERSION_PLACEHOLDER, version);
+    .replaceAll("@VERSION@", version);
   const unreplaced = [];
   for (const token of RELEASE_PLACEHOLDER_TOKENS) {
     if (out.includes(token)) unreplaced.push(token);
@@ -423,9 +427,11 @@ export function injectReleaseBindings(content, { tag, version }) {
     content: out,
     bindingsApplied:
       source.includes(RELEASE_TAG_PLACEHOLDER) ||
-      source.includes(RELEASE_VERSION_PLACEHOLDER) ||
+      source.includes("@VERSION@") ||
       source.includes("@DEVFLOW_TAG@") ||
-      source.includes("@DEVFLOW_VERSION@"),
+      source.includes("@DEVFLOW_VERSION@") ||
+      source.includes("__DEVFLOW_RELEASE_TAG__") ||
+      source.includes("__DEVFLOW_RELEASE_VERSION__"),
     unreplacedPlaceholders: unreplaced,
   };
 }
@@ -614,7 +620,9 @@ export function validateBootstrapAssets(dir) {
   const scripts = ["install.sh", "install.ps1"];
   for (const name of scripts) {
     const p = join(dir, name);
-    if (!existsSync(p)) continue;
+    if (!existsSync(p)) {
+      throw new Error(`Missing required bootstrap asset: ${name}`);
+    }
     const content = readFileSync(p, "utf8");
     for (const token of RELEASE_PLACEHOLDER_TOKENS) {
       if (content.includes(token)) {
@@ -624,5 +632,22 @@ export function validateBootstrapAssets(dir) {
       }
     }
   }
+}
+
+export function resolveTarCommand() {
+  const isWindows = process.platform === "win32";
+  const gitTar = "C:\\Program Files\\Git\\usr\\bin\\tar.exe";
+  if (isWindows && existsSync(gitTar)) {
+    return {
+      command: gitTar,
+      forceLocal: true,
+      defaultFlags: ["--force-local"],
+    };
+  }
+  return {
+    command: "tar",
+    forceLocal: false,
+    defaultFlags: [],
+  };
 }
 

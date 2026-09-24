@@ -15,18 +15,27 @@ import { spawnSync } from "node:child_process";
 const repoRoot = resolve(__dirname, "../..");
 const ps1Path = join(repoRoot, "scripts", "bootstrap", "install.ps1");
 const shPath = join(repoRoot, "scripts", "bootstrap", "install.sh");
-const pwshPath = existsSync(
-  "C:\\Users\\yckj4798\\AppData\\Local\\Programs\\PowerShell\\7\\pwsh.exe",
-)
-  ? "C:\\Users\\yckj4798\\AppData\\Local\\Programs\\PowerShell\\7\\pwsh.exe"
-  : null;
-const windowsPs = existsSync(
-  "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
-)
-  ? "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"
-  : "powershell.exe";
-// Prefer pwsh (UTF-8); fall back to Windows PowerShell. Script ships with UTF-8 BOM either way.
-const powershell = pwshPath ?? windowsPs;
+function resolvePowerShellCommand(): string {
+  const checkPwsh = spawnSync("pwsh", ["-NoProfile", "-Command", "$PSVersionTable.PSVersion.Major"], { encoding: "utf8" });
+  if (!checkPwsh.error && checkPwsh.status === 0) {
+    return "pwsh";
+  }
+  const localAppData = process.env.LOCALAPPDATA;
+  if (localAppData) {
+    const localPwsh = join(localAppData, "Programs", "PowerShell", "7", "pwsh.exe");
+    if (existsSync(localPwsh)) return localPwsh;
+  }
+  const programFiles = process.env.ProgramFiles;
+  if (programFiles) {
+    const pfPwsh = join(programFiles, "PowerShell", "7", "pwsh.exe");
+    if (existsSync(pfPwsh)) return pfPwsh;
+  }
+  const sysRoot = process.env.SystemRoot ?? "C:\\Windows";
+  const winPs = join(sysRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+  if (existsSync(winPs)) return winPs;
+  return "powershell.exe";
+}
+const powershell = resolvePowerShellCommand();
 
 interface TarEntry {
   name: string;

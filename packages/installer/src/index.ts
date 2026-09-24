@@ -5,4 +5,5 @@ export * from "./components.js";
 export * from "./runtime-files.js";
 export * from "./launchers.js";
 export * from "./upgrade.js";
+export * from "./context.js";
 export * from "./main.js";

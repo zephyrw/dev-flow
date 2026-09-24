@@ -26,7 +26,7 @@ const SUPPORTED_ASSISTANTS: Array<{
   {
     id: "codex",
     name: "Codex",
-    desc: "OpenAI 编程助手，已验证端到端工作流支持",
+    desc: "OpenAI 编程助手，提供基于官方 CLI 的工作流调度与交互支持",
     icon: "🤖",
     installHint: "确保 codex 命令在系统 PATH 中，并通过 codex login 完成登录",
   },
@@ -65,6 +65,27 @@ const SUPPORTED_ASSISTANTS: Array<{
     icon: "📱",
     installHint: "安装 @mimo-ai/cli 并配置 API 密钥",
   },
+  {
+    id: "grok-build",
+    name: "Grok Build",
+    desc: "xAI Grok 深度推理与构建辅助工具",
+    icon: "🚀",
+    installHint: "安装 grok-build CLI 并配置相关凭据",
+  },
+  {
+    id: "qoder",
+    name: "Qoder",
+    desc: "阿里通义灵码及本地编程助理调度接入",
+    icon: "✨",
+    installHint: "安装 qoder CLI 并完成账号激活",
+  },
+  {
+    id: "opencode",
+    name: "OpenCode",
+    desc: "开源终端代码助手通用调度接口",
+    icon: "🌐",
+    installHint: "配置 opencode 运行环境及系统路径",
+  },
 ];
 
 export function FirstRunSetup({ isOpen, onClose, onCompleted }: FirstRunSetupProps) {
@@ -75,8 +96,10 @@ export function FirstRunSetup({ isOpen, onClose, onCompleted }: FirstRunSetupPro
   const [plannerModel, setPlannerModel] = useState<string>("gpt-6-astra");
   const [executorModel, setExecutorModel] = useState<string>("gemini-3.8-flash-high");
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [verifying, setVerifying] = useState(false);
-  const [verifyStatus, setVerifyStatus] = useState<string | null>(null);
+  const [plannerVerifyStatus, setPlannerVerifyStatus] = useState<string | null>(null);
+  const [executorVerifyStatus, setExecutorVerifyStatus] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
@@ -92,8 +115,15 @@ export function FirstRunSetup({ isOpen, onClose, onCompleted }: FirstRunSetupPro
     }
   }, [isOpen]);
 
+  const handleSkipOrDismiss = () => {
+    // R13: 跳过或关闭时仅记录已忽略，严禁写入已完成
+    localStorage.setItem("devflow.wizard_dismissed", "true");
+    onClose();
+  };
+
   const handleFinish = async () => {
     setSaving(true);
+    setSaveError(null);
     try {
       const def = await getModelDefaults();
       const newPlanner: ToolProfile = {
@@ -106,40 +136,87 @@ export function FirstRunSetup({ isOpen, onClose, onCompleted }: FirstRunSetupPro
         adapterId: executorTool,
         modelId: executorModel,
       };
+      // 切换 adapter 时清除不适用的特定字段
+      if (newPlanner.adapterId !== def.plannerProfile?.adapterId) {
+        delete (newPlanner as any).providerConfigRef;
+        delete (newPlanner as any).executableRef;
+      }
+      if (newExecutor.adapterId !== def.executorProfile?.adapterId) {
+        delete (newExecutor as any).providerConfigRef;
+        delete (newExecutor as any).executableRef;
+      }
       await putModelDefaults({
         request_id: newRequestId(),
         expected_defaults_revision: def.revision,
         planner_profile: newPlanner,
         executor_profile: newExecutor,
       });
-    } catch {
-      // 容错：即使保存失败也允许继续进入工作台
-    } finally {
-      setSaving(false);
+
+      // 读回确认写入成功
+      const verified = await getModelDefaults();
+      if (
+        verified.plannerProfile?.adapterId !== plannerTool ||
+        verified.executorProfile?.adapterId !== executorTool
+      ) {
+        throw new Error("模型配置未能成功读回确认，请重试");
+      }
+
+      // 仅在真实保存并读回成功后标记已完成
       localStorage.setItem("devflow.first_run_completed", "true");
       onCompleted?.();
       onClose();
+    } catch (e: any) {
+      // 保留表单，展示具体错误与重试入口；严禁标记已完成
+      setSaveError(e?.message || "保存模型默认配置失败，请检查网络或后端状态后重试");
+    } finally {
+      setSaving(false);
     }
   };
 
   const handleVerify = async () => {
     setVerifying(true);
-    setVerifyStatus("正在验证模型访问...");
+    setPlannerVerifyStatus("正在验证...");
+    setExecutorVerifyStatus("正在验证...");
     try {
       const def = await getModelDefaults();
-      const profile: ToolProfile = {
-        ...def.plannerProfile,
+      const pProfile: ToolProfile = {
+        id: def.plannerProfile?.id || "planner",
+        revision: def.plannerProfile?.revision || 1,
         adapterId: plannerTool,
+        modelSelection: "explicit",
+        selectionKind: "fixed",
         modelId: plannerModel,
+        options: def.plannerProfile?.options ?? {},
       };
-      const res = await verifyModelAccess(profile);
-      if (res.status === "verified") {
-        setVerifyStatus("✓ 模型访问验证成功！");
-      } else {
-        setVerifyStatus(`状态：${res.message || res.status}（保留设置，可直接开始）`);
-      }
-    } catch (e) {
-      setVerifyStatus(`提示：${e instanceof Error ? e.message : "可在界面中稍后验证"}（不阻塞使用）`);
+      const pRes = await verifyModelAccess(pProfile, undefined, true);
+      setPlannerVerifyStatus(
+        pRes.status === "verified"
+          ? "✓ 验证成功"
+          : `状态：${pRes.message || pRes.status}`,
+      );
+    } catch (e: any) {
+      setPlannerVerifyStatus(`验证失败：${e?.message || "未知错误"}`);
+    }
+
+    try {
+      const def = await getModelDefaults();
+      const eProfile: ToolProfile = {
+        id: def.executorProfile?.id || "executor",
+        revision: def.executorProfile?.revision || 1,
+        adapterId: executorTool,
+        modelSelection: "explicit",
+        selectionKind: "fixed",
+        modelId: executorModel,
+        options: def.executorProfile?.options ?? {},
+      };
+      const eRes = await verifyModelAccess(eProfile, undefined, true);
+      setExecutorVerifyStatus(
+        eRes.status === "verified"
+          ? "✓ 验证成功"
+          : `状态：${eRes.message || eRes.status}`,
+      );
+    } catch (e: any) {
+      setExecutorVerifyStatus(`验证失败：${e?.message || "未知错误"}`);
     } finally {
       setVerifying(false);
     }
@@ -157,7 +234,7 @@ export function FirstRunSetup({ isOpen, onClose, onCompleted }: FirstRunSetupPro
   return (
     <AppDialog
       isOpen={isOpen}
-      onClose={onClose}
+      onClose={handleSkipOrDismiss}
       title="欢迎使用 DevFlow · 首次使用向导"
       width={720}
     >
@@ -257,10 +334,7 @@ export function FirstRunSetup({ isOpen, onClose, onCompleted }: FirstRunSetupPro
               <button
                 type="button"
                 className="btn"
-                onClick={() => {
-                  localStorage.setItem("devflow.first_run_completed", "true");
-                  onClose();
-                }}
+                onClick={handleSkipOrDismiss}
               >
                 跳过，稍后设置
               </button>
@@ -365,7 +439,7 @@ export function FirstRunSetup({ isOpen, onClose, onCompleted }: FirstRunSetupPro
           <div>
             <h3 style={{ margin: "0 0 8px 0" }}>验证模型访问与授权</h3>
             <p style={{ color: "#57606a", fontSize: "13px", margin: "0 0 16px 0" }}>
-              确保所选助手已在官方完成登录，且能够正常访问指定模型。验证不额外消耗任务额度。
+              确保所选助手已在官方完成登录，且能够正常访问指定模型。
             </p>
 
             <div
@@ -377,11 +451,21 @@ export function FirstRunSetup({ isOpen, onClose, onCompleted }: FirstRunSetupPro
                 background: "#fafbfc",
               }}
             >
-              <div style={{ marginBottom: "10px", fontSize: "13px" }}>
-                <strong>规划模型：</strong> {plannerTool} / <code>{plannerModel}</code>
+              <div style={{ marginBottom: "12px", fontSize: "13px" }}>
+                <strong>规划模型（Planner）：</strong> {plannerTool} / <code>{plannerModel}</code>
+                {plannerVerifyStatus && (
+                  <span style={{ marginLeft: "10px", fontSize: "12px", color: plannerVerifyStatus.startsWith("✓") ? "#2da44e" : "#cf222e" }}>
+                    {plannerVerifyStatus}
+                  </span>
+                )}
               </div>
               <div style={{ marginBottom: "16px", fontSize: "13px" }}>
-                <strong>执行模型：</strong> {executorTool} / <code>{executorModel}</code>
+                <strong>执行模型（Executor）：</strong> {executorTool} / <code>{executorModel}</code>
+                {executorVerifyStatus && (
+                  <span style={{ marginLeft: "10px", fontSize: "12px", color: executorVerifyStatus.startsWith("✓") ? "#2da44e" : "#cf222e" }}>
+                    {executorVerifyStatus}
+                  </span>
+                )}
               </div>
 
               <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
@@ -391,13 +475,8 @@ export function FirstRunSetup({ isOpen, onClose, onCompleted }: FirstRunSetupPro
                   onClick={handleVerify}
                   disabled={verifying}
                 >
-                  {verifying ? "正在检测访问..." : "🔍 验证模型访问"}
+                  {verifying ? "正在检测模型访问..." : "🔍 验证所选模型访问"}
                 </button>
-                {verifyStatus && (
-                  <span style={{ fontSize: "12px", color: verifyStatus.startsWith("✓") ? "#2da44e" : "#57606a" }}>
-                    {verifyStatus}
-                  </span>
-                )}
               </div>
             </div>
 
@@ -426,6 +505,22 @@ export function FirstRunSetup({ isOpen, onClose, onCompleted }: FirstRunSetupPro
                 不需要在网页反复复制需求，直接在你的编程助手中提出需求即可。
               </p>
             </div>
+
+            {saveError && (
+              <div
+                style={{
+                  background: "#ffebe9",
+                  border: "1px solid rgba(255, 129, 130, 0.4)",
+                  color: "#cf222e",
+                  padding: "10px 12px",
+                  borderRadius: "6px",
+                  fontSize: "13px",
+                  marginBottom: "16px",
+                }}
+              >
+                <strong>保存失败：</strong> {saveError}
+              </div>
+            )}
 
             <div
               style={{
@@ -480,18 +575,23 @@ export function FirstRunSetup({ isOpen, onClose, onCompleted }: FirstRunSetupPro
               </ol>
             </div>
 
-            <div style={{ display: "flex", justifyContent: "space-between" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <button type="button" className="btn" onClick={() => setStep(3)}>
                 ← 上一步
               </button>
-              <button
-                type="button"
-                className="btn btn-primary"
-                onClick={handleFinish}
-                disabled={saving}
-              >
-                {saving ? "正在保存..." : "完成，进入工作台 →"}
-              </button>
+              <div style={{ display: "flex", gap: "8px" }}>
+                <button type="button" className="btn" onClick={handleSkipOrDismiss}>
+                  稍后设置
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={handleFinish}
+                  disabled={saving}
+                >
+                  {saving ? "正在保存..." : "完成，进入工作台 →"}
+                </button>
+              </div>
             </div>
           </div>
         )}
