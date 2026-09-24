@@ -78,15 +78,15 @@ export function SettingsDialog({
 
         {/* Tab 内容区 */}
         <div className="settings-tab-content">
-          {activeTab === "models" && (
+          <div style={{ display: activeTab === "models" ? "block" : "none" }}>
             <DefaultModelsPanel
               onDefaultsUpdated={onDefaultsUpdated}
               onDirtyChange={setIsDirty}
               onClose={onClose}
             />
-          )}
+          </div>
 
-          {activeTab === "archives" && (
+          <div style={{ display: activeTab === "archives" ? "block" : "none" }}>
             <ArchivedWorkflowsPanel
               onSelectWorkflow={(workflowId) => {
                 onClose();
@@ -94,7 +94,7 @@ export function SettingsDialog({
               }}
               onWorkflowRestored={onWorkflowRestored}
             />
-          )}
+          </div>
         </div>
       </div>
     </AppDialog>

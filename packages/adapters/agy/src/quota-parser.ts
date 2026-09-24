@@ -123,14 +123,30 @@ export function parseAgyUsageOutput(
         status: "observed",
       };
       const list = poolMap.get(row.poolName) ?? [];
-      list.push(window);
+      if (list.some((w) => w.kind === row.kind)) {
+        // 发现同池重复窗口行，标记为冲突无效，拒绝伪造通过
+        list.push({ ...window, status: "missing", remaining_fraction: null });
+      } else {
+        list.push(window);
+      }
       poolMap.set(row.poolName, list);
     }
 
     for (const [poolName, pWindows] of poolMap.entries()) {
+      const lower = poolName.toLowerCase();
+      let models: string[];
+      if (lower.includes("gemini")) {
+        models = ["gemini-*"];
+      } else if (lower.includes("claude") || lower.includes("gpt")) {
+        models = ["claude-*", "gpt-*"];
+      } else if (lower === "global") {
+        models = ["*"];
+      } else {
+        models = [poolName];
+      }
       pools.push({
         pool_id: poolName,
-        models: [poolName.toLowerCase().includes("gemini") ? "gemini-*" : "*"],
+        models,
         windows: pWindows,
       });
     }

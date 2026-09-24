@@ -104,7 +104,7 @@ export function extractSafeAuthMetadata(
       typeof parsed.id_token === "string" ||
       typeof parsed.token === "string")
   )
-    result.metadata_status = "verified";
+    result.metadata_status = "unverified";
   return result;
 }
 

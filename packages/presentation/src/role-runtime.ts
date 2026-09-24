@@ -45,10 +45,14 @@ export function isProfileEquivalent(
   if (a.adapterId !== b.adapterId) return false;
   if (!isEquivalentModelName(a.modelId, b.modelId)) return false;
 
-  const aReasoning = a.reasoning?.mode === "explicit" ? a.reasoning.value : "";
-  const bReasoning = b.reasoning?.mode === "explicit" ? b.reasoning.value : "";
-  if (aReasoning !== bReasoning) return false;
+  const aMode = a.reasoning?.mode ?? "native-default";
+  const bMode = b.reasoning?.mode ?? "native-default";
+  if (aMode !== bMode) return false;
+  if (a.reasoning?.mode === "explicit" && b.reasoning?.mode === "explicit") {
+    if (a.reasoning.value !== b.reasoning.value) return false;
+  }
 
+  if (a.executableRef !== b.executableRef) return false;
   if (a.nativeConfigProfile !== b.nativeConfigProfile) return false;
   return true;
 }
@@ -112,6 +116,7 @@ const TERMINAL_OR_PAUSED_STATES = new Set([
   "COMMIT_PARTIAL",
   "BLOCKED",
   "RECOVERY_REQUIRED",
+  "PLAN_PENDING",
 ]);
 
 export function projectRoleRuntime(
@@ -199,8 +204,16 @@ export function projectRoleRuntime(
     };
   }
 
-  // 终态或暂停状态：无活动高亮
-  if (!state || TERMINAL_OR_PAUSED_STATES.has(state) || !activeRunId) {
+  // 终态、暂停状态或显式非运行态：无活动高亮
+  const isRunActive = currentRun
+    ? currentRun.status === undefined || currentRun.status === "running"
+    : true;
+  if (
+    !state ||
+    TERMINAL_OR_PAUSED_STATES.has(state) ||
+    !activeRunId ||
+    !isRunActive
+  ) {
     return {
       plannerRow,
       executorRow,
@@ -209,7 +222,7 @@ export function projectRoleRuntime(
         adapter: plannerProfile?.adapterId,
         model: plannerProfile?.modelId,
         isIndependentReviewer: false,
-        description: "当前规划模型额度",
+        description: "下次生效的规划配置",
       },
     };
   }

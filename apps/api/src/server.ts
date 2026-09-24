@@ -1292,10 +1292,8 @@ export async function buildServer(
     human(req);
     const key = Id.parse((req.params as any).id);
     if ((req.query as any)?.view === "summary") {
-      const detail = engine.detail(key, false);
       return {
         ...engine.summary(key),
-        overview: detail.overview,
         conversation_tree: conversations.getTree(key),
       };
     }
@@ -1635,28 +1633,61 @@ export async function buildServer(
   });
   app.post("/api/workflows/:id/approve", async (req) => {
     human(req);
-    const bodySchema = z.union([
-      z.object({
-        schema_version: z.union([z.literal(1), z.literal(2)]).optional(),
-        request_id: z.string().optional(),
-        binding: z.record(z.string(), z.unknown()),
-        execution_instructions: z
-          .object({
-            text: z.string().max(20000).optional(),
-            scope: z.literal("approved-plan").optional(),
-          })
-          .optional(),
-      }),
-      z.object({
-        binding: z.record(z.string(), z.unknown()),
-      }),
-    ]);
-    const b = bodySchema.parse(req.body);
+    const rawBody = (req.body || {}) as any;
+    const isV2 =
+      rawBody?.schema_version === 2 ||
+      rawBody?.execution_instructions !== undefined;
+
+    let b: {
+      schema_version: 1 | 2;
+      request_id: string;
+      binding: Record<string, unknown>;
+      execution_instructions?: {
+        text: string;
+        scope: "approved-plan";
+      };
+    };
+
+    if (isV2) {
+      const v2Schema = z
+        .object({
+          schema_version: z.literal(2).default(2),
+          request_id: z.string().uuid(),
+          binding: z.record(z.string(), z.unknown()),
+          execution_instructions: z
+            .object({
+              text: z.string().max(20000),
+              scope: z.literal("approved-plan"),
+            })
+            .strict()
+            .optional(),
+        })
+        .strict();
+      const parsed = v2Schema.parse(rawBody);
+      b = {
+        schema_version: 2,
+        request_id: parsed.request_id,
+        binding: parsed.binding,
+        execution_instructions: parsed.execution_instructions,
+      };
+    } else {
+      const v1Schema = z
+        .object({
+          schema_version: z.literal(1).optional(),
+          binding: z.record(z.string(), z.unknown()),
+        })
+        .strict();
+      const parsed = v1Schema.parse(rawBody);
+      b = {
+        schema_version: 1,
+        request_id: crypto.randomUUID(),
+        binding: parsed.binding,
+      };
+    }
+
     const key = Id.parse((req.params as any).id);
-    const requestId =
-      (b as any).request_id || `req_appr_${Date.now()}`;
-    const instructionsText =
-      (b as any).execution_instructions?.text ?? "";
+    const requestId = b.request_id;
+    const instructionsText = b.execution_instructions?.text ?? "";
     const receipt = engine.auth.recordConfirmation("approve", b.binding);
     try {
       const outcome = await planApprovalService.approve({

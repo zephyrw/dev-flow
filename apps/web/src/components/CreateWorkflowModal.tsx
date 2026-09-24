@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import type {
+  RoleBinding,
   RoleOverrides,
   ToolProfile,
 } from "../../../../packages/contracts/src/index.js";
@@ -71,10 +72,21 @@ export function CreateWorkflowModal({
     nextPlanner: ToolProfile,
     nextExecutor: ToolProfile,
     revision: number,
+    reviewerBinding?: RoleBinding,
   ) => {
     setPlanner(cloneProfile({ ...nextPlanner, id: "planner" }));
     setExecutor(cloneProfile({ ...nextExecutor, id: "executor" }));
-    setOverrides(inheritOverrides());
+    const baseOverrides = inheritOverrides();
+    if (reviewerBinding) {
+      baseOverrides.reviewer =
+        reviewerBinding.mode === "explicit" && reviewerBinding.profile
+          ? {
+              mode: "explicit",
+              profile: cloneProfile(reviewerBinding.profile),
+            }
+          : { mode: "inherit" };
+    }
+    setOverrides(baseOverrides);
     setLoadedRevision(revision);
     setDirty(false);
     setStale(false);
@@ -92,6 +104,7 @@ export function CreateWorkflowModal({
           defaults.plannerProfile,
           defaults.executorProfile,
           defaults.revision,
+          defaults.reviewerBinding,
         );
       })
       .catch((err) => {
@@ -137,7 +150,7 @@ export function CreateWorkflowModal({
 
   const setOverrideMode = (role: OverrideRoleId, explicit: boolean) => {
     setDirty(true);
-    setOverrides((current) => ({
+    setOverrides((current: RoleOverrides) => ({
       ...current,
       [role]: explicit
         ? {
@@ -145,6 +158,28 @@ export function CreateWorkflowModal({
             profile: blankProfile(role, planner.adapterId),
           }
         : { mode: "inherit" },
+    }));
+  };
+
+  const handleOverrideChange = (
+    role: "reviewer" | "review_fixer" | "functional_fixer",
+    mode: "inherit" | "explicit",
+    profile?: ToolProfile,
+  ) => {
+    setDirty(true);
+    setOverrides((current: RoleOverrides) => ({
+      ...current,
+      [role]:
+        mode === "explicit"
+          ? {
+              mode: "explicit",
+              profile: profile
+                ? cloneProfile(profile)
+                : (current[role]?.mode === "explicit" && current[role]?.profile
+                    ? cloneProfile(current[role]!.profile!)
+                    : blankProfile(role, planner.adapterId)),
+            }
+          : { mode: "inherit" },
     }));
   };
 
@@ -265,13 +300,21 @@ export function CreateWorkflowModal({
             tabs={[
               { id: "planner", label: "规划" },
               { id: "executor", label: "执行" },
+              {
+                id: "reviewer",
+                label: "代码审查",
+                inheritable: true,
+                defaultInheritSource: "planner",
+              },
             ]}
             activeTab={activeTab}
             onTabChange={setActiveTab}
             plannerProfile={planner}
             executorProfile={executor}
+            overrides={overrides}
             onPlannerChange={changePlanner}
             onExecutorChange={changeExecutor}
+            onOverrideChange={handleOverrideChange}
           />
         </div>
         <div>

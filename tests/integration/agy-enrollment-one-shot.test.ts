@@ -147,6 +147,7 @@ describe("W03 D03修复验证：关闭自动调度时手动录入one-shot闭环�
       realm_id: realmId,
       owner: "system",
       revision: 1,
+      phase: "idle",
       service_state: "stopped",
       desired_enabled: false,
       auth_epoch: 1,
@@ -169,7 +170,6 @@ describe("W03 D03修复验证：关闭自动调度时手动录入one-shot闭环�
       quiesce: async () => {},
       confirmStopped: async () => true,
       onAccountCommitted: async () => {},
-      onAccountSwitchFailed: async () => {},
     };
     service.registerConsumer(mockWorkflowConsumer, "workflow");
 

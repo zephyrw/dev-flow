@@ -157,7 +157,11 @@ export class AgyEnrollmentService {
       realm_id: realmId,
       revision: (existing?.revision ?? 0) + 1,
       alias: alias || existing?.alias || email.split("@")[0]!,
-      identity: { email, ...(subject ? { subject } : {}), verified_at: now },
+      identity: {
+        email,
+        ...(subject ? { subject } : {}),
+        verified_at: existing?.identity.verified_at ?? now,
+      },
       secret_ref: captured.secret_ref,
       credential_revision: captured.credential_revision,
       state: existing?.state === "disabled" ? "disabled" : "pending_quota",
@@ -171,7 +175,7 @@ export class AgyEnrollmentService {
         access_expires_at: captured.auth?.access_expires_at,
         refresh_expires_at: captured.auth?.refresh_expires_at,
         metadata_status: captured.auth?.metadata_status ?? "unverified",
-        last_authenticated_request_at: now,
+        last_authenticated_request_at: existing?.auth.last_authenticated_request_at,
         last_auth_error: undefined,
         last_refresh_verified_at: undefined,
         email: captured.auth?.email ?? email,
@@ -211,33 +215,52 @@ export class AgyEnrollmentService {
       return { success: false, error: "account_identity_mismatch" };
     }
 
-    const pools = observation && observation.capability_verified && !!observation.executable_fingerprint
+    const isOfficialVerified = Boolean(
+      observation &&
+      observation.capability_verified &&
+      observation.executable_fingerprint
+    );
+
+    const pools = isOfficialVerified
       ? observation.pools.filter(
           (pool: any) =>
             !context.model_id || pool.model_ids.includes(context.model_id) || pool.model_ids.includes("*"),
         )
       : [];
-    // 综合读取账号级顶层双额度与池级双额度判定完成状态 (Q01)
-    const allWindows = [
-      ...(observation?.windows ?? []),
-      ...pools.flatMap((p: any) => p.windows ?? []),
-    ];
-    const hasValidWindows =
-      observation &&
-      observation.capability_verified &&
-      !!observation.executable_fingerprint &&
-      ["weekly", "five_hour"].every((kind: string) =>
-        allWindows.some(
-          (w: any) =>
-            w.kind === kind &&
-            w.status === "observed" &&
-            typeof w.remaining_fraction === "number" &&
-            w.remaining_fraction >= 0 &&
-            w.remaining_fraction <= 1,
-        ),
+
+    // 双窗口必须在同有效池内完整包含且无重复矛盾，不跨池拼装
+    function poolHasDualWindows(windows: any[]): boolean {
+      if (!Array.isArray(windows)) return false;
+      const weekly = windows.filter(
+        (w) =>
+          w.kind === "weekly" &&
+          w.status === "observed" &&
+          typeof w.remaining_fraction === "number" &&
+          w.remaining_fraction >= 0 &&
+          w.remaining_fraction <= 1,
       );
-    const complete = !!hasValidWindows;
-    const isZero = allWindows.some((w: any) => w.remaining_fraction === 0);
+      const fiveHour = windows.filter(
+        (w) =>
+          w.kind === "five_hour" &&
+          w.status === "observed" &&
+          typeof w.remaining_fraction === "number" &&
+          w.remaining_fraction >= 0 &&
+          w.remaining_fraction <= 1,
+      );
+      return weekly.length === 1 && fiveHour.length === 1;
+    }
+
+    const hasValidWindows =
+      isOfficialVerified &&
+      (
+        (pools.length > 0 && pools.every((p: any) => poolHasDualWindows(p.windows))) ||
+        (pools.length === 0 && poolHasDualWindows(observation?.windows))
+      );
+    const complete = Boolean(hasValidWindows);
+    const checkedWindows = pools.length > 0
+      ? pools.flatMap((p: any) => p.windows ?? [])
+      : (observation?.windows ?? []);
+    const isZero = checkedWindows.some((w: any) => w.remaining_fraction === 0);
     const state: AccountState = !complete
       ? "pending_quota"
       : isZero
@@ -247,14 +270,23 @@ export class AgyEnrollmentService {
     const account: AgyAccount = {
       ...pendingAccount,
       revision: pendingAccount.revision + 1,
+      identity: {
+        ...pendingAccount.identity,
+        verified_at: isOfficialVerified ? now : (existing?.identity.verified_at ?? now),
+      },
+      auth: {
+        ...pendingAccount.auth,
+        metadata_status: isOfficialVerified ? "verified" : (pendingAccount.auth.metadata_status ?? "unverified"),
+        last_authenticated_request_at: isOfficialVerified ? now : pendingAccount.auth.last_authenticated_request_at,
+      },
       state: existing?.state === "disabled" ? "disabled" : state,
       enrollment_completed_at: complete ? now : undefined,
     };
-    // Interactive authentication proves a request, not refresh of an expired access token.
+    // 只有官方在顶层确证共享窗口时才允许 global 单池；不跨池拼装
     const effectivePools = pools.length > 0
       ? pools
-      : complete
-        ? [{ pool_id: "global", model_ids: ["*"], windows: observation.windows ?? allWindows }]
+      : complete && observation?.windows && poolHasDualWindows(observation.windows)
+        ? [{ pool_id: "global", model_ids: ["*"], windows: observation.windows }]
         : [];
     const snapshots: AgyQuotaSnapshot[] = effectivePools.map((pool: any) => ({
       id: "snp_" + randomUUID(),

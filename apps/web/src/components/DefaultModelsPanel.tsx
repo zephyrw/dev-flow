@@ -152,12 +152,28 @@ export function DefaultModelsPanel({
       const api = err as ApiError;
       if (
         api.code === "SPEC_VERSION_CONFLICT" ||
-        api.code === "DEFAULTS_VERSION_CONFLICT" ||
-        api.status === 409
+        api.code === "DEFAULTS_VERSION_CONFLICT"
       ) {
         setHasConflict(true);
         setError(
           "全局默认配置已在其他位置更新。请点击“重新载入最新配置”后核对编辑。",
+        );
+        requestId.current = newRequestId();
+        return;
+      }
+      if (api.code === "IDEMPOTENCY_CONFLICT") {
+        setError("相同请求标识已有不同内容提交，请稍候重试。");
+        requestId.current = newRequestId();
+        return;
+      }
+      if (api.code === "ACCOUNT_BUSY") {
+        setError("当前账号正忙或处于排他操作中，请稍候重试。");
+        return;
+      }
+      if (api.status === 409) {
+        setHasConflict(true);
+        setError(
+          api.message || "配置发生冲突，请重新载入最新配置后核对。",
         );
         requestId.current = newRequestId();
         return;

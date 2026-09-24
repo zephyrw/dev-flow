@@ -24,23 +24,34 @@ export function extractMarkdownSection(
   let currentLevel = 0;
   let matchedHeading = "";
   const bodyLines: string[] = [];
+  let inFencedCode = false;
 
   for (const line of lines) {
-    const headingMatch = /^(#{1,4})\s+(.+?)\s*$/.exec(line);
-    if (headingMatch) {
-      const level = headingMatch[1]!.length;
-      const title = headingMatch[2]!.trim();
+    if (/^\s*(```|~~~)/.test(line)) {
+      inFencedCode = !inFencedCode;
       if (capturing) {
-        if (level <= currentLevel) {
-          break;
+        bodyLines.push(line);
+      }
+      continue;
+    }
+
+    if (!inFencedCode) {
+      const headingMatch = /^(#{1,4})\s+(.+?)\s*$/.exec(line);
+      if (headingMatch) {
+        const level = headingMatch[1]!.length;
+        const title = headingMatch[2]!.trim();
+        if (capturing) {
+          if (level <= currentLevel) {
+            break;
+          }
+        } else if (
+          keywords.some((kw) => title.toLowerCase().includes(kw.toLowerCase()))
+        ) {
+          capturing = true;
+          currentLevel = level;
+          matchedHeading = title;
+          continue;
         }
-      } else if (
-        keywords.some((kw) => title.toLowerCase().includes(kw.toLowerCase()))
-      ) {
-        capturing = true;
-        currentLevel = level;
-        matchedHeading = title;
-        continue;
       }
     }
     if (capturing) {
@@ -217,11 +228,14 @@ function buildFindingsAndUnresolved(
 
   if (Array.isArray(planObj?.decisions)) {
     planObj.decisions.forEach((d: any, idx: number) => {
-      const title =
-        typeof d === "string"
-          ? d
-          : d?.decision ?? d?.title ?? d?.summary ?? "";
-      const desc = typeof d === "object" ? d?.rationale ?? d?.reason : undefined;
+      let title = "";
+      let desc: string | undefined = undefined;
+      if (typeof d === "string") {
+        title = d;
+      } else if (d && typeof d === "object") {
+        title = d.decision ?? d.question ?? d.title ?? d.summary ?? "";
+        desc = d.rationale ?? d.reason ?? d.answer ?? (d.source ? `来源: ${d.source}` : undefined);
+      }
       if (title.trim()) {
         findings.push({
           id: `decision-${idx + 1}`,
@@ -364,25 +378,42 @@ function buildTests(
   const evidences = Array.isArray(detail?.evidence) ? detail.evidence : [];
 
   const resolveItemStatus = (itemId: string): OverviewTestView["status"] => {
-    const matching = evidences.filter(
-      (e: any) =>
-        e.acceptance_item_id === itemId ||
-        e.test_id === itemId ||
-        e.item_id === itemId,
-    );
+    const matching = evidences
+      .filter(
+        (e: any) =>
+          e.acceptance_item_id === itemId ||
+          e.test_id === itemId ||
+          e.item_id === itemId,
+      )
+      .slice()
+      .sort((a: any, b: any) =>
+        String(a.created_at ?? "").localeCompare(String(b.created_at ?? "")),
+      );
     if (matching.length === 0) return "pending";
     const sameRev = matching.filter(
       (e: any) =>
         e.plan_revision === undefined || e.plan_revision === currentRev,
     );
     if (sameRev.length === 0) {
-      return matching.some((e: any) => e.passed || e.status === "passed")
+      return matching.some(
+        (e: any) => e.passed || e.status === "passed" || e.status === "stale",
+      )
         ? "stale"
         : "pending";
     }
     const latest = sameRev[sameRev.length - 1];
     if (latest.passed === false || latest.status === "failed") return "failed";
-    if (latest.passed === true || latest.status === "passed") return "passed";
+    if (latest.status === "stale") return "stale";
+    if (latest.passed === true || latest.status === "passed") {
+      if (
+        workflow?.environment_revision !== undefined &&
+        latest.environment_revision !== undefined &&
+        latest.environment_revision !== workflow.environment_revision
+      ) {
+        return "stale";
+      }
+      return "passed";
+    }
     return "pending";
   };
 
@@ -467,17 +498,31 @@ function resolveExecutionConstraints(
   if (!workflow?.id || !workflow?.plan_revision) return null;
   if (!store) return null;
 
-  const key = `${workflow.id}:${workflow.plan_revision}`;
-  const approval = store.get<PlanApprovalRecordV2>("plan_approval", key);
+  const canonicalKey = `${workflow.id}-${workflow.plan_revision}`;
+  const keys = [
+    canonicalKey,
+    `${workflow.id}:${workflow.plan_revision}`,
+  ];
+  let approval: any = null;
+  let matchedKey = canonicalKey;
+  for (const k of keys) {
+    approval = store.get<any>("approval", k) ?? store.get<any>("plan_approval", k);
+    if (approval) {
+      matchedKey = k;
+      break;
+    }
+  }
   if (
     approval &&
     approval.workflow_id === workflow.id &&
     approval.plan_revision === workflow.plan_revision &&
+    (!workflow.plan_hash || approval.plan_hash === workflow.plan_hash) &&
     approval.execution_instructions &&
+    typeof approval.execution_instructions.text === "string" &&
     approval.execution_instructions.text.trim().length > 0
   ) {
     return {
-      approval_id: key,
+      approval_id: approval.id ?? matchedKey,
       text: approval.execution_instructions.text,
       text_hash: approval.execution_instructions.text_hash,
     };
@@ -518,6 +563,8 @@ export function projectWorkflowOverview(
         ph: planHash,
         tp: taskProgress,
         tep: testProgress,
+        tasks: tasks.map((t) => [t.id, t.status]),
+        tests: tests.map((t) => [t.id, t.status]),
         ec: executionConstraints?.text_hash ?? null,
       }),
     )

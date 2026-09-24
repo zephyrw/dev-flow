@@ -564,7 +564,10 @@ export class SwitchOperationExecutor {
         throw new Error("no_eligible_account");
       }
       if (!probeRes) throw new Error("probe_failed");
-      const verifiedEmail = probeRes.email?.toLowerCase();
+      const activeAuthEmail = (
+        await this.authHost.inspectActive(options.realmId)
+      ).auth?.email;
+      const verifiedEmail = (probeRes.email ?? activeAuthEmail)?.toLowerCase();
       const expectedEmail = targetAcc.identity.email.toLowerCase();
 
       if (!verifiedEmail || verifiedEmail !== expectedEmail) {

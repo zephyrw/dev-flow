@@ -8,6 +8,7 @@ import { batchExecutionInstructions } from "../../core/src/execution-guidance.js
 import { NativeExecutionObserver } from "../../evidence/src/native-execution-observer.js";
 import { reconcileImplementationProofs } from "../../core/src/progress.js";
 import { isLegacyProtocol } from "../../core/src/run-profile.js";
+import { verifyAndResolveExecutionInstructions } from "../../core/src/execution-instructions.js";
 import { assertMeaningfulTestFiles } from "../../core/src/test-quality.js";
 import type { OperationRequest } from "../../core/src/interactions.js";
 import {
@@ -605,6 +606,20 @@ export class LocalRuntime implements Runtime {
     const plan = planRecord.plan;
     if (!isLegacyProtocol(run, plan) || (run.protocol !== "legacy" && usesProfileRuntime(this.engine, workflow, run)))
       return this.native.execute(workflow, run, token);
+    const extraCheck = verifyAndResolveExecutionInstructions(
+      this.engine.store,
+      workflow.id,
+      run,
+      workflow.plan_revision,
+      planRecord.hash,
+    );
+    if (extraCheck.instructions?.text) {
+      throw new FlowError(
+        "LEGACY_RUNTIME_UNSUPPORTED",
+        "旧版运行时不支持带审批附加指令的执行，请使用原生模型配置",
+        400,
+      );
+    }
     reconcileImplementationProofs(this.engine, workflow.id);
     this.assertRun(workflow.id, run.id, ["EXECUTING"]);
     const directory = join(

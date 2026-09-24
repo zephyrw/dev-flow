@@ -6,6 +6,7 @@ export interface AppDialogProps {
   isOpen: boolean;
   onClose: () => void;
   title: string;
+  titleExtra?: React.ReactNode;
   subtitle?: string;
   width?: number | string;
   isDirty?: boolean;
@@ -18,6 +19,7 @@ export function AppDialog({
   isOpen,
   onClose,
   title,
+  titleExtra,
   subtitle,
   width = 720,
   isDirty = false,
@@ -103,9 +105,12 @@ export function AppDialog({
       >
         <div className="app-dialog-header">
           <div className="app-dialog-title-wrap">
-            <h2 id="app-dialog-title" className="app-dialog-title">
-              {title}
-            </h2>
+            <div className="app-dialog-title-row">
+              <h2 id="app-dialog-title" className="app-dialog-title">
+                {title}
+              </h2>
+              {titleExtra}
+            </div>
             {subtitle && (
               <p className="app-dialog-subtitle">{subtitle}</p>
             )}

@@ -109,7 +109,6 @@ describe("W06: 三阶段默认模型与工作流创建绑定测试", () => {
     const createService = new CreateWorkflowService(env.store, env.config);
     const wfResult1 = createService.execute({
       request_id: crypto.randomUUID(),
-      name: "测试任务1",
       request_text: "完成需求1",
       workspace_root: repo.repo,
     });
@@ -144,7 +143,6 @@ describe("W06: 三阶段默认模型与工作流创建绑定测试", () => {
     const repo2 = await repository(env.root, "repo2");
     const wfResult2 = createService.execute({
       request_id: crypto.randomUUID(),
-      name: "测试任务2",
       request_text: "完成需求2",
       workspace_root: repo2.repo,
     });

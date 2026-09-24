@@ -198,8 +198,8 @@ export function applyContinuationMaterials(
   continuation?: RunContinuation,
 ): Record<string, unknown> {
   if (!continuation) return fullMaterials;
-  if (continuation.kind === "intent_clarification")
-    return {
+  if (continuation.kind === "intent_clarification") {
+    const result: Record<string, unknown> = {
       instructions: INTENT_CLARIFICATION_INSTRUCTION,
       original_text: continuation.original_text,
       kind: continuation.kind,
@@ -207,6 +207,12 @@ export function applyContinuationMaterials(
       purpose: continuation.purpose,
       role: continuation.role,
     };
+    if (fullMaterials.approved_execution_instructions) {
+      result.approved_execution_instructions =
+        fullMaterials.approved_execution_instructions;
+    }
+    return result;
+  }
   if (continuation.kind === "user_answer")
     return {
       ...fullMaterials,

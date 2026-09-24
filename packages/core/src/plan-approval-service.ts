@@ -59,8 +59,14 @@ export class PlanApprovalService {
     const requestDigest = hash(
       canonical({
         workflowId,
+        action: "approve",
+        expectedVersion,
+        binding,
         documentId,
+        documentRevision,
+        documentHash,
         instructionsText: instructions.text,
+        instructionsHash: instructions.text_hash,
       }),
     );
 
@@ -180,10 +186,10 @@ export class PlanApprovalService {
       );
 
       const bindingHash = objectHash(binding);
-      if (
-        bindingHash !== objectHash(expectedBindingWithExtra) &&
-        bindingHash !== objectHash(expectedBindingDefault)
-      ) {
+      const isExtraMatched = bindingHash === objectHash(expectedBindingWithExtra);
+      const isDefaultMatched = bindingHash === objectHash(expectedBindingDefault);
+
+      if (!isExtraMatched && !isDefaultMatched) {
         throw new FlowError("BINDING_CHANGED", "计划已变化，请刷新后重新审批", 409);
       }
 
@@ -228,9 +234,10 @@ export class PlanApprovalService {
       this.engine.scheduler.enqueue(workflowId, w.project_id);
       this.engine.store.enqueue(workflowId, "dispatch", {});
 
+      const { proof: _proof, ...publicApproval } = approvalRecord;
       const response: PlanApprovalResponse = {
         workflow_id: workflowId,
-        approval: approvalRecord,
+        approval: publicApproval as PlanApprovalRecordV2,
         request_id: requestId,
         transitioned: true,
       };

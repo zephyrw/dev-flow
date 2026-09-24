@@ -33,17 +33,23 @@ export function createBaseServer(options: BaseServerOptions) {
       "模型令牌不能调用控制台操作",
       403,
     );
+  const isAllowedOrigin = (reqOrigin: string | undefined) =>
+    reqOrigin === origin.origin ||
+    reqOrigin === `http://127.0.0.1:${options.port}` ||
+    reqOrigin === `http://localhost:${options.port}`;
   app.addHook("onRequest", async (req, reply) => {
     const host = req.headers.host;
     requireCondition(
-      host === origin.host || host === `127.0.0.1:${options.port}`,
+      host === origin.host ||
+        host === `127.0.0.1:${options.port}` ||
+        host === `localhost:${options.port}`,
       "HOST_DENIED",
       "Host 不匹配",
       403,
     );
     if (req.headers.origin)
       requireCondition(
-        req.headers.origin === origin.origin,
+        isAllowedOrigin(req.headers.origin),
         "ORIGIN_DENIED",
         "Origin 不匹配",
         403,
@@ -59,7 +65,7 @@ export function createBaseServer(options: BaseServerOptions) {
     }
     if (req.headers.upgrade?.toLowerCase() === "websocket")
       requireCondition(
-        req.headers.origin === origin.origin,
+        isAllowedOrigin(req.headers.origin),
         "ORIGIN_DENIED",
         "事件流需要同源连接",
         403,
@@ -70,7 +76,7 @@ export function createBaseServer(options: BaseServerOptions) {
       !req.url.startsWith("/api/worker/")
     )
       requireCondition(
-        req.headers.origin === origin.origin &&
+        isAllowedOrigin(req.headers.origin) &&
           (options.writeContentTypeAllowed
             ? options.writeContentTypeAllowed(req.method, req.url, req.headers["content-type"])
             : req.headers["content-type"]?.startsWith("application/json")),

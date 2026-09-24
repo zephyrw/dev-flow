@@ -21,7 +21,7 @@ describe("W05: 任务归档与可见性 HTTP 接口集成测试", () => {
     const p = project(r.repo);
     await s.engine.registerProject(p);
 
-    const app = await buildServer(s.engine, s.config);
+    const app = await buildServer(s.engine);
 
     // 创建两个任务
     const w1 = s.engine.create(

@@ -9,6 +9,7 @@ import guideText from "../../../docs/guide/使用指南.md?raw";
 import { TaskTree, TestResults } from "./panels.js";
 import { useNativeProgress } from "./native-progress.js";
 import { CreateWorkflowModal } from "./components/CreateWorkflowModal.js";
+import { ToolModelDialog } from "./components/ToolModelDialog.js";
 import {
   SettingsDialog,
   type SettingsTabId,
@@ -26,6 +27,7 @@ import {
   type PlanReviewTarget,
 } from "./components/PlanReviewDialog.js";
 import { PlanApprovalDialog } from "./components/PlanApprovalDialog.js";
+import { type ApprovalTarget } from "./components/plan-approval-api.js";
 import { AgyAccountsDialog } from "./components/AgyAccountsDialog.js";
 import { AgyAccountsPage } from "./components/AgyAccountsPage.js";
 import {
@@ -1216,6 +1218,7 @@ interface CentralWorkspaceProps {
   detail: any;
   diff: any[];
   pending: boolean;
+  projects?: any[];
   refreshDiff: () => Promise<void>;
   refresh: () => Promise<void>;
   setFileDiff: (f: any) => void;
@@ -1232,6 +1235,7 @@ const CentralWorkspace = React.memo(
     detail,
     diff,
     pending,
+    projects = [],
     refreshDiff,
     refresh,
     setFileDiff,
@@ -1734,11 +1738,12 @@ function App() {
   }, [selected, tab]);
   const detailCache = useRef(new Map<string, any>());
   const savedCursors = useRef(new Map<string, number>());
+  const fetchVisibleFlows = () => api("/workflows?visibility=visible");
   const refresh = async () => {
     const key = selected;
     const [p, f, next, tree] = await Promise.all([
       api("/projects"),
-      api("/workflows"),
+      fetchVisibleFlows(),
       key ? api("/workflows/" + key) : Promise.resolve(null),
       key ? loadConversationTree(key) : Promise.resolve(null),
     ]);
@@ -1763,7 +1768,7 @@ function App() {
       });
   };
   useEffect(() => {
-    void Promise.all([api("/projects"), api("/workflows")])
+    void Promise.all([api("/projects"), fetchVisibleFlows()])
       .then(([p, f]) => {
         setProjects(p);
         setFlows(f);
@@ -1824,7 +1829,7 @@ function App() {
     const update = () => {
       clearTimeout(debounce);
       debounce = setTimeout(() => {
-        void Promise.all([api("/projects"), api("/workflows")])
+        void Promise.all([api("/projects"), api("/workflows?visibility=visible")])
           .then(([p, f]) => {
             if (!disposed) {
               setProjects(p);
@@ -1946,27 +1951,30 @@ function App() {
   });
   const approve = async (
     action: "approve" | "accept",
+    target?: ApprovalTarget,
     instructionsText?: string,
+    instructionsHash?: string,
+    requestId?: string,
   ) => {
-    const viewed = detail?.workflow;
-    if (!viewed || viewed.id !== selected)
+    const viewed = target ?? (detail?.workflow?.id === selected ? detail.workflow : null);
+    if (!viewed)
       throw Error("请先打开计划或验收内容。");
 
     const trimmed = instructionsText?.trim() ?? "";
     const reqBody: any = {
       schema_version: 2,
-      request_id: crypto.randomUUID(),
+      request_id: requestId || crypto.randomUUID(),
       binding: {
-        workflow_id: selected,
+        workflow_id: viewed.workflowId ?? viewed.id,
         action,
-        version: viewed.version,
-        plan_revision: viewed.plan_revision,
-        plan_hash: viewed.plan_hash ?? null,
-        snapshot_id: viewed.snapshot_id ?? null,
-        environment_revision: viewed.environment_revision,
-        extra: trimmed
+        version: viewed.workflowVersion ?? viewed.version,
+        plan_revision: viewed.planRevision ?? viewed.plan_revision,
+        plan_hash: viewed.planHash ?? viewed.plan_hash ?? null,
+        snapshot_id: viewed.snapshotId ?? viewed.snapshot_id ?? null,
+        environment_revision: viewed.environmentRevision ?? viewed.environment_revision,
+        extra: trimmed && instructionsHash
           ? {
-              execution_instructions_hash: "", // 服务端以重新计算的结果为准
+              execution_instructions_hash: instructionsHash,
             }
           : {},
       },
@@ -1979,7 +1987,8 @@ function App() {
       };
     }
 
-    await api(`/workflows/${selected}/${action}`, reqBody);
+    const targetWorkflowId = viewed.workflowId ?? viewed.id;
+    await api(`/workflows/${targetWorkflowId}/${action}`, reqBody);
     await refresh();
     setNotice(
       action === "approve"
@@ -2268,11 +2277,13 @@ function App() {
           </button>
         </div>
         <div className="project-list-nav">
-          {projects.map((p) => (
-            <div key={p.id} className="project-nav">
-              <span className="project-name">▱ {p.name}</span>
-              {flows
-                .filter((f) => f.project_id === p.id)
+          {projects
+            .filter((p) => flows.some((f) => f.project_id === p.id))
+            .map((p) => (
+              <div key={p.id} className="project-nav">
+                <span className="project-name">▱ {p.name}</span>
+                {flows
+                  .filter((f) => f.project_id === p.id)
                 .map((f) => (
                   <button
                     key={f.id}
@@ -2760,8 +2771,10 @@ function App() {
                             <WorkflowArchiveAction
                               workflowId={w.id}
                               workflowTitle={w.title}
-                              onArchived={() => {
-                                setSelected("");
+                              onArchived={(archivedId) => {
+                                if (selection.current === archivedId) {
+                                  setSelected("");
+                                }
                                 void refresh();
                                 setNotice(
                                   "任务已移入归档，可在“设置 -> 归档”中随时查看或恢复。",
@@ -2822,6 +2835,7 @@ function App() {
                       detail={detail}
                       diff={diff}
                       pending={pending}
+                      projects={projects}
                       refreshDiff={refreshDiff}
                       refresh={refresh}
                       setFileDiff={setFileDiff}
@@ -3096,15 +3110,17 @@ function App() {
           workflowVersion={planApprovalTarget.version}
           planRevision={planApprovalTarget.plan_revision}
           planHash={planApprovalTarget.plan_hash}
+          snapshotId={planApprovalTarget.snapshot_id}
+          environmentRevision={planApprovalTarget.environment_revision}
           planTitle={detail?.plan?.plan?.title}
           planSummary={detail?.plan?.plan?.summary}
           executorProfileDescription={
-            planApprovalTarget.role_overrides?.executor
-              ? `${planApprovalTarget.role_overrides.executor.tool} · ${planApprovalTarget.role_overrides.executor.model}`
+            detail?.execution_spec?.resolvedRoles?.executor
+              ? `${detail.execution_spec.resolvedRoles.executor.profile.adapterId} · ${detail.execution_spec.resolvedRoles.executor.profile.modelId}`
               : undefined
           }
-          onApprove={async (instructionsText) => {
-            await approve("approve", instructionsText);
+          onApprove={async (target, instructionsText, instructionsHash, requestId) => {
+            await approve("approve", target, instructionsText, instructionsHash, requestId);
             setPlanApprovalTarget(null);
           }}
         />

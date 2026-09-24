@@ -119,13 +119,16 @@ export function evaluateAccountForDemand(
   }
 
   // 5. 配额池与模型
+  // 按 observed_at 降序稳定排序，确保每池选取最新快照，输入顺序不改变结果
   const poolSnaps = new Map<string, AgyQuotaSnapshot>();
-  for (const s of snapshots) {
-    if (s.account_id === account.id) {
+  const accountSnapshots = snapshots
+    .filter((s) => s.account_id === account.id)
+    .slice()
+    .sort((a, b) => Date.parse(b.observed_at) - Date.parse(a.observed_at));
+
+  for (const s of accountSnapshots) {
+    if (!poolSnaps.has(s.pool_id)) {
       poolSnaps.set(s.pool_id, s);
-      if (!poolSnaps.has("global")) {
-        poolSnaps.set("global", s);
-      }
     }
   }
 
@@ -136,7 +139,13 @@ export function evaluateAccountForDemand(
   let hasZeroWindowProjected = false;
 
   for (const poolId of policy.required_pool_ids) {
-    const snap = poolSnaps.get(poolId) ?? (poolId === "global" ? poolSnaps.get("global") : undefined);
+    const snap =
+      poolSnaps.get(poolId) ??
+      (poolId === "global"
+        ? (poolSnaps.get("global") ??
+          poolSnaps.get("default") ??
+          poolSnaps.values().next().value)
+        : undefined);
     if (!snap) {
       excluded_reasons.push("missing_required_quota_pools");
       break;
@@ -144,11 +153,12 @@ export function evaluateAccountForDemand(
 
     if (policy.required_model_ids && policy.required_model_ids.length > 0) {
       const supportsAllModels = policy.required_model_ids.every((m) =>
-        snap.model_ids.includes(m) ||
-        snap.model_ids.includes("*") ||
-        snap.model_ids.length === 0 ||
-        snap.pool_id === "global" ||
-        poolId === "global",
+        snap.model_ids.some((pattern) => {
+          if (pattern === "*") return true;
+          if (pattern === m) return true;
+          if (pattern.endsWith("*")) return m.startsWith(pattern.slice(0, -1));
+          return false;
+        }),
       );
       if (!supportsAllModels) {
         excluded_reasons.push("model_not_supported_in_pool");

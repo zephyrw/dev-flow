@@ -33,10 +33,15 @@ export function migrateLegacyExecutorModel(defaults: ModelDefaults): ModelDefaul
   if (defaults.executorProfile.modelId !== LEGACY_PREFILL_EXECUTOR_MODEL) {
     return defaults;
   }
+  const nextRevision = (defaults.revision ?? 1) + 1;
+  const nextProfileRevision = (defaults.executorProfile.revision ?? 1) + 1;
   return ModelDefaultsSchema.parse({
     ...defaults,
+    revision: nextRevision,
+    updated_at: now(),
     executorProfile: {
       ...defaults.executorProfile,
+      revision: nextProfileRevision,
       modelId: PREFILL_EXECUTOR_MODEL,
     },
   });
@@ -116,7 +121,7 @@ function parseDefaults(raw: unknown): ModelDefaults {
   } else {
     input.reviewerBinding = { mode: "inherit" };
   }
-  return migrateLegacyExecutorModel(ModelDefaultsSchema.parse(input));
+  return ModelDefaultsSchema.parse(input);
 }
 
 function defaultsOperationId(requestId: string): string {
@@ -204,26 +209,23 @@ function committedReceipt(
 export class ModelDefaultsService {
   constructor(private store: Store) {}
 
-  getOrImport(config: Config): ModelDefaults {
+  getOrImport(config?: Config): ModelDefaults {
     return this.store.transaction(() => {
       const raw = this.store.get<unknown>(DEFAULTS_KIND, DEFAULTS_ID);
       if (raw) {
         const existing = parseDefaults(raw);
-        // parseDefaults 已做 legacy-import 3.7→3.8 迁移；若存储仍是旧值则回写。
-        const rawExecutor = (
-          (raw as Record<string, unknown>).executorProfile as
-            | Record<string, unknown>
-            | undefined
-        )?.modelId;
         if (
-          rawExecutor === LEGACY_PREFILL_EXECUTOR_MODEL &&
-          existing.executorProfile.modelId === PREFILL_EXECUTOR_MODEL
+          existing.source === "legacy-import" &&
+          existing.executorProfile.modelId === LEGACY_PREFILL_EXECUTOR_MODEL
         ) {
-          this.store.put(DEFAULTS_KIND, DEFAULTS_ID, "global", existing);
+          const migrated = migrateLegacyExecutorModel(existing);
+          this.store.put(DEFAULTS_KIND, DEFAULTS_ID, "global", migrated);
           this.store.event("global", "global", "model_defaults_migrated", {
-            revision: existing.revision,
-            executor: existing.executorProfile.modelId,
+            previous_revision: existing.revision,
+            revision: migrated.revision,
+            executor: migrated.executorProfile.modelId,
           });
+          return migrated;
         }
         return existing;
       }
@@ -251,7 +253,7 @@ export class ModelDefaultsService {
     return raw ? parseDefaults(raw) : undefined;
   }
 
-  private buildImported(config: Config): ModelDefaults {
+  private buildImported(config?: Config): ModelDefaults {
     return ModelDefaultsSchema.parse({
       schema_version: 2,
       revision: 1,

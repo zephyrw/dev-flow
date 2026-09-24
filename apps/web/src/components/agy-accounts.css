@@ -699,3 +699,48 @@
   line-height: 1.5;
 }
 
+/* 弹窗头部纯图标刷新按钮 */
+.agy-header-refresh-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border-radius: 6px;
+  border: 1px solid #e2e8f0;
+  background: #ffffff;
+  color: #64748b;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  margin-left: 4px;
+}
+
+.agy-header-refresh-btn:hover:not(:disabled) {
+  background: #f1f5f9;
+  color: #0284c7;
+  border-color: #cbd5e1;
+}
+
+.agy-header-refresh-btn:active:not(:disabled) {
+  transform: scale(0.95);
+}
+
+.agy-header-refresh-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.agy-header-refresh-btn.is-spinning svg {
+  animation: agy-spin 0.8s linear infinite;
+}
+
+@keyframes agy-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+

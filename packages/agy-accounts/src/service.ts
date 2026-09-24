@@ -435,6 +435,154 @@ export class AgyAccountService {
     };
   }
 
+  async syncActiveAccountFromHost(realmId = "default-agy-realm"): Promise<{
+    active_account_id: string | null;
+    matched: boolean;
+    email?: string;
+  }> {
+    let realm = this.repository.getRealm(realmId);
+    if (!realm) {
+      realm = {
+        realm_id: realmId,
+        owner: "devflow",
+        active_account_id: null,
+        auth_epoch: 0,
+        phase: "idle",
+        revision: 1,
+        service_state: "stopped",
+        desired_enabled: true,
+        control_generation: 0,
+      };
+      this.repository.saveRealm(realm);
+    }
+
+    let temporaryLockRelease: (() => Promise<void>) | undefined;
+    if (!this.authHost.isDomainLockHeld(realmId)) {
+      try {
+        const lockRes = await this.authHost.acquireDomainLock(realmId);
+        if (lockRes.acquired && lockRes.release) {
+          temporaryLockRelease = lockRes.release;
+        } else {
+          return { active_account_id: realm.active_account_id, matched: false };
+        }
+      } catch {
+        return { active_account_id: realm.active_account_id, matched: false };
+      }
+    }
+
+    try {
+      const inspection = await this.authHost.inspectActive(realmId);
+      if (!inspection.exists) {
+        if (realm.active_account_id) {
+          realm.active_account_id = null;
+          realm.active_secret_ref = undefined;
+          realm.auth_epoch++;
+          realm.revision++;
+          this.repository.saveRealm(realm);
+        }
+        return { active_account_id: null, matched: false };
+      }
+
+      const activeEmail = inspection.auth?.email?.toLowerCase();
+      const activeSub = inspection.auth?.subject;
+      const accounts = this.repository.listAccounts(realmId);
+      const matched = accounts.find(
+        (a) =>
+          (activeEmail && a.identity.email.toLowerCase() === activeEmail) ||
+          (activeSub && a.identity.subject === activeSub) ||
+          (inspection.secret_ref && a.secret_ref === inspection.secret_ref),
+      );
+
+      if (matched) {
+        if (realm.active_account_id !== matched.id) {
+          realm.active_account_id = matched.id;
+          realm.active_secret_ref = matched.secret_ref;
+          realm.auth_epoch++;
+          realm.revision++;
+          this.repository.saveRealm(realm);
+        }
+        return { active_account_id: matched.id, matched: true, email: matched.identity.email };
+      } else {
+        if (realm.active_account_id !== null) {
+          realm.active_account_id = null;
+          realm.active_secret_ref = undefined;
+          realm.auth_epoch++;
+          realm.revision++;
+          this.repository.saveRealm(realm);
+        }
+        return { active_account_id: null, matched: false, email: activeEmail };
+      }
+    } finally {
+      if (temporaryLockRelease) {
+        try {
+          await temporaryLockRelease();
+        } catch {
+          // ignore
+        }
+      }
+    }
+  }
+
+  async syncAndRefreshQuotas(realmId = "default-agy-realm") {
+    // 1. 同步对齐外部真实活动账号
+    await this.syncActiveAccountFromHost(realmId);
+    const realm = this.repository.getRealm(realmId);
+    const activeId = realm?.active_account_id;
+
+    // 2. 刷新当前活动账号的最新官方双额度
+    if (activeId) {
+      const activeAcc = this.repository.getAccount(realmId, activeId);
+      if (activeAcc) {
+        try {
+          const probeResult = await this.probe.probeUsage();
+          if (probeResult.capability_verified && probeResult.pools.length > 0) {
+            let complete = true;
+            for (const pool of probeResult.pools) {
+              complete &&= ["weekly", "five_hour"].every((k) =>
+                pool.windows.some(
+                  (w) =>
+                    w.kind === k &&
+                    w.status === "observed" &&
+                    w.remaining_fraction !== null,
+                ),
+              );
+              this.repository.saveQuotaSnapshot({
+                id: randomUUID(),
+                realm_id: realmId,
+                account_id: activeId,
+                auth_epoch: realm?.auth_epoch ?? 1,
+                pool_id: pool.pool_id,
+                model_ids: pool.model_ids,
+                plan_tier: probeResult.plan_tier,
+                source: "official_cli_usage",
+                cli_version: probeResult.cli_version,
+                parser_revision: 1,
+                executable_fingerprint: probeResult.executable_fingerprint,
+                capability_verified: probeResult.capability_verified,
+                observed_at: this.clock.toISOString(),
+                windows: pool.windows,
+              });
+            }
+            const observedState = !complete
+              ? "pending_quota"
+              : probeResult.pools.some((p) =>
+                    p.windows.some((w) => w.remaining_fraction === 0),
+                  )
+                ? "waiting_quota"
+                : "ready";
+            activeAcc.state = observedState;
+            activeAcc.last_used_at = this.clock.toISOString();
+            this.repository.saveAccount(activeAcc);
+          }
+        } catch {
+          // 探针失败不影响整体刷新返回
+        }
+      }
+    }
+
+    return this.getPresentation(realmId);
+  }
+
   getCapabilitySnapshot(): any {
     if (this.capabilitySnapshot) return this.capabilitySnapshot;
     return {
@@ -609,39 +757,26 @@ export class AgyAccountService {
     }
     this.ownedRealms.add(input.realmId);
 
-    // 2. 回读本地活动项
+    // 2. 回读本地活动项并智能对齐
     const inspection = await this.authHost.inspectActive(input.realmId);
-    if (
-      !realm.pending_operation_id &&
-      realm.active_secret_ref &&
-      !(await this.authHost.compareActive(
-        input.realmId,
-        realm.active_secret_ref,
-      ))
-    ) {
-      realm.service_state = "blocked";
-      realm.last_error = "external_change";
-      this.repository.saveRealm(realm);
-      throw new AccountServiceError("external_change");
-    }
-    if (
-      inspection.exists &&
-      !realm.active_account_id &&
-      inspection.account_id &&
-      inspection.secret_ref
-    ) {
-      const account = this.repository.getAccount(
-        input.realmId,
-        inspection.account_id,
-      );
-      if (
-        account &&
-        (await this.authHost.compareActive(input.realmId, account.secret_ref))
-      ) {
-        realm.active_account_id = account.id;
-        realm.active_secret_ref = account.secret_ref;
+    const activeEmail = inspection.auth?.email?.toLowerCase();
+    const activeSub = inspection.auth?.subject;
+    const allAccounts = this.repository.listAccounts(input.realmId);
+    const matchedAccount = allAccounts.find(
+      (a) =>
+        (activeEmail && a.identity.email.toLowerCase() === activeEmail) ||
+        (activeSub && a.identity.subject === activeSub) ||
+        (inspection.secret_ref && a.secret_ref === inspection.secret_ref),
+    );
+    if (matchedAccount) {
+      if (realm.active_account_id !== matchedAccount.id) {
+        realm.active_account_id = matchedAccount.id;
+        realm.active_secret_ref = matchedAccount.secret_ref;
         realm.auth_epoch++;
       }
+    } else if (!inspection.exists) {
+      realm.active_account_id = null;
+      realm.active_secret_ref = undefined;
     }
 
     const resumeIntent = realm.desired_enabled;
@@ -2222,8 +2357,7 @@ export class AgyAccountService {
       return;
     }
     const isReadOnlyEnrollOrProbe =
-      (op.kind === "enroll" && op.mode === "capture_current") ||
-      op.kind === "probe";
+      op.kind === "enroll" && op.mode === "capture_current";
     if (!isReadOnlyEnrollOrProbe) {
       const occupancy = (
         await Promise.all(this.consumers.map((c) => c.listOccupancy()))
@@ -2353,10 +2487,11 @@ export class AgyAccountService {
         state: result.account.state,
       };
       this.saveStep(op, "enrollment_saved");
-      if (op.mode === "capture_current" && !op.before_account_id) {
+      if (op.mode === "capture_current") {
         const current = this.repository.getRealm(op.realm_id)!;
         current.active_account_id = result.account.id;
         current.active_secret_ref = result.account.secret_ref;
+        current.auth_epoch++;
         current.revision++;
         this.repository.saveRealm(current);
         op.before_account_id = result.account.id;
@@ -2412,9 +2547,13 @@ export class AgyAccountService {
               this.initializeSettings(op.realm_id).probe_timeout_seconds * 1000,
           });
           this.assertOperation(op, signal);
+          const activeAuthEmail = (
+            await this.authHost.inspectActive(op.realm_id)
+          ).auth?.email;
+          const observedEmail = result.email ?? activeAuthEmail;
           if (
-            !result.email ||
-            result.email.toLowerCase() !== account.identity.email.toLowerCase()
+            !observedEmail ||
+            observedEmail.toLowerCase() !== account.identity.email.toLowerCase()
           )
             throw new AccountServiceError("identity_mismatch");
           const capture = await this.authHost.captureActive(op.realm_id, id);
@@ -2564,9 +2703,9 @@ export class AgyAccountService {
       auth_epoch: realm.auth_epoch,
     };
 
-    // CR17: 维护后安全恢复凭据后，核查原账号资格
+    // CR17: 维护后安全恢复凭据后，核查原账号资格（enroll 操作不因待验额度标记失败）
     let beforeEligible = true;
-    if (op.before_account_id) {
+    if (op.before_account_id && op.kind !== "enroll") {
       const beforeAcc = this.repository.getAccount(op.realm_id, op.before_account_id);
       if (!beforeAcc || beforeAcc.state !== "ready") {
         beforeEligible = false;

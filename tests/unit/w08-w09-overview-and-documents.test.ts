@@ -165,7 +165,7 @@ describe("W08 & W09: 概览业务摘要投影与文档下载修复测试 (D07/D0
 
     // 2. 调研结论与待决问题严格分离
     expect(overview.findings).toHaveLength(1);
-    expect(overview.findings[0].title).toContain("Node Readable Stream");
+    expect(overview.findings[0]?.title).toContain("Node Readable Stream");
     expect(overview.unresolved).toEqual([
       "是否需要同时支持 Excel .xlsx 格式",
     ]);
@@ -244,7 +244,7 @@ describe("W08 & W09: 概览业务摘要投影与文档下载修复测试 (D07/D0
       },
     });
 
-    const app = await buildServer(env.engine, env.config);
+    const app = await buildServer(env.engine);
 
     // 1. JSON 读取接口 (验证 D08 回退读取 `${wfId}-1` 成功)
     const jsonRes = await app.inject({

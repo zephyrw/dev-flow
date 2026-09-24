@@ -20,6 +20,10 @@ export function WorkflowArchiveAction({
       const visRes = await fetch(
         `/api/workflows/${encodeURIComponent(workflowId)}/visibility`,
       );
+      if (!visRes.ok) {
+        const err = await visRes.json().catch(() => ({}));
+        throw new Error(err.message || `读取可见性状态失败 (${visRes.status})`);
+      }
       const visData = await visRes.json().catch(() => ({}));
       const currentRev = visData.visibility?.revision ?? 0;
 

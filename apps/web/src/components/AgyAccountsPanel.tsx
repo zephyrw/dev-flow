@@ -1,4 +1,10 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useState,
+} from "react";
 import "./agy-accounts.css";
 import {
   formatQuotaWindow,
@@ -17,6 +23,11 @@ import {
   setAutomationEnabled,
   type AccountOperationView,
 } from "./agy-api.js";
+
+export interface AgyAccountsPanelHandle {
+  refresh: () => Promise<void>;
+  syncAndRefresh: () => Promise<void>;
+}
 
 interface Realm {
   revision: number;
@@ -78,7 +89,10 @@ function CompactQuotaBar({
   );
 }
 
-export function AgyAccountsPanel({ onDismiss }: { onDismiss?: () => void }) {
+export const AgyAccountsPanel = forwardRef<
+  AgyAccountsPanelHandle,
+  { onDismiss?: () => void }
+>(function AgyAccountsPanel({ onDismiss }, ref) {
   const [view, setView] = useState<AccountView | null>(null);
   const [service, setService] = useState<ServiceView | null>(null);
   const [error, setError] = useState("");
@@ -104,6 +118,38 @@ export function AgyAccountsPanel({ onDismiss }: { onDismiss?: () => void }) {
       setError(e instanceof Error ? e.message : String(e));
     }
   }, []);
+
+  const syncAndRefresh = useCallback(async () => {
+    setError("");
+    try {
+      const [updatedView, serviceData] = await Promise.all([
+        agyApi<AccountView>("/sync-refresh", { method: "POST" }),
+        agyApi<ServiceView>("/service"),
+      ]);
+      setView(updatedView);
+      setService(serviceData);
+
+      const runningOp = serviceData.operations.find(
+        (op) => !terminalOperation(op.phase),
+      );
+      setActiveOperation(runningOp ?? null);
+      setNotice("已刷新当前活动账号与额度");
+      setTimeout(() => setNotice(""), 3000);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "刷新账号与额度失败";
+      setError(msg);
+      throw e;
+    }
+  }, []);
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      refresh,
+      syncAndRefresh,
+    }),
+    [refresh, syncAndRefresh],
+  );
 
   useEffect(() => {
     void refresh();
@@ -396,4 +442,4 @@ export function AgyAccountsPanel({ onDismiss }: { onDismiss?: () => void }) {
       />
     </div>
   );
-}
+});

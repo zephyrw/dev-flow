@@ -12,7 +12,7 @@ import {
   publishProjectMaterialSafely,
   readProjectMaterialByLocator,
 } from "./project-materials.js";
-import { bindProfile, buildDispatchContext, isLegacyProtocol, type RunPurpose } from "./run-profile.js";
+import { bindProfile, buildDispatchContext, isLegacyProtocol, latestSpec, type RunPurpose } from "./run-profile.js";
 import type { DispatchContext } from "../../contracts/src/model-routing.js";
 import { bindRepairAssignment, closeOpenRepairBatches } from "./repair-model-service.js";
 import { QualityCoordinator } from "./quality-coordinator.js";
@@ -307,6 +307,7 @@ export class Engine {
     return {
       workflow: w,
       runtime: currentRunObservation(this.store, w),
+      execution_spec: latestSpec(this.store, key) ?? null,
       human_accepted: this.displayHumanAccepted(key),
       attention: workflowAttention(this, key),
       loading: true,
@@ -388,6 +389,7 @@ export class Engine {
     const baseDetail = {
       workflow: w,
       runtime: currentRunObservation(this.store, w),
+      execution_spec: latestSpec(this.store, key) ?? null,
       human_accepted: this.displayHumanAccepted(key),
       attention: workflowAttention(this, key),
       executor_plan_check: this.planSelfCheck.current(key) ?? null,

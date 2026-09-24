@@ -320,16 +320,27 @@ export class ProfileRuntime {
         `${request.source_commit}...${request.candidate_commit}`,
       ]);
     } catch {}
+    const { instructions: extraInstructions, payload: extraPayload } =
+      verifyAndResolveExecutionInstructions(
+        this.engine.store,
+        w.id,
+        run,
+        w.plan_revision,
+        plan.hash,
+      );
+    const extraInstructionsPrompt =
+      formatExecutionInstructionsForPrompt(extraInstructions);
     const materials = {
       instructions: [
         executionScopeInstructions,
         "合并发生代码冲突。严格在原批准计划和正式整改范围内解决冲突，主动补齐解决冲突所必需的接线与调整，同时保留双方有效需求。禁止统一使用 ours/theirs、reset、stash 或删除历史。完成后返回结构化回执，不得自行提交 Git 或删除工作树。",
-      ].join("\n\n"),
+      ].join("\n\n") + extraInstructionsPrompt,
       workflow: w,
       run,
       request,
       request_id: request.id,
       plan,
+      ...(extraPayload ? { approved_execution_instructions: extraPayload } : {}),
       conflict_paths: request.conflict_paths,
       merge_head: request.source_commit,
       candidate_commit: request.candidate_commit,
@@ -573,6 +584,10 @@ export class ProfileRuntime {
   }
   private continuationMaterials(materials: Record<string, unknown>, run: Run) {
     const continuation = this.readContinuation(run);
+    const extraInstructions = (materials.approved_execution_instructions as any)?.instructions;
+    const extraInstructionsPrompt = extraInstructions
+      ? formatExecutionInstructionsForPrompt(extraInstructions)
+      : "";
     if (continuation && !continuationSessionToResume(this.engine.store, run)) {
       // A changed binding gets a fresh native session with the complete handoff.
       // Keep the original intent; never ask the new model to repeat completed work.
@@ -583,11 +598,18 @@ export class ProfileRuntime {
         questions: continuation.questions,
         answer: continuation.answer,
         ...(continuation.kind === "intent_clarification" ? {
-          instructions: INTENT_CLARIFICATION_INSTRUCTION + "。依据交接中的原文和完整背景判断上一轮结果，不重新执行已完成的开发或测试。",
+          instructions:
+            INTENT_CLARIFICATION_INSTRUCTION +
+            "。依据交接中的原文和完整背景判断上一轮结果，不重新执行已完成的开发或测试。" +
+            extraInstructionsPrompt,
         } : {}),
       };
     }
-    return applyContinuationMaterials(materials, continuation);
+    const applied = applyContinuationMaterials(materials, continuation);
+    if (materials.approved_execution_instructions && !applied.approved_execution_instructions) {
+      applied.approved_execution_instructions = materials.approved_execution_instructions;
+    }
+    return applied;
   }
   private async invoke(
     w: Workflow,

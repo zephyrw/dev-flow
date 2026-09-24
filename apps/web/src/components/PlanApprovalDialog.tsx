@@ -1,5 +1,10 @@
 import React, { useState, useEffect, useRef } from "react";
 import { AppDialog } from "./AppDialog.js";
+import {
+  ApprovalTarget,
+  normalizeInstructionsText,
+  computeInstructionsHash,
+} from "./plan-approval-api.js";
 
 export interface PlanApprovalDialogProps {
   isOpen: boolean;
@@ -8,10 +13,17 @@ export interface PlanApprovalDialogProps {
   workflowVersion: number;
   planRevision: number;
   planHash: string | null;
+  snapshotId?: string | null;
+  environmentRevision?: number;
   planTitle?: string;
   planSummary?: string;
   executorProfileDescription?: string;
-  onApprove: (instructionsText: string) => Promise<void>;
+  onApprove: (
+    target: ApprovalTarget,
+    instructionsText: string,
+    instructionsHash: string,
+    requestId: string,
+  ) => Promise<void>;
 }
 
 interface DraftRecord {
@@ -29,6 +41,8 @@ export function PlanApprovalDialog({
   workflowVersion,
   planRevision,
   planHash,
+  snapshotId,
+  environmentRevision,
   planTitle,
   planSummary,
   executorProfileDescription,
@@ -42,11 +56,32 @@ export function PlanApprovalDialog({
   );
   const isComposingRef = useRef(false);
 
+  const frozenTargetRef = useRef<ApprovalTarget | null>(null);
+  const currentRequestIdRef = useRef<string>(crypto.randomUUID());
+  const lastNormalizedTextRef = useRef<string>("");
+
   const storageKey = `devflow_approval_draft_${workflowId}`;
 
-  // 打开时初始化草稿
+  // 打开时锁定不可变目标并初始化草稿
   useEffect(() => {
-    if (!isOpen) return;
+    if (!isOpen) {
+      frozenTargetRef.current = null;
+      return;
+    }
+    const target: ApprovalTarget = {
+      workflowId,
+      workflowVersion,
+      planRevision,
+      planHash,
+      snapshotId,
+      environmentRevision,
+      planTitle,
+      planSummary,
+      executorProfileDescription,
+    };
+    frozenTargetRef.current = target;
+    currentRequestIdRef.current = crypto.randomUUID();
+    lastNormalizedTextRef.current = "";
     setError(null);
     setPlanMismatchNotice(null);
 
@@ -73,7 +108,27 @@ export function PlanApprovalDialog({
     } catch {
       setText("");
     }
-  }, [isOpen, workflowId, planRevision, planHash, storageKey]);
+  }, [
+    isOpen,
+    workflowId,
+    workflowVersion,
+    planRevision,
+    planHash,
+    snapshotId,
+    environmentRevision,
+    planTitle,
+    planSummary,
+    executorProfileDescription,
+    storageKey,
+  ]);
+
+  // 检测外部目标变化（防止背景变更导致误审批）
+  const isTargetStale =
+    frozenTargetRef.current !== null &&
+    (frozenTargetRef.current.workflowId !== workflowId ||
+      frozenTargetRef.current.planRevision !== planRevision ||
+      frozenTargetRef.current.planHash !== planHash ||
+      frozenTargetRef.current.workflowVersion !== workflowVersion);
 
   // 草稿自动保存
   const handleTextChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -92,12 +147,23 @@ export function PlanApprovalDialog({
   };
 
   const handleSubmit = async () => {
-    if (isSubmitting) return;
+    if (isSubmitting || !frozenTargetRef.current || isTargetStale) return;
     setIsSubmitting(true);
     setError(null);
 
     try {
-      await onApprove(text);
+      const normalized = normalizeInstructionsText(text);
+      if (normalized !== lastNormalizedTextRef.current) {
+        lastNormalizedTextRef.current = normalized;
+        currentRequestIdRef.current = crypto.randomUUID();
+      }
+      const hash = normalized ? await computeInstructionsHash(normalized) : "";
+      await onApprove(
+        frozenTargetRef.current,
+        normalized,
+        hash,
+        currentRequestIdRef.current,
+      );
       try {
         sessionStorage.removeItem(storageKey);
       } catch {}

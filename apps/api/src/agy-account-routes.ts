@@ -80,6 +80,15 @@ export function registerAgyAccountRoutes(
       settings: publicSettings(view.settings),
     };
   });
+  app.post("/api/agy-accounts/sync-refresh", async (req, reply) => {
+    human(req);
+    const view = await service.syncAndRefreshQuotas(realmId);
+    return reply.code(200).send({
+      ...view,
+      accounts: view.accounts.map((a) => AgyAccountDtoSchema.parse(a)),
+      settings: publicSettings(view.settings),
+    });
+  });
   app.get("/api/agy-accounts/service", async (req) => {
     human(req);
     const view = service.getPresentation(realmId);
@@ -110,7 +119,7 @@ export function registerAgyAccountRoutes(
       capability: view.capability,
       operations: repo
         .listOperations(realmId)
-        .sort((a, b) => b.created_at.localeCompare(a.created_at))
+        .sort((a: any, b: any) => b.created_at.localeCompare(a.created_at))
         .slice(0, 100)
         .map(publicAccountOperation),
     };
@@ -296,7 +305,7 @@ export function registerAgyAccountRoutes(
     requireCondition(repo.getAccount(realmId, id), "NOT_FOUND", "账号不存在", 404);
     const all = repo.listQuotaHistory(id, 1000);
     const offset = query.after
-      ? all.findIndex((item) => item.id === query.after) + 1
+      ? all.findIndex((item: any) => item.id === query.after) + 1
       : 0;
     const items = all.slice(offset, offset + query.limit);
     return {

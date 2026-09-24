@@ -323,7 +323,7 @@ export function ModelProfileEditor({
     update({
       modelSelection: "explicit",
       modelId: trimmed,
-      selectionKind: "custom-model-id",
+      selectionKind: "fixed",
       reasoning: { mode: "not-applicable" },
     });
   };
@@ -334,13 +334,13 @@ export function ModelProfileEditor({
     const isResidual =
       Boolean(profile.modelId) &&
       !currentChoice &&
-      profile.selectionKind !== "custom-model-id" &&
+      profile.modelSelection !== "explicit" &&
       ((adapter !== "agy" && /^gemini-/i.test(profile.modelId!)) ||
         (adapter !== "codex" && adapter !== "opencode" && /^gpt-6-astra$/i.test(profile.modelId!)));
     if (!profile.modelId || isResidual) {
       selectChoice(choices[0]!);
     }
-  }, [choices, profile.modelId, currentChoice, profile.selectionKind, adapter, disabled]);
+  }, [choices, profile.modelId, currentChoice, profile.modelSelection, adapter, disabled]);
 
   const changeEffort = (effortValue: string) => {
     if (!effortValue || effortValue === "default") {

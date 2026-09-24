@@ -219,6 +219,14 @@ export class AgyWorkflowBridge implements AccountConsumerPort {
     const frozen = run.frozen_invocation ?? run.model_binding?.frozen_invocation;
     if (!this.engine || !run.profile || !frozen || frozen.adapterId !== "agy" || frozen.modelToken !== modelId)
       throw new FlowError("AGY_ACCOUNT_BINDING_MISSING", "受管执行缺少一致的冻结模型配置", 409);
+
+    // 核心安全保障：新开启任务或从暂停中恢复任务时，自动重新获取并更新一次当前 AGY 的活动账号，避免中间在桌面端切换账号导致双账号冲突
+    try {
+      await this.accountService.syncActiveAccountFromHost("default-agy-realm");
+    } catch {
+      // 容错防崩
+    }
+
     const access = new ModelAccessService(this.engine.store);
     access.assertFrozenAccess(run.profile, frozen);
     const repository = this.accountService.getRepository();
@@ -284,6 +292,9 @@ export class AgyWorkflowBridge implements AccountConsumerPort {
 
   // 为即将启动的 AGY 任务申请执行许可
   async prepareRun(req: FrozenAgyRunRequest): Promise<AgyRunBinding> {
+    try {
+      await this.accountService.syncActiveAccountFromHost("default-agy-realm");
+    } catch {}
     const permit: UsagePermit = await this.accountService.acquireUsagePermit({
       realm_id: "default-agy-realm",
       consumer_id: req.run_id,

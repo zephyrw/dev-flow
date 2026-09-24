@@ -243,7 +243,7 @@ export class AgyAccountProbe implements AccountProbePort {
                 windows: parsed.windows,
               },
             ];
-        const valid = !!parsed.email && hasWindows;
+        const valid = hasWindows && (!!parsed.email || parsed.pools.length > 0);
         return {
           email: parsed.email,
           plan_tier: parsed.plan_tier,
