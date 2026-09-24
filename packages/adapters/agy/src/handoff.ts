@@ -15,6 +15,7 @@ const nativeTestingInstructions =
   "测试采用单元、集成、E2E 三层，仅 test_exemptions 中已批准的不适用项可豁免。" +
   "E2E 覆盖新需求全部业务流程，以及真实差异、上下游和共享依赖影响的旧功能回归。" +
   "Web E2E 必须用真实浏览器连接真实应用、后端和测试数据；仅 API、jsdom、截图或整链路 mock 不算完整 E2E。" +
+  "涉及前端影响的任务，执行模型还必须额外使用 OpenTabs 真实浏览器完成一轮仿人工核验，查看关键截图、校验布局并核对实际显示的数据；普通本地场景免密优先；确需人工介入时发出 user_interaction 挂起等待；新 worktree 端口独立且临时配置绝不提交。" +
   "仍保留用户功能确认。诚实报告真实测试情况；跳过、零用例、恒真断言和旧报告不能算通过。平台不核验测试证明。";
 
 export function containerHandoffFiles(directory: string) {

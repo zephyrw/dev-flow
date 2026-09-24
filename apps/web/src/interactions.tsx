@@ -24,6 +24,9 @@ import {
   useProjectAsides,
   writeAsidePromoteDraft,
 } from "./use-project-asides.js";
+import { UserInteractionDialog } from "./components/UserInteractionDialog.js";
+import { getCurrentUserInteraction } from "./components/user-interaction-api.js";
+import type { UserInteractionRecord } from "../../../packages/contracts/src/user-interaction.js";
 import "./components/aside-popover.css";
 
 export function TaskInteraction({
@@ -80,6 +83,34 @@ export function TaskInteraction({
     window.addEventListener("devflow-open-guidance", focus);
     return () => window.removeEventListener("devflow-open-guidance", focus);
   }, [w.id]);
+
+  const [interaction, setInteraction] = useState<UserInteractionRecord | null>(null);
+  const [interactionOpen, setInteractionOpen] = useState(false);
+  const [dismissedInteractionId, setDismissedInteractionId] = useState<string>("");
+
+  useEffect(() => {
+    let cancelled = false;
+    const fetchInteraction = async () => {
+      try {
+        const item = await getCurrentUserInteraction(w.id);
+        if (cancelled) return;
+        setInteraction(item);
+        if (item && item.status === "pending") {
+          if (dismissedInteractionId !== item.id) {
+            setInteractionOpen(true);
+          }
+        } else {
+          setInteractionOpen(false);
+        }
+      } catch {
+        // 忽略非关键网络错误
+      }
+    };
+    void fetchInteraction();
+    return () => {
+      cancelled = true;
+    };
+  }, [w.id, w.state, dismissedInteractionId]);
 
   useEffect(() => {
     if (w.state !== "HUMAN_PENDING") return;
@@ -228,6 +259,45 @@ export function TaskInteraction({
             继续自动排查
           </button>
         )}
+      {interaction && interaction.status === "pending" && !interactionOpen && (
+        <div className="user-interaction-pending-banner">
+          <span>模型请求协助：{interaction.request.title}</span>
+          <button
+            type="button"
+            className="btn btn-primary"
+            onClick={() => setInteractionOpen(true)}
+          >
+            处理请求
+          </button>
+        </div>
+      )}
+
+      <UserInteractionDialog
+        workflowId={w.id}
+        interaction={interaction}
+        isOpen={interactionOpen}
+        onClose={() => {
+          setInteractionOpen(false);
+          if (interaction) setDismissedInteractionId(interaction.id);
+        }}
+        onResponded={async () => {
+          setInteractionOpen(false);
+          setInteraction(null);
+          await refresh();
+          try {
+            const nextItem = await getCurrentUserInteraction(w.id);
+            setInteraction(nextItem);
+            if (nextItem && nextItem.status === "pending") {
+              setInteractionOpen(true);
+            }
+          } catch {
+            // 忽略刷新异常
+          }
+        }}
+        rootConversationId={rootConversationId}
+        expectedGeneration={expectedGeneration}
+      />
+
       {requests.map((request: any) => (
         <AuthorizationCard
           key={request.id}

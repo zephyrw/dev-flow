@@ -97,9 +97,11 @@ import {
   asideRecoveryGuidance,
   batchExecutionInstructions,
   executeRecoveryGuidance,
+  getExecutionSkillResources,
   planningRecoveryGuidance,
   repairRecoveryGuidance,
   reviewRecoveryGuidance,
+  shouldIncludeExecutionTestingSkill,
   type RecoveryGuidanceAttachment,
   type RecoveryGuidanceOptions,
 } from "../../core/src/execution-guidance.js";
@@ -425,7 +427,7 @@ export class ProfileRuntime {
     return applyPlanningHandoffMaterials(
       {
         instructions:
-          "你是规划模型。读取需求及引用的真实工作区文件，返回唯一正式计划。包含完整需求、确定实施步骤、单元/集成/E2E场景及受影响旧功能回归；等待用户批准后才实施。只读，不修改代码。如果提供 current_plan，须在同一任务中按用户的规划反馈修正该计划，逐条回应修改意见并提交完整新版，不能自行批准或启动实施。",
+          "你是规划模型。读取需求及引用的真实工作区文件，返回唯一正式计划。包含完整需求、确定实施步骤、单元/集成/E2E场景、前端仿人工真实浏览器核验场景、认证判定及受影响旧功能回归；等待用户批准后才实施。只读，不修改代码。如果提供 current_plan，须在同一任务中按用户的规划反馈修正该计划，逐条回应修改意见并提交完整新版，不能自行批准或启动实施。",
         current_plan: w.plan_revision
           ? readPlanMaterial(this.engine.store, w.id, w.plan_revision)
           : null,
@@ -451,12 +453,15 @@ export class ProfileRuntime {
     const assignment = this.engine.store.get<any>("repair_assignment", w.id);
     const repair = !policy2 || (assignment && assignment.assignment_id === run.assignment_id)
       ? assignment : null;
+    const includeTestingSkills = shouldIncludeExecutionTestingSkill(purpose, run.routing_role);
+    const executionSkills = includeTestingSkills ? getExecutionSkillResources() : undefined;
     return this.continuationMaterials(
       {
         instructions: roleSpecific
           ? (purpose === "planner_commit" ? "" : executionScopeWithoutTests) + roleBoundaryInstructionsFor(purpose)
           : executionScopeInstructions + "完成本轮开发或整改及必要测试后交代码复核，不自行提交 Git，不代替人工验收。",
         ...(roleSpecific ? {} : { execution_order: batchExecutionInstructions }),
+        ...(executionSkills ? { skill_resources: executionSkills } : {}),
         workflow: w,
         run,
         plan,
@@ -474,7 +479,7 @@ export class ProfileRuntime {
           ? this.engine.store.get("planner_integration_repair", w.id) ?? null : null,
         completion_instruction: purpose === "planner_commit" && policy2
           ? "完成实际提交后输出 JSON {status, summary, repositories: [{repo_id, commit}]}；无须新提交时在摘要说明。需要代码修复报告 need_planner；需要用户协助报告 need_user。"
-          : "最终输出 JSON {status, summary, notes, artifacts}。status 只能是 completed、need_planner 或 need_user。未知状态不会被当成完成。",
+          : "最终输出 JSON {status, summary, notes, artifacts, user_interaction}。status 只能是 completed、need_planner 或 need_user。若需要人工操作或提问，返回 status 为 need_user 并在 user_interaction 中填入结构化请求。未知状态不会被当成完成。",
       },
       run,
     );

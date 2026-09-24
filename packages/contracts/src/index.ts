@@ -828,3 +828,4 @@ export * from "./conversation-guidance.js";
 export * from "./run-observation.js";
 export * from "./session-binding.js";
 export * from "./review-output.js";
+export * from "./user-interaction.js";

@@ -45,16 +45,18 @@ description: 按 DevFlow 或用户指定的已有计划、整改文档执行开�
 
 按 `../devflow-test/SKILL.md` 执行单元、集成、E2E 三层测试；各层默认必需，只有计划已批准的不适用项可豁免。E2E 必须覆盖新需求的全部业务流程及真实 diff、上下游和共享依赖识别出的受影响旧功能回归。用户反馈修复需加入缺陷回归并检查受影响旧流程。
 
+涉及前端影响的任务，在完成正式开发与三层测试代码后，执行模型还必须使用 OpenTabs 原生工具操作真实浏览器，完成一轮仿人工真实核验；普通 E2E、Mock 页面不能替代这一轮。本地场景与身份无关时优先匿名或免密开发会话；确需人工登录或回答时发出 `need_user` 交互弹窗。详见 [真实浏览器核验规范](../devflow-test/references/real-browser-verification.md) 与 [本地免密与认证策略规范](../devflow-test/references/local-auth-strategy.md)。
+
 Web E2E 使用真实浏览器访问真实应用、后端与测试数据；仅接口请求、jsdom、整条业务链的 mock、截图或页面可见不算完整 Web E2E。人工功能确认仍由用户完成，不能用 E2E 报告代签。
 
 诚实报告真实测试情况。零用例、跳过、漏场景、恒真断言、旧报告不算通过。
 
-## Worktree 路径与工作区隔离规范
+## Worktree 路径、端口与本地环境隔离规范
 
 涉及独立 worktree 执行时，严格遵守以下红线约束：
-1. **统一收敛至 `.worktrees/`**：独立 worktree 必须且仅能在主工作区根目录下的 `.worktrees/` 子目录内创建（如 `<source_root>/.worktrees/<workflow_id>/<repo_id>` 或 `<source_root>/.worktrees/<branch_or_id>`），严禁在主工作区同级或随意外部路径新建 worktree。
-2. **严禁破坏主工作区分支与状态**：所有分支检出、文件修改和提交操作必须完全在指定的 `.worktrees/<dir>` 独立工作区中进行；严禁在主工作区（主仓库根目录）直接执行 `git checkout` 切换分支，绝不得干扰主工作区正在进行的其他任务或未提交修改。
-3. **保持版本控制隔离**：确保主工作区 `.gitignore` 中包含 `.worktrees/`，避免外部构建、工作树或临时文件污染版本库。
+1. **工作区分支与状态保护**：所有分支检出、文件修改和提交操作必须完全在指定的独立 worktree 工作区中进行；严禁在主工作区（主仓库根目录）直接执行 `git checkout` 切换分支，绝不得干扰主工作区正在进行的其他任务或未提交修改。
+2. **前后端与调试端口独立**：每个新增 worktree 的前端、后端、测试（如 Playwright E2E fixture server）及调试端口必须与主工作区（默认前端 5173、后端 4810）及其他兄弟 worktree 互不冲突。端口对应的 API 代理、WebSocket、HMR、测试 baseURL 和后端允许的本地开发 Origin 必须同步指向当前实例。
+3. **临时配置绝不提交或合并**：本地运行器生成的 `instance.json`、`devflow.runtime.yaml`、临时数据库和端口登记等仅保存在 `.cache/devflow-local/` 等未跟踪且被忽略的路径中；严禁将临时端口硬编码到版本控制的默认配置中，更不得合并回主分支。提交前必须检查暂存 diff。详见 [worktree 本地环境与端口隔离规范](references/worktree-local-environment.md)。
 
 ## 原生执行
 
@@ -64,8 +66,9 @@ Web E2E 使用真实浏览器访问真实应用、后端与测试数据；仅接
 2. 使用原生终端自主运行编译、数据库迁移、服务启动与测试框架（Vitest, JUnit, Playwright 等）。
 3. 同执行模型的开发、自测、整改、功能修复与新批次续接同一 CLI 主会话，首次 init 确认后持久化，不随意另开新会话；子 Agent 事件不覆盖主会话根。
 4. 在批准范围内完成全部实现和测试代码后，派发多个子 Agent 并行运行独立测试目标；各自负责相关修复与重跑。主 Agent 协调共享代码和资源冲突，汇总实际结果。
-5. 完成开发和自测后说明本轮结果，直接交代码审查。完成时输出 `{status:"completed", summary, notes, artifacts}`；需要规划澄清用 `need_planner`；需要用户输入用 `need_user`。外层 status 优先于 delivery 附件，部分实现材料不能覆盖求助。不要输出未知状态；未知输出会在原会话补问，不要让用户代填 completed。若平台只要求补充刚才这轮的结果意图，只输出 status 与 summary，不要重新完成全部开发或测试。可附报告路径或摘要，不为调用 ID、清单或 hash 重跑测试。不要在完成后继续改代码。平台默认相信已测试，不要求证明测试真实性。
-6. 若发现不可调和的架构、数据或外部接口冲突，提交具体证据，由规划模型修订方案。
+5. 完成开发和自测后说明本轮结果，直接交代码审查。完成时输出 `{status:"completed", summary, notes, artifacts}`；需要规划澄清用 `need_planner`；需要用户输入用 `need_user`。若需要人工在浏览器中完成登录/操作或需要用户回答明确业务问题，在 `need_user` 输出中附带结构化 `user_interaction` 字段（包含 `kind: "action_required" | "question"`、标题、原因、安全 URL、停留定位与恢复提示等）。发起登录请求前停止敏感页面的录制与抓包；本轮结束释放资源，不后台轮询；用户确认后续接原执行上下文，先复查页面与登录事实再继续；执行模型严禁代点自己发起的人工确认。详见 [通用人机交互规范](references/user-interaction.md)。
+6. 外层 status 优先于 delivery 附件，部分实现材料不能覆盖求助。不要输出未知状态；未知输出会在原会话补问，不要让用户代填 completed。若平台只要求补充刚才这轮的结果意图，只输出 status 与 summary，不要重新完成全部开发或测试。可附报告路径或摘要，不为调用 ID、清单或 hash 重跑测试。不要在完成后继续改代码。平台默认相信已测试，不要求证明测试真实性。
+7. 若发现不可调和的架构、数据或外部接口冲突，提交具体证据，由规划模型修订方案。
 
 历史 leaf-v1 材料仍可读；新轮次统一走上述轻量完成路径，不再按逐项 claim、freeze、run_check、finish 或平台代跑测试作为完成条件。
 

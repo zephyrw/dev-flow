@@ -26,7 +26,14 @@ const accountService = await bootstrapAccountService(store, {
 });
 const bridge = runtime.attachAccountService(accountService);
 
-const app = await buildServer(engine, { accountService });
+const developmentFrontendOrigin =
+  process.env.DEVFLOW_LOCAL_DEV === "1"
+    ? process.env.DEVFLOW_DEV_FRONTEND_ORIGIN?.trim()
+    : undefined;
+const app = await buildServer(engine, {
+  accountService,
+  developmentFrontendOrigin,
+});
 try {
   await app.listen({ host: config.server.host, port: config.server.port });
 } catch (e) {

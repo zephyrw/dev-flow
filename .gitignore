@@ -37,3 +37,7 @@ __pycache__/
 
 # Local review scratch files and source snapshots
 /scratch/
+
+# Local worktree temporary configs, ports and runtime state
+.cache/devflow-local/
+devflow-local/

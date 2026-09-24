@@ -84,6 +84,8 @@ import { projectAsidesPlugin } from "./routes/project-asides.js";
 import { conversationPlugin } from "./routes/conversations.js";
 import { conversationControlPlugin } from "./routes/conversation-controls.js";
 import { conversationMessagePlugin } from "./routes/conversation-messages.js";
+import { userInteractionPlugin } from "./routes/user-interactions.js";
+import { UserInteractionService } from "../../../packages/core/src/user-interaction-service.js";
 import { ConversationFileService } from "../../../packages/core/src/conversation-files.js";
 import {
   ConversationControlService,
@@ -107,11 +109,16 @@ import {
 
 export async function buildServer(
   engine: Engine,
-  options: { webRoot?: string; accountService?: AgyAccountService } = {},
+  options: {
+    webRoot?: string;
+    accountService?: AgyAccountService;
+    developmentFrontendOrigin?: string;
+  } = {},
 ) {
   const { app, humanCheck: human } = createBaseServer({
     get port() { return engine.config.server.port; },
     humanOrigin: engine.config.server.human_origin,
+    developmentFrontendOrigin: options.developmentFrontendOrigin,
     mode: "full", storageInstance: engine.config.storage_root, registerStatic: false,
     errorRetryable: modelErrorRetryable,
     writeContentTypeAllowed,
@@ -210,6 +217,12 @@ export async function buildServer(
         return result;
       },
     } as ConversationMessageService,
+    human,
+  });
+  const userInteractionService = new UserInteractionService(engine.store);
+  await app.register(userInteractionPlugin, {
+    interactionService: userInteractionService,
+    engine,
     human,
   });
 

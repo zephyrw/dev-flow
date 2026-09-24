@@ -13,6 +13,7 @@ import { hash } from "../../../packages/core/src/util.js";
 export interface BaseServerOptions {
   port: number;
   humanOrigin: string;
+  developmentFrontendOrigin?: string;
   mode: "accounts" | "full";
   features?: { workflows: boolean; agy_accounts: boolean };
   webRoot?: string;
@@ -24,6 +25,29 @@ export interface BaseServerOptions {
 export function createBaseServer(options: BaseServerOptions) {
   const app = Fastify({ logger: false, bodyLimit: 8 * 1024 * 1024 });
   const origin = new URL(options.humanOrigin);
+  const isDev =
+    process.env.NODE_ENV !== "production" &&
+    process.env.DEVFLOW_LOCAL_DEV === "1";
+  let devFrontendUrl: URL | undefined;
+  if (isDev && options.developmentFrontendOrigin) {
+    try {
+      devFrontendUrl = new URL(options.developmentFrontendOrigin);
+      if (
+        devFrontendUrl.hostname !== "127.0.0.1" &&
+        devFrontendUrl.hostname !== "localhost"
+      ) {
+        devFrontendUrl = undefined;
+      }
+    } catch {
+      devFrontendUrl = undefined;
+    }
+  }
+
+  const allowedOrigins = new Set<string>([origin.origin]);
+  if (devFrontendUrl) {
+    allowedOrigins.add(devFrontendUrl.origin);
+  }
+
   // The console trusts the current local user. Model bearer tokens only belong
   // to MCP/worker routes; they must never authorize a console action.
   const human = (request: any) =>
@@ -35,15 +59,14 @@ export function createBaseServer(options: BaseServerOptions) {
     );
   app.addHook("onRequest", async (req, reply) => {
     const host = req.headers.host;
-    requireCondition(
-      host === origin.host || host === `127.0.0.1:${options.port}`,
-      "HOST_DENIED",
-      "Host 不匹配",
-      403,
-    );
+    const isAllowedHost =
+      host === origin.host ||
+      host === `127.0.0.1:${options.port}` ||
+      (devFrontendUrl && host === devFrontendUrl.host);
+    requireCondition(isAllowedHost, "HOST_DENIED", "Host 不匹配", 403);
     if (req.headers.origin)
       requireCondition(
-        req.headers.origin === origin.origin,
+        allowedOrigins.has(req.headers.origin),
         "ORIGIN_DENIED",
         "Origin 不匹配",
         403,
@@ -51,7 +74,10 @@ export function createBaseServer(options: BaseServerOptions) {
     if (req.url.startsWith("/api/")) {
       const site = req.headers["sec-fetch-site"];
       requireCondition(
-        !site || site === "same-origin" || site === "none",
+        !site ||
+          site === "same-origin" ||
+          site === "none" ||
+          (devFrontendUrl && (site === "same-site" || site === "cross-site")),
         "FETCH_SITE_DENIED",
         "控制台接口只接受本机同源访问",
         403,
@@ -59,7 +85,7 @@ export function createBaseServer(options: BaseServerOptions) {
     }
     if (req.headers.upgrade?.toLowerCase() === "websocket")
       requireCondition(
-        req.headers.origin === origin.origin,
+        allowedOrigins.has(req.headers.origin ?? ""),
         "ORIGIN_DENIED",
         "事件流需要同源连接",
         403,
@@ -70,7 +96,7 @@ export function createBaseServer(options: BaseServerOptions) {
       !req.url.startsWith("/api/worker/")
     )
       requireCondition(
-        req.headers.origin === origin.origin &&
+        allowedOrigins.has(req.headers.origin ?? "") &&
           (options.writeContentTypeAllowed
             ? options.writeContentTypeAllowed(req.method, req.url, req.headers["content-type"])
             : req.headers["content-type"]?.startsWith("application/json")),

@@ -119,6 +119,7 @@ import {
   saveWaitingContext,
   type WaitingContext,
 } from "./waiting-context.js";
+import { UserInteractionService } from "./user-interaction-service.js";
 import type {
   QualityRepairAssignment,
   QualityTransfer,
@@ -4111,16 +4112,30 @@ export class Engine {
     }
     if (reviewIntent.intent === "need_user") {
       const phase = this.reviewPointer(key).phase ?? "before_human";
+      const currentW = this.get(key);
+      const interactionService = new UserInteractionService(this.store);
+      const conversationId = this.store.get<Run>("run", w.run_id!)?.conversation_id;
+      const interaction = interactionService.createInteraction({
+        workflowId: key,
+        sourceRunId: w.run_id ?? "",
+        sourcePlanRevision: currentW.plan_revision ?? 1,
+        rootConversationId: conversationId,
+        purpose: "review",
+        role: "planner",
+        fallbackSummary: review.summary ?? review.notes,
+        fallbackQuestions: reviewIntent.questions,
+      });
       saveWaitingContext(this.store, key, {
         purpose: "review",
         role: "planner",
         phase,
         run_id: w.run_id,
-        conversation_id: this.store.get<Run>("run", w.run_id!)?.conversation_id,
+        conversation_id: conversationId,
         source_execution_run_id: this.reviewPointer(key).completion_run_id,
         original_text: review.summary ?? review.notes,
         intent: "need_user",
         questions: reviewIntent.questions,
+        interaction_id: interaction.id,
       });
       this.transition(key, ["REVIEWING"], "WAITING_INPUT", w.stage, {
         blocker: {
@@ -4456,6 +4471,27 @@ export class Engine {
       });
       return { status: "unclear", summary: normalized.summary };
     }
+    let interactionId: string | undefined;
+    const questions = textQuestions(
+      (normalized.payload as { unresolved_questions?: unknown })
+        .unresolved_questions,
+    );
+    if (normalized.intent === "need_user") {
+      const currentW = this.get(key);
+      const interactionService = new UserInteractionService(this.store);
+      const interaction = interactionService.createInteraction({
+        workflowId: key,
+        sourceRunId: runId,
+        sourcePlanRevision: currentW.plan_revision ?? 1,
+        rootConversationId: conversationId,
+        purpose: "execute",
+        role: plannerRole ? "planner" : "executor",
+        rawInput: normalized.user_interaction,
+        fallbackSummary: normalized.summary,
+        fallbackQuestions: questions,
+      });
+      interactionId = interaction.id;
+    }
     saveWaitingContext(this.store, key, {
       purpose: "execute",
       role: plannerRole ? "planner" : "executor",
@@ -4464,11 +4500,9 @@ export class Engine {
       conversation_id: conversationId,
       source_execution_run_id: runId,
       original_text: normalized.summary,
-      questions: textQuestions(
-        (normalized.payload as { unresolved_questions?: unknown })
-          .unresolved_questions,
-      ),
+      questions,
       intent: normalized.intent,
+      interaction_id: interactionId,
     });
     this.transition(key, ["EXECUTING", "VERIFYING"], "WAITING_INPUT", run?.stage ?? "execute", {
       blocker: {
@@ -4579,8 +4613,11 @@ export class Engine {
       ...(userAnswer ? { answer: text } : {}),
     });
     saveRunContinuation(this.store, key, key, continuation);
+    const currentFeedback = Array.isArray(w.feedback) ? w.feedback : [];
     const feedback =
-      userAnswer || text !== "用户恢复执行" ? [...w.feedback, text] : w.feedback;
+      userAnswer || text !== "用户恢复执行"
+        ? [...currentFeedback, text]
+        : currentFeedback;
     if (waiting.purpose === "review") {
       this.patchReviewPointer(key, {
         phase: waiting.phase,

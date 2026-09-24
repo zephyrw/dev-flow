@@ -97,6 +97,11 @@ function hasSubmittedWork(rec: Record<string, unknown>) {
   );
 }
 
+import {
+  UserInteractionInputSchema,
+  type UserInteractionInput,
+} from "../../contracts/src/user-interaction.js";
+
 export type NormalizedExecution = {
   intent: ExecutionIntent;
   status?: string;
@@ -106,7 +111,15 @@ export type NormalizedExecution = {
   payload: Record<string, unknown>;
   intent_source: IntentSource;
   provided_intent_field: boolean;
+  user_interaction?: UserInteractionInput;
 };
+
+function parseUserInteraction(raw: unknown): UserInteractionInput | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const parsed = UserInteractionInputSchema.safeParse(raw);
+  if (parsed.success) return parsed.data;
+  return undefined;
+}
 
 function withCopy(
   rec: Record<string, unknown>,
@@ -121,6 +134,8 @@ function withCopy(
     : Array.isArray(nested?.artifacts)
       ? nested.artifacts
       : undefined;
+  const rawInteraction = rec.user_interaction ?? nested?.user_interaction;
+  const user_interaction = parseUserInteraction(rawInteraction);
   return {
     intent,
     status,
@@ -130,6 +145,7 @@ function withCopy(
     payload: rec,
     intent_source,
     provided_intent_field,
+    user_interaction,
   };
 }
 

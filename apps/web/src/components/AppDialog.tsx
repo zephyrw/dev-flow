@@ -25,6 +25,8 @@ export function AppDialog({
   footer,
   className = "",
 }: AppDialogProps) {
+  const generatedId = React.useId();
+  const titleId = `app-dialog-title-${generatedId.replace(/:/g, "")}`;
   const [showDiscardConfirm, setShowDiscardConfirm] = useState(false);
   const previousActiveElement = useRef<HTMLElement | null>(null);
   const dialogRef = useRef<HTMLDivElement | null>(null);
@@ -99,11 +101,11 @@ export function AppDialog({
         ref={dialogRef}
         role="dialog"
         aria-modal="true"
-        aria-labelledby="app-dialog-title"
+        aria-labelledby={titleId}
       >
         <div className="app-dialog-header">
           <div className="app-dialog-title-wrap">
-            <h2 id="app-dialog-title" className="app-dialog-title">
+            <h2 id={titleId} className="app-dialog-title">
               {title}
             </h2>
             {subtitle && (
