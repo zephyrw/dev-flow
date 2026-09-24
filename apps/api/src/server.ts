@@ -310,6 +310,7 @@ export async function buildServer(
 
   app.post("/api/workflows", async (req) => {
     human(req);
+    await accountService.syncActiveAccountFromHost("default-agy-realm").catch(() => {});
     const body = req.body as any;
     if (body.workspace_root) {
       // 统一新任务创建服务入口 (N06, CW-D11)
@@ -1662,6 +1663,7 @@ export async function buildServer(
   });
   app.post("/api/workflows/:id/approve", async (req) => {
     human(req);
+    await accountService.syncActiveAccountFromHost("default-agy-realm").catch(() => {});
     const rawBody = (req.body || {}) as any;
     const isV2 =
       rawBody?.schema_version === 2 ||
@@ -1787,6 +1789,7 @@ export async function buildServer(
   });
   app.post("/api/workflows/:id/feedback", async (req) => {
     human(req);
+    await accountService.syncActiveAccountFromHost("default-agy-realm").catch(() => {});
     const key = Id.parse((req.params as any).id);
     const body = (req.body || {}) as any;
     const text = String(body.text || "").trim();
@@ -1893,6 +1896,7 @@ export async function buildServer(
   });
   app.post("/api/workflows/:id/recover", async (req) => {
     human(req);
+    await accountService.syncActiveAccountFromHost("default-agy-realm").catch(() => {});
     const key = Id.parse((req.params as any).id);
     assertResumeMode(engine, key, (req.body || {}) as Record<string, unknown>);
     const body = (req.body || {}) as any;

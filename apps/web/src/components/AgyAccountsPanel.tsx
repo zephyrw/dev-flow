@@ -404,15 +404,26 @@ export const AgyAccountsPanel = forwardRef<
                   </div>
 
                   <div className="agy-account-actions">
-                    {!isActive && (
+                    {account.state === "reauth_required" ? (
                       <button
                         type="button"
-                        className="agy-secondary-btn"
-                        onClick={() => handleSwitchTo(account.id)}
-                        title="切换为当前活动账号"
+                        className="agy-icon-btn"
+                        onClick={() => handleReauth(account)}
+                        title="重新登录验证"
                       >
-                        设为活动
+                        重新登录
                       </button>
+                    ) : (
+                      !isActive && (
+                        <button
+                          type="button"
+                          className="agy-secondary-btn"
+                          onClick={() => handleSwitchTo(account.id)}
+                          title="切换为当前活动账号"
+                        >
+                          设为活动
+                        </button>
+                      )
                     )}
                     <button
                       type="button"

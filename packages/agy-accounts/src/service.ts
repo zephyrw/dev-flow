@@ -522,7 +522,7 @@ export class AgyAccountService {
         return { active_account_id: null, matched: false };
       }
 
-      const activeEmail = inspection.auth?.email?.toLowerCase();
+      let activeEmail = inspection.auth?.email?.toLowerCase();
       const accounts = this.repository.listAccounts(realmId);
       let matched: AgyAccount | undefined;
       for (const account of accounts) {
@@ -532,7 +532,18 @@ export class AgyAccountService {
         }
       }
 
-      // 若二进制凭据已刷新，但邮箱与已管理账号一致，自动同步最新凭据引用
+      if (!matched && !activeEmail) {
+        try {
+          const probed = await this.probe.probeIdentity();
+          if (probed?.email) {
+            activeEmail = probed.email.trim().toLowerCase();
+          }
+        } catch {
+          // ignore probe error
+        }
+      }
+
+      // 若二进制凭据已刷新，但邮箱与已管理账号一致，自动同步最新凭据引用并自愈登录失效状态
       if (!matched && activeEmail) {
         const byEmail = accounts.find(
           (a) => a.identity.email.trim().toLowerCase() === activeEmail,
@@ -541,7 +552,18 @@ export class AgyAccountService {
           try {
             const captured = await this.authHost.captureActive(realmId, byEmail.id);
             this.saveCapture(realmId, byEmail.id, captured);
-            matched = this.repository.getAccount(realmId, byEmail.id) ?? byEmail;
+            const updatedAcc = this.repository.getAccount(realmId, byEmail.id) ?? byEmail;
+            if (updatedAcc.state === "reauth_required") {
+              const snaps = this.repository.listQuotaSnapshots(realmId, updatedAcc.id);
+              const hasZeroWindow = snaps.some((s) =>
+                s.windows.some((w) => w.remaining_fraction === 0),
+              );
+              updatedAcc.state = hasZeroWindow ? "waiting_quota" : "ready";
+              updatedAcc.auth.last_authenticated_request_at = this.clock.toISOString();
+              updatedAcc.revision++;
+              this.repository.saveAccount(updatedAcc);
+            }
+            matched = updatedAcc;
           } catch {
             // ignore
           }
@@ -1201,7 +1223,7 @@ export class AgyAccountService {
       !(await this.authHost.compareActive(input.realm_id, realm.active_secret_ref))
     ) {
       const inspection = await this.authHost.inspectActive(input.realm_id).catch(() => null);
-      if (inspection?.exists && inspection.auth?.email) {
+      if (inspection?.exists) {
         await this.syncActiveAccountFromHostLocked(input.realm_id);
         realm = this.repository.getRealm(input.realm_id)!;
       }

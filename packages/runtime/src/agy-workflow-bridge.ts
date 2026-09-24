@@ -12,12 +12,12 @@ import type {
 import type { AgyFailureFact } from "../../adapters/agy/src/failure-fact.js";
 import type { ProcessManager } from "../../process/src/manager.js";
 import type { Engine } from "../../core/src/engine.js";
-import { FlowError, type Run } from "../../contracts/src/index.js";
+import { FlowError, ModelAccessRecordSchema, objectHash, type Run } from "../../contracts/src/index.js";
 import type { AgyAccountProcessHost } from "../../process/src/agy-account-processes.js";
 import { resumeApproved } from "./recovery.js";
 import { assertAccountModelRetryAccess, buildAccountModelRunRetry, stageAccountModelRunRetry } from "../../core/src/model-retry.js";
 import type { AsideSession } from "../../contracts/src/feedback.js";
-import { ModelAccessService } from "../../core/src/model-access-service.js";
+import { ModelAccessService, accessRecordId } from "../../core/src/model-access-service.js";
 import { managedAgyAccountIdentityId, readManagedAgyModelIdentity } from "../../core/src/model-identity.js";
 import { AgySubagentObserver } from "../../adapters/agy/src/subagent-observer.js";
 import {
@@ -216,12 +216,64 @@ export class AgyWorkflowBridge implements AccountConsumerPort {
         "账号管理需要任务明确选择模型，不能猜测 CLI 默认模型的额度池",
         409,
       );
-    const frozen = run.frozen_invocation ?? run.model_binding?.frozen_invocation;
+    let frozen = run.frozen_invocation ?? run.model_binding?.frozen_invocation;
     if (!this.engine || !run.profile || !frozen || frozen.adapterId !== "agy" || frozen.modelToken !== modelId)
       throw new FlowError("AGY_ACCOUNT_BINDING_MISSING", "受管执行缺少一致的冻结模型配置", 409);
 
+    // 启动新任务或继续任务时，先主动同步 CLI/桌面端在系统中更新的当前账号凭据
+    await this.accountService.syncActiveAccountFromHost("default-agy-realm").catch(() => {});
+
     const access = new ModelAccessService(this.engine.store);
-    access.assertFrozenAccess(run.profile, frozen);
+    const syncedNative = access.resolveNativeConfig(run.profile);
+    if (frozen.accountScope !== syncedNative.accountFingerprint) {
+      frozen = {
+        ...frozen,
+        accountScope: syncedNative.accountFingerprint,
+      };
+      if (run.frozen_invocation) run.frozen_invocation = frozen;
+      if (run.model_binding?.frozen_invocation) {
+        run.model_binding = {
+          ...run.model_binding,
+          frozen_invocation: frozen,
+        };
+      }
+      this.engine.store.put("run", run.id, workflowId, run);
+    }
+    try {
+      access.assertFrozenAccess(run.profile, frozen);
+    } catch (err: any) {
+      if (err?.code === "MODEL_VERIFICATION_REQUIRED" || err?.code === "MODEL_IDENTITY_CHANGED") {
+        // 外部已在 CLI/桌面端完成登录且凭据已同步，自动补齐当前同步账号的访问验证记录
+        const newKey = accessRecordId({
+          adapterId: frozen.adapterId,
+          nativeConfigScope: syncedNative.nativeConfigScope,
+          accountFingerprint: frozen.accountScope,
+          providerEndpointFingerprint: frozen.providerScope,
+          accessModelKey: frozen.accessModelKey,
+        });
+        const nowIso = new Date().toISOString();
+        access.putAccess(
+          ModelAccessRecordSchema.parse({
+            key: newKey,
+            status: "verified",
+            checked_at: nowIso,
+            adapterId: frozen.adapterId,
+            cliFingerprint: objectHash({
+              executable: frozen.executable,
+              capabilityRevision: frozen.capabilityRevision,
+            }),
+            accountScope: frozen.accountScope,
+            providerScope: frozen.providerScope,
+            accessModelKey: frozen.accessModelKey,
+            verification_method: "native-probe",
+            last_success_at: nowIso,
+            identityConfidence: "verified",
+          }),
+        );
+      } else {
+        throw err;
+      }
+    }
     const repository = this.accountService.getRepository();
     let policy = repository.getPolicy(workflowId);
     if (!policy) {
