@@ -381,6 +381,21 @@
   font-variant-numeric: tabular-nums;
 }
 
+.agy-quota-reset {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 5px;
+  height: 17px;
+  border-radius: 4px;
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
+  color: #475569;
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-weight: 500;
+  line-height: 1;
+}
+
 .agy-no-quota {
   font-size: 11.5px;
   color: #94a3b8;

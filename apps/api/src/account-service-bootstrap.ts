@@ -98,7 +98,7 @@ export async function bootstrapAccountService(
 
       const command: VerifiedLoginCommand = {
         executable: cliPath,
-        args: ["login"],
+        args: ["-i", "/login"],
         executable_fingerprint: fingerprint,
       };
       loginLauncher = new AgyLoginLauncher(runner, command);

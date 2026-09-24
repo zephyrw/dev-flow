@@ -10,6 +10,12 @@ import { resumeModelWaits } from "../../../packages/runtime/src/recovery.js";
 import { buildServer } from "./server.js";
 import { archiveLogs } from "../../../packages/runtime/src/maintenance.js";
 import { acquireControllerLock } from "../../../packages/process/src/controller-lock.js";
+process.on("uncaughtException", (err) => {
+  console.error("[CRITICAL] Uncaught exception:", err);
+});
+process.on("unhandledRejection", (reason) => {
+  console.error("[CRITICAL] Unhandled rejection:", reason);
+});
 const config = loadConfig(process.env.DEVFLOW_CONFIG);
 const unlock = await acquireControllerLock(config.storage_root);
 import { bootstrapAccountService } from "./account-service-bootstrap.js";

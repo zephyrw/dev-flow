@@ -5,7 +5,8 @@ import type {
   AccountState,
 } from "../../contracts/src/agy-account.js";
 import type { AgyAccountRepository } from "./repository.js";
-import type { AuthHostPort, AccountProbePort } from "./ports.js";
+import type { AuthHostPort, AccountProbePort, AccountProbeResult } from "./ports.js";
+import { hasDualQuotaWindows, modelCovered } from "./quota.js";
 import { AgyLoginLauncher } from "./login.js";
 export interface EnrollmentResult {
   success: boolean;
@@ -20,7 +21,7 @@ export interface EnrollmentContext {
   signal: AbortSignal;
   model_id?: string;
   onCaptured?: (data: {
-    account: AgyAccount;
+    account: Pick<AgyAccount, "id" | "state">;
     secret_ref: string;
     credential_revision: number;
   }) => void;
@@ -106,214 +107,125 @@ export class AgyEnrollmentService {
   ): Promise<EnrollmentResult> {
     this.requireContext(realmId, context);
     const active = await this.authHost.inspectActive(realmId);
-    if (!active.exists)
-      return { success: false, error: "active_credential_missing" };
+    if (!active.exists) return { success: false, error: "active_credential_missing" };
 
-    // 1. 核实身份（优先使用安全凭据 JWT 中已签名的身份邮箱，若无则通过 CLI 探测）
-    let email: string | undefined = active.auth?.email?.trim().toLowerCase();
-    if (!email) {
-      try {
-        const identityRes = await this.probe.probeIdentity({
-          signal: context.signal,
-        });
-        email = identityRes.email?.trim().toLowerCase();
-      } catch (err: any) {
-        if (err?.code === "PROCESS_STOP_UNCONFIRMED" || err?.name === "ProcessStopUnconfirmedError") {
-          throw err;
-        }
-      }
-    }
-
-    if (!email)
-      return { success: false, error: "account_identity_unverified" };
-
-    if (expected && expected.identity.email.toLowerCase() !== email)
-      return { success: false, error: "account_identity_mismatch" };
-
-    const existing =
-      expected ??
-      this.repository
-        .listAccounts(realmId)
-        .find((account) => account.identity.email.toLowerCase() === email);
-
-    if (
-      expected &&
-      this.repository.getAccount(realmId, expected.id)?.revision !==
-        expected.revision
-    )
-      return { success: false, error: "account_revision_conflict" };
-
-    const accountId = existing?.id ?? "acc_" + randomUUID();
-
-    // 2. 先 capture 新授权完整包保存（授权留存，即便后续配额查询失败也不丢失登录）
-    const captured = await this.authHost.captureActive(realmId, accountId);
-    this.requireContext(realmId, context);
-
-    const now = new Date().toISOString();
-    const subject = captured.auth?.subject ?? active.auth?.subject ?? existing?.identity.subject;
-    // 事务保存 pending 账号和操作 journal，避免后续取消或失败留下孤儿 secret
-    const pendingAccount: AgyAccount = {
-      id: accountId,
+    // 先独立保存候选凭据；本地 claim 不会覆盖任何现有账号。
+    const candidateId = "acc_" + randomUUID();
+    const captured = await this.authHost.captureActive(realmId, candidateId);
+    const pending = {
+      operation_id: context.operation_id,
       realm_id: realmId,
-      revision: (existing?.revision ?? 0) + 1,
-      alias: alias || existing?.alias || email.split("@")[0]!,
-      identity: {
-        email,
-        ...(subject ? { subject } : {}),
-        verified_at: existing?.identity.verified_at ?? now,
-      },
+      account_id: candidateId,
+      claimed_email: active.auth?.email,
       secret_ref: captured.secret_ref,
       credential_revision: captured.credential_revision,
-      state: existing?.state === "disabled" ? "disabled" : "pending_quota",
-      disabled_reason:
-        existing?.state === "disabled" ? existing.disabled_reason : undefined,
-      enrolled_at: existing?.enrolled_at ?? now,
-      enrollment_completed_at: undefined,
-      auth: {
-        has_refresh_credential: captured.auth?.has_refresh_credential ?? null,
-        refresh_expiry_source: captured.auth?.refresh_expiry_source ?? "not_provided",
-        access_expires_at: captured.auth?.access_expires_at,
-        refresh_expires_at: captured.auth?.refresh_expires_at,
-        metadata_status: captured.auth?.metadata_status ?? "unverified",
-        last_authenticated_request_at: existing?.auth.last_authenticated_request_at,
-        last_auth_error: undefined,
-        last_refresh_verified_at: undefined,
-        email: captured.auth?.email ?? email,
-        ...(subject ? { subject } : {}),
-      },
+      status: "pending_identity",
+      created_at: new Date().toISOString(),
     };
     this.repository.transaction(() => {
-      this.repository.saveAccount(pendingAccount);
-      if (context.onCaptured) {
-        context.onCaptured({
-          account: pendingAccount,
-          secret_ref: captured.secret_ref,
-          credential_revision: captured.credential_revision,
-        });
-      }
+      this.repository.putRecord("agy_pending_enrollment", context.operation_id, realmId, pending);
+      context.onCaptured?.({
+        account: { id: candidateId, state: "pending_quota" },
+        secret_ref: captured.secret_ref,
+        credential_revision: captured.credential_revision,
+      });
     });
+    this.requireContext(realmId, context);
 
-    // 3. 查询双额度和模型池（允许失败降级为 pending_quota）
-    let observation: any;
+    let identity: { email: string; subject?: string; cli_version?: string; raw_output?: string } | undefined;
+    try {
+      identity = await this.probe.probeIdentity({ signal: context.signal });
+    } catch (error: any) {
+      if (error?.code === "PROCESS_STOP_UNCONFIRMED" || error?.name === "ProcessStopUnconfirmedError") throw error;
+      const activeAuth = captured.auth?.email ? captured.auth : (await this.authHost.inspectActive(realmId)).auth;
+      const fallbackEmail = activeAuth?.email;
+      if (fallbackEmail) {
+        identity = { email: fallbackEmail, subject: activeAuth?.subject, cli_version: "verified", raw_output: "" };
+      } else {
+        this.requireContext(realmId, context);
+        return { success: false, error: "account_identity_unverified" };
+      }
+    }
+    const email = identity.email.trim().toLowerCase();
+    if (!email || (expected && expected.identity.email.toLowerCase() !== email)) {
+      return { success: false, error: "account_identity_mismatch" };
+    }
+    const existing = expected ?? this.repository.listAccounts(realmId)
+      .find((account) => account.identity.email.toLowerCase() === email);
+    let observation: AccountProbeResult | undefined;
     try {
       observation = await this.probe.probeUsage({
         signal: context.signal,
         model_id: context.model_id,
-        account_id: accountId,
+        account_id: candidateId,
         credential_revision: captured.credential_revision,
       });
-    } catch (err: any) {
-      if (err?.code === "PROCESS_STOP_UNCONFIRMED" || err?.name === "ProcessStopUnconfirmedError") {
-        throw err;
-      }
-      observation = undefined;
+    } catch (error: any) {
+      if (error?.code === "PROCESS_STOP_UNCONFIRMED" || error?.name === "ProcessStopUnconfirmedError") throw error;
     }
     this.requireContext(realmId, context);
-
-    // CR04 修复：校验后续 usage 观察的身份，若不同直接冻结并报错，杜绝污染
-    if (observation?.email && observation.email.toLowerCase() !== email.toLowerCase()) {
+    if (observation?.email && observation.email.toLowerCase() !== email) {
       return { success: false, error: "account_identity_mismatch" };
     }
-
-    const isOfficialVerified = Boolean(
-      observation &&
-      observation.capability_verified &&
-      observation.executable_fingerprint
-    );
-
-    const pools = isOfficialVerified
-      ? observation.pools.filter(
-          (pool: any) =>
-            !context.model_id || pool.model_ids.includes(context.model_id) || pool.model_ids.includes("*"),
-        )
-      : [];
-
-    // 双窗口必须在同有效池内完整包含且无重复矛盾，不跨池拼装
-    function poolHasDualWindows(windows: any[]): boolean {
-      if (!Array.isArray(windows)) return false;
-      const weekly = windows.filter(
-        (w) =>
-          w.kind === "weekly" &&
-          w.status === "observed" &&
-          typeof w.remaining_fraction === "number" &&
-          w.remaining_fraction >= 0 &&
-          w.remaining_fraction <= 1,
-      );
-      const fiveHour = windows.filter(
-        (w) =>
-          w.kind === "five_hour" &&
-          w.status === "observed" &&
-          typeof w.remaining_fraction === "number" &&
-          w.remaining_fraction >= 0 &&
-          w.remaining_fraction <= 1,
-      );
-      return weekly.length === 1 && fiveHour.length === 1;
+    const verified = Boolean(observation?.capability_verified && observation.executable_fingerprint);
+    // 已有账号在远端核验失败时保持原样，候选包与操作记录保留用于后续处理。
+    if (existing && !verified) {
+      return { success: false, error: "quota_capability_unavailable" };
     }
+    const pools = verified ? observation!.pools.filter((pool) =>
+      pool.model_ids.length > 0 && (!context.model_id || modelCovered(pool.model_ids, context.model_id!))) : [];
+    const complete = pools.length > 0 && pools.every((pool) => hasDualQuotaWindows(pool.windows));
+    if (existing && !complete) return { success: false, error: "quota_capability_unavailable" };
 
-    const hasValidWindows =
-      isOfficialVerified &&
-      (
-        (pools.length > 0 && pools.every((p: any) => poolHasDualWindows(p.windows))) ||
-        (pools.length === 0 && poolHasDualWindows(observation?.windows))
-      );
-    const complete = Boolean(hasValidWindows);
-    const checkedWindows = pools.length > 0
-      ? pools.flatMap((p: any) => p.windows ?? [])
-      : (observation?.windows ?? []);
-    const isZero = checkedWindows.some((w: any) => w.remaining_fraction === 0);
-    const state: AccountState = !complete
-      ? "pending_quota"
-      : isZero
-        ? "waiting_quota"
-        : "ready";
-
+    const accountId = existing?.id ?? candidateId;
+    // 只在身份核验后将保存包绑定到最终账号 ID，旧 secret_ref 尚未改变。
+    const accepted = await this.authHost.captureActive(realmId, accountId);
+    this.requireContext(realmId, context);
+    const timestamp = new Date().toISOString();
+    const state: AccountState = !complete ? "pending_quota" :
+      pools.some((pool) => pool.windows.some((window) => window.remaining_fraction === 0))
+        ? "waiting_quota" : "ready";
     const account: AgyAccount = {
-      ...pendingAccount,
-      revision: pendingAccount.revision + 1,
-      identity: {
-        ...pendingAccount.identity,
-        verified_at: isOfficialVerified ? now : (existing?.identity.verified_at ?? now),
-      },
-      auth: {
-        ...pendingAccount.auth,
-        metadata_status: isOfficialVerified ? "verified" : (pendingAccount.auth.metadata_status ?? "unverified"),
-        last_authenticated_request_at: isOfficialVerified ? now : pendingAccount.auth.last_authenticated_request_at,
-      },
-      state: existing?.state === "disabled" ? "disabled" : state,
-      enrollment_completed_at: complete ? now : undefined,
-    };
-    // 只有官方在顶层确证共享窗口时才允许 global 单池；不跨池拼装
-    const effectivePools = pools.length > 0
-      ? pools
-      : complete && observation?.windows && poolHasDualWindows(observation.windows)
-        ? [{ pool_id: "global", model_ids: ["*"], windows: observation.windows }]
-        : [];
-    const snapshots: AgyQuotaSnapshot[] = effectivePools.map((pool: any) => ({
-      id: "snp_" + randomUUID(),
+      ...existing,
+      id: accountId,
       realm_id: realmId,
-      account_id: accountId,
-      auth_epoch: context.auth_epoch,
-      pool_id: pool.pool_id,
-      model_ids: pool.model_ids,
-      plan_tier: observation?.plan_tier,
-      source: "official_cli_usage",
-      cli_version: observation?.cli_version ?? "unknown",
-      executable_fingerprint: observation?.executable_fingerprint ?? "",
-      capability_verified: observation?.capability_verified ?? false,
-      parser_revision: 2,
-      observed_at: now,
-      windows: pool.windows,
+      revision: (existing?.revision ?? 0) + 1,
+      alias: alias || existing?.alias || email.split("@")[0]!,
+      identity: { email, ...(identity.subject ? { subject: identity.subject } : {}), verified_at: timestamp },
+      secret_ref: accepted.secret_ref,
+      credential_revision: accepted.credential_revision,
+      state: existing?.state === "disabled" ? "disabled" : state,
+      state_before_disabled: existing?.state === "disabled" ? state : existing?.state_before_disabled,
+      enrolled_at: existing?.enrolled_at ?? timestamp,
+      enrollment_completed_at: complete ? timestamp : undefined,
+      auth: {
+        has_refresh_credential: accepted.auth?.has_refresh_credential ?? null,
+        refresh_expiry_source: accepted.auth?.refresh_expiry_source ?? "not_provided",
+        access_expires_at: accepted.auth?.access_expires_at,
+        refresh_expires_at: accepted.auth?.refresh_expires_at,
+        metadata_status: "unverified",
+        last_authenticated_request_at: timestamp,
+        email,
+        ...(identity.subject ? { subject: identity.subject } : {}),
+      },
+    };
+    const snapshots: AgyQuotaSnapshot[] = pools.map((pool) => ({
+      id: "snp_" + randomUUID(), realm_id: realmId, account_id: accountId,
+      auth_epoch: context.auth_epoch, pool_id: pool.pool_id, model_ids: pool.model_ids,
+      plan_tier: observation?.plan_tier, source: "official_cli_usage",
+      cli_version: observation!.cli_version, executable_fingerprint: observation!.executable_fingerprint,
+      capability_verified: true, parser_revision: 2, observed_at: timestamp, windows: pool.windows,
     }));
     this.repository.transaction(() => {
-      if (
-        existing &&
-        this.repository.getAccount(realmId, existing.id)?.revision !==
-          pendingAccount.revision
-      )
+      if (existing && this.repository.getAccount(realmId, existing.id)?.revision !== existing.revision)
         throw new Error("account_revision_conflict");
-      for (const snapshot of snapshots)
-        this.repository.saveQuotaSnapshot(snapshot);
+      this.repository.retainQuotaPools(realmId, accountId, pools.map((pool) => pool.pool_id));
+      for (const snapshot of snapshots) this.repository.saveQuotaSnapshot(snapshot);
       this.repository.saveAccount(account);
+      this.repository.putRecord("agy_pending_enrollment", context.operation_id, realmId, {
+        ...pending, status: "committed", committed_account_id: accountId,
+      });
+      context.onCaptured?.({ account, secret_ref: accepted.secret_ref, credential_revision: accepted.credential_revision });
     });
     return { success: true, account, snapshot: snapshots[0] };
   }

@@ -9,6 +9,7 @@ export interface QuotaWindowDisplay {
   percentageText: string;
   fraction: number | null;
   resetText: string;
+  shortResetText: string;
   isUnknown: boolean;
   isZero: boolean;
   isResetDue: boolean;
@@ -29,6 +30,7 @@ export function formatQuotaWindow(
       percentageText: "待补测",
       fraction: null,
       resetText: "—",
+      shortResetText: "",
       isUnknown: true,
       isZero: false,
       isResetDue: false,
@@ -41,6 +43,7 @@ export function formatQuotaWindow(
   const isZero = fraction <= 0;
 
   let resetText = "—";
+  let shortResetText = "";
   let isResetDue = false;
 
   if (window.reset_at) {
@@ -49,12 +52,26 @@ export function formatQuotaWindow(
       if (nowMs >= resetTime) {
         isResetDue = true;
         resetText = "预计已重置，待核验";
+        shortResetText = "待重置";
       } else {
-        const diffSec = Math.round((resetTime - nowMs) / 1000);
-        const hours = Math.floor(diffSec / 3600);
-        const mins = Math.floor((diffSec % 3600) / 60);
-        resetText =
-          hours > 0 ? `${hours}小时${mins}分后重置` : `${mins}分钟后重置`;
+        const diffSec = Math.max(0, Math.round((resetTime - nowMs) / 1000));
+        if (diffSec >= 86400) {
+          const days = Math.floor(diffSec / 86400);
+          const hours = Math.floor((diffSec % 86400) / 3600);
+          shortResetText = hours > 0 ? `${days}d${hours}h` : `${days}d`;
+          resetText =
+            hours > 0 ? `${days}天${hours}小时后重置` : `${days}天后重置`;
+        } else if (diffSec >= 3600) {
+          const hours = Math.floor(diffSec / 3600);
+          const mins = Math.floor((diffSec % 3600) / 60);
+          shortResetText = mins > 0 ? `${hours}h${mins}m` : `${hours}h`;
+          resetText =
+            mins > 0 ? `${hours}小时${mins}分后重置` : `${hours}小时后重置`;
+        } else {
+          const mins = Math.max(1, Math.floor(diffSec / 60));
+          shortResetText = diffSec < 60 ? "<1m" : `${mins}m`;
+          resetText = `${mins}分钟后重置`;
+        }
       }
     }
   }
@@ -68,6 +85,7 @@ export function formatQuotaWindow(
     percentageText: `${pct}%`,
     fraction,
     resetText,
+    shortResetText,
     isUnknown: false,
     isZero,
     isResetDue,

@@ -162,7 +162,8 @@ async function handle(
   }
   const restore = action === "restore-backup";
   const ref = stringArg(args, restore ? "backup_ref" : "secret_ref");
-  if (restore && !ref.startsWith("bak_")) throw new Error("invalid_reference");
+  // Account operations also use capture-active snapshots as rollback backups.
+  if (restore && !/^(bak|sec)_[a-f0-9]{32}$/.test(ref)) throw new Error("invalid_reference");
   if (action === "delete-saved") {
     if (active?.realm === realm && active.ref === ref)
       throw new Error("cannot_delete_active");

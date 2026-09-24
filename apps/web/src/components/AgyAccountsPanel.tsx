@@ -85,6 +85,11 @@ function CompactQuotaBar({
         />
       </div>
       <span className="agy-quota-num">{value.percentageText}</span>
+      {value.shortResetText && (
+        <span className="agy-quota-reset" title={value.resetText}>
+          {value.shortResetText}
+        </span>
+      )}
     </div>
   );
 }
@@ -123,7 +128,10 @@ export const AgyAccountsPanel = forwardRef<
     setError("");
     try {
       const [updatedView, serviceData] = await Promise.all([
-        agyApi<AccountView>("/sync-refresh", { method: "POST" }),
+        agyApi<AccountView>("/sync-refresh", {
+          method: "POST",
+          body: requestBody({}),
+        }),
         agyApi<ServiceView>("/service"),
       ]);
       setView(updatedView);
@@ -152,7 +160,9 @@ export const AgyAccountsPanel = forwardRef<
   );
 
   useEffect(() => {
-    void refresh();
+    void agyApi("/sync-active", { method: "POST", body: requestBody({}) })
+      .catch(() => {})
+      .finally(() => void refresh());
     const timer = setInterval(() => void refresh(), 3000);
     return () => clearInterval(timer);
   }, [refresh]);
@@ -194,13 +204,14 @@ export const AgyAccountsPanel = forwardRef<
   const handleReauth = async (account: AgyAccountDto) => {
     setError("");
     try {
-      await agyApi<AccountOperationView>(`/${encodeURIComponent(account.id)}/reauth`, {
+      const op = await agyApi<AccountOperationView>(`/${encodeURIComponent(account.id)}/reauth`, {
         method: "POST",
         body: requestBody({
           expected_account_revision: account.revision,
           expected_identity: account.identity.email,
         }),
       });
+      setActiveOperation(op);
       await refresh();
     } catch (e) {
       setError(e instanceof Error ? e.message : "重新认证失败");
@@ -274,7 +285,7 @@ export const AgyAccountsPanel = forwardRef<
           className="agy-primary-btn"
           onClick={() => setEnrollOpen(true)}
         >
-          + 添加管理账号
+          + 导入当前账号
         </button>
       </div>
 
@@ -347,7 +358,7 @@ export const AgyAccountsPanel = forwardRef<
               className="agy-secondary-btn"
               onClick={() => setEnrollOpen(true)}
             >
-              立即添加第一个账号
+              立即导入当前账号
             </button>
           </div>
         ) : (
@@ -370,9 +381,12 @@ export const AgyAccountsPanel = forwardRef<
                   <div className="agy-account-main-info">
                     <div className="agy-account-title-line">
                       <span className="agy-account-email">{account.identity.email}</span>
-                      {account.alias && (
-                        <span className="agy-account-alias">({account.alias})</span>
-                      )}
+                      {account.alias &&
+                        account.alias !== "test-import" &&
+                        account.alias.toLowerCase() !==
+                          account.identity.email.split("@")[0]?.toLowerCase() && (
+                          <span className="agy-account-alias">({account.alias})</span>
+                        )}
                       {isActive ? (
                         <span className="agy-badge active">当前使用中</span>
                       ) : (
@@ -406,14 +420,6 @@ export const AgyAccountsPanel = forwardRef<
                         设为活动
                       </button>
                     )}
-                    <button
-                      type="button"
-                      className="agy-icon-btn"
-                      onClick={() => handleReauth(account)}
-                      title="重新登录验证"
-                    >
-                      重新登录
-                    </button>
                     <button
                       type="button"
                       className="agy-icon-btn danger"

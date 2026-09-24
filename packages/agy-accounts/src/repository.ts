@@ -125,6 +125,15 @@ export class AgyAccountRepository {
     return parsed;
   }
 
+  retainQuotaPools(realmId: string, accountId: string, poolIds: string[]): void {
+    const allowed = new Set(poolIds);
+    for (const snapshot of this.listQuotaSnapshots(realmId, accountId)) {
+      if (!allowed.has(snapshot.pool_id)) {
+        this.store.remove("agy_quota", accountId + ":" + snapshot.pool_id);
+      }
+    }
+  }
+
   saveQuotaSnapshot(snapshot: z.input<typeof AgyQuotaSnapshotSchema>): void {
     const validated = AgyQuotaSnapshotSchema.parse(snapshot);
     const key = `${validated.account_id}:${validated.pool_id}`;

@@ -1,3 +1,4 @@
+import { hasDualQuotaWindows, requiredQuotaPools } from "./quota.js";
 import type {
   AgyAccount,
   AgyAccountOperation,
@@ -168,7 +169,10 @@ export class SwitchOperationExecutor {
         occupancy.length)
     )
       throw new Error("managed_busy");
-    options.requiredPoolIds = ["global"];
+    options.requiredPoolIds = [...new Set([
+      ...(options.requiredPoolIds.length ? options.requiredPoolIds : ["global"]),
+      ...occupancy.flatMap((item) => item.required_pool_ids ?? []),
+    ])];
     for (const item of occupancy)
       if (item.allowed_account_ids !== null)
         operation.allowed_account_ids =
@@ -186,6 +190,7 @@ export class SwitchOperationExecutor {
     ];
     this.repository.saveOperation(operation);
     const selectionPolicy = {
+      required_model_ids: operation.required_model_ids,
       allowed_account_ids: operation.allowed_account_ids,
       reset_clock_skew_seconds: settings.reset_clock_skew_seconds,
       ...nightWindow(settings.maintenance, this.clock.now()),
@@ -378,6 +383,7 @@ export class SwitchOperationExecutor {
         {
           reset_clock_skew_seconds: settings.reset_clock_skew_seconds,
           current_active_account_id: beforeAccountId,
+          required_model_ids: operation.required_model_ids,
           allowed_account_ids: operation.allowed_account_ids,
           ...nightWindow(settings.maintenance, this.clock.now()),
           night_pool: operation.night_pool,
@@ -396,6 +402,7 @@ export class SwitchOperationExecutor {
           {
             clockSkewSeconds: settings.reset_clock_skew_seconds,
             allowedAccountIds: operation.allowed_account_ids,
+            requiredModelIds: operation.required_model_ids,
           },
         );
         if (options.trigger.startsWith("workflow") && waitEval.should_wait) {
@@ -564,10 +571,7 @@ export class SwitchOperationExecutor {
         throw new Error("no_eligible_account");
       }
       if (!probeRes) throw new Error("probe_failed");
-      const activeAuthEmail = (
-        await this.authHost.inspectActive(options.realmId)
-      ).auth?.email;
-      const verifiedEmail = (probeRes.email ?? activeAuthEmail)?.toLowerCase();
+      const verifiedEmail = (probeRes.email ?? (await this.probe.probeIdentity({ signal: options.signal })).email).toLowerCase();
       const expectedEmail = targetAcc.identity.email.toLowerCase();
 
       if (!verifiedEmail || verifiedEmail !== expectedEmail) {
@@ -588,26 +592,10 @@ export class SwitchOperationExecutor {
       operation.installed_secret_ref = refreshed.secret_ref;
       operation.revision++;
       this.repository.saveOperation(operation);
-      const complete =
-        probeRes.capability_verified &&
-        !!probeRes.executable_fingerprint &&
-        options.requiredPoolIds.length > 0 &&
-        options.requiredPoolIds.every((id) => {
-          const pool =
-            probeRes.pools.find((p) => p.pool_id === id) ??
-            (id === "global" ? probeRes.pools[0] : undefined);
-          return (
-            pool &&
-            ["weekly", "five_hour"].every((kind) =>
-              pool.windows.some(
-                (w) =>
-                  w.kind === kind &&
-                  w.status === "observed" &&
-                  w.remaining_fraction !== null,
-              ),
-            )
-          );
-        });
+      const targetPools = requiredQuotaPools(probeRes.pools, options.requiredPoolIds, operation.required_model_ids);
+      const complete = probeRes.capability_verified && !!probeRes.executable_fingerprint &&
+        !!targetPools?.length && targetPools.every((pool) => hasDualQuotaWindows(pool.windows));
+      this.repository.retainQuotaPools(options.realmId, targetAcc.id, probeRes.pools.map((pool) => pool.pool_id));
       for (const pool of probeRes.pools) {
         this.repository.saveQuotaSnapshot({
           id: `snp_${options.operationId}_${candidateIndex}_${pool.pool_id}`,
@@ -624,26 +612,7 @@ export class SwitchOperationExecutor {
           observed_at: this.clock.toISOString(),
           windows: pool.windows,
         });
-        if (
-          pool.pool_id !== "global" &&
-          !probeRes.pools.some((p) => p.pool_id === "global")
-        ) {
-          this.repository.saveQuotaSnapshot({
-            id: `snp_${options.operationId}_${candidateIndex}_global`,
-            realm_id: options.realmId,
-            account_id: targetAcc.id,
-            auth_epoch: realm.auth_epoch,
-            pool_id: "global",
-            model_ids: pool.model_ids,
-            source: "official_cli_usage",
-            cli_version: probeRes.cli_version,
-            parser_revision: 1,
-            executable_fingerprint: probeRes.executable_fingerprint,
-            capability_verified: probeRes.capability_verified,
-            observed_at: this.clock.toISOString(),
-            windows: pool.windows,
-          });
-        }
+
       }
       if (!complete) {
         targetAcc.state = "pending_quota";
@@ -651,14 +620,7 @@ export class SwitchOperationExecutor {
         this.repository.saveAccount(targetAcc);
         throw new Error("quota_capability_unavailable");
       }
-      const targetPools = probeRes.pools.filter(
-        (p) =>
-          options.requiredPoolIds.includes(p.pool_id) ||
-          (options.requiredPoolIds.includes("global") &&
-            (p.pool_id === "global" || probeRes.pools.length === 1)),
-      );
-      const poolsToCheck =
-        targetPools.length > 0 ? targetPools : probeRes.pools;
+      const poolsToCheck = targetPools!;
       const zero = poolsToCheck.some((p) =>
         p.windows.some(
           (w) => w.remaining_fraction === null || w.remaining_fraction <= 0,

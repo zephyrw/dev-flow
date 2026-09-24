@@ -63,7 +63,7 @@ export const AgyAccountSchema = z.object({
   id: Id,
   realm_id: z.string().min(1),
   revision: z.number().int().positive().default(1),
-  alias: z.string().min(1),
+  alias: z.string().default(""),
   identity: AgyAccountIdentitySchema,
   secret_ref: z.string().min(1),
   credential_revision: z.number().int().positive().default(1),

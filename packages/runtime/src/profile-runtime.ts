@@ -24,6 +24,7 @@ import {
   verifyAndResolveExecutionInstructions,
   formatExecutionInstructionsForPrompt,
 } from "../../core/src/execution-instructions.js";
+import type { PlanApprovalRecordV2 } from "../../contracts/src/plan-approval.js";
 import { usesPolicyV2 } from "../../core/src/quality-policy-migration.js";
 import { composeRoleGuidance, type RecoveryGuidanceRole } from "../../core/src/conversation-guidance.js";
 import {
@@ -148,6 +149,27 @@ export class ProfileRuntime {
   ) {
     this.executionSessionStore = new ExecutionSessionStore(this.engine.store);
   }
+
+  private ensureRunApprovalRef(w: Workflow, run: Run): Run {
+    if (run.approval_ref) return run;
+    const approval = this.engine.store.get<PlanApprovalRecordV2>(
+      "approval",
+      `${w.id}-${w.plan_revision}`,
+    );
+    if (approval && approval.schema_version === 2) {
+      return {
+        ...run,
+        approval_ref: {
+          approval_id: (approval as any).approval_id ?? `${w.id}-${w.plan_revision}`,
+          plan_revision: approval.plan_revision ?? w.plan_revision,
+          plan_hash: approval.plan_hash,
+          instructions_hash: approval.execution_instructions?.text_hash ?? "",
+        },
+      };
+    }
+    return run;
+  }
+
   async plan(w: Workflow, run: Run) {
     const workspaces = await this.planningWorkspaces(w);
     const selectedSource = this.engine.store.get<SourceInput>(
@@ -322,11 +344,12 @@ export class ProfileRuntime {
         `${request.source_commit}...${request.candidate_commit}`,
       ]);
     } catch {}
+    const effectiveRun = this.ensureRunApprovalRef(w, run);
     const { instructions: extraInstructions, payload: extraPayload } =
       verifyAndResolveExecutionInstructions(
         this.engine.store,
         w.id,
-        run,
+        effectiveRun,
         w.plan_revision,
         plan.hash,
       );
@@ -469,11 +492,12 @@ export class ProfileRuntime {
     const repair = !policy2 || (assignment && assignment.assignment_id === run.assignment_id)
       ? assignment : null;
 
+    const effectiveRun = this.ensureRunApprovalRef(w, run);
     const { instructions: extraInstructions, payload: extraPayload } =
       verifyAndResolveExecutionInstructions(
         this.engine.store,
         w.id,
-        run,
+        effectiveRun,
         w.plan_revision,
         plan.hash,
       );
@@ -522,11 +546,12 @@ export class ProfileRuntime {
       w.stage === "quality_before_human" ? "before_human" : "after_human";
     const conflict_background = this.conflictReviewBackground(w.id);
 
+    const effectiveRun = this.ensureRunApprovalRef(w, run);
     const { instructions: extraInstructions, payload: extraPayload } =
       verifyAndResolveExecutionInstructions(
         this.engine.store,
         w.id,
-        run,
+        effectiveRun,
         w.plan_revision,
         this.engine.plan(w.id).hash,
       );
@@ -589,7 +614,7 @@ export class ProfileRuntime {
   }
   private continuationMaterials(materials: Record<string, unknown>, run: Run) {
     const continuation = this.readContinuation(run);
-    const extraInstructions = (materials.approved_execution_instructions as any)?.instructions;
+    const extraInstructions = materials.approved_execution_instructions as Parameters<typeof formatExecutionInstructionsForPrompt>[0];
     const extraInstructionsPrompt = extraInstructions
       ? formatExecutionInstructionsForPrompt(extraInstructions)
       : "";
@@ -1197,11 +1222,20 @@ export class ProfileRuntime {
       if (!exit && accountBinding)
         await this.accountBridge?.releaseRun(run.id, false, "process_failed");
     }
+    if (dispatchRecord) {
+      const code = typeof exit?.code === "number" ? exit.code : null;
+      dispatchManager.finishDispatch(dispatchId, {
+        exitCode: code,
+        error: failure || (code === null ? "进程未返回有效退出码" : undefined),
+      });
+    }
     // Native session scanning may discover the ID without a stdout init event.
     conversation ??= this.engine.store.get<Run>("run", run.id)?.conversation_id;
     retainConversation(conversation);
     this.engine.store.put("run", run.id, w.id, {
       ...this.engine.store.must<Run>("run", run.id),
+      status: exit.code === 0 && !failure ? "completed" : "failed",
+      ended_at: new Date().toISOString(),
       exit_code: exit.code,
       conversation_id: conversation,
     });

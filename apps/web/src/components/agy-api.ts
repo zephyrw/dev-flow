@@ -29,12 +29,14 @@ export async function agyApi<T>(
   path: string,
   options: RequestInit = {},
 ): Promise<T> {
+  const isMutation = Boolean(options.method && options.method.toUpperCase() !== "GET");
   const response = await fetch(`/api/agy-accounts${path}`, {
     ...options,
     headers: {
-      ...(options.body ? { "Content-Type": "application/json" } : {}),
+      ...(isMutation || options.body ? { "Content-Type": "application/json" } : {}),
       ...options.headers,
     },
+    body: options.body ?? (isMutation ? "{}" : undefined),
   });
   const data = await response.json();
   if (!response.ok) {

@@ -10,6 +10,7 @@ export interface AppDialogProps {
   subtitle?: string;
   width?: number | string;
   isDirty?: boolean;
+  busy?: boolean;
   children: React.ReactNode;
   footer?: React.ReactNode;
   className?: string;
@@ -42,6 +43,7 @@ export function AppDialog({
   subtitle,
   width = 720,
   isDirty = false,
+  busy = false,
   children,
   footer,
   className = "",
@@ -95,6 +97,7 @@ export function AppDialog({
   }, [isOpen]);
 
   const handleRequestClose = () => {
+    if (busy) return;
     if (isDirty && !showDiscardConfirm) {
       setShowDiscardConfirm(true);
       return;
@@ -164,7 +167,7 @@ export function AppDialog({
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isOpen, isDirty, showDiscardConfirm, onClose]);
+  }, [isOpen, isDirty, showDiscardConfirm, busy, onClose]);
 
   if (!isOpen) return null;
 
@@ -206,6 +209,7 @@ export function AppDialog({
             className="app-dialog-close-btn"
             onClick={handleRequestClose}
             aria-label="关闭对话框"
+            disabled={busy}
             ref={closeButtonRef}
           >
             &times;

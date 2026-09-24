@@ -73,12 +73,26 @@ export function registerAgyAccountRoutes(
   const repo = service.getRepository();
   app.get("/api/agy-accounts", async (req) => {
     human(req);
-    const view = service.getPresentation(realmId);
+    let view = service.getPresentation(realmId);
+    if (!view.realm || !("active_account_id" in view.realm) || !view.realm.active_account_id) {
+      await service.syncActiveAccountFromHost(realmId).catch(() => {});
+      view = service.getPresentation(realmId);
+    }
     return {
       ...view,
       accounts: view.accounts.map((a) => AgyAccountDtoSchema.parse(a)),
       settings: publicSettings(view.settings),
     };
+  });
+  app.post("/api/agy-accounts/sync-active", async (req, reply) => {
+    human(req);
+    await service.syncActiveAccountFromHost(realmId).catch(() => {});
+    const view = service.getPresentation(realmId);
+    return reply.code(200).send({
+      ...view,
+      accounts: view.accounts.map((a) => AgyAccountDtoSchema.parse(a)),
+      settings: publicSettings(view.settings),
+    });
   });
   app.post("/api/agy-accounts/sync-refresh", async (req, reply) => {
     human(req);
@@ -184,13 +198,6 @@ export function registerAgyAccountRoutes(
       service.updateSettings(realmId, patch, expected_revision, request_id),
     );
   });
-  const dispatchOperation = async (
-    input: Parameters<typeof service.requestOperation>[0],
-  ) => {
-    const res = await service.requestOperation(input);
-    service.triggerOperationImmediate(res.operation_id);
-    return res;
-  };
   app.post("/api/agy-accounts/switch", async (req, reply) => {
     human(req);
     const body = z
@@ -206,7 +213,7 @@ export function registerAgyAccountRoutes(
     return reply
       .code(202)
       .send(
-        await dispatchOperation({
+        await service.requestOperation({
           realm_id: realmId,
           kind: "switch",
           ...body,
@@ -228,7 +235,7 @@ export function registerAgyAccountRoutes(
     return reply
       .code(202)
       .send(
-        await dispatchOperation({
+        await service.requestOperation({
           realm_id: realmId,
           kind: "enroll",
           expected_revision: expected_realm_revision,
@@ -254,7 +261,7 @@ export function registerAgyAccountRoutes(
     return reply
       .code(202)
       .send(
-        await dispatchOperation({
+        await service.requestOperation({
           realm_id: realmId,
           kind: "maintenance",
           expected_revision: expected_realm_revision,
@@ -284,7 +291,7 @@ export function registerAgyAccountRoutes(
     return reply
       .code(202)
       .send(
-        await dispatchOperation({
+        await service.requestOperation({
           realm_id: realmId,
           kind: "cancel",
           operation_id: id,
@@ -327,7 +334,7 @@ export function registerAgyAccountRoutes(
     return reply
       .code(202)
       .send(
-        await dispatchOperation({
+        await service.requestOperation({
           realm_id: realmId,
           kind: "reauth",
           account_id: id,
@@ -345,7 +352,7 @@ export function registerAgyAccountRoutes(
     return reply
       .code(202)
       .send(
-        await dispatchOperation({
+        await service.requestOperation({
           realm_id: realmId,
           kind: "probe",
           account_id: id,
@@ -379,7 +386,7 @@ export function registerAgyAccountRoutes(
     return reply
       .code(202)
       .send(
-        await dispatchOperation({
+        await service.requestOperation({
           realm_id: realmId,
           kind: "delete",
           account_id: id,

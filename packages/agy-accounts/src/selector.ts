@@ -1,3 +1,4 @@
+import { hasDualQuotaWindows, requiredQuotaPools } from "./quota.js";
 import type {
   AgyAccount,
   AgyQuotaSnapshot,
@@ -124,7 +125,8 @@ export function evaluateAccountForDemand(
   const accountSnapshots = snapshots
     .filter((s) => s.account_id === account.id)
     .slice()
-    .sort((a, b) => Date.parse(b.observed_at) - Date.parse(a.observed_at));
+    .sort((a, b) => Date.parse(b.observed_at) - Date.parse(a.observed_at) ||
+      b.auth_epoch - a.auth_epoch || b.id.localeCompare(a.id));
 
   for (const s of accountSnapshots) {
     if (!poolSnaps.has(s.pool_id)) {
@@ -138,34 +140,15 @@ export function evaluateAccountForDemand(
   let hasZeroWindowUnreset = false;
   let hasZeroWindowProjected = false;
 
-  for (const poolId of policy.required_pool_ids) {
-    const snap =
-      poolSnaps.get(poolId) ??
-      (poolId === "global"
-        ? (poolSnaps.get("global") ??
-          poolSnaps.get("default") ??
-          poolSnaps.values().next().value)
-        : undefined);
-    if (!snap) {
+  const demandedPools = requiredQuotaPools([...poolSnaps.values()], policy.required_pool_ids, policy.required_model_ids ?? []);
+  if (!demandedPools) excluded_reasons.push("missing_required_quota_pools");
+  for (const snap of demandedPools ?? []) {
+    if (!snap || snap.capability_verified === false ||
+        !hasDualQuotaWindows(snap.windows) || !Number.isFinite(Date.parse(snap.observed_at)) ||
+        Date.parse(snap.observed_at) > evaluationTime + clockSkewMs) {
       excluded_reasons.push("missing_required_quota_pools");
       break;
     }
-
-    if (policy.required_model_ids && policy.required_model_ids.length > 0) {
-      const supportsAllModels = policy.required_model_ids.every((m) =>
-        snap.model_ids.some((pattern) => {
-          if (pattern === "*") return true;
-          if (pattern === m) return true;
-          if (pattern.endsWith("*")) return m.startsWith(pattern.slice(0, -1));
-          return false;
-        }),
-      );
-      if (!supportsAllModels) {
-        excluded_reasons.push("model_not_supported_in_pool");
-        break;
-      }
-    }
-
     if (snap.exhausted && snap.exhausted.window === "unknown") {
       excluded_reasons.push("quota_exhausted_unknown_window");
       break;
@@ -482,23 +465,9 @@ export function selectCandidates(
   now: number,
   policy: SelectionPolicy = {},
 ): SelectionResult {
-  const clockSkewMs = (policy.reset_clock_skew_seconds ?? 60) * 1000;
-  const allowedSet = policy.allowed_account_ids
-    ? new Set(policy.allowed_account_ids)
-    : null;
-
   const ranked: CandidateEvaluation[] = [];
   const excluded: ExcludedAccountReason[] = [];
   const eligibleTimestamps: number[] = [];
-
-  // 构建 snapshot 索引: account_id -> pool_id -> AgyQuotaSnapshot
-  const snapMap = new Map<string, Map<string, AgyQuotaSnapshot>>();
-  for (const s of snapshots) {
-    if (!snapMap.has(s.account_id)) {
-      snapMap.set(s.account_id, new Map());
-    }
-    snapMap.get(s.account_id)!.set(s.pool_id, s);
-  }
 
   for (const acc of accounts) {
     const evalRes = evaluateAccountForDemand({

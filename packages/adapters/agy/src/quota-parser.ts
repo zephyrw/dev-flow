@@ -1,3 +1,4 @@
+import { hasDualQuotaWindows } from "../../../agy-accounts/src/quota.js";
 import type {
   QuotaWindow,
   WindowKind,
@@ -74,16 +75,16 @@ export function parseAgyUsageOutput(
   const tableRows: Array<{
     poolName: string;
     kind: WindowKind;
-    remaining: number;
+    remaining: number | null;
     resetAt: string | null;
   }> = [];
 
   for (const line of lines) {
     const tableMatch =
-      /^([^\t]+?)\t+(Weekly Limit Remaining|Five Hour Limit Remaining)\t+(\d+(?:\.\d+)?)%\t+(.+)$/.exec(
+      /^([^\t]+?)\t+(Weekly Limit Remaining|Five Hour Limit Remaining)\t+(\S+)\t+(.+)$/.exec(
         line,
       ) ??
-      /^([A-Za-z0-9 ]+?)\s{2,}(Weekly Limit Remaining|Five Hour Limit Remaining)\s{2,}(\d+(?:\.\d+)?)%\s{2,}(.+)$/.exec(
+      /^([A-Za-z0-9 ]+?)\s{2,}(Weekly Limit Remaining|Five Hour Limit Remaining)\s{2,}(\S+)\s{2,}(.+)$/.exec(
         line,
       );
     if (tableMatch) {
@@ -93,18 +94,15 @@ export function parseAgyUsageOutput(
       const resetStr = tableMatch[4]!.trim();
       const kind: WindowKind =
         kindStr === "Weekly Limit Remaining" ? "weekly" : "five_hour";
-      const remaining = Number(pctStr) / 100;
+      const remaining = pctStr.endsWith("%") ? Number(pctStr.slice(0, -1)) / 100 : NaN;
       const resetAt = parseRelativeResetToIso(
         resetStr,
         Date.parse(observedAt),
       );
-      if (
-        Number.isFinite(remaining) &&
-        remaining >= 0 &&
-        remaining <= 1
-      ) {
-        tableRows.push({ poolName, kind, remaining, resetAt });
-      }
+      tableRows.push({
+        poolName, kind, resetAt,
+        remaining: Number.isFinite(remaining) && remaining >= 0 && remaining <= 1 ? remaining : null,
+      });
     }
   }
 
@@ -120,7 +118,7 @@ export function parseAgyUsageOutput(
         remaining_fraction: row.remaining,
         reset_at: row.resetAt,
         observed_at: observedAt,
-        status: "observed",
+        status: row.remaining === null ? "missing" : "observed",
       };
       const list = poolMap.get(row.poolName) ?? [];
       if (list.some((w) => w.kind === row.kind)) {
@@ -133,50 +131,29 @@ export function parseAgyUsageOutput(
     }
 
     for (const [poolName, pWindows] of poolMap.entries()) {
+      if (!hasDualQuotaWindows(pWindows)) {
+        for (const window of pWindows) { window.status = "missing"; window.remaining_fraction = null; }
+      }
       const lower = poolName.toLowerCase();
       let models: string[];
-      if (lower.includes("gemini")) {
+      if (lower === "gemini models") {
         models = ["gemini-*"];
-      } else if (lower.includes("claude") || lower.includes("gpt")) {
+      } else if (lower === "claude and gpt models") {
         models = ["claude-*", "gpt-*"];
       } else if (lower === "global") {
         models = ["*"];
       } else {
-        models = [poolName];
+        models = [];
       }
       pools.push({
-        pool_id: poolName,
+        pool_id: lower === "global" ? "global" : poolName,
         models,
         windows: pWindows,
       });
     }
 
-    // 全局双额度：优先取 Gemini Models 或第一组双额度
-    const primaryPool =
-      poolMap.get("Gemini Models") ??
-      [...poolMap.values()][0] ??
-      [];
-    const weeklyWin = primaryPool.find((w) => w.kind === "weekly");
-    const fiveHourWin = primaryPool.find((w) => w.kind === "five_hour");
-
-    windows = [
-      weeklyWin ?? {
-        kind: "weekly",
-        duration_minutes: 10080,
-        remaining_fraction: null,
-        reset_at: null,
-        observed_at: observedAt,
-        status: "missing",
-      },
-      fiveHourWin ?? {
-        kind: "five_hour",
-        duration_minutes: 300,
-        remaining_fraction: null,
-        reset_at: null,
-        observed_at: observedAt,
-        status: "missing",
-      },
-    ];
+    // 模型池窗口不能冒充账号全局额度。
+    windows = pools.find((pool) => pool.pool_id.toLowerCase() === "global")?.windows ?? [];
   } else {
     windows = (["weekly", "five_hour"] as const).map(
       (kind) => {

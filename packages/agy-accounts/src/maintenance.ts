@@ -140,25 +140,14 @@ export class AgyMaintenanceService {
         };
 
     const evaluationTime = Math.max(now, nw.night_start_at);
-    const pools = [
-      ...new Set(
-        snapshots
-          .filter(
-            (s) =>
-              !!settings?.standalone_model_id &&
-              s.model_ids.includes(settings.standalone_model_id) &&
-              s.capability_verified,
-          )
-          .map((s) => s.pool_id),
-      ),
-    ];
-    const selection = pools.length
-      ? selectCandidates(accounts, snapshots, pools, evaluationTime, {
+    const selection = settings?.standalone_model_id
+      ? selectCandidates(accounts, snapshots, ["global"], evaluationTime, {
+          required_model_ids: [settings.standalone_model_id],
           is_night: true,
           night_pool: "strict",
           night_end_at: nw.night_end_at,
           refresh_verified_max_age_hours:
-            settings?.maintenance.refresh_verified_max_age_hours ?? 24,
+            settings.maintenance.refresh_verified_max_age_hours,
         })
       : undefined;
 

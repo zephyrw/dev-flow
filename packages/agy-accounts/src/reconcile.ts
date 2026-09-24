@@ -124,8 +124,14 @@ export class AgyReconciler {
 
     if (!realm.pending_operation_id) return;
     const op = this.repository.getOperation(realm.pending_operation_id);
-    if (!op) throw new Error("operation_journal_missing");
-    if (["completed", "cancelled", "failed"].includes(op.phase)) {
+    if (!op || ["completed", "cancelled", "failed", "blocked"].includes(op.phase) ||
+        (op.deadline_at && new Date(op.deadline_at).getTime() < Date.now())) {
+      if (op && !["completed", "cancelled", "failed"].includes(op.phase)) {
+        op.phase = "cancelled";
+        op.error = op.error ?? "operation_cancelled_on_startup_reconcile";
+        op.revision++;
+        this.repository.saveOperation(op);
+      }
       realm.pending_operation_id = null;
       realm.phase = "idle";
       realm.revision++;

@@ -43,8 +43,6 @@ export function AgyAccountEnrollment({
   onClose,
   onOperation,
 }: Props) {
-  const [alias, setAlias] = useState("");
-  const [mode, setMode] = useState<"capture_current" | "login">("capture_current");
   const [submitting, setSubmitting] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [error, setError] = useState("");
@@ -107,8 +105,8 @@ export function AgyAccountEnrollment({
       const op = await agyApi<AccountOperationView>("/enroll", {
         method: "POST",
         body: requestBody({
-          alias: alias.trim(),
-          mode,
+          alias: "",
+          mode: "capture_current",
           expected_realm_revision: realmRevision,
         }),
       });
@@ -171,7 +169,7 @@ export function AgyAccountEnrollment({
             <div className="agy-wizard-result-icon success">✓</div>
             <div className="agy-wizard-result-body">
               <h4>账号导入成功</h4>
-              <p>已成功读取本地安全凭据并完成官方双额度核验，账号现已加入受管列表。</p>
+              <p>已成功读取本地 CLI 登录凭据并同步官方双额度，当前工作流已切换至该账号。</p>
             </div>
           </div>
           <div className="agy-modal-footer">
@@ -193,8 +191,8 @@ export function AgyAccountEnrollment({
           <div className="agy-wizard-result-card is-error">
             <div className="agy-wizard-result-icon error">!</div>
             <div className="agy-wizard-result-body">
-              <h4>{phase === "cancelled" ? "操作已取消" : "账号添加未完成"}</h4>
-              <p>{opError || (phase === "cancelled" ? "您已取消本次账号添加操作。" : "未能完成账号凭据核验，请检查登录状态后重试。")}</p>
+              <h4>{phase === "cancelled" ? "操作已取消" : "账号导入未完成"}</h4>
+              <p>{opError || (phase === "cancelled" ? "您已取消本次账号导入操作。" : "未能完成账号凭据核验，请确认已在 agy CLI 完成登录后重试。")}</p>
             </div>
           </div>
           <div className="agy-modal-footer">
@@ -206,7 +204,7 @@ export function AgyAccountEnrollment({
                 setError("");
               }}
             >
-              返回重选
+              重试
             </button>
             <button
               type="button"
@@ -227,11 +225,7 @@ export function AgyAccountEnrollment({
             <span className="agy-wizard-spinner" />
             <div className="agy-wizard-progress-title">
               <h4>{label}</h4>
-              <span>
-                {mode === "capture_current"
-                  ? "正在提取系统当前登录凭据并同步额度，请稍候…"
-                  : "请在弹出的 Antigravity 窗口中完成官方登录授权…"}
-              </span>
+              <span>正在提取本机 agy CLI 当前登录凭据并同步额度，请稍候…</span>
             </div>
           </div>
 
@@ -274,10 +268,10 @@ export function AgyAccountEnrollment({
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
-        aria-label="添加 AGY 管理账号"
+        aria-label="导入本机当前活动账号"
       >
         <div className="agy-modal-header">
-          <h3>添加 AGY 管理账号</h3>
+          <h3>导入本机当前活动账号</h3>
           <button type="button" className="agy-modal-close-btn" onClick={onClose}>
             ✕
           </button>
@@ -293,57 +287,12 @@ export function AgyAccountEnrollment({
               </div>
             )}
 
-            <div className="agy-form-item">
-              <label className="agy-form-label" htmlFor="agy-alias-input">
-                账号别名（可选）
-              </label>
-              <input
-                id="agy-alias-input"
-                className="agy-form-input"
-                value={alias}
-                maxLength={100}
-                placeholder="例如：主账号 / 团队账号"
-                onChange={(e) => setAlias(e.target.value)}
-                disabled={submitting}
-              />
-            </div>
-
-            <div className="agy-form-item">
-              <label className="agy-form-label">添加方式</label>
-              <div className="agy-radio-group">
-                <label
-                  className={`agy-radio-card ${mode === "login" ? "is-selected" : ""}`}
-                >
-                  <input
-                    type="radio"
-                    name="enroll-mode"
-                    value="login"
-                    checked={mode === "login"}
-                    onChange={() => setMode("login")}
-                    disabled={submitting}
-                  />
-                  <div className="agy-radio-meta">
-                    <strong>打开官方登录页面</strong>
-                    <span>弹出 Antigravity 官方窗口完成账号授权</span>
-                  </div>
-                </label>
-
-                <label
-                  className={`agy-radio-card ${mode === "capture_current" ? "is-selected" : ""}`}
-                >
-                  <input
-                    type="radio"
-                    name="enroll-mode"
-                    value="capture_current"
-                    checked={mode === "capture_current"}
-                    onChange={() => setMode("capture_current")}
-                    disabled={submitting}
-                  />
-                  <div className="agy-radio-meta">
-                    <strong>导入本机当前活动账号</strong>
-                    <span>直接保存系统当前已登录的凭据作为管理账号</span>
-                  </div>
-                </label>
+            <div className="agy-radio-card is-selected" style={{ cursor: "default" }}>
+              <div className="agy-radio-meta">
+                <strong>导入本机 AGY CLI 当前登录账号</strong>
+                <span>
+                  直接提取本机已通过 agy CLI 登录的账号凭据并同步周额度与五小时额度，导入后自动设为当前使用中账号
+                </span>
               </div>
             </div>
 
@@ -361,7 +310,7 @@ export function AgyAccountEnrollment({
                 className="agy-primary-btn"
                 disabled={submitting}
               >
-                {submitting ? "正在受理…" : "开始添加"}
+                {submitting ? "正在导入…" : "开始导入"}
               </button>
             </div>
           </form>

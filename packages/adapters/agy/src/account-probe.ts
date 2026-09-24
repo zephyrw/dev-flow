@@ -1,3 +1,4 @@
+import { hasDualQuotaWindows } from "../../../agy-accounts/src/quota.js";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -82,10 +83,7 @@ export function parseModelAccessOutput(
     return { success: false, reason: "missing_model_evidence" };
   }
   const isMatch =
-    eventModel === expected.modelId ||
-    expected.modelId === eventModel ||
-    expected.modelId.startsWith(eventModel) ||
-    eventModel.startsWith(expected.modelId);
+    eventModel === expected.modelId;
   if (!isMatch) {
     return { success: false, reason: "model_mismatch" };
   }
@@ -141,8 +139,7 @@ export class AgyAccountProbe implements AccountProbePort {
   private getAdapter(fingerprint: string): VerifiedUsageAdapter | undefined {
     if (
       this.activeAdapter &&
-      (!this.activeAdapter.executable_fingerprint ||
-        this.activeAdapter.executable_fingerprint === fingerprint)
+      this.activeAdapter.executable_fingerprint === fingerprint
     ) {
       return this.activeAdapter;
     }
@@ -179,11 +176,7 @@ export class AgyAccountProbe implements AccountProbePort {
       throw new Error(`identity_unverified: official cli exited with code ${result.code}`);
     }
     const parsed = adapter.parse(result.stdout);
-    const email =
-      parsed.email ??
-      (options.account_id && options.account_id.includes("@")
-        ? options.account_id
-        : undefined);
+    const email = parsed.email;
     if (!email) {
       throw new Error("identity_unverified: unable to extract email from official cli output");
     }
@@ -218,18 +211,6 @@ export class AgyAccountProbe implements AccountProbePort {
       .then((result) => {
         if (result.code !== 0) throw new Error("official_usage_probe_failed");
         const parsed = adapter.parse(result.stdout);
-        // 直接以账号级全局两个 windows 判定有效性 (Q01)
-        const hasWindows = ["weekly", "five_hour"].every((kind) => {
-          const windows = parsed.windows.filter((window) => window.kind === kind);
-          const window = windows[0];
-          return (
-            windows.length === 1 &&
-            window?.status === "observed" &&
-            typeof window.remaining_fraction === "number" &&
-            window.remaining_fraction >= 0 &&
-            window.remaining_fraction <= 1
-          );
-        });
         const pools = parsed.pools.length > 0
           ? parsed.pools.map((pool) => ({
               pool_id: pool.pool_id,
@@ -243,7 +224,8 @@ export class AgyAccountProbe implements AccountProbePort {
                 windows: parsed.windows,
               },
             ];
-        const valid = hasWindows && (!!parsed.email || parsed.pools.length > 0);
+        const valid = pools.length > 0 && pools.every((pool) =>
+          pool.model_ids.length > 0 && hasDualQuotaWindows(pool.windows));
         return {
           email: parsed.email,
           plan_tier: parsed.plan_tier,
