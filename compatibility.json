@@ -1,152 +1,311 @@
 {
-  "matrix_version": "2.0.0",
-  "verification_policy": "Discovery is not live workflow certification; use dated test evidence.",
+  "matrix_version": "3.0.0",
+  "verification_policy": "Discovery is not live workflow certification; use dated test evidence. Record package_build_native_load, install_workbench_smoke, tool_access, and real_workflow separately. Untested combinations stay unverified. live_workflow_verified requires evidence with application_commit, platform, tool_version, model_id, test_date, test_type, result, and report_location. runtime_backend is not a shared version number for application build, runner protocol, or credential worker protocol.",
+  "layers": {
+    "application_build": {
+      "authority": "build-info.json",
+      "description": "Application version, git commit, tag, built_at, platform, node_version, and native dependency versions are bound at package build time in build-info.json. This file does not carry those values and does not treat runtime_backend as an application version.",
+      "fields_bound_at_build": [
+        "application_version",
+        "build_revision",
+        "build_tag",
+        "built_at",
+        "platform",
+        "node_version",
+        "native_dependencies"
+      ]
+    },
+    "runtime_backend": "node-v1",
+    "runner_protocol": {
+      "version": "1.0.0",
+      "source": "packages/process/src/runner-entry.ts ready handshake; version checked in packages/process/src/manager.ts"
+    },
+    "credential_worker_protocol": {
+      "version": "3.0.0-node",
+      "source": "packages/agy-accounts/src/credential-worker.ts capabilities response; checked in packages/agy-accounts/src/auth-host.ts and packages/agy-accounts/src/service.ts"
+    }
+  },
   "platforms": {
     "win32-x64": {
-      "status": "local_regression_tested"
+      "status": "local_regression_tested",
+      "status_scope": "Source-tree local regression on win32-x64 only. Not final-archive install certification and not live workflow certification.",
+      "install_verification": {
+        "package_build_native_load": {
+          "status": "unverified",
+          "evidence": []
+        },
+        "install_workbench_smoke": {
+          "status": "unverified",
+          "evidence": []
+        },
+        "tool_access": {
+          "status": "unverified",
+          "evidence": []
+        },
+        "real_workflow": {
+          "status": "unverified",
+          "evidence": []
+        }
+      }
     },
     "win32-arm64": {
-      "status": "unverified"
+      "status": "unverified",
+      "status_scope": "Not tested. Script architecture recognition does not certify this platform.",
+      "install_verification": {
+        "package_build_native_load": {
+          "status": "unverified",
+          "evidence": []
+        },
+        "install_workbench_smoke": {
+          "status": "unverified",
+          "evidence": []
+        },
+        "tool_access": {
+          "status": "unverified",
+          "evidence": []
+        },
+        "real_workflow": {
+          "status": "unverified",
+          "evidence": []
+        }
+      }
     },
     "darwin-x64": {
-      "status": "unverified"
+      "status": "unverified",
+      "status_scope": "Not tested.",
+      "install_verification": {
+        "package_build_native_load": {
+          "status": "unverified",
+          "evidence": []
+        },
+        "install_workbench_smoke": {
+          "status": "unverified",
+          "evidence": []
+        },
+        "tool_access": {
+          "status": "unverified",
+          "evidence": []
+        },
+        "real_workflow": {
+          "status": "unverified",
+          "evidence": []
+        }
+      }
     },
     "darwin-arm64": {
-      "status": "unverified"
+      "status": "unverified",
+      "status_scope": "Not tested.",
+      "install_verification": {
+        "package_build_native_load": {
+          "status": "unverified",
+          "evidence": []
+        },
+        "install_workbench_smoke": {
+          "status": "unverified",
+          "evidence": []
+        },
+        "tool_access": {
+          "status": "unverified",
+          "evidence": []
+        },
+        "real_workflow": {
+          "status": "unverified",
+          "evidence": []
+        }
+      }
     },
     "linux-x64": {
-      "status": "unverified"
+      "status": "unverified",
+      "status_scope": "Not tested. Do not generalize a single distro result to all Linux.",
+      "install_verification": {
+        "package_build_native_load": {
+          "status": "unverified",
+          "evidence": []
+        },
+        "install_workbench_smoke": {
+          "status": "unverified",
+          "evidence": []
+        },
+        "tool_access": {
+          "status": "unverified",
+          "evidence": []
+        },
+        "real_workflow": {
+          "status": "unverified",
+          "evidence": []
+        }
+      }
     },
     "linux-arm64": {
-      "status": "unverified"
+      "status": "unverified",
+      "status_scope": "Not tested. Not in the first-release candidate matrix.",
+      "install_verification": {
+        "package_build_native_load": {
+          "status": "unverified",
+          "evidence": []
+        },
+        "install_workbench_smoke": {
+          "status": "unverified",
+          "evidence": []
+        },
+        "tool_access": {
+          "status": "unverified",
+          "evidence": []
+        },
+        "real_workflow": {
+          "status": "unverified",
+          "evidence": []
+        }
+      }
     }
   },
   "tools": {
     "codex": {
       "status": "adapter_implemented",
       "live_workflow_verified": false,
-      "roles": [
-        "planner",
-        "executor",
-        "tester",
-        "reviewer"
-      ],
-      "modes": [
-        "single",
-        "composite"
-      ]
+      "evidence": [],
+      "roles": ["planner", "executor", "tester", "reviewer"],
+      "modes": ["single", "composite"]
     },
     "agy": {
       "status": "adapter_implemented",
       "live_workflow_verified": false,
-      "roles": [
-        "planner",
-        "executor",
-        "tester",
-        "reviewer"
-      ],
-      "modes": [
-        "single",
-        "composite"
-      ]
+      "evidence": [],
+      "roles": ["planner", "executor", "tester", "reviewer"],
+      "modes": ["single", "composite"]
     },
     "grok-build": {
       "status": "adapter_implemented",
       "live_workflow_verified": false,
-      "roles": [
-        "planner",
-        "executor",
-        "tester",
-        "reviewer"
-      ],
-      "modes": [
-        "single",
-        "composite"
-      ]
+      "evidence": [],
+      "roles": ["planner", "executor", "tester", "reviewer"],
+      "modes": ["single", "composite"]
     },
     "claude-code": {
       "status": "adapter_implemented",
       "live_workflow_verified": false,
-      "roles": [
-        "planner",
-        "executor",
-        "tester",
-        "reviewer"
-      ],
-      "modes": [
-        "single",
-        "composite"
-      ]
+      "evidence": [],
+      "roles": ["planner", "executor", "tester", "reviewer"],
+      "modes": ["single", "composite"]
     },
     "kimi-code": {
       "status": "adapter_implemented",
       "live_workflow_verified": false,
-      "roles": [
-        "planner",
-        "executor",
-        "tester",
-        "reviewer"
-      ],
-      "modes": [
-        "single",
-        "composite"
-      ]
+      "evidence": [],
+      "roles": ["planner", "executor", "tester", "reviewer"],
+      "modes": ["single", "composite"]
     },
     "qoder": {
       "status": "adapter_implemented",
       "live_workflow_verified": false,
-      "roles": [
-        "planner",
-        "executor",
-        "tester",
-        "reviewer"
-      ],
-      "modes": [
-        "single",
-        "composite"
-      ]
+      "evidence": [],
+      "roles": ["planner", "executor", "tester", "reviewer"],
+      "modes": ["single", "composite"]
     },
     "opencode": {
       "status": "adapter_implemented",
       "live_workflow_verified": false,
-      "roles": [
-        "planner",
-        "executor",
-        "tester",
-        "reviewer"
-      ],
-      "modes": [
-        "single",
-        "composite"
-      ]
+      "evidence": [],
+      "roles": ["planner", "executor", "tester", "reviewer"],
+      "modes": ["single", "composite"]
     },
     "cursor-agent": {
       "status": "adapter_implemented",
       "live_workflow_verified": false,
-      "roles": [
-        "planner",
-        "executor",
-        "tester",
-        "reviewer"
-      ],
-      "modes": [
-        "single",
-        "composite"
-      ]
+      "evidence": [],
+      "roles": ["planner", "executor", "tester", "reviewer"],
+      "modes": ["single", "composite"]
     }
   },
   "agy_accounts": {
-    "platform": "win32",
-    "status": "disabled_until_runtime_capabilities_verified",
-    "auth_host_protocol": "2.0.0",
-    "required_process_capabilities": [
-      "doctor",
-      "suspended_spawn",
-      "kill_on_close",
-      "job-status"
+    "platform_scope": "win32",
+    "feature_boundary": {
+      "serial_operations_required": true,
+      "dual_quota_enrollment_required": true,
+      "unused_account_background_probe_allowed": false,
+      "fail_closed_off_platform": true
+    },
+    "credential_worker_protocol": "3.0.0-node",
+    "process_capability_model": {
+      "source_files": [
+        "packages/process/src/native/windows.ts",
+        "packages/process/src/native/posix.ts",
+        "packages/process/src/manager.ts",
+        "packages/agy-accounts/src/credential-worker.ts"
+      ],
+      "capabilities": [
+        "managed_runner_spawn",
+        "suspended_spawn_resume",
+        "job_object_kill_on_close",
+        "job_object_assign",
+        "job_object_terminate",
+        "job_object_active_query",
+        "process_group_terminate",
+        "named_mutex",
+        "controller_flock",
+        "clean_process_environment",
+        "credential_native_probe"
+      ],
+      "by_platform": {
+        "win32": [
+          "managed_runner_spawn",
+          "suspended_spawn_resume",
+          "job_object_kill_on_close",
+          "job_object_assign",
+          "job_object_terminate",
+          "job_object_active_query",
+          "named_mutex",
+          "clean_process_environment",
+          "credential_native_probe"
+        ],
+        "posix": [
+          "managed_runner_spawn",
+          "process_group_terminate",
+          "controller_flock",
+          "clean_process_environment"
+        ]
+      },
+      "capability_notes": {
+        "managed_runner_spawn": "ProcessManager starts compiled runner-entry.js and completes the ready/start/started/exited IPC handshake (runner protocol 1.0.0).",
+        "suspended_spawn_resume": "WindowsNative.spawnInteractive creates a process with CREATE_SUSPENDED then ResumeThread after job assignment.",
+        "job_object_kill_on_close": "Windows Job Object limit JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE.",
+        "job_object_assign": "AssignProcessToJobObject for the owned process tree.",
+        "job_object_terminate": "TerminateJobObject on managed stop.",
+        "job_object_active_query": "QueryInformationJobObject ActiveProcesses for exit confirmation.",
+        "process_group_terminate": "POSIX process-group SIGTERM then SIGKILL escalation in runner-entry/manager stop paths.",
+        "named_mutex": "CreateMutexW/acquireMutex for credential domain locks and capability probes.",
+        "controller_flock": "POSIX flock controller lock (tryAcquireFlock/acquireFlock).",
+        "clean_process_environment": "cleanProcessEnvironment allow-list and NODE_* injection filtering.",
+        "credential_native_probe": "credential-worker capabilities action probes DPAPI, credential manager, and named mutex at runtime."
+      },
+      "legacy_host_commands_removed": "Previous Host interface names (a host diagnostic command, a suspended-spawn flag, a kill-on-close flag, and a job-status query string) are not live commands on the Node CLI and must not be faked. They are replaced by the node-native capability list above: suspended spawn maps to suspended_spawn_resume; kill-on-close maps to job_object_kill_on_close; job status maps to job_object_active_query; the host diagnostic command is not a process capability (user-facing CLI doctor is a separate DFP-05 command)."
+    },
+    "verifications": [
+      {
+        "type": "capability_probe",
+        "status": "unverified",
+        "evidence": [],
+        "notes": "Runtime capability probe exists in the credential-worker capabilities action (dpapi_available, cred_manager_available, named_mutex_available). Probe success is not account login, dual-window certification, or cross-account resume. No dated certification evidence recorded; field migration does not certify this type."
+      },
+      {
+        "type": "official_cli_dual_window",
+        "status": "unverified",
+        "evidence": [],
+        "notes": "Formerly a boolean set false. Not upgraded by field migration."
+      },
+      {
+        "type": "cross_account_resume",
+        "status": "unverified",
+        "evidence": [],
+        "notes": "Formerly a boolean set false. Not upgraded by field migration."
+      },
+      {
+        "type": "account_switch_serial_safety",
+        "status": "unverified",
+        "evidence": [],
+        "notes": "win32-only, serial account operations, and dual-quota enrollment gate remain required boundaries. Schema migration does not certify serial safety or enrollment."
+      }
     ],
-    "official_cli_dual_window_verified": false,
-    "cross_account_resume_verified": false,
-    "notes": "Binary build and installation are not account switching certification. Unsupported hosts fail closed without affecting other adapters."
+    "notes": "Binary build and installation are not account switching certification. Unsupported hosts fail closed without affecting other adapters. Schema migration does not raise verification levels: the former disabled-until-runtime-capabilities-verified status is expressed as unverified capability_probe."
   }
 }

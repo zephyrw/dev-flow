@@ -38,3 +38,32 @@ export function validateReleaseManifest(
       throw new Error("发布资产无效");
   return input;
 }
+
+/** Strict platform/arch acceptance — never map unknown or 32-bit to x64. */
+export function isSupportedPlatformPair(
+  platform: string,
+  arch: string,
+): boolean {
+  return (
+    (platform === "win32" && arch === "x64") ||
+    (platform === "darwin" && (arch === "x64" || arch === "arm64")) ||
+    (platform === "linux" && arch === "x64")
+  );
+}
+
+export function assertPlatformAsset(
+  item: ComponentManifestItem,
+  platform = process.platform,
+  arch = process.arch,
+): void {
+  if (!isSupportedPlatformPair(item.platform, item.arch)) {
+    throw new Error(
+      `不支持的平台或架构：${item.platform}-${item.arch}（不会自动映射为 x64）`,
+    );
+  }
+  if (item.platform !== platform || item.arch !== arch) {
+    throw new Error(
+      `发布资产平台不匹配：需要 ${platform}-${arch}，清单为 ${item.platform}-${item.arch}`,
+    );
+  }
+}

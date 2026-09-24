@@ -1,0 +1,292 @@
+{
+  "schema_version": 1,
+  "description": "DevFlow 成品包唯一运行与合规文件清单（构建校验 / 安装复制 / 测试共用）。path 为相对包根的 posix 路径；required 可为布尔或平台条件 {os, arch?}；any_of 为可接受的替代路径（校验时任一存在即可）。",
+  "entries": [
+    {
+      "path": "package.json",
+      "category": "app",
+      "required": true
+    },
+    {
+      "path": "pnpm-lock.yaml",
+      "category": "app",
+      "required": true
+    },
+    {
+      "path": "pnpm-workspace.yaml",
+      "category": "app",
+      "required": true
+    },
+    {
+      "path": "dist/apps/api/src/main.js",
+      "category": "app",
+      "required": true
+    },
+    {
+      "path": "dist/apps/api/src/accounts-main.js",
+      "category": "app",
+      "required": true
+    },
+    {
+      "path": "dist/apps/api/src/base-server.js",
+      "category": "app",
+      "required": true
+    },
+    {
+      "path": "dist/packages/service/src/launcher.js",
+      "category": "app",
+      "required": true
+    },
+    {
+      "path": "dist/packages/service/src/open.js",
+      "category": "app",
+      "required": true
+    },
+    {
+      "path": "dist/packages/service/src/service-mode.js",
+      "category": "app",
+      "required": true
+    },
+    {
+      "path": "dist/packages/agy-accounts/src/service.js",
+      "category": "app",
+      "required": true
+    },
+    {
+      "path": "dist/packages/agy-accounts/src/credential-worker.js",
+      "category": "app",
+      "required": true
+    },
+    {
+      "path": "dist/packages/agy-accounts/src/credential-store.js",
+      "category": "app",
+      "required": true
+    },
+    {
+      "path": "dist/packages/agy-accounts/src/auth-host.js",
+      "category": "app",
+      "required": true
+    },
+    {
+      "path": "dist/packages/agy-accounts/src/credential-windows.js",
+      "category": "app",
+      "required": { "os": ["win32"] }
+    },
+    {
+      "path": "dist/packages/process/src/runner-entry.js",
+      "category": "app",
+      "required": true
+    },
+    {
+      "path": "dist/packages/process/src/manager.js",
+      "category": "app",
+      "required": true
+    },
+    {
+      "path": "dist/packages/process/src/native/index.js",
+      "category": "app",
+      "required": true
+    },
+    {
+      "path": "dist/packages/process/src/native/windows.js",
+      "category": "app",
+      "required": { "os": ["win32"] }
+    },
+    {
+      "path": "dist/packages/process/src/native/posix.js",
+      "category": "app",
+      "required": { "os": ["darwin", "linux"] }
+    },
+    {
+      "path": "dist/packages/installer/src/main.js",
+      "category": "app",
+      "required": true
+    },
+    {
+      "path": "dist/packages/installer/src/upgrade.js",
+      "category": "app",
+      "required": true
+    },
+    {
+      "path": "dist/packages/cli/src/main.js",
+      "category": "app",
+      "required": true
+    },
+    {
+      "path": "dist/packages/bridge/src/planner.js",
+      "category": "app",
+      "required": true
+    },
+    {
+      "path": "dist/packages/bridge/src/hook.js",
+      "category": "app",
+      "required": true
+    },
+    {
+      "path": "dist/web/index.html",
+      "category": "app",
+      "required": true
+    },
+    {
+      "path": "runtime/node.exe",
+      "category": "runtime",
+      "required": { "os": ["win32"] }
+    },
+    {
+      "path": "runtime/node",
+      "category": "runtime",
+      "required": { "os": ["darwin", "linux"] }
+    },
+    {
+      "path": "node_modules/koffi/package.json",
+      "category": "native",
+      "required": true
+    },
+    {
+      "path": "node_modules/better-sqlite3/package.json",
+      "category": "native",
+      "required": true
+    },
+    {
+      "path": "node_modules/@koromix/koffi-win32-x64/win32_x64/koffi.node",
+      "any_of": [
+        "node_modules/@koromix/koffi-win32-x64/win32_x64/koffi.node",
+        "node_modules/koffi/build/koffi/win32_x64/koffi.node"
+      ],
+      "category": "native",
+      "required": { "os": ["win32"], "arch": ["x64"] }
+    },
+    {
+      "path": "node_modules/@koromix/koffi-darwin-x64/darwin_x64/koffi.node",
+      "any_of": [
+        "node_modules/@koromix/koffi-darwin-x64/darwin_x64/koffi.node",
+        "node_modules/koffi/build/koffi/darwin_x64/koffi.node"
+      ],
+      "category": "native",
+      "required": { "os": ["darwin"], "arch": ["x64"] }
+    },
+    {
+      "path": "node_modules/@koromix/koffi-darwin-arm64/darwin_arm64/koffi.node",
+      "any_of": [
+        "node_modules/@koromix/koffi-darwin-arm64/darwin_arm64/koffi.node",
+        "node_modules/koffi/build/koffi/darwin_arm64/koffi.node"
+      ],
+      "category": "native",
+      "required": { "os": ["darwin"], "arch": ["arm64"] }
+    },
+    {
+      "path": "node_modules/@koromix/koffi-linux-x64/linux_x64/koffi.node",
+      "any_of": [
+        "node_modules/@koromix/koffi-linux-x64/linux_x64/koffi.node",
+        "node_modules/koffi/build/koffi/linux_x64/koffi.node"
+      ],
+      "category": "native",
+      "required": { "os": ["linux"], "arch": ["x64"] }
+    },
+    {
+      "path": "node_modules/better-sqlite3/prebuilds/win32-x64.node",
+      "category": "native",
+      "required": { "os": ["win32"], "arch": ["x64"] }
+    },
+    {
+      "path": "node_modules/better-sqlite3/prebuilds/darwin-x64.node",
+      "category": "native",
+      "required": { "os": ["darwin"], "arch": ["x64"] }
+    },
+    {
+      "path": "node_modules/better-sqlite3/prebuilds/darwin-arm64.node",
+      "category": "native",
+      "required": { "os": ["darwin"], "arch": ["arm64"] }
+    },
+    {
+      "path": "node_modules/better-sqlite3/prebuilds/linux-x64.node",
+      "category": "native",
+      "required": { "os": ["linux"], "arch": ["x64"] }
+    },
+    {
+      "path": "LICENSE",
+      "category": "compliance",
+      "required": true
+    },
+    {
+      "path": "THIRD_PARTY_NOTICES",
+      "category": "compliance",
+      "required": true
+    },
+    {
+      "path": "compatibility.json",
+      "category": "compliance",
+      "required": true
+    },
+    {
+      "path": "sbom.json",
+      "category": "compliance",
+      "required": true
+    },
+    {
+      "path": "build-info.json",
+      "category": "compliance",
+      "required": true
+    },
+    {
+      "path": "runtime-files.json",
+      "category": "compliance",
+      "required": true
+    },
+    {
+      "path": "packages/skills/devflow/SKILL.md",
+      "category": "skills",
+      "required": true
+    },
+    {
+      "path": "packages/skills/devflow-execute/SKILL.md",
+      "category": "skills",
+      "required": true
+    },
+    {
+      "path": "packages/skills/devflow-plan/SKILL.md",
+      "category": "skills",
+      "required": true
+    },
+    {
+      "path": "packages/skills/devflow-project-onboard/SKILL.md",
+      "category": "skills",
+      "required": true
+    },
+    {
+      "path": "packages/skills/devflow-review/SKILL.md",
+      "category": "skills",
+      "required": true
+    },
+    {
+      "path": "packages/skills/devflow-test/SKILL.md",
+      "category": "skills",
+      "required": true
+    },
+    {
+      "path": "dist/packages",
+      "category": "app",
+      "required": true
+    },
+    {
+      "path": "dist/apps",
+      "category": "app",
+      "required": true
+    },
+    {
+      "path": "dist/web",
+      "category": "app",
+      "required": true
+    },
+    {
+      "path": "packages/skills",
+      "category": "skills",
+      "required": true
+    },
+    {
+      "path": "node_modules",
+      "category": "native",
+      "required": true
+    }
+  ]
+}

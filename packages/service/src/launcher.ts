@@ -80,7 +80,94 @@ async function running(mode: "full" | "accounts") {
     throw new Error(
       "本端口运行的是另一版本安装，请先停止旧服务再启动当前版本。",
     );
+  assertBuildIdentity(status);
   return true;
+}
+
+export interface ExpectedBuildIdentity {
+  application_version?: string;
+  build_revision?: string;
+  service_protocol_version?: string;
+}
+
+let expectedBuildIdentity: ExpectedBuildIdentity = {};
+
+export function setExpectedBuildIdentity(next: ExpectedBuildIdentity) {
+  expectedBuildIdentity = { ...next };
+}
+
+export function readExpectedBuildIdentityFromInstall(
+  installRoot: string,
+): ExpectedBuildIdentity {
+  const candidates = [
+    join(installRoot, "build-info.json"),
+    join(installRoot, "install-source.json"),
+  ];
+  for (const file of candidates) {
+    try {
+      if (!existsSync(file)) continue;
+      const parsed = JSON.parse(readFileSync(file, "utf8"));
+      const identity: ExpectedBuildIdentity = {
+        application_version: parsed.application_version ?? parsed.version,
+        build_revision: parsed.build_revision,
+        service_protocol_version: parsed.service_protocol_version,
+      };
+      if (
+        identity.application_version ||
+        identity.build_revision ||
+        identity.service_protocol_version
+      ) {
+        return identity;
+      }
+    } catch {
+      /* try next source */
+    }
+  }
+  return {};
+}
+
+/**
+ * Actual running build identity (not just the config pointer). Same version
+ * directory with a different build is rejected via receipt/build digest.
+ */
+export function assertBuildIdentity(status: {
+  application_version?: unknown;
+  build_revision?: unknown;
+  service_protocol_version?: unknown;
+}): void {
+  const expected =
+    expectedBuildIdentity.application_version || expectedBuildIdentity.build_revision
+      ? expectedBuildIdentity
+      : readExpectedBuildIdentityFromInstall(installation);
+  const liveVersion = status.application_version;
+  const liveRevision = status.build_revision;
+  const liveProtocol = status.service_protocol_version;
+
+  if (expected.application_version && typeof liveVersion === "string") {
+    if (liveVersion !== expected.application_version) {
+      throw new Error(
+        "运行中服务的构建版本与本安装不一致（" +
+          liveVersion +
+          " ≠ " +
+          expected.application_version +
+          "）。请停止旧服务后再打开。",
+      );
+    }
+  }
+  if (expected.build_revision && typeof liveRevision === "string") {
+    if (liveRevision !== expected.build_revision) {
+      throw new Error(
+        "运行中服务的构建提交与本安装收据不一致，拒绝使用不明来源覆盖的服务。",
+      );
+    }
+  }
+  if (
+    expected.service_protocol_version &&
+    typeof liveProtocol === "string" &&
+    liveProtocol !== expected.service_protocol_version
+  ) {
+    throw new Error("服务协议版本不匹配，请更新后重试。");
+  }
 }
 
 export async function ensureService(mode: "full" | "accounts" = "full") {
@@ -92,7 +179,12 @@ export async function ensureService(mode: "full" | "accounts" = "full") {
   for (let i = 0; i < 45; i++) {
     assertNotUpdating();
     if (await running(mode))
-      return { endpoint, origin: configuration.server.human_origin };
+      return {
+        endpoint,
+        origin: configuration.server.human_origin,
+        port: configuration.server.port,
+        bind: "127.0.0.1",
+      };
     try {
       const fd = openSync(lockFile, "wx");
       try {
@@ -126,7 +218,12 @@ export async function ensureService(mode: "full" | "accounts" = "full") {
     );
   try {
     if (await running(mode))
-      return { endpoint, origin: configuration.server.human_origin };
+      return {
+        endpoint,
+        origin: configuration.server.human_origin,
+        port: configuration.server.port,
+        bind: "127.0.0.1",
+      };
     const entry = join(
       installation,
       mode === "accounts"
@@ -171,7 +268,12 @@ export async function ensureService(mode: "full" | "accounts" = "full") {
     }
     for (let i = 0; i < 90; i++) {
       if (await running(mode))
-        return { endpoint, origin: configuration.server.human_origin };
+        return {
+          endpoint,
+          origin: configuration.server.human_origin,
+          port: configuration.server.port,
+          bind: "127.0.0.1",
+        };
       await pause(1000);
     }
     throw new Error(
@@ -211,7 +313,15 @@ export function browserUrl() {
   return configuration.server.human_origin;
 }
 
-export async function openBrowser(mode: "full" | "accounts" = "full") {
+export interface OpenBrowserResult {
+  opened: boolean;
+  url: string;
+  message: string;
+}
+
+export async function openBrowser(
+  mode: "full" | "accounts" = "full",
+): Promise<OpenBrowserResult> {
   await ensureService(mode);
   const baseUrl = browserUrl();
   const url = mode === "accounts" ? `${baseUrl}/accounts` : baseUrl;
@@ -232,15 +342,31 @@ export async function openBrowser(mode: "full" | "accounts" = "full") {
           "Start-Process -FilePath $env:DEVFLOW_OPEN_URL",
         ]
       : [url];
-  const child = spawn(command, args, {
-    env: { ...process.env, DEVFLOW_OPEN_URL: url },
-    stdio: "ignore",
-    windowsHide: true,
-  });
-  await new Promise<void>((yes, no) => {
-    child.once("error", no);
-    child.once("exit", (code) =>
-      code === 0 ? yes() : no(new Error("无法打开默认浏览器")),
-    );
-  });
+  try {
+    const child = spawn(command, args, {
+      env: { ...process.env, DEVFLOW_OPEN_URL: url },
+      stdio: "ignore",
+      windowsHide: true,
+    });
+    await new Promise<void>((yes, no) => {
+      child.once("error", no);
+      child.once("exit", (code) =>
+        code === 0 ? yes() : no(new Error("无法打开默认浏览器")),
+      );
+    });
+    return {
+      opened: true,
+      url,
+      message:
+        "DevFlow 已安装，并已打开设置页面。选择你要使用的编程助手和模型，即可开始。",
+    };
+  } catch {
+    // 降级：打印地址 + 两段成功文案，不把安装标成失败（I-12）。
+    return {
+      opened: false,
+      url,
+      message:
+        "DevFlow 已安装。浏览器未能自动打开，请访问下方地址，或运行 `devflow` 再次打开。",
+    };
+  }
 }

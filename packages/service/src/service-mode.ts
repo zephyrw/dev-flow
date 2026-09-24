@@ -1,5 +1,13 @@
 export function assertServiceMode(
-  status: { mode?: string; features?: { agy_accounts?: boolean } },
+  status: {
+    mode?: string;
+    features?: { agy_accounts?: boolean };
+    application_version?: unknown;
+    build_revision?: unknown;
+    service_protocol_version?: unknown;
+    runtime_backend?: unknown;
+    runtime_root?: unknown;
+  },
   mode: "full" | "accounts",
 ) {
   if (mode === "accounts" && status.features?.agy_accounts !== true)

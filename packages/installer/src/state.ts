@@ -27,10 +27,38 @@ export interface ComponentStateRecord {
   error?: string;
 }
 
+export type SoftwareStatus =
+  | "downloading"
+  | "verifying"
+  | "installed"
+  | "failed";
+export type SetupStatus =
+  | "not_started"
+  | "pending_login"
+  | "pending_verification"
+  | "done";
+export type CapabilityStatus =
+  | "discovered"
+  | "verified"
+  | "workflow_verified"
+  | "unknown";
+
+export interface InstallResultView {
+  software: { status: SoftwareStatus; detail?: string };
+  setup: { status: SetupStatus; detail?: string };
+  capability: {
+    status: CapabilityStatus;
+    scope: string;
+    detail?: string;
+  };
+}
+
 export interface InstallerStateStorage {
   installed_components: Record<string, ComponentStateRecord>;
   current_version: string;
   last_exit_code?: number;
+  /** Three-dimension result view (software / setup / capability). */
+  result?: InstallResultView;
 }
 
 export class InstallationStateManager {
@@ -73,5 +101,22 @@ export class InstallationStateManager {
       error,
     };
     this.save(current);
+  }
+
+  updateResult(patch: Partial<InstallResultView>): InstallResultView {
+    const current = this.load();
+    const previous = current.result ?? {
+      software: { status: "downloading" as const },
+      setup: { status: "not_started" as const },
+      capability: { status: "unknown" as const, scope: "none" },
+    };
+    const next: InstallResultView = {
+      software: patch.software ?? previous.software,
+      setup: patch.setup ?? previous.setup,
+      capability: patch.capability ?? previous.capability,
+    };
+    current.result = next;
+    this.save(current);
+    return next;
   }
 }

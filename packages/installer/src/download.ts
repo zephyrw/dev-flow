@@ -33,7 +33,10 @@ export function isSafeExtractionPath(
     !entryRelativePath ||
     /[:\\\\]/.test(entryRelativePath) ||
     entryRelativePath.split("/").includes("..") ||
-    entryRelativePath.startsWith("/")
+    entryRelativePath.split("\\").includes("..") ||
+    entryRelativePath.startsWith("/") ||
+    /^[A-Za-z]:/.test(entryRelativePath) ||
+    entryRelativePath.includes("\0")
   ) {
     return false;
   }
@@ -42,4 +45,52 @@ export function isSafeExtractionPath(
     resolve(targetBase, entryRelativePath),
   );
   return !!rel && !rel.startsWith("..") && !isAbsolute(rel);
+}
+
+export type ArchiveEntryType = "file" | "directory" | "symlink" | "hardlink" | "other";
+
+export interface ArchiveEntrySafety {
+  safe: boolean;
+  reason?: string;
+}
+
+/**
+ * Reject absolute paths, `..`, symbolic links, hard links, and any write that
+ * would escape the staging root — before extraction touches the filesystem.
+ */
+export function assertSafeArchiveEntry(
+  targetBase: string,
+  entryRelativePath: string,
+  entryType: ArchiveEntryType,
+  linkTarget?: string,
+): ArchiveEntrySafety {
+  if (entryType === "symlink" || entryType === "hardlink") {
+    return {
+      safe: false,
+      reason: "归档含符号链接或硬链接，拒绝解压以避免跨根写入",
+    };
+  }
+  if (entryType === "other") {
+    return { safe: false, reason: "归档含不支持的条目类型" };
+  }
+  if (!isSafeExtractionPath(targetBase, entryRelativePath)) {
+    return { safe: false, reason: "归档路径逃逸：" + entryRelativePath };
+  }
+  if (linkTarget !== undefined) {
+    if (
+      linkTarget.includes("\0") ||
+      isAbsolute(linkTarget) ||
+      linkTarget.split("/").includes("..") ||
+      linkTarget.split("\\").includes("..")
+    ) {
+      return { safe: false, reason: "归档链接目标不安全" };
+    }
+  }
+  return { safe: true };
+}
+
+/** True when a copy/write target stays under targetBase after resolve. */
+export function isWithinRoot(targetBase: string, candidate: string): boolean {
+  const rel = relative(resolve(targetBase), resolve(candidate));
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }

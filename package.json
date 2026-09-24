@@ -26,7 +26,10 @@
     "check": "pnpm run typecheck && pnpm test && pnpm run build",
     "start:accounts": "node dist/apps/api/src/accounts-main.js",
     "open:accounts": "node dist/packages/service/src/open.js --accounts",
-    "open": "node dist/packages/service/src/open.js"
+    "open": "node dist/packages/service/src/open.js",
+    "release:build": "node scripts/release/build-release.mjs",
+    "release:verify": "node scripts/release/verify-release.mjs",
+    "release:assemble": "node scripts/release/assemble-release.mjs"
   },
   "dependencies": {
     "@fastify/static": "10.1.3",

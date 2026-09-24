@@ -7,24 +7,25 @@ export interface ComponentResolution {
   version: string;
 }
 export class ComponentManager {
-  constructor(private stateManager: InstallationStateManager) {}
+  constructor(
+    private stateManager: InstallationStateManager,
+    private applicationVersion = "0.0.0",
+  ) {}
   resolveRequiredComponents(selectedTools: string[]): ComponentResolution[] {
-    if (
-      !selectedTools.length ||
-      selectedTools.some((x) => !SupportedAdapters.includes(x as any))
-    )
+    // tools 空数组合法：默认不选客户端，稍后在界面中设置。
+    if (selectedTools.some((x) => !SupportedAdapters.includes(x as any)))
       throw new Error("必须选择已支持的工具");
     const state = this.stateManager.load();
     return [
       "node",
-      "host",
       "service",
+      "bootstrap",
       ...selectedTools.flatMap((t) => ["tool:" + t, "skills:" + t]),
     ].map((name) => ({
       name,
       required: true,
       alreadyInstalled: state.installed_components[name]?.state === "VERIFIED",
-      version: name === "node" ? process.version : "0.2.0",
+      version: name === "node" ? process.version : this.applicationVersion,
     }));
   }
 }

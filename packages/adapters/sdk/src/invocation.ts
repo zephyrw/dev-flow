@@ -127,7 +127,8 @@ export function clientInvocation(
         args.push(
           "--tools",
           "Read,Glob,Grep,Agent,Task",
-          "--disallowed-tools=Bash,Edit,Write,NotebookEdit",
+          "--disallowedTools",
+          "Bash,Edit,Write,NotebookEdit",
           "--agents",
           JSON.stringify({
             "devflow-readonly": {

@@ -21,7 +21,7 @@ import {
   type ModelCatalog,
   type ModelDefaults,
 } from "../../contracts/src/index.js";
-import { atomicWrite, hash } from "../../core/src/util.js";
+import { atomicWrite, hash, now } from "../../core/src/util.js";
 import { ModelDefaultsService } from "../../core/src/model-defaults-service.js";
 import { assertProfilesVerified } from "../../core/src/access-guard.js";
 import { ModelCatalogService } from "../../core/src/model-catalog-service.js";
@@ -35,6 +35,8 @@ import {
   cpSync,
   readFileSync,
   renameSync,
+  rmSync,
+  lstatSync,
 } from "node:fs";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -43,6 +45,23 @@ import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { acquireControllerLock } from "../../process/src/controller-lock.js";
 import { cleanProcessEnvironment } from "../../process/src/manager.js";
+import {
+  acquireInstallTransactionLock,
+  ensureInstallLayout,
+  installBootstrapRuntime,
+  writeCurrentPointer,
+  writeStableEntry,
+  appendWindowsUserPath,
+  upsertShellPathBlock,
+  type CurrentPointer,
+} from "./launchers.js";
+import {
+  readRuntimeFilesManifest,
+  requiredEntries,
+  COMPLIANCE_BASENAMES,
+} from "./runtime-files.js";
+import { isWithinRoot, assertSafeArchiveEntry } from "./download.js";
+
 const exec = promisify(execFile);
 
 export interface InstallerRoleInputs {
@@ -61,6 +80,12 @@ export interface InstallerRunOptions {
   clientHome?: string;
   port?: number;
   roleInputs?: InstallerRoleInputs;
+  /** --require-ready: only this mode treats unfinished tool setup as non-success. */
+  requireReady?: boolean;
+  /** Skip opening the browser after install (prints the address instead). */
+  noOpen?: boolean;
+  /** Skip PATH / system menu registration (tests). */
+  skipSystemRegistration?: boolean;
 }
 
 export class InstallerDefaultsError extends Error {
@@ -79,6 +104,8 @@ export function parseInstallerCliArgs(args: string[]): {
   installRoot?: string;
   targetTools?: string[];
   roleInputs: InstallerRoleInputs;
+  requireReady: boolean;
+  noOpen: boolean;
 } {
   const read = (name: string) => {
     const i = args.indexOf(name);
@@ -91,7 +118,8 @@ export function parseInstallerCliArgs(args: string[]): {
   return {
     sourceDir: read("--source"),
     installRoot: read("--install-dir"),
-    targetTools: tools?.split(","),
+    // 空/未指定 = 不选客户端（合法）；不再默认 ["codex"]。
+    targetTools: tools?.split(",").map((t) => t.trim()).filter(Boolean),
     roleInputs: {
       plannerTool: read("--planner-tool"),
       plannerModel: read("--planner-model"),
@@ -100,6 +128,8 @@ export function parseInstallerCliArgs(args: string[]): {
       executorModel: read("--executor-model"),
       executorEffort: read("--executor-effort"),
     },
+    requireReady: args.includes("--require-ready"),
+    noOpen: args.includes("--no-open"),
   };
 }
 
@@ -472,6 +502,119 @@ export function applyInstallerModelDefaultsFromConfigFile(
     store.close();
   }
 }
+
+export function readBuildInfo(sourceDir: string): Record<string, unknown> {
+  const file = join(sourceDir, "build-info.json");
+  if (!existsSync(file)) {
+    throw new Error("安装包不完整：缺少 build-info.json 构建身份");
+  }
+  try {
+    const parsed = JSON.parse(readFileSync(file, "utf8"));
+    if (!parsed || typeof parsed !== "object") {
+      throw new Error("build-info.json 无效");
+    }
+    return parsed;
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("build-info")) {
+      throw error;
+    }
+    throw new Error("安装包不完整：build-info.json 无法解析");
+  }
+}
+
+export function computeContentDigest(
+  sourceDir: string,
+  paths: string[],
+): string {
+  return hash(
+    paths
+      .map((p) => p + ":" + hash(readFileSync(join(sourceDir, p))))
+      .join("\n"),
+  );
+}
+
+export interface InstallReceipt {
+  digest: string;
+  content_digest: string;
+  application_version: string;
+  build_revision: string;
+  build_tag?: string;
+  built_at?: string;
+  platform: string;
+  node_version?: string;
+  bootstrap?: Record<string, string>;
+  updated_at: string;
+}
+
+/** Same version + same digest is idempotent. Same version + different digest is refused (U-04). */
+export function assertVersionDigestCompatible(
+  existingReceiptRaw: string | undefined,
+  digest: string,
+  version: string,
+): { reuse: boolean } {
+  if (!existingReceiptRaw) return { reuse: false };
+  let receipt: any;
+  try {
+    receipt = JSON.parse(existingReceiptRaw);
+  } catch {
+    throw new Error(
+      `版本 ${version} 已存在且收据无法解析，不能覆盖。请使用新版本号或独立开发目录。`,
+    );
+  }
+  const existingDigest = receipt.digest ?? receipt.content_digest;
+  if (existingDigest === digest) return { reuse: true };
+  throw new Error(
+    `版本 ${version} 已安装但内容摘要不同，拒绝覆盖。请使用新版本号或独立开发目录。`,
+  );
+}
+
+/** F stream UpgradeManager surface used by the update path (integration-aligned). */
+export interface UpgradeMaintenanceApi {
+  prepareCandidate(meta: {
+    sourceDir: string;
+    targetVersion: string;
+  }): Promise<{ targetDir: string; digest: string }>;
+  requestMaintenance(): Promise<void>;
+  waitForQuiescent(options: {
+    onActiveTasks: "wait" | "pause-and-update";
+  }): Promise<void>;
+  runUpgradeStateMachine(options: unknown): Promise<unknown>;
+}
+
+export function asUpgradeMaintenanceApi(manager: UpgradeManager): UpgradeMaintenanceApi {
+  const api = manager as unknown as Partial<UpgradeMaintenanceApi>;
+  for (const name of [
+    "prepareCandidate",
+    "requestMaintenance",
+    "waitForQuiescent",
+    "runUpgradeStateMachine",
+  ] as const) {
+    if (typeof api[name] !== "function") {
+      throw new Error(
+        "升级维护接口尚未就绪：" + name + "（需与升级流集成对齐）",
+      );
+    }
+  }
+  return api as UpgradeMaintenanceApi;
+}
+
+async function copyTreeProtected(source: string, destination: string, root: string) {
+  if (!isWithinRoot(root, destination)) {
+    throw new Error("拒绝跨根写入：" + destination);
+  }
+  if (!existsSync(source)) return;
+  const stat = lstatSync(source);
+  if (stat.isSymbolicLink()) {
+    throw new Error("拒绝复制符号链接：" + source);
+  }
+  cpSync(source, destination, {
+    recursive: true,
+    dereference: true,
+    force: true,
+    errorOnExist: false,
+  });
+}
+
 export async function runInstaller(
   options: InstallerRunOptions = {},
 ): Promise<number> {
@@ -480,20 +623,25 @@ export async function runInstaller(
   );
   const source = resolve(options.sourceDir ?? process.cwd());
   const state = new InstallationStateManager(join(root, "state.json"));
-  const tools = options.targetTools ?? ["codex"];
+  // tools 空数组合法：默认不选客户端、不写客户端配置。
+  const tools = (options.targetTools ?? []).filter(Boolean);
   const roleInputs = options.roleInputs ?? {};
+  const requireReady = options.requireReady === true;
   let code: number = INSTALL_EXIT_CODES.DOWNLOAD_VERIFICATION_FAILED;
   let releaseController: (() => Promise<void>) | undefined;
+  let releaseInstall: (() => Promise<void>) | undefined;
   let originalConfig: string | undefined;
   let originalPointer: string | undefined;
   let configurationChanged = false;
   let writableStateStarted = false;
+  const layout = ensureInstallLayout(root);
   try {
-    if (
-      !tools.length ||
-      tools.some((t) => !SupportedAdapters.includes(t as SupportedAdapterId))
-    )
+    state.updateResult({ software: { status: "downloading" } });
+    if (tools.some((t) => !SupportedAdapters.includes(t as SupportedAdapterId)))
       return INSTALL_EXIT_CODES.CONFIGURATION_CONFLICT;
+    // 操作正式目录前取得安装事务所有权（防两个安装器交错）。
+    releaseInstall = await acquireInstallTransactionLock(root);
+
     const sourcePackage = JSON.parse(
       readFileSync(join(source, "package.json"), "utf8"),
     );
@@ -504,87 +652,176 @@ export async function runInstaller(
       !/^\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$/.test(version)
     )
       throw new Error("安装包身份或版本不符");
-    const required = [
-      "dist/apps/api/src/main.js",
-      "dist/apps/api/src/accounts-main.js",
-      "dist/packages/agy-accounts/src/service.js",
-      "dist/packages/agy-accounts/src/credential-worker.js",
-      "dist/packages/process/src/runner-entry.js",
-      "dist/packages/process/src/native/index.js",
-      "dist/packages/service/src/open.js",
-      ...(process.platform === "win32"
-        ? ["dist/packages/agy-accounts/src/credential-windows.js"]
-        : []),
-      "dist/web/index.html",
-      "dist/packages/bridge/src/planner.js",
-      "dist/packages/service/src/launcher.js",
-      "package.json",
-      "node_modules/better-sqlite3/package.json",
-      "node_modules/koffi/package.json",
-      ...[
-        "devflow",
-        "devflow-project-onboard",
-        "devflow-plan",
-        "devflow-execute",
-        "devflow-test",
-        "devflow-review",
-      ].map((s) => "packages/skills/" + s + "/SKILL.md"),
+
+    const buildInfo = readBuildInfo(source);
+    const buildRevision = String(buildInfo.build_revision ?? "");
+    const applicationVersion = String(
+      buildInfo.application_version ?? version,
+    );
+
+    state.updateResult({ software: { status: "verifying" } });
+    const runtimeManifest = readRuntimeFilesManifest(source);
+    const requiredList = requiredEntries(runtimeManifest).map((e) => e.path);
+    // Critical runtime gates (I-05): bundled Node, native, SQLite, worker, runner.
+    const bundledNodeRelative =
+      "runtime/" + (process.platform === "win32" ? "node.exe" : "node");
+    const critical = [
+      ...new Set([
+        ...requiredList,
+        "dist/apps/api/src/main.js",
+        "dist/apps/api/src/accounts-main.js",
+        "dist/packages/agy-accounts/src/service.js",
+        "dist/packages/agy-accounts/src/credential-worker.js",
+        "dist/packages/process/src/runner-entry.js",
+        "dist/packages/process/src/native/index.js",
+        "dist/packages/service/src/open.js",
+        ...(process.platform === "win32"
+          ? ["dist/packages/agy-accounts/src/credential-windows.js"]
+          : []),
+        "dist/web/index.html",
+        "dist/packages/bridge/src/planner.js",
+        "dist/packages/service/src/launcher.js",
+        "dist/packages/cli/src/main.js",
+        "package.json",
+        "build-info.json",
+        "runtime-files.json",
+        bundledNodeRelative,
+        "node_modules/better-sqlite3/package.json",
+        "node_modules/koffi/package.json",
+        ...[
+          "devflow",
+          "devflow-project-onboard",
+          "devflow-plan",
+          "devflow-execute",
+          "devflow-test",
+          "devflow-review",
+        ].map((s) => "packages/skills/" + s + "/SKILL.md"),
+      ]),
     ];
-    for (const path of required)
+    for (const path of critical) {
+      if (assertSafeArchiveEntry(source, path, "file").safe === false) {
+        throw new Error("安装包路径不安全：" + path);
+      }
       if (!existsSync(join(source, path)))
         throw new Error("安装包不完整：" + path);
-    // The version directory is immutable once activated; never overwrite a running installation.
-    const target = join(root, "versions", version);
-    const digest = hash(
-      required
-        .map((p) => p + ":" + hash(readFileSync(join(source, p))))
-        .join("\n"),
-    );
-    const receipt = join(target, "install-source.json");
-    if (source !== target && existsSync(target)) {
-      if (
-        !existsSync(receipt) ||
-        JSON.parse(readFileSync(receipt, "utf8")).digest !== digest
-      )
-        throw new Error("现有版本内容不同，不能覆盖正在使用的安装目录");
     }
+    for (const name of COMPLIANCE_BASENAMES) {
+      // LICENSE / THIRD_PARTY_NOTICES / sbom / build-info / compatibility / runtime-files
+      if (name === "runtime-files.json" || name === "build-info.json") continue;
+      if (!existsSync(join(source, name))) {
+        // Compliance metadata is required for published packages; keep copying when present.
+        // Missing optional compliance is recorded, not silently ignored for required categories.
+        const listed = runtimeManifest.entries.some(
+          (e) => e.category === "compliance" && e.path === name,
+        );
+        if (listed) throw new Error("安装包不完整：" + name);
+      }
+    }
+
+    const target = join(root, "versions", version);
+    const contentDigest = computeContentDigest(source, critical);
+    const productDigest = hash(
+      contentDigest +
+        ":" +
+        applicationVersion +
+        ":" +
+        buildRevision,
+    );
+    const receiptPath = join(target, "install-source.json");
+    if (source !== target && existsSync(target)) {
+      const existing = existsSync(receiptPath)
+        ? readFileSync(receiptPath, "utf8")
+        : undefined;
+      assertVersionDigestCompatible(existing, productDigest, version);
+    }
+
     state.updateComponent("service", version, "PLANNED");
     if (source !== target && !existsSync(target)) {
-      const staging = target + ".staging-" + crypto.randomUUID();
+      const staging = target + ".staging-" + randomUUID();
       mkdirSync(staging, { recursive: true });
-      for (const entry of [
-        "dist",
-        "packages/skills",
-        "node_modules",
-        "package.json",
-      ])
-        cpSync(join(source, entry), join(staging, entry), {
-          recursive: true,
-          dereference: true,
-        });
-      if (existsSync(join(source, "runtime")))
-        cpSync(join(source, "runtime"), join(staging, "runtime"), {
-          recursive: true,
-        });
+      try {
+        for (const entry of ["dist", "packages/skills", "node_modules"]) {
+          await copyTreeProtected(join(source, entry), join(staging, entry), staging);
+        }
+        // Package root files: identity, compliance, runtime manifest.
+        for (const file of [
+          "package.json",
+          "build-info.json",
+          "runtime-files.json",
+          ...COMPLIANCE_BASENAMES,
+        ]) {
+          if (existsSync(join(source, file))) {
+            const destination = join(staging, file);
+            if (!isWithinRoot(staging, destination)) {
+              throw new Error("拒绝跨根写入：" + destination);
+            }
+            cpSync(join(source, file), destination, { force: true });
+          }
+        }
+        if (existsSync(join(source, "runtime"))) {
+          await copyTreeProtected(
+            join(source, "runtime"),
+            join(staging, "runtime"),
+            staging,
+          );
+        }
+        const receipt: InstallReceipt = {
+          digest: productDigest,
+          content_digest: contentDigest,
+          application_version: applicationVersion,
+          build_revision: buildRevision,
+          build_tag: buildInfo.build_tag ? String(buildInfo.build_tag) : undefined,
+          built_at: buildInfo.built_at ? String(buildInfo.built_at) : undefined,
+          platform: process.platform,
+          node_version: buildInfo.node_version
+            ? String(buildInfo.node_version)
+            : undefined,
+          updated_at: now(),
+        };
+        atomicWrite(
+          join(staging, "install-source.json"),
+          JSON.stringify(receipt, null, 2),
+        );
+        renameSync(staging, target);
+      } catch (error) {
+        try {
+          rmSync(staging, { recursive: true, force: true });
+        } catch {}
+        throw error;
+      }
+    } else if (source !== target && existsSync(target)) {
+      // Idempotent reuse: refresh receipt fields that describe the same content.
+      const existing = JSON.parse(readFileSync(receiptPath, "utf8"));
       atomicWrite(
-        join(staging, "install-source.json"),
-        JSON.stringify({ digest }),
+        receiptPath,
+        JSON.stringify(
+          {
+            ...existing,
+            digest: productDigest,
+            content_digest: contentDigest,
+            application_version: applicationVersion,
+            build_revision: buildRevision,
+            updated_at: now(),
+          },
+          null,
+          2,
+        ),
       );
-      renameSync(staging, target);
     }
-    const bundledNode = join(
-      source,
-      "runtime",
-      process.platform === "win32" ? "node.exe" : "node",
-    );
-    const node = existsSync(bundledNode)
-      ? join(
-          target,
-          "runtime",
-          process.platform === "win32" ? "node.exe" : "node",
-        )
-      : process.execPath;
-    // The runtime was staged together with the immutable service directory.
+
+    // 正式包必须内置 Node；禁止静默回退系统 Node（I-05）。
+    const bundledNode = join(source, "runtime", process.platform === "win32" ? "node.exe" : "node");
+    const targetNode = join(target, "runtime", process.platform === "win32" ? "node.exe" : "node");
+    if (!existsSync(bundledNode)) {
+      throw new Error("安装包不完整：缺少内置 Node 运行时，不会回退到系统 Node");
+    }
+    const node = existsSync(targetNode) ? targetNode : bundledNode;
+    const bootstrap = installBootstrapRuntime(root, {
+      sourceNode: node,
+      deferReplaceOnBusy: true,
+    });
+    state.updateComponent("bootstrap", version, "INSTALLED");
+
     const nodeVersion = (
       await exec(node, ["--version"], { windowsHide: true, timeout: 10000 })
     ).stdout.trim();
@@ -599,7 +836,6 @@ export async function runInstaller(
     )
       throw new Error("Node 版本不满足要求");
     state.updateComponent("node", nodeVersion, "VERIFIED");
-    // This preflight loads installed native libraries without touching the live database or credentials.
     await exec(
       node,
       [
@@ -618,7 +854,6 @@ export async function runInstaller(
         timeout: 15000,
       },
     );
-    // Verify credential worker exists (replaces old C# host binary)
     const credentialWorker = join(
       target,
       "dist",
@@ -674,7 +909,6 @@ export async function runInstaller(
       );
     else migrateAccountConfiguration(config);
     const configured = loadConfig(config);
-    // File presence and native loading do not prove real account capabilities.
     let accountPrerequisite = "unsupported_platform";
     if (process.platform === "win32") {
       accountPrerequisite = "credential_capability_unverified";
@@ -696,33 +930,43 @@ export async function runInstaller(
         accountPrerequisite +
         "。安装不会登录或更改账号。",
     );
-    const clients = new ClientInstaller(join(target, "packages", "skills"), {
-      home: options.clientHome,
-      node,
-      bridge: join(target, "dist/packages/bridge/src/planner.js"),
-      config,
-    });
-    for (const client of tools as SupportedAdapterId[]) {
-      const report = clients.installSkillsForClient(client);
-      atomicWrite(
-        join(root, "client-" + client + ".json"),
-        JSON.stringify(report, null, 2),
-      );
-      if (
-        !report.mcpConfigured ||
-        report.skillsInstalled.some((s) => s.status !== "installed")
-      )
-        throw new Error(report.error ?? "Skill 安装失败");
-      state.updateComponent("skills:" + client, version, "VERIFIED");
+
+    // tools 空/未选：不进入客户端配置写入循环，不写 Codex 等客户端配置。
+    if (tools.length) {
+      const clients = new ClientInstaller(join(target, "packages", "skills"), {
+        home: options.clientHome,
+        node,
+        bridge: join(target, "dist/packages/bridge/src/planner.js"),
+        config,
+      });
+      for (const client of tools as SupportedAdapterId[]) {
+        const report = clients.installSkillsForClient(client);
+        atomicWrite(
+          join(root, "client-" + client + ".json"),
+          JSON.stringify(report, null, 2),
+        );
+        if (
+          !report.mcpConfigured ||
+          report.skillsInstalled.some((s) => s.status !== "installed")
+        )
+          throw new Error(report.error ?? "Skill 安装失败");
+        state.updateComponent("skills:" + client, version, "VERIFIED");
+      }
     }
     state.updateComponent("service", version, "CONFIGURED");
     code = INSTALL_EXIT_CODES.CONFIGURATION_CONFLICT;
     const loaded = loadConfig(config);
-    atomicWrite(
-      currentPointer,
-      JSON.stringify({ version, root: target, config, node }, null, 2),
-    );
-    // Store construction may migrate/write data. Never automatically roll a database back after this point.
+    const pointer: CurrentPointer = {
+      version,
+      root: target,
+      config,
+      node,
+      schema: 2,
+      application_version: applicationVersion,
+      build_revision: buildRevision,
+      updated_at: now(),
+    };
+    writeCurrentPointer(root, pointer);
     writableStateStarted = true;
     const defaultsResult = applyInstallerModelDefaultsFromConfigFile(
       config,
@@ -730,7 +974,6 @@ export async function runInstaller(
       tools,
     );
     code = INSTALL_EXIT_CODES.SERVICE_UNHEALTHY;
-    // A subprocess loads the installed config without contaminating the installer's own module cache.
     const launcher = join(target, "dist/packages/service/src/launcher.js");
     await releaseController();
     releaseController = undefined;
@@ -749,11 +992,39 @@ export async function runInstaller(
         timeout: 150000,
       },
     );
-    atomicWrite(
-      join(root, "current.json"),
-      JSON.stringify({ version, root: target, config, node }, null, 2),
-    );
+    writeCurrentPointer(root, pointer);
     writeAccountsLauncher(root);
+
+    // Stable entry + user PATH / menu (absolute open does not wait for PATH refresh).
+    let openHint = loaded.server.human_origin;
+    let conflictHint: string[] = [];
+    if (!options.skipSystemRegistration) {
+      const stable = writeStableEntry(root);
+      conflictHint = stable.conflicts;
+      if (process.platform === "win32") {
+        try {
+          appendWindowsUserPath(
+            root,
+            () => process.env.PATH,
+            () => {
+              /* registry write performed by bootstrap scripts; keep env-only in process */
+            },
+          );
+        } catch {
+          /* PATH registration is best-effort; absolute entry still works */
+        }
+      } else {
+        try {
+          upsertShellPathBlock(
+            join(homedir(), process.platform === "darwin" ? ".zshrc" : ".bashrc"),
+            join(root, "bin"),
+          );
+        } catch {
+          /* shell rc is best-effort */
+        }
+      }
+    }
+
     state.updateComponent("service", version, "VERIFIED");
     code = INSTALL_EXIT_CODES.NEEDS_USER_ACTION;
     const registry = createDefaultAdapterRegistry();
@@ -764,7 +1035,7 @@ export async function runInstaller(
     const probeIds = [
       ...new Set([...tools, ...selectedRoleAdapters]),
     ] as SupportedAdapterId[];
-    let toolsReady = true;
+    let toolsReady = tools.length === 0;
     for (const adapterId of probeIds) {
       if (!SupportedAdapters.includes(adapterId)) continue;
       const probe = await registry.mustGet(adapterId).probe({
@@ -784,17 +1055,65 @@ export async function runInstaller(
       );
       if (!probe.available) toolsReady = false;
     }
-    console.log("首次设置页面：" + loaded.server.human_origin);
+
     const pending = defaultsResult.pending || !toolsReady;
-    if (pending) console.log("模型设置待完成");
+    state.updateResult({
+      software: { status: "installed", detail: applicationVersion },
+      setup: {
+        status: defaultsResult.pending
+          ? "not_started"
+          : toolsReady
+            ? "done"
+            : "pending_verification",
+        detail: defaultsResult.message,
+      },
+      capability: {
+        status: tools.length ? (toolsReady ? "discovered" : "unknown") : "unknown",
+        scope: tools.length ? tools.join(",") : "none",
+        detail: accountPrerequisite,
+      },
+    });
+
+    // Default success = software can run. Model unconfigured is onboarding, not failure.
+    const success = !pending || !requireReady;
+    const exitCode = success
+      ? pending && requireReady
+        ? INSTALL_EXIT_CODES.NEEDS_USER_ACTION
+        : INSTALL_EXIT_CODES.SUCCESS
+      : INSTALL_EXIT_CODES.NEEDS_USER_ACTION;
+
+    if (!options.noOpen) {
+      try {
+        const { openBrowser } = await import(
+          "../../service/src/launcher.js"
+        );
+        await openBrowser("full");
+        console.log(
+          "DevFlow 已安装，并已打开设置页面。选择你要使用的编程助手和模型，即可开始。",
+        );
+      } catch {
+        console.log(
+          "DevFlow 已安装。浏览器未能自动打开，请访问下方地址，或运行 `devflow` 再次打开。",
+        );
+        console.log("首次设置页面：" + loaded.server.human_origin);
+      }
+    } else {
+      console.log(
+        "DevFlow 已安装。浏览器未能自动打开，请访问下方地址，或运行 `devflow` 再次打开。",
+      );
+      console.log("首次设置页面：" + loaded.server.human_origin);
+    }
+    if (conflictHint.length) {
+      console.log(
+        "检测到同名非 DevFlow 命令，未覆盖。请使用绝对路径入口：" +
+          conflictHint.join(", "),
+      );
+    }
+    if (pending) console.log("模型设置待完成（不影响软件已可运行）");
     const saved = state.load();
-    saved.last_exit_code = pending
-      ? INSTALL_EXIT_CODES.NEEDS_USER_ACTION
-      : INSTALL_EXIT_CODES.SUCCESS;
+    saved.last_exit_code = exitCode;
     state.save(saved);
-    return pending
-      ? INSTALL_EXIT_CODES.NEEDS_USER_ACTION
-      : INSTALL_EXIT_CODES.SUCCESS;
+    return exitCode;
   } catch (e) {
     if (configurationChanged && !writableStateStarted) {
       if (originalConfig !== undefined)
@@ -802,6 +1121,12 @@ export async function runInstaller(
       if (originalPointer !== undefined)
         atomicWrite(join(root, "current.json"), originalPointer);
     }
+    state.updateResult({
+      software: {
+        status: "failed",
+        detail: e instanceof Error ? e.message : String(e),
+      },
+    });
     const saved = state.load();
     saved.last_exit_code = code;
     state.save(saved);
@@ -813,8 +1138,10 @@ export async function runInstaller(
     return code;
   } finally {
     await releaseController?.();
+    await releaseInstall?.();
   }
 }
+
 if (
   process.argv[1] &&
   resolve(process.argv[1]) === fileURLToPath(import.meta.url)
@@ -825,6 +1152,8 @@ if (
     installRoot: parsed.installRoot,
     targetTools: parsed.targetTools,
     roleInputs: parsed.roleInputs,
+    requireReady: parsed.requireReady,
+    noOpen: parsed.noOpen,
   }).then((code) => {
     process.exitCode = code;
   });
