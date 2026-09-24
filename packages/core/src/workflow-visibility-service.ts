@@ -48,7 +48,7 @@ export class WorkflowVisibilityService {
     input: WorkflowVisibilityUpdateRequest,
   ): WorkflowVisibilityResponse {
     const { request_id, expected_visibility_revision, archived } = input;
-    const requestDigest = hash(canonical({ workflowId, archived }));
+    const requestDigest = hash(canonical({ workflowId, archived, expected_visibility_revision }));
 
     return this.store.transaction(() => {
       // 1. 幂等性检查
@@ -190,7 +190,7 @@ export class WorkflowVisibilityService {
     archivedVis.sort((a, b) => {
       const timeA = a.archived_at ? new Date(a.archived_at).getTime() : 0;
       const timeB = b.archived_at ? new Date(b.archived_at).getTime() : 0;
-      return timeB - timeA;
+      return timeB - timeA || a.workflow_id.localeCompare(b.workflow_id);
     });
 
     const items: ArchivedWorkflowSummary[] = [];
@@ -221,6 +221,7 @@ export class WorkflowVisibilityService {
         "REVIEW_QUEUED",
       ].includes(w.state);
 
+      const workspace = this.store.list<{ branch?: string; root?: string }>("workspace", w.id)[0];
       items.push({
         workflow_id: w.id,
         project_id: w.project_id,
@@ -228,14 +229,18 @@ export class WorkflowVisibilityService {
         current_state: w.state,
         archived_at: v.archived_at,
         visibility_revision: v.revision,
-        branch: w.branch,
+        branch: workspace?.branch,
+        worktree_path: workspace?.root,
         plan_revision: w.plan_revision,
         is_running: isRunning,
       });
     }
 
     const limit = Math.max(1, Math.min(options.limit ?? 50, 100));
-    const offset = options.cursor ? parseInt(options.cursor, 10) || 0 : 0;
+    const offset = options.cursor ? Number(options.cursor) : 0;
+    if (!Number.isSafeInteger(offset) || offset < 0) {
+      throw new FlowError("INVALID_CURSOR", "归档分页游标无效", 400);
+    }
     const paginated = items.slice(offset, offset + limit);
     const nextCursor =
       offset + limit < items.length ? String(offset + limit) : undefined;

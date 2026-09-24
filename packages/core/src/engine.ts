@@ -2,9 +2,9 @@ import {
   PlanSelfCheckCoordinator,
   BEFORE_HUMAN_REVIEW_STAGE,
 } from "./plan-self-check.js";
-import { createApprovedExecutionInstructions } from "./execution-instructions.js";
+import { PlanApprovalService } from "./plan-approval-service.js";
 import { projectWorkflowOverview } from "./workflow-overview.js";
-import type { PlanApprovalRecordV2, RunApprovalRef } from "../../contracts/src/plan-approval.js";
+import type { RunApprovalRef } from "../../contracts/src/plan-approval.js";
 
 import {
   getPlanMaterialPath,
@@ -745,64 +745,16 @@ export class Engine {
       document_hash?: string | null;
     },
   ) {
-    return this.store.transaction(() => {
-      const w = this.get(key);
-      const bindingExtra = (binding as any)?.extra ?? {};
-      const expectedBindingWithExtra = this.binding(key, "approve", bindingExtra);
-      const expectedBindingDefault = this.binding(key, "approve", {});
-      const actualHash = objectHash(binding);
-      requireCondition(
-        actualHash === objectHash(expectedBindingWithExtra) ||
-          actualHash === objectHash(expectedBindingDefault),
-        "BINDING_CHANGED",
-        "计划已变化",
-      );
-      requireCondition(
-        ["PLAN_PENDING", "REPAIR_PLAN_PENDING"].includes(w.state),
-        "INVALID_STATE",
-        "没有待批准计划",
-      );
-      this.auth.consumeProof(proof, "approve", binding);
-
-      const existingRecord = this.store.get<any>(
-        "approval",
-        `${key}-${w.plan_revision}`,
-      );
-      const instructions =
-        options?.instructions?.text !== undefined
-          ? createApprovedExecutionInstructions(options.instructions.text)
-          : existingRecord?.execution_instructions ??
-            createApprovedExecutionInstructions("");
-
-      const approvalRecord: PlanApprovalRecordV2 = {
-        schema_version: 2,
-        workflow_id: key,
-        plan_revision: w.plan_revision,
-        revision: w.plan_revision,
-        plan_hash: w.plan_hash ?? "",
-        document_hash:
-          options?.document_hash ?? existingRecord?.document_hash ?? null,
-        request_id:
-          options?.request_id ?? existingRecord?.request_id ?? id("req_appr"),
-        proof,
-        approved_at: now(),
-        execution_instructions: instructions,
-      };
-
-      this.store.put(
-        "approval",
-        `${key}-${w.plan_revision}`,
-        key,
-        approvalRecord,
-      );
-      this.clearCurrentImplementationIntent(key);
-      this.supersedePendingContinuation(key);
-      const updated = this.transition(key, [w.state], "QUEUED", "prepare");
-      this.scheduler.enqueue(key, w.project_id);
-      this.store.enqueue(key, "dispatch", {});
-      return updated;
-    });
+    return new PlanApprovalService(this).approveSync({
+      workflowId: key,
+      requestId: options?.request_id ?? id("req_appr"),
+      binding: binding as Record<string, unknown>,
+      executionInstructionsText: options?.instructions?.text ?? "",
+      documentHash: options?.document_hash ?? undefined,
+      callerProof: proof,
+    }).workflow;
   }
+
   async accept(key: string, proof: string, binding: unknown) {
     return this.exclusive(key, async () => {
       const w = this.get(key);
@@ -2598,7 +2550,9 @@ export class Engine {
 
         // CW2-F08: outbox 冲突派发前必须先校验调度开关与占用状态，防止绕过停用
         const dispatchMgr = new CliDispatchManager(this.store);
-        const eligibility = dispatchMgr.checkDispatchEligibility(w.id);
+        const eligibility = dispatchMgr.checkDispatchEligibility(w.id, {
+          excludeRunId: payload.run_id,
+        });
         if (!eligibility.allowed) {
           continue;
         }
@@ -3025,6 +2979,7 @@ export class Engine {
       const bound = this.assignPlanningRun(w, run);
       this.bindAccountRecoveryRun(bound, pendingRetry);
       this.store.remove("pending_model_retry", w.id);
+      this.store.remove("pending_dispatch_purpose", w.id);
       return bound;
     });
     for (const msg of this.store
@@ -3363,7 +3318,7 @@ export class Engine {
         `${key}-${w.plan_revision}`,
       );
       const approvalRef: RunApprovalRef | undefined = retryRun?.approval_ref ?? (
-        approvalRecord
+        approvalRecord?.schema_version === 2
           ? {
               approval_id: approvalRecord.approval_id ?? `${key}-${w.plan_revision}`,
               plan_revision: approvalRecord.plan_revision ?? w.plan_revision,

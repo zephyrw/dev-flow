@@ -46,6 +46,9 @@ describe("DevFlow v2 Git 冲突模型修复与终态保护", () => {
         workspace_mode: "new_worktree",
         planner_profile_id: "profile-codex",
       }).workflow;
+      w.quality_policy_version = 1;
+      s.store.put("workflow", w.id, p.id, w);
+      s.store.put("preserve_quality_policy", w.id, w.id, true);
 
       const native = new LocalRuntime(s.engine);
       let conflictInjected = false;
@@ -84,13 +87,14 @@ describe("DevFlow v2 Git 冲突模型修复与终态保护", () => {
             source_commit: request.source_commit,
             status: "resolved",
             resolved_paths: ["app.txt"],
+            function_impact: "changed",
           };
           return receipt;
         },
       };
 
       const wait = async (state: string) => {
-        const end = Date.now() + 600000;
+        const end = Date.now() + 60000;
         while (Date.now() < end) {
           await s.engine.dispatch();
           await s.engine.consumeOutbox();
@@ -128,16 +132,28 @@ describe("DevFlow v2 Git 冲突模型修复与终态保护", () => {
         const accept = proof(s.engine, w.id, "accept");
         await s.engine.accept(w.id, accept.proof, accept.binding);
 
-        await wait("COMPLETED");
+        // 持续调度直到冲突解决并重新进入 HUMAN_PENDING
+        await wait("HUMAN_PENDING");
         expect(conflictResolved).toBe(true);
+
+        // 冲突解决后生成新合并候选，作废旧证据并重新补测与终审
+        const accept2 = proof(s.engine, w.id, "accept");
+        await s.engine.accept(w.id, accept2.proof, accept2.binding);
+
+        await wait("COMPLETED");
 
         // 断言最终主工作区内容同时保留了双方需求
         const finalContent = await git(r.repo, ["show", "HEAD:app.txt"]);
         expect(finalContent.trim()).toContain("after");
         expect(finalContent.trim()).toContain("upstream line");
 
-        // 工作树已被清理，临时分支已被删除
+        // 显式清理工作树后，工作树已被移除且临时分支已被删除
         const ws = s.store.list<any>("workspace", w.id)[0];
+        await new GitDeliveryCoordinator(
+          s.store,
+          s.config.workspace_root,
+          s.engine.git,
+        ).cleanupWorkspaces(w.id, [ws], { explicit_selection: true });
         expect(existsSync(ws.root)).toBe(false);
         expect(await git(r.repo, ["branch", "--list", ws.branch])).toBe("");
       } finally {
@@ -253,6 +269,9 @@ describe("DevFlow v2 Git 冲突模型修复与终态保护", () => {
       workspace_mode: "new_worktree",
       planner_profile_id: "profile-codex",
     }).workflow;
+    w.quality_policy_version = 1;
+    s.store.put("workflow", w.id, p.id, w);
+    s.store.put("preserve_quality_policy", w.id, w.id, true);
 
     const native = new LocalRuntime(s.engine);
     s.engine.runtime = {

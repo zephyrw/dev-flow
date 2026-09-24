@@ -219,7 +219,7 @@ export const AgyAccountsPanel = forwardRef<
   };
 
   const handleDeleteAccount = async (account: AgyAccountDto) => {
-    if (!window.confirm(`确定要移除账号 ${account.alias || account.identity.email} 吗？`)) {
+    if (!window.confirm(`确定要移除账号 ${account.identity.email} 吗？`)) {
       return;
     }
     setError("");
@@ -381,12 +381,6 @@ export const AgyAccountsPanel = forwardRef<
                   <div className="agy-account-main-info">
                     <div className="agy-account-title-line">
                       <span className="agy-account-email">{account.identity.email}</span>
-                      {account.alias &&
-                        account.alias !== "test-import" &&
-                        account.alias.toLowerCase() !==
-                          account.identity.email.split("@")[0]?.toLowerCase() && (
-                          <span className="agy-account-alias">({account.alias})</span>
-                        )}
                       {isActive ? (
                         <span className="agy-badge active">当前使用中</span>
                       ) : (

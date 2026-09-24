@@ -102,7 +102,7 @@ export const ModelDiscoveryStatusSchema = z.enum([
 ]);
 export type ModelDiscoveryStatus = z.infer<typeof ModelDiscoveryStatusSchema>;
 
-export const PARSER_REVISION = "20260924-v2";
+export const PARSER_REVISION = "20260924-v3";
 
 export const ModelCatalogSchema = z
   .object({

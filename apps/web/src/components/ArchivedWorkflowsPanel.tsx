@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import type { ArchivedWorkflowSummary } from "../../../../packages/contracts/src/workflow-visibility.js";
 
 export interface ArchivedWorkflowsPanelProps {
@@ -18,75 +18,90 @@ export function ArchivedWorkflowsPanel({
   const [operatingId, setOperatingId] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
-  const fetchArchives = async () => {
+  const [nextCursor, setNextCursor] = useState<string | undefined>();
+  const [projects, setProjects] = useState<Array<{ id: string; name?: string }>>([]);
+  const abortRef = useRef<AbortController | null>(null);
+  const restoreRequests = useRef(new Map<string, { request_id: string; expected_visibility_revision: number; archived: false }>());
+  const fetchArchives = async (cursor?: string) => {
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
     setLoading(true);
     setError(null);
     try {
-      const params = new URLSearchParams();
+      const params = new URLSearchParams({ limit: "100" });
       if (selectedProject) params.set("project_id", selectedProject);
       if (searchQuery.trim()) params.set("q", searchQuery.trim());
-      params.set("limit", "100");
-
-      const res = await fetch(`/api/archives?${params.toString()}`);
-      if (!res.ok) {
-        throw new Error(`获取归档列表失败: ${res.statusText}`);
-      }
+      if (cursor) params.set("cursor", cursor);
+      const res = await fetch("/api/archives?" + params, { signal: controller.signal });
+      if (!res.ok) throw new Error("获取归档列表失败: " + res.status);
       const data = await res.json();
-      setItems(data.items || []);
+      if (controller.signal.aborted) return;
+      setItems((previous) => {
+        const rows: ArchivedWorkflowSummary[] = cursor ? [...previous, ...data.items] : data.items;
+        return [...new Map(rows.map((item) => [item.workflow_id, item])).values()];
+      });
+      setNextCursor(data.next_cursor);
     } catch (err: any) {
-      setError(err?.message || "网络请求失败");
+      if (!controller.signal.aborted) setError(err?.message || "网络请求失败");
     } finally {
-      setLoading(false);
+      if (!controller.signal.aborted) setLoading(false);
     }
   };
-
+  const fetchLatest = useRef(fetchArchives);
+  fetchLatest.current = fetchArchives;
   useEffect(() => {
-    const timer = setTimeout(() => {
-      void fetchArchives();
-    }, 200);
-    return () => clearTimeout(timer);
+    abortRef.current?.abort();
+    setItems([]);
+    setNextCursor(undefined);
+    const timer = setTimeout(() => { void fetchLatest.current(); }, 200);
+    return () => { clearTimeout(timer); abortRef.current?.abort(); };
   }, [searchQuery, selectedProject]);
+  useEffect(() => {
+    const controller = new AbortController();
+    void fetch("/api/projects", { signal: controller.signal })
+      .then(async (response) => {
+        if (response.ok) {
+          const data = await response.json();
+          if (!controller.signal.aborted) setProjects(data);
+        }
+      }).catch(() => {});
+    return () => controller.abort();
+  }, []);
 
   const handleRestore = async (item: ArchivedWorkflowSummary) => {
+    if (operatingId) return;
     setOperatingId(item.workflow_id);
     try {
-      // 1. 获取当前最新 visibility revision
-      const visRes = await fetch(`/api/workflows/${item.workflow_id}/visibility`);
-      const visData = await visRes.json();
-      const currentRev = visData.visibility?.revision ?? item.visibility_revision;
-
-      // 2. 发起恢复请求
-      const updateRes = await fetch(
-        `/api/workflows/${item.workflow_id}/visibility`,
-        {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            request_id: crypto.randomUUID(),
-            expected_visibility_revision: currentRev,
-            archived: false,
-          }),
-        },
-      );
-
-      if (!updateRes.ok) {
-        const errJson = await updateRes.json().catch(() => ({}));
-        throw new Error(errJson.message || `恢复失败 (${updateRes.status})`);
+      let request = restoreRequests.current.get(item.workflow_id);
+      if (!request) {
+        const visRes = await fetch("/api/workflows/" + encodeURIComponent(item.workflow_id) + "/visibility");
+        if (!visRes.ok) throw new Error("读取归档状态失败: " + visRes.status);
+        const visData = await visRes.json();
+        if (!Number.isSafeInteger(visData.visibility?.revision)) throw new Error("归档状态响应无效");
+        request = { request_id: crypto.randomUUID(), expected_visibility_revision: visData.visibility.revision, archived: false };
+        restoreRequests.current.set(item.workflow_id, request);
       }
-
+      const updateRes = await fetch("/api/workflows/" + encodeURIComponent(item.workflow_id) + "/visibility", {
+        method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(request),
+      });
+      if (!updateRes.ok) {
+        if (updateRes.status === 409) restoreRequests.current.delete(item.workflow_id);
+        const err = await updateRes.json().catch(() => ({}));
+        throw new Error(err.message || "恢复失败: " + updateRes.status);
+      }
+      restoreRequests.current.delete(item.workflow_id);
       onWorkflowRestored?.(item.workflow_id);
-      await fetchArchives();
+      await fetchLatest.current();
     } catch (err: any) {
-      alert(`恢复任务失败: ${err?.message}`);
+      setError("恢复任务失败: " + err?.message);
     } finally {
       setOperatingId(null);
     }
   };
 
-  // 提取全部出现过的项目 ID
-  const projectList = Array.from(new Set(items.map((i) => i.project_id))).filter(
-    Boolean,
-  );
+  const projectList = projects.length ? projects.map((p) => p.id)
+    : Array.from(new Set(items.map((item) => item.project_id)));
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "14px", minHeight: "360px" }}>
@@ -120,7 +135,7 @@ export function ArchivedWorkflowsPanel({
             <option value="">全部项目</option>
             {projectList.map((p) => (
               <option key={p} value={p}>
-                {p}
+                {projects.find((project) => project.id === p)?.name ?? p}
               </option>
             ))}
           </select>
@@ -312,6 +327,7 @@ export function ArchivedWorkflowsPanel({
           })}
         </div>
       )}
+      {nextCursor && <button type="button" className="btn-secondary" disabled={loading} onClick={() => void fetchArchives(nextCursor)}>{loading ? "加载中…" : "加载更多归档"}</button>}
     </div>
   );
 }

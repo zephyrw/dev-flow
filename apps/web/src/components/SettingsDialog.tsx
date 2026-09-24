@@ -24,6 +24,12 @@ export function SettingsDialog({
 }: SettingsDialogProps) {
   const [activeTab, setActiveTab] = useState<SettingsTabId>(initialTab);
   const [isDirty, setIsDirty] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const requestClose = () => {
+    if (saving) return;
+    if (isDirty && !window.confirm("有未保存的默认模型修改，确定放弃吗？")) return;
+    onClose();
+  };
 
   useEffect(() => {
     if (isOpen) {
@@ -35,10 +41,11 @@ export function SettingsDialog({
   return (
     <AppDialog
       isOpen={isOpen}
-      onClose={onClose}
+      onClose={requestClose}
+      busy={saving}
       title="设置"
       width={760}
-      isDirty={isDirty}
+      isDirty={false}
     >
       <div className="settings-dialog-container" style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
         {/* 一级 Tab 导航栏 */}
@@ -60,6 +67,7 @@ export function SettingsDialog({
             aria-selected={activeTab === "models"}
             className={`btn ${activeTab === "models" ? "btn-primary" : "btn-secondary"}`}
             style={{ fontSize: "14px", padding: "6px 16px" }}
+            disabled={saving}
             onClick={() => setActiveTab("models")}
           >
             默认模型
@@ -70,6 +78,7 @@ export function SettingsDialog({
             aria-selected={activeTab === "archives"}
             className={`btn ${activeTab === "archives" ? "btn-primary" : "btn-secondary"}`}
             style={{ fontSize: "14px", padding: "6px 16px" }}
+            disabled={saving}
             onClick={() => setActiveTab("archives")}
           >
             归档
@@ -83,12 +92,15 @@ export function SettingsDialog({
               onDefaultsUpdated={onDefaultsUpdated}
               onDirtyChange={setIsDirty}
               onClose={onClose}
+              onCancel={requestClose}
+              onSavingChange={setSaving}
             />
           </div>
 
           <div style={{ display: activeTab === "archives" ? "block" : "none" }}>
             <ArchivedWorkflowsPanel
               onSelectWorkflow={(workflowId) => {
+                if (saving || (isDirty && !window.confirm("有未保存的默认模型修改，确定放弃吗？"))) return;
                 onClose();
                 onSelectWorkflow?.(workflowId);
               }}

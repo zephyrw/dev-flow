@@ -107,8 +107,7 @@ export function AgyMaintenancePanel({
                 {report[key].length ? (
                   report[key].map((e) => (
                     <div key={e.id}>
-                      {e.alias}
-                      {e.email && ` (${e.email})`}
+                      {e.email || e.alias}
                       {e.expires_at &&
                         ` · ${new Date(e.expires_at).toLocaleString()}`}
                       {e.reason && ` · ${e.reason}`}
@@ -138,7 +137,7 @@ export function AgyMaintenancePanel({
                   )
                 }
               />
-              {e.alias}
+              {e.email || e.alias}
             </label>
           ))}
         </fieldset>

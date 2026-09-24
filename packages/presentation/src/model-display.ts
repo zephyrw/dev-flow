@@ -192,11 +192,25 @@ export function buildModelChoices(entries: ModelEntry[]): ModelChoice[] {
     // A family label alone does not prove that distinct IDs are effort variants.
     const variants = entry.effort.variants ?? {};
     const mappedEffort = Object.entries(variants).find(([, id]) => id === entry.nativeId)?.[0];
-    const fixedEffort = entry.effort.fixedValue ?? mappedEffort;
+    let fixedEffort = entry.effort.fixedValue ?? mappedEffort;
     const hasTrustedVariants = entry.effort.status === "supported" && Boolean(fixedEffort);
-    const familyKey = hasTrustedVariants
+    let familyKey = hasTrustedVariants
       ? entry.familyId || (entry.adapterId === "agy" ? detectAgyFamily(entry.nativeId) : undefined)
       : undefined;
+
+    // 前端兜底：对于 AGY 工具的已知 Gemini 变体，即使后端旧缓存缺少 effort 元数据，也自动识别为同一家族
+    if (!familyKey && entry.adapterId === "agy" && entry.nativeId.startsWith("gemini-")) {
+      const detected = detectAgyFamily(entry.nativeId);
+      if (detected) {
+        familyKey = detected;
+        for (const suffix of ["-high", "-medium", "-low"] as const) {
+          if (entry.nativeId.endsWith(suffix)) {
+            fixedEffort = suffix.slice(1);
+            break;
+          }
+        }
+      }
+    }
     const scope = `${entry.adapterId}/${entry.providerId ?? ""}/`;
 
     if (familyKey) {

@@ -26,6 +26,8 @@ export interface DefaultModelsPanelProps {
   onDefaultsUpdated?: () => void;
   onDirtyChange?: (isDirty: boolean) => void;
   onClose?: () => void;
+  onCancel?: () => void;
+  onSavingChange?: (saving: boolean) => void;
 }
 
 const GLOBAL_TABS: ConfigTabItem[] = [
@@ -43,6 +45,8 @@ export function DefaultModelsPanel({
   onDefaultsUpdated,
   onDirtyChange,
   onClose,
+  onCancel,
+  onSavingChange,
 }: DefaultModelsPanelProps) {
   const [planner, setPlanner] = useState<ToolProfile>(
     blankProfile("planner", "codex"),
@@ -59,6 +63,8 @@ export function DefaultModelsPanel({
   const [error, setError] = useState<string | null>(null);
   const [hasConflict, setHasConflict] = useState(false);
   const [activeTab, setActiveTab] = useState<ConfigTabId>("planner");
+
+  useEffect(() => { onSavingChange?.(saving); }, [saving, onSavingChange]);
 
   const requestId = useRef(newRequestId());
   const panelAbort = useRef<AbortController | null>(null);
@@ -285,7 +291,7 @@ export function DefaultModelsPanel({
           <button
             type="button"
             className="btn btn-secondary"
-            onClick={onClose}
+            onClick={onCancel ?? onClose}
             disabled={saving}
           >
             取消

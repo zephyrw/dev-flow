@@ -144,4 +144,93 @@ describe("model-display 展示格式化与变体聚合", () => {
     expect(choices).toHaveLength(2);
     expect(choices.map((c) => c.nativeId)).toEqual(["custom-model-high", "custom-model-low"]);
   });
+
+  it("U08: buildModelChoices 正确聚合包含 high/medium/low 的同家族条目为单一项", () => {
+    const entries: ModelEntry[] = [
+      {
+        entryId: "ent-1",
+        adapterId: "agy",
+        nativeId: "gemini-3.8-flash-high",
+        label: "Gemini 3.8 Flash (High)",
+        source: "native-live",
+        selectionKind: "fixed",
+        discoveredAt: "2026-09-22T00:00:00.000Z",
+        hidden: false,
+        availability: "listed",
+        capabilityRevision: "1",
+        effort: {
+          status: "supported",
+          transport: "none",
+          values: ["high", "medium", "low"],
+          defaultValue: "high",
+          fixedValue: "high",
+          variants: {
+            high: "gemini-3.8-flash-high",
+            medium: "gemini-3.8-flash-medium",
+            low: "gemini-3.8-flash-low",
+          },
+        },
+      },
+      {
+        entryId: "ent-2",
+        adapterId: "agy",
+        nativeId: "gemini-3.8-flash-medium",
+        label: "Gemini 3.8 Flash (Medium)",
+        source: "native-live",
+        selectionKind: "fixed",
+        discoveredAt: "2026-09-22T00:00:00.000Z",
+        hidden: false,
+        availability: "listed",
+        capabilityRevision: "1",
+        effort: {
+          status: "supported",
+          transport: "none",
+          values: ["high", "medium", "low"],
+          defaultValue: "high",
+          fixedValue: "medium",
+          variants: {
+            high: "gemini-3.8-flash-high",
+            medium: "gemini-3.8-flash-medium",
+            low: "gemini-3.8-flash-low",
+          },
+        },
+      },
+      {
+        entryId: "ent-3",
+        adapterId: "agy",
+        nativeId: "gemini-3.8-flash-low",
+        label: "Gemini 3.8 Flash (Low)",
+        source: "native-live",
+        selectionKind: "fixed",
+        discoveredAt: "2026-09-22T00:00:00.000Z",
+        hidden: false,
+        availability: "listed",
+        capabilityRevision: "1",
+        effort: {
+          status: "supported",
+          transport: "none",
+          values: ["high", "medium", "low"],
+          defaultValue: "high",
+          fixedValue: "low",
+          variants: {
+            high: "gemini-3.8-flash-high",
+            medium: "gemini-3.8-flash-medium",
+            low: "gemini-3.8-flash-low",
+          },
+        },
+      },
+    ];
+
+    const choices = buildModelChoices(entries);
+    expect(choices).toHaveLength(1);
+    const choice = choices[0]!;
+    expect(choice.choiceId).toBe("gemini-3.8-flash");
+    expect(choice.label).toBe("Gemini 3.8 Flash");
+    expect(choice.effortValues).toEqual(["high", "medium", "low"]);
+    expect(choice.variantByEffort).toEqual({
+      high: "gemini-3.8-flash-high",
+      medium: "gemini-3.8-flash-medium",
+      low: "gemini-3.8-flash-low",
+    });
+  });
 });

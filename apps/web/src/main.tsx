@@ -1972,7 +1972,7 @@ function App() {
         plan_hash: viewed.planHash ?? viewed.plan_hash ?? null,
         snapshot_id: viewed.snapshotId ?? viewed.snapshot_id ?? null,
         environment_revision: viewed.environmentRevision ?? viewed.environment_revision,
-        extra: trimmed && instructionsHash
+        extra: action === "approve" && instructionsHash
           ? {
               execution_instructions_hash: instructionsHash,
             }
@@ -1980,7 +1980,7 @@ function App() {
       },
     };
 
-    if (trimmed) {
+    if (action === "approve") {
       reqBody.execution_instructions = {
         text: trimmed,
         scope: "approved-plan",
@@ -1989,7 +1989,7 @@ function App() {
 
     const targetWorkflowId = viewed.workflowId ?? viewed.id;
     await api(`/workflows/${targetWorkflowId}/${action}`, reqBody);
-    await refresh();
+    await refresh().catch(() => setError("操作已成功，详情刷新失败，请稍后刷新页面。"));
     setNotice(
       action === "approve"
         ? "计划已批准，进入执行队列。"
@@ -3105,6 +3105,7 @@ function App() {
         <PlanApprovalDialog
           key={`${planApprovalTarget.id}:${planApprovalTarget.plan_revision}`}
           isOpen={!!planApprovalTarget}
+          isStale={detail?.workflow?.id !== planApprovalTarget.id || detail?.workflow?.version !== planApprovalTarget.version || detail?.workflow?.plan_hash !== planApprovalTarget.plan_hash}
           onClose={() => setPlanApprovalTarget(null)}
           workflowId={planApprovalTarget.id}
           workflowVersion={planApprovalTarget.version}
@@ -3115,8 +3116,8 @@ function App() {
           planTitle={detail?.plan?.plan?.title}
           planSummary={detail?.plan?.plan?.summary}
           executorProfileDescription={
-            detail?.execution_spec?.resolvedRoles?.executor
-              ? `${detail.execution_spec.resolvedRoles.executor.profile.adapterId} · ${detail.execution_spec.resolvedRoles.executor.profile.modelId}`
+            detail?.execution_spec?.executorProfile
+              ? `${detail.execution_spec.executorProfile.adapterId} · ${detail.execution_spec.executorProfile.modelId}`
               : undefined
           }
           onApprove={async (target, instructionsText, instructionsHash, requestId) => {

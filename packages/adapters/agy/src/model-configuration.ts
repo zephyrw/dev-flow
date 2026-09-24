@@ -32,12 +32,27 @@ const HEADER_TOKENS = new Set([
 
 // These exact families are confirmed by the model catalog contract. Unknown IDs
 // must not acquire an effort capability just because their name ends in -high.
-// 注意：思考强度严格按家族对齐（例如 Gemini 3.8 Flash 最高只有 high，不存在 xhigh/max/ultra）。
+// 注意：思考强度严格按家族对齐（例如 Gemini 3.8 Flash 包含 high/medium/low，不存在 xhigh/max/ultra）。
 export const AGY_VARIANTS: Record<string, Record<string, string>> = {
-  "gemini-3.8-flash": { high: "gemini-3.8-flash-high", medium: "gemini-3.8-flash-medium" },
-  "gemini-3.7-flash": { high: "gemini-3.7-flash-high", medium: "gemini-3.7-flash-medium" },
-  "gemini-3.6-flash": { high: "gemini-3.6-flash-high", medium: "gemini-3.6-flash-medium" },
-  "gemini-3.1-pro": { high: "gemini-3.1-pro-high" },
+  "gemini-3.8-flash": {
+    high: "gemini-3.8-flash-high",
+    medium: "gemini-3.8-flash-medium",
+    low: "gemini-3.8-flash-low",
+  },
+  "gemini-3.7-flash": {
+    high: "gemini-3.7-flash-high",
+    medium: "gemini-3.7-flash-medium",
+    low: "gemini-3.7-flash-low",
+  },
+  "gemini-3.6-flash": {
+    high: "gemini-3.6-flash-high",
+    medium: "gemini-3.6-flash-medium",
+    low: "gemini-3.6-flash-low",
+  },
+  "gemini-3.1-pro": {
+    high: "gemini-3.1-pro-high",
+    low: "gemini-3.1-pro-low",
+  },
 };
 
 function providerFromSlug(nativeId: string): string | undefined {

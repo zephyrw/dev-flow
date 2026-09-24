@@ -55,7 +55,7 @@ export function AgyRuntimeAccount({ modelId }: { modelId?: string }) {
     >
       账号管理
       {account
-        ? `：${account.alias} · 上次实测周 ${weekly.percentageText} / 五小时 ${short.percentageText}`
+        ? `：${account.identity.email} · 上次实测周 ${weekly.percentageText} / 五小时 ${short.percentageText}`
         : "：未纳入管理"}
     </a>
   );

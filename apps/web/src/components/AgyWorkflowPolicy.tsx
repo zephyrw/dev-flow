@@ -146,7 +146,7 @@ export function AgyWorkflowPolicy({ workflowId }: { workflowId: string }) {
                       })
                     }
                   />
-                  {account.alias}
+                  {account.identity.email}
                 </label>
               ))}
             </fieldset>

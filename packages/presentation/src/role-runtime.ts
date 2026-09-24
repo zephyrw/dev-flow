@@ -205,9 +205,13 @@ export function projectRoleRuntime(
   }
 
   // 终态、暂停状态或显式非运行态：无活动高亮
+  const hasExplicitExitedObservation =
+    (detail?.runtime?.status === "exited" || detail?.runtime?.status === "error") ||
+    (detail?.events?.some((e: any) => e.type === "RunObserved" && e.run_id === activeRunId && ["exited", "error"].includes(e.payload?.status)));
+
   const isRunActive = currentRun
-    ? currentRun.status === undefined || currentRun.status === "running"
-    : true;
+    ? (currentRun.status === undefined || currentRun.status === "running") && !hasExplicitExitedObservation
+    : !!observation && ["starting", "responding", "working", "waiting"].includes(observation.status);
   if (
     !state ||
     TERMINAL_OR_PAUSED_STATES.has(state) ||
@@ -251,7 +255,18 @@ export function projectRoleRuntime(
     observation?.actual_model ??
     observation?.requested_model ??
     currentRun?.profile?.modelId;
-  const actualEffort = observation?.effort;
+  const actualEffort = observation?.effort ?? (currentRun?.profile?.reasoning?.mode === "explicit" ? currentRun.profile.reasoning.value : undefined);
+
+  const activeProfile = (fallback?: ToolProfile): ToolProfile | undefined => {
+    const profile = currentRun?.profile ?? fallback;
+    if (!profile) return undefined;
+    return {
+      ...profile,
+      adapterId: actualAdapter ?? profile.adapterId,
+      modelId: actualModel ?? profile.modelId,
+      reasoning: actualEffort ? { mode: "explicit", value: actualEffort } : profile.reasoning,
+    };
+  };
 
   // 1. planning / takeover 活动
   if (activeRole === "planner") {
@@ -310,9 +325,7 @@ export function projectRoleRuntime(
   // 3. reviewer 活动
   if (activeRole === "reviewer") {
     const isReviewerInherited =
-      reviewerBinding?.mode === "inherit" ||
-      !reviewerBinding ||
-      isProfileEquivalent(reviewerBinding.profile, plannerProfile);
+      isProfileEquivalent(activeProfile(reviewerBinding?.mode === "explicit" ? reviewerBinding.profile : plannerProfile), plannerProfile);
 
     if (isReviewerInherited) {
       plannerRow.isActive = true;
@@ -332,7 +345,7 @@ export function projectRoleRuntime(
       };
     } else {
       // 独立且不同的复核模型：两行都不高亮，显示紧凑复核标识
-      const reviewerProfile = reviewerBinding.profile;
+      const reviewerProfile = activeProfile(reviewerBinding?.mode === "explicit" ? reviewerBinding.profile : plannerProfile);
       const compactText = formatRuntimeDisplay({
         adapterId: actualAdapter ?? reviewerProfile?.adapterId,
         modelId: actualModel ?? reviewerProfile?.modelId,
@@ -362,9 +375,7 @@ export function projectRoleRuntime(
   // 4. functional_fixer 活动
   if (activeRole === "functional_fixer") {
     const isFixerInherited =
-      functionalFixerBinding?.mode === "inherit" ||
-      !functionalFixerBinding ||
-      isProfileEquivalent(functionalFixerBinding.profile, executorProfile);
+      isProfileEquivalent(activeProfile(functionalFixerBinding?.mode === "explicit" ? functionalFixerBinding.profile : executorProfile), executorProfile);
 
     if (isFixerInherited) {
       executorRow.isActive = true;
@@ -383,7 +394,7 @@ export function projectRoleRuntime(
         },
       };
     } else {
-      const fixerProfile = functionalFixerBinding.profile;
+      const fixerProfile = activeProfile(functionalFixerBinding?.mode === "explicit" ? functionalFixerBinding.profile : executorProfile);
       const compactText = formatRuntimeDisplay({
         adapterId: actualAdapter ?? fixerProfile?.adapterId,
         modelId: actualModel ?? fixerProfile?.modelId,
@@ -413,9 +424,7 @@ export function projectRoleRuntime(
   // 5. review_fixer 活动
   if (activeRole === "review_fixer") {
     const isReviewFixerInherited =
-      reviewFixerBinding?.mode === "inherit" ||
-      !reviewFixerBinding ||
-      isProfileEquivalent(reviewFixerBinding.profile, executorProfile);
+      isProfileEquivalent(activeProfile(reviewFixerBinding?.mode === "explicit" ? reviewFixerBinding.profile : executorProfile), executorProfile);
 
     if (isReviewFixerInherited) {
       executorRow.isActive = true;
@@ -434,7 +443,7 @@ export function projectRoleRuntime(
         },
       };
     } else {
-      const fixerProfile = reviewFixerBinding.profile;
+      const fixerProfile = activeProfile(reviewFixerBinding?.mode === "explicit" ? reviewFixerBinding.profile : executorProfile);
       const compactText = formatRuntimeDisplay({
         adapterId: actualAdapter ?? fixerProfile?.adapterId,
         modelId: actualModel ?? fixerProfile?.modelId,

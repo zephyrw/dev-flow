@@ -6,7 +6,6 @@ import {
 import { FlowError } from "../../contracts/src/index.js";
 import {
   createApprovedExecutionInstructions,
-  formatExecutionInstructionsForPrompt,
 } from "./execution-instructions.js";
 import { DocumentService } from "./document-service.js";
 import { canonical, hash, objectHash, now } from "./util.js";
@@ -22,6 +21,8 @@ export interface PlanApprovalExecuteInput {
   documentHash?: string;
   expectedVersion?: number;
   callerProof?: string;
+  schemaVersion?: 1 | 2;
+  feedbackCursor?: number;
 }
 
 export class PlanApprovalService {
@@ -33,13 +34,17 @@ export class PlanApprovalService {
   /**
    * 统一执行计划审批：支持幂等回执、附加执行指令绑定、文档审批与工作流状态原子流转
    */
-  async approve(input: PlanApprovalExecuteInput): Promise<{
+  async approve(input: PlanApprovalExecuteInput) {
+    return this.approveSync(input);
+  }
+
+  approveSync(input: PlanApprovalExecuteInput): {
     ok: true;
     approval: PlanApprovalRecordV2;
     workflow: any;
     document?: any;
     response: PlanApprovalResponse;
-  }> {
+  } {
     const {
       workflowId,
       requestId,
@@ -50,6 +55,8 @@ export class PlanApprovalService {
       documentHash,
       expectedVersion,
       callerProof,
+      schemaVersion = 1,
+      feedbackCursor = 0,
     } = input;
 
     // 规范化附加指令并在服务端计算哈希（不信任客户端哈希）
@@ -67,6 +74,8 @@ export class PlanApprovalService {
         documentHash,
         instructionsText: instructions.text,
         instructionsHash: instructions.text_hash,
+        schemaVersion,
+        feedbackCursor,
       }),
     );
 
@@ -117,6 +126,7 @@ export class PlanApprovalService {
 
       // 3. 校验文档（若提供 documentId）
       let approvedDoc: any = undefined;
+      if (documentId && !this.documentService) { throw new FlowError("DOCUMENT_SERVICE_MISSING", "文档审批服务不可用", 500); }
       if (documentId && this.documentService) {
         const approvalDocument = this.engine.store.must<any>(
           "project_document",
@@ -150,59 +160,28 @@ export class PlanApprovalService {
             expected_version: expectedVersion ?? w.version,
             document_revision: passedDocRevision,
             document_hash: passedDocHash,
-            feedback_cursor: 0,
+            feedback_cursor: feedbackCursor,
           },
         );
       }
 
-      // 4. binding 核对与指令摘要校验
-      const extraFromBinding = (binding as any)?.extra ?? {};
-      const expectedExtra: Record<string, string> = {};
-      if (instructions.text) {
-        expectedExtra.execution_instructions_hash = instructions.text_hash;
+      // 非空指令及 V2 空正文都必须纳入用户确认的绑定。
+      const expectedExtra = instructions.text || schemaVersion === 2
+        ? { execution_instructions_hash: instructions.text_hash }
+        : {};
+      const suppliedHash = (binding.extra as Record<string, unknown> | undefined)?.execution_instructions_hash;
+      if (suppliedHash !== undefined && suppliedHash !== instructions.text_hash) {
+        throw new FlowError("INSTRUCTIONS_HASH_MISMATCH", "指令摘要与正文不一致", 409);
       }
-
-      if (
-        extraFromBinding.execution_instructions_hash &&
-        extraFromBinding.execution_instructions_hash !== instructions.text_hash
-      ) {
-        throw new FlowError(
-          "INSTRUCTIONS_HASH_MISMATCH",
-          "客户端提供的指令摘要与服务端重新计算结果不一致",
-          409,
-        );
-      }
-
-      // 校验预期 binding 是否匹配
-      const expectedBindingWithExtra = this.engine.binding(
-        workflowId,
-        "approve",
-        expectedExtra,
-      );
-      const expectedBindingDefault = this.engine.binding(
-        workflowId,
-        "approve",
-        {},
-      );
-
-      const bindingHash = objectHash(binding);
-      const isExtraMatched = bindingHash === objectHash(expectedBindingWithExtra);
-      const isDefaultMatched = bindingHash === objectHash(expectedBindingDefault);
-
+      const bHash = objectHash(binding);
+      const isExtraMatched = bHash === objectHash(this.engine.binding(workflowId, "approve", expectedExtra));
+      const isDefaultMatched = bHash === objectHash(this.engine.binding(workflowId, "approve", {}));
       if (!isExtraMatched && !isDefaultMatched) {
-        throw new FlowError("BINDING_CHANGED", "计划已变化，请刷新后重新审批", 409);
+        throw new FlowError("BINDING_CHANGED", "计划或审批指令已变化，请重新核对", 409);
       }
-
-      // 5. 消费 human proof
-      const effectiveProof =
-        callerProof ||
-        this.engine.auth.recordConfirmation("approve", binding);
-      try {
-        this.engine.auth.consumeProof(effectiveProof, "approve", binding);
-      } catch (err: any) {
-        // 如果 proof 已消费或校验失败，抛出错误
-        throw err;
-      }
+      if (!callerProof) { throw new FlowError("PROOF_INVALID", "缺少人工审批凭据", 403); }
+      this.engine.auth.consumeProof(callerProof, "approve", binding);
+      const effectiveProof = callerProof;
 
       // 6. 原子写入 PlanApprovalRecordV2
       const approvalKey = `${workflowId}-${w.plan_revision}`;
@@ -224,6 +203,7 @@ export class PlanApprovalService {
       // 7. 清理并流转工作流
       this.engine.clearCurrentImplementationIntent(workflowId);
       this.engine.supersedePendingContinuation(workflowId);
+      this.engine.store.remove("pending_dispatch_purpose", workflowId);
       const updatedWorkflow = this.engine.transition(
         workflowId,
         [w.state],
@@ -254,7 +234,7 @@ export class PlanApprovalService {
 
       return {
         ok: true,
-        approval: approvalRecord,
+        approval: publicApproval,
         workflow: updatedWorkflow,
         document: approvedDoc,
         response,

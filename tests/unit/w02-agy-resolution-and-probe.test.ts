@@ -104,13 +104,16 @@ describe("W02 AGY 发现、能力与真实输出适配测试", () => {
     ].join("\n");
 
     const parsed = parseAgyUsageOutput(realCliOutput);
-    expect(parsed.windows).toHaveLength(2);
-    const weekly = parsed.windows.find((w) => w.kind === "weekly");
-    const fiveHour = parsed.windows.find((w) => w.kind === "five_hour");
+    // F13: 模型池窗口不能冒充账号全局额度，无 Global 池时顶层 windows 为空
+    expect(parsed.windows).toHaveLength(0);
+    expect(parsed.pools).toHaveLength(2);
+    const geminiPool = parsed.pools.find((p) => p.pool_id === "Gemini Models");
+    expect(geminiPool?.windows).toHaveLength(2);
+    const weekly = geminiPool?.windows.find((w) => w.kind === "weekly");
+    const fiveHour = geminiPool?.windows.find((w) => w.kind === "five_hour");
     expect(weekly?.remaining_fraction).toBe(0.85);
     expect(weekly?.reset_at).toBe("2026-09-30T09:58:52.000Z");
     expect(fiveHour?.remaining_fraction).toBe(0.21);
     expect(fiveHour?.reset_at).toBe("2026-09-24T05:33:38.000Z");
-    expect(parsed.pools).toHaveLength(2);
   });
 });

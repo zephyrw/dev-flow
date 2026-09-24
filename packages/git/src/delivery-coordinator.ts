@@ -6,6 +6,7 @@ import {
   type Snapshot,
   type Project,
   type Run,
+  type PlanApprovalRecordV2,
   type MergeConflictRequest,
   type MergeConflictReceipt,
   type Delivery,
@@ -539,6 +540,8 @@ export class GitDeliveryCoordinator {
               return;
             }
             const binding = this.conflictRunBinding(workflowId, w);
+            const approvalId = workflowId + "-" + w.plan_revision;
+            const approval = this.store.get<PlanApprovalRecordV2>("approval", approvalId);
             const run: Run = {
               id: runId,
               workflow_id: workflowId,
@@ -552,6 +555,12 @@ export class GitDeliveryCoordinator {
               started_at: now(),
               deadline_at: Date.now() + 300000,
               package_hash: conflictRequestId,
+              approval_ref: approval?.schema_version === 2 ? {
+                approval_id: approvalId,
+                plan_revision: approval.plan_revision,
+                plan_hash: approval.plan_hash,
+                instructions_hash: approval.execution_instructions.text_hash,
+              } : undefined,
               protocol: binding.protocol,
             };
             this.store.put("run", runId, workflowId, run);

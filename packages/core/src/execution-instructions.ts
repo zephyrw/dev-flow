@@ -6,6 +6,7 @@ import {
   ExecutionInstructionPayload,
 } from "../../contracts/src/plan-approval.js";
 import { hash } from "./util.js";
+import { FlowError } from "../../contracts/src/index.js";
 
 /**
  * 规范化用户输入的附加指令并计算 SHA-256 摘要
@@ -57,7 +58,7 @@ export function buildApprovedExecutionInstructionsPayload(
     return null;
   }
   return {
-    approval_id: record.approval_id ?? fallbackId,
+    approval_id: fallbackId,
     plan_revision: record.plan_revision ?? record.revision,
     plan_hash: record.plan_hash,
     text: instructions.text,
@@ -85,6 +86,9 @@ export function verifyAndResolveExecutionInstructions(
   instructions: ApprovedExecutionInstructions | null;
   payload: ExecutionInstructionPayload | null;
 } {
+  if (run.plan_revision !== undefined && run.plan_revision !== currentPlanRevision) {
+    throw new FlowError("APPROVAL_PLAN_MISMATCH", "运行计划版本与当前派发目标不符", 409);
+  }
   const targetRevision = run.approval_ref?.plan_revision ?? currentPlanRevision;
   const approvalKey = `${workflowId}-${targetRevision}`;
   const record = store.get<any>("approval", approvalKey);
@@ -92,97 +96,58 @@ export function verifyAndResolveExecutionInstructions(
   if (run.approval_ref) {
     const ref = run.approval_ref;
     if (!record) {
-      const err = new Error(
-        `审批记录缺失: 运行引用 approval ${ref.approval_id} 未找到, 无法安全派发`,
-      ) as any;
-      err.code = "APPROVAL_RECORD_MISSING";
-      err.status = 404;
-      throw err;
+      throw new FlowError("APPROVAL_RECORD_MISSING",
+        `审批记录缺失: 运行引用 approval ${ref.approval_id} 未找到, 无法安全派发`, 404);
     }
 
-    const expectedApprovalId = record.id ?? record.approval_id ?? approvalKey;
+    const expectedApprovalId = approvalKey;
     if (ref.approval_id !== expectedApprovalId) {
-      const err = new Error(
-        `审批引用失配: 引用 approval_id ${ref.approval_id} 与记录 ${expectedApprovalId} 不匹配`,
-      ) as any;
-      err.code = "APPROVAL_RECORD_MISSING";
-      err.status = 409;
-      throw err;
+      throw new FlowError("APPROVAL_RECORD_MISSING",
+        `审批引用失配: 引用 approval_id ${ref.approval_id} 与记录 ${expectedApprovalId} 不匹配`, 409);
     }
 
-    const recordWorkflowId = record.workflow_id ?? workflowId;
+    const recordWorkflowId = record.workflow_id;
     if (recordWorkflowId !== workflowId) {
-      const err = new Error(
-        `审批归属不符: 记录所属 ${recordWorkflowId} 与当前任务 ${workflowId} 不一致`,
-      ) as any;
-      err.code = "APPROVAL_OWNER_MISMATCH";
-      err.status = 403;
-      throw err;
+      throw new FlowError("APPROVAL_OWNER_MISMATCH",
+        `审批归属不符: 记录所属 ${recordWorkflowId} 与当前任务 ${workflowId} 不一致`, 403);
     }
 
     const recordRevision = record.plan_revision ?? record.revision;
     if (recordRevision !== ref.plan_revision) {
-      const err = new Error(
-        `计划版本不一致: 引用版本 v${ref.plan_revision} 与审批记录版本 v${recordRevision} 不匹配`,
-      ) as any;
-      err.code = "APPROVAL_PLAN_MISMATCH";
-      err.status = 409;
-      throw err;
+      throw new FlowError("APPROVAL_PLAN_MISMATCH",
+        `计划版本不一致: 引用版本 v${ref.plan_revision} 与审批记录版本 v${recordRevision} 不匹配`, 409);
     }
 
     if (record.plan_hash !== ref.plan_hash) {
-      const err = new Error(
-        `计划哈希不一致: 引用计划哈希 ${ref.plan_hash} 与审批记录哈希 ${record.plan_hash} 不匹配`,
-      ) as any;
-      err.code = "APPROVAL_PLAN_MISMATCH";
-      err.status = 409;
-      throw err;
+      throw new FlowError("APPROVAL_PLAN_MISMATCH",
+        `计划哈希不一致: 引用计划哈希 ${ref.plan_hash} 与审批记录哈希 ${record.plan_hash} 不匹配`, 409);
     }
 
     if (
       ref.plan_revision !== currentPlanRevision ||
       ref.plan_hash !== currentPlanHash
     ) {
-      const err = new Error(
-        `当前派发目标不符: 引用计划 v${ref.plan_revision} (${ref.plan_hash}) 与当前派发计划 v${currentPlanRevision} (${currentPlanHash}) 不匹配`,
-      ) as any;
-      err.code = "APPROVAL_PLAN_MISMATCH";
-      err.status = 409;
-      throw err;
+      throw new FlowError("APPROVAL_PLAN_MISMATCH",
+        `当前派发目标不符: 引用计划 v${ref.plan_revision} (${ref.plan_hash}) 与当前派发计划 v${currentPlanRevision} (${currentPlanHash}) 不匹配`, 409);
     }
 
     if (run.plan_revision !== undefined && run.plan_revision !== ref.plan_revision) {
-      const err = new Error(
-        `运行计划版本不匹配: run.plan_revision v${run.plan_revision} 与 ref.plan_revision v${ref.plan_revision} 不一致`,
-      ) as any;
-      err.code = "APPROVAL_PLAN_MISMATCH";
-      err.status = 409;
-      throw err;
+      throw new FlowError("APPROVAL_PLAN_MISMATCH",
+        `运行计划版本不匹配: run.plan_revision v${run.plan_revision} 与 ref.plan_revision v${ref.plan_revision} 不一致`, 409);
     }
 
     const recordInstructionsHash =
       record.execution_instructions?.text_hash ?? "";
     if (recordInstructionsHash !== ref.instructions_hash) {
-      const err = new Error(
-        `指令哈希不一致: 引用指令哈希 ${ref.instructions_hash} 与审批记录指令哈希 ${recordInstructionsHash} 不匹配`,
-      ) as any;
-      err.code = "APPROVAL_INSTRUCTIONS_TAMPERED";
-      err.status = 409;
-      throw err;
+      throw new FlowError("APPROVAL_INSTRUCTIONS_TAMPERED",
+        `指令哈希不一致: 引用指令哈希 ${ref.instructions_hash} 与审批记录指令哈希 ${recordInstructionsHash} 不匹配`, 409);
     }
 
-    if (record.execution_instructions?.text) {
-      const recomputedHash = hash(
-        normalizeInstructionsText(record.execution_instructions.text),
-      );
-      if (recomputedHash !== recordInstructionsHash) {
-        const err = new Error(
-          `审批指令被篡改: 存储指令重算哈希 ${recomputedHash} 与记录摘要 ${recordInstructionsHash} 不一致`,
-        ) as any;
-        err.code = "APPROVAL_INSTRUCTIONS_TAMPERED";
-        err.status = 409;
-        throw err;
-      }
+    const stored = record.execution_instructions;
+    if (!stored || typeof stored.text !== "string" || stored.scope !== "approved-plan" ||
+        stored.schema_version !== 1 || stored.text.length > 20000 ||
+        hash(normalizeInstructionsText(stored.text)) !== recordInstructionsHash) {
+      throw new FlowError("APPROVAL_INSTRUCTIONS_TAMPERED", "审批指令正文或摘要不一致", 409);
     }
 
     const instructions: ApprovedExecutionInstructions | null =
@@ -196,22 +161,13 @@ export function verifyAndResolveExecutionInstructions(
 
   // ISO-05: 若存在 V2 审批记录，新运行缺失 ref 是完整性缺失，阻断派发
   if (record && record.schema_version === 2) {
-    const err = new Error(
-      `审批引用缺失: V2 审批记录存在但当前运行未携带 approval_ref, 阻断派发`,
-    ) as any;
-    err.code = "APPROVAL_REFERENCE_MISSING";
-    err.status = 409;
-    throw err;
+    throw new FlowError("APPROVAL_REFERENCE_MISSING",
+      `审批引用缺失: V2 审批记录存在但当前运行未携带 approval_ref, 阻断派发`, 409);
   }
 
-  // 仅对明确的旧格式记录提供只读/兼容
-  if (record && record.execution_instructions) {
-    const payload = buildApprovedExecutionInstructionsPayload(
-      record,
-      approvalKey,
-    );
-    return { instructions: record.execution_instructions, payload };
+  // 历史审批仅兼容空指令，不能通过去掉 schema_version 绕过 V2 校验。
+  if (record?.execution_instructions) {
+    throw new FlowError("APPROVAL_REFERENCE_MISSING", "带附加指令的审批缺少运行引用", 409);
   }
-
   return { instructions: null, payload: null };
 }

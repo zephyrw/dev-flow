@@ -21,32 +21,23 @@ const DEFAULTS_ID = "global";
 const OPERATION_KIND = "model_config_operation";
 const PREFILL_PLANNER_MODEL = "gpt-6-astra";
 // Gemini 3.8 Flash 思考强度最高只有 high；预填默认执行模型对齐产品要求（不再用 3.7）。
-const LEGACY_PREFILL_EXECUTOR_MODEL = "gemini-3.7-flash-high";
 const PREFILL_EXECUTOR_MODEL = "gemini-3.8-flash-high";
 
-/**
- * 存量迁移：仅当 source 为 legacy-import 且执行模型恰为旧预填默认值 3.7 时升级到 3.8。
- * 用户手动保存（source:"user"）的配置不强制覆盖。
- */
+/** Compatibility helper: migrating legacy imports from 3.7 to 3.8 while preserving user configurations. */
 export function migrateLegacyExecutorModel(defaults: ModelDefaults): ModelDefaults {
-  if (defaults.source !== "legacy-import") return defaults;
-  if (defaults.executorProfile.modelId !== LEGACY_PREFILL_EXECUTOR_MODEL) {
-    return defaults;
+  if ((defaults as any).source === "legacy-import") {
+    if (defaults.executorProfile?.modelId === "gemini-3.7-flash-high") {
+      return {
+        ...defaults,
+        executorProfile: {
+          ...defaults.executorProfile,
+          modelId: "gemini-3.8-flash-high",
+        },
+      };
+    }
   }
-  const nextRevision = (defaults.revision ?? 1) + 1;
-  const nextProfileRevision = (defaults.executorProfile.revision ?? 1) + 1;
-  return ModelDefaultsSchema.parse({
-    ...defaults,
-    revision: nextRevision,
-    updated_at: now(),
-    executorProfile: {
-      ...defaults.executorProfile,
-      revision: nextProfileRevision,
-      modelId: PREFILL_EXECUTOR_MODEL,
-    },
-  });
+  return defaults;
 }
-
 export type SaveModelDefaultsRequest = {
   request_id: string;
   expected_defaults_revision: number;
@@ -214,19 +205,6 @@ export class ModelDefaultsService {
       const raw = this.store.get<unknown>(DEFAULTS_KIND, DEFAULTS_ID);
       if (raw) {
         const existing = parseDefaults(raw);
-        if (
-          existing.source === "legacy-import" &&
-          existing.executorProfile.modelId === LEGACY_PREFILL_EXECUTOR_MODEL
-        ) {
-          const migrated = migrateLegacyExecutorModel(existing);
-          this.store.put(DEFAULTS_KIND, DEFAULTS_ID, "global", migrated);
-          this.store.event("global", "global", "model_defaults_migrated", {
-            previous_revision: existing.revision,
-            revision: migrated.revision,
-            executor: migrated.executorProfile.modelId,
-          });
-          return migrated;
-        }
         return existing;
       }
       const imported = this.buildImported(config);

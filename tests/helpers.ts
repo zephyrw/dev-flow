@@ -46,7 +46,7 @@ export async function repository(root: string, name = "repo") {
   await git(repo, ["config", "user.email", "tests@example.invalid"]);
   await git(repo, ["config", "core.autocrlf", "false"]);
   writeFileSync(join(repo, "app.txt"), "before\n");
-  writeFileSync(join(repo, ".gitignore"), ".reports/\n");
+  writeFileSync(join(repo, ".gitignore"), ".reports/\n.devflow-fixture-*\ndocs/\n");
   await git(repo, ["add", "."]);
   const dirty = await git(repo, ["status", "--porcelain"]);
   if (dirty.trim()) await git(repo, ["commit", "-m", "fixture baseline"]);

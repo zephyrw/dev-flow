@@ -63,7 +63,10 @@ export function CurrentRuntime({
   const { plannerRow, executorRow, compactBadge, quotaTarget } = runtimeView;
 
   const observation = visibleRunObservation(detail);
-  const quota = observation?.quota;
+  const quota = observation && connected && runtimeView.activeRole &&
+    observation?.adapter === quotaTarget?.adapter &&
+    (observation.actual_model ?? observation.requested_model) === quotaTarget?.model
+      ? observation.quota : undefined;
   const activeModel =
     quotaTarget?.model ??
     observation?.actual_model ??
@@ -97,6 +100,7 @@ export function CurrentRuntime({
 
   const stale =
     !quota ||
+    !Number.isFinite(Date.parse(quota.observed_at)) ||
     now - Date.parse(quota.observed_at) > 120000 ||
     !connected ||
     ["exited", "error"].includes(observation?.status ?? "") ||

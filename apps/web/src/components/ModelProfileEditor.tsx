@@ -399,10 +399,13 @@ export function ModelProfileEditor({
     }
   };
 
-  // 关闭态展示友好名（若友好名与原始 ID 不等价则附带原始 ID；等价时只展示友好名，避免重复）
+  // 关闭态展示友好名（已匹配 Choice 时直接展示选项名称；未匹配且不等价时才附带原始 ID）
   const currentModelLabel = (() => {
     if (!profile.modelId) return "";
-    const label = currentChoice?.label ?? formatModelName(adapter, profile.modelId);
+    if (currentChoice) {
+      return currentChoice.label;
+    }
+    const label = formatModelName(adapter, profile.modelId);
     if (label && !isEquivalentModelName(label, profile.modelId)) {
       return `${label} · ${profile.modelId}`;
     }
@@ -443,12 +446,12 @@ export function ModelProfileEditor({
           <label htmlFor={`ms-model-${profile.id}`}>模型</label>
           <button
             type="button"
-            className="ms-icon-button"
+            className={`ms-icon-button ${refreshing ? "is-refreshing" : ""}`}
             title="刷新模型目录"
             disabled={disabled || loading || refreshing}
             onClick={() => loadCatalog(adapter, true)}
           >
-            {refreshing ? "…" : "↻"}
+            ↻
           </button>
         </div>
 
@@ -469,13 +472,13 @@ export function ModelProfileEditor({
             disabled={disabled}
             value={openList ? query : currentModelLabel}
             placeholder={
-              loading
-                ? "正在读取模型列表…"
-                : refreshing
+              (loading || refreshing) && choices.length === 0
+                ? refreshing
                   ? `正在发现${toolLabel === "工具" ? "" : toolLabel}可用模型…`
-                  : openList
-                    ? "输入搜索或直接输入自定义模型 ID"
-                    : "点击展开或输入自定义模型"
+                  : "正在读取模型列表…"
+                : openList
+                  ? "输入搜索或直接输入自定义模型 ID"
+                  : "点击展开或输入自定义模型"
             }
             onFocus={() => {
               setOpenList(true);
@@ -505,15 +508,17 @@ export function ModelProfileEditor({
                 maxHeight: listPos.maxHeight,
               }}
             >
+              {(loading || refreshing) && visibleChoices.length === 0 && (
+                <li className="ms-loading" role="status" aria-live="polite">
+                  <span className="ms-spinner" /> 正在获取可用模型列表…
+                </li>
+              )}
+
               {visibleChoices.map((choice, idx) => {
                 const isSelected =
                   currentChoice === choice;
                 const isFocused = activeIndex === idx;
-                const idTokens = [
-                  choice.nativeId,
-                  ...Object.values(choice.variantByEffort),
-                ];
-                const idText = [...new Set(idTokens)].join(" ");
+                const idText = choice.choiceId || choice.nativeId;
                 const showIdText =
                   Boolean(idText) && !isEquivalentModelName(choice.label, idText);
                 return (
@@ -536,6 +541,12 @@ export function ModelProfileEditor({
                 );
               })}
 
+              {refreshing && visibleChoices.length > 0 && !query.trim() && (
+                <li className="ms-loading-hint">
+                  <span className="ms-spinner" /> 正在检查更新…
+                </li>
+              )}
+
               {query.trim() &&
                 !choices.some(
                   (c) => c.nativeId.toLowerCase() === query.trim().toLowerCase(),
@@ -556,7 +567,7 @@ export function ModelProfileEditor({
                   </li>
                 )}
 
-              {!loading && visibleChoices.length === 0 && !query.trim() && (
+              {!loading && !refreshing && visibleChoices.length === 0 && !query.trim() && (
                 <li className="ms-empty">没有匹配的模型</li>
               )}
             </ul>,

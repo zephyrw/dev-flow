@@ -50,24 +50,24 @@ export const PlanApprovalBindingV2Schema = z
     environment_revision: z.number().int().nonnegative().optional(),
     extra: z
       .object({
-        execution_instructions_hash: z.string().optional(),
+        execution_instructions_hash: z.string().regex(/^[a-f0-9]{64}$/),
       })
-      .optional(),
+      .strict(),
   })
   .strict();
 export type PlanApprovalBindingV2 = z.infer<typeof PlanApprovalBindingV2Schema>;
 
 export const PlanApprovalRequestV2Schema = z
   .object({
-    schema_version: z.union([z.literal(1), z.literal(2)]).default(2),
-    request_id: z.string().min(1),
+    schema_version: z.literal(2),
+    request_id: z.string().uuid(),
     binding: PlanApprovalBindingV2Schema,
     execution_instructions: z
       .object({
         text: z.string().max(20000),
-        scope: z.literal("approved-plan").default("approved-plan"),
+        scope: z.literal("approved-plan"),
       })
-      .optional(),
+      .strict(),
   })
   .strict();
 export type PlanApprovalRequestV2 = z.infer<typeof PlanApprovalRequestV2Schema>;
@@ -75,7 +75,7 @@ export type PlanApprovalRequestV2 = z.infer<typeof PlanApprovalRequestV2Schema>;
 export const PlanApprovalResponseSchema = z
   .object({
     workflow_id: Id,
-    approval: PlanApprovalRecordV2Schema,
+    approval: PlanApprovalRecordV2Schema.omit({ proof: true }),
     request_id: z.string().min(1),
     transitioned: z.boolean(),
   })

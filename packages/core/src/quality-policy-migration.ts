@@ -69,6 +69,8 @@ export function migrateWorkflowQualityPolicy(
   const w = store.get<Workflow>("workflow", workflowId);
   if (!w) return { migrated: false, reason: "workflow_missing" };
   if (usesPolicyV2(w)) return { migrated: false, reason: "already_policy_2" };
+  if (store.get("preserve_quality_policy", workflowId))
+    return { migrated: false, reason: "policy_locked" };
   if (["COMPLETED", "COMMITTED", "CLEANUP_PENDING"].includes(w.state))
     return { migrated: false, reason: "terminal_readonly" };
   if (["COMMITTING", "INTEGRATING", "COMMIT_PARTIAL"].includes(w.state))

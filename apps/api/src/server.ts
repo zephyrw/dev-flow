@@ -45,7 +45,7 @@ import { repositoryInfo, previewWorktreePath } from "../../../packages/git/src/g
 import { GitDeliveryCoordinator } from "../../../packages/git/src/delivery-coordinator.js";
 import { DocumentService } from "../../../packages/core/src/document-service.js";
 import { PlanApprovalService } from "../../../packages/core/src/plan-approval-service.js";
-import { normalizeInstructionsText } from "../../../packages/contracts/src/plan-approval.js";
+import { normalizeInstructionsText, PlanApprovalRequestV2Schema } from "../../../packages/contracts/src/plan-approval.js";
 import { WorkflowVisibilityService } from "../../../packages/core/src/workflow-visibility-service.js";
 import { workflowVisibilityPlugin } from "./routes/workflow-visibility.js";
 import { WorkflowVisibilityFilterSchema } from "../../../packages/contracts/src/workflow-visibility.js";
@@ -1533,16 +1533,30 @@ export async function buildServer(
   app.post("/api/workflows/:id/documents/:documentId/approve", async (req) => {
     human(req);
     const { id: key, documentId } = req.params as any;
-    const body = (req.body || {}) as any;
-    const requestId = body.request_id || `req_doc_${Date.now()}`;
-    const expectedVersion =
-      body.expected_version !== undefined
-        ? Number(body.expected_version)
-        : undefined;
-    const docRevision = Number(body.document_revision ?? 1);
-    const docHash = String(body.hash || body.document_hash || "");
-    const instructionsText =
-      body.execution_instructions?.text ?? body.instructions_text ?? "";
+    const documentFields = {
+      expected_version: z.number().int().nonnegative(),
+      document_revision: z.number().int().positive(),
+      document_hash: z.string().min(1).optional(),
+      hash: z.string().min(1).optional(),
+      feedback_cursor: z.number().int().nonnegative().default(0),
+    };
+    const rawBody = req.body ?? {};
+    const isV2 = (rawBody as any).schema_version === 2;
+    const body = isV2
+      ? PlanApprovalRequestV2Schema.extend(documentFields).strict().parse(rawBody)
+      : z.object({
+          ...documentFields,
+          schema_version: z.literal(1).optional(),
+          request_id: z.string().min(1).optional(),
+          binding: z.record(z.string(), z.unknown()).optional(),
+          instructions_text: z.string().max(20000).optional(),
+          execution_instructions: z.object({ text: z.string().max(20000), scope: z.literal("approved-plan") }).strict().optional(),
+        }).strict().parse(rawBody);
+    const requestId = body.request_id ?? crypto.randomUUID();
+    const expectedVersion = body.expected_version;
+    const docRevision = body.document_revision;
+    const docHash = body.document_hash ?? body.hash ?? "";
+    const instructionsText = body.execution_instructions?.text ?? ("instructions_text" in body ? body.instructions_text : "") ?? "";
 
     const binding =
       body.binding ??
@@ -1569,6 +1583,8 @@ export async function buildServer(
         documentRevision: docRevision,
         documentHash: docHash,
         expectedVersion,
+        feedbackCursor: body.feedback_cursor,
+        schemaVersion: isV2 ? 2 : 1,
         callerProof: receipt,
       });
       void engine.dispatch();
@@ -1662,21 +1678,7 @@ export async function buildServer(
     };
 
     if (isV2) {
-      const v2Schema = z
-        .object({
-          schema_version: z.literal(2).default(2),
-          request_id: z.string().uuid(),
-          binding: z.record(z.string(), z.unknown()),
-          execution_instructions: z
-            .object({
-              text: z.string().max(20000),
-              scope: z.literal("approved-plan"),
-            })
-            .strict()
-            .optional(),
-        })
-        .strict();
-      const parsed = v2Schema.parse(rawBody);
+      const parsed = PlanApprovalRequestV2Schema.parse(rawBody);
       b = {
         schema_version: 2,
         request_id: parsed.request_id,
@@ -1708,6 +1710,7 @@ export async function buildServer(
         requestId,
         binding: b.binding,
         executionInstructionsText: instructionsText,
+        schemaVersion: b.schema_version,
         callerProof: receipt,
       });
       void engine.dispatch();

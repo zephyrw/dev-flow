@@ -1,3 +1,5 @@
+import { latestEvidence, progressEvidence } from "./progress.js";
+import { verifyAndResolveExecutionInstructions } from "./execution-instructions.js";
 import { createHash } from "node:crypto";
 import type { Store } from "../../store/src/store.js";
 import {
@@ -24,18 +26,20 @@ export function extractMarkdownSection(
   let currentLevel = 0;
   let matchedHeading = "";
   const bodyLines: string[] = [];
-  let inFencedCode = false;
+  let fence: { marker: string; length: number } | null = null;
+  const bulletLines: string[] = [];
 
   for (const line of lines) {
-    if (/^\s*(```|~~~)/.test(line)) {
-      inFencedCode = !inFencedCode;
+    const fenceMatch = /^ {0,3}(\x60{3,}|~{3,})(.*)$/.exec(line);
+    if (fenceMatch && (!fence || (fenceMatch[1]![0] === fence.marker && fenceMatch[1]!.length >= fence.length && !fenceMatch[2]!.trim()))) {
+      fence = fence ? null : { marker: fenceMatch[1]![0]!, length: fenceMatch[1]!.length };
       if (capturing) {
         bodyLines.push(line);
       }
       continue;
     }
 
-    if (!inFencedCode) {
+    if (!fence) {
       const headingMatch = /^(#{1,4})\s+(.+?)\s*$/.exec(line);
       if (headingMatch) {
         const level = headingMatch[1]!.length;
@@ -56,6 +60,7 @@ export function extractMarkdownSection(
     }
     if (capturing) {
       bodyLines.push(line);
+      if (!fence) bulletLines.push(line);
     }
   }
 
@@ -64,7 +69,7 @@ export function extractMarkdownSection(
   if (!rawBody) return null;
 
   const bullets: string[] = [];
-  for (const line of bodyLines) {
+  for (const line of bulletLines) {
     const bulletMatch = /^\s*(?:[-*+]|\d+\.)\s+(.+)$/.exec(line);
     if (bulletMatch) {
       const item = bulletMatch[1]!.trim();
@@ -266,7 +271,8 @@ function buildFindingsAndUnresolved(
         findings.push({
           id: `finding-${idx + 1}`,
           title: item,
-          status: "confirmed",
+          status: "open",
+          description: "来自计划章节，尚未独立核验",
         });
       }
     });
@@ -289,7 +295,7 @@ function normalizeTaskStatus(
   ) {
     return "completed";
   }
-  if (s === "blocked" || s === "failed" || s === "error") {
+  if (["blocked", "failed", "error", "needs_changes", "check_failed"].includes(s)) {
     return "blocked";
   }
   if (
@@ -320,7 +326,7 @@ function buildTasks(detail: any, planObj: any): OverviewTaskView[] {
       const id = String(t.id ?? t.work_item_id ?? `task-${idx + 1}`);
       const title = String(t.title ?? t.name ?? t.description ?? id).trim();
       const status = normalizeTaskStatus(
-        t.status ?? (t.completed ? "completed" : t.started ? "in_progress" : "pending"),
+        t.completed ? "completed" : t.development_status ?? t.status ?? (t.started ? "in_progress" : "pending"),
       );
       result.push({
         id,
@@ -374,10 +380,15 @@ function buildTests(
   workflow: any,
 ): OverviewTestView[] {
   const result: OverviewTestView[] = [];
+  const evidences = [...(detail?.evidence ?? []), ...(detail?.development_evidence ?? [])];
   const currentRev = workflow?.plan_revision ?? 0;
-  const evidences = Array.isArray(detail?.evidence) ? detail.evidence : [];
-
   const resolveItemStatus = (itemId: string): OverviewTestView["status"] => {
+    const cases = (detail?.test_progress?.cases ?? []).filter((c: any) => c.test_id === itemId);
+    if (cases.length) {
+      if (cases.some((c: any) => c.status === "failed")) return "failed";
+      if (cases.some((c: any) => c.status === "stale")) return "stale";
+      return cases.every((c: any) => c.status === "passed") ? "passed" : "pending";
+    }
     const matching = evidences
       .filter(
         (e: any) =>
@@ -390,6 +401,7 @@ function buildTests(
         String(a.created_at ?? "").localeCompare(String(b.created_at ?? "")),
       );
     if (matching.length === 0) return "pending";
+
     const sameRev = matching.filter(
       (e: any) =>
         e.plan_revision === undefined || e.plan_revision === currentRev,
@@ -401,6 +413,7 @@ function buildTests(
         ? "stale"
         : "pending";
     }
+
     const latest = sameRev[sameRev.length - 1];
     if (latest.passed === false || latest.status === "failed") return "failed";
     if (latest.status === "stale") return "stale";
@@ -409,6 +422,13 @@ function buildTests(
         workflow?.environment_revision !== undefined &&
         latest.environment_revision !== undefined &&
         latest.environment_revision !== workflow.environment_revision
+      ) {
+        return "stale";
+      }
+      if (
+        workflow?.snapshot_id &&
+        latest.snapshot_id &&
+        latest.snapshot_id !== workflow.snapshot_id
       ) {
         return "stale";
       }
@@ -506,28 +526,35 @@ function resolveExecutionConstraints(
   let approval: any = null;
   let matchedKey = canonicalKey;
   for (const k of keys) {
-    approval = store.get<any>("approval", k) ?? store.get<any>("plan_approval", k);
+    approval = store.get<PlanApprovalRecordV2>("approval", k) ?? store.get<any>("plan_approval", k);
     if (approval) {
       matchedKey = k;
       break;
     }
   }
-  if (
-    approval &&
-    approval.workflow_id === workflow.id &&
-    approval.plan_revision === workflow.plan_revision &&
-    (!workflow.plan_hash || approval.plan_hash === workflow.plan_hash) &&
-    approval.execution_instructions &&
-    typeof approval.execution_instructions.text === "string" &&
-    approval.execution_instructions.text.trim().length > 0
-  ) {
-    return {
-      approval_id: approval.id ?? matchedKey,
-      text: approval.execution_instructions.text,
-      text_hash: approval.execution_instructions.text_hash,
-    };
+  if (!approval || approval.schema_version !== 2) return null;
+  try {
+    const { payload } = verifyAndResolveExecutionInstructions(store, workflow.id, {
+      plan_revision: workflow.plan_revision,
+      approval_ref: { approval_id: matchedKey, plan_revision: approval.plan_revision,
+        plan_hash: approval.plan_hash, instructions_hash: approval.execution_instructions?.text_hash },
+    }, workflow.plan_revision, workflow.plan_hash);
+    return payload ? { approval_id: matchedKey, text: payload.text, text_hash: payload.text_hash } : null;
+  } catch {
+    if (
+      approval.execution_instructions &&
+      typeof approval.execution_instructions.text === "string" &&
+      approval.execution_instructions.text.trim().length > 0 &&
+      (!workflow.plan_hash || approval.plan_hash === workflow.plan_hash)
+    ) {
+      return {
+        approval_id: matchedKey,
+        text: approval.execution_instructions.text,
+        text_hash: approval.execution_instructions.text_hash,
+      };
+    }
+    return null;
   }
-  return null;
 }
 
 export function projectWorkflowOverview(
@@ -561,10 +588,9 @@ export function projectWorkflowOverview(
         v: workflow.version,
         pr: planRevision,
         ph: planHash,
+        goal, background, findings, unresolved, tasks, tests,
         tp: taskProgress,
         tep: testProgress,
-        tasks: tasks.map((t) => [t.id, t.status]),
-        tests: tests.map((t) => [t.id, t.status]),
         ec: executionConstraints?.text_hash ?? null,
       }),
     )

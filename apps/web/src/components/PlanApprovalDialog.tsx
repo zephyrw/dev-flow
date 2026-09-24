@@ -8,6 +8,7 @@ import {
 
 export interface PlanApprovalDialogProps {
   isOpen: boolean;
+  isStale?: boolean;
   onClose: () => void;
   workflowId: string;
   workflowVersion: number;
@@ -36,6 +37,7 @@ const MAX_INSTRUCTIONS_LENGTH = 20000;
 
 export function PlanApprovalDialog({
   isOpen,
+  isStale = false,
   onClose,
   workflowId,
   workflowVersion,
@@ -68,6 +70,7 @@ export function PlanApprovalDialog({
       frozenTargetRef.current = null;
       return;
     }
+    if (frozenTargetRef.current) return;
     const target: ApprovalTarget = {
       workflowId,
       workflowVersion,
@@ -123,12 +126,14 @@ export function PlanApprovalDialog({
   ]);
 
   // 检测外部目标变化（防止背景变更导致误审批）
-  const isTargetStale =
+  const isTargetStale = isStale || (
     frozenTargetRef.current !== null &&
     (frozenTargetRef.current.workflowId !== workflowId ||
       frozenTargetRef.current.planRevision !== planRevision ||
       frozenTargetRef.current.planHash !== planHash ||
-      frozenTargetRef.current.workflowVersion !== workflowVersion);
+      frozenTargetRef.current.workflowVersion !== workflowVersion ||
+      frozenTargetRef.current.snapshotId !== snapshotId ||
+      frozenTargetRef.current.environmentRevision !== environmentRevision));
 
   // 草稿自动保存
   const handleTextChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -157,9 +162,10 @@ export function PlanApprovalDialog({
         lastNormalizedTextRef.current = normalized;
         currentRequestIdRef.current = crypto.randomUUID();
       }
-      const hash = normalized ? await computeInstructionsHash(normalized) : "";
+      const target = frozenTargetRef.current;
+      const hash = await computeInstructionsHash(normalized);
       await onApprove(
-        frozenTargetRef.current,
+        target,
         normalized,
         hash,
         currentRequestIdRef.current,
@@ -190,6 +196,7 @@ export function PlanApprovalDialog({
     <AppDialog
       isOpen={isOpen}
       onClose={onClose}
+      busy={isSubmitting}
       title="批准执行计划"
       subtitle={`任务：${workflowId} · 计划修订版本 v${planRevision}`}
       width={720}
@@ -208,7 +215,7 @@ export function PlanApprovalDialog({
             type="button"
             className="primary"
             onClick={handleSubmit}
-            disabled={isSubmitting}
+            disabled={isSubmitting || isTargetStale}
           >
             {isSubmitting ? "正在批准并派发..." : "批准并开始执行"}
           </button>
@@ -242,6 +249,7 @@ export function PlanApprovalDialog({
           )}
         </div>
 
+        {isTargetStale && <div role="alert">任务或计划已变化，请关闭弹窗并重新核对后批准。草稿已保留。</div>}
         {planMismatchNotice && (
           <div
             style={{
