@@ -1,14 +1,20 @@
 import type { Store } from "../../store/src/store.js";
 import {
-  type UserInteractionInput,
   type UserInteractionRecord,
   type UserInteractionResponseInput,
   type UserInteractionReceipt,
 } from "../../contracts/src/user-interaction.js";
 import { id, now } from "./util.js";
-import { FlowError } from "../../contracts/src/index.js";
+import {
+  FlowError,
+  CONVERSATION_ENTITY,
+  type Workflow,
+  type Run,
+  type ConversationNode,
+  type ConversationAttempt,
+} from "../../contracts/src/index.js";
 import type { Engine } from "./engine.js";
-import { readWaitingContext } from "./waiting-context.js";
+import { readWaitingContext, type WaitingContext } from "./waiting-context.js";
 import {
   normalizeInteractionInput,
   validateInteractionResponse,
@@ -17,6 +23,48 @@ import {
 
 export const USER_INTERACTION_ENTITY = "user_interaction";
 export const USER_INTERACTION_RECEIPT_ENTITY = "user_interaction_receipt";
+
+// Native session IDs and UI conversation IDs are separate namespaces. Only a
+// root and attempt belonging to the source Run can establish UI ownership.
+export function interactionConversationContext(
+  store: Store,
+  workflowId: string,
+  runId?: string,
+  nativeSessionId?: string,
+) {
+  if (!runId || !nativeSessionId)
+    return {
+      nativeSessionId,
+      rootConversationId: undefined,
+      sourceGeneration: undefined,
+    };
+  const roots = store
+    .list<ConversationNode>(CONVERSATION_ENTITY.node, workflowId)
+    .filter(
+      (node) =>
+        node.id === node.root_id && node.native_session_id === nativeSessionId,
+    );
+  const attempts = store
+    .list<ConversationAttempt>(CONVERSATION_ENTITY.attempt, workflowId)
+    .filter(
+      (attempt) =>
+        attempt.run_id === runId &&
+        roots.some((node) => node.id === attempt.conversation_id),
+    )
+    .sort((a, b) => b.generation - a.generation);
+  const attempt = attempts[0];
+  if (new Set(attempts.map((item) => item.root_id)).size > 1)
+    return {
+      nativeSessionId,
+      rootConversationId: undefined,
+      sourceGeneration: undefined,
+    };
+  return {
+    nativeSessionId,
+    rootConversationId: attempt?.root_id,
+    sourceGeneration: attempt?.generation,
+  };
+}
 
 export interface CreateInteractionParams {
   workflowId: string;
@@ -37,16 +85,33 @@ export class UserInteractionService {
   constructor(private store: Store) {}
 
   listInteractions(workflowId: string): UserInteractionRecord[] {
-    return this.store.list<UserInteractionRecord>(
-      USER_INTERACTION_ENTITY,
-      workflowId,
-    );
+    return this.store
+      .list<UserInteractionRecord>(USER_INTERACTION_ENTITY, workflowId)
+      .map((record) => this.safeRecord(record));
   }
 
   getInteraction(interactionId: string): UserInteractionRecord | undefined {
-    return this.store.get<UserInteractionRecord>(
+    const record = this.store.get<UserInteractionRecord>(
       USER_INTERACTION_ENTITY,
       interactionId,
+    );
+    return record ? this.safeRecord(record) : undefined;
+  }
+
+  private safeRecord(record: UserInteractionRecord): UserInteractionRecord {
+    return { ...record, request: normalizeInteractionInput(record.request) };
+  }
+
+  private belongsToWaiting(
+    record: UserInteractionRecord,
+    workflowId: string,
+    waiting: WaitingContext,
+  ) {
+    return (
+      record.workflow_id === workflowId &&
+      record.source_run_id === waiting.run_id &&
+      record.purpose === waiting.purpose &&
+      record.role === waiting.role
     );
   }
 
@@ -55,7 +120,12 @@ export class UserInteractionService {
    */
   getCurrentInteraction(workflowId: string): UserInteractionRecord | undefined {
     const waiting = readWaitingContext(this.store, workflowId);
-    if (!waiting) {
+    const workflow = this.store.get<Workflow>("workflow", workflowId);
+    if (
+      !waiting ||
+      waiting.intent !== "need_user" ||
+      workflow?.state !== "WAITING_INPUT"
+    ) {
       return undefined;
     }
 
@@ -65,41 +135,54 @@ export class UserInteractionService {
       if (
         record &&
         record.status === "pending" &&
-        record.source_run_id === (waiting.run_id ?? "")
+        this.belongsToWaiting(record, workflowId, waiting)
       ) {
         return record;
       }
+      // An explicit binding is authoritative, including a terminal decision.
+      return undefined;
     }
 
     // 2. 如果 waiting 是 need_user 但没有 interaction_id，或者关联记录丢失，
     //    按来源 run_id 检查是否有现存 pending 记录
     const records = this.listInteractions(workflowId);
-    const matched = records.find(
-      (r) => r.status === "pending" && r.source_run_id === (waiting.run_id ?? ""),
+    const matching = records.filter((r) =>
+      this.belongsToWaiting(r, workflowId, waiting),
     );
-    if (matched) {
-      return matched;
-    }
+    if (matching.length)
+      return matching.length === 1 && matching[0]!.status === "pending"
+        ? this.safeRecord(matching[0]!)
+        : undefined;
 
     // 3. F06: 旧任务兼容视图（稳定派生 ID，绝不随机生成，只读不写）
-    if (waiting.intent === "need_user") {
+    const run = waiting.run_id
+      ? this.store.get<Run>("run", waiting.run_id)
+      : undefined;
+    if (run?.workflow_id === workflowId) {
       const stableId = `int-legacy-${workflowId}-${waiting.run_id || "pending"}`;
       const existingLegacy = this.getInteraction(stableId);
-      if (existingLegacy && existingLegacy.status === "pending") {
-        return existingLegacy;
-      }
+      if (existingLegacy)
+        return existingLegacy.status === "pending" ? existingLegacy : undefined;
 
       const normalizedRequest = normalizeInteractionInput(undefined, {
         summary: waiting.original_text,
         questions: waiting.questions,
       });
+      const context = interactionConversationContext(
+        this.store,
+        workflowId,
+        run.id,
+        run.conversation_id,
+      );
 
       return {
         id: stableId,
         workflow_id: workflowId,
         source_run_id: waiting.run_id ?? "",
-        source_plan_revision: 1,
-        root_conversation_id: waiting.conversation_id,
+        source_plan_revision: run.plan_revision,
+        root_conversation_id: context.rootConversationId,
+        source_generation: context.sourceGeneration,
+        native_session_id: run.conversation_id,
         purpose: waiting.purpose ?? "execute",
         role: waiting.role ?? "executor",
         request: normalizedRequest,
@@ -138,7 +221,19 @@ export class UserInteractionService {
 
     return this.store.transaction(() => {
       // 检查当前是否已有完全一致的同轮次 pending 记录
-      const existing = this.getCurrentInteraction(workflowId);
+      const pending = this.listInteractions(workflowId).filter(
+        (record) => record.status === "pending",
+      );
+      const existing = pending.find(
+        (record) =>
+          record.source_run_id === sourceRunId &&
+          record.source_plan_revision === sourcePlanRevision &&
+          record.root_conversation_id === rootConversationId &&
+          record.source_generation === sourceGeneration &&
+          record.native_session_id === nativeSessionId &&
+          record.purpose === purpose &&
+          record.role === role,
+      );
       if (
         existing &&
         existing.source_run_id === sourceRunId &&
@@ -149,7 +244,7 @@ export class UserInteractionService {
       }
 
       // 将该任务的历史 pending 请求标记为 superseded
-      if (existing && existing.status === "pending") {
+      for (const existing of pending) {
         const supersededRecord = {
           ...existing,
           status: "superseded" as const,
@@ -248,11 +343,7 @@ export class UserInteractionService {
       if (!workflow) {
         throw new FlowError("NOT_FOUND", `未找到工作流: ${workflowId}`, 404);
       }
-      if (
-        !["WAITING_INPUT", "HUMAN_PENDING", "HUMAN_VERIFY"].includes(
-          workflow.state,
-        )
-      ) {
+      if (workflow.state !== "WAITING_INPUT") {
         throw new FlowError(
           "INVALID_WORKFLOW_STATE",
           `工作流当前状态 (${workflow.state}) 不允许提交人工交互响应`,
@@ -261,7 +352,7 @@ export class UserInteractionService {
       }
 
       const waiting = readWaitingContext(this.store, workflowId);
-      if (!waiting) {
+      if (!waiting || waiting.intent !== "need_user") {
         throw new FlowError(
           "WAITING_CONTEXT_MISSING",
           "当前工作流未处于等待人工交互的上下文中",
@@ -291,11 +382,7 @@ export class UserInteractionService {
       }
 
       // 验证 WaitingContext 关联与来源一致性
-      if (
-        waiting.interaction_id &&
-        waiting.interaction_id !== record.id &&
-        !interactionId.startsWith("int-legacy-")
-      ) {
+      if (waiting.interaction_id && waiting.interaction_id !== record.id) {
         throw new FlowError(
           "WAITING_MISMATCH",
           "提交的交互请求与当前工作流等待的交互轮次不匹配",
@@ -303,12 +390,57 @@ export class UserInteractionService {
         );
       }
 
-      if (record.source_run_id !== (waiting.run_id ?? "")) {
+      if (!this.belongsToWaiting(record, workflowId, waiting)) {
         throw new FlowError(
           "RUN_MISMATCH",
           "交互请求的来源 Run 与当前等待的 Run 不匹配",
           409,
         );
+      }
+
+      const sourceRun = this.store.get<Run>("run", record.source_run_id);
+      if (
+        !sourceRun ||
+        workflow.plan_revision !== record.source_plan_revision ||
+        (workflow.run_id && workflow.run_id !== record.source_run_id) ||
+        sourceRun.workflow_id !== workflowId ||
+        sourceRun.plan_revision !== record.source_plan_revision ||
+        (record.native_session_id &&
+          sourceRun.conversation_id !== record.native_session_id) ||
+        (record.native_session_id &&
+          record.native_session_id !== waiting.conversation_id)
+      ) {
+        throw new FlowError(
+          "INTERACTION_STALE",
+          "交互来源或计划版本已变化，请刷新后处理当前请求",
+          409,
+        );
+      }
+      if (record.root_conversation_id) {
+        const root = this.store.get<ConversationNode>(
+          CONVERSATION_ENTITY.node,
+          record.root_conversation_id,
+        );
+        const attempt = root?.current_attempt_id
+          ? this.store.get<ConversationAttempt>(
+              CONVERSATION_ENTITY.attempt,
+              root.current_attempt_id,
+            )
+          : undefined;
+        if (
+          !root ||
+          root.workflow_id !== workflowId ||
+          !attempt ||
+          attempt.run_id !== record.source_run_id ||
+          attempt.generation !== record.source_generation ||
+          root.native_session_id !== record.native_session_id
+        ) {
+          throw new FlowError(
+            "INTERACTION_STALE",
+            "来源会话已恢复或替换，请刷新后处理当前请求",
+            409,
+          );
+        }
       }
 
       if (payload.source_run_id !== record.source_run_id) {
@@ -331,8 +463,7 @@ export class UserInteractionService {
       }
 
       if (
-        payload.root_conversation_id &&
-        record.root_conversation_id &&
+        payload.root_conversation_id !== undefined &&
         payload.root_conversation_id !== record.root_conversation_id
       ) {
         throw new FlowError(
@@ -344,7 +475,6 @@ export class UserInteractionService {
 
       if (
         payload.expected_generation !== undefined &&
-        record.source_generation !== undefined &&
         payload.expected_generation !== record.source_generation
       ) {
         throw new FlowError(
@@ -352,6 +482,12 @@ export class UserInteractionService {
           "响应提交的会话代数已过期",
           409,
         );
+      }
+      if (
+        payload.native_session_id !== undefined &&
+        payload.native_session_id !== record.native_session_id
+      ) {
+        throw new FlowError("SESSION_MISMATCH", "原生会话已变化", 409);
       }
 
       // 3. F04: 语义校验
@@ -411,8 +547,10 @@ export class UserInteractionService {
       let answerText = "";
       if (record.request.kind === "action_required") {
         answerText =
-          payload.answer?.trim() ||
-          "用户已在浏览器/界面中确认完成操作。请复查当前页面现场并继续未完成的业务链路。";
+          "用户已在浏览器/界面中确认完成操作。请复查当前页面现场并继续未完成的业务链路。" +
+          (payload.answer?.trim()
+            ? `\n用户说明: ${payload.answer.trim()}`
+            : "");
       } else {
         let choicePart = "";
         if (payload.choice_id) {
@@ -433,6 +571,12 @@ export class UserInteractionService {
       if (record.request.resume_note) {
         answerText = `${answerText}\n[继续提示: ${record.request.resume_note}]`;
       }
+      answerText =
+        `[原请求: ${record.request.title}]\n${record.request.message}\n` +
+        (record.request.choices?.length
+          ? `候选项: ${record.request.choices.map((choice) => choice.label).join("；")}\n`
+          : "") +
+        answerText;
 
       // F02: 在同一事务中原子更新交互实体、回执并调用 resumeFromWaiting
       this.store.put(USER_INTERACTION_ENTITY, record.id, workflowId, record);

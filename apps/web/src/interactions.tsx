@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { WorkflowActivity } from "./components/WorkflowActivity.js";
 import { AgyRecoveryPanel } from "./components/AgyRecoveryPanel.js";
 import { RepairModelPicker, defaultRepairPicker, type RepairPickerValue } from "./components/RepairModelPicker.js";
@@ -86,52 +86,58 @@ export function TaskInteraction({
 
   const [interaction, setInteraction] = useState<UserInteractionRecord | null>(null);
   const [interactionOpen, setInteractionOpen] = useState(false);
-  const [dismissedInteractionId, setDismissedInteractionId] = useState<string>("");
+  const dismissedInteractionId = useRef("");
   const [fetchError, setFetchError] = useState<string>("");
+  const activeWorkflow = useRef(w.id);
+  activeWorkflow.current = w.id;
+  const activeInteraction = useRef(interaction?.id);
+  activeInteraction.current = interaction?.id;
+  const requestSequence = useRef(0);
+  const requestController = useRef<AbortController | null>(null);
+  const fetchInteraction = useCallback(async () => {
+    const workflowId = w.id;
+    const sequence = ++requestSequence.current;
+    requestController.current?.abort();
+    const controller = new AbortController();
+    requestController.current = controller;
+    try {
+      const item = await getCurrentUserInteraction(workflowId, controller.signal);
+      if (controller.signal.aborted || activeWorkflow.current !== workflowId || sequence !== requestSequence.current) return;
+      setFetchError("");
+      setInteraction(item);
+      setInteractionOpen(Boolean(item?.status === "pending" && dismissedInteractionId.current !== item.id));
+    } catch {
+      if (controller.signal.aborted || activeWorkflow.current !== workflowId || sequence !== requestSequence.current) return;
+      setFetchError("获取待处理交互失败，点击重试");
+    } finally {
+      if (requestController.current === controller) requestController.current = null;
+    }
+  }, [w.id]);
 
   useEffect(() => {
-    let cancelled = false;
-    const currentWorkflowId = w.id;
-
-    // 任务切换时立即重置状态，防止旧任务残留
     setInteraction(null);
     setInteractionOpen(false);
     setFetchError("");
-
-    const fetchInteraction = async () => {
-      try {
-        const item = await getCurrentUserInteraction(currentWorkflowId);
-        if (cancelled || w.id !== currentWorkflowId) return;
-        setFetchError("");
-        setInteraction(item);
-        if (item && item.status === "pending") {
-          if (dismissedInteractionId !== item.id) {
-            setInteractionOpen(true);
-          }
-        } else {
-          setInteractionOpen(false);
-        }
-      } catch (err) {
-        if (cancelled || w.id !== currentWorkflowId) return;
-        setFetchError("获取待处理交互失败，点击重试");
-      }
-    };
-
+    dismissedInteractionId.current = "";
+  }, [w.id]);
+  useEffect(() => {
     void fetchInteraction();
-
-    // F08: 监听工作流活动事件、窗口聚焦与网络恢复，实现可靠的失效刷新
     const handleActivity = () => void fetchInteraction();
     window.addEventListener("devflow-activity", handleActivity);
     window.addEventListener("focus", handleActivity);
     window.addEventListener("online", handleActivity);
-
+    // Another window's cancellation does not change the workflow state.
+    const timer = w.state === "WAITING_INPUT" ? window.setInterval(() => {
+      if (!requestController.current) handleActivity();
+    }, 3000) : undefined;
     return () => {
-      cancelled = true;
+      requestController.current?.abort();
+      window.clearInterval(timer);
       window.removeEventListener("devflow-activity", handleActivity);
       window.removeEventListener("focus", handleActivity);
       window.removeEventListener("online", handleActivity);
     };
-  }, [w.id, w.state, dismissedInteractionId]);
+  }, [fetchInteraction, w.state]);
 
   useEffect(() => {
     if (w.state !== "HUMAN_PENDING") return;
@@ -286,18 +292,7 @@ export function TaskInteraction({
           <button
             type="button"
             className="btn btn-secondary btn-sm"
-            onClick={async () => {
-              try {
-                const item = await getCurrentUserInteraction(w.id);
-                setFetchError("");
-                setInteraction(item);
-                if (item && item.status === "pending") {
-                  setInteractionOpen(true);
-                }
-              } catch {
-                setFetchError("获取待处理交互失败，点击重试");
-              }
-            }}
+            onClick={() => void fetchInteraction()}
           >
             重试
           </button>
@@ -310,7 +305,7 @@ export function TaskInteraction({
           <button
             type="button"
             className="btn btn-primary"
-            onClick={() => setInteractionOpen(true)}
+            onClick={() => { dismissedInteractionId.current = ""; setInteractionOpen(true); }}
           >
             处理请求
           </button>
@@ -319,28 +314,20 @@ export function TaskInteraction({
 
       <UserInteractionDialog
         workflowId={w.id}
-        interaction={interaction}
+        interaction={interaction?.workflow_id === w.id ? interaction : null}
         isOpen={interactionOpen}
         onClose={() => {
+          if (activeWorkflow.current !== w.id || activeInteraction.current !== interaction?.id) return;
           setInteractionOpen(false);
-          if (interaction) setDismissedInteractionId(interaction.id);
+          if (interaction) dismissedInteractionId.current = interaction.id;
         }}
         onResponded={async () => {
           const targetId = w.id;
+          if (activeWorkflow.current !== targetId || activeInteraction.current !== interaction?.id) return;
           setInteractionOpen(false);
           setInteraction(null);
           await refresh();
-          try {
-            const nextItem = await getCurrentUserInteraction(targetId);
-            if (w.id === targetId) {
-              setInteraction(nextItem);
-              if (nextItem && nextItem.status === "pending") {
-                setInteractionOpen(true);
-              }
-            }
-          } catch {
-            // 忽略非关键刷新异常
-          }
+          if (activeWorkflow.current === targetId) await fetchInteraction();
         }}
         rootConversationId={rootConversationId}
         expectedGeneration={expectedGeneration}

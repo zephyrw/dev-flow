@@ -6,6 +6,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { UserInteractionDialog } from "../../apps/web/src/components/UserInteractionDialog.js";
 import type { UserInteractionRecord } from "../../packages/contracts/src/user-interaction.js";
 import * as api from "../../apps/web/src/components/user-interaction-api.js";
+import { AppDialog } from "../../apps/web/src/components/AppDialog.js";
 
 describe("U03 — 人机交互 UI 组件 (UserInteractionDialog)", () => {
   let container: HTMLDivElement | null = null;
@@ -73,6 +74,91 @@ describe("U03 — 人机交互 UI 组件 (UserInteractionDialog)", () => {
     created_at: new Date().toISOString(),
   };
 
+  it("旧问题延迟响应不能关闭后来打开的问题或触发其刷新", async () => {
+    let resolveResponse!: (value: {
+      success: boolean;
+      interaction: UserInteractionRecord;
+    }) => void;
+    vi.spyOn(api, "respondUserInteraction").mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveResponse = resolve;
+        }),
+    );
+    const onClose = vi.fn();
+    const onResponded = vi.fn(async () => {});
+    await act(async () => {
+      root?.render(
+        <UserInteractionDialog
+          workflowId="wf-1"
+          interaction={mockActionInteraction}
+          isOpen
+          onClose={onClose}
+          onResponded={onResponded}
+        />,
+      );
+    });
+    await act(async () => {
+      (
+        document.querySelector(".btn-interaction-confirm") as HTMLButtonElement
+      ).click();
+    });
+    await act(async () => {
+      root?.render(
+        <UserInteractionDialog
+          workflowId="wf-1"
+          interaction={mockQuestionInteraction}
+          isOpen
+          onClose={onClose}
+          onResponded={onResponded}
+        />,
+      );
+    });
+    await act(async () => {
+      resolveResponse({
+        success: true,
+        interaction: { ...mockActionInteraction, status: "answered" },
+      });
+    });
+    expect(onClose).not.toHaveBeenCalled();
+    expect(onResponded).not.toHaveBeenCalled();
+    expect(document.querySelector(".app-dialog-title")?.textContent).toBe(
+      mockQuestionInteraction.request.title,
+    );
+    expect(
+      (document.querySelector(".btn-interaction-submit") as HTMLButtonElement)
+        .textContent,
+    ).toBe("提交回答");
+  });
+
+  it("多弹窗只关闭顶层，隐藏弹窗不提前释放滚动锁", async () => {
+    const closeFirst = vi.fn();
+    const closeTop = vi.fn();
+    await act(async () => {
+      root?.render(
+        <>
+          <AppDialog isOpen onClose={closeFirst} title="first">
+            first
+          </AppDialog>
+          <AppDialog isOpen={false} onClose={() => {}} title="hidden">
+            hidden
+          </AppDialog>
+          <AppDialog isOpen onClose={closeTop} title="top">
+            top
+          </AppDialog>
+        </>,
+      );
+    });
+    expect(document.body.style.overflow).toBe("hidden");
+    await act(async () => {
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", cancelable: true }),
+      );
+    });
+    expect(closeTop).toHaveBeenCalledOnce();
+    expect(closeFirst).not.toHaveBeenCalled();
+  });
+
   it("渲染 action_required 弹窗，验证标题、说明与独立标题 ID 无障碍关联", async () => {
     await act(async () => {
       root?.render(
@@ -102,10 +188,12 @@ describe("U03 — 人机交互 UI 组件 (UserInteractionDialog)", () => {
   });
 
   it("点击关闭或稍后处理不触发 API 回答，仅调用 onClose", async () => {
-    const respondSpy = vi.spyOn(api, "respondUserInteraction").mockResolvedValue({
-      success: true,
-      interaction: mockActionInteraction,
-    });
+    const respondSpy = vi
+      .spyOn(api, "respondUserInteraction")
+      .mockResolvedValue({
+        success: true,
+        interaction: mockActionInteraction,
+      });
     const onClose = vi.fn();
 
     await act(async () => {
@@ -120,7 +208,9 @@ describe("U03 — 人机交互 UI 组件 (UserInteractionDialog)", () => {
       );
     });
 
-    const closeBtn = document.querySelector(".app-dialog-close-btn") as HTMLButtonElement;
+    const closeBtn = document.querySelector(
+      ".app-dialog-close-btn",
+    ) as HTMLButtonElement;
     expect(closeBtn).not.toBeNull();
 
     await act(async () => {
@@ -147,12 +237,16 @@ describe("U03 — 人机交互 UI 组件 (UserInteractionDialog)", () => {
       );
     });
 
-    const submitBtn = document.querySelector(".btn-interaction-submit") as HTMLButtonElement;
+    const submitBtn = document.querySelector(
+      ".btn-interaction-submit",
+    ) as HTMLButtonElement;
     expect(submitBtn).not.toBeNull();
     // 验证未选择选项且未输入文本时，提交按钮被禁用
     expect(submitBtn.disabled).toBe(true);
 
-    const firstRadio = document.querySelector('input[type="radio"]') as HTMLInputElement;
+    const firstRadio = document.querySelector(
+      'input[type="radio"]',
+    ) as HTMLInputElement;
     expect(firstRadio).not.toBeNull();
 
     await act(async () => {
@@ -170,8 +264,9 @@ describe("U03 — 人机交互 UI 组件 (UserInteractionDialog)", () => {
     let firstRequestId = "";
     let secondRequestId = "";
 
-    const respondSpy = vi.spyOn(api, "respondUserInteraction").mockImplementation(
-      async (_wfId, _intId, payload) => {
+    const respondSpy = vi
+      .spyOn(api, "respondUserInteraction")
+      .mockImplementation(async (_wfId, _intId, payload) => {
         callCount++;
         if (callCount === 1) {
           firstRequestId = payload.request_id;
@@ -182,8 +277,7 @@ describe("U03 — 人机交互 UI 组件 (UserInteractionDialog)", () => {
           success: true,
           interaction: { ...mockActionInteraction, status: "answered" },
         };
-      },
-    );
+      });
 
     const onClose = vi.fn();
     const onResponded = vi.fn();
@@ -200,7 +294,9 @@ describe("U03 — 人机交互 UI 组件 (UserInteractionDialog)", () => {
       );
     });
 
-    const confirmBtn = document.querySelector(".btn-interaction-confirm") as HTMLButtonElement;
+    const confirmBtn = document.querySelector(
+      ".btn-interaction-confirm",
+    ) as HTMLButtonElement;
 
     // 第一次点击：网络失败
     await act(async () => {
@@ -208,9 +304,9 @@ describe("U03 — 人机交互 UI 组件 (UserInteractionDialog)", () => {
     });
 
     expect(callCount).toBe(1);
-    expect(document.querySelector(".user-interaction-error")?.textContent).toContain(
-      "网络连接失败，请稍后重试",
-    );
+    expect(
+      document.querySelector(".user-interaction-error")?.textContent,
+    ).toContain("网络连接失败，请稍后重试");
     expect(onClose).not.toHaveBeenCalled();
 
     // 第二次点击：重试成功

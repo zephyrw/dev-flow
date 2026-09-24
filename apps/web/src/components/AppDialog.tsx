@@ -15,21 +15,21 @@ export interface AppDialogProps {
 }
 
 // 模块级模态计数器，确保多弹窗并存时滚动锁安全恢复
-let openModalsCount = 0;
+const openModals: HTMLElement[] = [];
 let initialBodyOverflow = "";
+const inertValues = new Map<HTMLElement, boolean>();
 
-function lockBodyScroll() {
-  if (openModalsCount === 0) {
-    initialBodyOverflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-  }
-  openModalsCount++;
-}
-
-function unlockBodyScroll() {
-  openModalsCount = Math.max(0, openModalsCount - 1);
-  if (openModalsCount === 0) {
-    document.body.style.overflow = initialBodyOverflow;
+function updateModalBackground() {
+  for (const [element, inert] of inertValues) element.inert = inert;
+  inertValues.clear();
+  const top = openModals.at(-1);
+  if (top) {
+    for (const child of Array.from(document.body.children)) {
+      if (child instanceof HTMLElement && !child.contains(top)) {
+        inertValues.set(child, child.inert);
+        child.inert = true;
+      }
+    }
   }
 }
 
@@ -50,52 +50,46 @@ export function AppDialog({
   const previousActiveElement = useRef<HTMLElement | null>(null);
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
-  const focusTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
-    if (isOpen) {
-      previousActiveElement.current = document.activeElement as HTMLElement | null;
+    const dialog = dialogRef.current;
+    if (isOpen && dialog) {
+      previousActiveElement.current =
+        document.activeElement as HTMLElement | null;
       setShowDiscardConfirm(false);
-      lockBodyScroll();
-
-      // 打开时自动聚焦关闭按钮或首个交互元素
-      focusTimeoutRef.current = setTimeout(() => {
-        if (closeButtonRef.current) {
-          closeButtonRef.current.focus();
-        } else if (dialogRef.current) {
-          const focusable = dialogRef.current.querySelector<HTMLElement>(
-            'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
-          );
-          focusable?.focus();
-        }
-      }, 50);
-    } else {
-      unlockBodyScroll();
-      if (previousActiveElement.current) {
-        try {
-          previousActiveElement.current.focus();
-        } catch {
-          // 元素可能已脱离 DOM
+      if (!openModals.length) {
+        initialBodyOverflow = document.body.style.overflow;
+        document.body.style.overflow = "hidden";
+      }
+      openModals.push(dialog);
+      updateModalBackground();
+      closeButtonRef.current?.focus();
+      const containFocus = (event: FocusEvent) => {
+        if (
+          openModals.at(-1) === dialog &&
+          !dialog.contains(event.target as Node)
+        )
+          dialog.focus();
+      };
+      document.addEventListener("focusin", containFocus);
+      return () => {
+        document.removeEventListener("focusin", containFocus);
+        const wasTop = openModals.at(-1) === dialog;
+        const index = openModals.indexOf(dialog);
+        if (index >= 0) openModals.splice(index, 1);
+        updateModalBackground();
+        if (!openModals.length)
+          document.body.style.overflow = initialBodyOverflow;
+        if (wasTop) {
+          const previous = previousActiveElement.current;
+          const top = openModals.at(-1);
+          if (previous?.isConnected && (!top || top.contains(previous)))
+            previous.focus();
+          else top?.focus();
         }
         previousActiveElement.current = null;
-      }
+      };
     }
-
-    return () => {
-      if (focusTimeoutRef.current) {
-        clearTimeout(focusTimeoutRef.current);
-      }
-      unlockBodyScroll();
-      // F09: 组件卸载时也要确保焦点恢复
-      if (previousActiveElement.current) {
-        try {
-          previousActiveElement.current.focus();
-        } catch {
-          // 元素已脱离 DOM
-        }
-        previousActiveElement.current = null;
-      }
-    };
   }, [isOpen]);
 
   const handleRequestClose = () => {
@@ -112,6 +106,7 @@ export function AppDialog({
     if (!isOpen) return;
 
     function handleKeyDown(e: KeyboardEvent) {
+      if (e.defaultPrevented || openModals.at(-1) !== dialogRef.current) return;
       if (e.key === "Escape") {
         e.preventDefault();
         if (showDiscardConfirm) {
@@ -123,8 +118,18 @@ export function AppDialog({
       }
 
       if (e.key === "Tab" && dialogRef.current) {
-        const focusableElements = dialogRef.current.querySelectorAll<HTMLElement>(
-          'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        const scope = showDiscardConfirm
+          ? (dialogRef.current.querySelector(".app-dialog-discard-content") ??
+            dialogRef.current)
+          : dialogRef.current;
+        const focusableElements = Array.from(
+          scope.querySelectorAll<HTMLElement>(
+            'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+          ),
+        ).filter(
+          (element) =>
+            element.tabIndex >= 0 &&
+            !element.closest('[hidden], [inert], [aria-hidden="true"]'),
         );
         if (focusableElements.length === 0) {
           e.preventDefault();
@@ -136,12 +141,18 @@ export function AppDialog({
         if (!firstElement || !lastElement) return;
 
         if (e.shiftKey) {
-          if (document.activeElement === firstElement || !dialogRef.current.contains(document.activeElement)) {
+          if (
+            document.activeElement === firstElement ||
+            !scope.contains(document.activeElement)
+          ) {
             e.preventDefault();
             lastElement.focus();
           }
         } else {
-          if (document.activeElement === lastElement || !dialogRef.current.contains(document.activeElement)) {
+          if (
+            document.activeElement === lastElement ||
+            !scope.contains(document.activeElement)
+          ) {
             e.preventDefault();
             firstElement.focus();
           }
@@ -151,7 +162,7 @@ export function AppDialog({
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isOpen, isDirty, showDiscardConfirm]);
+  }, [isOpen, isDirty, showDiscardConfirm, onClose]);
 
   if (!isOpen) return null;
 
@@ -174,6 +185,7 @@ export function AppDialog({
         aria-modal="true"
         aria-labelledby={titleId}
         ref={dialogRef}
+        tabIndex={-1}
       >
         <div className="app-dialog-header">
           <div>

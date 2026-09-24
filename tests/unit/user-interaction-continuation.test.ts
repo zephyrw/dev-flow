@@ -90,6 +90,9 @@ describe("U02 — 用户交互延续性与 WaitingContext 集成", () => {
       state: "WAITING_INPUT",
       plan_revision: 1,
     });
+    store.put("run", "run-exec-2", "wf-101", {
+      id: "run-exec-2", workflow_id: "wf-101", plan_revision: 1,
+    });
 
     saveWaitingContext(store, "wf-101", {
       purpose: "execute",

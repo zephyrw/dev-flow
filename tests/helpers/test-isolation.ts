@@ -1,7 +1,8 @@
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { createServer } from "node:net";
 import { homedir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
+import { loadConfig } from "../../packages/contracts/src/config.js";
 
 export const DEFAULT_TEST_PORT = 14811;
 export const PRODUCTION_SERVER_PORT = 4810;
@@ -32,6 +33,7 @@ export function loadTestInstanceConfig(
   const usesCustomRunDir = Boolean(runDirRaw);
   const runDirResolved = resolve(runDirRaw || ".cache");
   if (usesCustomRunDir) rejectUnsafeRunDir(runDirResolved);
+  assertTestManifest(runDirResolved);
   const storageRoot = join(runDirResolved, "state");
   const outputDir = usesCustomRunDir
     ? join(runDirResolved, "test-results")
@@ -144,17 +146,34 @@ export function assertSafeTestDatabaseCleanup(
   sqlitePath: string,
   runDir: string,
 ): void {
+  const ownedTest = assertTestManifest(runDir);
+  if (resolve(sqlitePath) !== resolve(runDir, "state", "devflow.sqlite"))
+    throw new Error("拒绝清理测试数据库: 数据库不属于本次运行目录");
+  rejectUnsafeRunDir(runDir);
+  if (existsSync(runDir)) rejectUnsafeRunDir(realpathSync(runDir));
+  if (
+    existsSync(dirname(sqlitePath)) &&
+    existsSync(runDir) &&
+    !isInside(realpathSync(dirname(sqlitePath)), realpathSync(runDir))
+  )
+    throw new Error("拒绝清理测试数据库: state 目录链接指向运行目录外");
   const normalizedRunDir = resolve(runDir);
   const normalizedSqlite = resolve(sqlitePath);
   if (
-    hasPathSegment(normalizedRunDir, "dev") ||
-    hasPathSegment(normalizedSqlite, "dev")
+    isDevInstancePath(normalizedRunDir) ||
+    isDevInstancePath(normalizedSqlite)
   ) {
     throw new Error(
       `拒绝清理测试数据库: 路径位于开发实例目录中 (${sqlitePath})，严禁删除开发数据`,
     );
   }
   const productionRoot = resolve(".devflow");
+  const configFile = resolve("devflow.yaml");
+  if (existsSync(configFile)) {
+    const configuredRoot = loadConfig(configFile).storage_root;
+    if (normalizedSqlite.toLowerCase() === configuredRoot.toLowerCase() || isInside(normalizedSqlite, configuredRoot))
+      throw new Error("DEVFLOW_TEST_RUN_DIR 不能使用当前服务配置的数据目录");
+  }
   if (
     normalizedSqlite === productionRoot ||
     isInside(normalizedSqlite, productionRoot)
@@ -162,15 +181,32 @@ export function assertSafeTestDatabaseCleanup(
     throw new Error("拒绝清理测试数据库: 不能操作生产数据库目录 .devflow");
   }
   const isIsolatedTest =
+    ownedTest ||
     hasPathSegment(normalizedRunDir, "tests") ||
     hasPathSegment(normalizedRunDir, "test") ||
     hasPathSegment(normalizedRunDir, ".cache") ||
     hasPathSegment(normalizedRunDir, "tmp") ||
     hasPathSegment(normalizedRunDir, "temp");
   if (!isIsolatedTest) {
-    throw new Error(
-      `拒绝清理测试数据库: 运行目录非测试隔离目录 (${runDir})`,
-    );
+    throw new Error(`拒绝清理测试数据库: 运行目录非测试隔离目录 (${runDir})`);
+  }
+}
+
+function assertTestManifest(runDir: string): boolean {
+  const root = resolve(runDir);
+  for (let dir = root; ; dir = dirname(dir)) {
+    const file = join(dir, "instance.json");
+    if (existsSync(file)) {
+      const manifest = JSON.parse(readFileSync(file, "utf8"));
+      if (
+        manifest.instance_type !== "test" ||
+        resolve(manifest.paths?.run_dir ?? "") !== root ||
+        resolve(manifest.paths?.storage_root ?? "") !== join(root, "state")
+      )
+        throw new Error("拒绝复用非本次测试实例的数据目录");
+      return true;
+    }
+    if (dirname(dir) === dir) return false;
   }
 }
 
@@ -178,10 +214,13 @@ function rejectUnsafeRunDir(dir: string) {
   const normalized = resolve(dir);
   if (hasPathSegment(normalized, "node_modules"))
     throw new Error("DEVFLOW_TEST_RUN_DIR 不能指向 node_modules");
-  if (hasPathSegment(normalized, "dev"))
+  if (isDevInstancePath(normalized))
     throw new Error("DEVFLOW_TEST_RUN_DIR 不能指向开发实例目录 dev");
   const productionRoot = resolve(".devflow");
-  if (normalized === productionRoot || isInside(normalized, productionRoot))
+  if (
+    normalized === productionRoot ||
+    isInside(normalized, productionRoot)
+  )
     throw new Error("DEVFLOW_TEST_RUN_DIR 不能使用生产数据库目录 .devflow");
   for (const forbidden of forbiddenAuthRoots()) {
     if (normalized === forbidden || isInside(normalized, forbidden))
@@ -208,6 +247,10 @@ function forbiddenAuthRoots(): string[] {
 
 function hasPathSegment(dir: string, name: string): boolean {
   return dir.toLowerCase().split(/[\\/]/).includes(name.toLowerCase());
+}
+
+function isDevInstancePath(dir: string): boolean {
+  return /(?:^|[\\/])devflow-local[\\/]dev(?:[\\/]|$)/i.test(dir);
 }
 
 function isInside(target: string, root: string): boolean {

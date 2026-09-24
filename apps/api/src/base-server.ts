@@ -1,7 +1,7 @@
 import Fastify from "fastify";
 import staticPlugin from "@fastify/static";
 import { existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { basename, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import {
@@ -10,6 +10,7 @@ import {
 } from "../../../packages/contracts/src/index.js";
 import { AccountServiceError } from "../../../packages/agy-accounts/src/service.js";
 import { hash } from "../../../packages/core/src/util.js";
+import { developmentFrontendOrigin } from "./local-development.js";
 export interface BaseServerOptions {
   port: number;
   humanOrigin: string;
@@ -25,13 +26,13 @@ export interface BaseServerOptions {
 export function createBaseServer(options: BaseServerOptions) {
   const app = Fastify({ logger: false, bodyLimit: 8 * 1024 * 1024 });
   const origin = new URL(options.humanOrigin);
-  const isDev =
-    process.env.NODE_ENV !== "production" &&
-    process.env.DEVFLOW_LOCAL_DEV === "1";
+  const moduleRoot = fileURLToPath(new URL("../../../", import.meta.url));
+  const runtimeRoot = basename(moduleRoot) === "dist" ? resolve(moduleRoot, "..") : moduleRoot;
   let devFrontendUrl: URL | undefined;
-  if (isDev && options.developmentFrontendOrigin) {
+  const verifiedDevOrigin = developmentFrontendOrigin(options);
+  if (verifiedDevOrigin) {
     try {
-      const parsed = new URL(options.developmentFrontendOrigin);
+      const parsed = new URL(verifiedDevOrigin);
       if (
         (parsed.protocol === "http:" || parsed.protocol === "https:") &&
         (parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost") &&
@@ -169,7 +170,7 @@ export function createBaseServer(options: BaseServerOptions) {
     ok: true,
     version: "0.2.0",
     runtime_backend: "node-v1",
-    runtime_root: fileURLToPath(new URL("../../../../", import.meta.url)),
+    runtime_root: runtimeRoot,
     mode: options.mode,
     features: { workflows: options.mode === "full", agy_accounts: true },
     service: "devflow",

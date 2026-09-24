@@ -2,11 +2,11 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { fileURLToPath } from "node:url";
 
-function parsePort(raw: string | undefined, defaultPort: number): number {
+export function parsePort(raw: string | undefined, defaultPort: number): number {
   if (!raw || !raw.trim()) return defaultPort;
   const num = Number(raw.trim());
   if (!Number.isInteger(num) || num < 1 || num > 65535) {
-    return defaultPort;
+    throw new Error(`无效的本地服务端口: ${raw}`);
   }
   return num;
 }

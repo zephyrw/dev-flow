@@ -35,14 +35,22 @@ function getDraftKey(workflowId: string, interactionId: string): string {
   return `${workflowId}:${interactionId}`;
 }
 
-export function UserInteractionDialog({
+export function UserInteractionDialog(props: UserInteractionDialogProps) {
+  if (!props.interaction) return null;
+  return (
+    <InteractionForm
+      key={getDraftKey(props.workflowId, props.interaction.id)}
+      {...props}
+    />
+  );
+}
+
+function InteractionForm({
   workflowId,
   interaction,
   isOpen,
   onClose,
   onResponded,
-  rootConversationId,
-  expectedGeneration,
 }: UserInteractionDialogProps) {
   const currentInteractionId = interaction?.id || "";
   const draftKey = currentInteractionId
@@ -53,6 +61,17 @@ export function UserInteractionDialog({
   const [answerText, setAnswerText] = useState<string>("");
   const [submitting, setSubmitting] = useState<boolean>(false);
   const [error, setError] = useState<string>("");
+  const mounted = useRef(false);
+  const busy = useRef(false);
+  const view = useRef({ open: isOpen, generation: 0 });
+  if (view.current.open !== isOpen)
+    view.current = { open: isOpen, generation: view.current.generation + 1 };
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
 
   // F07: 当 interaction 或 workflow 变化时，按 (workflowId, interactionId) 独立加载/重置草稿
   useEffect(() => {
@@ -110,7 +129,7 @@ export function UserInteractionDialog({
   const actionLabel = req.action_label || "我已完成，继续";
 
   const handleSubmit = async (action: "confirm" | "answer" | "cancel") => {
-    if (submitting) return;
+    if (busy.current) return;
 
     if (action === "answer") {
       const trimmedChoice = selectedChoiceId.trim();
@@ -127,6 +146,12 @@ export function UserInteractionDialog({
     }
 
     setSubmitting(true);
+    busy.current = true;
+    const generation = view.current.generation;
+    const isCurrentView = () =>
+      mounted.current &&
+      view.current.open &&
+      view.current.generation === generation;
     setError("");
 
     // F07: 提交快照与幂等 requestId 处理
@@ -169,32 +194,39 @@ export function UserInteractionDialog({
         request_id: requestId,
         source_run_id: interaction.source_run_id,
         source_plan_revision: interaction.source_plan_revision,
-        root_conversation_id: rootConversationId,
-        expected_generation: expectedGeneration,
+        root_conversation_id: interaction.root_conversation_id,
+        expected_generation: interaction.source_generation,
+        native_session_id: interaction.native_session_id,
         action,
         choice_id,
         answer,
       };
 
-      await respondUserInteraction(targetWorkflowId, targetInteractionId, payload);
+      await respondUserInteraction(
+        targetWorkflowId,
+        targetInteractionId,
+        payload,
+      );
 
       // 成功提交后清除该草稿
       draftStore.delete(draftKey);
 
       // 触发外部状态拉取
-      await onResponded();
-      onClose();
+      if (isCurrentView()) {
+        // Close this question before refreshing: the refresh may open another.
+        onClose();
+        await onResponded();
+      }
     } catch (err) {
       // 只有当前依然在同一问题时才显示错误
-      if (interaction.id === targetInteractionId) {
+      if (isCurrentView()) {
         setError(err instanceof Error ? err.message : String(err));
       }
     } finally {
-      setSubmitting(false);
+      busy.current = false;
+      if (mounted.current) setSubmitting(false);
     }
   };
-
-  const isDirty = Boolean(selectedChoiceId || answerText.trim());
 
   const footer = (
     <div className="user-interaction-footer">
@@ -264,7 +296,9 @@ export function UserInteractionDialog({
 
         {req.target && (
           <div className="user-interaction-target">
-            <span className="user-interaction-target-title">操作目标指引：</span>
+            <span className="user-interaction-target-title">
+              操作目标指引：
+            </span>
             {req.target.url && (
               <div className="user-interaction-target-url">
                 页面地址：{" "}

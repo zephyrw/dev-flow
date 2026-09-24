@@ -45,6 +45,9 @@ describe("I02 — 用户交互恢复与异常边界", () => {
         state: "WAITING_INPUT",
         plan_revision: 2,
       });
+      store1.put("run", "run-persist-1", "wf-restart-1", {
+        id: "run-persist-1", workflow_id: "wf-restart-1", plan_revision: 2,
+      });
 
       saveWaitingContext(store1, "wf-restart-1", {
         purpose: "execute",

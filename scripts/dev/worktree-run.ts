@@ -1,32 +1,90 @@
-import { execSync, spawn, type ChildProcess } from "node:child_process";
+import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { get } from "node:http";
+import { createRequire } from "node:module";
+import { basename, dirname, extname, join, resolve } from "node:path";
+import { constants } from "node:os";
+import { fileURLToPath } from "node:url";
 import {
+  ProcessManager,
+  type ManagedProcess,
+} from "../../packages/process/src/manager.js";
+import { executablePath } from "../../packages/process/src/executable.js";
+import { hash } from "../../packages/core/src/util.js";
+import {
+  ConfigSchema,
+  loadConfig,
+} from "../../packages/contracts/src/config.js";
+import {
+  getWorktreeRoot,
   reservePorts,
   releasePorts,
-  readInstanceConfig,
   type WorktreeInstanceConfig,
 } from "./worktree-env.js";
 
-async function isUrlHealthy(url: string): Promise<boolean> {
+class Interrupted extends Error {
+  constructor(readonly code: number) {
+    super("运行已中断");
+  }
+}
+
+function exitCode(result: { code: number | null; signal?: string }) {
+  if (result.signal)
+    return (
+      128 +
+      (constants.signals[result.signal as keyof typeof constants.signals] ?? 1)
+    );
+  return result.code === null ? 1 : result.code < 0 ? 1 : result.code;
+}
+
+function withSignal<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise((resolveResult, reject) => {
+    const abort = () => reject(signal.reason);
+    signal.addEventListener("abort", abort, { once: true });
+    promise
+      .then(resolveResult, reject)
+      .finally(() => signal.removeEventListener("abort", abort));
+  });
+}
+
+function health(
+  url: string,
+  instance: WorktreeInstanceConfig,
+): Promise<boolean> {
   return new Promise((resolveResult) => {
-    const req = get(url, { timeout: 2000 }, (res) => {
+    const req = get(url, { timeout: 1500 }, (res) => {
       if (res.statusCode !== 200) {
         res.resume();
-        return resolveResult(false);
+        resolveResult(false);
+        return;
       }
       let raw = "";
-      res.setEncoding("utf-8");
+      res.setEncoding("utf8");
       res.on("data", (chunk) => {
         raw += chunk;
+        if (raw.length > 65536) {
+          req.destroy();
+          resolveResult(false);
+        }
       });
+      res.on("error", () => resolveResult(false));
       res.on("end", () => {
         try {
           const body = JSON.parse(raw);
-          if (body?.ok === true && body?.service === "devflow") {
-            return resolveResult(true);
-          }
-        } catch {}
-        resolveResult(false);
+          const normalize = (path: string) => resolve(path).toLowerCase();
+          resolveResult(
+            body.ok === true &&
+              body.service === "devflow" &&
+              body.mode === "full" &&
+              body.instance === hash(normalize(instance.paths.storage_root)) &&
+              typeof body.runtime_root === "string" &&
+              normalize(body.runtime_root) ===
+                normalize(instance.worktree_path),
+          );
+        } catch {
+          resolveResult(false);
+        }
       });
     });
     req.on("error", () => resolveResult(false));
@@ -37,322 +95,271 @@ async function isUrlHealthy(url: string): Promise<boolean> {
   });
 }
 
-async function waitForApiHealth(
-  port: number,
-  timeoutMs: number = 30000,
-): Promise<boolean> {
-  const start = Date.now();
-  const url = `http://127.0.0.1:${port}/api/health`;
-  while (Date.now() - start < timeoutMs) {
-    const ok = await isUrlHealthy(url);
-    if (ok) return true;
-    await new Promise((r) => setTimeout(r, 300));
+async function waitForHealth(
+  url: string,
+  instance: WorktreeInstanceConfig,
+  signal: AbortSignal,
+) {
+  const deadline = Date.now() + 20000;
+  while (Date.now() < deadline) {
+    signal.throwIfAborted();
+    if (await health(url, instance)) return;
+    await new Promise((done) => setTimeout(done, 250));
   }
-  return false;
+  throw new Error(`实例未就绪或身份不匹配: ${url}`);
 }
 
-async function killProcessTree(proc: ChildProcess): Promise<void> {
-  if (!proc || proc.killed || !proc.pid) return;
-
-  const pid = proc.pid;
-  if (process.platform === "win32") {
-    try {
-      execSync(`taskkill /pid ${pid} /T /F`, { stdio: "ignore" });
-    } catch {}
-  } else {
-    try {
-      process.kill(-pid, "SIGTERM");
-    } catch {
+// Use actual Node entries/native binaries so arguments never pass through a shell.
+function commandLaunch(command: string, args: string[], root: string) {
+  const require = createRequire(join(root, "package.json"));
+  if (/^pnpm(?:\.cmd|\.exe)?$/i.test(basename(command))) {
+    const candidates: string[] = [];
+    if (process.env.npm_execpath && /pnpm/i.test(process.env.npm_execpath))
+      candidates.push(process.env.npm_execpath);
+    if (process.platform === "win32") {
       try {
-        proc.kill("SIGTERM");
+        const found = execFileSync("where.exe", [command], {
+          encoding: "utf8",
+          windowsHide: true,
+          stdio: ["ignore", "pipe", "ignore"],
+        })
+          .trim()
+          .split(/\r?\n/);
+        for (const file of found)
+          candidates.push(
+            file,
+            join(dirname(file), "node_modules/pnpm/bin/pnpm.cjs"),
+            join(dirname(file), "node_modules/corepack/dist/pnpm.js"),
+          );
       } catch {}
     }
+    for (const candidate of candidates) {
+      if (!existsSync(candidate)) continue;
+      if (/\.(?:cjs|mjs|js)$/i.test(candidate))
+        return { executable: process.execPath, args: [candidate, ...args] };
+      if (/\.exe$/i.test(candidate)) return { executable: candidate, args };
+    }
   }
-
-  // 等待进程真正关闭
-  if (!proc.killed) {
-    await new Promise<void>((done) => {
-      const timer = setTimeout(() => done(), 3000);
-      proc.once("close", () => {
-        clearTimeout(timer);
-        done();
-      });
-    });
+  if (["tsx", "vite", "vitest", "playwright"].includes(command)) {
+    const pkgFile = require.resolve(`${command}/package.json`);
+    const pkg = require(pkgFile);
+    const bin = typeof pkg.bin === "string" ? pkg.bin : pkg.bin?.[command];
+    if (typeof bin === "string")
+      return {
+        executable: process.execPath,
+        args: [join(dirname(pkgFile), bin), ...args],
+      };
   }
+  if ([".js", ".cjs", ".mjs"].includes(extname(command)))
+    return {
+      executable: process.execPath,
+      args: [resolve(root, command), ...args],
+    };
+  return { executable: executablePath(command), args };
 }
 
-async function runDev() {
-  const conflictedPorts: number[] = [];
-  let instance: WorktreeInstanceConfig | null = null;
-  let attempt = 0;
-  const maxAttempts = 3;
-
-  while (attempt < maxAttempts) {
-    attempt++;
-    if (!instance) {
-      const existing = readInstanceConfig();
-      if (existing && attempt === 1) {
-        instance = existing;
-      } else {
-        console.log(`[worktree-run] 正在分配独立开发端口与配置 (尝试 ${attempt}/${maxAttempts})...`);
-        instance = await reservePorts({
-          instanceType: "dev",
-          reservedPorts: conflictedPorts,
+async function run(mode: "dev" | "test", args: string[]) {
+  const root = getWorktreeRoot();
+  const configFile = join(root, "devflow.yaml");
+  const config = existsSync(configFile)
+    ? loadConfig(configFile)
+    : ConfigSchema.parse({});
+  const signalController = new AbortController();
+  const onInt = () => signalController.abort(new Interrupted(130));
+  const onTerm = () => signalController.abort(new Interrupted(143));
+  process.once("SIGINT", onInt);
+  process.once("SIGTERM", onTerm);
+  const excluded: number[] = [];
+  try {
+    for (
+      let attempt = 0;
+      attempt < (mode === "dev" ? config.ports.bind_retries : 1);
+      attempt++
+    ) {
+      signalController.signal.throwIfAborted();
+      // Every invocation owns fresh resources; never adopt current-dev.json.
+      const instance = await reservePorts({
+        instanceType: mode,
+        worktreeRoot: root,
+        reservedPorts: excluded,
+      });
+      const manager = new ProcessManager();
+      const children: ManagedProcess[] = [];
+      let outputTail = "";
+      const attemptController = new AbortController();
+      const cancelAttempt = () =>
+        attemptController.abort(signalController.signal.reason);
+      signalController.signal.addEventListener("abort", cancelAttempt, {
+        once: true,
+      });
+      const start = (
+        name: string,
+        executable: string,
+        commandArgs: string[],
+        extraEnv: Record<string, string>,
+      ) => {
+        signalController.signal.throwIfAborted();
+        const env = Object.fromEntries(
+          Object.entries(process.env).filter(
+            (entry): entry is [string, string] => entry[1] !== undefined,
+          ),
+        );
+        const child = manager.start({
+          id: `${instance.instance_id}-${name}`,
+          executable,
+          args: commandArgs,
+          cwd: root,
+          env: { ...env, ...extraEnv },
+          timeout_ms: 0,
+        });
+        children.push(child);
+        const output = (stream: NodeJS.WriteStream, data: Buffer) => {
+          stream.write(data);
+          outputTail = (outputTail + data.toString()).slice(-16000);
+        };
+        child.on("stdout", (data) => output(process.stdout, data));
+        child.on("stderr", (data) => output(process.stderr, data));
+        return child;
+      };
+      const stopped = (child: ManagedProcess) =>
+        child.completion.then((result) => {
+          throw new Error(`服务提前退出 (${exitCode(result)})`);
+        });
+      let retry = false;
+      try {
+        console.log(
+          `[worktree-run] ${mode} 实例 ${instance.instance_id}\n目录: ${root}\n运行目录: ${instance.paths.run_dir}`,
+        );
+        if (mode === "test") {
+          const launch = commandLaunch(args[0]!, args.slice(1), root);
+          const child = start("test", launch.executable, launch.args, {
+            DEVFLOW_TEST_PORT: String(instance.ports.test),
+            DEVFLOW_TEST_RUN_DIR: instance.paths.run_dir,
+            DEVFLOW_CONFIG: instance.paths.runtime_config,
+            DEVFLOW_REUSE_SERVER: "0",
+            DEVFLOW_LOCAL_DEV: "0",
+          });
+          return exitCode(
+            await withSignal(child.completion, signalController.signal),
+          );
+        }
+        const api = start(
+          "api",
+          process.execPath,
+          ["--import", "tsx", "apps/api/src/main.ts"],
+          {
+            DEVFLOW_CONFIG: instance.paths.runtime_config,
+            DEVFLOW_LOCAL_DEV: "1",
+            DEVFLOW_DEV_FRONTEND_ORIGIN: instance.origins.frontend,
+            DEVFLOW_INSTANCE_ID: instance.instance_id,
+          },
+        );
+        await withSignal(
+          Promise.race([api.ready, stopped(api)]),
+          signalController.signal,
+        );
+        await withSignal(
+          Promise.race([
+            waitForHealth(
+              `${instance.origins.backend}/api/health`,
+              instance,
+              attemptController.signal,
+            ),
+            stopped(api),
+          ]),
+          signalController.signal,
+        );
+        const vite = commandLaunch(
+          "vite",
+          ["--config", "apps/web/vite.config.ts"],
+          root,
+        );
+        const web = start("web", vite.executable, vite.args, {
+          DEVFLOW_WEB_PORT: String(instance.ports.frontend),
+          DEVFLOW_API_PORT: String(instance.ports.backend),
+        });
+        await withSignal(
+          Promise.race([web.ready, stopped(api), stopped(web)]),
+          signalController.signal,
+        );
+        await withSignal(
+          Promise.race([
+            waitForHealth(
+              `${instance.origins.frontend}/api/health`,
+              instance,
+              attemptController.signal,
+            ),
+            stopped(api),
+            stopped(web),
+          ]),
+          signalController.signal,
+        );
+        console.log(
+          `[worktree-run] 前后端及代理已就绪: ${instance.origins.frontend}`,
+        );
+        await withSignal(
+          Promise.race([stopped(api), stopped(web)]),
+          signalController.signal,
+        );
+      } catch (error) {
+        if (
+          !signalController.signal.aborted &&
+          mode === "dev" &&
+          /EADDRINUSE|Port \d+ is already in use/i.test(outputTail) &&
+          attempt + 1 < config.ports.bind_retries
+        ) {
+          excluded.push(...Object.values(instance.ports));
+          retry = true;
+          console.warn("[worktree-run] 端口绑定冲突，清理本实例后重新分配");
+        } else throw error;
+      } finally {
+        attemptController.abort();
+        signalController.signal.removeEventListener("abort", cancelAttempt);
+        const results = await Promise.all(
+          children.map((child) => manager.stop(child.id)),
+        );
+        if (
+          results.some(
+            (result) =>
+              !["confirmed_exited", "confirmed_not_started"].includes(
+                result.status,
+              ),
+          )
+        )
+          throw new Error(
+            `无法确认本实例进程树退出，保留登记: ${instance.instance_id}`,
+          );
+        await releasePorts(instance.instance_id, root, {
+          runDir: instance.paths.run_dir,
         });
       }
+      if (!retry) break;
     }
-
-    console.log("==================================================");
-    console.log(`[DevFlow Worktree 隔离开发环境]`);
-    console.log(`实例 ID:     ${instance.instance_id}`);
-    console.log(`工作目录:    ${instance.worktree_path}`);
-    console.log(`前端端口:    ${instance.ports.frontend} (URL: ${instance.origins.frontend})`);
-    console.log(`后端端口:    ${instance.ports.backend}  (URL: ${instance.origins.backend})`);
-    console.log(`运行配置:    ${instance.paths.runtime_config}`);
-    console.log("==================================================");
-
-    const processes: ChildProcess[] = [];
-    let cleanupPromise: Promise<void> | null = null;
-    let initialExitCode: number = 0;
-    let isBindingConflict = false;
-
-    const cleanup = async (exitCode: number = 0) => {
-      if (cleanupPromise) return cleanupPromise;
-      if (initialExitCode === 0 && exitCode !== 0) {
-        initialExitCode = exitCode;
-      }
-
-      cleanupPromise = (async () => {
-        console.log("\n正在停止本 worktree 的服务进程树...");
-        for (const proc of processes) {
-          await killProcessTree(proc);
-        }
-        if (instance && !isBindingConflict) {
-          try {
-            await releasePorts(instance.instance_id);
-            console.log(`已成功释放实例 ${instance.instance_id} 的端口登记。`);
-          } catch (err) {
-            console.warn("释放端口登记失败:", err);
-          }
-        }
-        process.exit(initialExitCode);
-      })();
-
-      return cleanupPromise;
-    };
-
-    const sigintHandler = () => {
-      console.log("\n收到中断信号，开始优雅停止...");
-      void cleanup(130);
-    };
-    const sigtermHandler = () => {
-      console.log("\n收到终止信号，开始优雅停止...");
-      void cleanup(143);
-    };
-
-    process.once("SIGINT", sigintHandler);
-    process.once("SIGTERM", sigtermHandler);
-
-    // 1. 启动后端 API 服务
-    const apiEnv = {
-      ...process.env,
-      DEVFLOW_CONFIG: instance.paths.runtime_config,
-      DEVFLOW_LOCAL_DEV: "1",
-      DEVFLOW_DEV_FRONTEND_ORIGIN: instance.origins.frontend,
-      DEVFLOW_INSTANCE_ID: instance.instance_id,
-    };
-
-    console.log("正在启动后端 API 服务...");
-    let apiStderrOutput = "";
-    const apiProc = spawn("pnpm", ["exec", "tsx", "apps/api/src/main.ts"], {
-      cwd: instance.worktree_path,
-      stdio: ["inherit", "inherit", "pipe"],
-      env: apiEnv,
-      shell: process.platform === "win32",
-    });
-    processes.push(apiProc);
-
-    apiProc.stderr?.on("data", (chunk) => {
-      const text = chunk.toString();
-      process.stderr.write(text);
-      apiStderrOutput += text;
-      if (text.includes("EADDRINUSE")) {
-        isBindingConflict = true;
-      }
-    });
-
-    let apiExitedEarly = false;
-    let earlyExitCode: number | null = null;
-    const earlyExitListener = (code: number | null) => {
-      apiExitedEarly = true;
-      earlyExitCode = code;
-    };
-    apiProc.once("exit", earlyExitListener);
-
-    // 等待 API 健康检查通过
-    console.log("等待后端 API 服务健康就绪...");
-    const isHealthy = await waitForApiHealth(instance.ports.backend, 15000);
-
-    if (!isHealthy) {
-      apiProc.removeListener("exit", earlyExitListener);
-      // 检查是否端口冲突
-      if (isBindingConflict || apiStderrOutput.includes("EADDRINUSE")) {
-        console.warn(`[worktree-run] 后端端口 ${instance.ports.backend} 遭遇绑定竞态 (EADDRINUSE)，正在重新分配并重试...`);
-        conflictedPorts.push(instance.ports.backend);
-        await killProcessTree(apiProc);
-        try {
-          await releasePorts(instance.instance_id);
-        } catch {}
-        instance = null;
-        process.removeListener("SIGINT", sigintHandler);
-        process.removeListener("SIGTERM", sigtermHandler);
-        continue;
-      }
-
-      console.error(`后端服务在规定时间内未通过健康检查。早期退出状态: ${apiExitedEarly}, 代码: ${earlyExitCode}`);
-      await cleanup(earlyExitCode ?? 1);
-      return;
-    }
-
-    // 健康检查通过，移除早期退出监听
-    apiProc.removeListener("exit", earlyExitListener);
-    apiProc.on("exit", (code) => {
-      if (code !== 0 && code !== null) {
-        console.error(`后端服务异常退出，代码: ${code}`);
-        void cleanup(code);
-      }
-    });
-
-    console.log(`后端 API 服务已健康就绪 (HTTP 200 /api/health)`);
-
-    // 2. 启动前端 Vite 服务
-    const webEnv = {
-      ...process.env,
-      DEVFLOW_WEB_PORT: String(instance.ports.frontend),
-      DEVFLOW_API_PORT: String(instance.ports.backend),
-    };
-
-    console.log("正在启动前端 Vite 服务...");
-    const webProc = spawn("pnpm", ["exec", "vite", "apps/web"], {
-      cwd: instance.worktree_path,
-      stdio: "inherit",
-      env: webEnv,
-      shell: process.platform === "win32",
-    });
-    processes.push(webProc);
-
-    webProc.on("exit", (code) => {
-      if (code !== 0 && code !== null) {
-        console.error(`前端 Vite 服务退出，代码: ${code}`);
-        void cleanup(code);
-      }
-    });
-
-    console.log(`\n==================================================`);
-    console.log(`工作树隔离开发环境已成功启动！`);
-    console.log(`访问控制台前端: ${instance.origins.frontend}`);
-    console.log(`后端服务接口:   ${instance.origins.backend}`);
-    console.log(`按 Ctrl+C 可停止环境并自动释放端口登记。`);
-    console.log(`==================================================\n`);
-
-    // 成功启动，不再重试
-    return;
-  }
-
-  console.error(`[worktree-run] 已达最大启动重试次数 (${maxAttempts})，启动失败。`);
-  process.exit(1);
-}
-
-async function runTest(args: string[]) {
-  if (args.length === 0) {
-    console.error("用法: pnpm exec tsx scripts/dev/worktree-run.ts test -- <test_command> [args...]");
-    process.exit(1);
-  }
-
-  // 严禁复用 dev 实例，每次测试分配独立测试实例 (F10)
-  console.log("[Worktree 隔离测试] 正在为测试分配独立的运行目录与端口...");
-  const testInstance = await reservePorts({
-    instanceType: "test",
-    targetId: "test",
-  });
-
-  const testEnv = {
-    ...process.env,
-    DEVFLOW_TEST_PORT: String(testInstance.ports.test),
-    DEVFLOW_TEST_RUN_DIR: testInstance.paths.run_dir,
-    DEVFLOW_CONFIG: testInstance.paths.runtime_config,
-  };
-
-  const [cmd, ...cmdArgs] = args;
-  console.log(`[Worktree 隔离测试] 执行命令: ${cmd} ${cmdArgs.join(" ")}`);
-  console.log(`[Worktree 隔离测试] 测试实例 ID: ${testInstance.instance_id}`);
-  console.log(`[Worktree 隔离测试] 测试端口: ${testInstance.ports.test}`);
-  console.log(`[Worktree 隔离测试] 运行目录: ${testInstance.paths.run_dir}`);
-
-  let childProc: ChildProcess | null = null;
-  let finished = false;
-
-  const cleanupTest = async () => {
-    if (finished) return;
-    finished = true;
-    if (childProc) {
-      await killProcessTree(childProc);
-    }
-    try {
-      await releasePorts(testInstance.instance_id);
-      console.log(`[Worktree 隔离测试] 已释放测试实例 ${testInstance.instance_id} 的端口登记与资源。`);
-    } catch (err) {
-      console.warn("清理测试实例失败:", err);
-    }
-  };
-
-  process.once("SIGINT", async () => {
-    console.log("\n[Worktree 隔离测试] 收到中断信号...");
-    await cleanupTest();
-    process.exit(130);
-  });
-  process.once("SIGTERM", async () => {
-    console.log("\n[Worktree 隔离测试] 收到终止信号...");
-    await cleanupTest();
-    process.exit(143);
-  });
-
-  try {
-    childProc = spawn(cmd, cmdArgs, {
-      cwd: testInstance.worktree_path,
-      stdio: "inherit",
-      env: testEnv,
-      shell: process.platform === "win32",
-    });
-
-    childProc.on("exit", async (code) => {
-      await cleanupTest();
-      process.exit(code ?? 0);
-    });
-  } catch (err) {
-    console.error("启动测试子进程失败:", err);
-    await cleanupTest();
-    process.exit(1);
+    return 1;
+  } finally {
+    process.removeListener("SIGINT", onInt);
+    process.removeListener("SIGTERM", onTerm);
   }
 }
 
 async function main() {
   const mode = process.argv[2];
-  if (mode === "dev") {
-    await runDev();
-  } else if (mode === "test") {
-    const dashIndex = process.argv.indexOf("--");
-    const testArgs = dashIndex !== -1 ? process.argv.slice(dashIndex + 1) : process.argv.slice(3);
-    await runTest(testArgs);
-  } else {
-    console.log("用法:");
-    console.log("  pnpm exec tsx scripts/dev/worktree-run.ts dev");
-    console.log("  pnpm exec tsx scripts/dev/worktree-run.ts test -- <test_command...>");
-    process.exit(1);
-  }
+  const separator = process.argv.indexOf("--");
+  const args = process.argv.slice(separator >= 0 ? separator + 1 : 3);
+  if ((mode !== "dev" && mode !== "test") || (mode === "test" && !args.length))
+    throw new Error("用法: worktree-run.ts dev | test -- <命令> [参数...]");
+  process.exitCode = await run(mode, args);
 }
 
-main().catch((err) => {
-  console.error("worktree-run 运行失败:", err);
-  process.exit(1);
-});
+if (
+  process.argv[1] &&
+  resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+) {
+  main().catch((error) => {
+    console.error(
+      "worktree-run 运行失败:",
+      error instanceof Error ? error.message : error,
+    );
+    process.exitCode = error instanceof Interrupted ? error.code : 1;
+  });
+}

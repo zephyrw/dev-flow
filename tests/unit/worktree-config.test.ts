@@ -2,14 +2,7 @@ import { describe, it, expect } from "vitest";
 import { readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 
-function parsePort(raw: string | undefined, defaultPort: number): number {
-  if (!raw || !raw.trim()) return defaultPort;
-  const num = Number(raw.trim());
-  if (!Number.isInteger(num) || num < 1 || num > 65535) {
-    return defaultPort;
-  }
-  return num;
-}
+import { parsePort } from "../../apps/web/vite.config.js";
 
 describe("U05 — worktree 配置解析与忽略规则校验", () => {
   it("默认端口行为：未设置环境变量时回退到默认端口 5173 / 4810", () => {
@@ -18,16 +11,12 @@ describe("U05 — worktree 配置解析与忽略规则校验", () => {
     expect(parsePort(undefined, 4810)).toBe(4810);
   });
 
-  it("环境变量覆盖：合法端口正常解析，非法值安全回退", () => {
+  it("环境变量覆盖：合法端口正常解析，非法值拒绝启动", () => {
     expect(parsePort("5200", 5173)).toBe(5200);
     expect(parsePort(" 4900 ", 4810)).toBe(4900);
 
-    // 非法值（NaN、浮点数、越界或空串）回退默认
-    expect(parsePort("invalid", 5173)).toBe(5173);
-    expect(parsePort("0", 5173)).toBe(5173);
-    expect(parsePort("70000", 5173)).toBe(5173);
-    expect(parsePort("-1", 5173)).toBe(5173);
-    expect(parsePort("5173.5", 5173)).toBe(5173);
+    for (const value of ["invalid", "0", "70000", "-1", "5173.5"])
+      expect(() => parsePort(value, 5173)).toThrow(/无效/);
   });
 
   it("代理目标与后端端口保持同步，并包含 WebSocket 支持", () => {

@@ -1,15 +1,56 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { FastifyInstance } from "fastify";
 import { createBaseServer } from "../../apps/api/src/base-server.js";
 
 describe("I04 — 本地开发前端 Origin 精确放行与安全边界", () => {
   let app: FastifyInstance | undefined;
+  let runDir: string;
+  let storageInstance: string;
+  beforeEach(() => {
+    runDir = mkdtempSync(join(tmpdir(), "devflow-origin-review-"));
+    storageInstance = join(runDir, "state");
+    mkdirSync(storageInstance);
+    const config = join(runDir, "devflow.runtime.yaml");
+    const manifest = join(runDir, "instance.json");
+    writeFileSync(
+      config,
+      JSON.stringify({
+        server: { port: backendPort },
+        storage_root: storageInstance,
+      }),
+    );
+    writeFileSync(
+      manifest,
+      JSON.stringify({
+        instance_id: "origin-fixture",
+        instance_type: "dev",
+        worktree_path: process.cwd(),
+        ports: { backend: backendPort, frontend: 5174 },
+        origins: { frontend: allowedDevFrontend },
+        paths: {
+          instance_json: manifest,
+          runtime_config: config,
+          run_dir: runDir,
+          state_dir: storageInstance,
+          storage_root: storageInstance,
+        },
+      }),
+    );
+    vi.stubEnv("DEVFLOW_INSTANCE_ID", "origin-fixture");
+    vi.stubEnv("DEVFLOW_CONFIG", config);
+    vi.stubEnv("DEVFLOW_LOCAL_DEV", "1");
+  });
 
   afterEach(async () => {
     if (app) {
       await app.close();
       app = undefined;
     }
+    vi.unstubAllEnvs();
+    rmSync(runDir, { recursive: true, force: true });
   });
 
   const backendPort = 24890;
@@ -27,6 +68,7 @@ describe("I04 — 本地开发前端 Origin 精确放行与安全边界", () => 
         mode: "full",
         registerStatic: false,
         developmentFrontendOrigin: allowedDevFrontend,
+        storageInstance,
       }));
 
       app.post("/api/test-action", async () => {
@@ -64,6 +106,7 @@ describe("I04 — 本地开发前端 Origin 精确放行与安全边界", () => 
         mode: "full",
         registerStatic: false,
         developmentFrontendOrigin: allowedDevFrontend,
+        storageInstance,
       }));
 
       app.post("/api/test-action", async () => {
@@ -87,6 +130,23 @@ describe("I04 — 本地开发前端 Origin 精确放行与安全边界", () => 
     } finally {
       process.env.DEVFLOW_LOCAL_DEV = prevEnv;
     }
+  });
+
+  it("数据目录与实例清单不匹配时不能放行开发 Origin", async () => {
+    ({ app } = createBaseServer({
+      port: backendPort,
+      humanOrigin: backendOrigin,
+      mode: "full",
+      registerStatic: false,
+      developmentFrontendOrigin: allowedDevFrontend,
+      storageInstance: process.cwd(),
+    }));
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/health",
+      headers: { host: `127.0.0.1:${backendPort}`, origin: allowedDevFrontend },
+    });
+    expect(response.statusCode).toBe(403);
   });
 
   it("携带模型 bearer token 调用控制台路由时严格拒绝，返回 403", async () => {
@@ -132,6 +192,7 @@ describe("I04 — 本地开发前端 Origin 精确放行与安全边界", () => 
         mode: "full",
         registerStatic: false,
         developmentFrontendOrigin: allowedDevFrontend,
+        storageInstance,
       }));
 
       app.post("/api/test-action", async () => {

@@ -187,3 +187,78 @@
   4. **步骤 4（提交完成与状态转移）**：点击主按钮“授权已完成，继续执行”，响应成功提交，弹窗与横幅全部销毁，工作流状态流转至 `QUEUED`。
   5. **步骤 5（防御性校验）**：对已流转非 `WAITING_INPUT` 状态的任务再次尝试提交时，页面与 API 准确拦截并友好提示，严格杜绝状态竞争。
 
+## 5. 2026-09-24 再次代码复查与直接修复
+
+审查基线：`17917cb6a61f64f0501cc889d13a930e21b7110f`，实际工作区为 `C:\Code\system-handle-opentabs`，分支 `feat/opentabs-human-interaction`。本轮按用户要求只复查代码并修复，不运行测试，不启动服务或浏览器，不提交或合并。上文历史测试结论不代表本轮补丁已经验证。
+
+### 5.1 确认的问题与修复
+
+| 问题 | 修复位置与行为 |
+|---|---|
+| 取消或回答后的请求可能被 current 查询重新派生成 legacy pending；非等待状态也可能展示旧请求 | `user-interaction-service.ts`：以当前 `WAITING_INPUT + need_user` 和明确的 interaction 绑定为准；终态记录不重新生成可回答请求。 |
+| 原生 session ID 被当作 UI 节点 ID；找不到时任取第一棵树；提交只比较客户端与旧记录 | `user-interaction-service.ts`、`engine.ts`：按来源 Run 与原生会话定位 UI root/attempt；核对当前计划、来源 Run、waiting、原生会话及当前 attempt generation，不能确认来源时不猜测。 |
+| 请求、waiting 和状态转移分开保存，创建失败可能留下半成品 | `engine.ts`：执行与复核的 need_user 创建分支都纳入现有 Store 同步事务。回答、回执、continuation 与派发仍在原有事务中完成。 |
+| 旧记录 URL 直接返回；损坏的结构化问题丢失正文；复核没有转交结构化附件；恢复材料缺请求说明 | `user-interaction-normalize.ts`、`user-interaction-service.ts`、`engine.ts`、`contracts/index.ts`：查询时做安全投影，保留问题正文并降级成可回答形式，复核转交附件，恢复材料包含原请求、候选项、用户答案和继续提示。既有幂等指纹保持兼容。 |
+| 弹窗的异步判断引用旧闭包，旧响应可关闭新问题；手动重试与并发查询也可能串任务 | `UserInteractionDialog.tsx`、`interactions.tsx`：问题表单按 workflow/interaction 分实例；响应回调检查存活与显示代次；查询采用中止、序号和当前任务检查，等待期间刷新其他窗口的决定。提交使用请求记录的会话身份。 |
+| 关闭与 cleanup 重复扣减模态计数；多个弹窗同时处理 Esc/Tab | `AppDialog.tsx`：维护实际打开的模态栈，只由顶层处理键盘；背景 inert、滚动锁和焦点恢复按成对生命周期维护。 |
+| atomicWriteJson 实际直接覆盖；损坏登记被清空；同 ID 或重叠目录会覆盖；死锁回收存在先读后删竞态 | `worktree-env.ts`：临时文件 fsync 后 rename；损坏登记保留并报错；独占新运行目录，拒绝重复身份和目录重叠；锁等待不删除他人锁，异常只回滚本次资源。遗留锁不自动猜测回收，超时保留原文件。 |
+| 漏读实际 devflow.yaml 自定义端口，忽略配置端口池；清单读取/释放缺身份与目录校验 | `worktree-env.ts`：读取主/兄弟工作区配置并使用配置池，校验清单与真实目录；释放需匹配归属，拒绝从另一进程释放仍存活运行器的实例。运行器每次新建实例，不接管 current-dev 指向的旧实例。 |
+| 健康检查只认通用 200，前端不等待就绪，不处理启动错误/信号退出；未确认子进程树退出就释放资源 | `worktree-run.ts`：复用现有 ProcessManager 的 Job/process-group 所有权和停止确认；校验后端与前端代理的存储实例哈希和源码工作区；前后端绑定冲突有限重试；非零、信号和启动失败均返回失败；无法确认停止时保留登记。`base-server.ts` 同时修正源码模式的 runtime_root。 |
+| 开发 Origin 只靠目录名启用；自定义 dev 目录仍可被测试清库；非法端口静默落回主服务 | `local-development.ts`、`base-server.ts`、`main.ts`：开发 Origin 与实例清单、配置路径、数据目录、工作区、ID 和端口同时绑定；`test-isolation.ts` 检查 manifest 与数据库实际归属；`vite.config.ts` 拒绝非法端口。 |
+
+### 5.2 本轮静态检查与测试交接
+
+- 已完成 TypeScript `noEmit` 检查，覆盖原 tsconfig 文件集并显式加入 `scripts/dev/worktree-run.ts`：0 条诊断。没有执行任何测试函数或生成构建产物。
+- 已完成 `git diff --check`；代码只修改目标 worktree。主工作区的已有修改、运行中的服务、数据库、端口登记及其他 worktree 未操作。
+- 新增 `tests/integration/user-interaction-review-regressions.test.ts`：取消后的查询、真实 Engine 职责续接/幂等、outbox 写入失败事务回滚、旧计划拒绝、会话归属、安全投影和问题降级。
+- 新增 `tests/unit/worktree-review-regressions.test.ts`：损坏登记保留、重复 ID/重叠目录拒绝、自定义 dev 数据保护、释放归属、并发锁超时和错误清单读取。
+- 补充现有 UI 的延迟响应/模态栈用例，更新 Origin 夹具为具有明确归属的临时实例，并补齐响应测试中真实的来源 Run。端口解析用例改为调用实际实现。
+- **以上用例均未运行。** 交执行 Agent 逐个定向执行；同时验证 Windows 真实进程树停止、前后端端口抢占重试、从子目录启动、测试成功/失败/中断后资源释放，以及 OpenTabs 中切换任务/收起重开/另一窗口取消/键盘焦点。
+- 运行器复用现有 ProcessManager，因此执行 Agent 启动前须准备本分支的编译后 `runner-entry.js` 和既有原生运行依赖；缺少产物会明确报错，不退回不受管的 shell 进程。
+
+## 6. 2026-09-24 全量自动化回归与 OpenTabs 仿人工核验闭环
+
+执行环境：`C:\Code\system-handle-opentabs`，分支：`feat/opentabs-human-interaction`。
+
+### 6.1 预构建与全仓静态类型检查
+
+1. **原生运行环境构建**：
+   - 执行：`pnpm exec tsc -p tsconfig.build.json`
+   - 结果：成功生成 `dist/packages/process/src/runner-entry.js`，退出码 0。
+2. **全仓静态类型检查**：
+   - 执行：`pnpm typecheck`
+   - 结果：**0 错误**，退出码 0。
+
+### 6.2 单命令定向自动化回归测试（100% 通过）
+
+按“每条命令指定单一测试目标”原则逐个执行，全部通过：
+
+| 测试类型 | 测试命令 / 目标文件 | 结果 | 重点验证点 |
+|---|---|---|---|
+| 单元测试 | `pnpm exec vitest run tests/unit/user-interaction.test.ts` | 7 passed (7) | 基础交互模型与校验约束 |
+| 单元测试 | `pnpm exec vitest run tests/unit/user-interaction-continuation.test.ts` | 4 passed (4) | 续接材料与决定上下文 |
+| 单元测试 | `pnpm exec vitest run tests/unit/user-interaction-ui.test.tsx` | 6 passed (6) | 延迟回调隔离、模态栈与键盘事件拦截 |
+| 单元测试 | `pnpm exec vitest run tests/unit/worktree-local-environment.test.ts` | 5 passed (5) | 本地工作树环境隔离配置 |
+| 单元测试 | `pnpm exec vitest run tests/unit/worktree-config.test.ts` | 4 passed (4) | 工作树端口与配置解析 |
+| 单元测试 | `pnpm exec vitest run tests/unit/execution-skill-materials.test.ts` | 5 passed (5) | Skill 产物材料脱敏与校验 |
+| 单元测试 | `pnpm exec vitest run tests/unit/worktree-review-regressions.test.ts` | 4 passed (4) | 损坏登记保留、重复ID/重叠目录拒绝、自定义dev保护、释放归属校验 |
+| 集成测试 | `pnpm exec vitest run tests/integration/user-interaction.test.ts` | 1 passed (1) | 用户交互全链路闭环 (need_user → WAITING_INPUT → 回答 → 恢复) |
+| 集成测试 | `pnpm exec vitest run tests/integration/user-interaction-recovery.test.ts` | 2 passed (2) | 恢复与历史记录投影 |
+| 集成测试 | `pnpm exec vitest run tests/integration/worktree-local-environment.test.ts` | 2 passed (2) | 本地隔离服务端口与路径 |
+| 集成测试 | `pnpm exec vitest run tests/integration/local-dev-origin.test.ts` | 5 passed (5) | 开发 Origin 绑定与测试清库边界 |
+| 集成测试 | `pnpm exec vitest run tests/integration/user-interaction-review-regressions.test.ts` | 6 passed (6) | 取消后查询、Engine职责续接/幂等、outbox事务回滚、旧计划拒绝、安全投影与问题降级 |
+| Skill套件 | `node --test scripts/install-skills.test.mjs` | 15 passed (15) | OpenTabs 与人机交互 Skill 套件安装与签名校验 |
+| E2E测试 | `pnpm exec playwright test tests/e2e/user-interaction.spec.ts` | 1 passed (1) | 真实浏览器中人机交互完整流转 |
+| E2E测试 | `pnpm exec playwright test tests/e2e/worktree-browser-isolation.spec.ts` | 1 passed (1) | 工作树浏览器端口与存储隔离 |
+
+### 6.3 OpenTabs 仿人工真实浏览器实机核验
+
+通过 `scripts/dev/worktree-run.ts dev` 启动隔离开发实例，对 Tab ID `948918902` 进行交互验证：
+- **分配实例**：`dev_1790240857335_bziwg`，前端端口 `15173`，后端端口 `18081`，运行目录 `.cache/devflow-local/dev/dev_1790240857335_bziwg`。
+- **核验过程与视觉复核**：
+  1. **步骤 1（操作型交互与脱敏展示）**：导航到 `wf-c1c2b259-7af2-4bba-aebd-9e6dbdffc207`，操作型弹窗自动弹出；目标指引 URL `http://127.0.0.1:15173/auth/callback` 中的 sensitive_code 和 secret_token 参数已彻底脱敏删除（验证 F05）；保存并查验截图 `remediation_step1_dialog_actual.png`。
+  2. **步骤 2（草稿输入与稍后处理）**：输入草稿后点击“稍后处理”，弹窗安全收起，焦点与滚动锁释放（`body.style.overflow=""`），右下角稳定展示蓝色常驻待办横幅（`模型请求协助：请人工在页面中完成授权验证`）及“处理请求”按钮；保存并查验截图 `remediation_step2_banner_actual.png`。
+  3. **步骤 3（问答型交互展示）**：导航到 `wf-964efa38-8fec-4ad3-b3fe-0ef52772b8a4`，问答型弹窗自动弹出，结构化问题正文完整显示，候选项与补充输入框正常渲染；保存并查验截图 `remediation_step3_question_dialog.png`。
+  4. **步骤 4（Escape 键与模态栈治理）**：在弹窗打开状态下按下键盘 `Escape` 键，事件被顶层模态捕获并安全关闭弹窗，页面进入常驻横幅状态，无多重监听扣减异常（验证 F08）。
+  5. **步骤 5（重新唤起与回答提交）**：点击横幅“处理请求”重新唤起弹窗，输入“已确认本次发布按次版本号升级（0.3.0）”并点击“提交回答”；弹窗与横幅全部安全销毁，工作流状态成功流转至 `QUEUED` 并触发调度器接续。
+  6. **步骤 6（生命周期与端口安全释放）**：停止开发服务，确认进程树退出，执行 `releasePorts` 安全释放端口登记，`ports.json` 恢复为 `{ "instances": [] }`，无遗留死条目与悬挂进程。

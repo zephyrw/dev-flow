@@ -78,22 +78,58 @@ export function normalizeInteractionInput(
       const data = parsed.data;
       return {
         ...data,
+        title: maskSensitiveText(data.title),
+        question: data.question ? maskSensitiveText(data.question) : undefined,
+        choices: data.choices?.map((choice) => ({
+          ...choice,
+          label: maskSensitiveText(choice.label),
+        })),
         message: maskSensitiveText(data.message),
-        resume_note: data.resume_note ? maskSensitiveText(data.resume_note) : undefined,
+        resume_note: data.resume_note
+          ? maskSensitiveText(data.resume_note)
+          : undefined,
         target: sanitizeInteractionTarget(data.target),
       };
     }
+    // A malformed optional target/choice must not erase the model's question.
+    const raw = rawInput as Record<string, unknown>;
+    const safeText = (value: unknown) =>
+      typeof value === "string" ? maskSensitiveText(value.trim()) : "";
+    const message =
+      safeText(raw.message) ||
+      fallback?.summary ||
+      fallback?.notes ||
+      "执行模型需要用户协助";
+    const question = safeText(raw.question);
+    if (raw.kind === "question" || question) {
+      return {
+        kind: "question",
+        title: (safeText(raw.title) || "请回答执行提问").slice(0, 120),
+        message: maskSensitiveText(message).slice(0, 4000),
+        question: (question || message).slice(0, 1000),
+        allow_free_text: true,
+        resume_note: safeText(raw.resume_note).slice(0, 4000) || undefined,
+      };
+    }
+    fallback = {
+      ...fallback,
+      summary: safeText(raw.message) || fallback?.summary,
+      notes: safeText(raw.resume_note) || fallback?.notes,
+    };
   }
 
   // 降级处理：优先使用 questions
-  const questions = (fallback?.questions ?? []).map((q) => q.trim()).filter(Boolean);
+  const questions = (fallback?.questions ?? [])
+    .map((q) => q.trim())
+    .filter(Boolean);
   const summary = fallback?.summary?.trim() || "";
   const notes = fallback?.notes?.trim() || "";
+  if (!questions.length && notes && !summary) questions.push(notes);
 
   if (questions.length > 0) {
     const combinedQuestion =
       questions.length === 1
-        ? (questions[0] || "")
+        ? questions[0] || ""
         : questions.map((q, idx) => `${idx + 1}. ${q}`).join("\n");
 
     const messageText = summary || notes || "执行模型需要用户协助决策";
@@ -101,7 +137,10 @@ export function normalizeInteractionInput(
       kind: "question",
       title: "请回答执行提问",
       message: maskSensitiveText(messageText).slice(0, 4000),
-      question: maskSensitiveText(combinedQuestion || "请确认决策").slice(0, 1000),
+      question: maskSensitiveText(combinedQuestion || "请确认决策").slice(
+        0,
+        1000,
+      ),
       allow_free_text: true,
       resume_note: notes ? maskSensitiveText(notes).slice(0, 4000) : undefined,
     };
@@ -109,7 +148,9 @@ export function normalizeInteractionInput(
 
   // 如果没有具体提问，但有 notes 或 summary，尝试判断是提问还是操作
   const fallbackMessage =
-    summary || notes || "执行模型需要用户在界面中完成必要操作，完成后请点击确认继续。";
+    summary ||
+    notes ||
+    "执行模型需要用户在界面中完成必要操作，完成后请点击确认继续。";
 
   return {
     kind: "action_required",
