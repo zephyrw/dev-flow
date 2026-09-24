@@ -85,6 +85,12 @@ describe("U02 — 用户交互延续性与 WaitingContext 集成", () => {
       feedback: vi.fn(),
     } as any;
 
+    store.put("workflow", "wf-101", "wf-101", {
+      id: "wf-101",
+      state: "WAITING_INPUT",
+      plan_revision: 1,
+    });
+
     saveWaitingContext(store, "wf-101", {
       purpose: "execute",
       role: "executor",

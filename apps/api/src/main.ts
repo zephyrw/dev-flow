@@ -1,4 +1,4 @@
-import { join } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { recordController } from "../../../packages/service/src/descriptor.js";
 import { loadConfig } from "../../../packages/contracts/src/config.js";
@@ -26,10 +26,51 @@ const accountService = await bootstrapAccountService(store, {
 });
 const bridge = runtime.attachAccountService(accountService);
 
-const developmentFrontendOrigin =
-  process.env.DEVFLOW_LOCAL_DEV === "1"
-    ? process.env.DEVFLOW_DEV_FRONTEND_ORIGIN?.trim()
-    : undefined;
+function resolveDevelopmentFrontendOrigin(): string | undefined {
+  if (process.env.NODE_ENV === "production") return undefined;
+  if (process.env.DEVFLOW_LOCAL_DEV !== "1") return undefined;
+
+  const host = config.server.host;
+  if (host !== "127.0.0.1" && host !== "localhost") return undefined;
+
+  const normalizedStorageRoot = resolve(config.storage_root).toLowerCase();
+  const segments = normalizedStorageRoot.split(/[\\/]/);
+  if (!segments.includes(".cache") && !segments.includes("devflow-local")) {
+    console.warn(
+      `[main] 拒绝启用开发前端 Origin 例外: storage_root (${config.storage_root}) 非隔离运行目录`,
+    );
+    return undefined;
+  }
+  const prodRoot = resolve(".devflow").toLowerCase();
+  if (
+    normalizedStorageRoot === prodRoot ||
+    normalizedStorageRoot.startsWith(prodRoot + sep)
+  ) {
+    console.warn(
+      "[main] 拒绝启用开发前端 Origin 例外: storage_root 覆盖了生产数据目录",
+    );
+    return undefined;
+  }
+
+  const raw = process.env.DEVFLOW_DEV_FRONTEND_ORIGIN?.trim();
+  if (!raw) return undefined;
+
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return undefined;
+    if (url.hostname !== "127.0.0.1" && url.hostname !== "localhost")
+      return undefined;
+    if (url.username || url.password) return undefined;
+    if (url.pathname !== "/" && url.pathname !== "") return undefined;
+    if (url.search || url.hash) return undefined;
+    if (!url.port) return undefined;
+    return url.origin;
+  } catch {
+    return undefined;
+  }
+}
+
+const developmentFrontendOrigin = resolveDevelopmentFrontendOrigin();
 const app = await buildServer(engine, {
   accountService,
   developmentFrontendOrigin,

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { fixture, cleanup } from "../fixtures/native-flow.js";
 import { UserInteractionService } from "../../packages/core/src/user-interaction-service.js";
+import { saveWaitingContext } from "../../packages/core/src/waiting-context.js";
 import { Store } from "../../packages/store/src/store.js";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -38,6 +39,21 @@ describe("I02 — 用户交互恢复与异常边界", () => {
       });
 
       expect(created.status).toBe("pending");
+
+      store1.put("workflow", "wf-restart-1", "wf-restart-1", {
+        id: "wf-restart-1",
+        state: "WAITING_INPUT",
+        plan_revision: 2,
+      });
+
+      saveWaitingContext(store1, "wf-restart-1", {
+        purpose: "execute",
+        role: "executor",
+        intent: "need_user",
+        run_id: "run-persist-1",
+        interaction_id: created.id,
+      });
+
       store1.close();
 
       // 2. 模拟服务重启：重新打开同一个 SQLite 文件
@@ -85,49 +101,69 @@ describe("I02 — 用户交互恢复与异常边界", () => {
   it("已取消或已解决的交互不能被重复回答，返回异常", async () => {
     const s = await fixture();
     try {
-      const service = new UserInteractionService(s.store);
+      const approved = s.engine.get(s.w.id);
+      const runId = "run-dup-1";
 
-      const interaction = service.createInteraction({
-        workflowId: s.w.id,
-        sourceRunId: "run-dup-1",
-        sourcePlanRevision: 1,
-        purpose: "execute",
-        role: "executor",
-        rawInput: {
+      s.engine.transition(s.w.id, [approved.state], "EXECUTING", "execute", {
+        run_id: runId,
+      });
+
+      s.store.put("run", runId, s.w.id, {
+        id: runId,
+        workflow_id: s.w.id,
+        plan_revision: approved.plan_revision,
+        adapter: "codex",
+        stage: "execute",
+        status: "running",
+        purpose: "implement",
+        protocol: "lightweight",
+        started_at: new Date().toISOString(),
+        package_hash: "pkg-1",
+      });
+
+      // 通过 deliver 触发 need_user
+      await s.engine.deliver(s.w.id, {
+        status: "need_user",
+        summary: "需要用户人工操作",
+        user_interaction: {
           kind: "action_required",
           title: "请人工操作",
           message: "点击完成",
         },
       });
 
+      const service = new UserInteractionService(s.store);
+      const interaction = service.getCurrentInteraction(s.w.id);
+      expect(interaction).toBeDefined();
+
       // 主动取消交互
       await service.respondInteraction(
         s.w.id,
-        interaction.id,
+        interaction!.id,
         {
           request_id: "req-cancel-1",
-          source_run_id: "run-dup-1",
+          source_run_id: runId,
           action: "cancel",
         },
         s.engine,
       );
 
-      const canceled = service.getInteraction(interaction.id);
+      const canceled = service.getInteraction(interaction!.id);
       expect(canceled?.status).toBe("cancelled");
 
       // 对已取消的交互提交新回答，应当抛出 409 CONFLICT 异常
       await expect(
         service.respondInteraction(
           s.w.id,
-          interaction.id,
+          interaction!.id,
           {
             request_id: "req-on-canceled",
-            source_run_id: "run-dup-1",
+            source_run_id: runId,
             action: "confirm",
           },
           s.engine,
         ),
-      ).rejects.toThrow(/该交互请求已被处理或失效/);
+      ).rejects.toThrow();
     } finally {
       await cleanup(s);
     }

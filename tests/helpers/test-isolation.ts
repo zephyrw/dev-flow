@@ -140,10 +140,46 @@ function parseTestPort(raw: string | undefined): number {
   return port;
 }
 
+export function assertSafeTestDatabaseCleanup(
+  sqlitePath: string,
+  runDir: string,
+): void {
+  const normalizedRunDir = resolve(runDir);
+  const normalizedSqlite = resolve(sqlitePath);
+  if (
+    hasPathSegment(normalizedRunDir, "dev") ||
+    hasPathSegment(normalizedSqlite, "dev")
+  ) {
+    throw new Error(
+      `拒绝清理测试数据库: 路径位于开发实例目录中 (${sqlitePath})，严禁删除开发数据`,
+    );
+  }
+  const productionRoot = resolve(".devflow");
+  if (
+    normalizedSqlite === productionRoot ||
+    isInside(normalizedSqlite, productionRoot)
+  ) {
+    throw new Error("拒绝清理测试数据库: 不能操作生产数据库目录 .devflow");
+  }
+  const isIsolatedTest =
+    hasPathSegment(normalizedRunDir, "tests") ||
+    hasPathSegment(normalizedRunDir, "test") ||
+    hasPathSegment(normalizedRunDir, ".cache") ||
+    hasPathSegment(normalizedRunDir, "tmp") ||
+    hasPathSegment(normalizedRunDir, "temp");
+  if (!isIsolatedTest) {
+    throw new Error(
+      `拒绝清理测试数据库: 运行目录非测试隔离目录 (${runDir})`,
+    );
+  }
+}
+
 function rejectUnsafeRunDir(dir: string) {
   const normalized = resolve(dir);
   if (hasPathSegment(normalized, "node_modules"))
     throw new Error("DEVFLOW_TEST_RUN_DIR 不能指向 node_modules");
+  if (hasPathSegment(normalized, "dev"))
+    throw new Error("DEVFLOW_TEST_RUN_DIR 不能指向开发实例目录 dev");
   const productionRoot = resolve(".devflow");
   if (normalized === productionRoot || isInside(normalized, productionRoot))
     throw new Error("DEVFLOW_TEST_RUN_DIR 不能使用生产数据库目录 .devflow");
@@ -171,10 +207,10 @@ function forbiddenAuthRoots(): string[] {
 }
 
 function hasPathSegment(dir: string, name: string): boolean {
-  return dir.split(/[\\/]/).includes(name);
+  return dir.toLowerCase().split(/[\\/]/).includes(name.toLowerCase());
 }
 
 function isInside(target: string, root: string): boolean {
   const prefix = root.endsWith(sep) ? root : root + sep;
-  return target.startsWith(prefix);
+  return target.toLowerCase().startsWith(prefix.toLowerCase());
 }

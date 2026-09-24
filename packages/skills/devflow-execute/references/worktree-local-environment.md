@@ -20,20 +20,26 @@
 ## 2. 临时文件布局与存储结构
 
 ```text
-<worktree>/
-  .cache/devflow-local/
-    instance.json                 # 当前实例端口、路径与进程信息
-    devflow.runtime.yaml          # 当前后端的临时运行时配置
-    state/                        # 独立的 SQLite 数据存储
-    reports/                      # 临时测试与核验报告
-    browser/                      # 临时标签页信息与截图缓存
+<worktree>/.cache/devflow-local/
+  current-dev.json                    # 指向当前交互式 dev 实例配置
+  dev/<instance-id>/
+    instance.json                     # 当前开发实例端口与路径清单
+    devflow.runtime.yaml              # 当前开发后端的临时运行时配置
+    state/                            # 独立的开发 SQLite 数据存储
+  tests/<target-id>/<invocation-id>/
+    instance.json                     # 独立测试实例端口与路径清单
+    devflow.runtime.yaml              # 独立测试后端的临时运行时配置
+    state/                            # 独立的测试 SQLite 数据存储
+    reports/                          # 临时测试与核验报告
+    browser/                          # 临时标签页信息与截图缓存
 
 <git-common-dir>/devflow-local/
-  ports.json                      # 同一 Git 仓库下所有 worktree 的全局端口登记表
-  allocation.lock/                # 跨进程文件分配锁
+  ports.json                          # 规范化 worktree + instance_id 归属登记
+  allocation.lock/                    # 短时、带所有权的本地锁
 ```
 
 - `<git-common-dir>` 通过 `git rev-parse --git-common-dir` 解析，兼容主工作区与 linked worktree。
+- 交互式 dev 实例与每次 test invocation 拥有独立的生命周期和目录，严禁测试复用 dev 实例的目录或数据。
 - 所有上述目录均在 `.gitignore` 保护下，防止误提交。
 
 ---

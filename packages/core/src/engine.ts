@@ -67,6 +67,9 @@ import {
   type QualityPhase,
   resolveTaskModel,
   type RunContinuation,
+  CONVERSATION_ENTITY,
+  type ConversationNode,
+  type ConversationAttempt,
 } from "../../contracts/src/index.js";
 import type { Config } from "../../contracts/src/config.js";
 import { Store } from "../../store/src/store.js";
@@ -867,6 +870,7 @@ export class Engine {
     )
       this.store.remove("repair_state", key);
     const waiting = readWaitingContext(this.store, key);
+    new UserInteractionService(this.store).supersedePendingInteractions(key);
     if (w.state === "WAITING_INPUT" && waiting && scope === "within_plan")
       return this.resumeFromWaiting(key, text, waiting);
     if (scope === "within_plan") {
@@ -4115,11 +4119,14 @@ export class Engine {
       const currentW = this.get(key);
       const interactionService = new UserInteractionService(this.store);
       const conversationId = this.store.get<Run>("run", w.run_id!)?.conversation_id;
+      const convCtx = this.resolveConversationTreeContext(key, w.run_id, conversationId);
       const interaction = interactionService.createInteraction({
         workflowId: key,
         sourceRunId: w.run_id ?? "",
         sourcePlanRevision: currentW.plan_revision ?? 1,
-        rootConversationId: conversationId,
+        rootConversationId: convCtx.rootConversationId,
+        sourceGeneration: convCtx.sourceGeneration,
+        nativeSessionId: convCtx.nativeSessionId,
         purpose: "review",
         role: "planner",
         fallbackSummary: review.summary ?? review.notes,
@@ -4479,16 +4486,20 @@ export class Engine {
     if (normalized.intent === "need_user") {
       const currentW = this.get(key);
       const interactionService = new UserInteractionService(this.store);
+      const convCtx = this.resolveConversationTreeContext(key, runId, conversationId);
       const interaction = interactionService.createInteraction({
         workflowId: key,
         sourceRunId: runId,
         sourcePlanRevision: currentW.plan_revision ?? 1,
-        rootConversationId: conversationId,
+        rootConversationId: convCtx.rootConversationId,
+        sourceGeneration: convCtx.sourceGeneration,
+        nativeSessionId: convCtx.nativeSessionId,
         purpose: "execute",
         role: plannerRole ? "planner" : "executor",
         rawInput: normalized.user_interaction,
         fallbackSummary: normalized.summary,
         fallbackQuestions: questions,
+        fallbackNotes: normalized.notes,
       });
       interactionId = interaction.id;
     }
@@ -4597,6 +4608,53 @@ export class Engine {
       });
     }
   }
+
+  private resolveConversationTreeContext(
+    workflowId: string,
+    runId?: string,
+    conversationId?: string,
+  ): {
+    rootConversationId?: string;
+    sourceGeneration?: number;
+    nativeSessionId?: string;
+  } {
+    const nativeSessionId = conversationId;
+    try {
+      const nodes = this.store.list<ConversationNode>(CONVERSATION_ENTITY.node, workflowId);
+      if (nodes.length > 0) {
+        let matchedNode = conversationId
+          ? nodes.find((n) => n.id === conversationId)
+          : undefined;
+        if (!matchedNode && runId) {
+          const run = this.store.get<Run>("run", runId);
+          if (run?.conversation_id) {
+            matchedNode = nodes.find((n) => n.id === run.conversation_id);
+          }
+        }
+        if (!matchedNode) {
+          matchedNode = nodes.find((n) => !n.parent_id || n.root_id === n.id) || nodes[0];
+        }
+        if (matchedNode) {
+          const rootConversationId = matchedNode.root_id || matchedNode.id;
+          let sourceGeneration: number | undefined;
+          if (matchedNode.current_attempt_id) {
+            const attempt = this.store.get<ConversationAttempt>(
+              CONVERSATION_ENTITY.attempt,
+              matchedNode.current_attempt_id,
+            );
+            if (attempt) {
+              sourceGeneration = attempt.generation;
+            }
+          }
+          return { rootConversationId, sourceGeneration, nativeSessionId };
+        }
+      }
+    } catch {
+      // 容错降级
+    }
+    return { nativeSessionId };
+  }
+
   resumeFromWaiting(
     key: string,
     text: string,

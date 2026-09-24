@@ -114,12 +114,7 @@ export type NormalizedExecution = {
   user_interaction?: UserInteractionInput;
 };
 
-function parseUserInteraction(raw: unknown): UserInteractionInput | undefined {
-  if (!raw || typeof raw !== "object") return undefined;
-  const parsed = UserInteractionInputSchema.safeParse(raw);
-  if (parsed.success) return parsed.data;
-  return undefined;
-}
+import { normalizeInteractionInput } from "./user-interaction-normalize.js";
 
 function withCopy(
   rec: Record<string, unknown>,
@@ -134,13 +129,30 @@ function withCopy(
     : Array.isArray(nested?.artifacts)
       ? nested.artifacts
       : undefined;
+  const summary = text(rec.summary) ?? text(nested?.summary);
+  const notes = text(rec.notes) ?? text(nested?.notes);
+  const questions = questionsOf(rec).concat(questionsOf(nested));
   const rawInteraction = rec.user_interaction ?? nested?.user_interaction;
-  const user_interaction = parseUserInteraction(rawInteraction);
+
+  let user_interaction: UserInteractionInput | undefined = undefined;
+  if (intent === "need_user") {
+    user_interaction = normalizeInteractionInput(rawInteraction, {
+      summary,
+      notes,
+      questions,
+    });
+  } else if (rawInteraction && typeof rawInteraction === "object") {
+    const parsed = UserInteractionInputSchema.safeParse(rawInteraction);
+    if (parsed.success) {
+      user_interaction = parsed.data;
+    }
+  }
+
   return {
     intent,
     status,
-    summary: text(rec.summary) ?? text(nested?.summary),
-    notes: text(rec.notes) ?? text(nested?.notes),
+    summary,
+    notes,
     artifacts,
     payload: rec,
     intent_source,

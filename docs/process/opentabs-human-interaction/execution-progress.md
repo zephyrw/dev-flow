@@ -135,3 +135,55 @@
 | A23 | E2E 测试覆盖真实弹窗与横幅交互全流程 | E01、E02 全部通过 | 通过 |
 | A24 | 原生运行时能够实际读取并向模型注入新 Skill 材料 | `execution-skill-materials.ts` 与 U06、运行时接线验证通过 | 通过 |
 | A25 | 执行完毕后保留测试证据，代码与文档状态清晰 | 测试全部全绿，进度文档详实记录 | 通过 |
+
+---
+
+## 4. 深度整改执行记录 (RT01 - RT07 与 F01 - F15)
+
+> 依据整改计划：`docs/plan/DevFlow_OpenTabs_Human_Interaction_Remediation_Plan.md`  
+> 修复确认的 15 项缺陷（8 项 P1，7 项 P2，编号 F01–F15），完成全部自动回归与真实浏览器核验。
+
+### 4.1 整改任务落实矩阵
+
+| 任务编号 | 覆盖问题 | 落实模块与关键修改 | 达成状态 |
+|---|---|---|---|
+| **RT01** | F04, F05, F06 | `packages/contracts/src/user-interaction.ts`, `packages/core/src/user-interaction-normalize.ts`, `round-intent.ts`：彻底剥离 URL 敏感凭据/Query/Fragment，强化非空 trim 校验；options 唯一性；增加 `normalizeInteractionInput` 与 `validateInteractionResponse` 语义归一化，安全降级损坏附件，确保 `completed` 绝不被附件篡改为等待。 | 已完成 |
+| **RT02** | F01, F02, F03, F06 | `packages/core/src/user-interaction-service.ts`, `engine.ts`：所有响应收敛在 Store 同步事务中；严格校验工作流状态 (`WAITING_INPUT`/`HUMAN_PENDING`/`HUMAN_VERIFY`) 与 WaitingContext 归属；前置校验 `receiptKey` 幂等指纹（同键同内容返回原回执，同键不同内容报 409 `IDEMPOTENCY_CONFLICT`）；取消分支原子标记取消，回答分支恢复工作流；`resolveConversationTreeContext` 注入真实 UI 根与代数；普通指导恢复时废弃历史未决交互。 | 已完成 |
+| **RT03** | F07, F08, F09 | `apps/web/src/components/AppDialog.tsx`, `UserInteractionDialog.tsx`, `interactions.tsx`, `user-interaction.css`：以 `(workflowId, interactionId)` 作为唯一键维护草稿；Esc/遮罩/稍后处理不丢草稿；网络重试复用相同快照的 requestId，修改内容重新生成；补齐键盘 Tab/Shift+Tab 焦点陷阱循环；组件卸载/关闭均可靠恢复原焦点；多模态共享全局滚动锁计数器。 | 已完成 |
+| **RT04** | F10, F11, F12 | `scripts/dev/worktree-env.ts`, `test-isolation.ts`, `fixture-server.ts`：`FileLock` 重构为非阻塞异步锁，加入所有权 token 与死进程超时回收；目录彻底划分为交互式开发 `.cache/devflow-local/dev/<id>/` 与测试 `.cache/devflow-local/tests/<target>/<invoc>/`；`ports.json` 原子替换并支持损坏备份；使用 `git worktree list --porcelain` 识别兄弟与主工作区，排除配置文件中的自定义保留端口；夹具增设 `assertSafeTestDatabaseCleanup` 保护，严禁对开发目录执行删除。 | 已完成 |
+| **RT05** | F13, F14, F15 | `scripts/dev/worktree-run.ts`, `apps/api/src/main.ts`, `base-server.ts`：运行器显式指定 `cwd = instance.worktree_path`；启动前端前等待 `/api/health` 验证实例健康就绪；捕获 `EADDRINUSE` 支持有限换端口重试；单 Promise 进程树（Windows taskkill/POSIX 信号）优雅清理与真实退出码透传；测试分配专属独立实例并于 finally 释放；严格限制 `developmentFrontendOrigin` 仅在非生产、回环、隔离数据目录下启用，Fetch Metadata 拦截无 Origin 跨站请求。 | 已完成 |
+| **RT06** | F06, F10, F12–F15 | `worktree-local-environment.md`, `user-interaction.md` 等文档：对齐 dev/test 独立生命周期目录布局与端口互斥策略；说明每次 test invocation 独立不继承 dev 数据库。 | 已完成 |
+| **RT07** | 全局回归 | 全量 TypeScript 编译检查、单目标测试全量回归、OpenTabs 真实浏览器核验。 | 全部通过 |
+
+### 4.2 自动化测试回归清单
+
+- [x] **全仓类型检查**：`pnpm typecheck` (0 errors, code 0)
+- [x] **单元测试 (Unit Tests)**：
+  - `tests/unit/user-interaction.test.ts` (7/7 passed)
+  - `tests/unit/user-interaction-continuation.test.ts` (4/4 passed)
+  - `tests/unit/user-interaction-ui.test.tsx` (4/4 passed)
+  - `tests/unit/worktree-local-environment.test.ts` (5/5 passed)
+  - `tests/unit/worktree-config.test.ts` (4/4 passed)
+  - `tests/unit/execution-skill-materials.test.ts` (5/5 passed)
+- [x] **集成测试 (Integration Tests)**：
+  - `tests/integration/user-interaction.test.ts` (1/1 passed)
+  - `tests/integration/user-interaction-recovery.test.ts` (2/2 passed)
+  - `tests/integration/worktree-local-environment.test.ts` (2/2 passed)
+  - `tests/integration/local-dev-origin.test.ts` (4/4 passed)
+- [x] **端到端测试 (E2E Tests)**：
+  - `tests/e2e/user-interaction.spec.ts` (1/1 passed)
+  - `tests/e2e/worktree-browser-isolation.spec.ts` (1/1 passed)
+- [x] **Skill 安装套件测试**：
+  - `node --test scripts/install-skills.test.mjs` (15/15 passed)
+
+### 4.3 OpenTabs 仿人工真实浏览器核验
+
+- **执行环境**：端口 `15173`（前端）与 `14810`（后端），数据隔离于 `.cache/devflow-local/state/`。
+- **核验标签页**：Tab ID `948918902`，真实 URL `http://127.0.0.1:15173/?workflow=wf-verify-1`。
+- **核验过程与视觉复核**：
+  1. **步骤 1（弹窗打开）**：进入挂起工作流，模态弹窗自动展出，标题、来源任务 (`wf-verify-1 (executor)`)、蓝色目标指引条与操作说明完整呈现；无障碍标题 ID 关联正常。调用 `view_file` 查验截图 `remediation_step1_dialog.png`，视觉样式整洁规范。
+  2. **步骤 2（稍后处理与横幅）**：输入草稿文本后点击“稍后处理”，弹窗安全收起，焦点可靠释放；工作台右下方任务面板上方展示蓝色常驻待办横幅（`模型请求协助：请人工在页面中完成授权验证`）及“处理请求”按钮。调用 `view_file` 查验截图 `remediation_step2_banner_actual.png`，视觉布局层次分明。
+  3. **步骤 3（重开与草稿保留）**：点击横幅“处理请求”，弹窗再次唤起，文本草稿完整保留（验证 F07 草稿跨收起保护）。
+  4. **步骤 4（提交完成与状态转移）**：点击主按钮“授权已完成，继续执行”，响应成功提交，弹窗与横幅全部销毁，工作流状态流转至 `QUEUED`。
+  5. **步骤 5（防御性校验）**：对已流转非 `WAITING_INPUT` 状态的任务再次尝试提交时，页面与 API 准确拦截并友好提示，严格杜绝状态竞争。
+

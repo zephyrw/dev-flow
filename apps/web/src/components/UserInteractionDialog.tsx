@@ -17,6 +17,24 @@ export interface UserInteractionDialogProps {
   expectedGeneration?: number;
 }
 
+interface DraftState {
+  selectedChoiceId: string;
+  answerText: string;
+  lastAttempt?: {
+    action: string;
+    choice_id?: string;
+    answer?: string;
+    requestId: string;
+  };
+}
+
+// F07: 全局草稿存储，以 (workflowId, interactionId) 作为唯一索引键
+const draftStore = new Map<string, DraftState>();
+
+function getDraftKey(workflowId: string, interactionId: string): string {
+  return `${workflowId}:${interactionId}`;
+}
+
 export function UserInteractionDialog({
   workflowId,
   interaction,
@@ -26,29 +44,64 @@ export function UserInteractionDialog({
   rootConversationId,
   expectedGeneration,
 }: UserInteractionDialogProps) {
+  const currentInteractionId = interaction?.id || "";
+  const draftKey = currentInteractionId
+    ? getDraftKey(workflowId, currentInteractionId)
+    : "";
+
   const [selectedChoiceId, setSelectedChoiceId] = useState<string>("");
   const [answerText, setAnswerText] = useState<string>("");
   const [submitting, setSubmitting] = useState<boolean>(false);
   const [error, setError] = useState<string>("");
 
-  // 保持重试时的稳定幂等 request_id
-  const requestIdRef = useRef<string>("");
-
+  // F07: 当 interaction 或 workflow 变化时，按 (workflowId, interactionId) 独立加载/重置草稿
   useEffect(() => {
-    if (isOpen && interaction) {
-      if (!requestIdRef.current) {
-        requestIdRef.current = `req_int_${Date.now()}_${Math.random()
-          .toString(36)
-          .slice(2, 9)}`;
-      }
-      setError("");
-    } else if (!isOpen) {
-      requestIdRef.current = "";
+    if (!draftKey) {
       setSelectedChoiceId("");
       setAnswerText("");
       setError("");
+      return;
     }
-  }, [isOpen, interaction?.id]);
+
+    const saved = draftStore.get(draftKey);
+    if (saved) {
+      setSelectedChoiceId(saved.selectedChoiceId);
+      setAnswerText(saved.answerText);
+    } else {
+      setSelectedChoiceId("");
+      setAnswerText("");
+    }
+    setError("");
+  }, [draftKey]);
+
+  // 当用户编辑时，同步保存当前问题的草稿
+  const handleChoiceChange = (choiceId: string) => {
+    setSelectedChoiceId(choiceId);
+    if (draftKey) {
+      const current = draftStore.get(draftKey) || {
+        selectedChoiceId: "",
+        answerText: "",
+      };
+      draftStore.set(draftKey, {
+        ...current,
+        selectedChoiceId: choiceId,
+      });
+    }
+  };
+
+  const handleAnswerChange = (text: string) => {
+    setAnswerText(text);
+    if (draftKey) {
+      const current = draftStore.get(draftKey) || {
+        selectedChoiceId: "",
+        answerText: "",
+      };
+      draftStore.set(draftKey, {
+        ...current,
+        answerText: text,
+      });
+    }
+  };
 
   if (!isOpen || !interaction) return null;
 
@@ -60,7 +113,14 @@ export function UserInteractionDialog({
     if (submitting) return;
 
     if (action === "answer") {
-      if (!selectedChoiceId && !answerText.trim()) {
+      const trimmedChoice = selectedChoiceId.trim();
+      const trimmedAnswer = answerText.trim();
+      if (req.allow_free_text === false) {
+        if (!trimmedChoice) {
+          setError("当前问题禁止自由文本输入，请选择一个有效选项");
+          return;
+        }
+      } else if (!trimmedChoice && !trimmedAnswer) {
         setError("请选择一个选项或输入回答内容");
         return;
       }
@@ -69,22 +129,66 @@ export function UserInteractionDialog({
     setSubmitting(true);
     setError("");
 
+    // F07: 提交快照与幂等 requestId 处理
+    const currentDraft = draftStore.get(draftKey) || {
+      selectedChoiceId,
+      answerText,
+    };
+    const choice_id = selectedChoiceId ? selectedChoiceId.trim() : undefined;
+    const answer = answerText.trim() ? answerText.trim() : undefined;
+
+    let requestId: string;
+    const last = currentDraft.lastAttempt;
+    if (
+      last &&
+      last.action === action &&
+      last.choice_id === choice_id &&
+      last.answer === answer
+    ) {
+      // 相同快照重试，复用相同 request_id
+      requestId = last.requestId;
+    } else {
+      // 新决定或修改内容，生成新 request_id
+      requestId = `req_int_${Date.now()}_${Math.random()
+        .toString(36)
+        .slice(2, 9)}`;
+      currentDraft.lastAttempt = {
+        action,
+        choice_id,
+        answer,
+        requestId,
+      };
+      draftStore.set(draftKey, currentDraft);
+    }
+
+    const targetWorkflowId = workflowId;
+    const targetInteractionId = interaction.id;
+
     try {
       const payload: UserInteractionResponseInput = {
-        request_id: requestIdRef.current,
+        request_id: requestId,
         source_run_id: interaction.source_run_id,
+        source_plan_revision: interaction.source_plan_revision,
         root_conversation_id: rootConversationId,
         expected_generation: expectedGeneration,
         action,
-        choice_id: selectedChoiceId || undefined,
-        answer: answerText.trim() || undefined,
+        choice_id,
+        answer,
       };
 
-      await respondUserInteraction(workflowId, interaction.id, payload);
+      await respondUserInteraction(targetWorkflowId, targetInteractionId, payload);
+
+      // 成功提交后清除该草稿
+      draftStore.delete(draftKey);
+
+      // 触发外部状态拉取
       await onResponded();
       onClose();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      // 只有当前依然在同一问题时才显示错误
+      if (interaction.id === targetInteractionId) {
+        setError(err instanceof Error ? err.message : String(err));
+      }
     } finally {
       setSubmitting(false);
     }
@@ -99,9 +203,7 @@ export function UserInteractionDialog({
         className="btn-interaction-cancel"
         disabled={submitting}
         onClick={() => {
-          if (window.confirm("确定要取消本次请求吗？任务将保持暂停状态。")) {
-            void handleSubmit("cancel");
-          }
+          void handleSubmit("cancel");
         }}
       >
         取消本次请求
@@ -131,7 +233,10 @@ export function UserInteractionDialog({
             type="button"
             className="btn btn-primary btn-interaction-submit"
             disabled={
-              submitting || (!selectedChoiceId && !answerText.trim())
+              submitting ||
+              (req.allow_free_text === false
+                ? !selectedChoiceId
+                : !selectedChoiceId && !answerText.trim())
             }
             onClick={() => void handleSubmit("answer")}
           >
@@ -149,7 +254,7 @@ export function UserInteractionDialog({
       title={req.title}
       subtitle={`来源任务：${interaction.workflow_id} (${interaction.role})`}
       width={640}
-      isDirty={isDirty}
+      isDirty={false} /* 稍后处理和关闭保持收起语义，不触发放弃警告 */
       footer={footer}
     >
       <div className="user-interaction-body">
@@ -172,7 +277,7 @@ export function UserInteractionDialog({
                 </a>
               </div>
             )}
-            {req.target.tab_id && (
+            {req.target.tab_id !== undefined && (
               <div>标签页 Tab ID：{req.target.tab_id}</div>
             )}
             {req.target.connection_hint && (
@@ -200,10 +305,10 @@ export function UserInteractionDialog({
                   >
                     <input
                       type="radio"
-                      name="user-interaction-choice"
+                      name={`user-interaction-choice-${interaction.id}`}
                       value={choice.id}
                       checked={selectedChoiceId === choice.id}
-                      onChange={() => setSelectedChoiceId(choice.id)}
+                      onChange={() => handleChoiceChange(choice.id)}
                       disabled={submitting}
                     />
                     <span>{choice.label}</span>
@@ -218,13 +323,14 @@ export function UserInteractionDialog({
           <div>
             <textarea
               className="user-interaction-textarea"
+              maxLength={4000}
               placeholder={
                 isAction
                   ? "可选：填写操作完成说明或遇到的异常..."
                   : "填写补充回答或说明..."
               }
               value={answerText}
-              onChange={(e) => setAnswerText(e.target.value)}
+              onChange={(e) => handleAnswerChange(e.target.value)}
               disabled={submitting}
             />
           </div>

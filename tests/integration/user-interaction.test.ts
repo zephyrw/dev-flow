@@ -80,7 +80,7 @@ describe("I01 — 用户交互全链路闭环 (结果接收 → WAITING_INPUT �
       expect(responseResult.success).toBe(true);
       expect(responseResult.interaction.status).toBe("answered");
 
-      // 6. 验证幂等性：客户端如果重试相同 request_id，应返回幂等
+      // 6. 验证幂等性：客户端如果重试相同快照与 request_id，应返回相同回执
       const retryResult = await interactionService.respondInteraction(
         s.w.id,
         currentInteraction!.id,
@@ -88,11 +88,27 @@ describe("I01 — 用户交互全链路闭环 (结果接收 → WAITING_INPUT �
           request_id: "req-user-resp-1",
           source_run_id: runId,
           action: "confirm",
+          answer: "已在页面输入短信验证码并成功进入系统",
         },
         s.engine,
       );
 
       expect(retryResult.success).toBe(true);
+
+      // 7. 验证冲突检测：同 request_id 但不同内容必须抛出 IDEMPOTENCY_CONFLICT
+      await expect(
+        interactionService.respondInteraction(
+          s.w.id,
+          currentInteraction!.id,
+          {
+            request_id: "req-user-resp-1",
+            source_run_id: runId,
+            action: "confirm",
+            answer: "不同的篡改内容",
+          },
+          s.engine,
+        ),
+      ).rejects.toThrow(/幂等请求 ID 已被用于不同的交互决定/);
     } finally {
       await cleanup(s);
     }

@@ -142,3 +142,22 @@
   color: #0969da;
 }
 
+.user-interaction-error-banner {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 12px;
+  background-color: #ffebe9;
+  border: 1px solid #ff8182;
+  border-radius: 6px;
+  margin-bottom: 12px;
+  font-size: 13px;
+  color: #cf222e;
+}
+
+.btn-sm {
+  padding: 2px 8px;
+  font-size: 12px;
+}
+
+

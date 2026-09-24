@@ -31,12 +31,18 @@ export function createBaseServer(options: BaseServerOptions) {
   let devFrontendUrl: URL | undefined;
   if (isDev && options.developmentFrontendOrigin) {
     try {
-      devFrontendUrl = new URL(options.developmentFrontendOrigin);
+      const parsed = new URL(options.developmentFrontendOrigin);
       if (
-        devFrontendUrl.hostname !== "127.0.0.1" &&
-        devFrontendUrl.hostname !== "localhost"
+        (parsed.protocol === "http:" || parsed.protocol === "https:") &&
+        (parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost") &&
+        !parsed.username &&
+        !parsed.password &&
+        (parsed.pathname === "/" || parsed.pathname === "") &&
+        !parsed.search &&
+        !parsed.hash &&
+        parsed.port
       ) {
-        devFrontendUrl = undefined;
+        devFrontendUrl = parsed;
       }
     } catch {
       devFrontendUrl = undefined;
@@ -73,11 +79,15 @@ export function createBaseServer(options: BaseServerOptions) {
       );
     if (req.url.startsWith("/api/")) {
       const site = req.headers["sec-fetch-site"];
+      const reqOrigin = req.headers.origin;
+      const isAllowedDevOrigin = Boolean(
+        devFrontendUrl && reqOrigin && reqOrigin === devFrontendUrl.origin,
+      );
       requireCondition(
         !site ||
           site === "same-origin" ||
           site === "none" ||
-          (devFrontendUrl && (site === "same-site" || site === "cross-site")),
+          (isAllowedDevOrigin && (site === "same-site" || site === "cross-site")),
         "FETCH_SITE_DENIED",
         "控制台接口只接受本机同源访问",
         403,

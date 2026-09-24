@@ -87,13 +87,22 @@ export function TaskInteraction({
   const [interaction, setInteraction] = useState<UserInteractionRecord | null>(null);
   const [interactionOpen, setInteractionOpen] = useState(false);
   const [dismissedInteractionId, setDismissedInteractionId] = useState<string>("");
+  const [fetchError, setFetchError] = useState<string>("");
 
   useEffect(() => {
     let cancelled = false;
+    const currentWorkflowId = w.id;
+
+    // 任务切换时立即重置状态，防止旧任务残留
+    setInteraction(null);
+    setInteractionOpen(false);
+    setFetchError("");
+
     const fetchInteraction = async () => {
       try {
-        const item = await getCurrentUserInteraction(w.id);
-        if (cancelled) return;
+        const item = await getCurrentUserInteraction(currentWorkflowId);
+        if (cancelled || w.id !== currentWorkflowId) return;
+        setFetchError("");
         setInteraction(item);
         if (item && item.status === "pending") {
           if (dismissedInteractionId !== item.id) {
@@ -102,13 +111,25 @@ export function TaskInteraction({
         } else {
           setInteractionOpen(false);
         }
-      } catch {
-        // 忽略非关键网络错误
+      } catch (err) {
+        if (cancelled || w.id !== currentWorkflowId) return;
+        setFetchError("获取待处理交互失败，点击重试");
       }
     };
+
     void fetchInteraction();
+
+    // F08: 监听工作流活动事件、窗口聚焦与网络恢复，实现可靠的失效刷新
+    const handleActivity = () => void fetchInteraction();
+    window.addEventListener("devflow-activity", handleActivity);
+    window.addEventListener("focus", handleActivity);
+    window.addEventListener("online", handleActivity);
+
     return () => {
       cancelled = true;
+      window.removeEventListener("devflow-activity", handleActivity);
+      window.removeEventListener("focus", handleActivity);
+      window.removeEventListener("online", handleActivity);
     };
   }, [w.id, w.state, dismissedInteractionId]);
 
@@ -259,6 +280,30 @@ export function TaskInteraction({
             继续自动排查
           </button>
         )}
+      {fetchError && (
+        <div className="user-interaction-error-banner">
+          <span>{fetchError}</span>
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm"
+            onClick={async () => {
+              try {
+                const item = await getCurrentUserInteraction(w.id);
+                setFetchError("");
+                setInteraction(item);
+                if (item && item.status === "pending") {
+                  setInteractionOpen(true);
+                }
+              } catch {
+                setFetchError("获取待处理交互失败，点击重试");
+              }
+            }}
+          >
+            重试
+          </button>
+        </div>
+      )}
+
       {interaction && interaction.status === "pending" && !interactionOpen && (
         <div className="user-interaction-pending-banner">
           <span>模型请求协助：{interaction.request.title}</span>
@@ -281,17 +326,20 @@ export function TaskInteraction({
           if (interaction) setDismissedInteractionId(interaction.id);
         }}
         onResponded={async () => {
+          const targetId = w.id;
           setInteractionOpen(false);
           setInteraction(null);
           await refresh();
           try {
-            const nextItem = await getCurrentUserInteraction(w.id);
-            setInteraction(nextItem);
-            if (nextItem && nextItem.status === "pending") {
-              setInteractionOpen(true);
+            const nextItem = await getCurrentUserInteraction(targetId);
+            if (w.id === targetId) {
+              setInteraction(nextItem);
+              if (nextItem && nextItem.status === "pending") {
+                setInteractionOpen(true);
+              }
             }
           } catch {
-            // 忽略刷新异常
+            // 忽略非关键刷新异常
           }
         }}
         rootConversationId={rootConversationId}
