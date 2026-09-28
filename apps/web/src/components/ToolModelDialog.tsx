@@ -33,7 +33,7 @@ export interface ToolModelDialogProps {
   workflowId: string;
   workflowState?: string;
   focusRole?: string;
-  onSpecUpdated?: () => void;
+  onSpecUpdated?: () => void | Promise<void>;
 }
 
 function specProfiles(data: ExecutionSpecPayload): {
@@ -260,7 +260,7 @@ export function ToolModelDialog({
         await postExecutionSpec(workflowId, writeBody());
       }
       setIsDirty(false);
-      onSpecUpdated?.();
+      await onSpecUpdated?.();
       onClose();
     } catch (err) {
       const api = err as ApiError;

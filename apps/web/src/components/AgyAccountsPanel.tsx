@@ -39,6 +39,7 @@ interface Realm {
 }
 
 interface AccountView {
+  model_id?: string | null;
   accounts: AgyAccountDto[];
   snapshots: AgyQuotaSnapshot[];
   realm: Realm | null;

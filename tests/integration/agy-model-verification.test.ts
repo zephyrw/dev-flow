@@ -16,9 +16,74 @@ beforeEach(async () => {
   await fixture.service.start({ realmId, requestId: "start" });
 });
 afterEach(async () => {
+  vi.restoreAllMocks();
   await fixture.service.close();
   store.close();
   rmSync(root, { recursive: true, force: true });
+});
+
+it("accepts refreshed credentials only after confirming the same authenticated account", async () => {
+  const compare = fixture.authHost.compareActive.bind(fixture.authHost);
+  const oldRef = fixture.repository.getRealm(realmId)!.active_secret_ref;
+  vi.spyOn(fixture.authHost, "compareActive").mockImplementation(async (realm, ref) =>
+    ref === oldRef ? false : compare(realm, ref));
+  const epoch = fixture.repository.getRealm(realmId)!.auth_epoch;
+  const verify = vi.fn(async () => "verified");
+  await expect(fixture.service.withModelVerification(identity, verify)).resolves.toBe("verified");
+  expect(verify).toHaveBeenCalledOnce();
+  expect(fixture.repository.getRealm(realmId)!.auth_epoch).toBe(epoch);
+  expect(fixture.repository.getRealm(realmId)!.active_secret_ref).not.toBe(oldRef);
+});
+
+it("waits for a short lived external query, but never kills its process", async () => {
+  const external = vi.spyOn(fixture.processHost, "findExternalAgyProcesses")
+    .mockResolvedValueOnce([{ pid: 42, exe_path: "agy.exe" }])
+    .mockResolvedValue([]);
+  const stop = vi.spyOn(fixture.processHost, "stopProcess");
+  await expect(fixture.service.withModelVerification(identity, async () => "verified")).resolves.toBe("verified");
+  expect(external.mock.calls.length).toBeGreaterThan(1);
+  expect(stop).not.toHaveBeenCalled();
+});
+
+it("uses safe credential identity when official usage output has no email", async () => {
+  const account = fixture.repository.getAccount(realmId, "a")!;
+  const oldRef = fixture.repository.getRealm(realmId)!.active_secret_ref;
+  const compare = fixture.authHost.compareActive.bind(fixture.authHost);
+  vi.spyOn(fixture.authHost, "compareActive").mockImplementation(async (realm, ref) =>
+    ref === oldRef ? false : compare(realm, ref));
+  vi.spyOn(fixture.authHost, "inspectActive").mockResolvedValue({
+    exists: true, auth: { email: account.identity.email },
+  });
+  const probe = vi.spyOn(fixture.probe, "probeIdentity").mockRejectedValue(new Error("usage has no email"));
+  await expect(fixture.service.withModelVerification(identity, async () => "verified")).resolves.toBe("verified");
+  expect(probe).not.toHaveBeenCalled();
+});
+
+it("keeps blocking an external session without launching the model probe", async () => {
+  fixture.setExternal([{ pid: 42, exe_path: "agy.exe" }]);
+  const verify = vi.fn(async () => "verified");
+  await expect(fixture.service.withModelVerification(identity, verify))
+    .rejects.toMatchObject({ code: "external_owner" });
+  expect(verify).not.toHaveBeenCalled();
+});
+
+it.each([false, true])("binds quota-only CLI output to credential identity, changed=%s", async (changed) => {
+  for (const snapshot of fixture.repository.listQuotaSnapshots(realmId).filter(s => s.account_id === "a")) {
+    fixture.repository.saveQuotaSnapshot({ ...snapshot, windows: snapshot.windows.map(w => ({
+      ...w, reset_at: new Date(Date.now() - 120_000).toISOString(),
+    })) });
+  }
+  const usage = fixture.probe.probeUsage.bind(fixture.probe);
+  vi.spyOn(fixture.probe, "probeUsage").mockImplementation(async () => ({ ...await usage(), email: undefined }));
+  vi.spyOn(fixture.authHost, "inspectActive")
+    .mockResolvedValueOnce({ exists: true, auth: { email: "a@example.com" } })
+    .mockResolvedValue({ exists: true, auth: { email: changed ? "b@example.com" : "a@example.com" } });
+  const permit = fixture.service.acquireUsagePermit({
+    realm_id: realmId, consumer_id: "quota-only-run", usage_kind: "execution",
+    required_pool_ids: ["fixture-pool"], required_model_ids: ["fixture-model"],
+  });
+  if (changed) await expect(permit).rejects.toThrow("active_account_unavailable");
+  else await expect(permit).resolves.toMatchObject({ account_id: "a" });
 });
 
 it("runs the exact caller probe without adding an account model probe", async () => {

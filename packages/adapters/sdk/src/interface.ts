@@ -178,6 +178,8 @@ export interface PreparedInputAttachments {
 
 export interface SessionIdentityResolutionInput {
   frozenProfile: ToolProfile;
+  /** Internal, non-secret account identity verified against this Run's frozen invocation. */
+  verifiedAccountScope?: string;
   resolvedExecutable?: string;
   effectiveEnvironment?: Record<string, string>;
   workspace: {

@@ -11,7 +11,7 @@ function readAccountFromJson(filePath: string): string | undefined {
   try {
     if (!existsSync(filePath)) return undefined;
     const data = JSON.parse(readFileSync(filePath, "utf8"));
-    return data.active_account || data.account_id || data.email
+    return data.tokens?.account_id || data.active_account || data.account_id || data.email
       || data.user_id || data.account || data.profile
       || undefined;
   } catch {}
@@ -220,7 +220,7 @@ export async function resolveSessionIdentity(
   // 并非所有适配器都有本地账户体系（如 claude-code/grok-build 等只有 API key，无 account 概念）。
   // SessionBindingKeySchema 要求 provider_account_scope 非空，
   // 因此当适配器确实无账户信息时，用确定性占位值 "_" 而非阻断身份解析。
-  let accountScope = env.DEVFLOW_ACCOUNT_SCOPE || env.DEVFLOW_PROVIDER_ACCOUNT;
+  let accountScope = input.verifiedAccountScope || env.DEVFLOW_ACCOUNT_SCOPE || env.DEVFLOW_PROVIDER_ACCOUNT;
   if (!accountScope && clientScope) {
     accountScope = readLocalAccountScope(profile.adapterId, clientScope);
   }

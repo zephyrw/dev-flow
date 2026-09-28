@@ -1319,7 +1319,7 @@ export class ModelAccessService {
         if (this.closed || this.cancelledJobs.has(job.id)) return;
         const current = readManagedAgyModelIdentity(this.store);
         if (!current || current.realmId !== managed.realmId || current.accountId !== managed.accountId ||
-            current.authEpoch !== managed.authEpoch || current.credentialRevision !== managed.credentialRevision) {
+            current.authEpoch !== managed.authEpoch) {
           throw new FlowError("MODEL_IDENTITY_CHANGED", "验证期间 AGY 账号身份已变化，请重新验证", 409);
         }
       } else {
@@ -1347,12 +1347,20 @@ export class ModelAccessService {
   private failProbeLaunch(job: ModelVerificationJob, error: unknown) {
     if (this.closed || this.cancelledJobs.has(job.id) || this.isTerminal(this.getVerification(job.id).status)) return;
     const flow = error instanceof FlowError ? error : null;
+    const accountCode = error && typeof error === "object" && "code" in error ? String(error.code) : undefined;
+    const accountMessage = accountCode === "external_owner"
+      ? "有其他 AGY 会话正在使用当前账号。请等待该会话结束后重试保存，现有配置已保留。"
+      : accountCode === "external_change"
+        ? "AGY 当前登录账号发生变化，请在账号管理中同步当前账号后重试保存。"
+        : accountCode === "model_verification_account_changed"
+          ? "验证期间 AGY 账号状态已变化，请重新保存以验证当前账号。"
+          : undefined;
     this.finishFailure(job, {
       status: "environment_error",
-      errorCode: flow?.code ?? "VERIFICATION_ENVIRONMENT_UNAVAILABLE",
+      errorCode: flow?.code ?? (accountMessage ? "ACCOUNT_BUSY" : "VERIFICATION_ENVIRONMENT_UNAVAILABLE"),
       retryable: false,
       message:
-        flow?.message ??
+        accountMessage ?? flow?.message ??
         (error instanceof Error ? error.message : "本机环境无法完成验证"),
     });
   }

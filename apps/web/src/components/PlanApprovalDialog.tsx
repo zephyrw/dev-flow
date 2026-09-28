@@ -1,5 +1,10 @@
 import React, { useState, useEffect, useRef } from "react";
 import { AppDialog } from "./AppDialog.js";
+import { ToolModelDialog } from "./ToolModelDialog.js";
+import { getExecutionSpec, formatApiError } from "./model-api.js";
+import type { ToolProfile } from "../../../../packages/contracts/src/index.js";
+import { formatToolName, formatModelName } from "../../../../packages/presentation/src/model-display.js";
+import "./plan-approval.css";
 import {
   ApprovalTarget,
   normalizeInstructionsText,
@@ -57,6 +62,37 @@ export function PlanApprovalDialog({
     null,
   );
   const isComposingRef = useRef(false);
+  const [executor, setExecutor] = useState<ToolProfile | null>(null);
+  const [editingExecutor, setEditingExecutor] = useState(false);
+  const [loadingExecutor, setLoadingExecutor] = useState(true);
+  const executorRevisionRef = useRef<number | undefined>(undefined);
+
+  const loadExecutor = async () => {
+    setLoadingExecutor(true);
+    try {
+      const data = await getExecutionSpec(workflowId);
+      setExecutor(data.spec.executorProfile);
+      executorRevisionRef.current = data.spec.revision;
+    } finally {
+      setLoadingExecutor(false);
+    }
+  };
+  useEffect(() => {
+    if (!isOpen) return;
+    const controller = new AbortController();
+    setLoadingExecutor(true);
+    setExecutor(null);
+    getExecutionSpec(workflowId, controller.signal).then((data) => {
+      if (controller.signal.aborted) return;
+      setExecutor(data.spec.executorProfile);
+      executorRevisionRef.current = data.spec.revision;
+    }).catch((err) => {
+      if (!controller.signal.aborted) setError(formatApiError(err));
+    }).finally(() => {
+      if (!controller.signal.aborted) setLoadingExecutor(false);
+    });
+    return () => controller.abort();
+  }, [isOpen, workflowId]);
 
   const frozenTargetRef = useRef<ApprovalTarget | null>(null);
   const currentRequestIdRef = useRef<string>(crypto.randomUUID());
@@ -152,11 +188,17 @@ export function PlanApprovalDialog({
   };
 
   const handleSubmit = async () => {
-    if (isSubmitting || !frozenTargetRef.current || isTargetStale) return;
+    if (isSubmitting || !frozenTargetRef.current || isTargetStale || !executor || loadingExecutor || editingExecutor) return;
     setIsSubmitting(true);
     setError(null);
 
     try {
+      const latest = await getExecutionSpec(workflowId);
+      if (latest.spec.revision !== executorRevisionRef.current) {
+        setExecutor(latest.spec.executorProfile);
+        executorRevisionRef.current = latest.spec.revision;
+        throw new Error("执行模型已更新，请核对下方配置后再次批准。");
+      }
       const normalized = normalizeInstructionsText(text);
       if (normalized !== lastNormalizedTextRef.current) {
         lastNormalizedTextRef.current = normalized;
@@ -193,12 +235,13 @@ export function PlanApprovalDialog({
   const isDirty = text.trim().length > 0;
 
   return (
+    <>
     <AppDialog
       isOpen={isOpen}
       onClose={onClose}
       busy={isSubmitting}
       title="批准执行计划"
-      subtitle={`任务：${workflowId} · 计划修订版本 v${planRevision}`}
+      subtitle={`计划版本 v${planRevision}`}
       width={720}
       isDirty={isDirty && !isSubmitting}
       footer={
@@ -215,7 +258,7 @@ export function PlanApprovalDialog({
             type="button"
             className="primary"
             onClick={handleSubmit}
-            disabled={isSubmitting || isTargetStale}
+            disabled={isSubmitting || isTargetStale || loadingExecutor || !executor || editingExecutor}
           >
             {isSubmitting ? "正在批准并派发..." : "批准并开始执行"}
           </button>
@@ -240,11 +283,6 @@ export function PlanApprovalDialog({
           {planSummary && (
             <div style={{ color: "var(--color-text-secondary, #64748b)", marginBottom: "6px" }}>
               {planSummary}
-            </div>
-          )}
-          {executorProfileDescription && (
-            <div style={{ fontSize: "12px", color: "var(--color-text-muted, #94a3b8)" }}>
-              审批后将启动的执行配置：<span style={{ color: "var(--color-text-primary, #1e293b)" }}>{executorProfileDescription}</span>
             </div>
           )}
         </div>
@@ -347,6 +385,23 @@ export function PlanApprovalDialog({
           </div>
         </div>
 
+        <section className="approval-executor" aria-label="当前执行模型">
+          <div className="approval-executor-heading">
+            <div><strong>执行模型</strong><p>批准后，由以下模型实施本计划</p></div>
+            <button type="button" className="btn-secondary" disabled={isSubmitting || loadingExecutor || isTargetStale}
+              onClick={() => setEditingExecutor(true)}>修改</button>
+          </div>
+          {loadingExecutor ? <p>正在读取执行配置…</p> : executor ? (
+            <dl className="approval-executor-details">
+              <div><dt>工具</dt><dd>{formatToolName(executor.adapterId)}</dd></div>
+              <div><dt>模型</dt><dd>{formatModelName(executor.adapterId, executor.modelId) || "工具默认"}</dd></div>
+              <div><dt>思考强度</dt><dd>{executor.reasoning?.mode === "explicit"
+                ? ({ low: "低", medium: "中", high: "高", xhigh: "极高" }[executor.reasoning.value] ?? executor.reasoning.value)
+                : executor.reasoning?.mode === "not-applicable" ? "不适用" : "工具默认"}</dd></div>
+            </dl>
+          ) : <p role="alert">暂时无法读取执行模型，请重新打开弹窗。</p>}
+        </section>
+
         {error && (
           <div
             style={{
@@ -363,5 +418,9 @@ export function PlanApprovalDialog({
         )}
       </div>
     </AppDialog>
+    <ToolModelDialog isOpen={editingExecutor} onClose={() => setEditingExecutor(false)}
+      workflowId={workflowId} workflowState="PLAN_PENDING" focusRole="executor"
+      onSpecUpdated={loadExecutor} />
+    </>
   );
 }

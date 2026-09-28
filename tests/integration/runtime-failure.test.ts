@@ -52,7 +52,8 @@ it.each([
     s.store.put("execution_spec", "isolated-spec", s.w.id, {
       id: "isolated-spec",
       workflow_id: s.w.id,
-      revision: 1,
+      // Creation now persists revision 1; this fixture deliberately overrides it.
+      revision: 2,
       plannerProfile: profile,
       executorProfile: profile,
       created_at: new Date().toISOString(),

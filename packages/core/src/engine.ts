@@ -12,7 +12,8 @@ import {
   publishProjectMaterialSafely,
   readProjectMaterialByLocator,
 } from "./project-materials.js";
-import { bindProfile, buildDispatchContext, isLegacyProtocol, latestSpec, type RunPurpose } from "./run-profile.js";
+import { bindProfile, buildDispatchContext, isLegacyProtocol, latestSpec, readEffectiveSpec, type RunPurpose } from "./run-profile.js";
+import { createWorkflowSpec } from "./create-workflow.js";
 import type { DispatchContext } from "../../contracts/src/model-routing.js";
 import { bindRepairAssignment, closeOpenRepairBatches } from "./repair-model-service.js";
 import { QualityCoordinator } from "./quality-coordinator.js";
@@ -308,7 +309,7 @@ export class Engine {
     return {
       workflow: w,
       runtime: currentRunObservation(this.store, w),
-      execution_spec: latestSpec(this.store, key) ?? null,
+      execution_spec: readEffectiveSpec(this.store, this.config, key).spec,
       human_accepted: this.displayHumanAccepted(key),
       attention: workflowAttention(this, key),
       loading: true,
@@ -390,7 +391,7 @@ export class Engine {
     const baseDetail = {
       workflow: w,
       runtime: currentRunObservation(this.store, w),
-      execution_spec: latestSpec(this.store, key) ?? null,
+      execution_spec: readEffectiveSpec(this.store, this.config, key).spec,
       human_accepted: this.displayHumanAccepted(key),
       attention: workflowAttention(this, key),
       executor_plan_check: this.planSelfCheck.current(key) ?? null,
@@ -542,6 +543,8 @@ export class Engine {
         feedback: [],
       };
       this.store.put("workflow", w.id, w.project_id, w);
+      const spec = createWorkflowSpec(this.store, w.id, {}, this.config);
+      this.store.put("execution_spec", spec.id, w.id, spec);
       this.store.event(w.id, w.project_id, "WorkflowCreated", {
         title: w.title,
       });

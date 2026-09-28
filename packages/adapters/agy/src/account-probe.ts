@@ -78,7 +78,8 @@ export function parseModelAccessOutput(
     return { success: false, reason: "missing_init_event" };
   }
 
-  const eventModel = (initEvent.model as string) ?? (initEvent.session as any)?.model;
+  const eventModel = (initEvent.init as any)?.model ??
+    (initEvent.model as string) ?? (initEvent.session as any)?.model;
   if (!eventModel || typeof eventModel !== "string") {
     return { success: false, reason: "missing_model_evidence" };
   }

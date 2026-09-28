@@ -32,6 +32,29 @@ describe("CW2-T10: CLI 会话真实身份解析与隔离集成测试", () => {
     } catch {}
   });
 
+  it("reads a real Codex nested account id without using tokens as identity", async () => {
+    writeFileSync(join(codexHome, "auth.json"), JSON.stringify({
+      tokens: { account_id: "nested-account", access_token: "not-an-identity" },
+    }));
+    const result = await resolveSessionIdentity(dummyAdapter, {
+      frozenProfile: { id: "p", revision: 1, adapterId: "codex", modelSelection: "explicit", modelId: "gpt-6-astra", options: {} },
+      effectiveEnvironment: { CODEX_HOME: codexHome }, workspace: { root: fakeWorkspaceRoot },
+    });
+    expect(result.resolved).toBe(true);
+    expect(result.provider_account_scope).toBe("nested-account");
+  });
+
+  it("uses the internally verified managed AGY account without settings.json", async () => {
+    const result = await resolveSessionIdentity(dummyAdapter, {
+      frozenProfile: { id: "p", revision: 1, adapterId: "agy", modelSelection: "explicit", modelId: "gemini-3.8-flash-high", options: {} },
+      verifiedAccountScope: "managed-account-fingerprint",
+      effectiveEnvironment: { AGY_HOME: agyHome, DEVFLOW_ACCOUNT_SCOPE: "stale-env" },
+      workspace: { root: fakeWorkspaceRoot },
+    });
+    expect(result.resolved).toBe(true);
+    expect(result.provider_account_scope).toBe("managed-account-fingerprint");
+  });
+
   it("CW2-T10: native-config 正确读取配置中的实际模型与账户，不依赖假 default 字符串", async () => {
     // 写入 Codex 配置文件，不设置任何环境变量
     writeFileSync(

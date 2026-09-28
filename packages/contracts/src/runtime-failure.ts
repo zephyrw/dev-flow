@@ -7,6 +7,16 @@ export interface RuntimeFailureResolution {
 }
 
 const resolutions: Record<string, Omit<RuntimeFailureResolution, "code">> = {
+  SESSION_IDENTITY_UNRESOLVED: {
+    title: "执行账号身份无法确认",
+    message: "模型尚未启动，当前工具的账号身份未能解析。",
+    steps: ["核对工具登录及账号管理状态，恢复账号身份后继续原任务。"],
+  },
+  SESSION_IDENTITY_CHANGED: {
+    title: "执行账号已变化",
+    message: "当前账号与本轮冻结配置不一致，已保留现场。",
+    steps: ["核对当前账号，使用模型切换或账号恢复入口继续原任务。"],
+  },
   CLI_VERSION_UNSUPPORTED: {
     title: "工具版本不兼容",
     message: "当前命令行工具版本不支持所选模型或启动参数，模型未能开始执行。",

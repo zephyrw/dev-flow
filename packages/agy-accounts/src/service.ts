@@ -1202,13 +1202,49 @@ export class AgyAccountService {
         ) throw new AccountServiceError("model_verification_account_changed");
         return realm;
       };
-      const before = assertCurrent();
+      let before = assertCurrent();
       const assertCredential = async () => {
         await this.processHost.listManagedProcesses(input.realm_id);
-        if ((await this.processHost.findExternalAgyProcesses()).length)
-          throw new AccountServiceError("external_owner");
-        if (!(await this.authHost.compareActive(input.realm_id, before.active_secret_ref!)))
-          throw new AccountServiceError("external_change");
+        // Directory/usage queries are short lived. Allow them to finish without
+        // killing or adopting an external session, then enforce the same fence.
+        for (let attempt = 0; ; attempt++) {
+          if (!(await this.processHost.findExternalAgyProcesses()).length) break;
+          if (attempt === 3) throw new AccountServiceError("external_owner");
+          await new Promise((resolve) => setTimeout(resolve, 400));
+          assertCurrent();
+        }
+        if (!(await this.authHost.compareActive(input.realm_id, before.active_secret_ref!))) {
+          // A successful CLI request can refresh tokens for the SAME account.
+          // Establish its real identity before capturing; never accept a changed
+          // principal or label a changed credential as a successful model probe.
+          const account = this.repository.getAccount(input.realm_id, input.account_id);
+          // Current AGY /usage prints quotas only. The managed credential host
+          // already exposes safe identity metadata without exposing tokens.
+          const readIdentity = async () => {
+            const inspected = await this.authHost.inspectActive(input.realm_id);
+            return inspected.exists && inspected.auth?.email
+              ? inspected.auth
+              : this.probe.probeIdentity();
+          };
+          const identity = await readIdentity();
+          if (!account || !identity.email ||
+              identity.email.trim().toLowerCase() !== account.identity.email.trim().toLowerCase() ||
+              (account.identity.subject && identity.subject && account.identity.subject !== identity.subject))
+            throw new AccountServiceError("external_change");
+          assertCurrent();
+          const captured = await this.authHost.captureActive(input.realm_id, account.id);
+          const afterIdentity = await readIdentity();
+          if (afterIdentity.email?.trim().toLowerCase() !== identity.email.trim().toLowerCase() ||
+              (identity.subject && afterIdentity.subject !== identity.subject) ||
+              !(await this.authHost.compareActive(input.realm_id, captured.secret_ref)))
+            throw new AccountServiceError("external_change");
+          const current = assertCurrent();
+          if (current.auth_epoch !== before.auth_epoch || current.revision !== before.revision)
+            throw new AccountServiceError("model_verification_account_changed");
+          this.saveCapture(input.realm_id, account.id, captured);
+          before = { ...current, active_secret_ref: captured.secret_ref, revision: current.revision + 1 };
+          this.repository.saveRealm(before);
+        }
         const current = assertCurrent();
         if (current.auth_epoch !== before.auth_epoch || current.revision !== before.revision)
           throw new AccountServiceError("model_verification_account_changed");
@@ -1283,15 +1319,25 @@ export class AgyAccountService {
     // Q01/R05 修复：区分 candidate 与 permit。核对返回身份及凭据上下文，再保存快照
     if (!evalOutput.eligible_for_permit && evalOutput.eligible_for_candidate) {
       try {
+        const beforeIdentity = await this.authHost.inspectActive(input.realm_id);
         const fresh = await this.probe.probeUsage({
           account_id: activeAccount.id,
           credential_revision: activeAccount.credential_revision,
           timeoutMs: this.initializeSettings(input.realm_id).probe_timeout_seconds * 1000,
         });
+        const afterIdentity = await this.authHost.inspectActive(input.realm_id);
+        const expectedEmail = activeAccount.identity.email.trim().toLowerCase();
+        const credentialIdentityMatches = beforeIdentity.exists && afterIdentity.exists &&
+          beforeIdentity.auth?.email?.trim().toLowerCase() === expectedEmail &&
+          afterIdentity.auth?.email?.trim().toLowerCase() === expectedEmail &&
+          (!beforeIdentity.auth?.subject || beforeIdentity.auth.subject === afterIdentity.auth?.subject);
+        const observedEmail = fresh.email ?? (credentialIdentityMatches ? expectedEmail : undefined);
+        const observedRealm = this.repository.getRealm(input.realm_id);
         if (
           fresh.capability_verified &&
-          fresh.email &&
-          fresh.email.trim().toLowerCase() === activeAccount.identity.email.trim().toLowerCase()
+          observedEmail?.trim().toLowerCase() === expectedEmail &&
+          observedRealm?.auth_epoch === realm.auth_epoch &&
+          observedRealm?.active_account_id === activeAccount.id
         ) {
           // 同账号真实刷新：捕获最新凭据引用，更新账号与 realm，避免后置 compareActive 误判 external_change (R05)
           try {

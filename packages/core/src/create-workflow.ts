@@ -69,7 +69,7 @@ function parseOptionalProfile(value: unknown): ToolProfile | undefined {
 }
 
 function loadCreateDefaults(store: Store, config?: Config) {
-  if (config) return new ModelDefaultsService(store).getOrImport(config);
+  if (config || store.get("model_defaults", "global")) return new ModelDefaultsService(store).getOrImport(config);
   return {
     schema_version: 2 as const,
     revision: 0,
@@ -80,9 +80,9 @@ function loadCreateDefaults(store: Store, config?: Config) {
   };
 }
 
-function resolveCreateProfiles(
+export function resolveCreateProfiles(
   store: Store,
-  input: CreateWorkflowRequest,
+  input: Partial<CreateWorkflowRequest>,
   config?: Config,
 ) {
   const defaults = loadCreateDefaults(store, config);
@@ -126,6 +126,24 @@ function resolveCreateProfiles(
     roleOverrides,
     sourceDefaultsRevision,
   };
+}
+export function createWorkflowSpec(
+  store: Store,
+  workflowId: string,
+  input: Partial<CreateWorkflowRequest>,
+  config?: Config,
+) {
+  const { plannerProfile, executorProfile, roleOverrides, sourceDefaultsRevision } =
+    resolveCreateProfiles(store, input, config);
+  return ExecutionSpecSchema.parse({
+    id: id("spec"), workflow_id: workflowId, revision: 1,
+    plannerProfile, executorProfile, roleOverrides,
+    mode: specMode({ plannerProfile, executorProfile, roleOverrides }),
+    template_id: "native-development",
+    template_revision: getDefaultTemplate().revision,
+    quality_policy_version: getDefaultTemplate().quality_policy_version ?? 2,
+    created_at: now(), source_defaults_revision: sourceDefaultsRevision,
+  });
 }
 export interface CreateWorkflowResult {
   workflow: Workflow;

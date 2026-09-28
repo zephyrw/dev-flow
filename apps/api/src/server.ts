@@ -494,8 +494,11 @@ export async function buildServer(
 
     const adapterRegistry = createDefaultAdapterRegistry();
     const adapter = adapterRegistry.mustGet(profile.adapterId);
+    const nativeIdentity = accessService.resolveNativeConfig(profile);
     const resolvedIdentity = await resolveSessionIdentity(adapter, {
       frozenProfile: profile,
+      verifiedAccountScope: nativeIdentity.identityConfidence === "account"
+        ? nativeIdentity.accountId ?? nativeIdentity.accountFingerprint : undefined,
       workspace: {
         root: targetWs.root,
         all_workspaces: workspaces,

@@ -96,6 +96,7 @@ import {
   type AgyFailureFact,
 } from "../../adapters/agy/src/failure-fact.js";
 import { CurrentTurn } from "../../adapters/agy/src/current-turn.js";
+import { ModelAccessService } from "../../core/src/model-access-service.js";
 import { readPlanMaterial } from "../../core/src/plan-review.js";
 import type { SourceInput } from "../../core/src/source-change.js";
 import {
@@ -650,6 +651,30 @@ export class ProfileRuntime {
     planningWorkspaces?: Workspace[],
   ): Promise<any> {
     const profile = profileForRun(this.engine.store, run);
+    // Acquire the account before computing the session key: synchronization may
+    // update the frozen account, and the permit fences subsequent switches.
+    const accountBinding = profile.adapterId === "agy"
+      ? await this.accountBridge?.prepareProfileRun(
+          w.id, run, run.frozen_invocation?.modelToken ?? profile.modelId, profile.id,
+        )
+      : undefined;
+    try {
+      return await this.invokePrepared(w, run, materials, schema, token, planningWorkspaces, accountBinding);
+    } catch (error) {
+      if (accountBinding) await this.accountBridge?.releaseRun(run.id, false, "invocation_failed");
+      throw error;
+    }
+  }
+  private async invokePrepared(
+    w: Workflow,
+    run: Run,
+    materials: unknown,
+    schema: unknown,
+    token?: string,
+    planningWorkspaces?: Workspace[],
+    accountBinding?: Awaited<ReturnType<AgyWorkflowBridge["prepareProfileRun"]>>,
+  ): Promise<any> {
+    const profile = profileForRun(this.engine.store, run);
     const adapter = await adapterForToolProfile(profile);
     const root = join(this.engine.config.storage_root, "native-runs", run.id);
     mkdirSync(root, { recursive: true });
@@ -691,8 +716,16 @@ export class ProfileRuntime {
         permissionCategoryForPurpose(purpose),
       );
     const primaryWs = workspaces[0];
+    const nativeIdentity = new ModelAccessService(this.engine.store).resolveNativeConfig(profile);
+    const frozen = run.frozen_invocation ?? run.model_binding?.frozen_invocation;
+    if (frozen && nativeIdentity.identityConfidence === "account" &&
+        frozen.accountScope !== nativeIdentity.accountFingerprint) {
+      throw new FlowError("SESSION_IDENTITY_CHANGED", "当前工具账号与本轮冻结账号不一致", 409);
+    }
     const identity = await resolveSessionIdentity(adapter, {
       frozenProfile: profile,
+      verifiedAccountScope: nativeIdentity.identityConfidence === "account"
+        ? nativeIdentity.accountId ?? nativeIdentity.accountFingerprint : undefined,
       workspace: {
         root: primaryWs?.root ?? "",
         source_root: primaryWs?.source_root ?? primaryWs?.root,
@@ -913,17 +946,6 @@ export class ProfileRuntime {
       });
     }
 
-    const accountBinding =
-      profile.adapterId === "agy"
-        ? await this.accountBridge?.prepareProfileRun(
-            w.id,
-            run,
-            run.frozen_invocation
-              ? run.frozen_invocation.modelToken ?? undefined
-              : profile.modelId,
-            profile.id,
-          )
-        : undefined;
     let proc;
     try {
       if (dispatchRecord) dispatchManager.claimStarting(dispatchId);

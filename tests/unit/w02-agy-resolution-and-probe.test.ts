@@ -95,6 +95,17 @@ describe("W02 AGY 发现、能力与真实输出适配测试", () => {
     expect(resMatched.success).toBe(true);
   });
 
+  it("reads the native CLI nested init model and rejects mismatched or failed results", () => {
+    const output = (model: string, status: string) => [
+      JSON.stringify({ event: "init", init: { model, cwd: "C:/workspace" } }),
+      JSON.stringify({ event: "result", result: { status } }),
+    ].join("\n");
+    const expected = { modelId: "gemini-3.8-flash-high" };
+    expect(parseModelAccessOutput(output(expected.modelId, "SUCCESS"), expected).success).toBe(true);
+    expect(parseModelAccessOutput(output("another-model", "SUCCESS"), expected).reason).toBe("model_mismatch");
+    expect(parseModelAccessOutput(output(expected.modelId, "ERROR"), expected).success).toBe(false);
+  });
+
   it("解析真实 CLI 制表符格式的双额度", () => {
     const realCliOutput = [
       "Gemini Models\tWeekly Limit Remaining\t85%\t2026-09-30T09:58:52Z",

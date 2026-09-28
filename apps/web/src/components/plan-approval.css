@@ -1,0 +1,25 @@
+.approval-executor {
+  padding: 16px;
+  border: 1px solid #dbe4f0;
+  border-radius: 10px;
+  background: #f8faff;
+}
+.approval-executor-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.approval-executor-heading strong { font-size: 14px; color: #1e293b; }
+.approval-executor-heading p { margin: 4px 0 0; color: #64748b; font-size: 12px; }
+.approval-executor-details {
+  display: grid;
+  grid-template-columns: 1fr 2fr 1fr;
+  gap: 16px;
+  margin: 16px 0 0;
+}
+.approval-executor-details dt { color: #64748b; font-size: 12px; margin-bottom: 5px; }
+.approval-executor-details dd { margin: 0; font-size: 14px; font-weight: 600; color: #1e293b; overflow-wrap: anywhere; }
+@media (max-width: 520px) {
+  .approval-executor-details { grid-template-columns: 1fr; gap: 12px; }
+}
