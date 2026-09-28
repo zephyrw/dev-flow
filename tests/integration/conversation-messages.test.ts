@@ -245,6 +245,17 @@ function resumeMaterials(
 }
 
 describe("SA-I17 conversation message attachment paths", () => {
+  it("publishes formal guidance once on the composer route and keeps aside separate", async () => {
+    const f = fixture();
+    const request = payload(f.roots, "wf1", { text: "保留已有进度，不要刷新 Token" });
+    await f.messages.submit("wf1", request as any);
+    await f.messages.submit("wf1", request as any);
+    await f.messages.submit("wf1", payload(f.roots, "wf1", { request_id: "aside-req", text: "/btw 解释当前进度" }) as any);
+    const guidance = f.s.store.events("wf1", 0, 1000).filter((event) => event.type === "UserGuidance");
+    expect(guidance).toHaveLength(1);
+    expect(guidance[0]?.payload).toMatchObject({ text: request.text, status: "received" });
+    expect(f.s.store.list("feedback_message", "wf1")).toHaveLength(1);
+  });
   it("formal/planning/functional/aside bind ready files and resume the same hash", async () => {
     const f = fixture({
       "wf-exec": "EXECUTING",

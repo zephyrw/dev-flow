@@ -2117,7 +2117,7 @@ function App() {
     humanAccepted: detail.human_accepted,
   }) : undefined;
   const timeline = w
-    ? userFacingLogs(readableLogs(detail.events, selected), w.run_id)
+    ? userFacingLogs(readableLogs(detail.events, selected, detail.formal_guidance), w.run_id)
     : [];
   const conversationTree = detail?.conversation_tree;
   const conversationView = useConversationView({

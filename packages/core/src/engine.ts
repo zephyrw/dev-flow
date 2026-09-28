@@ -130,7 +130,8 @@ import type {
   QualityTransfer,
 } from "../../contracts/src/quality.js";
 import { ConversationService } from "./conversation-service.js";
-import type { ConversationControlRequest } from "./conversation-control.js";
+import { CONVERSATION_CONTROL_FENCE, type ConversationControlFence, type ConversationControlRequest } from "./conversation-control.js";
+import { CONVERSATION_ENTITY, type ConversationControl } from "../../contracts/src/conversation.js";
 
 export interface PlanRecord {
   id: string;
@@ -559,6 +560,7 @@ export class Engine {
     state: State,
     stage: string,
     patch: Partial<Workflow> = {},
+    event: { resumed?: boolean } = {},
   ) {
     return this.store.transaction(() => {
       const w = this.get(key);
@@ -583,6 +585,7 @@ export class Engine {
         from: w.state,
         to: state,
         stage,
+        ...event,
         ...(patch.blocker
           ? {
               blocker: {
@@ -892,16 +895,24 @@ export class Engine {
     if (scope === "new_scope" || w.state === "HUMAN_PENDING")
       this.supersedePendingContinuation(key);
     else this.stageExecuteContinuation(key);
+    const pause = w.run_id ? this.store.get<{ source?: string }>("run_stop", w.run_id) : undefined;
+    const pausedRun = scope === "within_plan" && w.state === "STOPPED" && pause?.source === "conversation_control"
+      ? this.store.get<Run>("run", w.run_id!) : undefined;
     const state = scope === "new_scope" ? "REPAIR_RESEARCH_REQUIRED" : "QUEUED";
     const next = this.transition(
       key,
       [w.state],
       state,
-      scope === "new_scope" ? "research" : "execute",
+      scope === "new_scope" ? "research" : pausedRun?.stage ?? "execute",
       { feedback: [...w.feedback, text], blocker: undefined },
     );
     if (scope === "within_plan") {
       this.scheduler.enqueue(key, w.project_id);
+      if (pausedRun?.purpose && pausedRun.plan_revision === w.plan_revision) {
+        this.restoreDispatchContext(key, pausedRun.id);
+        this.store.enqueue(key, "dispatch", {});
+        return next;
+      }
       // 功能反馈派发 functional_fix；其他按 implement 处理。
       const feedbackKind = this.store
         .list<{ text: string; kind?: string; status: string }>(
@@ -3189,12 +3200,14 @@ export class Engine {
           });
           continue;
         }
+        const reuseWorkspaces = this.project(w.project_id).repositories.every(
+          (repo) => known.some((ws) => ws.repo_id === repo.id && !!ws.root),
+        );
+        const preparationMessage = reuseWorkspaces ? "正在检查并复用已有工作区"
+          : w.workspace_mode === "existing_workspace" ? "正在检查主工作区" : "正在准备独立工作区";
         this.store.put("queue_wait", w.id, w.id, {
           kind: "preparing",
-          message:
-            w.workspace_mode === "existing_workspace"
-              ? "已取得执行名额，正在检查主工作区"
-              : "已取得执行名额，正在准备独立工作区",
+          message: reuseWorkspaces ? preparationMessage : "已取得执行名额，" + preparationMessage,
           owners: [],
         });
         this.store.event(
@@ -3202,10 +3215,7 @@ export class Engine {
           w.project_id,
           "PreparationStarted",
           {
-            message:
-              w.workspace_mode === "existing_workspace"
-                ? "正在检查主工作区"
-                : "正在准备独立工作区",
+            message: preparationMessage,
           },
           runId,
         );
@@ -3374,10 +3384,14 @@ export class Engine {
         protocol: "lightweight",
         approval_ref: approvalRef,
       };
+      const resumed = this.store.list<Run>("run", key).some((prior) =>
+        prior.plan_revision === run.plan_revision && prior.purpose === run.purpose &&
+        prior.routing_role === run.routing_role && prior.purpose !== "aside",
+      );
       this.store.transaction(() => {
         w = this.transition(key, [review ? "REVIEW_QUEUED" : "QUEUED"], review ? "REVIEWING" : "EXECUTING", stage, {
           run_id: runId, review_request_id: review ? id("review") : w.review_request_id, blocker: undefined,
-        });
+        }, { resumed });
         this.store.remove("pending_dispatch_purpose", key);
         this.store.remove("queue_wait", key);
         if (continuation)
@@ -3552,7 +3566,19 @@ export class Engine {
           "COMMITTING",
           "HUMAN_PENDING",
         ].includes(w.state);
-      if (ownsRun && e instanceof FlowError && e.code.startsWith("AGY_ACCOUNT_")) {
+      const controlledPause = ownsRun ? this.confirmedConversationPause(key, runId, e) : undefined;
+      if (controlledPause) {
+        const source = this.store.must<Run>("run", runId);
+        const interruption = {
+          category: "pause", source: "conversation_control", at: now(),
+          prior_state: w.state, prior_stage: source.stage, prior_purpose: source.purpose,
+          prior_run_id: runId, run_id: runId, control_id: controlledPause.control_id,
+          message: "会话已按用户请求暂停", next_action: "按原任务继续",
+        };
+        this.store.put("run_stop", runId, key, interruption);
+        this.store.put("interruption", key, key, interruption);
+        this.transition(key, [w.state], "STOPPED", "stopped", { blocker: undefined });
+      } else if (ownsRun && e instanceof FlowError && e.code.startsWith("AGY_ACCOUNT_")) {
         this.block(key, e);
       } else if (ownsRun && !review) {
         const normalized = normalizeRuntimeFailure(e);
@@ -3674,6 +3700,25 @@ export class Engine {
       this.running.delete(key);
       queueMicrotask(() => void this.dispatch());
     }
+  }
+
+  private confirmedConversationPause(key: string, runId: string, error: unknown) {
+    if (!(error instanceof FlowError) || error.code !== "RUN_REVOKED" ||
+        (error.details as { termination_reason?: string } | undefined)?.termination_reason !== "manual") return;
+    const process = this.store.get<{ status: string; confirmed?: boolean }>("process_record", runId);
+    if (!process?.confirmed || !["exited", "failed"].includes(process.status)) return;
+    return this.store.list<ConversationControlFence>(CONVERSATION_CONTROL_FENCE, key).find((fence) => {
+      if (fence.run_id !== runId || !fence.dispatch_frozen) return false;
+      const control = this.store.get<ConversationControl>(CONVERSATION_ENTITY.control, fence.control_id);
+      // The process exit can precede pauseTree's completion callback. The
+      // owned process-tree receipt confirms stopping without waiting on it.
+      return control?.action === "pause" && control.workflow_id === key &&
+        ["pending", "complete"].includes(control.status) &&
+        (control.status !== "complete" || control.unconfirmed_count === 0) &&
+        !control.targets.some((target) => target.status === "unknown" || target.status === "failed") &&
+        control.root_id === fence.root_id && control.expected_generation === fence.expected_generation &&
+        control.targets.some((target) => target.conversation_id === fence.root_id);
+    });
   }
 
   private qualityFindingsFromReview(review: Review) {

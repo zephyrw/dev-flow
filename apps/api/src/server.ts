@@ -181,7 +181,7 @@ export async function buildServer(
     runtimeStopPort(engine.runtime as LocalRuntime | undefined),
   );
   engine.pauseTree = async (workflowId, request) => {
-    const fence = existingPauseFence(engine.store, workflowId, request.root_id);
+    const fence = existingPauseFence(engine.store, workflowId, request.root_id, request.expected_generation);
     if (fence) return conversationControls.reconcile(workflowId, fence.control_id);
     return conversationControls.pauseTree(workflowId, request);
   };
@@ -1318,6 +1318,10 @@ export async function buildServer(
     return {
       ...detail,
       events: detail.events.map((e) => engine.store.publicEvent(e)),
+      formal_guidance: publicEvent(engine.store.list<ConversationMessage>(CONVERSATION_ENTITY.message, key)
+        .filter((message) => message.mode === "formal")
+        .map((message) => ({ id: message.id, workflow_id: key, text: message.text,
+          created_at: message.created_at, feedback_id: message.feedback_message_id }))),
       attachment_status: listAttachmentRecords(engine.store, key),
       conversation_tree: conversations.getTree(key),
     };
@@ -1836,12 +1840,6 @@ export async function buildServer(
     const feedbackMsg = saved?.feedback_message_id
       ? engine.store.get<any>("feedback_message", saved.feedback_message_id)
       : undefined;
-    engine.store.event(key, w.project_id, "UserGuidance", {
-      text: text || saved?.text || "",
-      scope: body.scope ?? "within_plan",
-      status: "received",
-      feedback_id: saved?.feedback_message_id,
-    });
     if (!body.interrupt_requested && body.scope !== "new_scope") {
       await afterConversationMessage(engine, key, submitted);
       return { ok: true, message: feedbackMsg, result: engine.get(key) };
@@ -2253,10 +2251,11 @@ function existingPauseFence(
   store: Store,
   workflowId: string,
   rootId: string,
+  expectedGeneration: number,
 ): ConversationControlFence | undefined {
   return store
     .list<ConversationControlFence>(CONVERSATION_CONTROL_FENCE, workflowId)
-    .filter((item) => item.root_id === rootId && item.dispatch_frozen)
+    .filter((item) => item.root_id === rootId && item.expected_generation === expectedGeneration && item.dispatch_frozen)
     .sort((a, b) => b.updated_at.localeCompare(a.updated_at))[0];
 }
 
@@ -2271,7 +2270,7 @@ async function pauseActiveTree(
   const rootId = conversations.resolveControlRoot(workflowId, tree);
   if (!rootId) return undefined;
   const generation = latestRootGeneration(tree.attempts, rootId);
-  const fence = existingPauseFence(store, workflowId, rootId);
+  const fence = existingPauseFence(store, workflowId, rootId, generation);
   if (fence) return controls.reconcile(workflowId, fence.control_id);
   try {
     return await controls.pauseTree(workflowId, {

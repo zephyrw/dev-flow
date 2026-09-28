@@ -182,7 +182,7 @@ export function conversationHandoverHint(params: {
   receivedFormal: boolean;
 }): string | undefined {
   if (params.readonly || params.mode !== "formal") return undefined;
-  if (params.receivedFormal) return "指导已接收，正在交接";
+  if (params.receivedFormal) return "指导已保存，具体执行与回应见执行过程";
   return undefined;
 }
 

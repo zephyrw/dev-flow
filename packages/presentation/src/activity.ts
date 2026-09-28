@@ -198,7 +198,9 @@ export function workflowProgress(
   };
 }
 /** The original events stay intact; this is only a readable, scoped projection. */
-export function readableLogs(events: any[], workflow: string): LogEntry[] {
+export function readableLogs(events: any[], workflow: string, formalGuidance: Array<{
+  id: string; workflow_id: string; text: string; created_at: string; feedback_id?: string;
+}> = []): LogEntry[] {
   const rows: LogEntry[] = [],
     steps = new Map<string, LogEntry>();
   let repairPending = false;
@@ -525,14 +527,20 @@ export function readableLogs(events: any[], workflow: string): LogEntry[] {
         title =
           p.stage === "planner_takeover"
             ? "规划模型开始修复"
-            : repairPending
+            : p.stage === "executor_test"
+              ? (p.resumed === true ? "继续测试" : "开始测试")
+            : repairPending || p.resumed === true
               ? "继续开发与自测"
               : "开始开发与自测";
         repairPending = false;
         text =
           p.stage === "planner_takeover"
             ? "正在启动规划模型；收到真实工具事件后展示修改、自测与完成说明。"
-            : "执行模型自主安排本轮开发与自测，完成后交代码质量审查。";
+            : p.stage === "executor_test"
+              ? "由执行模型沿已有进度完成指定测试和必要修复。"
+            : p.resumed === true
+              ? "保留原计划、已有修改和执行进度，继续处理本轮尚未完成的工作。"
+              : "执行模型自主安排本轮开发与自测，完成后交代码质量审查。";
       } else if (p.to === "REVIEW_QUEUED") {
         title = "等待规划模型审查";
         text =
@@ -545,6 +553,9 @@ export function readableLogs(events: any[], workflow: string): LogEntry[] {
           p.stage === "quality_before_human"
             ? "正在审查代码质量，通过后进入人工功能确认。"
             : "正在进行人工后代码质量审查，通过后进入本地提交。";
+      } else if (p.to === "STOPPED") {
+        title = "执行已暂停";
+        text = "已保留原计划、工作区和已有修改。";
       } else if (p.to === "BLOCKED") {
         title =
           runtimeFailureResolution(p.blocker?.code, p.blocker?.message)
@@ -667,6 +678,20 @@ export function readableLogs(events: any[], workflow: string): LogEntry[] {
             : undefined,
     });
   }
+  // Older composer messages were persisted without a UserGuidance event.
+  // Display those records without rewriting history or treating acceptance as model compliance.
+  for (const message of formalGuidance) {
+    if (message.workflow_id !== workflow || !message.text.trim()) continue;
+    if ([...unique.values()].some((event) => event.type === "UserGuidance" && (
+      event.payload?.message_id === message.id ||
+      (message.feedback_id && event.payload?.feedback_id === message.feedback_id)
+    ))) continue;
+    const next = [...unique.values()].sort((a, b) => a.event_seq - b.event_seq)
+      .find((event) => event.created_at > message.created_at);
+    const sequence = next ? next.event_seq - 0.5 : Math.max(0, ...unique.keys()) + 0.5;
+    rows.push({ key: `guidance:${message.id}`, sequence, created_at: message.created_at,
+      title: "收到你的指导", text: message.text, kind: "message", raw: [] });
+  }
   // Old runs must not continue to look active after a stop/failure or a new run.
   const boundary =
     [...unique.values()]
@@ -684,7 +709,7 @@ export function readableLogs(events: any[], workflow: string): LogEntry[] {
   return rows
     .filter((r) => r.kind !== "message" || r.text.trim())
     .filter((r) => r.kind !== "tool" || r.text.trim() || r.command?.trim() || r.resultText?.trim() || r.raw.some((e: any) => e.type === "ReviewDiagnostic"))
-    .sort((a, b) => a.sequence - b.sequence);
+    .sort((a, b) => a.sequence - b.sequence || a.created_at.localeCompare(b.created_at));
 }
 
 /** Keep diagnostics available for progress parsing without putting raw logs in the UI. */

@@ -269,7 +269,16 @@ export class ConversationMessageService {
         messageId,
       );
     }
-    return this.saveMessage(this.bindDomain(draft, prepared));
+    const saved = this.saveMessage(this.bindDomain(draft, prepared));
+    if (saved.mode === "formal") {
+      this.deps.store.event(saved.workflow_id, prepared.workflow.project_id, "UserGuidance", {
+        text: saved.text,
+        status: "received",
+        feedback_id: saved.feedback_message_id,
+        message_id: saved.id,
+      });
+    }
+    return saved;
   }
 
   private bindDomain(

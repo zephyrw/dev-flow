@@ -2,6 +2,28 @@ import { it, expect } from "vitest";
 import { readableLogs, userFacingLogs } from "../../apps/web/src/logs.js";
 import { toolSummary } from "../../packages/presentation/src/tool-summary.js";
 
+it("distinguishes a resumed implementation and displays historical formal guidance once", () => {
+  const events = [{ workflow_id: "w", event_seq: 4, created_at: "2026-09-28T08:00:00Z",
+    type: "StateChanged", payload: { from: "QUEUED", to: "EXECUTING", stage: "execute", resumed: true } }];
+  const guidance = { id: "m", workflow_id: "w", text: "Token 已更新，不要刷新", feedback_id: "f",
+    created_at: "2026-09-28T07:59:00Z" };
+  const rows = readableLogs(events, "w", [guidance, { ...guidance, workflow_id: "other" }]);
+  expect(rows.map((row) => row.title)).toEqual(["收到你的指导", "继续开发与自测"]);
+  expect(rows[0]?.text).toBe(guidance.text);
+  expect(rows[1]?.text).toContain("已有修改和执行进度");
+  const savedEvent = { workflow_id: "w", event_seq: 3, created_at: guidance.created_at,
+    type: "UserGuidance", payload: { feedback_id: "f", text: guidance.text } };
+  expect(readableLogs([savedEvent, ...events], "w", [guidance])
+    .filter((row) => row.title === "收到你的指导")).toHaveLength(1);
+  expect(readableLogs([{ ...events[0], payload: { ...events[0]!.payload, resumed: false } }], "w")[0]?.title)
+    .toBe("开始开发与自测");
+  expect(readableLogs([{ ...events[0], payload: { ...events[0]!.payload, stage: "executor_test" } }], "w")[0]?.title)
+    .toBe("继续测试");
+  const paused = readableLogs([{ ...events[0], payload: { to: "STOPPED" } }], "w")[0];
+  expect(paused).toMatchObject({ title: "执行已暂停" });
+  expect(paused?.status).not.toBe("error");
+});
+
 it("renders native commands, file targets and returned output, hiding empty unknown events", () => {
   const tool = (
     seq: number,
