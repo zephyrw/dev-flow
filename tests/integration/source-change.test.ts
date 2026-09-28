@@ -7,7 +7,6 @@ import { SourceChangeService } from "../../packages/core/src/source-change.js";
 import { buildServer } from "../../apps/api/src/server.js";
 import { LocalRuntime } from "../../packages/runtime/src/runtime.js";
 import { git } from "../../packages/git/src/git.js";
-import { hash } from "../../packages/core/src/util.js";
 import { changesFromInitialInput } from "../../packages/git/src/initial-state.js";
 
 const headers = {
@@ -54,6 +53,8 @@ it("预览只读；使用当前代码保留计划、生成新批准记录并防�
   try {
     const before = s.engine.get(f.id),
       original = s.engine.plan(f.id);
+    const originalDocument = s.store.list<any>("project_document", f.id)[0]!;
+    const originalDocumentText = readFileSync(originalDocument.path, "utf8");
     const status = await git(f.repo, ["status", "--porcelain"]);
     const previewResult = await api.inject({
       method: "POST",
@@ -96,9 +97,11 @@ it("预览只读；使用当前代码保留计划、生成新批准记录并防�
     expect(updated.plan.acceptance_items).toEqual(
       original.plan.acceptance_items,
     );
-    expect(updated.plan.design_ref!.content_hash).toBe(
-      hash(updated.plan.markdown!),
-    );
+    expect(updated.plan.markdown).toBeUndefined();
+    expect(updated.plan.design_ref).toEqual(original.plan.design_ref);
+    expect(s.store.list("project_document", f.id)).toHaveLength(1);
+    expect(readFileSync(originalDocument.path, "utf8")).toBe(originalDocumentText);
+    expect(s.store.must<any>("plan", updated.id).plan.markdown).toBeUndefined();
     expect(s.store.must<any>("approval", f.id + "-2").plan_hash).toBe(
       updated.hash,
     );

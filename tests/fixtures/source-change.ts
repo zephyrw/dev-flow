@@ -5,6 +5,7 @@ import { DocumentService } from "../../packages/core/src/document-service.js";
 import { ExecutionSpecSchema } from "../../packages/contracts/src/execution-spec.js";
 import { hash, id, now, objectHash } from "../../packages/core/src/util.js";
 import { git } from "../../packages/git/src/git.js";
+import { readEffectiveSpec } from "../../packages/core/src/run-profile.js";
 import { repository, project, proof } from "../helpers.js";
 
 export async function seedSourceChange(engine: Engine, root: string) {
@@ -79,7 +80,7 @@ export async function seedSourceChange(engine: Engine, root: string) {
   const spec = ExecutionSpecSchema.parse({
     id: id("spec"),
     workflow_id: w.id,
-    revision: 1,
+    revision: Math.max(0, ...engine.store.list<{ revision: number }>("execution_spec", w.id).map(s => s.revision)) + 1,
     plannerProfile: profile,
     executorProfile: { ...profile, id: "fixture-source-executor" },
     mode: "single_tool",
@@ -88,6 +89,12 @@ export async function seedSourceChange(engine: Engine, root: string) {
     created_at: now(),
   });
   engine.store.put("execution_spec", spec.id, w.id, spec);
+  const effective = readEffectiveSpec(engine.store, engine.config, w.id).spec;
+  if ([effective.plannerProfile, effective.executorProfile].some(p => {
+    const args = p.options?.prefixArgs;
+    return p.executableRef !== process.execPath || !Array.isArray(args) || args[0] !== resolve("tests/fixtures/native-cli.mjs");
+  }))
+    throw new Error("Source-change fixture must use only the local native-cli fixture");
   writeFileSync(join(repo.repo, "context.txt"), "new committed context\n");
   await git(repo.repo, ["add", "context.txt"]);
   await git(repo.repo, ["commit", "-m", "补充项目说明"]);

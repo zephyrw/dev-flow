@@ -18,7 +18,6 @@ export function ReviewResults({ review }: { review?: Partial<Review> & { stale?:
   return <div className="review-results">
     <p>
       {review.stale ? "历史复核已失效，请以新一轮结果为准。" : "本轮复核"}
-      {review.plan_revision != null && <> · 第 {review.plan_revision} 版计划</>}
       {verdict && <> · {verdictLabels[verdict] ?? verdict}</>}
     </p>
     {review.summary && <div className="document"><Markdown remarkPlugins={[remarkGfm]}>{review.summary}</Markdown></div>}

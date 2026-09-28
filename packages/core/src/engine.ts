@@ -7,18 +7,13 @@ import { projectWorkflowOverview } from "./workflow-overview.js";
 import { recordExecutionTestReport, reportedTestProgress } from "./execution-test-progress.js";
 import type { RunApprovalRef } from "../../contracts/src/plan-approval.js";
 
-import {
-  getPlanMaterialPath,
-  resolveMaterialLocator,
-  publishProjectMaterialSafely,
-  readProjectMaterialByLocator,
-} from "./project-materials.js";
 import { bindProfile, buildDispatchContext, isLegacyProtocol, latestSpec, readEffectiveSpec, type RunPurpose } from "./run-profile.js";
 import { createWorkflowSpec } from "./create-workflow.js";
 import type { DispatchContext } from "../../contracts/src/model-routing.js";
 import { bindRepairAssignment, closeOpenRepairBatches } from "./repair-model-service.js";
 import { QualityCoordinator } from "./quality-coordinator.js";
 import { DocumentService } from "./document-service.js";
+import { readPlanMaterial } from "./plan-review.js";
 import {
   AsideSessionService,
   ASIDE_TIMEOUT_MS,
@@ -78,7 +73,6 @@ import type { Config } from "../../contracts/src/config.js";
 import { Store } from "../../store/src/store.js";
 import { Auth, type Principal } from "./auth.js";
 import { atomicWrite, id, now, objectHash, hash } from "./util.js";
-import { parsePlanDiagrams } from "../../plans/src/diagrams.js";
 import { validatePlan } from "../../plans/src/validate.js";
 import { GitDeliveryCoordinator } from "../../git/src/delivery-coordinator.js";
 import {
@@ -369,13 +363,9 @@ export class Engine {
     const planData = w.plan_revision
       ? (() => {
           const p = this.plan(key);
-          const body =
-            p.plan.markdown ??
-            this.store
-              .list<any>("project_document", key)
-              .find((d) => d.hash === p.plan.design_ref?.content_hash)
-              ?.content ??
-            "";
+          let body = "";
+          try { body = readPlanMaterial(this.store, key, w.plan_revision).markdown; }
+          catch { /* A missing file must not prevent inspecting or recovering the task. */ }
           return { ...p, plan: { ...p.plan, markdown: body } };
         })()
       : null;
@@ -606,7 +596,6 @@ export class Engine {
     expectedVersion: number,
     idempotency: string,
   ) {
-    await parsePlanDiagrams(input);
     return this.submitPlan(key, input, expectedVersion, idempotency);
   }
   submitPlan(
@@ -700,6 +689,12 @@ export class Engine {
           }
         }
         const revision = w.plan_revision + 1;
+        // Persist only the original project file, never a plan-body snapshot.
+        const document = validated.plan.markdown?.trim()
+          ? new DocumentService(this.store, this.config.storage_root).publishDocument(
+              key, "plan", validated.plan.markdown, revision, validated.plan.design_ref?.file_ref,
+            )
+          : undefined;
         this.supersedePendingContinuation(key, w.state !== "PLANNING");
         if (w.plan_revision > 0) {
           this.invalidate(key, "计划版本变化，旧验收与测试不能沿用");
@@ -710,7 +705,8 @@ export class Engine {
           workflow_id: key,
           revision,
           hash: validated.hash,
-          plan: validated.plan,
+          plan: { ...validated.plan, markdown: undefined },
+          ...(document?.path ? { material_path: document.path } : {}),
           created_at: now(),
         };
         this.store.put("plan", record.id, key, record);
@@ -3051,34 +3047,10 @@ export class Engine {
       );
       const normalized = result.markdown.replace(/\r\n/g, "\n");
       const plan = result.plan as any;
-      if (plan.design_ref)
-        requireCondition(
-          plan.design_ref.content_hash === hash(normalized),
-          "PLAN_DOCUMENT_HASH_MISMATCH",
-          "规划正文哈希不匹配",
-        );
       const doc = new DocumentService(
         this.store,
         this.config.storage_root,
-      ).publishDocument(w.id, "plan", normalized, w.plan_revision + 1);
-
-      // CW2-D03 / CW3-F11 / CW4-F03: 通过 Locator 定位并写入项目工作区，发布后将真实 material ID/locator 关联到规划版本记录
-      let locator: any;
-      try {
-        locator = resolveMaterialLocator({
-          store: this.store,
-          workflowId: w.id,
-          kind: "plan",
-          revision: w.plan_revision + 1,
-          run_id: runId,
-        });
-        publishProjectMaterialSafely({
-          store: this.store,
-          locator,
-          content: normalized,
-          cachePath: doc.path,
-        });
-      } catch {}
+      ).publishDocument(w.id, "plan", normalized, w.plan_revision + 1, plan.design_ref?.file_ref, true);
 
       await this.submitValidatedPlan(
         w.id,
@@ -3088,18 +3060,17 @@ export class Engine {
       );
       const planRev = this.get(w.id).plan_revision;
       const currentPlan = this.store.get<PlanRecord>("plan", `${w.id}-${planRev}`);
-      if (currentPlan && locator) {
+      if (currentPlan) {
         this.store.put("plan", currentPlan.id, w.id, {
           ...currentPlan,
-          material_id: locator.material_id,
-          material_path: locator.relative_path,
+          material_path: doc.path,
           run_id: runId,
         });
       }
       this.store.put("planning_document", w.id, w.id, {
         document_id: doc.id,
         plan_revision: planRev,
-        material_id: locator?.material_id,
+        path: doc.path,
         run_id: runId,
       });
       this.store.put("run", runId, w.id, {
@@ -3805,33 +3776,9 @@ export class Engine {
       w,
       review,
     );
-    if (review.repair_plan) await parsePlanDiagrams(review.repair_plan);
     this.store.transaction(() =>
       this.commitNativeRepairDecision(w, review, quality, body, withinScope),
     );
-    if (body.trim()) {
-      try {
-        const doc = new DocumentService(
-          this.store,
-          this.config.storage_root,
-        ).publishDocument(w.id, "repair_plan", body, usesPolicyV2(w) ? undefined : w.plan_revision);
-
-        // CW2-D03 / CW3-F11: 通过 Locator 定位并写入项目工作区整改原件，包含真实 run_id/revision
-        const locator = resolveMaterialLocator({
-          store: this.store,
-          workflowId: w.id,
-          kind: "repair",
-          revision: w.plan_revision,
-          run_id: w.run_id,
-        });
-        publishProjectMaterialSafely({
-          store: this.store,
-          locator,
-          content: body,
-          cachePath: doc.path,
-        });
-      } catch {}
-    }
     return this.get(w.id);
   }
   private persistQualityTransferRecord(
@@ -4986,19 +4933,15 @@ export class Engine {
       }
     this.scheduler.suspectExpired(0);
   }
-  exportDocuments(key: string) {
+  exportDocuments(_key: string) {
+    // Kept for older callers: scheduling never exports or copies documents.
+  }
+  renderProgressDocuments(key: string): Record<string, string> {
+    const documents: Record<string, string> = {};
     try {
       const w = this.get(key);
-      if (!w.plan_revision) return;
+      if (!w.plan_revision) return documents;
       const p = this.plan(key);
-      const root = join(
-        this.config.storage_root,
-        "documents",
-        key,
-        `r${w.plan_revision}`,
-      );
-      mkdirSync(root, { recursive: true });
-      atomicWrite(join(root, "计划.md"), p.plan.markdown ?? "");
       const planCheck = this.planSelfCheck.current(key);
       if (planCheck) {
         const revision =
@@ -5011,9 +4954,8 @@ export class Engine {
           revision &&
           this.store.get<Delivery>("delivery", revision.delivery_id)?.manifest
             .plan_self_check;
-        atomicWrite(
-          join(root, "执行模型计划复核.md"),
-          `# 执行模型正式计划复核\n\n本文件为执行事实记录，不是实施计划。状态：${planCheck.status}；计划版本：${planCheck.plan_revision}。\n\n` +
+        documents["plan-self-check"] =
+          `# 执行模型正式计划复核\n\n本文件为执行事实记录，不是实施计划。状态：${planCheck.status}。\n\n` +
             `请求：${planCheck.id}；源交付：${planCheck.source_delivery_revision_id}；复核轮次：${planCheck.run_id ?? "待调度"}。\n\n` +
             (report
               ? report.checks
@@ -5023,8 +4965,7 @@ export class Engine {
                   )
                   .join("\n")
               : "尚无通过的逐项复核报告。") +
-            "\n",
-        );
+            "\n";
       }
       const allEvidence = [
         ...this.store.list<Evidence>("evidence", key),
@@ -5051,20 +4992,12 @@ export class Engine {
             )}\n\n操作步骤：\n${t.steps.map((step, i) => `${i + 1}. ${step}`).join("\n")}\n\n断言：\n${t.assertions.map((a) => "- " + a).join("\n")}\n\n${e ? `证据：${e.id}\n\n快照：${e.snapshot_id}；环境：${e.environment_revision}\n\n结果：发现 ${e.discovered}，通过 ${e.passed}，失败 ${e.failed}，跳过 ${e.skipped}，退出码 ${e.exit_code}\n\n原始文件：\n${e.files.map((f) => "- " + f.path + " / SHA-256 " + f.hash).join("\n")}` : "尚无运行证据。"}\n`;
         })
         .join("\n");
-      if (p.plan.complexity === "complex") {
-        atomicWrite(
-          join(root, "开发进度.md"),
-          `# 开发进度\n\n计划哈希：${p.hash}\n状态：${w.state}\n\n${tasks}\n`,
-        );
-        atomicWrite(join(root, "测试进度.md"), `# 测试进度\n\n${tests}\n`);
-      } else
-        atomicWrite(
-          join(root, "计划.md"),
-          `${p.plan.markdown}\n\n## 开发进度\n\n${tasks}\n\n## 测试进度\n\n${tests}\n`,
-        );
+      documents.progress = `# 开发进度\n\n状态：${w.state}\n\n${tasks}\n`;
+      documents.tests = `# 测试进度\n\n${tests}\n`;
     } catch {
       // 资料导出与缓存失败不阻塞调度流程
     }
+    return documents;
   }
   // Read-only presentation: keep runner case names in review evidence, but use
   // the submitted plan scene IDs when counting the plan's displayed results.

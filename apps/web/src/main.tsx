@@ -1311,7 +1311,7 @@ const CentralWorkspace = React.memo(
             >
               <div className="section-title plan-section-title">
                 <div className="plan-title-left">
-                  <h2>开发计划 · 第 {w.plan_revision} 版</h2>
+                  <h2>开发计划</h2>
                   {detail.plan && (
                     <button
                       className={`btn-secondary btn-toc-toggle ${showToc ? "active" : ""}`}
@@ -1705,6 +1705,10 @@ function App() {
         return merged;
       });
   };
+  useEffect(() => {
+    if (selected && tab === "plan")
+      void refresh().catch((e) => setError(String(e)));
+  }, [selected, tab]);
   useEffect(() => {
     void Promise.all([api("/projects"), fetchVisibleFlows()])
       .then(([p, f]) => {
@@ -3019,7 +3023,7 @@ function App() {
             setNotice(
               choice === "continue"
                 ? "已确认使用当前代码，将按原计划继续执行。"
-                : "规划模型将结合当前代码修正计划，新版仍需你批准。",
+                : "规划模型将结合当前代码修正计划，完成后仍需你批准。",
             );
             void refresh().catch((e) => setError(String(e)));
           }}
@@ -3027,13 +3031,13 @@ function App() {
       )}
       {planReview && (
         <PlanReviewDialog
-          key={`${planReview.workflow_id}:${planReview.plan_revision}:${planReview.mode}`}
+          key={`${planReview.workflow_id}:${planReview.mode}`}
           target={planReview}
           onClose={() => setPlanReview(null)}
           onRejected={() => {
             setPlanReview(null);
             setNotice(
-              "计划已驳回，规划模型将按修改意见提交新版，等待你重新批准。",
+              "计划已驳回，规划模型将按修改意见更新当前计划，等待你重新批准。",
             );
             void refresh().catch((e) => setError(String(e)));
           }}
@@ -3041,9 +3045,9 @@ function App() {
       )}
       {planApprovalTarget && (
         <PlanApprovalDialog
-          key={`${planApprovalTarget.id}:${planApprovalTarget.plan_revision}`}
+          key={planApprovalTarget.id}
           isOpen={!!planApprovalTarget}
-          isStale={detail?.workflow?.id !== planApprovalTarget.id || detail?.workflow?.version !== planApprovalTarget.version || detail?.workflow?.plan_hash !== planApprovalTarget.plan_hash}
+          isStale={detail?.workflow?.id !== planApprovalTarget.id || detail?.workflow?.version !== planApprovalTarget.version}
           onClose={() => setPlanApprovalTarget(null)}
           workflowId={planApprovalTarget.id}
           workflowVersion={planApprovalTarget.version}

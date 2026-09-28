@@ -10,7 +10,65 @@ import {
   type ProjectMaterial,
 } from "../../contracts/src/index.js";
 import { atomicWrite, now } from "./util.js";
+export function publishProjectMaterialSafely(options: {
+  store: Store; locator: MaterialLocator; content: string; cachePath?: string; expectedHash?: string;
+}): { material: ProjectMaterial; writtenToDisk: boolean } {
+  const { store, locator, content } = options;
+  let writtenToDisk = false;
+  let sourceHash = computeSha256(content);
+  try {
+    if (!existsSync(locator.absolute_path)) {
+      mkdirSync(dirname(locator.absolute_path), { recursive: true });
+      try { writeFileSync(locator.absolute_path, content, { encoding: "utf8", flag: "wx" }); }
+      catch (error: any) { if (error?.code !== "EEXIST") throw error; }
+    }
+    sourceHash = computeSha256(readFileSync(locator.absolute_path, "utf8"));
+    writtenToDisk = true;
+  } catch {}
+  const record: ProjectMaterial = {
+    id: locator.material_id ?? `mat_${locator.workflow_id}_${locator.kind}`,
+    workflow_id: locator.workflow_id, repo_id: locator.repo_id, workspace_id: locator.workspace_id,
+    path: locator.relative_path, kind: locator.kind, revision: locator.revision,
+    source_hash: sourceHash, status: writtenToDisk ? "verified" : "missing", created_at: now(), updated_at: now(),
+  };
+  store.put("project_material", record.id, locator.workflow_id, record);
+  return { material: record, writtenToDisk };
+}
 
+/** Read current project text. Hashes/status from older publication are not prose locks. */
+export function readProjectMaterialByLocator(options: {
+  store: Store; locator: MaterialLocator; fallbackPendingContent?: string; platformCachePath?: string;
+}): MaterialReadResult {
+  const { store, locator, fallbackPendingContent, platformCachePath } = options;
+  if (existsSync(locator.absolute_path)) return {
+    content: readFileSync(locator.absolute_path, "utf8"), exists: true, source: "project_material", locator,
+  };
+  const material = store.list<ProjectMaterial>("project_material", locator.workflow_id)
+    .find(m => m.id === locator.material_id || (m.kind === locator.kind && m.path === locator.relative_path));
+  if (material) return { content: "", exists: false, source: "project_material", locator };
+  // Legacy rescue is read-only here; normal referenced originals never fall back to caches.
+  const legacy = fallbackPendingContent ?? (platformCachePath && existsSync(platformCachePath) ? readFileSync(platformCachePath, "utf8") : "");
+  return legacy ? { content: legacy, exists: true, source: "platform_legacy", locator }
+    : { content: "", exists: false, source: "none", locator };
+}
+
+/** Old pending caches must never recreate or overwrite a project original. */
+export function reconcileMaterialOutbox(store: Store, workflowId?: string): number {
+  const materials = store.list<ProjectMaterial>("project_material", workflowId);
+  let count = 0;
+  for (const material of materials.filter(m => m.status === "pending")) {
+    const ws = store.get<Workspace>("workspace", material.workspace_id);
+    if (!ws) continue;
+    const path = resolve(ws.root, sanitizeRelativePath(ws.root, material.path));
+    if (!existsSync(path)) continue;
+    store.put("project_material", material.id, material.workflow_id, {
+      ...material, cache_path: undefined, source_hash: computeSha256(readFileSync(path, "utf8")),
+      status: "verified", updated_at: now(),
+    });
+    count++;
+  }
+  return count;
+}
 export type ProjectMaterialCategory = "plan" | "review" | "repair" | "process" | "evidence";
 
 export interface MaterialLocator {
@@ -59,6 +117,50 @@ export function sanitizeRelativePath(baseRoot: string, relPath: string): string 
   return normRel;
 }
 
+/** Resolve an existing document reference; never select a different copy by hash. */
+export function originalPlanPath(store: Store, workflowId: string, revision?: number): string | undefined {
+  const wf = store.get<any>("workflow", workflowId);
+  const records = store.list<any>("plan", workflowId);
+  const record = records.find(p => p.revision === (revision ?? wf?.plan_revision));
+  const project = wf?.project_id ? store.get<Project>("project", wf.project_id) : undefined;
+  const workspaces = store.list<Workspace>("workspace", workflowId);
+  const roots = [
+    ...workspaces.map(w => ({ repo_id: w.repo_id, root: w.root })),
+    ...(project?.repositories ?? []).map(r => ({ repo_id: r.id, root: r.path })),
+  ];
+  const ref = record?.plan?.design_ref?.file_ref;
+  if (typeof ref === "string" && ref.trim()) {
+    if (isAbsolute(ref)) return normalize(ref);
+    const qualified = roots.find(r => ref.startsWith(r.repo_id + ":"));
+    const root = qualified ?? roots.find(r => r.repo_id === project?.primary_repo_id) ?? roots.find(r => r.repo_id === "main") ?? roots[0];
+    if (root) return resolve(root.root, sanitizeRelativePath(root.root, qualified ? ref.slice(root.repo_id.length + 1) : ref));
+  }
+  const link = store.get<any>("planning_document", workflowId);
+  if (record?.material_path) {
+    if (isAbsolute(record.material_path)) return normalize(record.material_path);
+    if (roots[0]) return resolve(roots[0].root, sanitizeRelativePath(roots[0].root, record.material_path));
+  }
+  const materials = store.list<ProjectMaterial>("project_material", workflowId).filter(m => m.kind === "plan");
+  const material = materials.find(m => m.id === (record?.material_id ?? link?.material_id)) ??
+    materials.find(m => m.id === `mat_${workflowId}_plan`) ??
+    materials.find(m => record?.run_id && m.id === `mat_${workflowId}_plan_r${record.revision}_run_${record.run_id}`) ??
+    materials.find(m => m.revision === (revision ?? wf?.plan_revision));
+  if (material) {
+    const ws = workspaces.find(w => w.id === material.workspace_id);
+    const root = ws?.root ?? roots.find(r => r.repo_id === material.repo_id)?.root;
+    if (root) return resolve(root, sanitizeRelativePath(root, material.path));
+  }
+  const docs = store.list<any>("project_document", workflowId).filter(d => d.document_type === "plan");
+  const doc = docs.find(d => d.id === link?.document_id) ?? docs.find(d => d.id === `doc_${workflowId}_plan`) ??
+    docs.find(d => d.revision === (revision ?? wf?.plan_revision));
+  const platformCopy = doc?.path && (doc.path.replaceAll("\\", "/").includes("/.devflow/documents/") ||
+    doc.path.replaceAll("\\", "/").includes(`/documents/${workflowId}/`));
+  if (doc?.path && !platformCopy && roots.some(root => {
+    const rel = relative(resolve(root.root), resolve(doc.path));
+    return !rel.startsWith("..") && !isAbsolute(rel);
+  })) return doc.path;
+}
+
 /**
  * 依据 CW2-D03 / CW3-F11 / CW3-F12 规范：解析主工作区及材料 Locator
  * 规则：优先用户指定原件引用，再项目 material_paths，再明确 primary repo，多仓库绝不无脑取首项；
@@ -78,12 +180,15 @@ export function resolveMaterialLocator(options: {
   const { store, workflowId, kind, preferredWorkspaceId, customRelPath, run_id, round, expectedHash } = options;
   const revision = options.revision ?? 1;
 
-  const workspaces = store.list<Workspace>("workspace", workflowId);
-  requireCondition(workspaces.length > 0, "NO_WORKSPACES", `工作流 ${workflowId} 无可用工作区`, 404);
-
   // 读取关联的 Project
   const wf = store.get<any>("workflow", workflowId);
   const project = wf?.project_id ? store.get<Project>("project", wf.project_id) : undefined;
+  const savedWorkspaces = store.list<Workspace>("workspace", workflowId);
+  const workspaces = savedWorkspaces.length ? savedWorkspaces : (project?.repositories ?? []).map(r => ({
+    id: `project:${r.id}`, repo_id: r.id, root: r.path,
+  } as Workspace));
+  requireCondition(workspaces.length > 0, "NO_WORKSPACES", `工作流 ${workflowId} 无可用工作区`, 404);
+  const existingPath = kind === "plan" ? originalPlanPath(store, workflowId) : undefined;
 
   let targetWs: Workspace | undefined;
   if (preferredWorkspaceId) {
@@ -111,7 +216,13 @@ export function resolveMaterialLocator(options: {
   const matPaths = repoConfig?.material_paths;
 
   let relPath: string;
-  if (customRelPath && customRelPath.trim()) {
+  if (existingPath && !customRelPath) {
+    const root = [...workspaces, ...(project?.repositories ?? []).map(r => ({ id: `project:${r.id}`, repo_id: r.id, root: r.path } as Workspace))]
+      .find(w => { const rel = relative(resolve(w.root), resolve(existingPath)); return !rel.startsWith("..") && !isAbsolute(rel); });
+    requireCondition(root, "PATH_ESCAPE", "计划原件必须属于项目或任务工作区", 400);
+    targetWs = root;
+    relPath = sanitizeRelativePath(root.root, relative(root.root, existingPath));
+  } else if (customRelPath && customRelPath.trim()) {
     relPath = sanitizeRelativePath(targetWs.root, customRelPath);
   } else {
     let baseDir: string;
@@ -135,25 +246,19 @@ export function resolveMaterialLocator(options: {
 
     switch (kind) {
       case "plan": {
-        const runPart = run_id ? `-run-${run_id}` : "";
-        relPath = `${baseDir}/${workflowId}/plan-r${revision}${runPart}.md`;
+        relPath = `${baseDir}/${workflowId}/plan.md`;
         break;
       }
       case "review": {
-        const roundPart = round !== undefined ? `-round-${round}` : "";
-        const runPart = run_id ? `-run-${run_id}` : "";
-        relPath = `${baseDir}/${workflowId}/review-r${revision}${roundPart}${runPart}.md`;
+        relPath = `${baseDir}/${workflowId}/review.md`;
         break;
       }
       case "repair": {
-        const roundPart = round !== undefined ? `-round-${round}` : "";
-        const runPart = run_id ? `-run-${run_id}` : "";
-        relPath = `${baseDir}/${workflowId}/repair-r${revision}${roundPart}${runPart}.md`;
+        relPath = `${baseDir}/${workflowId}/repair.md`;
         break;
       }
       case "process": {
-        const runPart = run_id ? `-${run_id}` : "";
-        relPath = `${baseDir}/${workflowId}/handover${runPart}.md`;
+        relPath = `${baseDir}/${workflowId}/handover.md`;
         break;
       }
       case "evidence": {
@@ -164,7 +269,7 @@ export function resolveMaterialLocator(options: {
   }
 
   const absPath = normalize(resolve(targetWs.root, relPath));
-  const materialId = `mat_${workflowId}_${kind}_r${revision}${round !== undefined ? `_round_${round}` : ""}${run_id ? `_run_${run_id}` : ""}`;
+  const materialId = kind === "evidence" ? `mat_${workflowId}_${kind}_r${revision}${round !== undefined ? `_round_${round}` : ""}${run_id ? `_run_${run_id}` : ""}` : `mat_${workflowId}_${kind}`;
 
   return {
     workflow_id: workflowId,
@@ -188,244 +293,6 @@ export function resolveMaterialLocator(options: {
  * 1. 既有异内容默认冲突；只有明确更新意图且 expected_hash 匹配才允许覆盖
  * 2. 全新写入必须为 no-replace 独占发布，不改判模型成功事实，落盘失败标 pending
  */
-export function publishProjectMaterialSafely(options: {
-  store: Store;
-  locator: MaterialLocator;
-  content: string;
-  cachePath?: string;
-  expectedHash?: string;
-}): { material: ProjectMaterial; writtenToDisk: boolean } {
-  const { store, locator, content, cachePath, expectedHash } = options;
-  const contentHash = computeSha256(content);
-  const materialId =
-    locator.material_id ??
-    `mat_${locator.workflow_id}_${locator.kind}_r${locator.revision}${locator.round !== undefined ? `_round_${locator.round}` : ""}${locator.run_id ? `_run_${locator.run_id}` : ""}`;
-  const effectiveExpectedHash = expectedHash ?? locator.expected_hash;
-
-  let writtenToDisk = false;
-  let status: ProjectMaterial["status"] = "pending";
-
-  try {
-    if (existsSync(locator.absolute_path)) {
-      const existing = readFileSync(locator.absolute_path, "utf8");
-      const existingHash = computeSha256(existing);
-
-      if (existingHash === contentHash) {
-        // 内容已一致，直接核验通过
-        writtenToDisk = true;
-        status = "verified";
-      } else if (effectiveExpectedHash !== undefined && existingHash === effectiveExpectedHash) {
-        // 明确具有更新意图且预期哈希完全匹配，允许覆盖写入
-        atomicWrite(locator.absolute_path, content);
-        writtenToDisk = true;
-        status = "verified";
-      } else {
-        // CW3-F11: 未传 expectedHash 或预期哈希不匹配时，既有异内容默认判定为冲突，禁止覆盖
-        status = "conflict";
-        writtenToDisk = false;
-      }
-    } else {
-      // 全新写入 (no-replace 独占发布)
-      const targetDir = dirname(locator.absolute_path);
-      if (!existsSync(targetDir)) {
-        mkdirSync(targetDir, { recursive: true });
-      }
-      atomicWrite(locator.absolute_path, content);
-      writtenToDisk = true;
-      status = "verified";
-    }
-  } catch (err: any) {
-    // 磁盘写入失败时记录 pending，保留模型成功事实并支持后续 outbox 重试
-    status = "pending";
-    writtenToDisk = false;
-  }
-
-  const record: ProjectMaterial = {
-    id: materialId,
-    workflow_id: locator.workflow_id,
-    repo_id: locator.repo_id,
-    workspace_id: locator.workspace_id,
-    path: locator.relative_path,
-    kind: locator.kind,
-    revision: locator.revision,
-    source_hash: contentHash,
-    cache_path: cachePath,
-    status,
-    created_at: now(),
-    updated_at: now(),
-  };
-
-  store.put("project_material", materialId, locator.workflow_id, record);
-  return { material: record, writtenToDisk };
-}
-
-/**
- * 依据 CW2-D03 / CW3-F12 / §6 规范：按 Locator 精确读取材料
- * 严格区分 result_pending、原件冲突/缺失与历史无 locator 兼容。
- * 原件发布后若丢失，禁止以平台缓存掩盖！
- */
-export function readProjectMaterialByLocator(options: {
-  store: Store;
-  locator: MaterialLocator;
-  fallbackPendingContent?: string;
-  platformCachePath?: string;
-}): MaterialReadResult {
-  const { store, locator, fallbackPendingContent, platformCachePath } = options;
-  const materialId =
-    locator.material_id ??
-    `mat_${locator.workflow_id}_${locator.kind}_r${locator.revision}${locator.round !== undefined ? `_round_${locator.round}` : ""}${locator.run_id ? `_run_${locator.run_id}` : ""}`;
-  
-  let materialRecord = store.get<ProjectMaterial>("project_material", materialId);
-  if (!materialRecord) {
-    // 尝试寻找同 workflow, kind, revision 的材料记录
-    const list = store.list<ProjectMaterial>("project_material", locator.workflow_id);
-    materialRecord = list.find((m) => m.kind === locator.kind && m.revision === locator.revision);
-  }
-
-  // 1. 若记录自身已是冲突状态
-  if (materialRecord?.status === "conflict") {
-    const raw = existsSync(locator.absolute_path) ? readFileSync(locator.absolute_path, "utf8") : "";
-    return {
-      content: raw,
-      exists: !!raw,
-      source: "project_material",
-      is_conflict: true,
-      conflict_reason: "项目材料发布存在内容冲突，已保护原件不被覆盖",
-      locator,
-    };
-  }
-
-  // 2. 若项目原件存在于磁盘，核验内容与哈希
-  if (existsSync(locator.absolute_path)) {
-    try {
-      const raw = readFileSync(locator.absolute_path, "utf8");
-      const currentHash = computeSha256(raw);
-
-      if (materialRecord && materialRecord.source_hash && currentHash !== materialRecord.source_hash) {
-        return {
-          content: raw,
-          exists: true,
-          source: "project_material",
-          is_conflict: true,
-          conflict_reason: `项目原件已被修改 (预期哈希: ${materialRecord.source_hash.slice(0, 8)}, 当前: ${currentHash.slice(0, 8)})`,
-          locator,
-        };
-      }
-      return {
-        content: raw,
-        exists: true,
-        source: "project_material",
-        locator,
-      };
-    } catch (err: any) {
-      // 读取异常处理
-    }
-  }
-
-  // 3. 磁盘文件不存在：
-  // 3a. 若材料记录处于 pending 状态，或有当前本轮正文，返回 result_pending
-  if (materialRecord?.status === "pending" || fallbackPendingContent) {
-    const pendingText =
-      fallbackPendingContent ??
-      (platformCachePath && existsSync(platformCachePath) ? readFileSync(platformCachePath, "utf8") : "");
-    if (pendingText) {
-      return {
-        content: pendingText,
-        exists: true,
-        source: "result_pending",
-        locator,
-      };
-    }
-  }
-
-  // 3b. 若材料记录已存在且曾发布成功 (verified)，但磁盘文件丢失：
-  // CW3-F12: 绝不能用平台缓存掩盖已发布原件的丢失！
-  if (materialRecord && materialRecord.status === "verified") {
-    return {
-      content: "",
-      exists: false,
-      source: "project_material",
-      is_conflict: true,
-      conflict_reason: `项目原件已丢失 (${locator.relative_path})，禁止以平台缓存掩盖`,
-      locator,
-    };
-  }
-
-  // 3c. 历史兼容：确无任何项目材料记录时，回退平台缓存
-  if (!materialRecord && platformCachePath && existsSync(platformCachePath)) {
-    try {
-      const legacyContent = readFileSync(platformCachePath, "utf8");
-      return {
-        content: legacyContent,
-        exists: true,
-        source: "platform_legacy",
-        locator,
-      };
-    } catch {}
-  }
-
-  return {
-    content: "",
-    exists: false,
-    source: "none",
-    locator,
-  };
-}
-
-/**
- * 依据 CW3-F12 规范：材料 outbox 恢复与补写对账
- * 在服务启动或恢复时，将 pending 状态的材料安全补写至磁盘，恢复只补写不重走模型业务
- */
-export function reconcileMaterialOutbox(store: Store, workflowId?: string): number {
-  const materials = workflowId
-    ? store.list<ProjectMaterial>("project_material", workflowId)
-    : store.list<ProjectMaterial>("project_material");
-
-  const pendingList = materials.filter((m) => m.status === "pending");
-  let reconciledCount = 0;
-
-  for (const mat of pendingList) {
-    const ws = store.get<Workspace>("workspace", mat.workspace_id);
-    if (!ws || !existsSync(ws.root)) continue;
-
-    const absPath = normalize(resolve(ws.root, mat.path));
-    try {
-      let contentToSave: string | null = null;
-      if (mat.cache_path && existsSync(mat.cache_path)) {
-        contentToSave = readFileSync(mat.cache_path, "utf8");
-      }
-
-      if (!contentToSave) continue;
-
-      if (existsSync(absPath)) {
-        const cur = readFileSync(absPath, "utf8");
-        if (computeSha256(cur) === mat.source_hash) {
-          mat.status = "verified";
-          mat.updated_at = now();
-          store.put("project_material", mat.id, mat.workflow_id, mat);
-          reconciledCount++;
-        } else {
-          mat.status = "conflict";
-          mat.updated_at = now();
-          store.put("project_material", mat.id, mat.workflow_id, mat);
-        }
-      } else {
-        const targetDir = dirname(absPath);
-        if (!existsSync(targetDir)) {
-          mkdirSync(targetDir, { recursive: true });
-        }
-        atomicWrite(absPath, contentToSave);
-        mat.status = "verified";
-        mat.updated_at = now();
-        store.put("project_material", mat.id, mat.workflow_id, mat);
-        reconciledCount++;
-      }
-    } catch {}
-  }
-
-  return reconciledCount;
-}
-
 // 保持向下兼容的轻量 helper 导出
 export function getPlanMaterialPath(
   workspaceRoot: string,

@@ -20,6 +20,7 @@ it("renders the current review contract without coverage or snapshot and retains
   expect(html).toContain("整改沿用原批准计划");
   expect(html).not.toContain("重新批准");
   expect(html).not.toContain("快照：");
+  expect(html).not.toContain("版计划");
 });
 
 it.each([

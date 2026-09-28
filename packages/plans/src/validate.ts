@@ -245,32 +245,6 @@ export function validatePlan(input: unknown): {
   const diagrams = [
     ...markdown.matchAll(/^```mermaid\r?\n([\s\S]*?)^```\s*$/gm),
   ].map((m) => m[1]!);
-  requireCondition(
-    diagrams.length >= (plan.complexity === "complex" ? 4 : 1),
-    "DIAGRAM_MISSING",
-    "缺少必需图解",
-    422,
-  );
-  if (plan.complexity === "complex")
-    requireCondition(
-      diagrams.some((d) => d.includes("sequenceDiagram")) &&
-        diagrams.some((d) => /flowchart|graph /.test(d)),
-      "DIAGRAM_TYPE",
-      "复杂计划需要流程图和时序图",
-      422,
-    );
-  requireCondition(
-    (plan.unresolved_decisions?.length ?? 0) === 0,
-    "UNRESOLVED_DECISION",
-    "正式计划存在未解决决策",
-    422,
-  );
-  requireCondition(
-    !/(?:TODO|TBD|待定|待确认)\s*[:：]/i.test(markdown),
-    "UNRESOLVED_DECISION",
-    "正式计划存在未解决决策",
-    422,
-  );
   if (plan.markdown) {
     plan.markdown = plan.markdown.replace(/\r\n/g, "\n");
   }

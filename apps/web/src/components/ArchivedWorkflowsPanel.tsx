@@ -317,9 +317,6 @@ export function ArchivedWorkflowsPanel({
                   >
                     <div><strong>ID：</strong><code>{item.workflow_id}</code></div>
                     {item.branch && <div><strong>分支：</strong><code>{item.branch}</code></div>}
-                    {item.plan_revision !== undefined && (
-                      <div><strong>计划修订版本：</strong>v{item.plan_revision}</div>
-                    )}
                   </div>
                 )}
               </div>

@@ -1,9 +1,10 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { rmSync } from "node:fs";
+import { rmSync, writeFileSync } from "node:fs";
 import { setup, repository, project, plan, proof } from "../helpers.js";
 import { PlanApprovalService } from "../../packages/core/src/plan-approval-service.js";
 import { verifyAndResolveExecutionInstructions } from "../../packages/core/src/execution-instructions.js";
 import { objectHash } from "../../packages/core/src/util.js";
+import { DocumentService } from "../../packages/core/src/document-service.js";
 
 describe("W04: 计划审批附加执行指令端到端集成测试", () => {
   let fixtureRoot: string | undefined;
@@ -14,6 +15,39 @@ describe("W04: 计划审批附加执行指令端到端集成测试", () => {
         rmSync(fixtureRoot, { recursive: true, force: true });
       } catch {}
     }
+  });
+
+  it("审批允许原件继续更新，回执仅存引用且重放读取当前原件", async () => {
+    const s = setup();
+    fixtureRoot = s.root;
+    try {
+      const r = await repository(s.root), p = project(r.repo);
+      await s.engine.registerProject(p);
+      const w = s.engine.create({ project_id: p.id, title: "原件审批", request: "实现某特性",
+        complexity: "simple", workspace_mode: "existing_workspace" }, "doc-approval");
+      s.engine.submitPlan(w.id, plan(objectHash(p), r.baseline), w.version, "doc-plan");
+      const docs = new DocumentService(s.store, s.engine.config.storage_root);
+      const doc = docs.publishDocument(w.id, "plan", "# 原计划\n", 1);
+      writeFileSync(doc.path!, "# 原计划\n\n执行进度已补充\n");
+      const service = new PlanApprovalService(s.engine, docs);
+      const auth = proof(s.engine, w.id, "approve");
+      const input = { workflowId: w.id, requestId: "approve-live-document", binding: auth.binding,
+        documentId: doc.id, documentRevision: 999, documentHash: "old-document-content",
+        executionInstructionsText: "不要刷新 Token", callerProof: auth.proof };
+      const result = await service.approve(input);
+      expect(result.workflow.state).toBe("QUEUED");
+      expect(result.document.content).toContain("执行进度已补充");
+      const receipt = s.store.must<any>("plan_approval_receipt", input.requestId);
+      expect(receipt.document.content).toBeUndefined();
+      expect(receipt.document.anchor_map).toBeUndefined();
+      expect(receipt.approval?.document_hash ?? receipt.response.approval.document_hash).toBeNull();
+      writeFileSync(doc.path!, "# 原计划\n\n又发现一个问题\n");
+      const replay = await service.approve({ ...input, documentRevision: 1000, documentHash: "latest-ui-hash" });
+      expect(replay.document.content).toContain("又发现一个问题");
+      expect(replay.approval.execution_instructions.text).toBe("不要刷新 Token");
+      await expect(service.approve({ ...input, executionInstructionsText: "允许刷新 Token" }))
+        .rejects.toThrow(/已被用于不同的审批内容/);
+    } finally { s.store.close(); }
   });
 
   it("端到端闭环：审批附加指令、V2记录持久化、幂等防重与运行材料解析", async () => {

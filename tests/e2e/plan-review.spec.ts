@@ -103,8 +103,9 @@ test("计划问答保持审批状态，驳回在原规划会话修正后重新�
     actions.getByRole("button", { name: "批准当前计划", exact: true }),
   ).toBeVisible();
   await actions.getByRole("button", { name: "计划问答", exact: true }).click();
-  dialog = page.getByRole("dialog", { name: /计划问答 · 第 2 版/ });
-  await dialog.getByLabel("向规划模型提问").fill("第二版修改了什么？");
+  dialog = page.getByRole("dialog", { name: "计划问答", exact: true });
+  await expect(dialog).not.toContainText("第 2 版");
+  await dialog.getByLabel("向规划模型提问").fill("当前计划修改了什么？");
   await dialog.getByRole("button", { name: "发送问题", exact: true }).click();
   await expect(dialog.getByLabel("计划问答记录")).toContainText(
     "请补充回滚步骤",

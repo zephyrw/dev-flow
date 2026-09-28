@@ -210,7 +210,6 @@ export class ProfileRuntime {
       project_config_hash: objectHash(this.engine.project(w.project_id)),
       design_ref: {
         ...value.plan?.design_ref,
-        content_hash: hash(value.markdown.replace(/\r\n/g, "\n")),
       },
     };
     return schema.parse(value);
@@ -245,7 +244,7 @@ export class ProfileRuntime {
             instructions:
               "只读诊断故障。按当前唯一正式计划定位真实运行或环境故障根因，给出确定修复步骤；诊断不是代码质量审核，不能产出测试真实性核验或证明工具任务；需要改变范围时返回完整正式计划并等待批准。禁止另建替代计划。",
             error,
-            plan: this.engine.plan(w.id),
+            plan: this.planReference(w),
             authorities: this.engine.planSelfCheck.authorities(w),
             evidence: this.engine.getEvidence(w.id),
           },
@@ -277,16 +276,9 @@ export class ProfileRuntime {
       plan_hash?: string;
     },
   ) {
-    const revision = question.plan_revision ?? w.plan_revision;
-    const plan = revision
-      ? readPlanMaterial(this.engine.store, w.id, revision)
+    const plan = w.plan_revision
+      ? readPlanMaterial(this.engine.store, w.id, w.plan_revision)
       : null;
-    requireCondition(
-      !question.plan_hash || plan?.hash === question.plan_hash,
-      "PLAN_CHANGED",
-      "提问绑定的计划版本不一致",
-      409,
-    );
     const value = await this.invoke(
       w,
       run,
@@ -471,7 +463,7 @@ export class ProfileRuntime {
         instructions:
           "你是规划模型。读取需求及引用的真实工作区文件，返回唯一正式计划。包含完整需求、确定实施步骤、单元/集成/E2E场景、前端仿人工真实浏览器核验场景、认证判定及受影响旧功能回归；等待用户批准后才实施。只读，不修改代码。如果提供 current_plan，须在同一任务中按用户的规划反馈修正该计划，逐条回应修改意见并提交完整新版，不能自行批准或启动实施。",
         current_plan: w.plan_revision
-          ? readPlanMaterial(this.engine.store, w.id, w.plan_revision)
+          ? this.planReference(w)
           : null,
         selected_source:
           selectedSource?.plan_hash === w.plan_hash ? selectedSource : null,
@@ -486,6 +478,13 @@ export class ProfileRuntime {
       },
       this.readPlanningHandoff(w.id),
     );
+  }
+  private planReference(w: Workflow) {
+    const record = this.engine.plan(w.id);
+    const document = readPlanMaterial(this.engine.store, w.id, w.plan_revision);
+    const { markdown: _markdown, ...plan } = record.plan;
+    return { ...record, plan, path: document.path,
+      instruction: "读取 path 指向的项目计划原件；模型可在原件中追加进度与未解决问题。" };
   }
   private executeMaterials(w: Workflow, run: Run) {
     const plan = this.engine.plan(w.id);
@@ -522,7 +521,7 @@ export class ProfileRuntime {
         ...(executionSkills ? { skill_resources: executionSkills } : {}),
         workflow: w,
         run,
-        plan,
+        plan: this.planReference(w),
         test_result_targets: plan.plan.tests.flatMap(test => test.expected_case_ids.map(case_id => ({ test_id: test.id, case_id, layer: test.layer }))),
         ...(extraPayload ? { approved_execution_instructions: extraPayload } : {}),
         authorities: this.engine.planSelfCheck.authorities(w),
@@ -577,7 +576,7 @@ export class ProfileRuntime {
         run,
         phase,
         cycle: this.engine.quality.getOrCreateGate(w.id, phase).cycle,
-        plan: this.engine.plan(w.id),
+        plan: this.planReference(w),
         ...(extraPayload ? { approved_execution_instructions: extraPayload } : {}),
         authorities: this.engine.planSelfCheck.authorities(w),
         snapshot,
@@ -1493,7 +1492,7 @@ function asideQuestionMaterials(
       ? {
           revision: plan.revision,
           hash: plan.hash,
-          markdown: plan.markdown,
+          path: plan.path,
         }
       : null,
     plan_summary: asidePlanSummary(plan),
