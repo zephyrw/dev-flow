@@ -3232,6 +3232,8 @@ function asConversationLogEntries(items: unknown): LogEntry[] {
             ? row.status
             : undefined,
         command: typeof row.command === "string" ? row.command : undefined,
+        cwd: typeof row.cwd === "string" ? row.cwd : undefined,
+        resultText: typeof row.resultText === "string" ? row.resultText : undefined,
       } satisfies LogEntry;
     });
 }

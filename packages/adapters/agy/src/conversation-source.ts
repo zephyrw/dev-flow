@@ -12,6 +12,7 @@ import {
 } from "../../sdk/src/conversation-source.js";
 import type { SubagentCapabilities } from "../../../contracts/src/conversation.js";
 import { SubagentCapabilitiesSchema } from "../../../contracts/src/conversation.js";
+import { toolSummary, toolOutputSummary } from "../../../presentation/src/tool-summary.js";
 import {
   AgyNativeRecordSource,
   agyStepSourceId,
@@ -191,7 +192,7 @@ function parentActivity(
 ): NativeConversationEvent {
   const info = toolInfo(step);
   const params = publicParameters(info);
-  const command = params.CommandLine ?? params.command;
+  const summary = toolSummary(typeof name === "string" ? name : undefined, params);
   return eventBase(
     context,
     identity.conversation_id,
@@ -199,10 +200,13 @@ function parentActivity(
     "activity",
     {
       activity_id: agyActivityId(identity),
-      title: typeof name === "string" ? name : undefined,
+      title: summary.title ?? (typeof name === "string" ? name : undefined),
+      public_text: summary.text.slice(0, 16000),
       status: step.state === "ERROR" ? "failed" : step.state === "DONE" ? "completed" : "running",
       kind: step.step_type === "tool" ? "tool" : "event",
-      command: typeof command === "string" ? command.slice(0, 32000) : undefined,
+      command: summary.command?.slice(0, 32000),
+      cwd: summary.cwd,
+      result_text: toolOutputSummary(info.output, typeof name === "string" ? name : undefined),
     },
   );
 }

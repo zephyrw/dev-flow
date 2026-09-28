@@ -2,7 +2,7 @@ import { failureSummary } from "./failure.js";
 import { ReviewActivityStream } from "./review-activity.js";
 import { runtimeFailureResolution } from "../../contracts/src/runtime-failure.js";
 import { toolSummary, toolOutputSummary } from "./tool-summary.js";
-import { conversationActivityLogEntry } from "./conversation-activity.js";
+import { conversationActivityLogEntry, mergeConversationLogEntry } from "./conversation-activity.js";
 import { CONVERSATION_EVENT } from "../../contracts/src/conversation.js";
 export interface LogEntry {
   key: string;
@@ -238,7 +238,7 @@ export function readableLogs(events: any[], workflow: string): LogEntry[] {
         rows.push(mapped);
         steps.set(mapped.key, mapped);
       } else {
-        Object.assign(row, mapped);
+        mergeConversationLogEntry(row, mapped);
       }
       continue;
     }
@@ -683,7 +683,7 @@ export function readableLogs(events: any[], workflow: string): LogEntry[] {
       row.status = "interrupted";
   return rows
     .filter((r) => r.kind !== "message" || r.text.trim())
-    .filter((r) => r.kind !== "tool" || r.text.trim() || r.resultText?.trim() || r.raw.some((e: any) => e.type === "ReviewDiagnostic"))
+    .filter((r) => r.kind !== "tool" || r.text.trim() || r.command?.trim() || r.resultText?.trim() || r.raw.some((e: any) => e.type === "ReviewDiagnostic"))
     .sort((a, b) => a.sequence - b.sequence);
 }
 

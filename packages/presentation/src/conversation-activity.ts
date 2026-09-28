@@ -72,6 +72,8 @@ export function conversationActivityLogEntry(event: {
     kind,
     status: conversationActivityStatus(payload.status),
     command: payload.command,
+    cwd: payload.cwd,
+    resultText: payload.result_text,
   };
 }
 
@@ -93,8 +95,19 @@ export function conversationLogs(
       rows.set(entry.key, entry);
       order.push(entry);
     } else {
-      Object.assign(existing, entry);
+      mergeConversationLogEntry(existing, entry);
     }
   }
   return order.sort((a, b) => a.sequence - b.sequence);
+}
+
+/** Completion events may omit the arguments sent with the start event. */
+export function mergeConversationLogEntry(existing: LogEntry, incoming: LogEntry) {
+  const details = {
+    text: incoming.text || existing.text,
+    command: incoming.command || existing.command,
+    cwd: incoming.cwd || existing.cwd,
+    resultText: incoming.resultText || existing.resultText,
+  };
+  Object.assign(existing, incoming, details);
 }

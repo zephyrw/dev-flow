@@ -276,6 +276,8 @@ export const ConversationActivityPayloadSchema = z
     status: ConversationStatusSchema.optional(),
     kind: z.enum(["tool", "message", "event", "separator"]).optional(),
     command: z.string().max(32000).optional(),
+    cwd: z.string().max(4000).optional(),
+    result_text: z.string().max(16000).optional(),
     replaces_conversation_id: Id.optional(),
   })
   .strict();

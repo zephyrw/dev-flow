@@ -818,7 +818,8 @@ function ensureAttempt(
     workflow_id: ctx.workflow_id,
     run_id: ctx.run_id,
     generation,
-    status: incoming ?? (event.kind === "discovered" ? "discovered" : "starting"),
+    status: event.kind === "activity" ? "running" :
+      incoming ?? (event.kind === "discovered" ? "discovered" : "starting"),
     observed_at: timestamp,
     freshness: "fresh",
   });
@@ -917,7 +918,9 @@ function applyActivityState(
   payload: PayloadRecord,
 ) {
   const incoming = readStatus(payload);
-  if (incoming) applyState(attempt, payload);
+  // Activity status belongs to one tool/message, not the conversation lifecycle.
+  // Only explicit state events may complete or fail the conversation.
+  if (incoming && !isTerminalConversationStatus(incoming)) applyState(attempt, payload);
   else if (!isTerminalConversationStatus(attempt.status)) {
     if (attempt.status === "discovered" || attempt.status === "starting")
       attempt.status = "running";
@@ -1138,6 +1141,8 @@ function toActivityPayload(
         ? kind
         : undefined,
     command: clipOptional(readString(payload, "command"), COMMAND_MAX),
+    cwd: clipOptional(readString(payload, "cwd"), 4000),
+    result_text: clipOptional(readString(payload, "result_text"), PUBLIC_TEXT_MAX),
     replaces_conversation_id: readString(payload, "replaces_conversation_id"),
   });
   return parsed.success ? parsed.data : undefined;
