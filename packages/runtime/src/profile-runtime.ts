@@ -122,6 +122,7 @@ import {
 import {
   reviewSkillResources,
   repairReviewMaterial,
+  repairAssignmentForRun,
   reviewContractContext,
   reviewInstructions,
 } from "./review-materials.js";
@@ -492,8 +493,7 @@ export class ProfileRuntime {
     const purpose = run.purpose ?? "implement";
     const roleSpecific = policy2 && purpose !== "implement";
     const assignment = this.engine.store.get<any>("repair_assignment", w.id);
-    const repair = !policy2 || (assignment && assignment.assignment_id === run.assignment_id)
-      ? assignment : null;
+    const repair = policy2 ? repairAssignmentForRun(this.engine.store, w, run) : assignment;
     const sourceReview = repairReviewMaterial(this.engine.store, w, run, repair);
 
     const effectiveRun = this.ensureRunApprovalRef(w, run);
@@ -516,13 +516,14 @@ export class ProfileRuntime {
     return this.continuationMaterials(
       {
         instructions: baseInstructions + extraInstructionsPrompt +
-          "\n可在顶层或delivery.test_results逐项回传原计划测试结果：test_id用计划测试ID，case_id用expected_case_ids，status为passed/failed/skipped/not_run，summary简述结果或未运行原因；只报告你明确确认的场景，need_user时也保留已完成结果，未回传项不会被当作失败或未执行。" + (sourceReview
+          "\n可在顶层或delivery.test_results逐项回传原计划测试结果：test_id用计划测试ID，case_id必须用计划expected_case_ids，不填测试文件路径或类名；按test_result_targets中的test_id/case_id逐项填写。status为passed/failed/skipped/not_run，summary简述结果或未运行原因；只报告你明确确认的场景，need_user时也保留已完成结果，未回传项不会被当作失败或未执行。" + (sourceReview
           ? "\n本轮是代码复核整改。读取 source_review 中的问题正文及 repair_instructions，按问题编号逐项修复并说明处理结果；沿用原批准计划和已有修改，不从头开发，不以整改摘要替代问题正文。" : ""),
         ...(roleSpecific ? {} : { execution_order: batchExecutionInstructions }),
         ...(executionSkills ? { skill_resources: executionSkills } : {}),
         workflow: w,
         run,
         plan,
+        test_result_targets: plan.plan.tests.flatMap(test => test.expected_case_ids.map(case_id => ({ test_id: test.id, case_id, layer: test.layer }))),
         ...(extraPayload ? { approved_execution_instructions: extraPayload } : {}),
         authorities: this.engine.planSelfCheck.authorities(w),
         feedback: this.engine.store.list("feedback_message", w.id),

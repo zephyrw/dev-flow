@@ -87,6 +87,17 @@ it("normalizes optional result rows independently instead of discarding valid si
   expect(value.test_results).toEqual([passed]);
 });
 
+it("uses the uniquely named planned test when the model puts a test file in its case field", () => {
+  const w = s.engine.get(wid), run = s.store.must<Run>("run", "executor");
+  recordExecutionTestReport(s.store, w, run, { test_results: [
+    { test_id: "IT01", case_id: "tests/integration/real.spec.ts", status: "passed", summary: "Model reported its result" },
+    { test_id: "UT01", case_id: "tests/unit/ambiguous.spec.ts", status: "passed" },
+    { test_id: "not-in-plan", case_id: "case-a", status: "passed" },
+  ] });
+  expect(both().cases.map(c => c.status)).toEqual(["unreported", "unreported", "passed"]);
+  expect(both().cases[2]).toMatchObject({ id: "IT01", report_source: "executor_report", summary: "Model reported its result" });
+});
+
 it("uses a newer explicit report in place of stale evidence without changing the evidence record", () => {
   const w = s.engine.get(wid), run = s.store.must<Run>("run", "executor"), p = s.engine.plan(wid).plan;
   recordExecutionTestReport(s.store, w, run, { test_results: [passed] });

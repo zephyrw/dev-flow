@@ -28,6 +28,7 @@ import {
 } from "../../core/src/conversation-control.js";
 import type { ConversationService } from "../../core/src/conversation-service.js";
 import { latestSpec } from "../../core/src/run-profile.js";
+import { continuationMatchesRun } from "../../core/src/conversation-lineage.js";
 import {
   continuationForRecovery,
   readWaitingContext,
@@ -326,10 +327,15 @@ export class ConversationRecovery {
     }
     const sourceRun = this.deps.store.get<Run>("run", sourceRunId);
     const purpose = preservedPurpose(fence, sourceRun, tree, request.root_id);
+    const priorContinuation = fence?.continuation ?? sourceRun?.continuation;
+    const validatedContinuation = sourceRun && priorContinuation &&
+      ["implement", "functional_fix", "planner_takeover", "quality_review", "planning"].includes(purpose)
+      ? continuationMatchesRun(this.deps.store, { ...sourceRun, purpose: purpose as Run["purpose"] }, priorContinuation) ? priorContinuation : undefined
+      : priorContinuation;
     const ownership = waitingPurposeFromRun(
       purpose,
       fence?.stage ?? sourceRun?.stage ?? workflow.stage,
-      fence?.continuation ?? sourceRun?.continuation,
+      validatedContinuation,
     );
     const planningOnly = isPlanningOnly(this.deps.store, workflow, purpose);
     const profileChanged = hasNextToolChange(this.deps.store, workflow, sourceRun);

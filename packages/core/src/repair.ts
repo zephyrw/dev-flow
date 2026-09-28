@@ -7,6 +7,7 @@ import { batchExecutionInstructions } from "./execution-guidance.js";
 import { normalizeRuntimeFailure } from "../../runtime/src/errors.js";
 import { runtimeFailureResolution } from "../../contracts/src/runtime-failure.js";
 import { openRepairBatch } from "./repair-model-service.js";
+import { usesQualityPolicyV2 } from "./quality-flow.js";
 
 export function prepareRepairResume(engine: Engine, key: string) {
   if (resolveTaskModel(engine.plan(key).plan) !== "native-v2") return;
@@ -15,6 +16,14 @@ export function prepareRepairResume(engine: Engine, key: string) {
     engine.store.remove("repair_state", key);
   const assignment = engine.store.get<any>("repair_assignment", key);
   if (!assignment?.planner) return;
+  if (usesQualityPolicyV2(w.quality_policy_version)) {
+    const flow = engine.store.get<{ phase: string; planner_repairs_only: boolean }>("quality_flow", key);
+    if (assignment.source === "quality_review" && assignment.plan_revision === w.plan_revision &&
+        assignment.plan_hash === w.plan_hash && assignment.phase === flow?.phase && flow?.planner_repairs_only)
+      return;
+    engine.store.remove("repair_assignment", key);
+    return;
+  }
   if (
     assignment.source === "quality_review" &&
     assignment.plan_revision === w.plan_revision &&

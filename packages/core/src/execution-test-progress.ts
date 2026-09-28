@@ -41,7 +41,11 @@ export function reportedTestProgress(store: Store, w: Workflow, plan: Plan | nul
   for (const report of reports) {
     for (const result of report.material.test_results ?? []) {
       const test = plan.tests.find(t => t.id === result.test_id);
-      const caseId = result.case_id ?? (test?.expected_case_ids.length === 1 ? test.expected_case_ids[0] : undefined);
+      // A precise test ID already identifies its sole planned case. Providers
+      // sometimes put the executed file/class in case_id; retain that explicit
+      // report without guessing between cases of a multi-case test.
+      const caseId = test?.expected_case_ids.includes(result.case_id ?? "") ? result.case_id
+        : test?.expected_case_ids.length === 1 ? test.expected_case_ids[0] : undefined;
       if (!caseId || !test?.expected_case_ids.includes(caseId)) continue;
       latest.set(`${test.id}:${caseId}`, { report, result });
     }

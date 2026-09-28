@@ -126,6 +126,7 @@ import {
   type WaitingContext,
 } from "./waiting-context.js";
 import { UserInteractionService, interactionConversationContext } from "./user-interaction-service.js";
+import { continuationMatchesRun } from "./conversation-lineage.js";
 import type {
   QualityRepairAssignment,
   QualityTransfer,
@@ -1543,10 +1544,13 @@ export class Engine {
     key: string,
     purpose: RunContinuation["purpose"],
     role: RunContinuation["role"],
+    target?: Pick<Run, "workflow_id" | "purpose" | "routing_role" | "assignment_id" | "plan_revision">,
   ): RunContinuation | undefined {
     const staged = readRunContinuation(this.store, key);
     const waiting = readWaitingContext(this.store, key);
-    const stagedMatch = staged?.purpose === purpose ? staged : undefined;
+    const matches = (value: RunContinuation) => value.purpose === purpose &&
+      (target ? continuationMatchesRun(this.store, target, value) : !value.role || value.role === role);
+    const stagedMatch = staged && matches(staged) ? staged : undefined;
     const waitingMatch =
       waiting &&
       waiting.purpose === purpose &&
@@ -1555,9 +1559,10 @@ export class Engine {
         waiting.intent === "unclear")
         ? continuationFromWaiting(waiting)
         : undefined;
-    const continuation = stagedMatch ?? waitingMatch ?? this.openRunContinuation(key, purpose);
+    const continuation = stagedMatch ?? (waitingMatch && matches(waitingMatch) ? waitingMatch : undefined) ??
+      this.openRunContinuation(key, purpose, matches);
     if (!continuation) {
-      if (staged && staged.purpose !== purpose)
+      if (staged && !matches(staged))
         clearRunContinuation(this.store, key);
       return;
     }
@@ -1566,11 +1571,13 @@ export class Engine {
   private openRunContinuation(
     key: string,
     purpose: RunContinuation["purpose"],
+    matches?: (value: RunContinuation) => boolean,
   ) {
     const runs = this.store.list<Run>("run", key);
     for (let i = runs.length - 1; i >= 0; i--) {
       const run = runs[i]!;
       if (run.continuation?.purpose !== purpose) continue;
+      if (matches && !matches(run.continuation)) continue;
       if (run.status === "completed" && run.exit_code === 0) continue;
       return run.continuation;
     }
@@ -3348,7 +3355,10 @@ export class Engine {
       const deadline = this.accountRecoveryDeadline(pendingRetry, this.config.timeouts.agent_minutes * 60000);
       const continuationPurpose = review ? "review" : "execute";
       const role = profileBinding.routing_role === "planner" || profileBinding.routing_role === "reviewer" ? "planner" : "executor";
-      const continuation = this.consumeContinuation(key, continuationPurpose, role);
+      const continuation = this.consumeContinuation(key, continuationPurpose, role, {
+        workflow_id: key, purpose, routing_role: profileBinding.routing_role,
+        assignment_id: profileBinding.assignment_id, plan_revision: w.plan_revision,
+      });
 
       const approvalRecord = this.store.get<any>(
         "approval",

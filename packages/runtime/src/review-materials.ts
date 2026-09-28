@@ -9,6 +9,19 @@ import { requireCondition } from "../../contracts/src/index.js";
 import { reviewCompletionContext } from "../../core/src/review-completion.js";
 import { reviewScopeInstructions } from "../../core/src/role-boundaries.js";
 
+/** A recovered Run keeps its frozen assignment even if the active pointer was lost. */
+export function repairAssignmentForRun(store: Store, w: Workflow, run: Run): QualityRepairAssignment | null {
+  if (!run.assignment_id || run.purpose === "aside" || run.workflow_id !== w.id) return null;
+  const active = store.get<QualityRepairAssignment>("repair_assignment", w.id);
+  const assignment = active?.assignment_id === run.assignment_id ? active :
+    store.list<QualityRepairAssignment>("quality_repair_assignment", w.id)
+      .find(item => item.assignment_id === run.assignment_id);
+  if (!assignment || assignment.plan_revision !== run.plan_revision || run.plan_revision !== w.plan_revision ||
+      (assignment.plan_hash && assignment.plan_hash !== w.plan_hash) ||
+      (run.dispatch_context?.source_run_id && assignment.source_review_id !== run.dispatch_context.source_run_id)) return null;
+  return assignment;
+}
+
 /** Resolve the assigned review, never an unrelated latest review. Older saved
  * assignments are supported using the persisted review Run/request binding. */
 export function repairReviewMaterial(store: Store, w: Workflow, run: Run, assignment?: QualityRepairAssignment | null): Review | null {
