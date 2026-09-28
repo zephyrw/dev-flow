@@ -1,4 +1,4 @@
-import { hasDualQuotaWindows, modelCovered } from "./quota.js";
+import { hasAccountIdentityMismatch, hasDualQuotaWindows, modelCovered } from "./quota.js";
 import { randomUUID, createHash } from "node:crypto";
 import { z } from "zod";
 import {
@@ -24,6 +24,7 @@ import type { AgyAccountRepository } from "./repository.js";
 import type {
   AuthHostPort,
   AccountProbePort,
+  AccountProbeResult,
   ProcessHostPort,
   AccountConsumerPort,
   ClockPort,
@@ -343,7 +344,8 @@ export class AgyAccountService {
     for (const op of operations) {
       if (["completed", "failed", "cancelled"].includes(op.phase)) continue;
 
-      const isExpired = Boolean(op.deadline_at && new Date(op.deadline_at).getTime() < now);
+      const isExpired = !["committed", "recovering"].includes(op.phase) &&
+        Boolean(op.deadline_at && new Date(op.deadline_at).getTime() < now);
       const isOrphaned = realm ? realm.pending_operation_id !== op.operation_id : true;
       const isBlocked = op.phase === "blocked";
 
@@ -364,7 +366,8 @@ export class AgyAccountService {
         !op ||
         ["completed", "failed", "cancelled"].includes(op.phase) ||
         op.phase === "blocked" ||
-        (op.deadline_at && new Date(op.deadline_at).getTime() < now);
+        (!["committed", "recovering"].includes(op.phase) &&
+          op.deadline_at && new Date(op.deadline_at).getTime() < now);
 
       if (isStale) {
         if (op && !["completed", "failed", "cancelled"].includes(op.phase)) {
@@ -467,8 +470,11 @@ export class AgyAccountService {
           updated_at: this.clock.toISOString(),
         }),
       realm = this.repository.getRealm(realmId);
-    const accounts = this.repository.listAccounts(realmId),
-      snapshots = this.repository.listQuotaSnapshots(realmId);
+    const storedAccounts = this.repository.listAccounts(realmId);
+    const mismatchedIds = new Set(storedAccounts.filter(hasAccountIdentityMismatch).map(a => a.id));
+    const accounts = storedAccounts.map(a => mismatchedIds.has(a.id)
+      ? { ...a, state: "reauth_required" as const } : a),
+      snapshots = this.repository.listQuotaSnapshots(realmId).filter(s => !mismatchedIds.has(s.account_id));
     const pools = ["global"];
     const selection = selectCandidates(accounts, snapshots, pools, this.clock.now(), {
       required_model_ids: settings.standalone_model_id ? [settings.standalone_model_id] : [],
@@ -536,6 +542,11 @@ export class AgyAccountService {
 
     try {
       const inspection = await this.authHost.inspectActive(realmId);
+      // A switch can be accepted while a host RPC is in flight. Never overwrite
+      // its reservation with the realm snapshot taken before that await.
+      realm = this.repository.getRealm(realmId)!;
+      if (realm.pending_operation_id)
+        return { active_account_id: realm.active_account_id, matched: false };
       if (!inspection.exists) {
         if (realm.active_account_id) {
           realm.active_account_id = null;
@@ -551,6 +562,9 @@ export class AgyAccountService {
       const accounts = this.repository.listAccounts(realmId);
       let matched: AgyAccount | undefined;
       for (const account of accounts) {
+        // A saved blob may have been mislabelled by an older quota refresh.
+        // Matching its bytes must not override a contradictory real identity.
+        if (activeEmail && activeEmail !== account.identity.email.trim().toLowerCase()) continue;
         if (await this.authHost.compareActive(realmId, account.secret_ref)) {
           matched = account;
           break;
@@ -632,6 +646,9 @@ export class AgyAccountService {
         }
       }
 
+      realm = this.repository.getRealm(realmId)!;
+      if (realm.pending_operation_id)
+        return { active_account_id: realm.active_account_id, matched: false };
       if (matched) {
         if (
           realm.active_account_id !== matched.id ||
@@ -687,8 +704,20 @@ export class AgyAccountService {
       let origActiveAcc = origActiveId
         ? this.repository.getAccount(realmId, origActiveId)
         : null;
+      let changedCredential = false;
+      let refreshScope: "all" | "active_only" = "all";
+      const hasRunningUsers = async () => {
+        const managed = await this.processHost.listManagedProcesses(realmId);
+        return managed.length > 0 ||
+          this.repository.listPermits(realmId).some(p => p.status !== "released") ||
+          (await this.processHost.findExternalAgyProcesses()).length > 0;
+      };
 
       try {
+        if (!this.authHost.isDomainLockHeld(realmId))
+          throw new AccountServiceError("domain_lock_not_held");
+        if (realm?.pending_operation_id)
+          throw new AccountServiceError("operation_in_progress");
         // 1. 同步对齐外部真实活动账号 (直接调用私有 Locked 方法，避免 coordinator 队列死锁)
         await this.syncActiveAccountFromHostLocked(realmId);
         realm = this.repository.getRealm(realmId);
@@ -696,32 +725,17 @@ export class AgyAccountService {
         origActiveAcc = origActiveId
           ? this.repository.getAccount(realmId, origActiveId)
           : null;
+        if (!origActiveAcc) throw new AccountServiceError("active_account_unavailable");
         const accounts = this.repository.listAccounts(realmId);
 
         const probeSingleAccount = async (acc: AgyAccount) => {
           try {
             console.log(`[额度探测-串行] 正在探测账号: ${acc.identity.email} (${acc.alias})...`);
-            const probeResult = await this.probe.probeUsage({
-              account_id: acc.id,
-              timeoutMs: 35000,
-            });
-            if (
-              probeResult.email &&
-              probeResult.email.toLowerCase() !== acc.identity.email.toLowerCase()
-            ) {
-              console.warn(
-                `[额度探测-串行] 账号 ${acc.identity.email} 凭据身份不匹配 (实际为 ${probeResult.email})，跳过写入`,
-              );
-              return false;
-            }
+            const probeResult = await this.probeAccountUsage(realmId, acc, 35000);
             if (probeResult.capability_verified && probeResult.pools.length > 0) {
-              try {
-                const captured = await this.authHost.captureActive(realmId, acc.id);
-                this.saveCapture(realmId, acc.id, captured);
-                acc = this.repository.getAccount(realmId, acc.id) ?? acc;
-              } catch {
-                // ignore
-              }
+              const captured = await this.captureUsageCredential(realmId, acc);
+              this.saveCapture(realmId, acc.id, captured);
+              acc = this.repository.getAccount(realmId, acc.id) ?? acc;
               let complete = true;
               this.repository.retainQuotaPools(realmId, acc.id, probeResult.pools.map((p) => p.pool_id));
               for (const pool of probeResult.pools) {
@@ -763,6 +777,20 @@ export class AgyAccountService {
                 acc.enrollment_completed_at ??= this.clock.toISOString();
               }
               this.repository.saveAccount(acc);
+              // Admission remains immediate while this serialized refresh runs.
+              // Merge only our credential observation into the latest realm.
+              realm = this.repository.getRealm(realmId);
+              if (acc.id === origActiveId && realm) {
+                realm.active_secret_ref = captured.secret_ref;
+                // Recover the historical missing-/usage-email false alarm only
+                // after a fresh, identity-checked query and credential capture.
+                if (realm.phase === "blocked" && realm.last_error === "external_change") {
+                  realm.phase = "idle";
+                  realm.last_error = undefined;
+                }
+                realm.revision++;
+                this.repository.saveRealm(realm);
+              }
               console.log(`[额度探测-串行] 账号 ${acc.identity.email} 探测完成，状态: ${observedState}`);
               return true;
             }
@@ -774,7 +802,8 @@ export class AgyAccountService {
               msg.includes("401") ||
               msg.includes("login") ||
               msg.includes("unauthorized") ||
-              msg.includes("identity_unverified")
+              msg.includes("identity_unverified") ||
+              msg === "external_change"
             ) {
               acc.state = "reauth_required";
               this.repository.saveAccount(acc);
@@ -793,34 +822,49 @@ export class AgyAccountService {
         for (const acc of accounts) {
           if (acc.id === origActiveId) continue;
           if (!acc.secret_ref) continue;
+          if (await hasRunningUsers()) {
+            refreshScope = "active_only";
+            break;
+          }
 
           try {
             // 切换到该账号的保存凭据
             await this.authHost.activateSaved(realmId, acc.id, acc.secret_ref);
+            changedCredential = true;
             await probeSingleAccount(acc);
           } catch (e: any) {
             console.warn(`[额度探测-串行] 切换账号 ${acc.identity.email} 或探测异常:`, e?.message || e);
           }
         }
       } finally {
-        // 4. 无论中间是否发生异常，务必将宿主机恢复为原活动账号凭据（若原活动账号为空则恢复为首个受管账号）
+        // Only restore if this refresh actually switched credentials. An active-only
+        // refresh must never reinstall a blob while a user's CLI is still running.
         const fallbackAcc =
-          (origActiveAcc ? this.repository.getAccount(realmId, origActiveAcc.id) : null) ??
-          this.repository.listAccounts(realmId).find((a) => a.secret_ref);
-        if (fallbackAcc && fallbackAcc.secret_ref) {
+          origActiveAcc ? this.repository.getAccount(realmId, origActiveAcc.id) : null;
+        if (changedCredential && fallbackAcc?.secret_ref) {
           try {
+            if (await hasRunningUsers()) throw new AccountServiceError("external_owner");
             await this.authHost.activateSaved(
               realmId,
               fallbackAcc.id,
               fallbackAcc.secret_ref,
             );
+            realm = this.repository.getRealm(realmId);
             if (realm) {
               realm.active_account_id = fallbackAcc.id;
               realm.active_secret_ref = fallbackAcc.secret_ref;
+              realm.revision++;
               this.repository.saveRealm(realm);
             }
           } catch (err: any) {
             console.warn(`[额度探测-串行] 恢复活动账号异常:`, err?.message || err);
+            realm = this.repository.getRealm(realmId);
+            if (realm) {
+              realm.phase = "blocked";
+              realm.last_error = err?.code ?? "restore_failed";
+              realm.revision++;
+              this.repository.saveRealm(realm);
+            }
           }
         }
         if (temporaryLockRelease) {
@@ -832,7 +876,7 @@ export class AgyAccountService {
         }
       }
 
-      return this.getPresentation(realmId);
+      return { ...this.getPresentation(realmId), refresh_scope: refreshScope };
     });
   }
 
@@ -1015,6 +1059,7 @@ export class AgyAccountService {
     const inspection = await this.authHost.inspectActive(input.realmId);
     let matchedAccount: AgyAccount | undefined;
     for (const account of this.repository.listAccounts(input.realmId)) {
+      if (inspection.auth?.email && inspection.auth.email.trim().toLowerCase() !== account.identity.email.trim().toLowerCase()) continue;
       if (await this.authHost.compareActive(input.realmId, account.secret_ref)) { matchedAccount = account; break; }
     }
     if (matchedAccount) {
@@ -1319,19 +1364,10 @@ export class AgyAccountService {
     // Q01/R05 修复：区分 candidate 与 permit。核对返回身份及凭据上下文，再保存快照
     if (!evalOutput.eligible_for_permit && evalOutput.eligible_for_candidate) {
       try {
-        const beforeIdentity = await this.authHost.inspectActive(input.realm_id);
-        const fresh = await this.probe.probeUsage({
-          account_id: activeAccount.id,
-          credential_revision: activeAccount.credential_revision,
-          timeoutMs: this.initializeSettings(input.realm_id).probe_timeout_seconds * 1000,
-        });
-        const afterIdentity = await this.authHost.inspectActive(input.realm_id);
+        const fresh = await this.probeAccountUsage(input.realm_id, activeAccount,
+          this.initializeSettings(input.realm_id).probe_timeout_seconds * 1000);
         const expectedEmail = activeAccount.identity.email.trim().toLowerCase();
-        const credentialIdentityMatches = beforeIdentity.exists && afterIdentity.exists &&
-          beforeIdentity.auth?.email?.trim().toLowerCase() === expectedEmail &&
-          afterIdentity.auth?.email?.trim().toLowerCase() === expectedEmail &&
-          (!beforeIdentity.auth?.subject || beforeIdentity.auth.subject === afterIdentity.auth?.subject);
-        const observedEmail = fresh.email ?? (credentialIdentityMatches ? expectedEmail : undefined);
+        const observedEmail = fresh.email ?? expectedEmail;
         const observedRealm = this.repository.getRealm(input.realm_id);
         if (
           fresh.capability_verified &&
@@ -1340,19 +1376,17 @@ export class AgyAccountService {
           observedRealm?.active_account_id === activeAccount.id
         ) {
           // 同账号真实刷新：捕获最新凭据引用，更新账号与 realm，避免后置 compareActive 误判 external_change (R05)
-          try {
-            const capture = await this.authHost.captureActive(input.realm_id, activeAccount.id);
-            this.saveCapture(input.realm_id, activeAccount.id, capture);
-            const currentRealm = this.repository.getRealm(input.realm_id);
-            if (currentRealm) {
-              currentRealm.active_secret_ref = capture.secret_ref;
-              currentRealm.last_capture_at = this.clock.toISOString();
-              currentRealm.revision++;
-              this.repository.saveRealm(currentRealm);
-              realm = currentRealm;
-            }
-            activeAccount = this.repository.getAccount(input.realm_id, activeAccount.id)!;
-          } catch {}
+          const capture = await this.captureUsageCredential(input.realm_id, activeAccount);
+          this.saveCapture(input.realm_id, activeAccount.id, capture);
+          const currentRealm = this.repository.getRealm(input.realm_id);
+          if (currentRealm) {
+            currentRealm.active_secret_ref = capture.secret_ref;
+            currentRealm.last_capture_at = this.clock.toISOString();
+            currentRealm.revision++;
+            this.repository.saveRealm(currentRealm);
+            realm = currentRealm;
+          }
+          activeAccount = this.repository.getAccount(input.realm_id, activeAccount.id)!;
 
           this.repository.retainQuotaPools(input.realm_id, activeAccount.id, fresh.pools.map((pool) => pool.pool_id));
           for (const p of fresh.pools) {
@@ -1530,21 +1564,14 @@ export class AgyAccountService {
       realm.revision++;
       this.repository.saveRealm(realm);
       try {
-        const observed = await this.probe.probeUsage({
-          account_id: account.id,
-          credential_revision: account.credential_revision,
-          timeoutMs:
-            this.initializeSettings(permit.realm_id).probe_timeout_seconds *
-            1000,
-        });
-        if (
-          observed.email?.toLowerCase() !== account.identity.email.toLowerCase()
-        )
-          throw new AccountServiceError("external_change");
-        const capture = await this.authHost.captureActive(
+        const observed = await this.probeAccountUsage(
           permit.realm_id,
-          account.id,
+          account,
+          this.initializeSettings(permit.realm_id).probe_timeout_seconds * 1000,
         );
+        if (!observed.capability_verified || !observed.pools.length)
+          throw new AccountServiceError("quota_capability_unavailable");
+        const capture = await this.captureUsageCredential(permit.realm_id, account);
         this.saveCapture(permit.realm_id, account.id, capture);
         const current = this.repository.getRealm(permit.realm_id)!;
         if (current.auth_epoch !== permit.auth_epoch)
@@ -2262,7 +2289,7 @@ export class AgyAccountService {
       }
     }
 
-    if (op.deadline_at)
+    if (op.deadline_at && !["committed", "recovering"].includes(op.phase))
       timer = setTimeout(
         () => this.activeAbort?.abort(),
         Math.max(1, Date.parse(op.deadline_at) - this.clock.now()),
@@ -2979,6 +3006,48 @@ export class AgyAccountService {
     await this.rollbackOperation(op);
   }
 
+  private async captureUsageCredential(realmId: string, account: AgyAccount) {
+    // Quota reads do not themselves create a new credential generation. Reuse
+    // an identical snapshot so the account/model access cache survives a run.
+    const inspection = await this.authHost.inspectActive(realmId);
+    if (inspection.exists && !hasAccountIdentityMismatch(account) &&
+        inspection.auth?.email?.trim().toLowerCase() === account.identity.email.trim().toLowerCase() &&
+        (!account.identity.subject || inspection.auth.subject === account.identity.subject) &&
+        await this.authHost.compareActive(realmId, account.secret_ref)) {
+      return { secret_ref: account.secret_ref, credential_revision: account.credential_revision,
+        auth: inspection.auth };
+    }
+    return this.authHost.captureActive(realmId, account.id);
+  }
+
+  private async probeAccountUsage(
+    realmId: string,
+    account: AgyAccount,
+    timeoutMs: number,
+  ): Promise<AccountProbeResult> {
+    const before = await this.authHost.inspectActive(realmId);
+    const observed = await this.probe.probeUsage({
+      account_id: account.id,
+      credential_revision: account.credential_revision,
+      timeoutMs,
+    });
+    const after = await this.authHost.inspectActive(realmId);
+    const expected = account.identity.email.trim().toLowerCase();
+    const emails = [before.auth?.email, after.auth?.email, observed.email];
+    if (emails.some(email => email && email.trim().toLowerCase() !== expected) ||
+        (account.identity.subject && [before.auth?.subject, after.auth?.subject]
+          .some(subject => subject && subject !== account.identity.subject)) ||
+        (before.auth?.subject && before.auth.subject !== after.auth?.subject))
+      throw new AccountServiceError("external_change");
+    // AGY 1.2.12 /usage contains quotas without an email. In that format,
+    // require the host to identify the same account on both sides of the query.
+    if (!observed.email && !(before.exists && after.exists &&
+        before.auth?.email?.trim().toLowerCase() === expected &&
+        after.auth?.email?.trim().toLowerCase() === expected))
+      throw new AccountServiceError("identity_unverified");
+    return observed;
+  }
+
   private saveCapture(
     realmId: string,
     accountId: string,
@@ -2989,6 +3058,9 @@ export class AgyAccountService {
     },
   ): void {
     const account = this.repository.getAccount(realmId, accountId)!;
+    if ((capture.auth?.email && capture.auth.email.trim().toLowerCase() !== account.identity.email.trim().toLowerCase()) ||
+        (capture.auth?.subject && account.identity.subject && capture.auth.subject !== account.identity.subject))
+      throw new AccountServiceError("external_change");
     if (capture.credential_revision < account.credential_revision)
       throw new AccountServiceError("credential_revision_stale");
     account.secret_ref = capture.secret_ref;

@@ -670,6 +670,35 @@ export class SwitchOperationExecutor {
           }
           verifiedModelIds.push(modelId);
         }
+      // Inference may renew the keyring token after the /usage capture. Commit
+      // the renewed bytes only when the installed account's identity still matches.
+      if (!(await this.authHost.compareActive(options.realmId, targetAcc.secret_ref))) {
+        const matchesIdentity = (auth: Partial<AgyAccount["auth"]> | undefined) =>
+          auth?.email?.trim().toLowerCase() === expectedEmail &&
+          (!targetAcc.identity.subject || auth?.subject === targetAcc.identity.subject);
+        const active = await this.authHost.inspectActive(options.realmId);
+        if (!active.exists || !matchesIdentity(active.auth)) {
+          realm.phase = "blocked";
+          this.repository.saveRealm(realm);
+          throw new Error("identity_mismatch");
+        }
+        guard();
+        const renewed = await this.authHost.captureActive(options.realmId, targetAcc.id);
+        if (!matchesIdentity(renewed.auth) ||
+            !(await this.authHost.compareActive(options.realmId, renewed.secret_ref))) {
+          realm.phase = "blocked";
+          this.repository.saveRealm(realm);
+          throw new Error("identity_mismatch");
+        }
+        targetAcc.secret_ref = renewed.secret_ref;
+        targetAcc.credential_revision = renewed.credential_revision;
+        targetAcc.auth = { ...targetAcc.auth, ...renewed.auth };
+        targetAcc.revision++;
+        this.repository.saveAccount(targetAcc);
+        operation.installed_secret_ref = renewed.secret_ref;
+        operation.revision++;
+        this.repository.saveOperation(operation);
+      }
       if (zero || !accessible) {
         if (options.selection.mode === "explicit")
           throw new Error("target_unavailable");

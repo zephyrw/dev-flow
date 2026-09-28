@@ -116,6 +116,50 @@ export class ConversationService {
     return this.diagnostics.slice();
   }
 
+  /** Control/recovery follows the current Run; the display root can belong to an older role. */
+  resolveControlRoot(workflowId: string, tree = this.getTree(workflowId)): string | undefined {
+    const workflow = this.store.get<Workflow>("workflow", workflowId);
+    type SessionRun = Run & { root_session_id?: string };
+    const run = workflow?.run_id ? this.store.get<SessionRun>("run", workflow.run_id) : undefined;
+    if (!run || run.workflow_id !== workflowId) return tree.active_root_id;
+    const adapter = run.adapter ?? run.profile?.adapterId;
+    const nodes = tree.nodes.filter((node) => !adapter || node.adapter_id === adapter);
+    const rootFor = (reference: string | undefined) => {
+      if (!reference) return undefined;
+      const matches = nodes.filter((node) => node.id === reference || node.native_session_id === reference);
+      const roots = [...new Set(matches.map((node) => node.root_id))];
+      return roots.length === 1 ? roots[0] : undefined;
+    };
+    const attemptRoot = (runId: string) => {
+      const attempts = tree.attempts.filter((attempt) => attempt.run_id === runId)
+        .sort((a, b) => b.generation - a.generation);
+      for (const attempt of attempts) {
+        const root = rootFor(attempt.conversation_id);
+        if (root) return root;
+      }
+      return undefined;
+    };
+    const direct = attemptRoot(run.id) ?? rootFor(run.root_session_id) ?? rootFor(run.conversation_id)
+      ?? rootFor(run.continuation?.conversation_id) ?? rootFor(run.continuation_conversation_id);
+    if (direct) return direct;
+    const sourceId = run.continuation?.source_run_id ?? run.dispatch_context?.source_run_id;
+    const source = sourceId ? this.store.get<SessionRun>("run", sourceId) : undefined;
+    if (source?.workflow_id === workflowId && (!adapter || source.adapter === adapter)) {
+      const root = attemptRoot(source.id) ?? rootFor(source.root_session_id) ?? rootFor(source.conversation_id);
+      if (root) return root;
+    }
+    if (run.purpose === "aside") return undefined;
+    const model = run.frozen_invocation?.modelToken ?? run.profile?.modelId;
+    if (!adapter || !model) return undefined;
+    const bindings = this.store.list<{
+      adapter_id: string; canonical_model_id: string; conversation_id?: string; state: string;
+    }>("session_binding", workflowId).filter((binding) => binding.adapter_id === adapter &&
+      binding.canonical_model_id === model && binding.state === "bound");
+    const roots = [...new Set(bindings.map((binding) => rootFor(binding.conversation_id)).filter((root): root is string => !!root))];
+    // Ambiguous/missing ownership must not resume the most recently displayed model.
+    return roots.length === 1 ? roots[0] : undefined;
+  }
+
   getTree(workflowId: string, rootId?: string): ConversationTreeSnapshot {
     const nodes = this.store.list<ConversationNode>(
       CONVERSATION_ENTITY.node,

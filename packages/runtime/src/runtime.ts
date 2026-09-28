@@ -246,6 +246,7 @@ export class LocalRuntime implements Runtime {
   browser: BrowserGateway;
   private checking = new Set<string>();
   private cancelledRuns = new Set<string>();
+  private executingCalls = new Map<string, number>();
   private preparing = new Map<string, Promise<void>>();
   private preparationProcesses = new Map<string, Set<string>>();
   private adapters = createDefaultAdapterRegistry();
@@ -599,6 +600,24 @@ export class LocalRuntime implements Runtime {
     return current;
   }
   async execute(workflow: Workflow, run: Run, token: string) {
+    const canConfirmNotStarted = !this.engine.store.get("process_record", run.id);
+    this.executingCalls.set(run.id, (this.executingCalls.get(run.id) ?? 0) + 1);
+    try {
+      return await this.executeRun(workflow, run, token);
+    } finally {
+      const remaining = this.executingCalls.get(run.id)! - 1;
+      if (remaining) this.executingCalls.set(run.id, remaining);
+      else this.executingCalls.delete(run.id);
+      // A completed invocation observed from entry, with no start attempt, is
+      // positive evidence. Missing records from historical runs are not.
+      if (canConfirmNotStarted && !remaining && !this.processes.hasStartAttempt(run.id)) {
+        this.engine.store.put("stop_result", run.id, workflow.id, {
+          status: "confirmed_not_started",
+        } satisfies ProcessStopResult);
+      }
+    }
+  }
+  private async executeRun(workflow: Workflow, run: Run, token: string) {
     if (run.deadline_at && Date.now() >= run.deadline_at) {
       throw new FlowError("TIMEOUT", "执行启动前已达到截止时间");
     }

@@ -193,20 +193,28 @@ function parentHierarchyHint(manifest: RecoveryManifest): string | undefined {
 }
 
 function skipTerminalHint(manifest: RecoveryManifest): string {
+  // Older persisted manifests may have counted the resumed main conversation
+  // as its own terminal child. It must remain eligible for follow-up work.
+  const completedChildren = manifest.completed_children.filter(
+    (item) => item.conversation_id !== manifest.root_conversation_id,
+  );
+  const cancelledChildren = manifest.cancelled_children.filter(
+    (id) => id !== manifest.root_conversation_id,
+  );
   const lines = [
     "已经完成或用户取消的子任务不要重跑，不自动重启完成/取消项。",
   ];
-  if (manifest.completed_children.length) {
+  if (completedChildren.length) {
     lines.push(
       "已完成、不要重跑：" +
-        manifest.completed_children
+        completedChildren
           .map((item) => item.conversation_id)
           .join("、"),
     );
   }
-  if (manifest.cancelled_children.length) {
+  if (cancelledChildren.length) {
     lines.push(
-      "用户已取消、不要重跑：" + manifest.cancelled_children.join("、"),
+      "用户已取消、不要重跑：" + cancelledChildren.join("、"),
     );
   }
   return lines.join("\n");

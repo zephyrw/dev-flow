@@ -310,6 +310,7 @@ export class Engine {
       workflow: w,
       runtime: currentRunObservation(this.store, w),
       execution_spec: readEffectiveSpec(this.store, this.config, key).spec,
+      execution_test_report: this.executionTestReport(key),
       human_accepted: this.displayHumanAccepted(key),
       attention: workflowAttention(this, key),
       loading: true,
@@ -395,6 +396,7 @@ export class Engine {
       human_accepted: this.displayHumanAccepted(key),
       attention: workflowAttention(this, key),
       executor_plan_check: this.planSelfCheck.current(key) ?? null,
+      execution_test_report: this.executionTestReport(key),
       plan: planData,
       workspaces: this.store.list<Workspace>("workspace", key),
       runs: this.store.list<Run>("run", key),
@@ -2423,6 +2425,25 @@ export class Engine {
       stopResult?.status === "confirmed_not_started";
 
     if (isExited) {
+      this.store.transaction(() => {
+        const control = dispatchMgr.getDispatchControl(key);
+        if (!w.run_id || control.writer_state !== "unknown") return;
+        const pendingDispatch = this.store.list<{ state: string }>("cli_dispatch_record", key)
+          .some((d) => ["prepared", "starting", "running", "stopping", "needs_reconcile"].includes(d.state));
+        const otherRunning = this.store.list<Run>("run", key)
+          .some((r) => r.id !== w.run_id && r.status === "running");
+        const unconfirmedProcess = this.store.list<{ status: string; confirmed?: boolean }>("process_record", key)
+          .some((p) => p.status !== "exited" || !p.confirmed);
+        // The current stop receipt resolves only this run. Keep the fence if
+        // any other invocation or process is still active or unconfirmed.
+        if (pendingDispatch || otherRunning || unconfirmedProcess) return;
+        this.store.put("workflow_dispatch_control", key, key, {
+          ...control,
+          writer_state: "idle",
+          revision: control.revision + 1,
+          updated_at: now(),
+        });
+      });
       const next = this.transition(key, ["STOPPING"], "STOPPED", "stopped");
       this.store.event(key, w.project_id, "Stopped", {
         ...interruption,
@@ -2447,8 +2468,9 @@ export class Engine {
   }
   private async pauseActiveConversationTree(key: string) {
     if (!this.pauseTree) return;
-    const tree = new ConversationService(this.store).getTree(key);
-    const rootId = tree.active_root_id;
+    const conversations = new ConversationService(this.store);
+    const tree = conversations.getTree(key);
+    const rootId = conversations.resolveControlRoot(key, tree);
     if (!rootId) return;
     const generation =
       tree.attempts
@@ -5035,6 +5057,24 @@ export class Engine {
     const delivery = this.store.get<Delivery>("delivery", revision.delivery_id);
     if (!delivery || delivery.status !== "passed") return null;
     return { revision, delivery };
+  }
+  /** Present the executor's submitted explanation without promoting its mappings to passed cases. */
+  executionTestReport(key: string) {
+    if (!this.get(key).plan_revision) return null;
+    const active = this.activeNativeDelivery(key);
+    if (!active) return null;
+    const { delivery } = active;
+    const manifest = delivery.manifest;
+    return {
+      delivery_id: delivery.id,
+      run_id: active.revision.run_id ?? delivery.run_id,
+      submitted_at: delivery.submitted_at,
+      summary: manifest.summary ?? "",
+      notes: manifest.notes ?? "",
+      test_executions: manifest.test_executions ?? [],
+      acceptance_mappings: manifest.acceptance_mappings ?? [],
+      unfinished_items: manifest.unfinished_items ?? [],
+    };
   }
   deliveryReportFiles(delivery: Delivery): { path: string; hash: string }[] {
     const w = this.store.get<Workflow>("workflow", delivery.workflow_id);

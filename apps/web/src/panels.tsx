@@ -279,7 +279,9 @@ export function TestResults({
         </div>
       </div>
       <AttachmentArchiveStatus items={detail.attachment_status} />
-      {native && selfTests.length > 0 && <NativeSelfTests runs={selfTests} />}
+      {native && (selfTests.length > 0 || detail.execution_test_report) && (
+        <NativeSelfTests runs={selfTests} report={detail.execution_test_report} />
+      )}
       <div className="test-layers-list">
         {Object.entries(layers).map(([layer, label]) => {
           const all = progress.cases.filter((c: any) => c.layer === layer),
@@ -388,7 +390,13 @@ function AttachmentArchiveStatus({ items }: { items?: any[] }) {
   );
 }
 
-function NativeSelfTests({ runs }: { runs: any[] }) {
+function NativeSelfTests({ runs, report }: { runs: any[]; report?: any }) {
+  const executions = report?.test_executions ?? [];
+  const mappings = report?.acceptance_mappings ?? [];
+  const unfinished = report?.unfinished_items ?? [];
+  const unobserved = executions.filter((execution: any) =>
+    !runs.some((run) => run.command === execution.command && (!run.cwd || run.cwd === execution.cwd)),
+  );
   const labels: Record<string, string> = {
     running: "测试运行中",
     passed: "自测通过",
@@ -398,6 +406,28 @@ function NativeSelfTests({ runs }: { runs: any[] }) {
   };
   return (
     <section className="native-test-progress" aria-label="原生自测进度">
+      {report && (
+        <details className="native-test-run" open={unfinished.length > 0}>
+          <summary>执行模型自测说明 · {executions.length} 条命令 · {unfinished.length} 项未完成</summary>
+          {report.summary && <p>{report.summary}</p>}
+          {report.notes && <p>{report.notes}</p>}
+          {mappings.length > 0 && <>
+            <p>执行模型所报场景关联（计划通过结果待确认）：</p>
+            <ul>{mappings.map((mapping: any, index: number) => (
+              <li key={index}>{mapping.requirement_id} / {mapping.scene_id}：{mapping.report_path}</li>
+            ))}</ul>
+          </>}
+          {unfinished.length > 0 && <ul>{unfinished.map((item: any, index: number) => (
+            <li key={index}>{item.id}：{item.reason}</li>
+          ))}</ul>}
+          {unobserved.map((execution: any, index: number) => (
+            <div key={index}>
+              <p>执行模型报告的命令 · {execution.exit_code === undefined ? "未报告退出码" : `所报退出码 ${execution.exit_code}`}</p>
+              <CommandPreview command={execution.command} cwd={execution.cwd} />
+            </div>
+          ))}
+        </details>
+      )}
       {runs.map((run) => (
         <article
           className="native-test-run"
@@ -412,6 +442,12 @@ function NativeSelfTests({ runs }: { runs: any[] }) {
             )}
           </div>
           <CommandPreview command={run.command} cwd={run.cwd} />
+          {executions.filter((execution: any) => execution.command === run.command &&
+            (!run.cwd || run.cwd === execution.cwd)).slice(-1).map((execution: any) => (
+            <p key={execution.tool_call_id} className="associated-tasks">
+              执行模型所报退出码：{execution.exit_code ?? "未报告"}
+            </p>
+          ))}
         </article>
       ))}
     </section>

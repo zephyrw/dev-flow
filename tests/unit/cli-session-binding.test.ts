@@ -72,6 +72,19 @@ describe("CLI 会话绑定与复用 (NV-U03, NV-U04, NV-U06)", () => {
     expect(bound.first_run_id).toBe("run-001");
     expect(bound.revision).toBe(2);
 
+    const resumed = sessionStore.bindConversationId(bound.id, bound.conversation_id!, "run-resumed");
+    expect(resumed).toMatchObject({
+      conversation_id: bound.conversation_id,
+      owner_key: bound.owner_key,
+      first_run_id: bound.first_run_id,
+      latest_run_id: "run-resumed",
+      generation: bound.generation,
+      revision: bound.revision,
+    });
+    expect(sessionStore.getBindingById(bound.id)?.latest_run_id).toBe("run-resumed");
+    const repeated = sessionStore.bindConversationId(bound.id, bound.conversation_id!, "run-resumed");
+    expect(repeated).toEqual(resumed);
+
     // 通过 ID 反查验证
     const queried = sessionStore.getBindingById(initial.id);
     expect(queried?.conversation_id).toBe("conv-root-12345");

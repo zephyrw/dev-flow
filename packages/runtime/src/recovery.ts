@@ -587,7 +587,7 @@ function openConversationRecovery(engine: Engine, key: string) {
     runPort: storeRecoveryRunPort(engine.store),
   });
   const tree = conversations.getTree(key);
-  const rootId = tree.active_root_id;
+  const rootId = conversations.resolveControlRoot(key, tree);
   if (!rootId) return undefined;
   const generation =
     tree.attempts

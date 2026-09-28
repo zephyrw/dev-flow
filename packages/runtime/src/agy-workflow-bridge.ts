@@ -5,6 +5,7 @@ import type {
   AccountCommittedEvent,
   UsagePermit,
 } from "../../agy-accounts/src/index.js";
+import { AccountServiceError } from "../../agy-accounts/src/service.js";
 import type {
   AgyRunBinding,
   AgyAccountPolicy,
@@ -302,10 +303,23 @@ export class AgyWorkflowBridge implements AccountConsumerPort {
       });
     } catch (error) {
       if (error instanceof FlowError) throw error;
+      const rawCode = (error as { code?: unknown } | null)?.code;
+      const safeCode = typeof rawCode === "string" && /^[a-zA-Z][a-zA-Z0-9_]{0,79}$/.test(rawCode)
+        ? rawCode
+        : error instanceof Error && ["probe_identity_busy", "official_usage_probe_failed"].includes(error.message)
+          ? error.message : "unknown";
+      const errorClass = error instanceof AccountServiceError ? "AccountServiceError"
+        : error instanceof Error && /^[a-zA-Z][a-zA-Z0-9_]{0,79}$/.test(error.name)
+          ? error.name : "UnknownError";
+      const diagnostic = { code: safeCode, error_class: errorClass };
+      // Persist only bounded diagnostic identifiers, never raw credential/RPC output.
+      this.engine.store.event(workflowId, this.engine.get(workflowId).project_id,
+        "AgyAccountAdmissionFailed", diagnostic, run.id);
       throw new FlowError(
         "AGY_ACCOUNT_UNAVAILABLE",
         "账号服务、模型额度映射或执行许可尚不可用；请查看账号管理页",
         409,
+        diagnostic,
       );
     }
     try {

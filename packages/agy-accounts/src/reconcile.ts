@@ -125,7 +125,8 @@ export class AgyReconciler {
     if (!realm.pending_operation_id) return;
     const op = this.repository.getOperation(realm.pending_operation_id);
     if (!op || ["completed", "cancelled", "failed", "blocked"].includes(op.phase) ||
-        (op.deadline_at && new Date(op.deadline_at).getTime() < Date.now())) {
+        (!["committed", "recovering"].includes(op.phase) &&
+          op.deadline_at && new Date(op.deadline_at).getTime() < Date.now())) {
       if (op && !["completed", "cancelled", "failed"].includes(op.phase)) {
         op.phase = "cancelled";
         op.error = op.error ?? "operation_cancelled_on_startup_reconcile";

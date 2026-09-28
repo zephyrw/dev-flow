@@ -533,7 +533,8 @@ export class ProfileRuntime {
           ? this.engine.store.get("planner_integration_repair", w.id) ?? null : null,
         completion_instruction: purpose === "planner_commit" && policy2
           ? "完成实际提交后输出 JSON {status, summary, repositories: [{repo_id, commit}]}；无须新提交时在摘要说明。需要代码修复报告 need_planner；需要用户协助报告 need_user。"
-          : "最终输出 JSON {status, summary, notes, artifacts, user_interaction}。status 只能是 completed、need_planner 或 need_user。若需要人工操作或提问，返回 status 为 need_user 并在 user_interaction 中填入结构化请求。未知状态不会被当成完成。",
+          : "最终输出 JSON {status, summary, notes, artifacts, user_interaction}。status 只能是 completed、need_planner 或 need_user。若需要人工操作或提问，返回 status 为 need_user 并在 user_interaction 中填入结构化请求。未知状态不会被当成完成。" +
+            (includeTestingSkills ? "在summary/notes中逐项说明原计划测试场景的实际结果和未完成项；使用delivery时保留test_executions、acceptance_mappings和unfinished_items，关联必须对应实际测试场景，不能把编译或单测当作真实接口、集成或浏览器验证。必要测试未完成不得声明completed；继续可执行的测试，确需外部协助则报告need_user。" : ""),
       },
       run,
     );

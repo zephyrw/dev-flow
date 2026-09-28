@@ -202,8 +202,8 @@ export function buildManifest(input: BuildManifestInput): RecoveryManifest {
     reason: input.reason,
     purpose: input.purpose,
     pending_children: pending.children,
-    completed_children: collectCompletedChildren(input.tree),
-    cancelled_children: collectCancelledChildren(input.tree),
+    completed_children: collectCompletedChildren(input.tree, input.root_conversation_id),
+    cancelled_children: collectCancelledChildren(input.tree, input.root_conversation_id),
     stage: "prepared",
     delivered_count: 0,
     observed_count: 0,
@@ -663,10 +663,11 @@ function collectPendingChildren(
 
 function collectCompletedChildren(
   tree: ConversationTreeSnapshot,
+  rootId: string,
 ): RecoveryManifest["completed_children"] {
   const items: RecoveryManifest["completed_children"] = [];
   for (const node of tree.nodes) {
-    if (isAsideNode(node)) continue;
+    if (node.id === rootId || isAsideNode(node)) continue;
     const attempt = latestAttempt(tree.attempts, node.id);
     if (attempt?.status !== "completed") continue;
     items.push({
@@ -677,10 +678,10 @@ function collectCompletedChildren(
   return items;
 }
 
-function collectCancelledChildren(tree: ConversationTreeSnapshot): string[] {
+function collectCancelledChildren(tree: ConversationTreeSnapshot, rootId: string): string[] {
   const ids: string[] = [];
   for (const node of tree.nodes) {
-    if (isAsideNode(node)) continue;
+    if (node.id === rootId || isAsideNode(node)) continue;
     const attempt = latestAttempt(tree.attempts, node.id);
     if (attempt?.status === "cancelled") ids.push(node.id);
   }

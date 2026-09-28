@@ -133,7 +133,14 @@ export class ExecutionSessionStore {
 
       // 相同会话 ID 确认幂等，不重复递增 revision (CW2-D05 / CW3-F03)
       if (current.conversation_id === conversationId) {
-        return current;
+        if (current.latest_run_id === runId) return current;
+        const observed: SessionBinding = {
+          ...current,
+          latest_run_id: runId,
+          updated_at: now(),
+        };
+        this.store.put("session_binding", index.keyStr, current.workflow_id, observed);
+        return observed;
       }
 
       // 跨任务原生根所有权互斥检查 (CW-D00 / CW-D07)

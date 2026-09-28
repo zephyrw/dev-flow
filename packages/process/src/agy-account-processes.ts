@@ -59,6 +59,27 @@ export class AgyAccountProcessHost implements ProcessHostPort {
     return this.options.store.list<RecordEntry>("process_record");
   }
 
+  private async awaitOwnedStart(record: RecordEntry): Promise<RecordEntry> {
+    if (record.status !== "starting") return record;
+    const managed = this.options.processManager?.get(record.id);
+    const attempt = record.identity?.attempt_id;
+    const realm = record.agy_account?.realm_id;
+    if (!managed || !attempt || managed.identity?.attempt_id !== attempt)
+      throw new Error("AGY_MANAGED_PROCESS_IDENTITY_UNKNOWN");
+    let readyFailed = false;
+    try { await managed.ready; } catch { readyFailed = true; }
+    const current = this.options.processManager?.get(record.id);
+    const fresh = this.records().find((r) => r.id === record.id);
+    const exited = fresh?.confirmed === true &&
+      (fresh.status === "exited" || fresh.status === "failed");
+    if (!fresh || fresh.identity?.attempt_id !== attempt ||
+        fresh.agy_account?.realm_id !== realm ||
+        (current && (current !== managed || current.identity?.attempt_id !== attempt)) ||
+        (!current && !exited) || (readyFailed && !exited) || fresh.status === "starting")
+      throw new Error("AGY_MANAGED_PROCESS_IDENTITY_UNKNOWN");
+    return fresh;
+  }
+
   async assertCapabilities() {
     await getNativeAsync();
   }
@@ -96,9 +117,10 @@ export class AgyAccountProcessHost implements ProcessHostPort {
   async listManagedProcesses(realmId: string) {
     await this.assertCapabilities();
     const out = [];
-    for (const r of this.records().filter(
+    for (const record of this.records().filter(
       (r) => r.agy_account?.realm_id === realmId,
     )) {
+      const r = await this.awaitOwnedStart(record);
       const status = await this.confirmRecordStopped(r);
       if (status === "confirmed_exited") continue;
       if (status === "unknown" || status === "not_owned") {
@@ -141,6 +163,14 @@ export class AgyAccountProcessHost implements ProcessHostPort {
   }
   async findExternalAgyProcesses(): Promise<ExternalProcessInfo[]> {
     await this.assertCapabilities();
+    const records: RecordEntry[] = [];
+    for (const entry of this.records().filter(
+      (r) => r.agy_account && this.options.processManager?.get(r.id),
+    )) {
+      records.push(await this.awaitOwnedStart(entry));
+    }
+    // Startup may take seconds; enumerate the OS only after those waits so an
+    // external CLI appearing meanwhile cannot be missed by an older snapshot.
     const rows = await this.inventory();
     const configuredName = basename(this.options.agyExecutable).toLowerCase();
     const isAgyCliProcess = (name: string) => {
@@ -162,12 +192,11 @@ export class AgyAccountProcessHost implements ProcessHostPort {
     const native = await getNativeAsync();
     if (!("openJob" in native))
       throw new Error("AGY_PROCESS_INVENTORY_UNSUPPORTED");
-    for (const record of this.records().filter(
-      (r) => r.agy_account && this.options.processManager?.get(r.id),
-    )) {
+    for (const record of records) {
+      if ((record.status === "exited" || record.status === "failed") && record.confirmed) continue;
       const managed = this.options.processManager!.get(record.id)!;
       if (
-        !record.identity?.job_name ||
+        !managed || !record.identity?.job_name ||
         record.identity.attempt_id !== managed.identity?.attempt_id
       )
         throw new Error("AGY_MANAGED_PROCESS_IDENTITY_UNKNOWN");

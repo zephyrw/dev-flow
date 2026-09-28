@@ -22,6 +22,7 @@ async function observe(
   response: string,
   error: string | null = oldError,
   previousErrors = [oldError],
+  stderr = "",
 ) {
   const directory = mkdtempSync(join(tmpdir(), "devflow-current-turn-"));
   const proc = new EventEmitter() as ManagedProcess;
@@ -56,6 +57,7 @@ async function observe(
     },
   ])
     proc.emit("stdout", Buffer.from(JSON.stringify(event) + "\n"));
+  if (stderr) proc.emit("stderr", Buffer.from(stderr));
   done({ code: 1 });
   return observed;
 }
@@ -135,4 +137,32 @@ it("a model response discussing quota does not itself prove a quota failure", as
       [],
     ),
   ).rejects.toMatchObject({ code: "EXECUTION_FAILED" });
+});
+
+const tlsError = "API error: request failed: local error: tls: bad record MAC";
+it("accepts the current completed turn despite a retained TLS footer", async () => {
+  await expect(
+    observe(
+      [step(447, "user_input"), step(454, "tool"), step(455, "agent_response")],
+      '{"status":"need_user"}',
+      tlsError,
+      [],
+    ),
+  ).resolves.toMatchObject({ conversation: "same-conversation" });
+});
+it("does not ignore a TLS failure reported by this process on stderr", async () => {
+  await expect(
+    observe(
+      [step(447, "user_input"), step(454, "tool"), step(455, "agent_response")],
+      '{"status":"completed"}',
+      tlsError,
+      [],
+      tlsError,
+    ),
+  ).rejects.toMatchObject({ code: "MODEL_CONNECTION_FAILED" });
+});
+it("preserves an init-only TLS failure without a completed new turn", async () => {
+  await expect(observe([], "", tlsError, [])).rejects.toMatchObject({
+    code: "MODEL_CONNECTION_FAILED",
+  });
 });

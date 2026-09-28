@@ -2268,7 +2268,7 @@ async function pauseActiveTree(
   requestId?: string,
 ): Promise<ConversationControlResult | undefined> {
   const tree = conversations.getTree(workflowId);
-  const rootId = tree.active_root_id;
+  const rootId = conversations.resolveControlRoot(workflowId, tree);
   if (!rootId) return undefined;
   const generation = latestRootGeneration(tree.attempts, rootId);
   const fence = existingPauseFence(store, workflowId, rootId);
@@ -2301,7 +2301,7 @@ async function resumeActiveTree(
   body: { request_id?: string; root_id?: string; expected_generation?: number },
 ): Promise<void> {
   const tree = conversations.getTree(workflowId);
-  const rootId = body.root_id ?? tree.active_root_id;
+  const rootId = body.root_id ?? conversations.resolveControlRoot(workflowId, tree);
   if (!rootId) return;
   const request: ConversationControlRequest = {
     request_id:

@@ -4,6 +4,9 @@ import { join } from "node:path";
 import { setup, plan, project } from "../helpers.js";
 import { hash } from "../../packages/core/src/util.js";
 import { buildServer } from "../../apps/api/src/server.js";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { TestResults } from "../../apps/web/src/panels.js";
 
 function fixture() {
   const s = setup();
@@ -164,4 +167,50 @@ it("keeps legacy evidence and development progress working", () => {
   } finally {
     s.store.close();
   }
+});
+
+it("shows submitted test explanations without counting a unit mapping as a passed browser scene", () => {
+  const s = fixture();
+  try {
+    for (const n of [1, 2]) s.store.remove("acceptance_result", `result-${n}`);
+    const delivery = s.store.get<any>("delivery", "delivery");
+    const command = "npx vitest run tests/unit/product.spec.ts";
+    s.store.put("delivery", "delivery", s.w.id, {
+      ...delivery,
+      report_hashes: {},
+      manifest: {
+        summary: "单元测试完成，真实浏览器尚未执行",
+        notes: "等待测试环境恢复",
+        test_executions: [{ tool_call_id: "unit-1", command, cwd: s.root, exit_code: 0, report_paths: ["tests/unit/product.spec.ts"] }],
+        acceptance_mappings: [{ requirement_id: "UT01", scene_id: "scene-1", test_execution_id: "unit-1", report_path: "tests/unit/product.spec.ts", case_id: "真实浏览器" }],
+        unfinished_items: [{ id: "browser", reason: "测试环境未启动" }],
+      },
+    });
+    const before = s.engine.get(s.w.id);
+    const detail = s.engine.detail(s.w.id, false);
+    expect(detail.execution_test_report).toEqual(s.engine.summary(s.w.id).execution_test_report);
+    expect(detail.execution_test_report).toMatchObject({ run_id: "run-execute", unfinished_items: [{ id: "browser", reason: "测试环境未启动" }] });
+    expect(detail.test_progress).toMatchObject({ passed: 0, total: 2 });
+    expect(s.engine.getEvidence(s.w.id)).toEqual([]);
+    const html = renderToStaticMarkup(createElement(TestResults, {
+      detail: { ...detail, native_progress: { tests: [{ command, cwd: s.root, status: "returned" }] } },
+    }));
+    expect(html).toContain("执行模型自测说明");
+    expect(html).toContain("测试环境未启动");
+    expect(html).toContain("计划通过结果待确认");
+    expect(html).toContain("执行模型所报退出码");
+    expect(html).not.toContain("执行模型报告的命令");
+    expect(s.store.list("acceptance_result", s.w.id)).toEqual([]);
+    expect(s.engine.get(s.w.id)).toEqual(before);
+  } finally { s.store.close(); }
+});
+
+it("omits the submitted explanation after its delivery is invalidated", () => {
+  const s = fixture();
+  try {
+    expect(s.engine.detail(s.w.id, false).execution_test_report).not.toBeNull();
+    const revision = s.store.get<any>("delivery_revision", "revision");
+    s.store.put("delivery_revision", "revision", s.w.id, { ...revision, invalidated: true });
+    expect(s.engine.summary(s.w.id).execution_test_report).toBeNull();
+  } finally { s.store.close(); }
 });

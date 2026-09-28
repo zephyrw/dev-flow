@@ -119,6 +119,7 @@ export function cleanProcessEnvironment(
 export class ProcessManager {
   private active = new Map<string, ManagedProcess>();
   private stopHistory = new Map<string, ProcessStopResult>();
+  private startAttempts = new Set<string>();
   private admission?: (spec: ProcessSpec) => void;
   private closing = false;
   constructor(
@@ -131,6 +132,7 @@ export class ProcessManager {
     this.admission = guard;
   }
   start(spec: ProcessSpec): ManagedProcess {
+    this.startAttempts.add(spec.id);
     if (this.closing)
       throw new FlowError("PROCESS_MANAGER_CLOSING", "进程管理器正在关闭", 503);
     const existing = this.active.get(spec.id);
@@ -548,6 +550,9 @@ export class ProcessManager {
   }
   get(key: string) {
     return this.active.get(key);
+  }
+  hasStartAttempt(key: string) {
+    return this.startAttempts.has(key);
   }
   async observe(key: string): Promise<StopObservation> {
     const active = this.active.get(key);

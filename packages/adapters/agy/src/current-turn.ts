@@ -66,14 +66,6 @@ export class CurrentTurn {
     _previousErrors: string[],
     exit: number | null,
   ) {
-    if (
-      typeof result?.error === "string" &&
-      /bad record mac|local error:\s*tls:|streamGenerateContent/i.test(
-        result.error,
-      )
-    ) {
-      return false;
-    }
     return (
       !!result &&
       [0, 1].includes(exit!) &&
