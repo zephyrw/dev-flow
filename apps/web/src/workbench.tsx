@@ -15,6 +15,8 @@ export function DeliveryStrip({ detail }: { detail: any }) {
     detail.tasks.filter((t: any) => t.status === "verified").length;
 
   const test = detail.test_progress;
+  const unreported = test?.unreported ?? test?.cases?.filter((c: any) => c.status === "unreported").length ?? 0;
+  const awaitingResults = native && test?.total > 0 && unreported === test.total;
   const taskPercent = total > 0 ? Math.round((completed / total) * 100) : 0;
   const testPercent =
     test?.total > 0 ? Math.round((test.passed / test.total) * 100) : 0;
@@ -95,6 +97,10 @@ export function DeliveryStrip({ detail }: { detail: any }) {
       )}
       {test?.total > 0 && (
         <span className="metric-chip">
+          {awaitingResults ? <>
+            <span className="chip-label">测试进度：</span>
+            <span>尚未收到逐项结果</span>
+          </> : <>
           <span className="chip-label">
             {native ? "计划用例报告通过" : "已通过测试"}
           </span>
@@ -107,40 +113,14 @@ export function DeliveryStrip({ detail }: { detail: any }) {
             value={test.passed}
             max={test.total}
           />
+          {native && unreported > 0 && <span> · {unreported} 项未回传</span>}
+          </>}
         </span>
       )}
       {test?.failed > 0 && (
         <span className="metric-chip error-chip">
           <span className="error-dot" />
           失败 <b>{test.failed}</b>
-        </span>
-      )}
-      {native && detail.native_progress?.tests.length > 0 && (
-        <span className="metric-chip" aria-label="自测执行次数">
-          已执行自测 <b>{detail.native_progress.tests.length}</b> 次
-        </span>
-      )}
-      {native && detail.native_progress?.running > 0 && (
-        <span className="metric-chip">
-          自测运行中 <b>{detail.native_progress.running}</b>
-        </span>
-      )}
-      {native && detail.native_progress?.latest_result && (
-        <span className="metric-chip" aria-label="最近自测结果">
-          最近自测：
-          {detail.native_progress.latest_result.passed !== undefined ? (
-            <>
-              {detail.native_progress.latest_result.status === "failed"
-                ? "命令失败 · "
-                : ""}
-              通过 <b>{detail.native_progress.latest_result.passed}</b> · 失败{" "}
-              <b>{detail.native_progress.latest_result.failed ?? 0}</b>
-            </>
-          ) : detail.native_progress.latest_result.status === "failed" ? (
-            "执行失败"
-          ) : (
-            "结果待确认"
-          )}
         </span>
       )}
       {test?.previously_passed > 0 && (

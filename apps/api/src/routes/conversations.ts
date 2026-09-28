@@ -200,11 +200,8 @@ function buildNodeResponse(
   nodeId: string,
 ) {
   const read = readOwnedNode(conversations, workflowId, nodeId);
-  const attempts = listNodeAttempts(store, read.node, conversations, workflowId);
-  const current =
-    attempts.find((item) => item.id === read.node.current_attempt_id) ??
-    read.attempt ??
-    attempts[attempts.length - 1];
+  const attempts = listNodeAttempts(read.node, conversations, workflowId);
+  const current = attempts[attempts.length - 1] ?? read.attempt;
   return {
     node: publicNode(read.node),
     ancestors: read.ancestors.map(publicNode),
@@ -241,7 +238,11 @@ function readOwnedNode(
   nodeId: string,
 ) {
   try {
-    return conversations.readNode(workflowId, nodeId);
+    const read = conversations.readNode(workflowId, nodeId);
+    const tree = conversations.getTree(workflowId);
+    const node = tree.nodes.find((item) => item.id === nodeId) ?? read.node;
+    const attempt = tree.attempts.find((item) => item.id === node.current_attempt_id) ?? read.attempt;
+    return { ...read, node, attempt };
   } catch (error) {
     if (
       !(error instanceof FlowError) ||
@@ -267,16 +268,10 @@ function readLegacyNode(
 }
 
 function listNodeAttempts(
-  store: Store,
   node: ConversationNode,
   conversations: ConversationService,
   workflowId: string,
 ): ConversationAttempt[] {
-  const stored = store
-    .list<ConversationAttempt>(CONVERSATION_ENTITY.attempt, workflowId)
-    .filter((attempt) => attempt.conversation_id === node.id)
-    .sort((a, b) => a.generation - b.generation);
-  if (stored.length) return stored;
   const tree = conversations.getTree(workflowId);
   return tree.attempts
     .filter((attempt) => attempt.conversation_id === node.id)

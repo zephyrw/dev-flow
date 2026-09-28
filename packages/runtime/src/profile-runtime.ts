@@ -515,7 +515,8 @@ export class ProfileRuntime {
     const executionSkills = includeTestingSkills ? getExecutionSkillResources() : undefined;
     return this.continuationMaterials(
       {
-        instructions: baseInstructions + extraInstructionsPrompt + (sourceReview
+        instructions: baseInstructions + extraInstructionsPrompt +
+          "\n可在顶层或delivery.test_results逐项回传原计划测试结果：test_id用计划测试ID，case_id用expected_case_ids，status为passed/failed/skipped/not_run，summary简述结果或未运行原因；只报告你明确确认的场景，need_user时也保留已完成结果，未回传项不会被当作失败或未执行。" + (sourceReview
           ? "\n本轮是代码复核整改。读取 source_review 中的问题正文及 repair_instructions，按问题编号逐项修复并说明处理结果；沿用原批准计划和已有修改，不从头开发，不以整改摘要替代问题正文。" : ""),
         ...(roleSpecific ? {} : { execution_order: batchExecutionInstructions }),
         ...(executionSkills ? { skill_resources: executionSkills } : {}),
@@ -1161,8 +1162,7 @@ export class ProfileRuntime {
           v.type === "turn.failed" ||
           (v.event === "result" && v.result?.error)
         )
-          failure ??=
-            "CLI 返回错误：" + redact(JSON.stringify(v)).slice(0, 8000);
+          failure ??= nativeFailureDiagnostic(v);
         if (v.structured_output) final = v.structured_output;
         if (v.type === "result" && typeof v.result === "string")
           text = v.result;
@@ -1968,6 +1968,15 @@ function guidanceForRunPurpose(
   )
     return repairRecoveryGuidance(manifest, capabilities, extra);
   return executeRecoveryGuidance(manifest, capabilities, extra);
+}
+
+/** Keep the provider cause ahead of long model responses before truncating. */
+export function nativeFailureDiagnostic(event: Record<string, any>): string {
+  const error = event.result?.error ?? event.error;
+  const deniedActions = event.result?.denied_actions ?? event.denied_actions;
+  const cause = error !== undefined || deniedActions !== undefined
+    ? JSON.stringify({ denied_actions: deniedActions, error }) + " " : "";
+  return "CLI 返回错误：" + redact(cause + JSON.stringify(event)).slice(0, 8000);
 }
 
 function latestUpdated<T extends { updated_at?: string }>(items: T[]) {

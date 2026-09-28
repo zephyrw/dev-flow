@@ -62,7 +62,7 @@ test("E2E-01/05/06/08 local button approval, diagrams, evidence and accepted com
       timeout: 60000,
     },
   );
-  await page.getByRole("button", { name: "测试结果", exact: true }).click();
+  await page.getByRole("button", { name: "测试进度", exact: true }).click();
   await page.locator(".task-module > summary").first().click();
   await expect(page.locator(".test-case")).toContainText("已通过");
   await page.getByRole("button", { name: "任务进度", exact: true }).click();

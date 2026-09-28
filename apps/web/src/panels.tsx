@@ -1,5 +1,4 @@
 import React, { useState } from "react";
-import { CommandPreview } from "./command-preview.js";
 export const taskLabels: Record<string, string> = {
   completed: "开发完成",
   active: "进行中",
@@ -15,6 +14,7 @@ function developmentStatus(task: any) {
   return status === "in_progress" ? "active" : status;
 }
 export const caseLabels: Record<string, string> = {
+  unreported: "未回传",
   passed: "已通过",
   failed: "失败",
   skipped: "已跳过",
@@ -256,11 +256,10 @@ export function TestResults({
     e2e: "浏览器自动测试",
     opentabs: "E2E（历史浏览器用例）",
   };
-  const selfTests = detail.native_progress?.tests ?? [];
   return (
     <div className="test-results-container">
       <div className="panel-toolbar-header">
-        <h2>{title ?? "测试结果"}</h2>
+        <h2>{title ?? "测试进度"}</h2>
         <div className="filters">
           <div className="select-wrapper">
             <select
@@ -279,9 +278,6 @@ export function TestResults({
         </div>
       </div>
       <AttachmentArchiveStatus items={detail.attachment_status} />
-      {native && (selfTests.length > 0 || detail.execution_test_report) && (
-        <NativeSelfTests runs={selfTests} report={detail.execution_test_report} />
-      )}
       <div className="test-layers-list">
         {Object.entries(layers).map(([layer, label]) => {
           const all = progress.cases.filter((c: any) => c.layer === layer),
@@ -293,6 +289,7 @@ export function TestResults({
             (c: any) => c.status === "passed",
           ).length;
           const hasFailed = all.some((c: any) => c.status === "failed");
+          const unreported = all.filter((c: any) => c.status === "unreported").length;
           return (
             <details
               className="task-module test-layer-module"
@@ -307,7 +304,10 @@ export function TestResults({
                 <span
                   className={`module-badge ${hasFailed ? "has-failed" : passedCount === all.length ? "all-done" : ""}`}
                 >
-                  {passedCount} / {all.length} 通过
+                  {unreported === all.length ? "尚未收到测试结果" : <>
+                    {passedCount} / {all.length} {native ? "报告通过" : "通过"}
+                    {unreported > 0 && <> · {unreported} 项未回传</>}
+                  </>}
                 </span>
               </summary>
               <div className="module-tasks-body">
@@ -322,6 +322,11 @@ export function TestResults({
                         {labels[c.status]}
                       </span>
                     </div>
+                    {c.report_source === "executor_report" && <p className="associated-tasks">
+                      执行模型上次报告
+                      {c.reported_at && <> · <time dateTime={c.reported_at}>{new Date(c.reported_at).toLocaleString()}</time></>}
+                    </p>}
+                    {c.summary && <p className="associated-tasks">{c.summary}</p>}
                     <details className="test-case-details">
                       <summary>查看结果证据与关联</summary>
                       <div className="test-spec-box">
@@ -384,70 +389,6 @@ function AttachmentArchiveStatus({ items }: { items?: any[] }) {
           {typeof item.detail === "string" && item.detail && item.state !== "archived" ? (
             <p className="associated-tasks">{item.detail}</p>
           ) : null}
-        </article>
-      ))}
-    </section>
-  );
-}
-
-function NativeSelfTests({ runs, report }: { runs: any[]; report?: any }) {
-  const executions = report?.test_executions ?? [];
-  const mappings = report?.acceptance_mappings ?? [];
-  const unfinished = report?.unfinished_items ?? [];
-  const unobserved = executions.filter((execution: any) =>
-    !runs.some((run) => run.command === execution.command && (!run.cwd || run.cwd === execution.cwd)),
-  );
-  const labels: Record<string, string> = {
-    running: "测试运行中",
-    passed: "自测通过",
-    failed: "自测失败",
-    returned: "已返回",
-    interrupted: "已中断",
-  };
-  return (
-    <section className="native-test-progress" aria-label="原生自测进度">
-      {report && (
-        <details className="native-test-run" open={unfinished.length > 0}>
-          <summary>执行模型自测说明 · {executions.length} 条命令 · {unfinished.length} 项未完成</summary>
-          {report.summary && <p>{report.summary}</p>}
-          {report.notes && <p>{report.notes}</p>}
-          {mappings.length > 0 && <>
-            <p>执行模型所报场景关联（计划通过结果待确认）：</p>
-            <ul>{mappings.map((mapping: any, index: number) => (
-              <li key={index}>{mapping.requirement_id} / {mapping.scene_id}：{mapping.report_path}</li>
-            ))}</ul>
-          </>}
-          {unfinished.length > 0 && <ul>{unfinished.map((item: any, index: number) => (
-            <li key={index}>{item.id}：{item.reason}</li>
-          ))}</ul>}
-          {unobserved.map((execution: any, index: number) => (
-            <div key={index}>
-              <p>执行模型报告的命令 · {execution.exit_code === undefined ? "未报告退出码" : `所报退出码 ${execution.exit_code}`}</p>
-              <CommandPreview command={execution.command} cwd={execution.cwd} />
-            </div>
-          ))}
-        </details>
-      )}
-      {runs.map((run) => (
-        <article
-          className="native-test-run"
-          key={run.key ?? run.sequence ?? run.command}
-        >
-          <div className="test-case-row">
-            <span className={"badge " + run.status}>
-              {labels[run.status] ?? run.status}
-            </span>
-            {run.created_at && (
-              <time>{new Date(run.created_at).toLocaleTimeString()}</time>
-            )}
-          </div>
-          <CommandPreview command={run.command} cwd={run.cwd} />
-          {executions.filter((execution: any) => execution.command === run.command &&
-            (!run.cwd || run.cwd === execution.cwd)).slice(-1).map((execution: any) => (
-            <p key={execution.tool_call_id} className="associated-tasks">
-              执行模型所报退出码：{execution.exit_code ?? "未报告"}
-            </p>
-          ))}
         </article>
       ))}
     </section>

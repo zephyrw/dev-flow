@@ -52,6 +52,23 @@ export class AccountServiceError extends Error {
   }
 }
 
+/** Admission stopped before issuing a permit; carries identity, never credentials. */
+export class AccountQuotaAdmissionError extends AccountServiceError {
+  constructor(
+    public realm_id: string,
+    public account_id: string,
+    public auth_epoch: number,
+    public operation_id?: string,
+  ) {
+    super(operation_id ? "account_switch_pending" : "active_account_quota_exhausted");
+  }
+}
+
+function isOnlyQuotaExhaustion(evaluation: ReturnType<typeof evaluateAccountForDemand>) {
+  return evaluation.excluded_reasons.length > 0 && evaluation.excluded_reasons.every(reason =>
+    ["quota_exhausted_not_reset", "five_hour_exhausted_unknown_reset", "weekly_exhausted_unknown_reset"].includes(reason));
+}
+
 export interface ServiceControlRequest {
   realmId: string;
   requestId: string;
@@ -1302,16 +1319,65 @@ export class AgyAccountService {
   }
 
   async acquireUsagePermit(input: AgyUsageRequest): Promise<UsagePermit> {
+    this.rejectQueuedWorkflowSwitch(input.realm_id);
     return this.coordinator.enqueue(() => this.acquireUsagePermitOwned(input));
+  }
+
+  private rejectQueuedWorkflowSwitch(realmId: string) {
+    const realm = this.repository.getRealm(realmId);
+    const operation = realm?.pending_operation_id ? this.repository.getOperation(realm.pending_operation_id) : undefined;
+    if (realm?.active_account_id && operation?.kind === "switch" && operation.phase === "queued" &&
+        operation.selection.mode === "auto" && operation.trigger.startsWith("workflow") &&
+        !operation.cancel_requested && operation.before_auth_epoch === realm.auth_epoch)
+      throw new AccountQuotaAdmissionError(realmId, realm.active_account_id, realm.auth_epoch, operation.operation_id);
+  }
+
+  /** Verify only the bound active identity. This never activates another account. */
+  async verifyActiveQuotaExhausted(input: {
+    realm_id: string; account_id: string; auth_epoch: number;
+    required_pool_ids: string[]; required_model_ids: string[];
+  }): Promise<boolean> {
+    // A switch can be awaiting this Run's exit. Never queue behind that switch.
+    const initial = this.repository.getRealm(input.realm_id);
+    if (initial?.pending_operation_id) return false;
+    return this.coordinator.enqueue(async () => {
+      const realm = this.repository.getRealm(input.realm_id);
+      if (!realm || realm.pending_operation_id || realm.phase !== "idle" || realm.service_state !== "running" ||
+          realm.active_account_id !== input.account_id || realm.auth_epoch !== input.auth_epoch ||
+          !realm.active_secret_ref || !this.authHost.isDomainLockHeld(input.realm_id) ||
+          !(await this.authHost.compareActive(input.realm_id, realm.active_secret_ref))) return false;
+      const account = this.repository.getAccount(input.realm_id, input.account_id);
+      if (!account) return false;
+      try {
+        const observed = await this.probeAccountUsage(input.realm_id, account,
+          this.initializeSettings(input.realm_id).probe_timeout_seconds * 1000);
+        const current = this.repository.getRealm(input.realm_id);
+        if (!observed.capability_verified || !current || current.pending_operation_id ||
+            current.auth_epoch !== input.auth_epoch || current.active_account_id !== input.account_id ||
+            !(await this.authHost.compareActive(input.realm_id, realm.active_secret_ref))) return false;
+        const snapshots = observed.pools.map(pool => ({
+          id: randomUUID(), realm_id: input.realm_id, account_id: account.id, auth_epoch: input.auth_epoch,
+          pool_id: pool.pool_id, model_ids: pool.model_ids, source: "official_cli_usage" as const,
+          cli_version: observed.cli_version, parser_revision: 1, executable_fingerprint: observed.executable_fingerprint,
+          capability_verified: true, observed_at: this.clock.toISOString(), windows: pool.windows,
+        }));
+        for (const snapshot of snapshots) this.repository.saveQuotaSnapshot(snapshot);
+        return isOnlyQuotaExhaustion(evaluateAccountForDemand({ account, snapshots,
+          policy: { required_pool_ids: input.required_pool_ids, required_model_ids: input.required_model_ids },
+          evaluationTime: this.clock.now() }));
+      } catch { return false; }
+    });
   }
 
   private async acquireUsagePermitOwned(
     input: AgyUsageRequest,
   ): Promise<UsagePermit> {
     if (this.closing) throw new AccountServiceError("account_service_closing");
+    this.rejectQueuedWorkflowSwitch(input.realm_id);
     await this.processHost.listManagedProcesses(input.realm_id);
     if ((await this.processHost.findExternalAgyProcesses()).length)
       throw new AccountServiceError("external_owner");
+    this.rejectQueuedWorkflowSwitch(input.realm_id);
     let realm = this.repository.getRealm(input.realm_id);
     if (
       !realm ||
@@ -1426,6 +1492,14 @@ export class AgyAccountService {
     }
 
     if (!evalOutput.eligible_for_permit) {
+      if (isOnlyQuotaExhaustion(evalOutput) && realm.active_secret_ref &&
+          await this.authHost.compareActive(input.realm_id, realm.active_secret_ref)) {
+        const current = this.repository.getRealm(input.realm_id);
+        if (current?.active_account_id === activeAccount.id && current.auth_epoch === realm.auth_epoch &&
+            !current.pending_operation_id && current.phase === "idle")
+          throw new AccountQuotaAdmissionError(input.realm_id, activeAccount.id, realm.auth_epoch);
+      }
+      this.rejectQueuedWorkflowSwitch(input.realm_id);
       throw new AccountServiceError("active_account_unavailable");
     }
     if (
@@ -1448,6 +1522,7 @@ export class AgyAccountService {
         }))
       )
         throw new AccountServiceError("target_model_unavailable");
+    this.rejectQueuedWorkflowSwitch(input.realm_id);
     const current = this.repository.getRealm(input.realm_id)!;
     if (
       this.closing ||
@@ -1831,12 +1906,26 @@ export class AgyAccountService {
             trusted && op &&
             op.before_auth_epoch === input.expected_epoch &&
             op.trigger.startsWith("workflow")
-          )
+          ) {
+            // A prelaunch consumer can join only before the selection snapshot.
+            // Persist its demand now, even before its Run reaches account wait.
+            if (op.phase === "queued") {
+              op.required_pool_ids = [...new Set([...op.required_pool_ids, ...trusted.required_pool_ids!])];
+              op.required_model_ids = [...new Set([...op.required_model_ids,
+                ...(trusted.model_id ? [trusted.model_id] : []), ...(trusted.required_model_ids ?? [])])];
+              if (trusted.allowed_account_ids != null)
+                op.allowed_account_ids = op.allowed_account_ids === null ? trusted.allowed_account_ids :
+                  op.allowed_account_ids.filter(id => trusted.allowed_account_ids!.includes(id));
+              if (trusted.night_pool === "strict") op.night_pool = "strict";
+              op.revision++;
+              this.repository.saveOperation(op);
+            }
             return {
               operation_id: op.operation_id,
               revision: op.revision,
               phase: op.phase,
             };
+          }
           throw new AccountServiceError("operation_in_progress");
         }
         if (input.account_id) {
@@ -1861,7 +1950,7 @@ export class AgyAccountService {
         }
         const model = input.model_id ??
           (trusted ? undefined : settings.standalone_model_id ?? undefined);
-        const pools = input.kind === "switch" ? ["global"] : [];
+        const pools = input.kind === "switch" ? trusted?.required_pool_ids ?? ["global"] : [];
         const op = AgyAccountOperationSchema.parse({
           operation_id: randomUUID(),
           realm_id: input.realm_id,

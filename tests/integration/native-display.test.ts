@@ -169,7 +169,7 @@ it("keeps legacy evidence and development progress working", () => {
   }
 });
 
-it("shows submitted test explanations without counting a unit mapping as a passed browser scene", () => {
+it("shows missing categorized results without counting a unit mapping as a passed browser scene", () => {
   const s = fixture();
   try {
     for (const n of [1, 2]) s.store.remove("acceptance_result", `result-${n}`);
@@ -195,11 +195,11 @@ it("shows submitted test explanations without counting a unit mapping as a passe
     const html = renderToStaticMarkup(createElement(TestResults, {
       detail: { ...detail, native_progress: { tests: [{ command, cwd: s.root, status: "returned" }] } },
     }));
-    expect(html).toContain("执行模型自测说明");
-    expect(html).toContain("测试环境未启动");
-    expect(html).toContain("计划通过结果待确认");
-    expect(html).toContain("执行模型所报退出码");
-    expect(html).not.toContain("执行模型报告的命令");
+    expect(html).toContain("尚未收到测试结果");
+    expect(html).toContain("未回传");
+    expect(html).not.toContain(command);
+    expect(html).not.toContain("执行模型自测说明");
+    expect(html).not.toContain("执行模型所报退出码");
     expect(s.store.list("acceptance_result", s.w.id)).toEqual([]);
     expect(s.engine.get(s.w.id)).toEqual(before);
   } finally { s.store.close(); }

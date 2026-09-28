@@ -526,6 +526,11 @@ export function selectCandidates(
       return b.projected_weekly - a.projected_weekly;
     }
 
+    // 周余额相同时，先选本轮五小时余额更多的账号，再用最近使用时间打平。
+    if (b.min_five_hour !== a.min_five_hour) {
+      return (b.min_five_hour ?? 0) - (a.min_five_hour ?? 0);
+    }
+
     // 并列：last_used_at 更早（LRU，更久没用的优先）
     const aUsed = parseTimeMs(a.last_used_at) ?? 0;
     const bUsed = parseTimeMs(b.last_used_at) ?? 0;

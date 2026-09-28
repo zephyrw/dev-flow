@@ -84,7 +84,7 @@ test("native report results and before/after-human reviews display independently
     "计划用例报告通过2/2",
   );
   await expect(page.getByLabel("交付进度")).toContainText("工作包已交付1/1");
-  await page.getByRole("button", { name: "测试结果", exact: true }).click();
+  await page.getByRole("button", { name: "测试进度", exact: true }).click();
   await expect(page.locator(".test-case .badge")).toHaveText([
     "报告通过",
     "报告通过",
@@ -180,7 +180,7 @@ test("附件状态展示：归档状态显示状态和原因", async ({ page }) 
   await page.routeWebSocket("**/api/notifications", () => {});
   await page.routeWebSocket("**/api/events?*", () => {});
   await page.goto(`/?workflow=${workflow.id}`);
-  await page.getByRole("button", { name: "测试结果", exact: true }).click();
+  await page.getByRole("button", { name: "测试进度", exact: true }).click();
   const attachments = page.getByLabel("附件归档状态");
   await expect(attachments).toContainText("已归档");
   await expect(attachments).toContainText("文件缺失");
@@ -199,7 +199,7 @@ test("真实附件归档完成后通过事件自动刷新，并在刷新页面�
   const socket = page.waitForEvent("websocket", (connection) => connection.url().includes("/api/events?") && connection.url().includes(fixture.workflow_id));
   await page.goto(`/?workflow=${fixture.workflow_id}`);
   await socket;
-  await page.getByRole("button", { name: "测试结果", exact: true }).click();
+  await page.getByRole("button", { name: "测试进度", exact: true }).click();
   const attachments = page.getByLabel("附件归档状态");
   await expect(attachments.locator(".badge")).toHaveText(["待归档", "待归档"]);
   const triggered = await page.request.post("/__fixture/attachments/drain", {
@@ -217,7 +217,7 @@ test("真实附件归档完成后通过事件自动刷新，并在刷新页面�
   expect(detail.attachment_status.map((record: any) => record.state).sort()).toEqual(["archived", "missing"]);
   expect(detail.events.some((event: any) => event.type === "AttachmentArchiveUpdated")).toBe(true);
   await page.reload();
-  await page.getByRole("button", { name: "测试结果", exact: true }).click();
+  await page.getByRole("button", { name: "测试进度", exact: true }).click();
   await expect(page.getByLabel("附件归档状态")).toContainText("已归档");
   await expect(page.getByLabel("附件归档状态")).toContainText("文件缺失");
 });

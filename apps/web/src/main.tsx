@@ -1275,7 +1275,7 @@ const CentralWorkspace = React.memo(
             ["overview", "概览"],
             ["plan", "开发计划"],
             ["tasks", "任务进度"],
-            ["tests", "测试结果"],
+            ["tests", "测试进度"],
             ["diff", "代码变更"],
             ["review", "代码复核"],
             ["environment", "本机验证副本"],
@@ -1440,7 +1440,7 @@ const CentralWorkspace = React.memo(
           )}
           {tab === "tests" && (
             <section className="panel">
-              <TestResults detail={detail} title="测试结果" />
+              <TestResults detail={detail} title="测试进度" />
             </section>
           )}
           {tab === "diff" && (

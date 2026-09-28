@@ -69,9 +69,9 @@ export class SwitchOperationExecutor {
         message: `Realm ${options.realmId} not found`,
       };
     }
-    const operation = this.repository.getOperation(options.operationId);
+    const initialOperation = this.repository.getOperation(options.operationId);
     if (
-      !operation ||
+      !initialOperation ||
       !this.authHost.isDomainLockHeld(options.realmId) ||
       realm.service_state !== "running" ||
       realm.pending_operation_id !== options.operationId
@@ -82,6 +82,7 @@ export class SwitchOperationExecutor {
         message: "operation_not_owned",
       };
     }
+    let operation = initialOperation;
     const guard = () => {
       const current = this.repository.getRealm(options.realmId),
         op = this.repository.getOperation(options.operationId);
@@ -160,6 +161,13 @@ export class SwitchOperationExecutor {
       };
     }
     guard();
+    // Close queued admission before taking the consumer/demand snapshot. The
+    // external-process await above may have accepted more queued consumers.
+    operation = this.repository.getOperation(options.operationId)!;
+    operation.phase = "quiescing";
+    operation.revision++;
+    this.repository.saveOperation(operation);
+    options.requiredPoolIds = [...new Set([...options.requiredPoolIds, ...operation.required_pool_ids])];
     const occupancy = (
       await Promise.all(this.consumers.map((c) => c.listOccupancy()))
     ).flat();

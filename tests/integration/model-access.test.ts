@@ -20,6 +20,8 @@ import {
 import { FlowError, type ToolProfile } from "../../packages/contracts/src/index.js";
 import type { ModelCatalog } from "../../packages/contracts/src/model-catalog.js";
 import type { ModelVerificationJob } from "../../packages/contracts/src/model-access.js";
+import { accountFixture } from "../fixtures/agy-accounts/service-fixture.js";
+import { frozenInvocationFromProfile } from "../../packages/core/src/run-profile.js";
 
 const FIXTURE = join(
   dirname(fileURLToPath(import.meta.url)),
@@ -1101,4 +1103,47 @@ it.each(["cancel", "close"] as const)("%s prevents an already queued managed ver
   await done;
   expect(access.getVerification(started.job.id).status).toBe("cancelled");
   expect(probeCount(env.logDir)).toBe(0);
+});
+
+it.each(["committed", "candidate"] as const)("account recovery %s proof preserves native identity confidence in the verified record", async (kind) => {
+  const s = setup();
+  const accounts = accountFixture(s.store);
+  accounts.seedAccounts();
+  await accounts.service.start({ realmId: "default-agy-realm", requestId: "identity-regression" });
+  const verifier = vi.fn(async () => true);
+  const access = new ModelAccessService(s.store, { candidateVerifier: verifier });
+  closeEnv = async () => { await access.close(); await accounts.service.close(); s.store.close(); };
+  const chosen = profile("agy", "fixture-model", "high");
+  const native = access.resolveNativeConfig(chosen);
+  const realm = accounts.repository.getRealm("default-agy-realm")!;
+  const account = accounts.repository.getAccount(realm.realm_id, "a")!;
+  const frozen = { ...frozenInvocationFromProfile(chosen, "profile-native"),
+    accountScope: native.accountFingerprint, providerScope: native.providerEndpointFingerprint!, identityConfidence: native.identityConfidence };
+  const checked = new Date().toISOString();
+  s.store.put("agy_account_operation", "identity-operation", realm.realm_id, {
+    operation_id: "identity-operation", realm_id: realm.realm_id, kind: "switch", trigger: "workflow_quota",
+    selection: { mode: "auto" }, phase: "committed", request_id: "identity-operation", created_at: checked,
+    candidate_results: [{ account_id: "a", weekly: 0.5, verified_at: checked,
+      verified_model_ids: ["fixture-model"], credential_revision: account.credential_revision }],
+  });
+  let result;
+  if (kind === "committed") {
+    accounts.repository.saveFinalAccountCommit({ commit_id: "identity-commit", operation_id: "identity-operation",
+      realm_id: realm.realm_id, outcome: "switched", account_id: "a", secret_ref: account.secret_ref,
+      credential_revision: account.credential_revision, auth_epoch: realm.auth_epoch, control_generation: realm.control_generation,
+      committed_at: checked, stopped_job_ids: [] });
+    result = access.recordAccountRecoveryAccess(chosen, frozen, "identity-operation");
+    expect(verifier).not.toHaveBeenCalled();
+  } else {
+    const lease = { lease_id: "identity-lease", realm_id: realm.realm_id, account_id: "a",
+      auth_epoch: realm.auth_epoch, credential_revision: account.credential_revision };
+    s.store.put("agy_auxiliary_lease", lease.lease_id, realm.realm_id, { ...lease, operation_id: "identity-operation", status: "active" });
+    result = await access.verifyFrozenForAccountRecovery(frozen, chosen, lease);
+    expect(verifier).toHaveBeenCalledOnce();
+  }
+  expect(native.identityConfidence).toBe("account");
+  expect(result).toMatchObject({ status: "verified", identityConfidence: native.identityConfidence,
+    accountScope: native.accountFingerprint, accessModelKey: "fixture-model" });
+  expect(access.getAccess(result.key)).toEqual(result);
+  expect(access.assertFrozenAccess(chosen, frozen)).toEqual(result);
 });

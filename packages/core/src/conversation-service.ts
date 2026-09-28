@@ -165,23 +165,24 @@ export class ConversationService {
       CONVERSATION_ENTITY.node,
       workflowId,
     );
-    if (!nodes.length) return this.legacyTree(workflowId);
+    const attempts = this.store.list<ConversationAttempt>(CONVERSATION_ENTITY.attempt, workflowId);
+    const workflow = this.store.get<Workflow>("workflow", workflowId);
+    if (workflow) mergeRunProjections(workflow, this.store.list<Run>("run", workflowId), nodes, attempts);
     const scoped = rootId
-      ? this.store.conversationNodesByRoot<ConversationNode>(rootId).filter(
-          (node) => node.workflow_id === workflowId,
-        )
+      ? nodes.filter((node) => node.root_id === rootId)
       : nodes;
-    const attempts = this.store
-      .list<ConversationAttempt>(CONVERSATION_ENTITY.attempt, workflowId)
+    const scopedAttempts = attempts
       .filter((attempt) => scoped.some((node) => node.id === attempt.conversation_id))
       .sort((a, b) => a.generation - b.generation);
-    const active = resolveActiveRootId(scoped, attempts, rootId);
+    const current = scopedAttempts.find((attempt) => attempt.run_id === workflow?.run_id &&
+      scoped.some((node) => node.id === attempt.conversation_id && node.id === node.root_id));
+    const active = rootId ?? current?.root_id ?? resolveActiveRootId(scoped, scopedAttempts);
     return ConversationTreeSnapshotSchema.parse({
       nodes: scoped,
-      attempts,
+      attempts: scopedAttempts,
       active_root_id: active,
       capabilities:
-        this.capabilities.get(workflowId) ?? unknownSubagentCapabilities(),
+        this.capabilities.get(workflowId) ?? unknownSubagentCapabilities(nodes.every((node) => node.lineage_id.startsWith("legacy:")) ? LEGACY_REASON : undefined),
       cursor: this.store.eventCursor(workflowId),
     });
   }
@@ -1227,6 +1228,44 @@ function resolveActiveRootId(
   return roots.sort((a, b) => b.updated_at.localeCompare(a.updated_at))[0]?.id;
 }
 
+/** Read-only compatibility projection: native telemetry may exist for one tool but not another. */
+function mergeRunProjections(
+  workflow: Workflow,
+  runs: Run[],
+  nodes: ConversationNode[],
+  attempts: ConversationAttempt[],
+) {
+  for (const run of runs.slice().sort((a, b) => a.started_at.localeCompare(b.started_at))) {
+    if (run.workflow_id !== workflow.id || attempts.some((attempt) => attempt.run_id === run.id &&
+      nodes.some((node) => node.id === attempt.conversation_id && node.id === node.root_id))) continue;
+    // Historical attempts without a native identity cannot be attributed to a reusable session.
+    if (!run.conversation_id && run.id !== workflow.run_id) continue;
+    const kind = run.purpose === "aside" ? "aside" : "main";
+    const matches = run.conversation_id ? nodes.filter((node) => node.id === node.root_id &&
+      node.kind === kind && node.adapter_id === run.adapter &&
+      (node.native_session_id === run.conversation_id || node.id === run.conversation_id)) : [];
+    const existing = matches.length === 1 ? matches[0] : undefined;
+    const projection = projectLegacyRoot(workflow, run, 0);
+    const node = existing ?? projection.nodes[0]!;
+    const previous = attempts.filter((attempt) => attempt.conversation_id === node.id);
+    const newest = previous.slice().sort((a, b) => b.generation - a.generation)[0];
+    // Never give an older, unobserved Run a generation newer than native telemetry.
+    if (existing && newest && run.id !== workflow.run_id &&
+      run.started_at < newest.observed_at && !node.lineage_id.startsWith("legacy:")) continue;
+    const attempt = {
+      ...projection.attempts[0]!,
+      conversation_id: node.id,
+      root_id: node.id,
+      generation: newest ? newest.generation + 1 : 0,
+    };
+    attempts.push(attempt);
+    const updated = { ...node, current_attempt_id: attempt.id,
+      updated_at: run.ended_at ?? run.started_at };
+    if (existing) nodes[nodes.indexOf(existing)] = updated;
+    else nodes.push(updated);
+  }
+}
+
 function projectLegacyRoot(
   workflow: Workflow,
   run: Run,
@@ -1259,6 +1298,7 @@ function projectLegacyRoot(
     status: legacyStatus(run.status),
     observed_at: run.ended_at ?? timestamp,
     freshness: "unavailable",
+    requested_model: run.frozen_invocation?.modelToken ?? run.profile?.modelId,
   });
   return ConversationTreeSnapshotSchema.parse({
     nodes: [node],

@@ -4,6 +4,7 @@ import {
 } from "./plan-self-check.js";
 import { PlanApprovalService } from "./plan-approval-service.js";
 import { projectWorkflowOverview } from "./workflow-overview.js";
+import { recordExecutionTestReport, reportedTestProgress } from "./execution-test-progress.js";
 import type { RunApprovalRef } from "../../contracts/src/plan-approval.js";
 
 import {
@@ -335,7 +336,7 @@ export class Engine {
         verified: tasks.filter((t) => t.status === "verified").length,
         submitted: tasks.filter((t) => t.has_implementation).length,
       },
-      test_progress: testProgress(
+      test_progress: reportedTestProgress(this.store, w, plan?.plan ?? null, testProgress(
         plan?.plan ?? null,
         [
           ...(w.plan_revision ? this.displayEvidence(key) : []),
@@ -344,7 +345,7 @@ export class Engine {
             : this.store.list<Evidence>("development_evidence", key)),
         ],
         w,
-      ),
+      )),
       workspaces: this.store.list("workspace", key),
       environment: this.store.get("environment", key),
       project: this.project(w.project_id),
@@ -379,7 +380,7 @@ export class Engine {
       : null;
     const evidenceList = w.plan_revision ? this.displayEvidence(key) : [];
     const taskList = this.taskStatus(key, verifyFiles);
-    const testProg = testProgress(
+    const testProg = reportedTestProgress(this.store, w, planData?.plan ?? null, testProgress(
       planData ? planData.plan : null,
       [
         ...evidenceList,
@@ -388,7 +389,7 @@ export class Engine {
           : this.store.list<Evidence>("development_evidence", key)),
       ],
       w,
-    );
+    ));
 
     const baseDetail = {
       workflow: w,
@@ -1699,6 +1700,7 @@ export class Engine {
       manifest,
       deliverySubmit ? { deliverySubmit: true } : undefined,
     );
+    recordExecutionTestReport(this.store, w, this.store.must<Run>("run", runId), normalized.payload);
     if (normalized.intent !== "completed")
       return this.routeExecutionIntent(key, runId, normalized);
 
