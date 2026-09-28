@@ -103,7 +103,7 @@ test("native report results and before/after-human reviews display independently
   expect(writes).toEqual([]);
 });
 
-test("附件状态展示：归档状态显示状态和原因", async ({ page }) => {
+test("测试进度不展示附件归档清单", async ({ page }) => {
   const workflow = {
     id: "wf-attachment-status",
     title: "附件状态展示",
@@ -182,13 +182,11 @@ test("附件状态展示：归档状态显示状态和原因", async ({ page }) 
   await page.goto(`/?workflow=${workflow.id}`);
   await page.getByRole("button", { name: "测试进度", exact: true }).click();
   const attachments = page.getByLabel("附件归档状态");
-  await expect(attachments).toContainText("已归档");
-  await expect(attachments).toContainText("文件缺失");
-  await expect(attachments).toContainText("文件不存在");
-  await expect(attachments).toContainText(".reports/missing.json");
+  await expect(attachments).toHaveCount(0);
+  await expect(page.locator(".test-results-container")).not.toContainText(".reports/missing.json");
 });
 
-test("真实附件归档完成后通过事件自动刷新，并在刷新页面后保留结果", async ({ page }) => {
+test("真实附件归档仍持久化，但测试进度不渲染归档清单", async ({ page }) => {
   test.setTimeout(180_000);
   const token = fixtureState().shutdownToken;
   const seeded = await page.request.post("/__fixture/attachments", {
@@ -201,15 +199,16 @@ test("真实附件归档完成后通过事件自动刷新，并在刷新页面�
   await socket;
   await page.getByRole("button", { name: "测试进度", exact: true }).click();
   const attachments = page.getByLabel("附件归档状态");
-  await expect(attachments.locator(".badge")).toHaveText(["待归档", "待归档"]);
+  await expect(attachments).toHaveCount(0);
   const triggered = await page.request.post("/__fixture/attachments/drain", {
     headers: { Origin: "http://localhost:14811" }, data: { token, ...fixture },
   });
   expect(triggered.ok()).toBe(true);
-  await expect(attachments).toContainText("已归档");
-  await expect(attachments).toContainText("文件缺失");
-  await expect(attachments).toContainText("文件不存在");
-  await expect(attachments.locator("article")).toHaveCount(2);
+  await expect.poll(async () => {
+    const detail = await (await page.request.get(`/api/workflows/${fixture.workflow_id}`)).json();
+    return detail.attachment_status.map((record: any) => record.state).sort();
+  }).toEqual(["archived", "missing"]);
+  await expect(attachments).toHaveCount(0);
   const persisted = await page.request.get(`/api/workflows/${fixture.workflow_id}`);
   expect(persisted.ok()).toBe(true);
   const detail = await persisted.json();
@@ -218,8 +217,7 @@ test("真实附件归档完成后通过事件自动刷新，并在刷新页面�
   expect(detail.events.some((event: any) => event.type === "AttachmentArchiveUpdated")).toBe(true);
   await page.reload();
   await page.getByRole("button", { name: "测试进度", exact: true }).click();
-  await expect(page.getByLabel("附件归档状态")).toContainText("已归档");
-  await expect(page.getByLabel("附件归档状态")).toContainText("文件缺失");
+  await expect(page.getByLabel("附件归档状态")).toHaveCount(0);
 });
 
 test("SA-E24 native delivery still completes without requiring subagent observation", async ({

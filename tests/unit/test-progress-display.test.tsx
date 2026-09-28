@@ -10,6 +10,7 @@ const detail = {
   native_progress: { tests: [{ command: "pnpm vitest run secret-command", status: "passed" }], running: 1,
     latest_result: { status: "passed", passed: 500, failed: 0 } },
   execution_test_report: { test_executions: [{ command: "mvn test another-command", exit_code: 0 }] },
+  attachment_status: [{ path: "private-reports/archived-test.xml", state: "archived" }],
   test_progress: { total: 4, passed: 1, failed: 1, cases: [
     { id: "U1", test_id: "U", layer: "unit", status: "passed", task_ids: [] },
     { id: "U2", test_id: "U", layer: "unit", status: "not_run", task_ids: [] },
@@ -30,6 +31,8 @@ it("renders categorized reported progress without promoting native command succe
   expect(html).not.toContain("secret-command");
   expect(html).not.toContain("another-command");
   expect(html).not.toContain("原生自测进度");
+  expect(html).not.toContain("archived-test.xml");
+  expect(html).not.toContain("附件归档状态");
 });
 
 it("keeps plan progress in the delivery strip and removes all native self-test chips", () => {

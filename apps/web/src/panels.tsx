@@ -277,7 +277,6 @@ export function TestResults({
           </div>
         </div>
       </div>
-      <AttachmentArchiveStatus items={detail.attachment_status} />
       <div className="test-layers-list">
         {Object.entries(layers).map(([layer, label]) => {
           const all = progress.cases.filter((c: any) => c.layer === layer),
