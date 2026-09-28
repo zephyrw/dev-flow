@@ -79,29 +79,68 @@ export function parseAgyUsageOutput(
     resetAt: string | null;
   }> = [];
 
+function shouldDropUnstartedReset(
+  remaining: number | null,
+  resetAt: string | null,
+  observedAt: string,
+  kind: WindowKind,
+): boolean {
+  // 规则：只有当前额度为 100% (remaining === 1) 的时候才有可能没有重置时间；
+  // 如果小于 100% (remaining < 1)，一定是有重置时间的。
+  // 在 100% 额度时，如果重置时间差值接近窗口满额周期（说明会话未发生，时间随当前查询时间临时漂移），判定为没有重置时间。
+  if (remaining !== 1 || !resetAt) {
+    return false;
+  }
+  const resetMs = Date.parse(resetAt);
+  const observedMs = Date.parse(observedAt);
+  if (Number.isNaN(resetMs) || Number.isNaN(observedMs)) {
+    return false;
+  }
+  const durationMs = kind === "weekly" ? 7 * 86400 * 1000 : 5 * 3600 * 1000;
+  const diffMs = resetMs - observedMs;
+  // 容差 2 分钟 (120,000 ms)：CLI 内部临时生成 now + duration 时，与 observedAt 差值会接近 durationMs
+  return diffMs >= durationMs - 120_000;
+}
+
   for (const line of lines) {
     const tableMatch =
-      /^([^\t]+?)\t+(Weekly Limit Remaining|Five Hour Limit Remaining)\t+(\S+)\t+(.+)$/.exec(
+      /^([^\t]+?)\t+(Weekly Limit Remaining|Five Hour Limit Remaining)\t+(\S+)(?:\t+(.*))?$/.exec(
         line,
       ) ??
-      /^([A-Za-z0-9 ]+?)\s{2,}(Weekly Limit Remaining|Five Hour Limit Remaining)\s{2,}(\S+)\s{2,}(.+)$/.exec(
+      /^([A-Za-z0-9 ]+?)\s{2,}(Weekly Limit Remaining|Five Hour Limit Remaining)\s{2,}(\S+)(?:\s{2,}(.*))?$/.exec(
         line,
       );
     if (tableMatch) {
       const poolName = tableMatch[1]!.trim();
       const kindStr = tableMatch[2]!;
       const pctStr = tableMatch[3]!;
-      const resetStr = tableMatch[4]!.trim();
+      const rawResetStr = tableMatch[4]?.trim();
       const kind: WindowKind =
         kindStr === "Weekly Limit Remaining" ? "weekly" : "five_hour";
       const remaining = pctStr.endsWith("%") ? Number(pctStr.slice(0, -1)) / 100 : NaN;
-      const resetAt = parseRelativeResetToIso(
-        resetStr,
-        Date.parse(observedAt),
-      );
+      const validRemaining =
+        Number.isFinite(remaining) && remaining >= 0 && remaining <= 1 ? remaining : null;
+
+      let resetAt: string | null = null;
+      if (
+        rawResetStr &&
+        !["-", "—", "none", "n/a", "null", "unknown"].includes(
+          rawResetStr.toLowerCase(),
+        )
+      ) {
+        resetAt = parseRelativeResetToIso(rawResetStr, Date.parse(observedAt));
+      }
+
+      // 如果额度为 100% 且重置时间未启动，则没有重置时间
+      if (shouldDropUnstartedReset(validRemaining, resetAt, observedAt, kind)) {
+        resetAt = null;
+      }
+
       tableRows.push({
-        poolName, kind, resetAt,
-        remaining: Number.isFinite(remaining) && remaining >= 0 && remaining <= 1 ? remaining : null,
+        poolName,
+        kind,
+        resetAt,
+        remaining: validRemaining,
       });
     }
   }
@@ -181,14 +220,25 @@ export function parseAgyUsageOutput(
           Number.isFinite(remaining) &&
           remaining >= 0 &&
           remaining <= 1;
+        let resetAt: string | null = null;
+        if (
+          resetValue &&
+          resets.length <= 1 &&
+          !["-", "—", "none", "n/a", "null", "unknown"].includes(
+            resetValue.trim().toLowerCase(),
+          )
+        ) {
+          resetAt = parseRelativeResetToIso(resetValue, Date.parse(observedAt));
+        }
+        if (shouldDropUnstartedReset(valid ? remaining : null, resetAt, observedAt, kind)) {
+          resetAt = null;
+        }
+
         return {
           kind: kind as WindowKind,
           duration_minutes: kind === "weekly" ? 10080 : 300,
           remaining_fraction: valid ? remaining : null,
-          reset_at:
-            resetValue && resets.length <= 1
-              ? parseRelativeResetToIso(resetValue, Date.parse(observedAt))
-              : null,
+          reset_at: resetAt,
           observed_at: observedAt,
           status: valid ? "observed" : "missing",
         };

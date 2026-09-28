@@ -41,3 +41,8 @@ __pycache__/
 # Local worktree temporary configs, ports and runtime state
 .cache/devflow-local/
 devflow-local/
+
+# Local backups and editor artifacts
+.claude/
+backup/
+*.backup.*

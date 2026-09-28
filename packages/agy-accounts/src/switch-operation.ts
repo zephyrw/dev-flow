@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { hasDualQuotaWindows, requiredQuotaPools } from "./quota.js";
 import type {
   AgyAccount,
@@ -198,26 +199,33 @@ export class SwitchOperationExecutor {
       refresh_verified_max_age_hours:
         settings.maintenance.refresh_verified_max_age_hours,
     };
+    let accounts = this.repository.listAccounts(options.realmId);
     const initialSelection = selectCandidates(
-      this.repository.listAccounts(options.realmId),
+      accounts,
       this.repository.listQuotaSnapshots(options.realmId),
       options.requiredPoolIds,
       this.clock.now(),
       selectionPolicy,
     );
-    if (
-      options.selection.mode === "explicit" &&
-      !initialSelection.ranked_candidates.some(
-        (candidate) =>
-          candidate.account_id ===
-          (options.selection as { account_id: string }).account_id,
-      )
-    )
-      return {
-        success: false,
-        status: "target_unavailable",
-        message: "target_unavailable",
-      };
+    if (options.selection.mode === "explicit") {
+      const explicitId = (options.selection as { account_id: string }).account_id;
+      const isRanked = initialSelection.ranked_candidates.some(
+        (candidate) => candidate.account_id === explicitId,
+      );
+      if (!isRanked) {
+        const explicitAcc = accounts.find((a) => a.id === explicitId);
+        const isEligibleFreshAccount =
+          explicitAcc &&
+          !["disabled", "reauth_required", "incompatible"].includes(explicitAcc.state);
+        if (!isEligibleFreshAccount) {
+          return {
+            success: false,
+            status: "target_unavailable",
+            message: "target_unavailable",
+          };
+        }
+      }
+    }
     const requested =
       options.selection.mode === "explicit"
         ? options.selection.account_id
@@ -291,18 +299,20 @@ export class SwitchOperationExecutor {
       const expectedAccount = beforeAccountId
         ? this.repository.getAccount(options.realmId, beforeAccountId)
         : undefined;
-      if (!occupancy.length || !expectedAccount)
-        throw new Error("external_change");
-      const observed = await this.probe.probeUsage({
-        signal: options.signal,
-        account_id: beforeAccountId,
-        timeoutMs: settings.probe_timeout_seconds * 1000,
-      });
-      if (
-        observed.email?.toLowerCase() !==
-        expectedAccount.identity.email.toLowerCase()
-      )
-        throw new Error("external_change");
+      if (!expectedAccount) {
+        console.error("[SWITCH_DEBUG] expectedAccount not found for beforeAccountId:", beforeAccountId);
+        throw new Error("external_change:expected_account_missing");
+      }
+
+      const activeInspection = await this.authHost.inspectActive(options.realmId);
+      const activeEmail = activeInspection.auth?.email?.toLowerCase();
+      const expectedEmail = expectedAccount.identity.email.toLowerCase();
+      console.log("[SWITCH_DEBUG] Step 5 compareActive failed, checking email:", { activeEmail, expectedEmail });
+
+      if (!activeEmail || activeEmail !== expectedEmail) {
+        console.error("[SWITCH_DEBUG] Email mismatch in step 5:", { activeEmail, expectedEmail });
+        throw new Error("external_change:step5_email_mismatch");
+      }
     }
     const captured = await this.authHost.captureActive(
       options.realmId,
@@ -325,7 +335,7 @@ export class SwitchOperationExecutor {
     }
 
     // 6. 确定候选
-    const accounts = this.repository.listAccounts(options.realmId);
+    accounts = this.repository.listAccounts(options.realmId);
     const snapshots = this.repository.listQuotaSnapshots(options.realmId);
     const now = this.clock.now();
 
@@ -464,15 +474,18 @@ export class SwitchOperationExecutor {
       const targetAcc = accounts.find((a) => a.id === targetAccountId)!;
       realm.phase = "installing";
       this.repository.saveRealm(realm);
-      if ((await this.processHost.findExternalAgyProcesses()).length)
-        throw new Error("external_change");
+      const extProcs = await this.processHost.findExternalAgyProcesses();
+      if (extProcs.length) {
+        console.error("[SWITCH_DEBUG] External AGY processes found in step 7:", extProcs);
+        throw new Error("external_change:step7_external_processes");
+      }
       const expectedRef =
         operation.installed_secret_ref ?? operation.before_secret_ref;
-      if (
-        !expectedRef ||
-        !(await this.authHost.compareActive(options.realmId, expectedRef))
-      )
-        throw new Error("external_change");
+      const compareActiveMatches = expectedRef ? await this.authHost.compareActive(options.realmId, expectedRef) : false;
+      if (!expectedRef || !compareActiveMatches) {
+        console.error("[SWITCH_DEBUG] compareActive failed in step 7:", { expectedRef, compareActiveMatches });
+        throw new Error("external_change:step7_compare_active_failed");
+      }
       guard();
       operation.install_target_ref = targetAcc.secret_ref;
       operation.install_target_account_id = targetAcc.id;
@@ -571,7 +584,16 @@ export class SwitchOperationExecutor {
         throw new Error("no_eligible_account");
       }
       if (!probeRes) throw new Error("probe_failed");
-      const verifiedEmail = (probeRes.email ?? (await this.probe.probeIdentity({ signal: options.signal })).email).toLowerCase();
+      let verifiedEmail = probeRes.email?.toLowerCase();
+      if (!verifiedEmail) {
+        try {
+          const probed = await this.probe.probeIdentity({ signal: options.signal });
+          verifiedEmail = probed?.email?.toLowerCase();
+        } catch {
+          const activeAuth = (await this.authHost.inspectActive(options.realmId)).auth;
+          verifiedEmail = activeAuth?.email?.toLowerCase();
+        }
+      }
       const expectedEmail = targetAcc.identity.email.toLowerCase();
 
       if (!verifiedEmail || verifiedEmail !== expectedEmail) {
@@ -598,7 +620,7 @@ export class SwitchOperationExecutor {
       this.repository.retainQuotaPools(options.realmId, targetAcc.id, probeRes.pools.map((pool) => pool.pool_id));
       for (const pool of probeRes.pools) {
         this.repository.saveQuotaSnapshot({
-          id: `snp_${options.operationId}_${candidateIndex}_${pool.pool_id}`,
+          id: randomUUID(),
           realm_id: options.realmId,
           account_id: targetAcc.id,
           auth_epoch: realm.auth_epoch,

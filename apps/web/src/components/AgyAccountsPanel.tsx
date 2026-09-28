@@ -71,9 +71,12 @@ function CompactQuotaBar({
   if (!window) return null;
   const value = formatQuotaWindow(window);
   const percent = value.fraction !== null ? Math.round(value.fraction * 100) : null;
+  const tooltip = value.shortResetText
+    ? `${value.label}：${value.percentageText}，${value.resetText}`
+    : `${value.label}：${value.percentageText}`;
 
   return (
-    <div className="agy-compact-quota" title={`${value.label}：${value.percentageText}，${value.resetText}`}>
+    <div className="agy-compact-quota" title={tooltip}>
       <span className="agy-quota-lbl">{value.label}</span>
       <div className="agy-quota-track">
         <div
@@ -85,11 +88,11 @@ function CompactQuotaBar({
         />
       </div>
       <span className="agy-quota-num">{value.percentageText}</span>
-      {value.shortResetText && (
+      {value.shortResetText ? (
         <span className="agy-quota-reset" title={value.resetText}>
           {value.shortResetText}
         </span>
-      )}
+      ) : null}
     </div>
   );
 }
@@ -100,6 +103,8 @@ export const AgyAccountsPanel = forwardRef<
 >(function AgyAccountsPanel({ onDismiss }, ref) {
   const [view, setView] = useState<AccountView | null>(null);
   const [service, setService] = useState<ServiceView | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [enrollOpen, setEnrollOpen] = useState(false);
@@ -121,11 +126,14 @@ export const AgyAccountsPanel = forwardRef<
       setActiveOperation(runningOp ?? null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoading(false);
     }
   }, []);
 
   const syncAndRefresh = useCallback(async () => {
     setError("");
+    setRefreshing(true);
     try {
       const [updatedView, serviceData] = await Promise.all([
         agyApi<AccountView>("/sync-refresh", {
@@ -147,6 +155,9 @@ export const AgyAccountsPanel = forwardRef<
       const msg = e instanceof Error ? e.message : "刷新账号与额度失败";
       setError(msg);
       throw e;
+    } finally {
+      setRefreshing(false);
+      setLoading(false);
     }
   }, []);
 
@@ -162,7 +173,18 @@ export const AgyAccountsPanel = forwardRef<
   useEffect(() => {
     void agyApi("/sync-active", { method: "POST", body: requestBody({}) })
       .catch(() => {})
-      .finally(() => void refresh());
+      .finally(() => {
+        void refresh();
+        // 打开面板后在后台静默对齐一次当前账号最新实测额度，防止额度因近期会话消耗后界面仍停留于旧快照
+        void agyApi<AccountView>("/sync-refresh", {
+          method: "POST",
+          body: requestBody({}),
+        })
+          .then((updatedView) => {
+            setView(updatedView);
+          })
+          .catch(() => {});
+      });
     const timer = setInterval(() => void refresh(), 3000);
     return () => clearInterval(timer);
   }, [refresh]);
@@ -185,19 +207,33 @@ export const AgyAccountsPanel = forwardRef<
     }
   };
 
+  const formatErrorMsg = (e: unknown, fallback: string): string => {
+    const raw = e instanceof Error ? e.message : String(e);
+    const friendlyMap: Record<string, string> = {
+      operation_in_progress: "当前已有另一项账号操作正在进行中，请先等待其完成或点击取消",
+      account_in_use: "该账号当前正在使用中，无法移除，请先切换至其他账号",
+      external_change: "检测到外部 AGY 正在修改凭据，请稍后重试",
+      domain_lock_acquire_failed: "未能获取系统账号锁，可能有其他进程正在使用",
+    };
+    return friendlyMap[raw] || (raw ? `${fallback}: ${raw}` : fallback);
+  };
+
   const handleSwitchTo = async (accountId: string) => {
     setError("");
     try {
-      await agyApi<AccountOperationView>("/switch", {
+      const op = await agyApi<AccountOperationView>("/switch", {
         method: "POST",
         body: requestBody({
           selection: { mode: "explicit", account_id: accountId },
           expected_epoch: service?.auth_epoch ?? 0,
         }),
       });
+      setActiveOperation(op);
+      setNotice("已发起切换账号操作");
+      setTimeout(() => setNotice(""), 3000);
       await refresh();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "切换账号失败");
+      setError(formatErrorMsg(e, "切换账号失败"));
     }
   };
 
@@ -214,7 +250,7 @@ export const AgyAccountsPanel = forwardRef<
       setActiveOperation(op);
       await refresh();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "重新认证失败");
+      setError(formatErrorMsg(e, "重新认证失败"));
     }
   };
 
@@ -224,15 +260,18 @@ export const AgyAccountsPanel = forwardRef<
     }
     setError("");
     try {
-      await agyApi<AccountOperationView>(`/${encodeURIComponent(account.id)}`, {
+      const op = await agyApi<AccountOperationView>(`/${encodeURIComponent(account.id)}`, {
         method: "DELETE",
         body: requestBody({
           expected_revision: account.revision,
         }),
       });
+      setActiveOperation(op);
+      setNotice(`已发起移除账号 ${account.identity.email}`);
+      setTimeout(() => setNotice(""), 3000);
       await refresh();
     } catch (e) {
-      setError(e instanceof Error ? e.message : "移除账号失败");
+      setError(formatErrorMsg(e, "移除账号失败"));
     }
   };
 
@@ -346,10 +385,20 @@ export const AgyAccountsPanel = forwardRef<
       {/* 账号列表 */}
       <div className="agy-accounts-list-wrap">
         <div className="agy-list-header">
-          <span>已管理账号 ({accounts.length})</span>
+          <span>已管理账号 {loading && !view ? "" : `(${accounts.length})`}</span>
+          {refreshing && (
+            <span style={{ marginLeft: "8px", fontSize: "12px", color: "#2563eb", fontWeight: "normal" }}>
+              正在刷新额度...
+            </span>
+          )}
         </div>
 
-        {accounts.length === 0 ? (
+        {loading && !view ? (
+          <div className="agy-loading-state">
+            <span className="agy-loading-spinner" />
+            <p>正在加载账号及额度信息...</p>
+          </div>
+        ) : accounts.length === 0 ? (
           <div className="agy-empty-state">
             <span className="agy-empty-icon">👥</span>
             <p>暂无管理的 AGY 账号</p>
@@ -365,7 +414,22 @@ export const AgyAccountsPanel = forwardRef<
           <div className="agy-accounts-grid">
             {accounts.map((account) => {
               const isActive = account.id === activeAccountId;
-              const snapshot = view?.snapshots.find((s) => s.account_id === account.id);
+              // 优先匹配主力模型池（默认为 Gemini Models），避免因为遍历顺序命中常满的 Claude and GPT models 快照
+              const accountSnapshots =
+                view?.snapshots.filter((s) => s.account_id === account.id) ?? [];
+              const targetPoolName =
+                view?.model_id?.toLowerCase().includes("claude") ||
+                view?.model_id?.toLowerCase().includes("gpt")
+                  ? "Claude and GPT models"
+                  : "Gemini Models";
+              const snapshot =
+                accountSnapshots.find((s) => s.pool_id === targetPoolName) ??
+                accountSnapshots.find((s) => s.pool_id === "Gemini Models") ??
+                accountSnapshots.find((s) =>
+                  s.pool_id.toLowerCase().includes("gemini"),
+                ) ??
+                accountSnapshots[0];
+
               const weeklyWindow = snapshot?.windows.find(
                 (w) => w.duration_minutes === 10080 || w.kind === "weekly",
               );
@@ -395,7 +459,9 @@ export const AgyAccountsPanel = forwardRef<
                       {weeklyWindow ? (
                         <CompactQuotaBar window={weeklyWindow} />
                       ) : (
-                        <span className="agy-no-quota">周额度待实测</span>
+                        <span className="agy-no-quota">
+                          {refreshing ? "周额度探测中..." : "周额度待实测"}
+                        </span>
                       )}
                       {shortWindow ? (
                         <CompactQuotaBar window={shortWindow} />
@@ -445,7 +511,10 @@ export const AgyAccountsPanel = forwardRef<
       <AgyAccountEnrollment
         isOpen={enrollOpen}
         realmRevision={view?.realm?.revision ?? 0}
-        onClose={() => setEnrollOpen(false)}
+        onClose={() => {
+          setEnrollOpen(false);
+          void syncAndRefresh().catch(() => {});
+        }}
         onOperation={(op) => {
           setActiveOperation(op);
           void refresh();

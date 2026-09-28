@@ -124,7 +124,7 @@ function hmacHex(secret: Buffer, value: string): string {
   return createHmac("sha256", secret).update(value).digest("hex");
 }
 
-function accessRecordId(parts: {
+export function accessRecordId(parts: {
   adapterId: string;
   nativeConfigScope: string;
   providerEndpointFingerprint: string;
@@ -1479,7 +1479,7 @@ export class ModelAccessService {
     }
   }
 
-  private putAccess(record: ModelAccessRecord) {
+  putAccess(record: ModelAccessRecord) {
     const stored = ModelAccessRecordSchema.parse(record);
     this.store.put(ACCESS_KIND, stored.key, stored.adapterId, stored);
   }

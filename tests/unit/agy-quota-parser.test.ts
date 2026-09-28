@@ -34,4 +34,34 @@ describe("labelled synthetic usage format (not a verified production capability)
     for (const text of ["garbage 1h", "1h 2h", "1month", "2026-09-21 02:30", ""])
       expect(parseRelativeResetToIso(text, base)).toBeNull();
   });
+  it("当额度为 100% 且未开始会话倒计时时判定没有重置时间，小于 100% 则正常保留重置时间", () => {
+    const observedAt = "2026-09-24T13:00:00.000Z";
+    // 100% 额度且 CLI 输出的时间正好是 now + 5h (18:00:00) 和 now + 7d (10-01T13:00:00)
+    const rawCli = [
+      "Gemini Models\tWeekly Limit Remaining\t83%\t2026-09-30T09:58:52Z",
+      "Gemini Models\tFive Hour Limit Remaining\t98%\t2026-09-24T17:56:15Z",
+      "Claude and GPT models\tWeekly Limit Remaining\t100%\t2026-10-01T13:00:00Z",
+      "Claude and GPT models\tFive Hour Limit Remaining\t100%\t2026-09-24T18:00:00Z",
+    ].join("\n");
+
+    const parsed = parseAgyUsageOutput(rawCli, { observedAt });
+    const geminiPool = parsed.pools.find((p) => p.pool_id === "Gemini Models");
+    const claudePool = parsed.pools.find((p) => p.pool_id === "Claude and GPT models");
+
+    // 小于 100% 时，重置时间一定保留
+    const geminiWeekly = geminiPool?.windows.find((w) => w.kind === "weekly");
+    const geminiFiveHour = geminiPool?.windows.find((w) => w.kind === "five_hour");
+    expect(geminiWeekly?.remaining_fraction).toBe(0.83);
+    expect(geminiWeekly?.reset_at).toBe("2026-09-30T09:58:52.000Z");
+    expect(geminiFiveHour?.remaining_fraction).toBe(0.98);
+    expect(geminiFiveHour?.reset_at).toBe("2026-09-24T17:56:15.000Z");
+
+    // 100% 额度时，未启动倒计时的虚拟时间被识别为无重置时间 (null)
+    const claudeWeekly = claudePool?.windows.find((w) => w.kind === "weekly");
+    const claudeFiveHour = claudePool?.windows.find((w) => w.kind === "five_hour");
+    expect(claudeWeekly?.remaining_fraction).toBe(1);
+    expect(claudeWeekly?.reset_at).toBeNull();
+    expect(claudeFiveHour?.remaining_fraction).toBe(1);
+    expect(claudeFiveHour?.reset_at).toBeNull();
+  });
 });

@@ -12,7 +12,8 @@ import type {
 import type { AgyFailureFact } from "../../adapters/agy/src/failure-fact.js";
 import type { ProcessManager } from "../../process/src/manager.js";
 import type { Engine } from "../../core/src/engine.js";
-import { FlowError, ModelAccessRecordSchema, objectHash, type Run } from "../../contracts/src/index.js";
+import { FlowError, ModelAccessRecordSchema, type Run } from "../../contracts/src/index.js";
+import { objectHash } from "../../core/src/util.js";
 import type { AgyAccountProcessHost } from "../../process/src/agy-account-processes.js";
 import { resumeApproved } from "./recovery.js";
 import { assertAccountModelRetryAccess, buildAccountModelRunRetry, stageAccountModelRunRetry } from "../../core/src/model-retry.js";

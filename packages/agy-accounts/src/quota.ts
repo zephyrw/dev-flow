@@ -24,8 +24,12 @@ export function requiredQuotaPools<T extends { pool_id: string; model_ids: strin
   if (new Set(pools.map((pool) => pool.pool_id)).size !== pools.length) return null;
   const selected = new Map<string, T>();
   for (const id of poolIds.length ? poolIds : ["global"]) {
-    const exact = pools.find((pool) => pool.pool_id === id);
-    if (exact) selected.set(id, exact);
+    let exact = pools.find((pool) => pool.pool_id === id);
+    if (!exact && id === "global") {
+      // 官方真实CLI池为 "Gemini Models" 和 "Claude and GPT models"，无字面 "global" 时回退匹配默认模型池
+      exact = pools.find((p) => p.pool_id.toLowerCase().includes("gemini")) ?? pools[0];
+    }
+    if (exact) selected.set(exact.pool_id, exact);
     if (id !== "global" || !models.length) {
       if (!exact) return null;
       continue;

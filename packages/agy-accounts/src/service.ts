@@ -333,34 +333,58 @@ export class AgyAccountService {
     );
   }
 
-  private cleanStalePendingOperationLocked(realmId: string): boolean {
+  cleanStalePendingOperationLocked(realmId: string): boolean {
+    let mutated = false;
     const realm = this.repository.getRealm(realmId);
-    if (!realm || !realm.pending_operation_id) return false;
+    const now = this.clock.now();
 
-    const op = this.repository.getOperation(realm.pending_operation_id);
-    const isStale =
-      !op ||
-      ["completed", "failed", "cancelled"].includes(op.phase) ||
-      op.phase === "blocked" ||
-      (op.deadline_at && new Date(op.deadline_at).getTime() < this.clock.now());
+    // 1. 扫描当前 realm 下所有操作，对孤儿 queued/started 操作或已超时非终态操作进行自动取消与收敛
+    const operations = this.repository.listOperations(realmId);
+    for (const op of operations) {
+      if (["completed", "failed", "cancelled"].includes(op.phase)) continue;
 
-    if (isStale) {
-      if (op && !["completed", "failed", "cancelled"].includes(op.phase)) {
+      const isExpired = Boolean(op.deadline_at && new Date(op.deadline_at).getTime() < now);
+      const isOrphaned = realm ? realm.pending_operation_id !== op.operation_id : true;
+      const isBlocked = op.phase === "blocked";
+
+      if (isExpired || (isOrphaned && (op.phase === "queued" || op.phase === "started")) || (isBlocked && isOrphaned)) {
         op.phase = "cancelled";
         op.completed_at = this.clock.toISOString();
-        op.error = op.error ?? "operation_stale_or_blocked";
+        op.error = op.error ?? (isExpired ? "operation_timed_out" : "orphaned_operation_cancelled");
         op.revision++;
         this.repository.saveOperation(op);
+        mutated = true;
       }
-      realm.pending_operation_id = null;
-      if (realm.phase === "blocked") realm.phase = "idle";
-      if (realm.service_state === "blocked") realm.service_state = "stopped";
-      realm.last_error = undefined;
-      realm.revision++;
-      this.repository.saveRealm(realm);
-      return true;
     }
-    return false;
+
+    // 2. 检查 realm.pending_operation_id 自身是否失步或超时
+    if (realm && realm.pending_operation_id) {
+      const op = this.repository.getOperation(realm.pending_operation_id);
+      const isStale =
+        !op ||
+        ["completed", "failed", "cancelled"].includes(op.phase) ||
+        op.phase === "blocked" ||
+        (op.deadline_at && new Date(op.deadline_at).getTime() < now);
+
+      if (isStale) {
+        if (op && !["completed", "failed", "cancelled"].includes(op.phase)) {
+          op.phase = "cancelled";
+          op.completed_at = this.clock.toISOString();
+          op.error = op.error ?? "operation_stale_or_blocked";
+          op.revision++;
+          this.repository.saveOperation(op);
+        }
+        realm.pending_operation_id = null;
+        if (realm.phase === "blocked") realm.phase = "idle";
+        if (realm.service_state === "blocked") realm.service_state = "stopped";
+        realm.last_error = undefined;
+        realm.revision++;
+        this.repository.saveRealm(realm);
+        mutated = true;
+      }
+    }
+
+    return mutated;
   }
 
   updateAccount(
@@ -435,6 +459,7 @@ export class AgyAccountService {
   }
 
   getPresentation(realmId = "default-agy-realm") {
+    this.cleanStalePendingOperationLocked(realmId);
     const settings =
         this.repository.getSettings(realmId) ??
         AgyAccountSettingsSchema.parse({
@@ -1671,10 +1696,16 @@ export class AgyAccountService {
               ["completed", "failed", "cancelled"].includes(related.phase)
             ) continue;
             related.cancel_requested = true;
-            // A detached wait has already restored its identity; no job cleanup remains.
-            if (related.phase === "waiting" && realm.pending_operation_id !== related.operation_id) {
+            // 未在活动执行器中深层运行的操作（如脱钩等待、queued排队）直接收敛为 cancelled
+            if (realm.pending_operation_id !== related.operation_id || related.phase === "queued" || related.phase === "waiting") {
               related.phase = "cancelled";
               related.completed_at = this.clock.toISOString();
+              if (realm.pending_operation_id === related.operation_id) {
+                realm.pending_operation_id = null;
+                realm.phase = "idle";
+                realm.revision++;
+                this.repository.saveRealm(realm);
+              }
             }
             related.revision++;
             this.repository.saveOperation(related);
@@ -2806,10 +2837,19 @@ export class AgyAccountService {
               this.initializeSettings(op.realm_id).probe_timeout_seconds * 1000,
           });
           this.assertOperation(op, signal);
-          const observedEmail = result.email ?? (await this.probe.probeIdentity({ signal })).email;
+          let observedEmail = result.email?.toLowerCase();
+          if (!observedEmail) {
+            try {
+              const probed = await this.probe.probeIdentity({ signal });
+              observedEmail = probed?.email?.toLowerCase();
+            } catch {
+              const activeAuth = (await this.authHost.inspectActive(op.realm_id)).auth;
+              observedEmail = activeAuth?.email?.toLowerCase();
+            }
+          }
           if (
             !observedEmail ||
-            observedEmail.toLowerCase() !== account.identity.email.toLowerCase()
+            observedEmail !== account.identity.email.toLowerCase()
           )
             throw new AccountServiceError("identity_mismatch");
           const capture = await this.authHost.captureActive(op.realm_id, id);

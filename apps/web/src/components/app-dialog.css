@@ -20,6 +20,8 @@
   background-color: #ffffff;
   color: #1e293b;
   border-radius: 12px;
+  border: none;
+  outline: none;
   box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04), 0 0 0 1px rgba(0, 0, 0, 0.06);
   max-width: calc(100vw - 32px);
   max-height: calc(100dvh - 48px);
@@ -27,6 +29,11 @@
   flex-direction: column;
   overflow: hidden;
   animation: app-dialog-zoom-in 0.15s ease-out;
+}
+
+.app-dialog-container:focus,
+.app-dialog-container:focus-visible {
+  outline: none;
 }
 
 .app-dialog-header {

@@ -41,18 +41,46 @@ export function formatQuotaWindow(
   const fraction = window.remaining_fraction;
   const pct = Math.round(fraction * 100);
   const isZero = fraction <= 0;
+  const isFull = pct >= 100;
 
   let resetText = "—";
   let shortResetText = "";
   let isResetDue = false;
 
-  if (window.reset_at) {
+  // 判断是否应该显示重置时间：
+  // 规则：
+  // 1. 只有当前额度为 100% (isFull) 时才有可能没有重置时间；若小于 100%，一定有重置时间。
+  // 2. 额度已经是 100% 时，绝不可能处于“待重置”状态！若当前时间已超过旧 reset_at (nowMs >= resetTime)，
+  //    说明上一轮重置早已完成并已达满额，新会话尚未发生，计时器未开启，故没有重置时间。
+  // 3. 若额度为 100% 且 resetTime 与观测时间差值接近满额周期（临时漂移占位时间），也没有重置时间。
+  let hasValidReset = Boolean(window.reset_at);
+  if (hasValidReset && isFull && window.reset_at) {
     const resetTime = Date.parse(window.reset_at);
     if (!Number.isNaN(resetTime)) {
       if (nowMs >= resetTime) {
-        isResetDue = true;
-        resetText = "预计已重置，待核验";
-        shortResetText = "待重置";
+        // 时间已过且额度已满(100%)：已重置完成，无需重置，未启动新会话倒计时，无重置时间
+        hasValidReset = false;
+      } else {
+        const observedTime = window.observed_at ? Date.parse(window.observed_at) : NaN;
+        if (!Number.isNaN(observedTime)) {
+          const durationMs = window.kind === "weekly" ? 7 * 86400 * 1000 : 5 * 3600 * 1000;
+          const diffMs = resetTime - observedTime;
+          if (diffMs >= durationMs - 120_000) {
+            hasValidReset = false;
+          }
+        }
+      }
+    }
+  }
+
+  if (hasValidReset && window.reset_at) {
+    const resetTime = Date.parse(window.reset_at);
+    if (!Number.isNaN(resetTime)) {
+      if (nowMs >= resetTime) {
+        // 倒计时已到期：不显示“待重置”标签，短文本置空
+        isResetDue = !isFull;
+        resetText = !isFull ? "预计已重置，待核验" : "—";
+        shortResetText = "";
       } else {
         const diffSec = Math.max(0, Math.round((resetTime - nowMs) / 1000));
         if (diffSec >= 86400) {
