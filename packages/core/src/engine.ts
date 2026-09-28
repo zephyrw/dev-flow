@@ -560,7 +560,7 @@ export class Engine {
     state: State,
     stage: string,
     patch: Partial<Workflow> = {},
-    event: { resumed?: boolean } = {},
+    event: { resumed?: boolean; repair_source?: "quality_review"; source_review_id?: string } = {},
   ) {
     return this.store.transaction(() => {
       const w = this.get(key);
@@ -3391,7 +3391,8 @@ export class Engine {
       this.store.transaction(() => {
         w = this.transition(key, [review ? "REVIEW_QUEUED" : "QUEUED"], review ? "REVIEWING" : "EXECUTING", stage, {
           run_id: runId, review_request_id: review ? id("review") : w.review_request_id, blocker: undefined,
-        }, { resumed });
+        }, { resumed, ...(assignment?.source === "quality_review" && assignment.assignment_id === run.assignment_id
+          ? { repair_source: "quality_review" as const, source_review_id: assignment.source_review_id } : {}) });
         this.store.remove("pending_dispatch_purpose", key);
         this.store.remove("queue_wait", key);
         if (continuation)
@@ -3848,6 +3849,7 @@ export class Engine {
     w: Workflow,
     transfer: QualityTransfer,
     body: string,
+    review: Review,
   ) {
     const assignmentId =
       transfer.next_assignment_id ?? transfer.assignment?.assignment_id;
@@ -3864,6 +3866,7 @@ export class Engine {
       plan_revision: next.plan_revision,
       plan_hash: next.plan_hash,
       instructions: body,
+      source_review: { ...review, run_id: transfer.review_run_id },
     });
   }
   private carryAcceptanceAfterQualityRepair(
@@ -3894,10 +3897,11 @@ export class Engine {
       review_id: quality.run_id,
     });
   }
-  private assignPolicy2Repair(w: Workflow, body: string, planner: boolean, phase: "before_human" | "after_human") {
+  private assignPolicy2Repair(w: Workflow, body: string, planner: boolean, phase: "before_human" | "after_human", review?: Review) {
     const assignment: QualityRepairAssignment = {
       assignment_id: id("assignment"), planner, phase, source: "quality_review",
       source_review_id: w.run_id!, plan_revision: w.plan_revision, plan_hash: w.plan_hash, instructions: body,
+      ...(review ? { source_review: { ...review, run_id: w.run_id } } : {}),
     };
     this.store.put("repair_assignment", w.id, w.id, assignment);
     this.store.put("quality_repair_assignment", assignment.assignment_id!, w.id, assignment);
@@ -3906,7 +3910,7 @@ export class Engine {
 
   private commitPolicy2RepairDecision(
     w: Workflow,
-    _review: Review,
+    review: Review,
     quality: { verdict?: string; summary?: string; repair_document?: string },
     body: string,
     withinScope: boolean,
@@ -3929,7 +3933,7 @@ export class Engine {
     this.clearCurrentImplementationIntent(w.id);
     if (withinScope) {
       if (action.kind === "executor_repair" || action.kind === "planner_repair")
-        this.assignPolicy2Repair(w, body, action.kind === "planner_repair", flow.phase);
+        this.assignPolicy2Repair(w, body, action.kind === "planner_repair", flow.phase, review);
       this.dispatchPolicy2AfterReview(w.id, action, flow.phase);
     }
   }
@@ -3997,7 +4001,7 @@ export class Engine {
         "quality-" + applied.review_run_id,
       );
     }
-    this.writeRepairAssignment(w, applied, body);
+    this.writeRepairAssignment(w, applied, body, review);
     this.persistQualityTransferRecord(applied, {
       completion_run_id: this.reviewPointer(w.id).completion_run_id,
     });
@@ -4192,6 +4196,7 @@ export class Engine {
     };
     this.store.put("review", review.review_request_id ?? w.run_id!, key, {
       ...review,
+      run_id: w.run_id,
       id: review.review_request_id ?? w.run_id,
       original_result: parsed.data,
     });

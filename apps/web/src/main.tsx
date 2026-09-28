@@ -7,6 +7,7 @@ import {
 import { DeliveryStrip, EnvironmentSummary } from "./workbench.js";
 import guideText from "../../../docs/guide/使用指南.md?raw";
 import { TaskTree, TestResults } from "./panels.js";
+import { ReviewResults } from "./components/ReviewResults.js";
 import { useNativeProgress } from "./native-progress.js";
 import { CreateWorkflowModal } from "./components/CreateWorkflowModal.js";
 import { ToolModelDialog } from "./components/ToolModelDialog.js";
@@ -1458,70 +1459,7 @@ const CentralWorkspace = React.memo(
           {tab === "review" && (
             <section className="panel">
               <h2>独立复核结果</h2>
-              {detail.review ? (
-                <>
-                  <p>
-                    {detail.review.stale
-                      ? "历史复核已失效，请以新一轮结果为准。"
-                      : "本轮复核"}{" "}
-                    · 第 {detail.review.plan_revision} 版计划 ·{" "}
-                    {
-                      (
-                        {
-                          pass: "通过",
-                          findings: "发现问题",
-                          incomplete: "验证不完整",
-                        } as Record<string, string>
-                      )[detail.review.verdict]
-                    }
-                  </p>
-                  <details>
-                    <summary>技术详情</summary>
-                    <p className="mono">快照：{detail.review.snapshot_id}</p>
-                  </details>
-                  {detail.review.findings.map((f: any, index: number) => (
-                    <article key={index} className="panel">
-                      <h3>
-                        {f.id} · {f.severity}
-                      </h3>
-                      <p>
-                        {f.repo_id} / {f.path}:{f.line}
-                      </p>
-                      <p>触发条件：{f.trigger}</p>
-                      <p>证据：{f.evidence}</p>
-                      <p>影响：{f.consequence}</p>
-                      <p>处置理由：{f.reason}</p>
-                    </article>
-                  ))}
-                  {detail.review.unresolved_questions.length > 0 && (
-                    <>
-                      <h3>复核缺口</h3>
-                      <ul>
-                        {detail.review.unresolved_questions.map(
-                          (q: string, i: number) => (
-                            <li key={i}>{q}</li>
-                          ),
-                        )}
-                      </ul>
-                    </>
-                  )}
-                  <h3>覆盖文件</h3>
-                  <ul>
-                    {detail.review.coverage.files.map((p: string) => (
-                      <li key={p}>{p}</li>
-                    ))}
-                  </ul>
-                  {detail.review.repair_plan && (
-                    <p>
-                      修复计划已列入「计划与图解」，需要重新批准后才能执行。
-                    </p>
-                  )}
-                </>
-              ) : (
-                <div className="empty">
-                  尚无独立复核结果。人工验收通过后会自动启动 GPT-6。
-                </div>
-              )}
+              <ReviewResults review={detail.review} />
             </section>
           )}
           {tab === "environment" && (

@@ -2,10 +2,31 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Engine } from "../../core/src/engine.js";
-import type { Run, Workflow } from "../../contracts/src/index.js";
+import type { Run, Workflow, Review } from "../../contracts/src/index.js";
+import type { QualityRepairAssignment } from "../../contracts/src/quality.js";
+import type { Store } from "../../store/src/store.js";
 import { requireCondition } from "../../contracts/src/index.js";
 import { reviewCompletionContext } from "../../core/src/review-completion.js";
 import { reviewScopeInstructions } from "../../core/src/role-boundaries.js";
+
+/** Resolve the assigned review, never an unrelated latest review. Older saved
+ * assignments are supported using the persisted review Run/request binding. */
+export function repairReviewMaterial(store: Store, w: Workflow, run: Run, assignment?: QualityRepairAssignment | null): Review | null {
+  if (!assignment || assignment.source !== "quality_review" || run.purpose === "aside" ||
+      assignment.assignment_id !== run.assignment_id || assignment.plan_revision !== run.plan_revision ||
+      (assignment.plan_hash && assignment.plan_hash !== w.plan_hash)) return null;
+  const matches = (review: Review) => (!review.workflow_id || review.workflow_id === w.id) &&
+    (!review.plan_revision || review.plan_revision === assignment.plan_revision);
+  if (assignment.source_review && matches(assignment.source_review) &&
+      assignment.source_review.run_id === assignment.source_review_id) return assignment.source_review;
+  const reviews = store.list<Review>("review", w.id);
+  const exact = reviews.find(review => review.run_id === assignment.source_review_id && matches(review));
+  if (exact) return exact;
+  const pointer = store.get<{ review_run_id?: string }>("plan_check_review_intent", w.id);
+  if (pointer?.review_run_id !== assignment.source_review_id || !w.review_request_id) return null;
+  const legacy = reviews.find(review => !review.run_id && review.review_request_id === w.review_request_id && matches(review));
+  return legacy ? { ...legacy, run_id: assignment.source_review_id } : null;
+}
 
 export function reviewSkillResources() {
   const dir = dirname(fileURLToPath(import.meta.url));

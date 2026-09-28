@@ -529,6 +529,8 @@ export function readableLogs(events: any[], workflow: string, formalGuidance: Ar
             ? "规划模型开始修复"
             : p.stage === "executor_test"
               ? (p.resumed === true ? "继续测试" : "开始测试")
+            : p.repair_source === "quality_review"
+              ? "修复代码复核问题"
             : repairPending || p.resumed === true
               ? "继续开发与自测"
               : "开始开发与自测";
@@ -538,6 +540,8 @@ export function readableLogs(events: any[], workflow: string, formalGuidance: Ar
             ? "正在启动规划模型；收到真实工具事件后展示修改、自测与完成说明。"
             : p.stage === "executor_test"
               ? "由执行模型沿已有进度完成指定测试和必要修复。"
+            : p.repair_source === "quality_review"
+              ? "沿用原批准计划和已有修改，按本轮代码复核问题逐项整改并进行必要测试。"
             : p.resumed === true
               ? "保留原计划、已有修改和执行进度，继续处理本轮尚未完成的工作。"
               : "执行模型自主安排本轮开发与自测，完成后交代码质量审查。";

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { Id, RelativePath } from "./base.js";
+import type { Review } from "./index.js";
 
 export type QualityPhase = "before_human" | "after_human";
 export type QualityVerdict = "passed" | "changes_required" | "incomplete";
@@ -161,6 +162,7 @@ export interface QualityRepairAssignment {
   plan_revision: number;
   plan_hash?: string;
   instructions?: string;
+  source_review?: Review;
   repair_cycle_id?: string;
   current_attempt_run_id?: string;
   consumed_completion_run_id?: string;

@@ -121,6 +121,7 @@ import {
 } from "./conversation-recovery.js";
 import {
   reviewSkillResources,
+  repairReviewMaterial,
   reviewContractContext,
   reviewInstructions,
 } from "./review-materials.js";
@@ -493,6 +494,7 @@ export class ProfileRuntime {
     const assignment = this.engine.store.get<any>("repair_assignment", w.id);
     const repair = !policy2 || (assignment && assignment.assignment_id === run.assignment_id)
       ? assignment : null;
+    const sourceReview = repairReviewMaterial(this.engine.store, w, run, repair);
 
     const effectiveRun = this.ensureRunApprovalRef(w, run);
     const { instructions: extraInstructions, payload: extraPayload } =
@@ -513,7 +515,8 @@ export class ProfileRuntime {
     const executionSkills = includeTestingSkills ? getExecutionSkillResources() : undefined;
     return this.continuationMaterials(
       {
-        instructions: baseInstructions + extraInstructionsPrompt,
+        instructions: baseInstructions + extraInstructionsPrompt + (sourceReview
+          ? "\n本轮是代码复核整改。读取 source_review 中的问题正文及 repair_instructions，按问题编号逐项修复并说明处理结果；沿用原批准计划和已有修改，不从头开发，不以整改摘要替代问题正文。" : ""),
         ...(roleSpecific ? {} : { execution_order: batchExecutionInstructions }),
         ...(executionSkills ? { skill_resources: executionSkills } : {}),
         workflow: w,
@@ -526,6 +529,7 @@ export class ProfileRuntime {
         project: this.engine.project(w.project_id),
         workspaces: this.workspaces(w),
         repair_assignment: repair,
+        source_review: sourceReview,
         repair_instructions: policy2 ? repair?.instructions ?? null :
           this.engine.store.get<any>("repair_state", w.id)?.instructions ?? repair?.instructions ?? null,
         previous_completion: run.dispatch_context?.source_run_id

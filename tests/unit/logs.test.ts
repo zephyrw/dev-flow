@@ -2,6 +2,15 @@ import { it, expect } from "vitest";
 import { readableLogs, userFacingLogs } from "../../apps/web/src/logs.js";
 import { toolSummary } from "../../packages/presentation/src/tool-summary.js";
 
+it.each([true, false])("labels a bound quality repair as remediation rather than implementation (resumed=%s)", (resumed) => {
+  const rows = readableLogs([{ workflow_id: "w", event_seq: 1, created_at: "2026-09-28T09:54:06Z",
+    type: "StateChanged", payload: { from: "QUEUED", to: "EXECUTING", stage: "execute", resumed,
+      repair_source: "quality_review", source_review_id: "review-run" } }], "w");
+  expect(rows[0]).toMatchObject({ title: "修复代码复核问题" });
+  expect(rows[0]?.text).toContain("按本轮代码复核问题逐项整改");
+  expect(rows[0]?.text).not.toContain("自主安排本轮开发");
+});
+
 it("distinguishes a resumed implementation and displays historical formal guidance once", () => {
   const events = [{ workflow_id: "w", event_seq: 4, created_at: "2026-09-28T08:00:00Z",
     type: "StateChanged", payload: { from: "QUEUED", to: "EXECUTING", stage: "execute", resumed: true } }];
