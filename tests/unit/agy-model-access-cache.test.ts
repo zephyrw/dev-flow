@@ -17,7 +17,8 @@ const success = {
   stderr: "",
 };
 function fixture() {
-  const runAuxiliaryProbe = vi.fn(async (_options: any) => success);
+  const runAuxiliaryProbe = vi.fn(async (options: any) => options.args.includes("--version")
+    ? { code: 0, stdout: "1.2.13", stderr: "" } : success);
   const adapter = createVerifiedUsageAdapter("cli-v1", "1.2.12");
   const probe = new AgyAccountProbe(executable.resolvedPath, adapter, { runAuxiliaryProbe });
   return { probe, adapter, runAuxiliaryProbe };
@@ -88,10 +89,9 @@ describe("AGY model access probe cache and shared calls", () => {
     await f.probe.probeModelAccess(model, { ...identity, credential_revision: 2 });
     expect(await f.probe.probeModelAccess("other-model", identity)).toBe(false);
     executable.fingerprint = "cli-v2";
-    expect(await f.probe.probeModelAccess(model, identity)).toBe(false); // unverified binary
-    f.adapter.executable_fingerprint = "cli-v2";
+    expect(await f.probe.probeModelAccess(model, identity)).toBe(true); // re-probed upgraded CLI
     await f.probe.probeModelAccess(model, identity);
-    expect(f.runAuxiliaryProbe).toHaveBeenCalledTimes(5);
+    expect(f.runAuxiliaryProbe).toHaveBeenCalledTimes(6);
   });
 
   it("joins concurrent callers and releases its lock after completion", async () => {
@@ -162,4 +162,62 @@ describe("AGY model access probe cache and shared calls", () => {
     expect(await f.probe.probeModelAccess(model, identity)).toBe(true);
     expect(f.runAuxiliaryProbe).toHaveBeenCalledTimes(2);
   });
+  it("refreshes identity and dual quotas after an upgrade without manufacturing model access", async () => {
+    const f = fixture();
+    const usage = [
+      "Account: fixture@example.test",
+      "Gemini Models\tWeekly Limit Remaining\t78%\t2026-10-04T13:40:53Z",
+      "Gemini Models\tFive Hour Limit Remaining\t48%\t2026-09-29T11:12:13Z",
+    ].join("\n");
+    f.runAuxiliaryProbe.mockImplementation(async options => options.args.includes("--version")
+      ? { code: 0, stdout: "agy version 1.2.13", stderr: "" }
+      : options.args.includes("/usage") ? { code: 0, stdout: usage, stderr: "" } : success);
+    await f.probe.probeModelAccess(model, identity);
+    executable.fingerprint = "cli-v2";
+    const observed = await f.probe.probeUsage(identity);
+    expect(observed).toMatchObject({ cli_version: "1.2.13", executable_fingerprint: "cli-v2", capability_verified: true });
+    expect(observed.pools[0]?.windows.map(w => w.remaining_fraction)).toEqual([0.78, 0.48]);
+    expect(await f.probe.probeIdentity(identity)).toMatchObject({ email: "fixture@example.test", cli_version: "1.2.13" });
+    expect(await f.probe.probeModelAccess(model, identity)).toBe(true);
+    expect(f.runAuxiliaryProbe.mock.calls.filter(([o]) => o.args.includes("--version"))).toHaveLength(1);
+    expect(f.runAuxiliaryProbe.mock.calls.filter(([o]) => o.args.includes("--model"))).toHaveLength(2);
+  });
+
+  it("shares upgrade refresh and model probes between concurrent callers", async () => {
+    const f = fixture(), version = deferred<typeof success>();
+    executable.fingerprint = "cli-v2";
+    f.runAuxiliaryProbe.mockReturnValueOnce(version.promise);
+    const first = f.probe.probeModelAccess(model, identity);
+    const second = f.probe.probeModelAccess(model, identity);
+    await vi.waitFor(() => expect(f.runAuxiliaryProbe).toHaveBeenCalledTimes(1));
+    expect(f.runAuxiliaryProbe.mock.calls[0]![0]).toMatchObject({ args: ["--version"], timeoutMs: 3000 });
+    version.resolve({ code: 0, stdout: "1.2.13", stderr: "" });
+    expect(await Promise.all([first, second])).toEqual([true, true]);
+    expect(f.runAuxiliaryProbe).toHaveBeenCalledTimes(2);
+  });
+
+  it("still validates actual results when version metadata is unavailable", async () => {
+    const f = fixture();
+    await f.probe.probeModelAccess(model, identity);
+    executable.fingerprint = "cli-v2";
+    f.runAuxiliaryProbe.mockRejectedValueOnce(new Error("version timeout"));
+    f.runAuxiliaryProbe.mockResolvedValueOnce({ code: 1, stdout: "", stderr: "network error" });
+    expect(await f.probe.probeModelAccess(model, identity)).toBe(false);
+    expect(await f.probe.probeModelAccess(model, identity)).toBe(true);
+    expect(f.runAuxiliaryProbe).toHaveBeenCalledTimes(4);
+  });
+
+  it("does not bypass cancellation or an unconfirmed process stop during upgrade", async () => {
+    const f = fixture();
+    executable.fingerprint = "cli-v2";
+    const stop = Object.assign(new Error("not stopped"), { code: "PROCESS_STOP_UNCONFIRMED" });
+    f.runAuxiliaryProbe.mockRejectedValueOnce(stop);
+    await expect(f.probe.probeModelAccess(model, identity)).rejects.toBe(stop);
+    const controller = new AbortController(); controller.abort();
+    await expect(f.probe.probeModelAccess(model, { ...identity, signal: controller.signal })).rejects.toThrow();
+    expect(f.runAuxiliaryProbe).toHaveBeenCalledTimes(1);
+    expect(await f.probe.probeModelAccess(model, identity)).toBe(true);
+    expect(f.runAuxiliaryProbe).toHaveBeenCalledTimes(3);
+  });
+
 });

@@ -126,6 +126,7 @@ export class AgyAccountProbe implements AccountProbePort {
   private modelAccessFlight?: ModelAccessFlight;
   private modelAccessCache = new Map<string, number>();
   private activeAdapter?: VerifiedUsageAdapter;
+  private adapterRefresh?: Promise<void>;
   private runner?: AuxiliaryProbeRunner;
 
   constructor(
@@ -149,14 +150,34 @@ export class AgyAccountProbe implements AccountProbePort {
       return "";
     }
   }
-  private getAdapter(fingerprint: string): VerifiedUsageAdapter | undefined {
-    if (
-      this.activeAdapter &&
-      this.activeAdapter.executable_fingerprint === fingerprint
-    ) {
-      return this.activeAdapter;
+  private async getAdapter(fingerprint: string): Promise<VerifiedUsageAdapter | undefined> {
+    if (!fingerprint || !this.activeAdapter) return undefined;
+    if (this.activeAdapter.executable_fingerprint === fingerprint) return this.activeAdapter;
+    // A CLI update invalidates cached evidence, not permission to query the CLI.
+    // Share metadata refresh; actual identity, quota and model checks still run.
+    if (this.adapterRefresh) {
+      await this.adapterRefresh;
+      return this.getAdapter(fingerprint);
     }
-    return undefined;
+    const refresh = (async () => {
+      let cliVersion = "unknown";
+      try {
+        const result = await this.execute(["--version"], { timeoutMs: 3000 });
+        if (result.code === 0) cliVersion = /\b(\d+\.\d+\.\d+)\b/.exec(result.stdout)?.[1] ?? "unknown";
+      } catch (error) {
+        if ((error as { code?: string })?.code === "PROCESS_STOP_UNCONFIRMED") throw error;
+        // Version metadata is optional; let the real probe report availability.
+      }
+      this.modelAccessCache.clear();
+      this.activeAdapter = createVerifiedUsageAdapter(fingerprint, cliVersion);
+    })();
+    this.adapterRefresh = refresh;
+    try {
+      await refresh;
+      return this.activeAdapter;
+    } finally {
+      if (this.adapterRefresh === refresh) this.adapterRefresh = undefined;
+    }
   }
   private unknown(fingerprint: string): AccountProbeResult {
     return {
@@ -177,7 +198,7 @@ export class AgyAccountProbe implements AccountProbePort {
   }> {
     options.signal?.throwIfAborted();
     const fingerprint = await this.fingerprint();
-    const adapter = this.getAdapter(fingerprint);
+    const adapter = await this.getAdapter(fingerprint);
     if (!fingerprint || !adapter) {
       throw new Error("identity_unverified: cli_adapter_or_fingerprint_unverified");
     }
@@ -210,7 +231,7 @@ export class AgyAccountProbe implements AccountProbePort {
   async probeUsage(options: ProbeOptions = {}): Promise<AccountProbeResult> {
     options.signal?.throwIfAborted();
     const fingerprint = await this.fingerprint();
-    const adapter = this.getAdapter(fingerprint);
+    const adapter = await this.getAdapter(fingerprint);
     if (!fingerprint || !adapter) return this.unknown(fingerprint);
     if (this.identityInFlight || this.modelAccessFlight)
       throw new Error("probe_identity_busy");
@@ -271,7 +292,7 @@ export class AgyAccountProbe implements AccountProbePort {
   ): Promise<boolean> {
     options.signal?.throwIfAborted();
     const fingerprint = await this.fingerprint();
-    const adapter = this.getAdapter(fingerprint);
+    const adapter = await this.getAdapter(fingerprint);
     if (
       !adapter ||
       !options.account_id ||
@@ -388,7 +409,7 @@ export class AgyAccountProbe implements AccountProbePort {
     }
     const hostTimeoutMs = Math.max(
       options.timeoutMs ?? (cliTimeoutMs > 0 ? cliTimeoutMs + 5000 : 35000),
-      cliTimeoutMs > 0 ? cliTimeoutMs + 5000 : 35000,
+      cliTimeoutMs > 0 ? cliTimeoutMs + 5000 : 0,
     );
 
     const lease = {
