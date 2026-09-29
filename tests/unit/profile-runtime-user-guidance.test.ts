@@ -147,6 +147,21 @@ it("preserves unfinished task guidance when account or model recovery recreates 
   expect(currentRunUserGuidance(store, "workflow", current)?.messages.map(m => m.seq)).toEqual([1]);
 });
 
+it.each(["executor_test", "planner_commit"] as const)("restores paused %s guidance without changing native session continuation rules", purpose => {
+  const { store, put } = fixture();
+  const role = purpose === "planner_commit" ? "planner" : "executor";
+  const source = resumedRun("source", undefined, { purpose, routing_role: role });
+  const current = resumedRun("current-run", source.id, { purpose, routing_role: role });
+  current.continuation!.role = role;
+  for (const run of [source, current]) store.put("run", run.id, "workflow", run);
+  put(1, "保留已有结果，按这条原文继续当前工作", { ack_run: source.id });
+  expect(currentRunUserGuidance(store, "workflow", current)?.messages.map(m => m.seq)).toEqual([1]);
+  store.put("run", source.id, "workflow", { ...source, purpose: "implement" });
+  expect(currentRunUserGuidance(store, "workflow", current)).toBeUndefined();
+  store.put("run", source.id, "workflow", { ...source, routing_role: role === "planner" ? "executor" : "planner" });
+  expect(currentRunUserGuidance(store, "workflow", current)).toBeUndefined();
+});
+
 it("stops before an intermediate completed resume so older already-handled guidance is not replayed", () => {
   const { store, put } = fixture();
   const source = resumedRun("source"), completed = resumedRun("completed-resume", source.id, { status: "completed" });

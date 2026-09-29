@@ -1450,10 +1450,18 @@ export function currentRunUserGuidance(
   // A runtime pause does not mean the model fulfilled its assigned guidance.
   // Follow only the scheduler-bound unfinished continuation, never general history.
   while (cursor.workflow_id === workflowId && cursor.purpose !== "aside") {
-    const continuation = boundConversationContinuation(store, cursor);
+    const continuation = boundConversationContinuation(store, cursor) ??
+      (["executor_test", "planner_commit"].includes(cursor.purpose ?? "")
+        ? [cursor.continuation, store.get<RunContinuation>("run_continuation", cursor.id)]
+          .find(value => value?.kind === "runtime_resume" && value.purpose === "execute" &&
+            value.role === (cursor.purpose === "planner_commit" ? "planner" : "executor"))
+        : undefined);
     if (continuation?.kind !== "runtime_resume" || assignedRuns.has(continuation.source_run_id)) break;
     const source = store.get<Run>("run", continuation.source_run_id);
     if (!source || source.workflow_id !== workflowId || source.purpose === "aside" ||
+        source.purpose !== cursor.purpose || source.plan_revision !== cursor.plan_revision ||
+        source.assignment_id !== cursor.assignment_id ||
+        (source.routing_role && cursor.routing_role && source.routing_role !== cursor.routing_role) ||
         source.status === "completed" ||
         store.get<{ intent?: string }>("execution_completion", source.id)?.intent === "completed") break;
     // Guidance belongs to this unfinished task, even when account/model recovery
