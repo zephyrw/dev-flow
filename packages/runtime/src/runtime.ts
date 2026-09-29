@@ -165,6 +165,7 @@ function diagnosisLauncher(engine: Engine, workflow: Workflow) {
   };
 }
 import { createDefaultAdapterRegistry } from "../../adapters/sdk/src/index.js";
+import { followupText, isSessionFollowup, pendingRunMessages } from "../../core/src/session-input.js";
 import type { NativeAgentAdapter } from "../../adapters/sdk/src/interface.js";
 import {
   CONVERSATION_ENTITY,
@@ -672,114 +673,26 @@ export class LocalRuntime implements Runtime {
     );
     const launcher = runLauncherSelection(run);
     const conversation = compatibleConversation(this.engine, run);
-    const recoveryGuidance = readRoleRecoveryGuidance(
-      this.engine,
-      workflow,
-      run,
-    );
-
-    if (isNativeV2) {
-      const workspaces = this.engine.store.list<Workspace>(
-        "workspace",
-        workflow.id,
-      );
-      if (!conversation?.id) {
+    const messages = pendingRunMessages(this.engine.store, workflow.id, run);
+    const followup = isSessionFollowup(this.engine.store, run, conversation?.id, messages);
+    if (!followup) {
+      if (isNativeV2) {
         const fullPkg = HandoffBuilder.buildFullHandoff({
-          workflow: this.engine.get(workflow.id),
-          plan,
-          runId: run.id,
-          packageHash: run.package_hash,
-          directory,
-          workspaces,
+          workflow: this.engine.get(workflow.id), plan, runId: run.id,
+          packageHash: run.package_hash, directory,
+          workspaces: this.engine.store.list<Workspace>("workspace", workflow.id),
         });
-        if (recoveryGuidance)
-          fullPkg.instructions = joinPrompt(
-            fullPkg.instructions,
-            recoveryGuidance,
-          );
         HandoffBuilder.writeHandoffFiles(directory, fullPkg, plan.markdown);
       } else {
-        const issues =
-          rejectedDeliveryFeedback(this.engine.store, workflow)?.issues ?? [];
-        const cursor = this.engine.store.get<{
-          plan_hash: string;
-          feedback_count: number;
-        }>("handoff_cursor", workflow.id);
-        const resumePkg = HandoffBuilder.buildResumeHandoff({
-          workflow: this.engine.get(workflow.id),
-          plan,
-          runId: run.id,
-          conversationId: conversation.id,
-          packageHash: run.package_hash,
-          directory,
-          workspaces,
-          deliveryIssues: issues,
-        });
-        resumePkg.feedback = resumePkg.feedback?.slice(
-          cursor?.feedback_count ?? 0,
-        );
-        resumePkg.design_changed = cursor?.plan_hash !== workflow.plan_hash;
-        if (!resumePkg.design_changed) {
-          resumePkg.index = {
-            ...resumePkg.index,
-            modules: [],
-            tasks: [],
-            acceptance_items: [],
-          };
-          resumePkg.instructions +=
-            " 设计和索引未变，沿用前轮完整工作包；本轮仅提供新增反馈和未解决事项。";
-        }
-        if (recoveryGuidance)
-          resumePkg.instructions = joinPrompt(
-            resumePkg.instructions,
-            recoveryGuidance,
-          );
-        HandoffBuilder.writeHandoffFiles(
-          directory,
-          resumePkg,
-          resumePkg.design_changed ? plan.markdown : undefined,
-        );
+        atomicWrite(join(directory, "handoff.json"), JSON.stringify({
+          workflow: this.engine.get(workflow.id), plan: planRecord,
+          environment: this.engine.store.get("environment", workflow.id), package_hash: run.package_hash,
+        }, null, 2));
       }
-    } else {
-      const bundle = {
-        workflow: this.engine.get(workflow.id),
-        plan: planRecord,
-        environment: this.engine.store.get("environment", workflow.id),
-        package_hash: run.package_hash,
-      };
-      atomicWrite(
-        join(directory, "handoff.json"),
-        JSON.stringify(bundle, null, 2),
-      );
     }
-
-    const prompt = isNativeV2
-      ? JSON.stringify({
-          workflow_id: workflow.id,
-          run_id: run.id,
-          plan_revision: workflow.plan_revision,
-          plan_hash: workflow.plan_hash,
-          package_hash: run.package_hash,
-          instruction: joinPrompt(
-            conversation?.id
-              ? nativeLaunchInstruction(directory, "resume")
-              : nativeLaunchInstruction(directory, "full"),
-            recoveryGuidance,
-          ),
-          execution_order: batchExecutionInstructions,
-        })
-      : JSON.stringify({
-          workflow_id: workflow.id,
-          run_id: run.id,
-          plan_revision: workflow.plan_revision,
-          plan_hash: workflow.plan_hash,
-          package_hash: run.package_hash,
-          instruction: joinPrompt(
-            "首先调用 devflow_execute_context，读取完整批准计划与 Skill。按既定设计完成开发并主动补齐必要遗漏，逐任务实施，仅使用 devflow_worker 工具。报告任务后 devflow_freeze，逐项 devflow_run_check，全部通过后 devflow_finish。遇到关键设计冲突或必须超范围时报告阻塞并结束。",
-            recoveryGuidance,
-          ),
-          execution_order: batchExecutionInstructions,
-        });
+    const prompt = followup ? followupText(this.engine.store, run, messages)
+      : isNativeV2 ? nativeLaunchInstruction(directory, "full")
+      : "首先调用 devflow_execute_context，读取批准计划与 Skill，完成当前阶段任务后返回结果。";
     this.assertRun(workflow.id, run.id, ["EXECUTING"]);
     const remainingMs = run.deadline_at
       ? Math.max(0, run.deadline_at - Date.now())
@@ -1523,14 +1436,25 @@ export class LocalRuntime implements Runtime {
     mkdirSync(root, { recursive: true });
     const schema = join(root, "schema.json"),
       output = join(root, "review.json");
-    const manifest = join(root, "materials.json");
+    let manifest = join(root, "materials.json");
+    const conversation = compatibleConversation(this.engine, run);
+    const messages = pendingRunMessages(this.engine.store, workflow.id, run);
+    const followup = isSessionFollowup(this.engine.store, run, conversation?.id, messages);
+    if (followup) {
+      const prior = this.engine.store.list<Run>("run", workflow.id)
+        .filter(item => item.id !== run.id && item.conversation_id === conversation?.id)
+        .sort((a, b) => b.started_at.localeCompare(a.started_at))
+        .find(item => existsSync(join(this.engine.config.storage_root, "reviews", item.id, "materials.json")));
+      requireCondition(prior, "SESSION_CONTINUATION_UNAVAILABLE", "原审查会话材料入口不可用，未重新注入任务");
+      manifest = join(this.engine.config.storage_root, "reviews", prior.id, "materials.json");
+    }
     const continuation =
       asRunContinuation(run.continuation) ??
       asRunContinuation(
         this.engine.store.get("run_continuation", workflow.id),
       ) ??
       asRunContinuation(this.engine.store.get("run_continuation", run.id));
-    const materials = applyContinuationMaterials(
+    const materials = followup ? undefined : applyContinuationMaterials(
       {
         skill_resources: reviewSkillResources(),
         review_contract: reviewContractContext(this.engine, workflow, run),
@@ -1553,52 +1477,21 @@ export class LocalRuntime implements Runtime {
       },
       continuation,
     );
-    atomicWrite(manifest, JSON.stringify(materials));
+    if (materials) atomicWrite(manifest, JSON.stringify(materials));
     atomicWrite(
       schema,
       JSON.stringify(
         reviewOutputSchema(snapshot?.repositories.map((r) => r.repo_id) ?? []),
       ),
     );
-    const recoveryGuidance = readRoleRecoveryGuidance(
-      this.engine,
-      workflow,
-      run,
-    );
-    const prompt = JSON.stringify(
-      continuation?.kind === "intent_clarification"
-        ? {
-            instruction: joinPrompt(
-              INTENT_CLARIFICATION_INSTRUCTION,
-              recoveryGuidance,
-            ),
-            original_text: continuation.original_text,
-          }
-        : {
-            instruction: joinPrompt(reviewInstructions, recoveryGuidance),
-            review_contract: reviewContractContext(this.engine, workflow, run),
-            phase:
-              workflow.stage === BEFORE_HUMAN_REVIEW_STAGE
-                ? "before_human"
-                : "after_human",
-            review_request_id: workflow.review_request_id,
-            workflow_id: workflow.id,
-            plan_revision: workflow.plan_revision,
-            snapshot_id: snapshot?.id,
-            plan: this.engine.plan(workflow.id).plan,
-            diff: snapshot ? await this.engine.git.diff(snapshot) : "",
-            workspaces: this.engine.store
-              .list<Workspace>("workspace", workflow.id)
-              .map((item) => ({ repo_id: item.repo_id, path: item.root })),
-            questions: continuation?.questions,
-            answer: continuation?.answer,
-          },
-    );
+    const prompt = followup ? followupText(this.engine.store, run, messages)
+      : JSON.stringify({ instruction: reviewInstructions, ...materials });
     const launcher = runLauncherSelection(run);
     const prefix = run.profile?.options?.prefixArgs ?? [];
     const args = [
       ...prefix,
       "exec",
+      ...(conversation?.id ? ["resume", conversation.id] : []),
       "--ignore-user-config",
       "--ignore-rules",
       "--json",
@@ -1692,7 +1585,12 @@ export class LocalRuntime implements Runtime {
       run,
       adapter,
       telemetry,
-      onRootSession: (nativeId) => observer.bind(nativeId),
+      previousNativeId: conversation?.id,
+      onRootSession: (nativeId) => {
+        requireCondition(!conversation || conversation.id === nativeId, "CONVERSATION_MISMATCH", "审查续接会话不匹配");
+        observer.bind(nativeId);
+        retainRunConversation(this.engine.store, run, nativeId);
+      },
     });
     const lines = new JsonLines((event) => {
       acceptCodexLiveTelemetry(telemetry, adapter, event, run.id);

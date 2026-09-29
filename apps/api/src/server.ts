@@ -1691,7 +1691,7 @@ export async function buildServer(
     await accountService.syncActiveAccountFromHost("default-agy-realm").catch(() => {});
     const key = Id.parse((req.params as any).id);
     const body = (req.body || {}) as any;
-    const text = String(body.text || "").trim();
+    const text = String(body.text || "");
     const w = engine.get(key);
     if (body.expected_version !== undefined) {
       requireCondition(
@@ -1717,7 +1717,7 @@ export async function buildServer(
     }
     if (!submitted) {
       requireCondition(
-        text.length > 0,
+        text.trim().length > 0,
         "EMPTY_FEEDBACK",
         "反馈正文不能为空",
         400,

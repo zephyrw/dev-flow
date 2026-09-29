@@ -243,8 +243,8 @@ it("hides abandoned partial model fragments while retaining the current narrativ
       AbsolutePath: "C:/work/.devflow/containers/task/handoff.json",
     }),
   ).toMatchObject({
-    title: "读取任务说明",
-    text: "读取本轮任务要求和已有进度",
+    title: "读取文件",
+    text: "C:/work/.devflow/containers/task/handoff.json",
   });
 });
 

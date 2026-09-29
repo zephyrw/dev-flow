@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { setup, plan, project, repository } from "../helpers.js";
+import * as planReview from "../../packages/core/src/plan-review.js";
 import { objectHash } from "../../packages/core/src/util.js";
 import { resumeApproved } from "../../packages/runtime/src/recovery.js";
 import { ConversationService } from "../../packages/core/src/conversation-service.js";
@@ -33,7 +34,14 @@ function run(purpose: Run["purpose"] = "functional_fix"): Run {
     package_hash: "package", conversation_id: "existing-native-session" };
 }
 function materials(r = run()) {
-  return (new ProfileRuntime(s.engine, {} as any) as any).executeMaterials(s.engine.get(wid), r);
+  // These assertions cover first-stage material composition, not material
+  // publication. Real process follow-up tests exercise the lazy path separately.
+  const record = s.engine.plan(wid);
+  const ready = vi.spyOn(planReview, "assertPlanMaterialReady").mockReturnValue({
+    ...record, markdown: record.plan.markdown ?? "", path: "fixture-plan.md",
+  } as any);
+  try { return (new ProfileRuntime(s.engine, {} as any) as any).executeMaterials(s.engine.get(wid), r); }
+  finally { ready.mockRestore(); }
 }
 
 async function prepareRealDispatch() {
@@ -111,7 +119,8 @@ it.each(["recover", "new-guidance"] as const)("acceptance guidance keeps mode an
         await paused; return;
       }
       expect(r.dispatch_context?.guidance_mode).toBe("human_acceptance");
-      expect(currentRunUserGuidance(s.store, wid, r)?.messages[0]?.text).toBe(text);
+      expect(currentRunUserGuidance(s.store, wid, r)?.messages[0]?.text)
+        .toBe(resumeKind === "new-guidance" ? "继续，并把访问地址给我" : undefined);
       await s.engine.receiveRoundResult(wid, r.id, { status: "completed", summary: "服务已检查可用并保留供验收" });
     }, review: async () => { throw new Error("Unexpected review"); }, check: async () => { throw new Error("Unexpected check"); },
     stop: async () => { release(); return { status: "confirmed_not_started" }; }, close: async () => {},
@@ -196,7 +205,8 @@ it("preserves mixed questions and browser testing requests instead of reducing t
   const handoff = materials(r);
   expect(guidance?.messages[0]?.text).toBe(mixed);
   expect(invokePrompt("functional_fix", "HANDOFF.json", "schema.json", undefined, undefined, guidance)).toContain(mixed);
-  expect(guidance?.instruction).toContain("问题、操作要求和约束");
+  expect(guidance).not.toHaveProperty("instruction");
+  expect(invokePrompt("functional_fix", "HANDOFF.json", "schema.json", undefined, undefined, guidance)).toBe(mixed);
   expect(handoff.instructions).toContain("不能用 E2E 结果替代");
   expect(handoff.skill_resources_usage).toContain("落实明确要求的测试");
   expect(handoff.completion_instruction).toContain("不能用启动成功代替问题回答");

@@ -31,13 +31,7 @@ export function nativeLaunchInstruction(
   kind: "full" | "resume" = "full",
 ) {
   const files = containerHandoffFiles(directory);
-  if (kind === "resume")
-    return (
-      "会话恢复：请完整查看 " +
-      files.json +
-      " 中的全部反馈与未完成说明。" +
-      "按原计划和反馈完成修复并主动补齐必要遗漏，定位当前失败目标及受影响代码，修复后先重跑该目标，再由负责的子 Agent 并行运行独立的受影响回归目标，说明实际修复与测试结果。"
-    );
+  if (kind === "resume") return "继续";
   return (
     "原生开发模式：请先阅读工作包 " +
     files.markdown +
@@ -60,16 +54,8 @@ function fullHandoffInstructions(directory: string) {
   );
 }
 
-function resumeHandoffInstructions(directory: string) {
-  const files = containerHandoffFiles(directory);
-  return (
-    "会话恢复：本轮续接历史执行会话，先完整核查 " +
-    files.json +
-    " 中全部反馈与未完成说明的根因及影响。" +
-    "定位当前失败目标及受影响代码，按既定设计修复并主动补齐必要遗漏，修复后先重跑该目标，再由负责的子 Agent 并行运行独立的受影响回归目标并说明结果。" +
-    "原始计划和正式整改计划是唯一依据，禁止另建或改写替代执行计划；发现设计冲突应上报规划模型。" +
-    nativeTestingInstructions
-  );
+function resumeHandoffInstructions(_directory: string) {
+  return "继续";
 }
 
 export interface HandoffWorkspaceInfo {

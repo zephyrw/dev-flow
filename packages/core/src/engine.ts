@@ -968,8 +968,10 @@ export class Engine {
       const restored = this.restoreFailedRole(key, text);
       if (restored) return restored;
     }
-    this.invalidate(key, "用户反馈");
-    this.clearCurrentImplementationIntent(key);
+    if (scope === "new_scope" || w.state === "HUMAN_PENDING") {
+      this.invalidate(key, "用户反馈");
+      this.clearCurrentImplementationIntent(key);
+    }
     if (scope === "new_scope" || w.state === "HUMAN_PENDING")
       this.supersedePendingContinuation(key);
     else this.stageExecuteContinuation(key);
@@ -2281,6 +2283,21 @@ export class Engine {
     });
   }
 
+  private queuePendingRunInput(run: Run): boolean {
+    if (run.dispatch_context?.guidance_mode === "human_acceptance") return false;
+    const w = this.get(run.workflow_id);
+    if (w.run_id !== run.id || this.store.get("run_stop", run.id)) return false;
+    const pending = this.store.list<FeedbackMessage>("feedback_message", w.id)
+      .filter(message => message.status === "pending");
+    if (!pending.length || pending.some(message => message.kind === "functional")) return false;
+    this.restoreDispatchContext(w.id, run.id);
+    const target = run.purpose === "planning" ? "PLANNING" : run.purpose === "quality_review" ? "REVIEW_QUEUED" : "QUEUED";
+    this.transition(w.id, [w.state], target, run.stage, { blocker: undefined });
+    this.scheduler.enqueue(w.id, w.project_id);
+    this.store.enqueue(w.id, "dispatch_run", { ...run.dispatch_context, purpose: run.purpose });
+    return true;
+  }
+
   async finalizeNativeDelivery(key: string, runId: string) {
     const w = this.get(key);
     if (!["EXECUTING", "VERIFYING"].includes(w.state)) return;
@@ -2297,6 +2314,7 @@ export class Engine {
       (active?.exit_code !== undefined && active.exit_code !== 0)
     )
       return;
+    if (this.queuePendingRunInput(active)) return;
     if (active.dispatch_context?.guidance_mode === "human_acceptance") {
       const pending = this.store.list<FeedbackMessage>("feedback_message", key).filter((message) => message.status === "pending");
       if (pending.length) {
@@ -3151,6 +3169,7 @@ export class Engine {
         "RUN_REVOKED",
         "规划已停止，不能发布旧结果",
       );
+      if (this.queuePendingRunInput(bound)) return;
       requireCondition(
         typeof result.markdown === "string" && result.markdown.trim(),
         "PLAN_DOCUMENT_MISSING",
@@ -3295,14 +3314,14 @@ export class Engine {
         const reuseWorkspaces = this.project(w.project_id).repositories.every(
           (repo) => known.some((ws) => ws.repo_id === repo.id && !!ws.root),
         );
-        const preparationMessage = reuseWorkspaces ? "正在检查并复用已有工作区"
+        const preparationMessage = reuseWorkspaces ? "正在连接模型会话"
           : w.workspace_mode === "existing_workspace" ? "正在检查主工作区" : "正在准备独立工作区";
         this.store.put("queue_wait", w.id, w.id, {
           kind: "preparing",
           message: reuseWorkspaces ? preparationMessage : "已取得执行名额，" + preparationMessage,
           owners: [],
         });
-        this.store.event(
+        if (!reuseWorkspaces) this.store.event(
           w.id,
           w.project_id,
           "PreparationStarted",
@@ -3352,7 +3371,8 @@ export class Engine {
         return;
       }
       if (review && !ownsPreparation()) return;
-      if (!review) {
+      if (!review && !this.project(w.project_id).repositories.every(repo =>
+        this.store.list<Workspace>("workspace", key).some(ws => ws.repo_id === repo.id && !!ws.root))) {
         prepareRepairResume(this, key);
         const plan = this.plan(key);
         const approval = this.store.must<{ plan_hash: string }>(
@@ -3509,7 +3529,7 @@ export class Engine {
               repair_cycle_id:
                 assignment.repair_cycle_id ?? assignment.assignment_id,
             });
-          this.startImplementationAttempt(key, runId);
+          if (!continuation) this.startImplementationAttempt(key, runId);
         } else if (review) {
           this.patchReviewPointer(key, { review_run_id: runId });
         }
@@ -3553,7 +3573,7 @@ export class Engine {
             this.get(key).run_id === runId &&
             this.get(key).state === "REVIEWING"
           )
-            await this.receiveReview(key, result);
+            if (!this.queuePendingRunInput(run)) await this.receiveReview(key, result);
         } else {
           const stopGraceMs = Math.max(
             (this.config.timeouts.stop_seconds ?? 0) * 1000,

@@ -67,6 +67,8 @@ export async function repairFailure(
       "DELIVERY_CONFLICT",
       "ROUND_RESULT_CONFLICT",
       "ROUND_RESULT_IDENTITY_MISMATCH",
+      "INPUT_DELIVERY_UNKNOWN",
+      "SESSION_CONTINUATION_UNAVAILABLE",
     ].includes(code)
   )
     return null;

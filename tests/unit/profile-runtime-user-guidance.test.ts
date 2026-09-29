@@ -49,13 +49,13 @@ it("selects only feedback assigned to this run, in message order, preserving ref
 
   expect(guidance?.messages.map((message) => message.seq)).toEqual([3, 4]);
   expect(guidance?.messages[1]).toMatchObject({ text: latest.text, refs: latest.refs, attachment_ids: latest.attachment_ids });
-  expect(guidance?.instruction).toContain("送达不代表你已执行或遵从");
+  expect(guidance).not.toHaveProperty("instruction");
   expect(store.get("feedback_message", latest.message_id)).toEqual(latest);
   expect(currentRunUserGuidance(store, "workflow", { id: "next-run", purpose: "implement" })).toBeUndefined();
 });
 
 it.each(["planning", "quality_review", "implement"] as Run["purpose"][])(
-  "places new user guidance first in the real %s prompt while retaining role and final-output boundaries",
+  "sends only exact user guidance in the real %s follow-up prompt",
   (purpose) => {
     const { store, put } = fixture();
     put(1, "这个 Token 就是最新的，你不要去刷新 Token");
@@ -64,14 +64,7 @@ it.each(["planning", "quality_review", "implement"] as Run["purpose"][])(
       kind: "user_answer", source_run_id: "old-run", purpose: "execute", role: "executor", answer: "旧建议刷新 Token",
     }, "沿用原角色继续", guidance);
 
-    expect(prompt.startsWith("本轮用户指导")).toBe(true);
-    expect(prompt).toContain("这个 Token 就是最新的，你不要去刷新 Token");
-    expect(prompt).toContain("先用简短公开进度回复");
-    expect(prompt).toContain("已完成且未受影响的工作不重做");
-    expect(prompt).toContain("指导不自动改变角色或扩大授权");
-    expect(prompt).toContain("schema.json");
-    expect(prompt).toContain("沿用原角色继续");
-    if (purpose === "quality_review") expect(prompt).toContain("不要求遍历测试报告");
+    expect(prompt).toBe("这个 Token 就是最新的，你不要去刷新 Token");
   },
 );
 
@@ -101,7 +94,7 @@ function resumedRun(id: string, sourceId?: string, extra: Partial<Run> = {}): Ru
       role: "executor" as const, conversation_id: "original-session" } } : {}), ...extra };
 }
 
-it("restores exact unfinished guidance through repeated runtime pauses, ordered with new guidance and deduplicated", () => {
+it("does not replay old native-session guidance through repeated pauses", () => {
   const { store, put } = fixture();
   const source = resumedRun("source"), paused = resumedRun("paused", source.id), current = resumedRun("current-run", paused.id);
   paused.continuation!.conversation_id = "cnv-source-projection";
@@ -113,9 +106,8 @@ it("restores exact unfinished guidance through repeated runtime pauses, ordered 
   put(1, original.text, { message_id: "duplicate-record", ack_run: source.id });
   put(4, "无关历史", { ack_run: "unrelated" });
   const result = currentRunUserGuidance(store, "workflow", current);
-  expect(result?.messages.map(m => m.seq)).toEqual([1, 2, 3]);
-  expect(result?.messages[0]?.text).toBe(original.text);
-  expect(invokePrompt("functional_fix", "HANDOFF.json", "schema.json", undefined, undefined, result)).toContain(original.text);
+  expect(result?.messages.map(m => m.seq)).toEqual([3]);
+  expect(invokePrompt("functional_fix", "HANDOFF.json", "schema.json", undefined, undefined, result)).toBe("逐项回答");
   expect(store.get("feedback_message", original.message_id)).toEqual(original);
 });
 
@@ -137,17 +129,17 @@ it.each(["completed", "completion_record", "aside", "workflow", "plan", "role", 
   },
 );
 
-it("preserves unfinished task guidance when account or model recovery recreates the native session", () => {
+it("does not silently replay delivered guidance when a model or account binding changes", () => {
   const { store, put } = fixture();
   const source = resumedRun("source"), current = resumedRun("current-run", source.id, {
     adapter: "codex", conversation_id: "new-native-session", invocation_fingerprint: "new-account-and-model",
   });
   for (const run of [source, current]) store.put("run", run.id, "workflow", run);
   put(1, "请先回答 OpenTabs 是否做过，再启动服务", { ack_run: source.id });
-  expect(currentRunUserGuidance(store, "workflow", current)?.messages.map(m => m.seq)).toEqual([1]);
+  expect(currentRunUserGuidance(store, "workflow", current)).toBeUndefined();
 });
 
-it.each(["executor_test", "planner_commit"] as const)("restores paused %s guidance without changing native session continuation rules", purpose => {
+it.each(["executor_test", "planner_commit"] as const)("retains native %s context without replaying guidance", purpose => {
   const { store, put } = fixture();
   const role = purpose === "planner_commit" ? "planner" : "executor";
   const source = resumedRun("source", undefined, { purpose, routing_role: role });
@@ -155,7 +147,7 @@ it.each(["executor_test", "planner_commit"] as const)("restores paused %s guidan
   current.continuation!.role = role;
   for (const run of [source, current]) store.put("run", run.id, "workflow", run);
   put(1, "保留已有结果，按这条原文继续当前工作", { ack_run: source.id });
-  expect(currentRunUserGuidance(store, "workflow", current)?.messages.map(m => m.seq)).toEqual([1]);
+  expect(currentRunUserGuidance(store, "workflow", current)).toBeUndefined();
   store.put("run", source.id, "workflow", { ...source, purpose: "implement" });
   expect(currentRunUserGuidance(store, "workflow", current)).toBeUndefined();
   store.put("run", source.id, "workflow", { ...source, routing_role: role === "planner" ? "executor" : "planner" });
