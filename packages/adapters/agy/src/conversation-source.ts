@@ -200,7 +200,7 @@ function parentActivity(
     "activity",
     {
       activity_id: agyActivityId(identity),
-      title: summary.title ?? (typeof name === "string" ? name : undefined),
+      title: summary.title ?? (summary.command ? "执行命令" : typeof name === "string" ? name : undefined),
       public_text: summary.text.slice(0, 16000),
       status: step.state === "ERROR" ? "failed" : step.state === "DONE" ? "completed" : "running",
       kind: step.step_type === "tool" ? "tool" : "event",

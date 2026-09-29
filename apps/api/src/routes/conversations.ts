@@ -405,6 +405,8 @@ function publicActivity(store: Store, event: DomainEvent) {
     kind: entry.kind,
     status: entry.status,
     command: entry.command,
+    cwd: entry.cwd,
+    resultText: entry.resultText,
     conversation_id: parsed.data.conversation_id,
     attempt_id: parsed.data.attempt_id,
     activity_id: parsed.data.activity_id,

@@ -178,6 +178,28 @@ function conversationStatusFromActivity(
   return "interrupted";
 }
 
+function nonblank(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+/** Bound the public value, including redaction expansion and the ellipsis. */
+function boundedPublicText(value: string, limit: number): string {
+  const text: string = publicEvent(value);
+  if (text.length <= limit) return text;
+  let prefixLength = limit - 1;
+  while (prefixLength > 0) {
+    // Truncation can split a redaction marker or turn JSON into ordinary text.
+    // Reapply the same public projection that the read path uses before sizing.
+    let candidate: string = publicEvent(text.slice(0, prefixLength) + "…");
+    // If redaction consumed the suffix as part of a secret, separate it from
+    // the completed marker so later public projections retain truncation UI.
+    if (!candidate.endsWith("…")) candidate += " …";
+    if (candidate.length <= limit) return candidate;
+    prefixLength -= candidate.length - limit;
+  }
+  return "…";
+}
+
 /** One bounded batch per run; every item snapshot is independently replayable. */
 export class RunTelemetry {
   private legacy: AgentTelemetry;
@@ -289,15 +311,25 @@ export class RunTelemetry {
   private activity(item: RunActivity, publish: boolean) {
     // Partial completion records inherit only the same run's live item.
     const previous = this.active.get(item.id) ?? this.pending.get(item.id);
+    const rawResult =
+      nonblank((item as any).result_text) ?? nonblank(item.resultText);
+    const normalizedItem: RunActivity = {
+      ...item,
+      cwd: nonblank(item.cwd),
+      resultText: rawResult,
+    };
     const full = {
       ...previous,
       ...Object.fromEntries(
-        Object.entries(item).filter(([, v]) => v !== undefined && v !== ""),
+        Object.entries(normalizedItem).filter(
+          ([, v]) => v !== undefined && (typeof v !== "string" || v.trim()),
+        ),
       ),
     } as RunActivity;
-    full.text = full.text?.slice(0, 16000) ?? "";
-    if (full.command && full.command.length > 32000)
-      full.command = full.command.slice(0, 32000) + "…";
+    full.text = boundedPublicText(full.text ?? "", 16000);
+    if (full.command) full.command = boundedPublicText(full.command, 32000);
+    if (full.cwd) full.cwd = boundedPublicText(full.cwd, 4000);
+    if (full.resultText) full.resultText = boundedPublicText(full.resultText, 16000);
     if (full.status === "active" && full.kind === "tool")
       this.active.set(full.id, full);
     else this.active.delete(full.id);
@@ -367,6 +399,8 @@ export class RunTelemetry {
       item.id,
     );
     const previous = this.childActive.get(key) ?? this.childPending.get(key);
+    const incomingResult =
+      nonblank((item as any).result_text) ?? nonblank(item.resultText);
     const merged = {
       ...previous,
       conversation_id: route.conversationId,
@@ -374,15 +408,20 @@ export class RunTelemetry {
       root_id: route.rootId,
       activity_id: item.id,
       source_event_id: sourceEventId,
-      public_text: (item.text ?? previous?.public_text ?? "").slice(0, 16000),
-      title: item.title || previous?.title,
+      public_text: nonblank(item.text) ?? previous?.public_text ?? "",
+      title: nonblank(item.title) ?? previous?.title,
       status: conversationStatusFromActivity(item.status),
       kind: item.kind,
-      command:
-        item.command && item.command.length > 32000
-          ? item.command.slice(0, 32000) + "…"
-          : item.command || previous?.command,
+      command: nonblank(item.command) ?? previous?.command,
+      cwd: nonblank(item.cwd) ?? previous?.cwd,
+      result_text: incomingResult ?? previous?.result_text,
     } satisfies ConversationActivityPayload;
+    merged.public_text = boundedPublicText(merged.public_text, 16000);
+    if (merged.title) merged.title = boundedPublicText(merged.title, 200);
+    if (merged.command) merged.command = boundedPublicText(merged.command, 32000);
+    if (merged.cwd) merged.cwd = boundedPublicText(merged.cwd, 4000);
+    if (merged.result_text)
+      merged.result_text = boundedPublicText(merged.result_text, 16000);
     if (item.status === "active" && item.kind === "tool")
       this.childActive.set(key, merged);
     else this.childActive.delete(key);

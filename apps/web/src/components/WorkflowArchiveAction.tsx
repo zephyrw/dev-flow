@@ -4,19 +4,24 @@ export interface WorkflowArchiveActionProps {
   workflowId: string;
   workflowTitle?: string;
   onArchived?: (workflowId: string) => void;
+  variant?: "button" | "icon";
 }
 
 export function WorkflowArchiveAction({
   workflowId,
   workflowTitle,
   onArchived,
+  variant = "button",
 }: WorkflowArchiveActionProps) {
   const [archiving, setArchiving] = useState(false);
 
   const pendingRequest = useRef<{ workflowId: string; payload: { request_id: string; expected_visibility_revision: number; archived: true } } | null>(null);
   const handleArchive = async () => {
     if (archiving) return;
-    if (!window.confirm("归档后任务将从菜单和总览隐藏，文件、状态和记录均保留。正在运行的任务会继续执行，可在设置中恢复。")) return;
+    const confirmMsg = workflowTitle
+      ? `确认归档任务“${workflowTitle}”吗？归档后任务将从菜单和总览隐藏，文件、状态和记录均保留。正在运行的任务会继续执行，可在设置中恢复。`
+      : "归档后任务将从菜单和总览隐藏，文件、状态和记录均保留。正在运行的任务会继续执行，可在设置中恢复。";
+    if (!window.confirm(confirmMsg)) return;
     setArchiving(true);
     try {
       if (pendingRequest.current?.workflowId !== workflowId) {
@@ -45,6 +50,32 @@ export function WorkflowArchiveAction({
       setArchiving(false);
     }
   };
+
+  if (variant === "icon") {
+    return (
+      <button
+        type="button"
+        className="btn-archive-icon"
+        onClick={(e) => {
+          e.stopPropagation();
+          void handleArchive();
+        }}
+        disabled={archiving}
+        title="归档"
+        aria-label="归档"
+      >
+        <svg
+          width="13"
+          height="13"
+          viewBox="0 0 16 16"
+          fill="currentColor"
+          aria-hidden="true"
+        >
+          <path d="M2 3a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1v7a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1-1-1V3zm2 3v6h8V6H4zm-1-2v1h10V4H3zm3 3.5a.5.5 0 0 1 .5-.5h3a.5.5 0 0 1 0 1h-3a.5.5 0 0 1-.5-.5z" />
+        </svg>
+      </button>
+    );
+  }
 
   return (
     <button

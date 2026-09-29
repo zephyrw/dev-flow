@@ -6,7 +6,8 @@ import {
   routeRawTelemetryEvent,
   shouldApplyRootSessionIdentity,
 } from "../../packages/runtime/src/run-telemetry.js";
-import { conversationActivityKey } from "../../packages/contracts/src/conversation.js";
+import { conversationActivityKey, ConversationActivityPayloadSchema } from "../../packages/contracts/src/conversation.js";
+import { publicEvent } from "../../packages/core/src/util.js";
 import {
   conversationLogs,
   conversationActivityLogEntry,
@@ -66,6 +67,104 @@ function childActivity(
     },
   };
 }
+
+it.each([
+  { label: "below limit", make: (limit: number) => "x".repeat(limit - 1) },
+  { label: "at limit", make: (limit: number) => "x".repeat(limit) },
+  { label: "over limit", make: (limit: number) => "x".repeat(limit + 1) },
+  { label: "redaction expands at cut", make: (limit: number) => "x".repeat(limit - 12) + " token=a " },
+  { label: "truncated JSON", make: (limit: number) => JSON.stringify({ value: "x".repeat(limit), token: "private-secret", reasoning: "private-thought" }) },
+])("public activity limits survive persistence and repeated redaction: $label", ({ make }) => {
+  const s = fixture();
+  try {
+    for (const session of ["root-session", "child-a"]) {
+      s.telemetry.acceptConversationEvent({
+        source_id: "fixture",
+        source_seq: session,
+        root_native_id: "root-session",
+        session_native_id: session,
+        ...(session === "child-a" ? { parent_native_id: "root-session" } : {}),
+        kind: "activity",
+        payload: {
+          id: "bounded",
+          kind: "tool",
+          status: "active",
+          title: make(200),
+          text: make(16000),
+          command: make(32000),
+          cwd: make(4000),
+          result_text: make(16000),
+        },
+      });
+    }
+    s.telemetry.flush();
+    const events = s.store.events("w", 0, 1000);
+    const activities = events.filter((event) => event.type === "ConversationActivity");
+    expect(activities).toHaveLength(2);
+    for (const event of activities) {
+      const published = s.store.publicEvent(event);
+      const parsed = ConversationActivityPayloadSchema.parse(published.payload);
+      expect(publicEvent(published.payload)).toEqual(parsed);
+      expect(parsed.command).toBeTruthy();
+      expect(parsed.cwd).toBeTruthy();
+      expect(parsed.result_text).toBeTruthy();
+      expect(parsed.public_text).toBeTruthy();
+      expect(parsed.status).toBe("running");
+      if (publicEvent(make(32000)).length > 32000)
+        expect(parsed.command!.endsWith("…")).toBe(true);
+      const serialized = JSON.stringify(parsed);
+      expect(serialized).not.toContain("token=a");
+      expect(serialized).not.toContain("private-secret");
+      expect(serialized).not.toContain("private-thought");
+    }
+    const root = events.find((event) => event.type === "NativeActivity")!.payload as any;
+    for (const [field, limit] of Object.entries({ text: 16000, command: 32000, cwd: 4000, resultText: 16000 })) {
+      expect(root[field].length).toBeLessThanOrEqual(limit);
+      expect(publicEvent(root[field])).toBe(root[field]);
+    }
+  } finally {
+    s.telemetry.finish();
+    s.store.close();
+  }
+});
+
+it.each([
+  { flush: false, text: undefined, status: "done", expected: "completed" },
+  { flush: false, text: " \n\t", status: "error", expected: "failed" },
+  { flush: true, text: undefined, status: "done", expected: "completed" },
+  { flush: true, text: " \n\t", status: "error", expected: "failed" },
+])("status-only updates retain concrete text (flush=$flush, status=$status)", ({ flush, text, status, expected }) => {
+  const s = fixture();
+  try {
+    const event = childActivity("child-a", "operation", "", "1");
+    s.telemetry.acceptConversationEvent({
+      ...event,
+      payload: {
+        id: "operation", kind: "tool", status: "active",
+        title: "读取文件", text: "读取 src/example.ts", cwd: "C:/repo",
+        command: "read src/example.ts", result_text: "exit code: 0",
+      },
+    });
+    if (flush) s.telemetry.flush();
+    s.telemetry.acceptConversationEvent({
+      ...event, source_seq: "2",
+      payload: {
+        id: "operation", kind: "tool", status, text,
+        cwd: " \t", command: " ", result_text: "\n",
+      },
+    });
+    s.telemetry.flush();
+    const activities = s.store.events("w", 0, 1000).filter((entry) => entry.type === "ConversationActivity");
+    expect(activities).toHaveLength(flush ? 2 : 1);
+    expect(activities.at(-1)!.payload).toMatchObject({
+      public_text: "读取 src/example.ts", status: expected, cwd: "C:/repo",
+      command: "read src/example.ts", result_text: "exit code: 0",
+    });
+  } finally {
+    s.telemetry.finish();
+    s.store.close();
+  }
+});
 
 it("route 先区分 root/child，子事件不绑定主会话身份", () => {
   const bound = {

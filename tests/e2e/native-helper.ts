@@ -131,7 +131,10 @@ export async function createNative(
   await modal.getByLabel("工作区真实路径").fill(state.nativeRepo);
   // ModelConfigTabs 每个职责 tab 只渲染一个「工具」选择器
   const pickModel = async (query: string) => {
-    const search = modal.getByLabel("模型", { exact: true });
+    const search = modal
+      .getByLabel("工具模型搜索")
+      .or(modal.getByLabel("模型", { exact: true }))
+      .first();
     await expect(search).toBeEnabled({ timeout: 20000 });
     await search.click();
     await search.fill(query);

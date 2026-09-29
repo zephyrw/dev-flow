@@ -2,8 +2,9 @@ import { failureSummary } from "./failure.js";
 import { ReviewActivityStream } from "./review-activity.js";
 import { runtimeFailureResolution } from "../../contracts/src/runtime-failure.js";
 import { toolSummary, toolOutputSummary } from "./tool-summary.js";
-import { conversationActivityLogEntry, mergeConversationLogEntry } from "./conversation-activity.js";
+import { conversationActivityLogEntry, mergeConversationLogEntry, isMeaningfulLogEntry } from "./conversation-activity.js";
 import { CONVERSATION_EVENT } from "../../contracts/src/conversation.js";
+export { isMeaningfulLogEntry, mergeConversationLogEntry } from "./conversation-activity.js";
 export interface LogEntry {
   key: string;
   sequence: number;
@@ -223,7 +224,7 @@ export function readableLogs(events: any[], workflow: string): LogEntry[] {
         rows.push(row);
         steps.set(key, row);
       }
-      Object.assign(row, { sequence: e.event_seq, created_at: e.created_at, title: p.title,
+      mergeConversationLogEntry(row, { key, sequence: e.event_seq, created_at: e.created_at, title: p.title,
         text: p.text ?? "", kind: p.kind, status: p.status, command: p.command, cwd: p.cwd, resultText: p.resultText, raw: [e] });
       continue;
     }
@@ -681,10 +682,7 @@ export function readableLogs(events: any[], workflow: string): LogEntry[] {
   for (const row of rows)
     if (row.status === "active" && row.sequence < boundary)
       row.status = "interrupted";
-  return rows
-    .filter((r) => r.kind !== "message" || r.text.trim())
-    .filter((r) => r.kind !== "tool" || r.text.trim() || r.command?.trim() || r.resultText?.trim() || r.raw.some((e: any) => e.type === "ReviewDiagnostic"))
-    .sort((a, b) => a.sequence - b.sequence);
+  return rows.sort((a, b) => a.sequence - b.sequence);
 }
 
 /** Keep diagnostics available for progress parsing without putting raw logs in the UI. */
@@ -705,6 +703,7 @@ export function userFacingLogs(entries: LogEntry[], currentRun?: string) {
             (entry.status === "interrupted" ||
               (!!currentRun && !!e.run_id && e.run_id !== currentRun)),
         )
-      ),
+      ) &&
+      isMeaningfulLogEntry(entry),
   );
 }

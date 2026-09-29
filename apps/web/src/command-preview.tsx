@@ -51,18 +51,35 @@ export function CommandPreview({
         {canExpand && (
           <button
             type="button"
+            className="command-expand-btn"
             aria-expanded={expanded}
             aria-controls={id}
-            onClick={() => setExpanded(!expanded)}
+            title={expanded ? "收起命令" : "展开命令"}
+            aria-label={expanded ? "收起命令" : "展开命令"}
+            onClick={(e) => {
+              e.stopPropagation();
+              setExpanded((prev) => !prev);
+            }}
           >
-            {expanded ? "收起命令" : "展开命令"}
+            <svg
+              width="12"
+              height="12"
+              viewBox="0 0 16 16"
+              fill="currentColor"
+              aria-hidden="true"
+              style={{
+                transform: expanded ? "rotate(180deg)" : "rotate(0deg)",
+                transition: "transform 0.15s ease",
+              }}
+            >
+              <path d="M4.427 6.427l3.396 3.396a.25.25 0 00.354 0l3.396-3.396A.25.25 0 0011.396 6H4.604a.25.25 0 00-.177.427z" />
+            </svg>
           </button>
         )}
       </div>
       {canExpand && expanded && (
         <div id={id}>
           <pre className="terminal-pre command-full">{command}</pre>
-          {cwd && <p className="notice-subtle">工作目录：{cwd}</p>}
           {command.endsWith("…") && (
             <p className="notice-subtle">
               执行端已截断这条历史命令；以上为收到的全部内容。
@@ -70,6 +87,7 @@ export function CommandPreview({
           )}
         </div>
       )}
+      {cwd?.trim() && <p className="notice-subtle">工作目录：{cwd}</p>}
     </div>
   );
 }

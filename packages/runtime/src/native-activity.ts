@@ -327,12 +327,20 @@ export function conversationEventActivities(
       {
         id: payload.id,
         kind: payload.kind,
-        title: str(payload.title) ?? "会话活动",
+        title:
+          str(payload.title) ??
+          (str(payload.command)
+            ? "执行命令"
+            : payload.kind === "message"
+              ? "模型输出"
+              : payload.status === "error" || payload.status === "failed"
+                ? "执行失败"
+                : "会话活动"),
         text: str(payload.public_text ?? payload.text) ?? "",
         status: activityStatusFromPayload(payload.status),
         command: str(payload.command),
         cwd: str(payload.cwd),
-        resultText: str(payload.resultText),
+        resultText: str(payload.result_text) ?? str(payload.resultText),
       },
     ];
   return nativeActivities(payload);

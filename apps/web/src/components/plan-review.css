@@ -1,3 +1,7 @@
+.plan-review-backdrop {
+  z-index: 2000 !important;
+}
+
 .plan-review-dialog {
   width: min(760px, calc(100vw - 32px));
   max-height: 88vh;

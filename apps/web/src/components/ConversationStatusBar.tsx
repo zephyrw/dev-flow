@@ -399,12 +399,6 @@ export function ConversationStatusBar({
   workflowId: string;
   model: ComposerRuntimeModel;
 }) {
-  if (!model.workText) return null;
-  return (
-    <div className="conversation-composer-status-bar">
-      <p className="conversation-composer-work" title={model.workText}>
-        {model.workText}
-      </p>
-    </div>
-  );
+  // 根据需求 R8，输入框加号右侧的角色与阶段等文字已在右上角展示，在此处不再重复渲染
+  return null;
 }

@@ -26,6 +26,17 @@ describe("计划驳回与只读问答 API", () => {
       "review",
     );
     id = w.id;
+    s.store.put("workspace", "ws-" + id, id, {
+      id: "ws-" + id,
+      workflow_id: id,
+      repo_id: "main",
+      root: s.root,
+      source_root: s.root,
+      source_branch: "main",
+      branch: "worktree-" + id,
+      baseline: "a".repeat(40),
+      owned: true,
+    });
     s.engine.submitPlan(
       id,
       plan(objectHash(p), "a".repeat(40)),

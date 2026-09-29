@@ -36,6 +36,9 @@ it("the production planner-takeover runtime publishes native actions before proc
     modelId: "fixture-model",
     options: { prefixArgs: [cli] },
   };
+  for (const es of s.store.list<any>("execution_spec", s.w.id)) {
+    s.store.remove("execution_spec", es.id);
+  }
   s.store.put("execution_spec", "telemetry-spec", s.w.id, {
     id: "telemetry-spec",
     revision: 1,

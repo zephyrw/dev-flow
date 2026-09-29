@@ -348,7 +348,12 @@ export function ExecutionPanel({
                   <PathSummary text={e.text} />
                 </p>
               ) : null}
-              {e.kind === "tool" && e.resultText && (
+              {e.cwd && !e.command && (
+                <p className="activity-cwd" title={e.cwd}>
+                  <small>工作目录：</small><code>{e.cwd}</code>
+                </p>
+              )}
+              {e.resultText && (!e.command || e.kind === "tool") && (
                 <p className="activity-result">{e.resultText}</p>
               )}
             </div>

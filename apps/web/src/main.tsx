@@ -36,7 +36,6 @@ import {
 } from "./components/SubagentWorkCard.js";
 import { ConversationBreadcrumb } from "./components/ConversationBreadcrumb.js";
 import {
-  ConversationRequestGuard,
   useConversationView,
 } from "./use-conversation-view.js";
 import {
@@ -47,16 +46,21 @@ import {
 } from "../../../packages/contracts/src/conversation.js";
 import type { LogEntry } from "./logs.js";
 import React, { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { PlanTocButton, usePlanReading } from "./plan-reading.js";
+import { ConversationHistoryCache, type ConversationHistorySnapshot } from "./conversation-history.js";
 
 import { createRoot } from "react-dom/client";
-import Markdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+import type { Components } from "react-markdown";
+import { compilePlanDocument, type CompiledPlanDocument } from "./plan-document.js";
 import mermaid from "mermaid";
 import "./style.css";
 import "./components/model-settings.css";
 import {
   readableLogs,
   userFacingLogs,
+  isMeaningfulLogEntry,
+  mergeConversationLogEntry,
   mergeEvents,
   workflowProgress,
 } from "./logs.js";
@@ -372,96 +376,31 @@ const Diagram = React.memo(function Diagram({ source }: { source: string }) {
   return <div className="diagram" style={{ minHeight: "40px" }} />;
 });
 
-function extractTextFromChildren(children: any): string {
-  if (!children) return "";
-  if (typeof children === "string") return children;
-  if (Array.isArray(children))
-    return children.map(extractTextFromChildren).join("");
-  if (children.props?.children)
-    return extractTextFromChildren(children.props.children);
-  return "";
-}
-
-function slugifyHeading(text: string): string {
-  const clean = text
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g, "-")
-    .replace(/[^\w\u4e00-\u9fa5-]+/g, "");
-  return encodeURIComponent(clean) || "section";
-}
-
-const headingRenderer = (level: number) => {
-  return ({ children, ...props }: any) => {
-    const text = extractTextFromChildren(children).replace(/[*_`[\]]/g, "");
-    const id = slugifyHeading(text);
-    const Tag = `h${level}` as any;
-    return (
-      <Tag id={id} {...props}>
-        {children}
-      </Tag>
-    );
-  };
-};
-
-const markdownComponents = {
-  h1: headingRenderer(1),
-  h2: headingRenderer(2),
-  h3: headingRenderer(3),
-  h4: headingRenderer(4),
-  code: ({ className, children, ...props }: any) =>
+const documentComponents: Components = {
+  code: ({ node: _node, className, children, ...props }) =>
     className === "language-mermaid" ? (
       <Diagram source={String(children)} />
     ) : (
-      <code className={className} {...props}>
-        {children}
-      </code>
+      <code className={className} {...props}>{children}</code>
     ),
-  a: ({ children, ...props }: any) => (
-    <a {...props} target="_blank" rel="noreferrer">
-      {children}
-    </a>
+  a: ({ node: _node, children, ...props }) => (
+    <a {...props} target="_blank" rel="noreferrer">{children}</a>
   ),
 };
 
-const Document = React.memo(function Document({ text }: { text: string }) {
-  return (
-    <div className="document">
-      <Markdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
-        {text}
-      </Markdown>
-    </div>
-  );
-});
-
-interface TocItem {
-  id: string;
+export const Document = React.memo(function Document({
+  text,
+  compiled,
+}: {
   text: string;
-  level: number;
-}
-
-function extractToc(markdown: string): TocItem[] {
-  if (!markdown) return [];
-  const lines = markdown.split("\n");
-  const items: TocItem[] = [];
-  const seen = new Map<string, number>();
-
-  for (const line of lines) {
-    const match = line.match(/^(#{1,4})\s+(.+)$/);
-    if (match && match[1] && match[2]) {
-      const level = match[1].length;
-      const rawText = match[2].trim().replace(/[*_`[\]]/g, "");
-      let slug = slugifyHeading(rawText);
-      const count = seen.get(slug) ?? 0;
-      seen.set(slug, count + 1);
-      if (count > 0) {
-        slug = `${slug}-${count}`;
-      }
-      items.push({ id: slug, text: rawText, level });
-    }
-  }
-  return items;
-}
+  compiled?: CompiledPlanDocument;
+}) {
+  const document = React.useMemo(
+    () => compiled ?? compilePlanDocument(text, documentComponents),
+    [text, compiled],
+  );
+  return <div className="document">{document.content}</div>;
+});
 
 interface ParsedDiffLine {
   type: "hunk" | "add" | "del" | "context" | "meta";
@@ -1224,6 +1163,7 @@ interface CentralWorkspaceProps {
   setFileDiff: (f: any) => void;
   attempt: (fn: () => Promise<unknown>) => Promise<void>;
   setNotice: (notice: string) => void;
+  setPlanReview: (target: PlanReviewTarget | null) => void;
 }
 
 const CentralWorkspace = React.memo(
@@ -1241,31 +1181,185 @@ const CentralWorkspace = React.memo(
     setFileDiff,
     attempt,
     setNotice,
+    setPlanReview,
   }: CentralWorkspaceProps) {
-    const [showToc, setShowToc] = useState(true);
-    const [planFullscreen, setPlanFullscreen] = useState(false);
-
-    useEffect(() => {
-      if (!planFullscreen) return;
-      const handleKeyDown = (e: KeyboardEvent) => {
-        if (e.key === "Escape") setPlanFullscreen(false);
-      };
-      window.addEventListener("keydown", handleKeyDown);
-      return () => window.removeEventListener("keydown", handleKeyDown);
-    }, [planFullscreen]);
+    const reading = usePlanReading(`${w.id}:${w.plan_revision}:${w.plan_hash}:${tab}`);
+    const { showToc, setShowToc } = reading;
+    const planFullscreen = reading.fullscreen;
+    const enterFullscreen = reading.enter;
+    const exitFullscreen = reading.exit;
 
     const planMarkdown = detail.plan?.plan?.markdown ?? "";
-    const tocItems = React.useMemo(
-      () => extractToc(planMarkdown),
+    const planDocument = React.useMemo(
+      () => compilePlanDocument(planMarkdown, documentComponents),
       [planMarkdown],
     );
+    const tocItems = planDocument.toc;
 
     const scrollToHeading = (id: string) => {
-      const el = document.getElementById(id);
+      const el = Array.from(reading.contentRef.current?.querySelectorAll<HTMLElement>("[id]") ?? [])
+        .find((element) => element.id === id);
       if (el) {
         el.scrollIntoView({ behavior: "smooth", block: "start" });
       }
     };
+
+    const planBodyContent = detail.plan ? (
+      <div key={`${w.id}:${w.plan_revision}:${w.plan_hash}:${planFullscreen}`} className={`plan-viewer-body ${showToc ? "has-toc" : ""}`}>
+        {showToc && (
+          <aside className="plan-toc-sidebar" aria-label="文档大纲">
+            <div className="toc-header">
+              <span className="toc-title">目录导航</span>
+              <span className="toc-count">
+                {tocItems.length} 个章节
+              </span>
+            </div>
+            <div className="toc-items-container" ref={reading.tocRef}>
+              {tocItems.length > 0 ? (
+                <ul className="toc-list">
+                  {tocItems.map((item) => (
+                    <li
+                      key={item.id}
+                      className={`toc-item level-${item.level}`}
+                    >
+                      <PlanTocButton text={item.text} onClick={() => scrollToHeading(item.id)} />
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <div className="toc-empty">未发现标题章节</div>
+              )}
+            </div>
+          </aside>
+        )}
+        <div className="plan-content-area" ref={reading.contentRef}>
+          <Document text={planMarkdown} compiled={planDocument} />
+          <details className="plan-runtime-details">
+            <summary>本计划使用的运行配置</summary>
+            <p>
+              工作目录：
+              {w.workspace_mode === "new_worktree"
+                ? "独立 worktree"
+                : "当前目录"}
+              ；测试数据：
+              {detail.project?.data.mode === "directory"
+                ? "按任务独立目录"
+                : "共享数据按资源排队"}
+            </p>
+            {detail.project?.repositories.map((r: any) => (
+              <p key={r.id}>
+                {r.id}：{detail.context?.roots?.[r.id] ?? r.path}
+              </p>
+            ))}
+            {detail.project?.commands.map((c: any) => (
+              <p key={c.id}>
+                {c.id}：
+                <code>{[c.executable, ...c.args].join(" ")}</code>
+              </p>
+            ))}
+          </details>
+        </div>
+      </div>
+    ) : (
+      <div className="empty">
+        计划尚未提交。先由 GPT-6 完成调研和任务拆解。
+      </div>
+    );
+
+    const renderPlanActions = (isFullscreen: boolean) => (
+      <div className="plan-title-actions">
+        {w.plan_revision > 0 && detail.plan && (
+          <button
+            type="button"
+            className="btn-secondary btn-plan-action-icon"
+            disabled={pending}
+            onClick={() =>
+              setPlanReview({
+                workflow_id: w.id,
+                expected_version: w.version,
+                plan_revision: w.plan_revision,
+                plan_hash: w.plan_hash,
+                mode: "question",
+              })
+            }
+            title="计划问答"
+            aria-label="计划问答"
+          >
+            <svg
+              width="15"
+              height="15"
+              viewBox="0 0 16 16"
+              fill="currentColor"
+              aria-hidden="true"
+            >
+              <path d="M5.92 6.03a1.5 1.5 0 0 1 2.9-.57.5.5 0 0 0 .96-.28 2.5 2.5 0 1 0-4.83.95c.06.32.33.62.66.79.43.23.63.45.68.74.05.3.06.57.06.87a.5.5 0 0 0 1 0c0-.36-.02-.7-.1-1.07-.1-.44-.37-.77-.87-1.04a1.05 1.05 0 0 1-.5-.39zm1.08 5.47a.75.75 0 1 1 1.5 0 .75.75 0 0 1-1.5 0zM0 2a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H4.414a1 1 0 0 0-.707.293L1.354 15.646A.5.5 0 0 1 .5 15.293V13H2a1 1 0 0 0 1-1V2a1 1 0 0 0-1-1H2a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1h.5a.5.5 0 0 1 0 1H2a2 2 0 0 1-2-2V2z" />
+            </svg>
+          </button>
+        )}
+        {detail.plan && (
+          <button
+            type="button"
+            className="btn-secondary btn-plan-action-icon btn-fullscreen-toggle"
+            onClick={() => (isFullscreen ? exitFullscreen() : enterFullscreen())}
+            title={isFullscreen ? "退出全屏" : "全屏查看"}
+            aria-label={isFullscreen ? "退出全屏" : "全屏查看"}
+          >
+            {isFullscreen ? (
+              <svg
+                width="15"
+                height="15"
+                viewBox="0 0 16 16"
+                fill="currentColor"
+                aria-hidden="true"
+              >
+                <path d="M5.5 0a.5.5 0 0 1 .5.5v4A1.5 1.5 0 0 1 4.5 6h-4a.5.5 0 0 1 0-1h4a.5.5 0 0 0 .5-.5v-4a.5.5 0 0 1 .5-.5zm5 0a.5.5 0 0 1 .5.5v4a.5.5 0 0 0 .5.5h4a.5.5 0 0 1 0 1h-4A1.5 1.5 0 0 1 10 4.5v-4a.5.5 0 0 1 .5-.5zM0 10.5a.5.5 0 0 1 .5-.5h4A1.5 1.5 0 0 1 6 11.5v4a.5.5 0 0 1-1 0v-4a.5.5 0 0 0-.5-.5h-4a.5.5 0 0 1-.5-.5zm10 1a1.5 1.5 0 0 1 1.5-1.5h4a.5.5 0 0 1 0 1h-4a.5.5 0 0 0-.5.5v4a.5.5 0 0 1-1 0v-4z" />
+              </svg>
+            ) : (
+              <svg
+                width="15"
+                height="15"
+                viewBox="0 0 16 16"
+                fill="currentColor"
+                aria-hidden="true"
+              >
+                <path d="M1.5 1a.5.5 0 0 0-.5.5v4a.5.5 0 0 1-1 0v-4A1.5 1.5 0 0 1 1.5 0h4a.5.5 0 0 1 0 1h-4zm10-1a.5.5 0 0 1 0 1h4a.5.5 0 0 1 .5.5v4a.5.5 0 0 1-1 0v-4a.5.5 0 0 0-.5-.5h-4zM0 11.5a.5.5 0 0 1 1 0v4a.5.5 0 0 0 .5.5h4a.5.5 0 0 1 0 1h-4A1.5 1.5 0 0 1 0 15.5v-4zm15.5-.5a.5.5 0 0 1 .5.5v4a1.5 1.5 0 0 1-1.5 1.5h-4a.5.5 0 0 1 0-1h4a.5.5 0 0 0 .5-.5v-4a.5.5 0 0 1 .5-.5z" />
+              </svg>
+            )}
+          </button>
+        )}
+        {w.plan_revision > 0 && (
+          <a
+            className="btn-secondary btn-plan-action-icon download-link"
+            href={`/api/workflows/${selected}/documents/plan?format=markdown&download=1`}
+            target="_blank"
+            rel="noreferrer"
+            title="下载"
+            aria-label="下载"
+          >
+            <svg
+              width="15"
+              height="15"
+              viewBox="0 0 16 16"
+              fill="currentColor"
+              aria-hidden="true"
+            >
+              <path d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5z" />
+              <path d="M7.646 11.854a.5.5 0 0 0 .708 0l3-3a.5.5 0 0 0-.708-.708L8.5 10.293V1.5a.5.5 0 0 0-1 0v8.793L5.354 8.146a.5.5 0 1 0-.708.708l3 3z" />
+            </svg>
+          </a>
+        )}
+        {detail.executor_plan_check && (
+          <a
+            className="download-link"
+            href={`/api/workflows/${selected}/documents/plan-self-check`}
+            target="_blank"
+            rel="noreferrer"
+          >
+            查看计划自查记录
+          </a>
+        )}
+      </div>
+    );
 
     return (
       <div className="central-workspace">
@@ -1291,7 +1385,7 @@ const CentralWorkspace = React.memo(
           ))}
         </div>
         <div
-          className={`module-body ${tab === "diff" ? "module-body-diff" : ""}`}
+          className={`module-body ${tab === "diff" ? "module-body-diff" : tab === "plan" ? "module-body-plan" : ""}`}
           key={selected + tab}
         >
           {tab === "overview" && (
@@ -1305,133 +1399,62 @@ const CentralWorkspace = React.memo(
             />
           )}
           {tab === "plan" && (
-            <section
-              className={`panel plan-panel ${planFullscreen ? "plan-fullscreen-active" : ""}`}
-            >
+            <section className="panel plan-panel">
               <div className="section-title plan-section-title">
                 <div className="plan-title-left">
                   <h2>开发计划 · 第 {w.plan_revision} 版</h2>
                   {detail.plan && (
                     <button
+                      type="button"
                       className={`btn-secondary btn-toc-toggle ${showToc ? "active" : ""}`}
                       onClick={() => setShowToc(!showToc)}
                       title={showToc ? "收起文档大纲" : "展开文档大纲"}
+                      aria-label={showToc ? "收起大纲" : "文档大纲"}
                     >
                       <span className="btn-icon">📑</span>
                       <span>{showToc ? "收起大纲" : "文档大纲"}</span>
                     </button>
                   )}
                 </div>
-                <div className="plan-title-actions">
-                  {detail.plan && (
-                    <button
-                      className="btn-secondary btn-fullscreen-toggle"
-                      onClick={() => setPlanFullscreen(!planFullscreen)}
-                      title={
-                        planFullscreen
-                          ? "退出全屏浏览 (ESC)"
-                          : "全屏查看开发计划"
-                      }
-                    >
-                      <span className="btn-icon">
-                        {planFullscreen ? "✕" : "⛶"}
-                      </span>
-                      <span>{planFullscreen ? "退出全屏" : "全屏查看"}</span>
-                    </button>
-                  )}
-                  {detail.executor_plan_check && (
-                    <a
-                      className="download-link"
-                      href={`/api/workflows/${selected}/documents/plan-self-check`}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      查看计划自查记录
-                    </a>
-                  )}
-                  {w.plan_revision > 0 && (
-                    <a
-                      className="download-link"
-                      href={`/api/workflows/${selected}/documents/plan?format=markdown&download=1`}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      下载 Markdown
-                    </a>
-                  )}
-                </div>
+                {renderPlanActions(false)}
               </div>
-
-              {detail.plan ? (
-                <div className={`plan-viewer-body ${showToc ? "has-toc" : ""}`}>
-                  {showToc && (
-                    <aside className="plan-toc-sidebar" aria-label="文档大纲">
-                      <div className="toc-header">
-                        <span className="toc-title">目录导航</span>
-                        <span className="toc-count">
-                          {tocItems.length} 个章节
-                        </span>
-                      </div>
-                      <div className="toc-items-container">
-                        {tocItems.length > 0 ? (
-                          <ul className="toc-list">
-                            {tocItems.map((item, idx) => (
-                              <li
-                                key={idx}
-                                className={`toc-item level-${item.level}`}
-                              >
-                                <button
-                                  className="toc-link-btn"
-                                  onClick={() => scrollToHeading(item.id)}
-                                  title={item.text}
-                                >
-                                  <span className="toc-bullet" />
-                                  <span className="toc-text">{item.text}</span>
-                                </button>
-                              </li>
-                            ))}
-                          </ul>
-                        ) : (
-                          <div className="toc-empty">未发现标题章节</div>
-                        )}
-                      </div>
-                    </aside>
-                  )}
-                  <div className="plan-content-area">
-                    <Document text={detail.plan.plan.markdown} />
-                    <details className="plan-runtime-details">
-                      <summary>本计划使用的运行配置</summary>
-                      <p>
-                        工作目录：
-                        {w.workspace_mode === "new_worktree"
-                          ? "独立 worktree"
-                          : "当前目录"}
-                        ；测试数据：
-                        {detail.project?.data.mode === "directory"
-                          ? "按任务独立目录"
-                          : "共享数据按资源排队"}
-                      </p>
-                      {detail.project?.repositories.map((r: any) => (
-                        <p key={r.id}>
-                          {r.id}：{detail.context?.roots?.[r.id] ?? r.path}
-                        </p>
-                      ))}
-                      {detail.project?.commands.map((c: any) => (
-                        <p key={c.id}>
-                          {c.id}：
-                          <code>{[c.executable, ...c.args].join(" ")}</code>
-                        </p>
-                      ))}
-                    </details>
-                  </div>
-                </div>
-              ) : (
-                <div className="empty">
-                  计划尚未提交。先由 GPT-6 完成调研和任务拆解。
-                </div>
-              )}
+              {!planFullscreen && planBodyContent}
             </section>
           )}
+          {planFullscreen &&
+            createPortal(
+              <div
+                ref={reading.viewportRef}
+                className="plan-fullscreen-viewport"
+                role="dialog"
+                aria-label="开发计划全屏阅读"
+                aria-modal="true"
+                tabIndex={-1}
+              >
+                <div className="section-title plan-section-title plan-fullscreen-title">
+                  <div className="plan-title-left">
+                    <h2>开发计划 · 第 {w.plan_revision} 版</h2>
+                    {detail.plan && (
+                      <button
+                        type="button"
+                        className={`btn-secondary btn-toc-toggle ${showToc ? "active" : ""}`}
+                        onClick={() => setShowToc(!showToc)}
+                        title={showToc ? "收起文档大纲" : "展开文档大纲"}
+                        aria-label={showToc ? "收起大纲" : "文档大纲"}
+                      >
+                        <span className="btn-icon">📑</span>
+                        <span>{showToc ? "收起大纲" : "文档大纲"}</span>
+                      </button>
+                    )}
+                  </div>
+                  {renderPlanActions(true)}
+                </div>
+                <div className="plan-fullscreen-body">
+                  {planBodyContent}
+                </div>
+              </div>,
+              document.body,
+            )}
           {tab === "tasks" && (
             <section className="panel">
               <TaskTree detail={detail} title="任务进度" />
@@ -1678,7 +1701,11 @@ function App() {
   const [workCardExpanded, setWorkCardExpanded] = useState(false);
   const [childEntries, setChildEntries] = useState<LogEntry[]>([]);
   const [childHasMore, setChildHasMore] = useState(false);
-  const childGuard = useRef(new ConversationRequestGuard());
+  const childHistory = useRef(new ConversationHistoryCache());
+  const publishChildHistory = (snapshot: ConversationHistorySnapshot) => {
+    setChildEntries(asConversationLogEntries(snapshot.items));
+    setChildHasMore(snapshot.hasMore);
+  };
   const [updated, setUpdated] = useState(false);
   useEffect(() => {
     let alive = true;
@@ -1710,6 +1737,23 @@ function App() {
     if (selected) sessionStorage.setItem("devflow.tab." + selected, tab);
   }, [tab, selected]);
   const [connected, setConnected] = useState(false);
+  const [leftSidebarOpen, setLeftSidebarOpen] = useState(() => {
+    try {
+      const saved = localStorage.getItem("devflow.left_sidebar_open");
+      return saved !== null ? saved === "true" : true;
+    } catch {
+      return true;
+    }
+  });
+  const toggleLeftSidebar = () => {
+    setLeftSidebarOpen((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem("devflow.left_sidebar_open", String(next));
+      } catch {}
+      return next;
+    });
+  };
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [isToolDrawerOpen, setIsToolDrawerOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -2138,37 +2182,26 @@ function App() {
         "expanded",
     );
   }, [selected, conversationView.rootConversationId]);
+  React.useLayoutEffect(() => {
+    childHistory.current.select(selected,
+      conversationView.isChildView ? conversationView.selectedConversationId : null);
+    publishChildHistory(childHistory.current.snapshot());
+    return () => childHistory.current.select("", null);
+  }, [selected, conversationView.isChildView, conversationView.selectedConversationId]);
   useEffect(() => {
-    if (
-      !selected ||
-      !conversationView.isChildView ||
-      !conversationView.selectedConversationId
-    ) {
-      setChildEntries([]);
-      setChildHasMore(false);
-      return;
-    }
-    const req = childGuard.current.start(
-      selected,
-      conversationView.selectedConversationId,
-    );
-    void api(
-      `/workflows/${selected}/conversations/${conversationView.selectedConversationId}/activities?limit=100`,
-    )
+    const request = childHistory.current.begin("latest");
+    if (!request) return;
+    void api(`/workflows/${request.workflowId}/conversations/${request.conversationId}/activities?limit=100`)
       .then((page) => {
-        if (!req.accept()) return;
-        setChildEntries(asConversationLogEntries(page.items));
-        setChildHasMore(Boolean(page.has_more));
+        const snapshot = childHistory.current.applyPage(request, page);
+        if (snapshot) publishChildHistory(snapshot);
       })
-      .catch(() => {
-        if (req.accept()) setChildEntries([]);
+      .catch((error) => {
+        if (childHistory.current.finish(request)) {
+          setError(`无法刷新子会话记录：${error instanceof Error ? error.message : String(error)}`);
+        }
       });
-  }, [
-    selected,
-    conversationView.isChildView,
-    conversationView.selectedConversationId,
-    conversationTree?.cursor,
-  ]);
+  }, [selected, conversationView.isChildView, conversationView.selectedConversationId, conversationTree?.cursor]);
   const phaseStart =
     [...(detail?.events ?? [])]
       .reverse()
@@ -2228,15 +2261,45 @@ function App() {
   };
   return (
     <div
-      className={"layout " + (selected && !showGuide ? "workbench" : "")}
+      className={
+        "layout " +
+        (selected && !showGuide ? "workbench" : "") +
+        (!leftSidebarOpen ? " left-collapsed" : "")
+      }
       style={
         { "--execution-width": `${sidebarWidth}px` } as React.CSSProperties
       }
     >
       <aside>
         <div className="brand">
-          <span className="mark">D</span>
-          <span className="brand-text">DevFlow</span>
+          <div className="brand-main">
+            <span className="mark">D</span>
+            <span className="brand-text">DevFlow</span>
+          </div>
+          <button
+            type="button"
+            className="btn-sidebar-collapse"
+            onClick={toggleLeftSidebar}
+            title="收起"
+            aria-label="收起"
+          >
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 16 16"
+              fill="currentColor"
+              aria-hidden="true"
+            >
+              <path
+                fillRule="evenodd"
+                d="M10.354 3.646a.5.5 0 0 1 0 .708L6.707 8l3.647 3.646a.5.5 0 0 1-.708.708l-4-4a.5.5 0 0 1 0-.708l4-4a.5.5 0 0 1 .708 0z"
+              />
+              <path
+                fillRule="evenodd"
+                d="M4.5 2.5a.5.5 0 0 1 .5.5v10a.5.5 0 0 1-1 0V3a.5.5 0 0 1 .5-.5z"
+              />
+            </svg>
+          </button>
         </div>
         <button
           className={!selected && !showGuide ? "nav active" : "nav"}
@@ -2284,29 +2347,49 @@ function App() {
                 <span className="project-name">▱ {p.name}</span>
                 {flows
                   .filter((f) => f.project_id === p.id)
-                .map((f) => (
-                  <button
-                    key={f.id}
-                    className={
-                      "flow-nav " +
-                      (!showGuide && selected === f.id ? "active" : "")
-                    }
-                    onClick={() => {
-                      setShowGuide(false);
-                      setSelected(f.id);
-                      setTab(
-                        sessionStorage.getItem("devflow.tab." + f.id) ||
-                          "overview",
-                      );
-                      setDiff([]);
-                      setFileDiff(null);
-                      setLocate(undefined);
-                    }}
-                  >
-                    <i className={"dot " + f.state} />
-                    <span className="flow-title-text">{f.title}</span>
-                  </button>
-                ))}
+                  .map((f) => (
+                    <div
+                      key={f.id}
+                      className={
+                        "flow-nav-item " +
+                        (!showGuide && selected === f.id ? "active" : "")
+                      }
+                    >
+                      <button
+                        type="button"
+                        className="flow-nav-btn"
+                        onClick={() => {
+                          setShowGuide(false);
+                          setSelected(f.id);
+                          setTab(
+                            sessionStorage.getItem("devflow.tab." + f.id) ||
+                              "overview",
+                          );
+                          setDiff([]);
+                          setFileDiff(null);
+                          setLocate(undefined);
+                        }}
+                      >
+                        <i className={"dot " + f.state} />
+                        <span className="flow-title-text">{f.title}</span>
+                      </button>
+                      <WorkflowArchiveAction
+                        workflowId={f.id}
+                        workflowTitle={f.title}
+                        variant="icon"
+                        onArchived={(archivedId) => {
+                          if (selection.current === archivedId) {
+                            setSelected("");
+                            setDetail(null);
+                          }
+                          void refresh();
+                          setNotice(
+                            "任务已移入归档，可在“设置 -> 归档”中随时查看或恢复。",
+                          );
+                        }}
+                      />
+                    </div>
+                  ))}
             </div>
           ))}
         </div>
@@ -2358,8 +2441,35 @@ function App() {
       </aside>
       <main>
         <header>
-          <div>
-            <p className="eyebrow">
+          <div className="header-main-info">
+            {!leftSidebarOpen && (
+              <button
+                type="button"
+                className="btn-sidebar-expand"
+                onClick={toggleLeftSidebar}
+                title="展开"
+                aria-label="展开"
+              >
+                <svg
+                  width="16"
+                  height="16"
+                  viewBox="0 0 16 16"
+                  fill="currentColor"
+                  aria-hidden="true"
+                >
+                  <path
+                    fillRule="evenodd"
+                    d="M5.646 3.646a.5.5 0 0 0 0 .708L9.293 8l-3.647 3.646a.5.5 0 0 0 .708.708l4-4a.5.5 0 0 0 0-.708l-4-4a.5.5 0 0 0-.708 0z"
+                  />
+                  <path
+                    fillRule="evenodd"
+                    d="M11.5 2.5a.5.5 0 0 0-.5.5v10a.5.5 0 0 0 1 0V3a.5.5 0 0 0-.5-.5z"
+                  />
+                </svg>
+              </button>
+            )}
+            <div>
+              <p className="eyebrow">
               {showGuide
                 ? "DevFlow / 使用指南"
                 : selected
@@ -2395,6 +2505,7 @@ function App() {
                 </span>
               )}
             </div>
+          </div>
           </div>
           <div className="header-aside">
             {w && !showGuide && (
@@ -2700,23 +2811,7 @@ function App() {
                                 </button>
                               </>
                             )}
-                            {w.plan_revision > 0 && (
-                              <button
-                                className="btn-secondary"
-                                disabled={pending}
-                                onClick={() =>
-                                  setPlanReview({
-                                    workflow_id: w.id,
-                                    expected_version: w.version,
-                                    plan_revision: w.plan_revision,
-                                    plan_hash: w.plan_hash,
-                                    mode: "question",
-                                  })
-                                }
-                              >
-                                计划问答
-                              </button>
-                            )}
+
                             {w.state === "HUMAN_PENDING" && (
                               <button
                                 className="primary"
@@ -2747,40 +2842,7 @@ function App() {
                                   : "暂停"}
                               </button>
                             )}
-                            <button
-                              className="secondary"
-                              onClick={() => setIsToolDrawerOpen(true)}
-                              aria-label="工具与模型"
-                              title="查看或安全修改当前任务的工具与模型配置"
-                              style={{
-                                padding: "6px 12px",
-                                borderRadius: "6px",
-                                border:
-                                  "1px solid var(--color-border-default, #d0d7de)",
-                                background: "var(--color-btn-bg, #f6f8fa)",
-                                cursor: "pointer",
-                                fontSize: "13px",
-                                display: "inline-flex",
-                                alignItems: "center",
-                                gap: "4px",
-                              }}
-                            >
-                              <span>🛠️</span>
-                              <span>工具与模型</span>
-                            </button>
-                            <WorkflowArchiveAction
-                              workflowId={w.id}
-                              workflowTitle={w.title}
-                              onArchived={(archivedId) => {
-                                if (selection.current === archivedId) {
-                                  setSelected("");
-                                }
-                                void refresh();
-                                setNotice(
-                                  "任务已移入归档，可在“设置 -> 归档”中随时查看或恢复。",
-                                );
-                              }}
-                            />
+
                           </div>
                           {!sidebarOpen && (
                             <button
@@ -2841,6 +2903,7 @@ function App() {
                       setFileDiff={setFileDiff}
                       attempt={attempt}
                       setNotice={setNotice}
+                      setPlanReview={setPlanReview}
                     />
                   )}
                 </div>
@@ -2907,17 +2970,17 @@ function App() {
                     conversationView.isChildView
                       ? childHasMore
                         ? async () => {
-                            const oldest = childEntries[0]?.sequence;
-                            if (!oldest || !conversationView.selectedConversationId)
-                              return;
-                            const page = await api(
-                              `/workflows/${selected}/conversations/${conversationView.selectedConversationId}/activities?before_seq=${oldest}&limit=100`,
-                            );
-                            setChildEntries((previous) => [
-                              ...asConversationLogEntries(page.items),
-                              ...previous,
-                            ]);
-                            setChildHasMore(Boolean(page.has_more));
+                            const request = childHistory.current.begin("older");
+                            if (!request) return;
+                            try {
+                              const page = await api(`/workflows/${request.workflowId}/conversations/${request.conversationId}/activities?before_seq=${request.beforeSeq}&limit=100`);
+                              const snapshot = childHistory.current.applyPage(request, page);
+                              if (snapshot) publishChildHistory(snapshot);
+                            } catch (error) {
+                              if (childHistory.current.finish(request)) {
+                                setError(`无法加载更早的记录：${error instanceof Error ? error.message : String(error)}`);
+                              }
+                            }
                           }
                         : undefined
                       : detail.history_cursor === null
@@ -3206,51 +3269,83 @@ function latestConversationGeneration(
 
 function asConversationLogEntries(items: unknown): LogEntry[] {
   if (!Array.isArray(items)) return [];
-  return items
-    .filter((item) => item && typeof item === "object")
-    .map((item) => {
-      const row = item as Record<string, unknown>;
-      return {
-        key: String(row.key ?? `${row.conversation_id}:${row.sequence}`),
-        sequence: Number(row.sequence ?? 0),
-        created_at: String(row.created_at ?? ""),
-        title: String(row.title ?? "会话活动"),
-        text: String(row.text ?? ""),
-        raw: [row],
-        kind:
-          row.kind === "tool" ||
-          row.kind === "message" ||
-          row.kind === "event" ||
-          row.kind === "diagnostic"
-            ? row.kind
-            : "event",
-        status:
-          row.status === "active" ||
-          row.status === "done" ||
-          row.status === "error" ||
-          row.status === "interrupted"
-            ? row.status
-            : undefined,
-        command: typeof row.command === "string" ? row.command : undefined,
-        cwd: typeof row.cwd === "string" ? row.cwd : undefined,
-        resultText: typeof row.resultText === "string" ? row.resultText : undefined,
-      } satisfies LogEntry;
-    });
+  const unmergedEntries: LogEntry[] = [];
+  for (const item of items) {
+    if (!item || typeof item !== "object") continue;
+    const row = item as Record<string, unknown>;
+    let title = typeof row.title === "string" && row.title.trim() ? row.title : "";
+    const command = typeof row.command === "string" && row.command.trim() ? row.command : undefined;
+    const text = typeof row.text === "string" ? row.text : typeof row.public_text === "string" ? row.public_text : "";
+    if (!title || title === "会话活动") {
+      if (command) title = "执行命令";
+      else if (row.status === "error" || row.status === "failed") title = "执行失败";
+      else if (row.kind === "message" && text.trim().length > 0) title = "模型输出";
+      else title = "会话活动";
+    }
+    const activityKey = String(row.key ?? `${row.conversation_id ?? ""}:${row.activity_id ?? row.sequence ?? ""}`);
+    const entry: LogEntry = {
+      key: activityKey,
+      sequence: Number(row.sequence ?? row.event_seq ?? 0),
+      created_at: String(row.created_at ?? ""),
+      title,
+      text,
+      raw: [row],
+      kind:
+        row.kind === "tool" ||
+        row.kind === "message" ||
+        row.kind === "event" ||
+        row.kind === "diagnostic"
+          ? (row.kind as any)
+          : "event",
+      status:
+        row.status === "active" ||
+        row.status === "done" ||
+        row.status === "error" ||
+        row.status === "interrupted"
+          ? (row.status as any)
+          : row.status === "failed"
+            ? "error"
+            : row.status === "completed"
+              ? "done"
+              : undefined,
+      command,
+      cwd: typeof row.cwd === "string" ? row.cwd : undefined,
+      resultText: typeof row.resultText === "string" ? row.resultText : typeof row.result_text === "string" ? row.result_text : undefined,
+    };
+    unmergedEntries.push(entry);
+  }
+  unmergedEntries.sort((a, b) => a.sequence - b.sequence);
+  const rows = new Map<string, LogEntry>();
+  const order: LogEntry[] = [];
+  for (const entry of unmergedEntries) {
+    const existing = rows.get(entry.key);
+    if (!existing) {
+      const copy = { ...entry };
+      rows.set(entry.key, copy);
+      order.push(copy);
+    } else {
+      mergeConversationLogEntry(existing, entry);
+    }
+  }
+  return order.filter(isMeaningfulLogEntry).sort((a, b) => a.sequence - b.sequence);
 }
 
-const root = createRoot(document.getElementById("root")!);
-async function mountApplication() {
-  if (window.location.pathname.replace(/\/$/, "") === "/accounts") {
-    root.render(<AgyAccountsPage />);
-    return;
+const rootEl = typeof document !== "undefined" ? document.getElementById("root") : null;
+if (rootEl) {
+  const root = createRoot(rootEl);
+  async function mountApplication() {
+    if (window.location.pathname.replace(/\/$/, "") === "/accounts") {
+      root.render(<AgyAccountsPage />);
+      return;
+    }
+    try {
+      const response = await fetch("/api/health");
+      if (!response.ok) throw new Error("无法读取服务模式");
+      const health = await response.json();
+      root.render(health.mode === "accounts" ? <AgyAccountsPage /> : <App />);
+    } catch (error) {
+      root.render(<div role="alert">{error instanceof Error ? error.message : "服务暂不可用"}</div>);
+    }
   }
-  try {
-    const response = await fetch("/api/health");
-    if (!response.ok) throw new Error("无法读取服务模式");
-    const health = await response.json();
-    root.render(health.mode === "accounts" ? <AgyAccountsPage /> : <App />);
-  } catch (error) {
-    root.render(<div role="alert">{error instanceof Error ? error.message : "服务暂不可用"}</div>);
-  }
+  void mountApplication();
 }
-void mountApplication();

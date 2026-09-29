@@ -1,4 +1,5 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { containTab, focusableElements } from "../plan-reading.js";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import "./plan-review.css";
@@ -26,12 +27,36 @@ export function PlanReviewDialog({
   const [questions, setQuestions] = useState<any[]>([]);
   const [reload, setReload] = useState(0);
   const request = useRef({ payload: "", id: "" });
+  const dialogRef = useRef<HTMLElement>(null);
+  const returnFocus = useRef(typeof document !== "undefined" ? document.activeElement : null);
   const reject = target.mode === "reject";
   const endpoint = `/api/workflows/${encodeURIComponent(target.workflow_id)}/plan/`;
 
+  useLayoutEffect(() => {
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    const onFocus = (event: FocusEvent) => {
+      if (!dialog.contains(event.target as Node)) {
+        (focusableElements(dialog)[0] ?? dialog).focus({ preventScroll: true });
+      }
+    };
+    document.addEventListener("focusin", onFocus);
+    return () => {
+      document.removeEventListener("focusin", onFocus);
+      const trigger = returnFocus.current;
+      if (trigger instanceof HTMLElement && trigger.isConnected) trigger.focus({ preventScroll: true });
+    };
+  }, []);
+
   useEffect(() => {
     const escape = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !pending) onClose();
+      if (dialogRef.current) containTab(event, dialogRef.current);
+      if (event.key === "Escape" && !pending) {
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+        onClose();
+      }
     };
     window.addEventListener("keydown", escape);
     return () => window.removeEventListener("keydown", escape);
@@ -109,8 +134,10 @@ export function PlanReviewDialog({
   };
 
   return (
-    <div className="modal-backdrop">
+    <div className="modal-backdrop plan-review-backdrop">
       <section
+        ref={dialogRef}
+        tabIndex={-1}
         className="modal plan-review-dialog"
         role="dialog"
         aria-modal="true"
