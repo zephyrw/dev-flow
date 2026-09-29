@@ -1,12 +1,14 @@
 import { ExecutionPanel, formatPathSummary } from "./execution-panel.js";
 import { TaskInteraction } from "./interactions.js";
+import { WorkflowActivity } from "./components/WorkflowActivity.js";
 import {
   RuntimeFailureNotice,
   runtimeFailureForTask,
 } from "./components/RuntimeFailureNotice.js";
-import { DeliveryStrip, EnvironmentSummary } from "./workbench.js";
+import { DeliveryStrip, AcceptanceAccess } from "./workbench.js";
 import guideText from "../../../docs/guide/使用指南.md?raw";
 import { TaskTree, TestResults } from "./panels.js";
+import { ReviewResults } from "./components/ReviewResults.js";
 import { useNativeProgress } from "./native-progress.js";
 import { CreateWorkflowModal } from "./components/CreateWorkflowModal.js";
 import { ToolModelDialog } from "./components/ToolModelDialog.js";
@@ -18,7 +20,7 @@ import { CurrentRuntime } from "./components/CurrentRuntime.js";
 import { WorkflowAttentionBanner } from "./components/WorkflowAttentionBanner.js";
 import { WorkflowOverview } from "./components/WorkflowOverview.js";
 import { WorkflowArchiveAction } from "./components/WorkflowArchiveAction.js";
-import { formatWorkflowState } from "../../../packages/presentation/src/workflow-status.js";
+import { canPauseWorkflow, formatWorkflowState, getWorkflowTone } from "../../../packages/presentation/src/workflow-status.js";
 import { useEventCatchup } from "./use-event-catchup.js";
 import { RequirementComposer } from "./components/RequirementComposer.js";
 import { SourceChangeDialog } from "./components/SourceChangeDialog.js";
@@ -1368,10 +1370,9 @@ const CentralWorkspace = React.memo(
             ["overview", "概览"],
             ["plan", "开发计划"],
             ["tasks", "任务进度"],
-            ["tests", "测试结果"],
+            ["tests", "测试进度"],
             ["diff", "代码变更"],
             ["review", "代码复核"],
-            ["environment", "本机验证副本"],
           ].map(([key, title]) => (
             <button
               key={key}
@@ -1402,7 +1403,7 @@ const CentralWorkspace = React.memo(
             <section className="panel plan-panel">
               <div className="section-title plan-section-title">
                 <div className="plan-title-left">
-                  <h2>开发计划 · 第 {w.plan_revision} 版</h2>
+                  <h2>开发计划</h2>
                   {detail.plan && (
                     <button
                       type="button"
@@ -1433,7 +1434,7 @@ const CentralWorkspace = React.memo(
               >
                 <div className="section-title plan-section-title plan-fullscreen-title">
                   <div className="plan-title-left">
-                    <h2>开发计划 · 第 {w.plan_revision} 版</h2>
+                    <h2>开发计划</h2>
                     {detail.plan && (
                       <button
                         type="button"
@@ -1462,7 +1463,7 @@ const CentralWorkspace = React.memo(
           )}
           {tab === "tests" && (
             <section className="panel">
-              <TestResults detail={detail} title="测试结果" />
+              <TestResults detail={detail} title="测试进度" />
             </section>
           )}
           {tab === "diff" && (
@@ -1481,127 +1482,7 @@ const CentralWorkspace = React.memo(
           {tab === "review" && (
             <section className="panel">
               <h2>独立复核结果</h2>
-              {detail.review ? (
-                <>
-                  <p>
-                    {detail.review.stale
-                      ? "历史复核已失效，请以新一轮结果为准。"
-                      : "本轮复核"}{" "}
-                    · 第 {detail.review.plan_revision} 版计划 ·{" "}
-                    {
-                      (
-                        {
-                          pass: "通过",
-                          findings: "发现问题",
-                          incomplete: "验证不完整",
-                        } as Record<string, string>
-                      )[detail.review.verdict]
-                    }
-                  </p>
-                  <details>
-                    <summary>技术详情</summary>
-                    <p className="mono">快照：{detail.review.snapshot_id}</p>
-                  </details>
-                  {detail.review.findings.map((f: any, index: number) => (
-                    <article key={index} className="panel">
-                      <h3>
-                        {f.id} · {f.severity}
-                      </h3>
-                      <p>
-                        {f.repo_id} / {f.path}:{f.line}
-                      </p>
-                      <p>触发条件：{f.trigger}</p>
-                      <p>证据：{f.evidence}</p>
-                      <p>影响：{f.consequence}</p>
-                      <p>处置理由：{f.reason}</p>
-                    </article>
-                  ))}
-                  {detail.review.unresolved_questions.length > 0 && (
-                    <>
-                      <h3>复核缺口</h3>
-                      <ul>
-                        {detail.review.unresolved_questions.map(
-                          (q: string, i: number) => (
-                            <li key={i}>{q}</li>
-                          ),
-                        )}
-                      </ul>
-                    </>
-                  )}
-                  <h3>覆盖文件</h3>
-                  <ul>
-                    {detail.review.coverage.files.map((p: string) => (
-                      <li key={p}>{p}</li>
-                    ))}
-                  </ul>
-                  {detail.review.repair_plan && (
-                    <p>
-                      修复计划已列入「计划与图解」，需要重新批准后才能执行。
-                    </p>
-                  )}
-                </>
-              ) : (
-                <div className="empty">
-                  尚无独立复核结果。人工验收通过后会自动启动 GPT-6。
-                </div>
-              )}
-            </section>
-          )}
-          {tab === "environment" && (
-            <section className="panel">
-              <div className="section-title">
-                <h2>本机验证副本</h2>
-                {detail.environment && (
-                  <button
-                    onClick={() =>
-                      void attempt(async () => {
-                        await api(
-                          `/workflows/${selected}/environment/stop`,
-                          {},
-                        );
-                        await refresh();
-                      })
-                    }
-                  >
-                    释放环境
-                  </button>
-                )}
-              </div>
-              <EnvironmentSummary detail={detail} />
-              {detail.environment && (
-                <>
-                  {w.state === "HUMAN_PENDING" && (
-                    <div className="actions">
-                      <button
-                        onClick={() =>
-                          void attempt(async () => {
-                            await api(
-                              `/workflows/${selected}/browser/lock`,
-                              {},
-                            );
-                            setNotice("已保留共享浏览器，完成场景后请释放。");
-                          })
-                        }
-                      >
-                        占用人工核验浏览器
-                      </button>
-                      <button
-                        onClick={() =>
-                          void attempt(async () => {
-                            await api(
-                              `/workflows/${selected}/browser/release`,
-                              {},
-                            );
-                            setNotice("浏览器已释放。");
-                          })
-                        }
-                      >
-                        释放人工核验浏览器
-                      </button>
-                    </div>
-                  )}
-                </>
-              )}
+              <ReviewResults review={detail.review} />
             </section>
           )}
         </div>
@@ -1734,6 +1615,10 @@ function App() {
     };
   }, []);
   useEffect(() => {
+    if (tab === "environment") {
+      setTab("overview");
+      return;
+    }
     if (selected) sessionStorage.setItem("devflow.tab." + selected, tab);
   }, [tab, selected]);
   const [connected, setConnected] = useState(false);
@@ -1811,6 +1696,10 @@ function App() {
         return merged;
       });
   };
+  useEffect(() => {
+    if (selected && tab === "plan")
+      void refresh().catch((e) => setError(String(e)));
+  }, [selected, tab]);
   useEffect(() => {
     void Promise.all([api("/projects"), fetchVisibleFlows()])
       .then(([p, f]) => {
@@ -2153,7 +2042,7 @@ function App() {
                     category: "acceptance",
                     message: "等待你实际操作验收",
                     at: w.updated_at,
-                    action: "查看本机验证副本",
+                    action: "查看人工验收",
                   }
                 : null;
   const progress = w ? workflowProgress(w, detail.events, {
@@ -2161,7 +2050,7 @@ function App() {
     humanAccepted: detail.human_accepted,
   }) : undefined;
   const timeline = w
-    ? userFacingLogs(readableLogs(detail.events, selected), w.run_id)
+    ? userFacingLogs(readableLogs(detail.events, selected, detail.formal_guidance), w.run_id)
     : [];
   const conversationTree = detail?.conversation_tree;
   const conversationView = useConversationView({
@@ -2370,7 +2259,7 @@ function App() {
                           setLocate(undefined);
                         }}
                       >
-                        <i className={"dot " + f.state} />
+                        <i className={`dot workflow-tone-${getWorkflowTone(f)}`} />
                         <span className="flow-title-text">{f.title}</span>
                       </button>
                       <WorkflowArchiveAction
@@ -2489,7 +2378,7 @@ function App() {
                     : "工作流总览"}
               </h1>
               {w && (
-                <span className={"badge " + w.state}>
+                <span className={`badge workflow-tone-${getWorkflowTone(w)}`}>
                   <span className="badge-dot" />
                   {detail.queue?.kind === "preparing"
                     ? w.workspace_mode === "existing_workspace"
@@ -2501,7 +2390,9 @@ function App() {
                       ? "等待模型额度"
                       : w.stage === "auto_repair"
                         ? "准备自动修复"
-                        : formatWorkflowState(w.state)}
+                        : w.stage === "acceptance_guidance" && ["QUEUED", "EXECUTING"].includes(w.state)
+                          ? w.state === "QUEUED" ? "指导已排队" : "正在处理指导"
+                        : formatWorkflowState(w.state, w.stage)}
                 </span>
               )}
             </div>
@@ -2542,17 +2433,11 @@ function App() {
             <small>正在读取任务详情…</small>
             {flows.some(
               (f) =>
-                f.id === selected &&
-                ![
-                  "COMMITTED",
-                  "COMMITTING",
-                  "COMMIT_PARTIAL",
-                  "STOPPED",
-                ].includes(f.state),
+                f.id === selected && canPauseWorkflow(f),
             ) && (
               <button
-                className="danger"
-                disabled={stopping}
+                className="warning"
+                disabled={stopping || flows.find(f => f.id === selected)?.state === "STOPPING"}
                 onClick={stopSelected}
               >
                 {stopping ? "正在暂停…" : "暂停"}
@@ -2627,8 +2512,8 @@ function App() {
                         <span className="project-label">
                           {projects.find((p) => p.id === f.project_id)?.name}
                         </span>
-                        <span className={"badge " + f.state}>
-                          {formatWorkflowState(f.state)}
+                        <span className={`badge workflow-tone-${getWorkflowTone(f)}`}>
+                          {formatWorkflowState(f.state, f.stage)}
                         </span>
                       </div>
                       <h3>{f.title}</h3>
@@ -2789,11 +2674,17 @@ function App() {
                               <>
                                 <button
                                   className="primary"
-                                  disabled={pending}
+                                  disabled={pending || detail?.plan?.authority_ready !== true}
+                                  title={detail?.plan?.material_error?.message ?? (detail?.plan?.authority_ready === true ? undefined : "计划材料尚未核验，只可查看")}
                                   onClick={() => setPlanApprovalTarget(w)}
                                 >
                                   批准当前计划
                                 </button>
+                                {detail?.plan?.authority_ready !== true && (
+                                  <span role="status" className="muted">
+                                    {detail?.plan?.material_error?.message ?? "计划材料尚未核验，暂不可批准。"}
+                                  </span>
+                                )}
                                 <button
                                   className="btn-secondary"
                                   disabled={pending}
@@ -2824,16 +2715,9 @@ function App() {
                               </button>
                             )}
 
-                            {[
-                              "QUEUED",
-                              "EXECUTING",
-                              "VERIFYING",
-                              "REVIEW_QUEUED",
-                              "REVIEWING",
-                              "STOPPING",
-                            ].includes(w.state) && (
+                            {canPauseWorkflow(w, detail.runs) && (
                               <button
-                                className="danger"
+                                className="warning"
                                 disabled={stopping || w.state === "STOPPING"}
                                 onClick={stopSelected}
                               >
@@ -2861,6 +2745,7 @@ function App() {
                   )}
                   <WorkflowAttentionBanner
                     attention={attention}
+                    tone={getWorkflowTone(w)}
                     workflowId={w.id}
                     workflowVersion={w.version}
                     onOpenPlan={() => setTab("plan")}
@@ -2870,13 +2755,31 @@ function App() {
                         version: w.version,
                       })
                     }
-                    onOpenEnvironment={() => setTab("environment")}
+                    onOpenAcceptance={() => {
+                      const card = document.getElementById(`human-acceptance-${w.id}`);
+                      card?.scrollIntoView({ block: "nearest" });
+                      card?.focus();
+                    }}
                     onOpenGuidance={() => {
                       toggleSidebar(true);
                       window.dispatchEvent(new Event("devflow-open-guidance"));
                     }}
                   />
                 </div>
+                <AcceptanceAccess detail={detail}
+                  onReleaseEnvironment={() => void attempt(async () => {
+                    await api(`/workflows/${selected}/environment/stop`, {});
+                    await refresh();
+                  })}
+                  onLockBrowser={() => void attempt(async () => {
+                    await api(`/workflows/${selected}/browser/lock`, {});
+                    setNotice("已保留共享浏览器，完成场景后请释放。");
+                  })}
+                  onReleaseBrowser={() => void attempt(async () => {
+                    await api(`/workflows/${selected}/browser/release`, {});
+                    setNotice("浏览器已释放。");
+                  })}
+                />
                 <RuntimeFailureNotice
                   key={w.id}
                   detail={detail}
@@ -3144,7 +3047,7 @@ function App() {
             setNotice(
               choice === "continue"
                 ? "已确认使用当前代码，将按原计划继续执行。"
-                : "规划模型将结合当前代码修正计划，新版仍需你批准。",
+                : "规划模型将结合当前代码修正计划，完成后仍需你批准。",
             );
             void refresh().catch((e) => setError(String(e)));
           }}
@@ -3152,13 +3055,13 @@ function App() {
       )}
       {planReview && (
         <PlanReviewDialog
-          key={`${planReview.workflow_id}:${planReview.plan_revision}:${planReview.mode}`}
+          key={`${planReview.workflow_id}:${planReview.mode}`}
           target={planReview}
           onClose={() => setPlanReview(null)}
           onRejected={() => {
             setPlanReview(null);
             setNotice(
-              "计划已驳回，规划模型将按修改意见提交新版，等待你重新批准。",
+              "计划已驳回，规划模型将按修改意见更新当前计划，等待你重新批准。",
             );
             void refresh().catch((e) => setError(String(e)));
           }}
@@ -3166,9 +3069,9 @@ function App() {
       )}
       {planApprovalTarget && (
         <PlanApprovalDialog
-          key={`${planApprovalTarget.id}:${planApprovalTarget.plan_revision}`}
+          key={planApprovalTarget.id}
           isOpen={!!planApprovalTarget}
-          isStale={detail?.workflow?.id !== planApprovalTarget.id || detail?.workflow?.version !== planApprovalTarget.version || detail?.workflow?.plan_hash !== planApprovalTarget.plan_hash}
+          isStale={detail?.plan?.authority_ready !== true || detail?.workflow?.id !== planApprovalTarget.id || detail?.workflow?.version !== planApprovalTarget.version}
           onClose={() => setPlanApprovalTarget(null)}
           workflowId={planApprovalTarget.id}
           workflowVersion={planApprovalTarget.version}
@@ -3222,7 +3125,11 @@ function App() {
         workflowState={detail?.workflow?.state}
         focusRole={toolDrawerFocus}
         onSpecUpdated={() => void refresh()}
-      />
+      >
+        {isToolDrawerOpen && detail?.workflow && (
+          <WorkflowActivity workflow={detail.workflow} refresh={refresh} detail={detail} />
+        )}
+      </ToolModelDialog>
       <SettingsDialog
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}

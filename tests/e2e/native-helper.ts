@@ -138,8 +138,9 @@ export async function createNative(
     await expect(search).toBeEnabled({ timeout: 20000 });
     await search.click();
     await search.fill(query);
-    const option = modal
-      .locator('[aria-label="模型选项列表"] [role="option"]')
+    const option = page
+      .getByRole("listbox", { name: "模型选项列表", exact: true })
+      .getByRole("option")
       .first();
     await expect(option).toBeVisible({ timeout: 15000 });
     await option.click();

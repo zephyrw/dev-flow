@@ -1,8 +1,8 @@
 import { afterAll, describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { realpathSync } from "node:fs";
 import { GitDeliveryCoordinator } from "../../packages/git/src/delivery-coordinator.js";
 import { git, repositoryInfo } from "../../packages/git/src/git.js";
@@ -123,7 +123,138 @@ function coordinator(store: ReturnType<typeof memoryStore>, workspaceRoot: strin
   return new GitDeliveryCoordinator(store as never, workspaceRoot);
 }
 
+async function fastForwardFixture(taskPath = "task.txt", ignored = false) {
+  const sourceRepo = scratch("devflow-ff-source-");
+  initRepo(sourceRepo);
+  writeFileSync(join(sourceRepo, "base.txt"), "base\n");
+  if (ignored) writeFileSync(join(sourceRepo, ".gitignore"), taskPath + "\n");
+  const baseline = commitAll(sourceRepo, "baseline");
+  const taskRoot = join(scratch("devflow-ff-task-"), "task");
+  shell(sourceRepo, ["worktree", "add", "-b", "devflow/task", taskRoot]);
+  mkdirSync(dirname(join(taskRoot, taskPath)), { recursive: true });
+  writeFileSync(join(taskRoot, taskPath), "task content\n");
+  if (ignored) shell(taskRoot, ["add", "-f", "--", taskPath]);
+  const taskCommit = commitAll(taskRoot, "task by planner");
+  const commonDir = realpathSync(
+    resolve(realpathSync(taskRoot), await git(taskRoot, ["rev-parse", "--git-common-dir"])),
+  );
+  const store = memoryStore({
+    workflow: { wf: baseWorkflow() },
+    project: { p: { id: "p", repositories: [{ id: "main", path: sourceRepo }] } },
+    workspace: {
+      ws: {
+        id: "ws", workflow_id: "wf", repo_id: "main",
+        root: realpathSync(taskRoot), common_dir: commonDir,
+        baseline, branch: "devflow/task",
+        source_root: realpathSync(sourceRepo), source_branch: "main", owned: true,
+      },
+    },
+  });
+  const delivery = coordinator(store, scratch("devflow-ff-coordinator-"));
+  const integrate = () => delivery.integrateCommittedDelivery("wf", [
+    { repo_id: "main", commit: taskCommit },
+  ]);
+  return { sourceRepo, taskRoot, baseline, taskCommit, store, integrate };
+}
+
 describe("planner-commit 真实 Git 集成", () => {
+  it("源工作区不重叠的未跟踪计划文档允许快进，保留原字节和未暂存状态，重试幂等", async () => {
+    const { sourceRepo, taskRoot, taskCommit, store, integrate } = await fastForwardFixture();
+    const planPath = "docs/plans/current-plan.md";
+    const planBytes = Buffer.from("\ufeff# 批准计划\r\n保留原件与换行。\r\n", "utf8");
+    mkdirSync(dirname(join(sourceRepo, planPath)), { recursive: true });
+    writeFileSync(join(sourceRepo, planPath), planBytes);
+    store.put("workflow", "wf", "p", {
+      ...store.must<Record<string, unknown>>("workflow", "wf"),
+      state: "COMMIT_PARTIAL",
+      blocker: { code: "SOURCE_BUSY", message: "上轮被未跟踪计划文档阻塞" },
+    });
+
+    const first = await integrate();
+    expect(first.integrations[0]!.status).toBe("success");
+    expect(shell(sourceRepo, ["rev-parse", "HEAD"])).toBe(taskCommit);
+    expect(readFileSync(join(sourceRepo, planPath))).toEqual(planBytes);
+    expect(shell(sourceRepo, ["status", "--porcelain", "--untracked-files=all"])).toBe("?? " + planPath);
+    expect(shell(sourceRepo, ["diff", "--cached", "--name-only"])).toBe("");
+    expect(shell(sourceRepo, ["ls-files", "--", planPath])).toBe("");
+    expect(store.must<{ state: string; blocker?: unknown }>("workflow", "wf")).toMatchObject({ state: "COMPLETED" });
+    expect(store.must<{ blocker?: unknown }>("workflow", "wf").blocker).toBeUndefined();
+
+    // 模拟回执已持久化但阶段恢复后再次收尾，必须复用同一回执和提交。
+    store.put("workflow", "wf", "p", {
+      ...store.must<Record<string, unknown>>("workflow", "wf"), state: "COMMIT_PARTIAL",
+    });
+    const retry = await integrate();
+    expect(retry.integrations).toEqual(first.integrations);
+    expect(shell(sourceRepo, ["rev-parse", "HEAD"])).toBe(taskCommit);
+    expect(shell(sourceRepo, ["rev-list", "--count", "HEAD"])).toBe("2");
+    expect(shell(taskRoot, ["rev-parse", "HEAD"])).toBe(taskCommit);
+    expect(readFileSync(join(sourceRepo, planPath))).toEqual(planBytes);
+    expect(shell(sourceRepo, ["status", "--porcelain", "--untracked-files=all"])).toBe("?? " + planPath);
+    expect(shell(sourceRepo, ["diff", "--cached", "--name-only"])).toBe("");
+    expect(store.must<{ state: string }>("workflow", "wf").state).toBe("COMPLETED");
+  }, 30_000);
+
+  it.each([
+    { name: "未跟踪同名文件", taskPath: "overlap.txt", localPath: "overlap.txt", ignored: false },
+    { name: "未跟踪父路径文件", taskPath: "overlap/child.txt", localPath: "overlap", ignored: false },
+    { name: "未跟踪子路径文件", taskPath: "overlap", localPath: "overlap/child.txt", ignored: false },
+    { name: "被忽略的同名文件", taskPath: "overlap.txt", localPath: "overlap.txt", ignored: true },
+  ])("$name 阻止快进覆盖，保留文件、候选与具体 blocker", async ({ taskPath, localPath, ignored }) => {
+    const { sourceRepo, taskRoot, baseline, taskCommit, store, integrate } = await fastForwardFixture(taskPath, ignored);
+    const localBytes = Buffer.from("本地独立内容\r\n\u0000保留\r\n", "utf8");
+    mkdirSync(dirname(join(sourceRepo, localPath)), { recursive: true });
+    writeFileSync(join(sourceRepo, localPath), localBytes);
+    const statusBefore = shell(sourceRepo, ["status", "--porcelain", "--untracked-files=all", "--ignored"]);
+    if (ignored) expect(statusBefore).toContain("!! " + localPath);
+    const indexBefore = shell(sourceRepo, ["write-tree"]);
+
+    const result = await integrate();
+
+    expect(result.integrations[0]).toMatchObject({ status: "failed", candidate_commit: taskCommit });
+    expect(result.repairInstructions).toBeUndefined();
+    expect(shell(sourceRepo, ["rev-parse", "HEAD"])).toBe(baseline);
+    expect(shell(taskRoot, ["rev-parse", "HEAD"])).toBe(taskCommit);
+    expect(readFileSync(join(sourceRepo, localPath))).toEqual(localBytes);
+    expect(shell(sourceRepo, ["write-tree"])).toBe(indexBefore);
+    expect(shell(sourceRepo, ["status", "--porcelain", "--untracked-files=all", "--ignored"])).toBe(statusBefore);
+    const wf = store.must<{ state: string; blocker?: { code: string; message: string } }>("workflow", "wf");
+    expect(wf.state).toBe("COMMIT_PARTIAL");
+    expect(wf.blocker?.code).toBe("GIT_INTEGRATION_FAILED");
+    expect(wf.blocker?.message).toContain("overlap");
+    expect(store.events.find((event) => event.type === "PlannerIntegrationFailed")?.payload).toMatchObject({
+      repo_id: "main", code: "GIT_INTEGRATION_FAILED", message: expect.stringContaining("overlap"),
+    });
+    expect(store.get<{ commit: string }>("planner_commit_candidate", "wf:run-1:main")?.commit).toBe(taskCommit);
+  }, 30_000);
+
+  it.each(["unstaged", "staged"] as const)("源工作区 tracked %s 改动继续阻塞且保留", async (change) => {
+    const { sourceRepo, taskRoot, baseline, taskCommit, store, integrate } = await fastForwardFixture();
+    shell(sourceRepo, ["config", "merge.autoStash", "true"]);
+    const localBytes = Buffer.from("用户已有修改\r\n", "utf8");
+    writeFileSync(join(sourceRepo, "base.txt"), localBytes);
+    if (change === "staged") shell(sourceRepo, ["add", "base.txt"]);
+    const statusBefore = shell(sourceRepo, ["status", "--porcelain"]);
+    const indexBefore = shell(sourceRepo, ["write-tree"]);
+
+    const result = await integrate();
+
+    expect(result.integrations[0]).toMatchObject({ status: "failed", candidate_commit: taskCommit });
+    expect(shell(sourceRepo, ["rev-parse", "HEAD"])).toBe(baseline);
+    expect(shell(taskRoot, ["rev-parse", "HEAD"])).toBe(taskCommit);
+    expect(readFileSync(join(sourceRepo, "base.txt"))).toEqual(localBytes);
+    expect(shell(sourceRepo, ["write-tree"])).toBe(indexBefore);
+    expect(shell(sourceRepo, ["status", "--porcelain"])).toBe(statusBefore);
+    expect(existsSync(join(sourceRepo, "task.txt"))).toBe(false);
+    const wf = store.must<{ state: string; blocker?: { code: string; message: string } }>("workflow", "wf");
+    expect(wf.state).toBe("COMMIT_PARTIAL");
+    expect(wf.blocker?.code).toBe("SOURCE_BUSY");
+    expect(wf.blocker?.message).toContain("未提交");
+    expect(store.events.find((event) => event.type === "PlannerIntegrationFailed")?.payload).toMatchObject({
+      repo_id: "main", code: "SOURCE_BUSY", message: expect.stringContaining("未提交"),
+    });
+  }, 30_000);
+
   it("C01 existing_workspace 已有规划提交：不重复生成提交，保留无关 index 与工作区内容", async () => {
     const repo = scratch("devflow-c01-");
     initRepo(repo);
@@ -380,7 +511,7 @@ describe("planner-commit 真实 Git 集成", () => {
     expect(frozen?.commit).toBe(taskCommit);
   });
 
-  it("C07 源分支已分叉：不 cherry-pick 最后一个提交，生成规划修复说明并停留 COMMIT_PARTIAL", async () => {
+  it("C07 源分支无冲突分叉：仅预演并交规划模型在最终提交阶段吸收固定源提交", async () => {
     const sourceRepo = scratch("devflow-c07-src-");
     initRepo(sourceRepo);
     writeFileSync(join(sourceRepo, "base.txt"), "base\n");
@@ -419,13 +550,60 @@ describe("planner-commit 真实 Git 集成", () => {
     expect(shell(sourceRepo, ["rev-parse", "HEAD"])).toBe(advanceCommit);
     // 任务提交未被丢弃
     expect(shell(taskRoot, ["rev-parse", "HEAD"])).toBe(taskCommit);
-    // 交规划模型处理，而不是成功回执
+    // 预演无冲突后继续最终提交，不再交实施或执行测试轮次。
     expect(result.repairInstructions).toBeTruthy();
     expect(result.repairInstructions).toContain("吸收");
+    expect(result.repairInstructions).toContain("提交阶段");
+    expect(result.repairInstructions).toContain(advanceCommit);
+    expect(result.repairInstructions).toContain("--no-autostash");
+    expect(result.repairInstructions).not.toContain("交执行模型测试后");
     expect(result.integrations).toHaveLength(0);
     expect(store.must<{ state: string }>("workflow", "wf").state).toBe("COMMIT_PARTIAL");
     // 不强迫空提交、不改写任一方历史
     expect(shell(sourceRepo, ["rev-list", "--count", "HEAD"])).toBe("2");
+    expect(shell(sourceRepo, ["status", "--porcelain"])).toBe("");
+    expect(shell(taskRoot, ["status", "--porcelain"])).toBe("");
+    expect(existsSync(resolve(sourceRepo, shell(sourceRepo, ["rev-parse", "--git-path", "MERGE_HEAD"])))).toBe(false);
+    expect(existsSync(resolve(taskRoot, shell(taskRoot, ["rev-parse", "--git-path", "MERGE_HEAD"])))).toBe(false);
+  });
+
+  it("C07 真实内容冲突仅阻塞最终提交，保留双方现场和具体冲突路径，不派发修复测试", async () => {
+    const { sourceRepo, taskRoot, taskCommit, store, integrate } = await fastForwardFixture("base.txt");
+    writeFileSync(join(sourceRepo, "base.txt"), "source branch content\n");
+    const sourceCommit = commitAll(sourceRepo, "source changes same line");
+    const sourceBytes = readFileSync(join(sourceRepo, "base.txt"));
+    const taskBytes = readFileSync(join(taskRoot, "base.txt"));
+    const sourceIndex = shell(sourceRepo, ["write-tree"]);
+    const taskIndex = shell(taskRoot, ["write-tree"]);
+    const sourceMergeHead = resolve(sourceRepo, shell(sourceRepo, ["rev-parse", "--git-path", "MERGE_HEAD"]));
+    const taskMergeHead = resolve(taskRoot, shell(taskRoot, ["rev-parse", "--git-path", "MERGE_HEAD"]));
+
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const result = await integrate();
+
+      expect(result.repairInstructions).toBeUndefined();
+      expect(result.integrations[0]).toMatchObject({ status: "failed", candidate_commit: taskCommit });
+      expect(store.must<{ state: string; blocker?: { code: string; message: string } }>("workflow", "wf")).toMatchObject({
+        state: "COMMIT_PARTIAL",
+        blocker: { code: "MERGE_CONFLICT", message: expect.stringContaining("base.txt") },
+      });
+      expect(shell(sourceRepo, ["rev-parse", "HEAD"])).toBe(sourceCommit);
+      expect(shell(taskRoot, ["rev-parse", "HEAD"])).toBe(taskCommit);
+      expect(readFileSync(join(sourceRepo, "base.txt"))).toEqual(sourceBytes);
+      expect(readFileSync(join(taskRoot, "base.txt"))).toEqual(taskBytes);
+      expect(shell(sourceRepo, ["write-tree"])).toBe(sourceIndex);
+      expect(shell(taskRoot, ["write-tree"])).toBe(taskIndex);
+      expect(shell(sourceRepo, ["status", "--porcelain"])).toBe("");
+      expect(shell(taskRoot, ["status", "--porcelain"])).toBe("");
+      expect(existsSync(sourceMergeHead)).toBe(false);
+      expect(existsSync(taskMergeHead)).toBe(false);
+    }
+    const failures = store.events.filter((event) => event.type === "PlannerIntegrationFailed");
+    expect(failures).toHaveLength(2);
+    for (const failure of failures) expect(failure.payload).toMatchObject({
+      repo_id: "main", code: "MERGE_CONFLICT", message: expect.stringContaining("base.txt"),
+    });
+    expect(store.get<{ commit: string }>("planner_commit_candidate", "wf:run-1:main")?.commit).toBe(taskCommit);
   });
 
   it("C08 无须新提交：existing_workspace 不伪造集成成功，也不删除外部改动", async () => {

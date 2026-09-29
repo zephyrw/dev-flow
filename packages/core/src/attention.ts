@@ -179,7 +179,7 @@ export function workflowAttention(engine: Engine, key: string) {
     return {
       category: "acceptance",
       message: "等待你实际操作验收",
-      action: "查看本机验证副本",
+      action: "查看人工验收",
       at: w.updated_at,
     };
   if (["QUEUED", "REVIEW_QUEUED"].includes(w.state))

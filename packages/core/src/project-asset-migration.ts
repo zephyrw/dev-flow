@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync, copyFileSync, readdirSync, statSync, readFileSync, writeFileSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, readdirSync, statSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, resolve, normalize, relative, dirname, basename } from "node:path";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
@@ -8,6 +9,8 @@ import { computeSessionBindingKey } from "../../contracts/src/session-binding.js
 import { resolveWorktreePath, ensureWorktreeGitExcluded } from "../../git/src/workspace-paths.js";
 import { resolveWorkspaceIdentity } from "../../adapters/sdk/src/identity.js";
 import { now } from "./util.js";
+import { migrateMaterialBinding, validateMaterialMigration } from "./project-materials.js";
+import { materialRelativePath, readMaterialFile, publishMaterialFile, withMaterialRoot } from "./material-filesystem.js";
 
 /**
  * CW4-F04: 统一使用完整工作区映射重算 workspace_identity 与 binding key，保留真实 source_root
@@ -128,8 +131,49 @@ export interface ProjectAssetMigrationRecord {
   updated_at: string;
 }
 
+async function publishDatabaseBackup(store: Store, root: string, destination: string, operationId: string) {
+  type BackupIntent = { root: string; root_identity: string; path: string; temporary: string; hash: string; status: "pending" | "verified" };
+  const path = materialRelativePath(relative(root, destination));
+  const removeTemporary = (temporary: string) => {
+    requireCondition(dirname(resolve(temporary)) === resolve(tmpdir()) && basename(temporary).startsWith("devflow-material-backup-"), "BACKUP_CACHE_CONFLICT", "备份临时目录归属不明确", 409);
+    rmSync(temporary, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  };
+  let saved = store.getWithVersion<BackupIntent>("migration_backup_intent", operationId);
+  if (!saved) {
+    requireCondition(typeof store.db.backup === "function", "BACKUP_UNSUPPORTED", "SQLite 引擎不支持一致性备份", 500);
+    const temporary = mkdtempSync(join(tmpdir(), "devflow-material-backup-"));
+    let durableIntent = false;
+    try {
+      const file = join(temporary, "store.db");
+      await store.db.backup(file);
+      const body = readFileSync(file);
+      requireCondition(body.length > 0, "BACKUP_FAILED", "SQLite 一致性备份为空", 500);
+      const intent: BackupIntent = { root: resolve(root), root_identity: withMaterialRoot(root, (port) => port.identity), path, temporary, hash: createHash("sha256").update(body).digest("hex"), status: "pending" };
+      saved = store.compareAndSwap("migration_backup_intent", operationId, operationId, 0, intent);
+      durableIntent = true;
+    } finally {
+      if (!durableIntent) removeTemporary(temporary);
+    }
+  }
+  const intent = saved.data;
+  requireCondition(intent.root === resolve(root) && intent.path === path && intent.root_identity === withMaterialRoot(root, (port) => port.identity), "BACKUP_BINDING_CONFLICT", "一致性备份绑定已变化", 409);
+  if (intent.status === "pending") {
+    const file = join(intent.temporary, "store.db");
+    requireCondition(existsSync(file), "BACKUP_CACHE_MISSING", "一致性备份恢复缓存丢失，不能生成另一份快照替代", 409);
+    const body = readFileSync(file);
+    requireCondition(createHash("sha256").update(body).digest("hex") === intent.hash, "BACKUP_CACHE_CONFLICT", "一致性备份恢复缓存已变化", 409);
+    publishMaterialFile(root, path, body, operationId);
+    store.compareAndSwap("migration_backup_intent", operationId, operationId, saved.version, { ...intent, status: "verified" });
+  } else {
+    const body = readMaterialFile(root, path);
+    requireCondition(body && createHash("sha256").update(body).digest("hex") === intent.hash, "BACKUP_FILE_CONFLICT", "已发布的一致性备份缺失或已变化", 409);
+  }
+  removeTemporary(intent.temporary);
+}
+
 function computeFileSha256(filePath: string): string {
-  const content = readFileSync(filePath);
+  const content = readMaterialFile(dirname(filePath), basename(filePath));
+  requireCondition(content, "MATERIAL_FILE_MISSING", "迁移材料文件缺失", 409);
   return createHash("sha256").update(content).digest("hex");
 }
 
@@ -531,19 +575,10 @@ export class ProjectAssetMigrationService {
     this.store.put("project_asset_migration", migrationId, workflowId, record);
 
     // 2. backed_up 阶段：真实备份 SQLite 数据库及原工作树重要数据
-    mkdirSync(backupDir, { recursive: true });
 
     // CW3-F09: SQLite 一致性 backup，任何失败停留在原阶段，删掉主文件直接拷贝兜底
     const dbBackupPath = join(backupDir, "store.db");
-    if (typeof (this.store as any).db?.backup === "function") {
-      try {
-        await (this.store as any).db.backup(dbBackupPath);
-      } catch (err: any) {
-        throw new FlowError("BACKUP_FAILED", `SQLite 数据库备份失败: ${err.message}`, 500);
-      }
-    } else {
-      throw new FlowError("BACKUP_UNSUPPORTED", "SQLite 引擎不支持一致性备份 API", 500);
-    }
+    await publishDatabaseBackup(this.store, preview.source_root, dbBackupPath, `${migrationId}-database`);
     requireCondition(
       existsSync(dbBackupPath) && statSync(dbBackupPath).size > 0,
       "BACKUP_FAILED",
@@ -555,8 +590,9 @@ export class ProjectAssetMigrationService {
     for (const m of activeFiles) {
       if (existsSync(m.source_path)) {
         const fileBackupTarget = join(backupDir, "files", m.target_relative_path);
-        mkdirSync(dirname(fileBackupTarget), { recursive: true });
-        copyFileSync(m.source_path, fileBackupTarget);
+        const body = readMaterialFile(dirname(m.source_path), basename(m.source_path));
+        requireCondition(body, "MATERIAL_FILE_MISSING", "备份来源材料缺失", 409);
+        publishMaterialFile(preview.source_root, materialRelativePath(relative(preview.source_root, fileBackupTarget)), body, `${migrationId}-backup-${m.file_id}`);
       }
     }
 
@@ -570,9 +606,9 @@ export class ProjectAssetMigrationService {
       target_root: preview.target_root,
       files: activeFiles,
       db_backup: dbBackupPath,
-      backed_up_at: now(),
+      backed_up_at: record.created_at,
     };
-    writeFileSync(join(backupDir, "manifest.json"), JSON.stringify(manifest, null, 2), "utf8");
+    publishMaterialFile(preview.source_root, materialRelativePath(relative(preview.source_root, join(backupDir, "manifest.json"))), Buffer.from(JSON.stringify(manifest, null, 2)), `${migrationId}-manifest`);
 
     // 校验备份完整性 (CW2-F02)
     requireCondition(
@@ -589,34 +625,10 @@ export class ProjectAssetMigrationService {
     // CW2-F01 & CW3-F08: move_worktree 模式下写中间位置 copy_destination (旧工作树)
     for (const m of activeFiles) {
       if (m.status === "reusable") continue;
-      const copyDest = m.copy_destination;
-      const tempDest = `${copyDest}.tmp-${migrationId}`;
-      mkdirSync(dirname(copyDest), { recursive: true });
-      copyFileSync(m.source_path, tempDest);
-      const copiedHash = computeFileSha256(tempDest);
-      requireCondition(
-        copiedHash === m.hash,
-        "MATERIAL_COPY_CORRUPTED",
-        `复制文件哈希校验失败: ${m.source_path}`,
-      );
+      const data = readMaterialFile(dirname(m.source_path), basename(m.source_path));
+      requireCondition(data && createHash("sha256").update(data).digest("hex") === m.hash, "MATERIAL_COPY_CORRUPTED", "迁移来源材料已变化", 409);
+      publishMaterialFile(preview.current_root, materialRelativePath(m.target_relative_path), data, `${migrationId}-${m.file_id}`);
 
-      // CW3-F08 原子 no-replace 独占发布：若目标已存在异内容，拒绝覆盖
-      if (existsSync(copyDest)) {
-        const existingHash = computeFileSha256(copyDest);
-        if (existingHash !== m.hash) {
-          try { unlinkSync(tempDest); } catch {}
-          throw new FlowError(
-            "TARGET_FILE_CONFLICT",
-            `目标文件已存在异内容，禁止覆盖: ${copyDest}`,
-            409,
-          );
-        }
-      } else {
-        writeFileSync(copyDest, readFileSync(tempDest));
-      }
-      try {
-        unlinkSync(tempDest);
-      } catch {}
     }
     record.stage = "materials_copied";
     record.updated_at = now();
@@ -624,6 +636,7 @@ export class ProjectAssetMigrationService {
 
     // 4. worktree_moved 阶段：执行真正的 Git worktree move
     if (mode === "move_worktree" && preview.current_root.toLowerCase() !== preview.target_root.toLowerCase()) {
+      validateMaterialMigration(this.store, workspaceId, preview.current_root);
       ensureWorktreeGitExcluded(preview.source_root);
       requireCondition(
         !existsSync(preview.target_root),
@@ -703,19 +716,8 @@ export class ProjectAssetMigrationService {
           preview.current_root,
         );
 
-        // CW3-F10: 同步更新材料的绝对路径
-        const materials = this.store.list<any>("project_material", workflowId);
-        for (const mat of materials) {
-          if (mat.workspace_id === workspaceId) {
-            const newAbs = normalize(resolve(preview.target_root, mat.path));
-            this.store.put("project_material", mat.id, workflowId, {
-              ...mat,
-              workspace_root: preview.target_root,
-              absolute_path: newAbs,
-              updated_at: now(),
-            });
-          }
-        }
+        migrateMaterialBinding(this.store, workspaceId, preview.target_root);
+
       }
 
       record.stage = "committed";
@@ -758,17 +760,8 @@ export class ProjectAssetMigrationService {
 
     // 阶段 1 -> 2: 若卡在 prepared，补全备份
     if (record.stage === "prepared") {
-      mkdirSync(backupDir, { recursive: true });
       const dbBackupPath = join(backupDir, "store.db");
-      if (typeof (this.store as any).db?.backup === "function") {
-        try {
-          await (this.store as any).db.backup(dbBackupPath);
-        } catch (err: any) {
-          throw new FlowError("BACKUP_FAILED", `SQLite 数据库恢复备份失败: ${err.message}`, 500);
-        }
-      } else {
-        throw new FlowError("BACKUP_UNSUPPORTED", "SQLite 引擎不支持一致性备份 API", 500);
-      }
+      await publishDatabaseBackup(this.store, record.source_root, dbBackupPath, `${migrationId}-database`);
       requireCondition(
         existsSync(dbBackupPath) && statSync(dbBackupPath).size > 0,
         "BACKUP_FAILED",
@@ -779,8 +772,9 @@ export class ProjectAssetMigrationService {
       for (const m of record.files) {
         if (existsSync(m.source_path)) {
           const fileBackupTarget = join(backupDir, "files", m.target_relative_path);
-          mkdirSync(dirname(fileBackupTarget), { recursive: true });
-          copyFileSync(m.source_path, fileBackupTarget);
+          const body = readMaterialFile(dirname(m.source_path), basename(m.source_path));
+          requireCondition(body, "MATERIAL_FILE_MISSING", "备份来源材料缺失", 409);
+          publishMaterialFile(record.source_root, materialRelativePath(relative(record.source_root, fileBackupTarget)), body, `${migrationId}-backup-${m.file_id}`);
         }
       }
 
@@ -793,9 +787,9 @@ export class ProjectAssetMigrationService {
         target_root: record.target_root,
         files: record.files,
         db_backup: dbBackupPath,
-        backed_up_at: now(),
+        backed_up_at: record.created_at,
       };
-      writeFileSync(join(backupDir, "manifest.json"), JSON.stringify(manifest, null, 2), "utf8");
+      publishMaterialFile(record.source_root, materialRelativePath(relative(record.source_root, join(backupDir, "manifest.json"))), Buffer.from(JSON.stringify(manifest, null, 2)), `${migrationId}-manifest`);
       record.stage = "backed_up";
       record.backup_dir = backupDir;
       record.updated_at = now();
@@ -806,30 +800,10 @@ export class ProjectAssetMigrationService {
     if (record.stage === "backed_up") {
       for (const m of record.files) {
         if (m.status === "reusable") continue;
-        const copyDest = m.copy_destination || normalize(resolve(record.initial_root, m.target_relative_path));
-        const tempDest = `${copyDest}.tmp-${migrationId}`;
-        mkdirSync(dirname(copyDest), { recursive: true });
-        copyFileSync(m.source_path, tempDest);
-        const copiedHash = computeFileSha256(tempDest);
-        requireCondition(
-          copiedHash === m.hash,
-          "MATERIAL_COPY_CORRUPTED",
-          `复制文件哈希校验失败: ${m.source_path}`,
-        );
-        if (existsSync(copyDest)) {
-          const existingHash = computeFileSha256(copyDest);
-          if (existingHash !== m.hash) {
-            try { unlinkSync(tempDest); } catch {}
-            throw new FlowError(
-              "TARGET_FILE_CONFLICT",
-              `目标文件已存在异内容，禁止覆盖: ${copyDest}`,
-              409,
-            );
-          }
-        } else {
-          writeFileSync(copyDest, readFileSync(tempDest));
-        }
-        try { unlinkSync(tempDest); } catch {}
+        const data = readMaterialFile(dirname(m.source_path), basename(m.source_path));
+        requireCondition(data && createHash("sha256").update(data).digest("hex") === m.hash, "MATERIAL_COPY_CORRUPTED", "迁移来源材料已变化", 409);
+        publishMaterialFile(record.initial_root, materialRelativePath(m.target_relative_path), data, `${migrationId}-${m.file_id}`);
+
       }
       record.stage = "materials_copied";
       record.updated_at = now();
@@ -869,6 +843,7 @@ export class ProjectAssetMigrationService {
           `移动目标目录已存在: ${record.target_root}`,
           409,
         );
+        validateMaterialMigration(this.store, record.workspace_id, record.initial_root);
         mkdirSync(dirname(record.target_root), { recursive: true });
         execFileSync("git", ["worktree", "move", record.initial_root, record.target_root], {
           cwd: record.source_root,
@@ -927,19 +902,8 @@ export class ProjectAssetMigrationService {
             record.initial_root,
           );
 
-          // 同步更新材料绝对路径
-          const materials = this.store.list<any>("project_material", workflowId);
-          for (const mat of materials) {
-            if (mat.workspace_id === record.workspace_id) {
-              const newAbs = normalize(resolve(record.target_root, mat.path));
-              this.store.put("project_material", mat.id, workflowId, {
-                ...mat,
-                workspace_root: record.target_root,
-                absolute_path: newAbs,
-                updated_at: now(),
-              });
-            }
-          }
+          migrateMaterialBinding(this.store, record.workspace_id, record.target_root);
+
         }
 
         record.stage = "committed";
@@ -986,6 +950,11 @@ export class ProjectAssetMigrationService {
       409,
     );
 
+    // Reject changed v2 bytes before any reverse move; retain the committed record for recovery.
+    const rollbackRoot = record.mode === "move_worktree" && existsSync(record.target_root)
+      ? record.target_root : record.initial_root;
+    validateMaterialMigration(this.store, record.workspace_id, rollbackRoot);
+
     // 若曾移动过工作树，执行反向 move
     if (record.mode === "move_worktree" && existsSync(record.target_root)) {
       requireCondition(
@@ -1021,19 +990,7 @@ export class ProjectAssetMigrationService {
         record.target_root,
       );
 
-      // 同步回滚材料绝对路径
-      const materials = this.store.list<any>("project_material", record.workflow_id);
-      for (const mat of materials) {
-        if (mat.workspace_id === record.workspace_id) {
-          const origAbs = normalize(resolve(record.initial_root, mat.path));
-          this.store.put("project_material", mat.id, record.workflow_id, {
-            ...mat,
-            workspace_root: record.initial_root,
-            absolute_path: origAbs,
-            updated_at: now(),
-          });
-        }
-      }
+      migrateMaterialBinding(this.store, record.workspace_id, record.initial_root);
 
       record.stage = "rolled_back";
       record.updated_at = now();

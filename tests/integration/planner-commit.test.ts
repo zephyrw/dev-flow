@@ -1,4 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { setup, project, plan } from "../helpers.js";
+import { objectHash } from "../../packages/core/src/util.js";
+import { GitDeliveryCoordinator } from "../../packages/git/src/delivery-coordinator.js";
+import { CliDispatchManager } from "../../packages/runtime/src/cli-dispatch.js";
+import type { Run, Workflow } from "../../packages/contracts/src/index.js";
 import {
   createQualityFlow,
   nextQualityAction,
@@ -88,5 +93,135 @@ describe("planner-commit 路由契约", () => {
     );
     // 清理是 integrateCommittedDelivery 的收尾；路由层已到达终点动作
     expect(r.action.kind).toBe("planner_commit");
+  });
+});
+
+function commitRecoveryFixture(purpose = "planner_commit", state: Workflow["state"] = "EXECUTING") {
+  const s = setup();
+  const p = project(s.root), time = new Date().toISOString();
+  const workflow: Workflow = { id: "commit-recovery", project_id: p.id, title: "final commit", request: "finish approved delivery",
+    complexity: "simple", workspace_mode: "new_worktree", quality_policy_version: 2,
+    state, stage: purpose, version: 1, plan_revision: 1, plan_hash: "approved", run_id: "current-run",
+    environment_revision: 0, snapshot_id: "tested-snapshot", feedback: [], created_at: time, updated_at: time };
+  const run = { id: workflow.run_id!, workflow_id: workflow.id, plan_revision: 1, purpose,
+    routing_role: purpose === "executor_test" || purpose === "implement" ? "executor" : "planner",
+    stage: purpose, status: "running", logical_round_id: "same-round", conversation_id: "same-session",
+    assignment_id: "same-assignment", dispatch_context: { purpose, review_phase: "after_human", source_run_id: "tested-run",
+      logical_round_id: "same-round", assignment_id: "same-assignment" } } as Run;
+  s.store.put("project", p.id, p.id, p);
+  s.store.put("workflow", workflow.id, p.id, workflow);
+  s.store.put("run", run.id, workflow.id, run);
+  s.store.put("plan", workflow.id + "-1", workflow.id, { revision: 1, hash: workflow.plan_hash,
+    plan: { ...plan(objectHash(p), "a".repeat(40)), task_model: "native-v2" } });
+  s.store.put("quality_flow", workflow.id, workflow.id, { ...createQualityFlow(workflow.id), phase: "after_human", planner_repairs_only: true });
+  s.store.put("acceptance", workflow.id, workflow.id, { accepted: true, snapshot_id: workflow.snapshot_id });
+  s.store.put("evidence", "tested", workflow.id, { id: "tested", status: "passed", snapshot_id: workflow.snapshot_id });
+  return { ...s, workflow, run };
+}
+
+describe("planner commit recovery through Engine", () => {
+  it.each(["planner_commit", "executor_test", "planner_takeover"])("local-console stop and feedback retain %s and its frozen context", async purpose => {
+    const s = commitRecoveryFixture(purpose);
+    try {
+      await s.engine.stop(s.workflow.id, "local_console");
+      expect(s.engine.get(s.workflow.id).state).toBe("STOPPED");
+      const next = s.engine.feedback(s.workflow.id, "继续当前轮次，保留已完成工作", "within_plan");
+      await s.engine.consumeOutbox();
+      expect(next).toMatchObject({ state: "QUEUED", stage: purpose, snapshot_id: "tested-snapshot" });
+      expect(s.store.get("pending_dispatch_purpose", s.workflow.id)).toMatchObject(s.run.dispatch_context!);
+      expect(s.store.get("run", s.run.id)).toMatchObject({ conversation_id: "same-session", logical_round_id: "same-round" });
+      expect(s.store.get("run_continuation", s.workflow.id)).toMatchObject({ kind: "runtime_resume", source_run_id: s.run.id, conversation_id: "same-session" });
+      expect(s.store.get("acceptance", s.workflow.id)).toMatchObject({ accepted: true });
+      expect(s.store.get("evidence", "tested")).toMatchObject({ status: "passed" });
+      expect(new CliDispatchManager(s.store).getDispatchControl(s.workflow.id).reasons).toEqual([]);
+    } finally { s.store.close(); }
+  });
+
+  it("preserves a queued commit context when its previous completed Run belongs to another role", async () => {
+    const s = commitRecoveryFixture("executor_test", "QUEUED");
+    try {
+      s.store.put("workflow", s.workflow.id, s.workflow.project_id, { ...s.workflow, stage: "planner_commit" });
+      s.store.put("run", s.run.id, s.workflow.id, { ...s.run, status: "completed" });
+      const context = { purpose: "planner_commit", source_run_id: s.run.id, review_phase: "after_human",
+        logical_round_id: "commit-round", assignment_id: "commit-assignment", repair_batch_id: "existing-batch" };
+      s.store.put("pending_dispatch_purpose", s.workflow.id, s.workflow.id, context);
+      await s.engine.stop(s.workflow.id, "local_console");
+      s.engine.feedback(s.workflow.id, "仅继续最后提交", "within_plan");
+      await s.engine.consumeOutbox();
+      expect(s.engine.get(s.workflow.id)).toMatchObject({ state: "QUEUED", stage: "planner_commit", snapshot_id: "tested-snapshot" });
+      expect(s.store.get("pending_dispatch_purpose", s.workflow.id)).toEqual(context);
+    } finally { s.store.close(); }
+  });
+
+  it("does not use a historical commit handoff to reroute ordinary implementation feedback", async () => {
+    const s = commitRecoveryFixture("implement");
+    try {
+      s.store.put("planner_commit_handoff", s.workflow.id, s.workflow.id, { run_id: "historical-commit" });
+      await s.engine.stop(s.workflow.id, "local_console");
+      s.engine.feedback(s.workflow.id, "继续本轮开发", "within_plan");
+      await s.engine.consumeOutbox();
+      expect(s.engine.get(s.workflow.id)).toMatchObject({ state: "QUEUED", stage: "execute" });
+      expect(s.store.get("pending_dispatch_purpose", s.workflow.id)).toMatchObject({ purpose: "implement" });
+    } finally { s.store.close(); }
+  });
+
+  it("keeps clean divergence in planner_commit instead of starting repair and testing", async () => {
+    const s = commitRecoveryFixture();
+    const integrate = vi.spyOn(GitDeliveryCoordinator.prototype, "integrateCommittedDelivery").mockImplementation(async () => {
+      s.engine.transition(s.workflow.id, ["COMMITTING"], "COMMIT_PARTIAL", "commit_recovery");
+      return { integrations: [], repairInstructions: "合并已确认无冲突的固定提交并完成提交" };
+    });
+    try {
+      await (s.engine as any).completePlannerCommit(s.workflow.id, s.run.id, { repositories: [{ repo_id: "main", commit: "b".repeat(40) }] });
+      await s.engine.consumeOutbox();
+      expect(s.engine.get(s.workflow.id)).toMatchObject({ state: "QUEUED", stage: "planner_commit", snapshot_id: "tested-snapshot" });
+      expect(s.store.get("pending_dispatch_purpose", s.workflow.id)).toMatchObject({ purpose: "planner_commit", source_run_id: s.run.id });
+      expect(s.store.get("planner_integration_repair", s.workflow.id)).toMatchObject({ source_run_id: s.run.id });
+      expect(s.store.get("repair_assignment", s.workflow.id)).toBeUndefined();
+      expect(s.store.get("evidence", "tested")).toMatchObject({ status: "passed" });
+    } finally { integrate.mockRestore(); s.store.close(); }
+  });
+
+  it("requeues a new final commit from a stopped misrouted Run without replacing the original handoff or tested work", async () => {
+    const s = commitRecoveryFixture("implement", "STOPPED");
+    const dispatch = vi.spyOn(s.engine, "dispatch").mockResolvedValue(undefined);
+    try {
+      const source = { ...s.run, id: "original-commit", purpose: "planner_commit", status: "completed" };
+      const handoff = { run_id: source.id, repositories: [{ repo_id: "main", commit: "c".repeat(40) }] };
+      s.store.put("run", source.id, s.workflow.id, source);
+      s.store.put("run", s.run.id, s.workflow.id, { ...s.run, status: "stopped" });
+      s.store.put("planner_commit_handoff", s.workflow.id, s.workflow.id, handoff);
+      s.store.put("planner_integration_repair", s.workflow.id, s.workflow.id, { source_run_id: source.id, instructions: "原整合状态" });
+      s.store.put("pending_dispatch_purpose", s.workflow.id, s.workflow.id, { purpose: "implement" });
+      new CliDispatchManager(s.store).addControlReason(s.workflow.id, { reason: "workflow_pause", created_at: new Date().toISOString() });
+      await s.engine.retryCommit(s.workflow.id);
+      await s.engine.consumeOutbox();
+      expect(s.engine.get(s.workflow.id)).toMatchObject({ state: "QUEUED", stage: "planner_commit", snapshot_id: "tested-snapshot" });
+      expect(s.store.get("pending_dispatch_purpose", s.workflow.id)).toMatchObject({ purpose: "planner_commit", source_run_id: source.id, review_phase: "after_human" });
+      expect(s.store.get("planner_commit_handoff", s.workflow.id)).toEqual(handoff);
+      expect(s.store.get("planner_integration_repair", s.workflow.id)).toMatchObject({ instructions: expect.stringContaining("不据此重开开发、全量测试或代码复核") });
+      expect(s.store.get("evidence", "tested")).toMatchObject({ status: "passed" });
+      expect(s.store.get("acceptance", s.workflow.id)).toMatchObject({ accepted: true });
+      expect(new CliDispatchManager(s.store).getDispatchControl(s.workflow.id).reasons).toEqual([]);
+      expect(dispatch).toHaveBeenCalledOnce();
+    } finally { dispatch.mockRestore(); s.store.close(); }
+  });
+
+  it.each(["missing-link", "different-plan", "before-human"])("refuses a stopped final commit retry with %s", async invalid => {
+    const s = commitRecoveryFixture("implement", "STOPPED");
+    const dispatch = vi.spyOn(s.engine, "dispatch").mockResolvedValue(undefined);
+    try {
+      const source = { ...s.run, id: "original-commit", purpose: "planner_commit", status: "completed",
+        plan_revision: invalid === "different-plan" ? 2 : 1 };
+      s.store.put("run", source.id, s.workflow.id, source);
+      s.store.put("run", s.run.id, s.workflow.id, { ...s.run, status: "stopped" });
+      s.store.put("planner_commit_handoff", s.workflow.id, s.workflow.id, { run_id: source.id });
+      if (invalid !== "missing-link") s.store.put("planner_integration_repair", s.workflow.id, s.workflow.id, { source_run_id: source.id });
+      if (invalid === "before-human") s.store.put("quality_flow", s.workflow.id, s.workflow.id, createQualityFlow(s.workflow.id));
+      await expect(s.engine.retryCommit(s.workflow.id)).rejects.toMatchObject({ code: "COMMIT_CONTEXT_MISSING" });
+      expect(s.engine.get(s.workflow.id).state).toBe("STOPPED");
+      expect(s.store.get("pending_dispatch_purpose", s.workflow.id)).toBeUndefined();
+      expect(dispatch).not.toHaveBeenCalled();
+    } finally { dispatch.mockRestore(); s.store.close(); }
   });
 });

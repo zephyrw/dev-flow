@@ -637,7 +637,9 @@ export function useConversationView(input: {
     previousSelected.current = view.selectedConversationId;
   }, [view.selectedConversationId]);
   const selectConversation = (conversationId: string) => {
-    setRequestedId(conversationId);
+    // Returning to the current root resumes following role handoffs. Only an
+    // explicitly selected child/history conversation stays pinned.
+    setRequestedId(conversationId === view.rootConversationId ? undefined : conversationId);
     if (typeof history === "undefined" || typeof location === "undefined") {
       return;
     }

@@ -1,8 +1,4 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { WorkflowActivity } from "./components/WorkflowActivity.js";
-import { AgyRecoveryPanel } from "./components/AgyRecoveryPanel.js";
-import { RepairModelPicker, defaultRepairPicker, type RepairPickerValue } from "./components/RepairModelPicker.js";
-import { getExecutionSpec, type ExecutionSpecPayload } from "./components/model-api.js";
 import { AsidePopover } from "./components/AsidePopover.js";
 import { type ReferenceItem } from "./components/RequirementComposer.js";
 import {
@@ -48,8 +44,6 @@ export function TaskInteraction({
   const [error, setError] = useState("");
   const [authNote, setAuthNote] = useState("");
   const [asideOpen, setAsideOpen] = useState(false);
-  const [repair, setRepair] = useState<RepairPickerValue>(defaultRepairPicker());
-  const [spec, setSpec] = useState<ExecutionSpecPayload | null>(null);
   const w = detail.workflow;
   const draftApi = useConversationDraft(w.id);
   const showComposer = shouldRenderConversationComposer({
@@ -139,15 +133,6 @@ export function TaskInteraction({
     };
   }, [fetchInteraction, w.state]);
 
-  useEffect(() => {
-    if (w.state !== "HUMAN_PENDING") return;
-    const controller = new AbortController();
-    getExecutionSpec(w.id, controller.signal)
-      .then(setSpec)
-      .catch(() => setSpec(null));
-    return () => controller.abort();
-  }, [w.state, w.id]);
-
   const act = async (
     fn: () => Promise<any>,
     propagateError = false,
@@ -217,24 +202,8 @@ export function TaskInteraction({
         rootConversationId,
         expectedGeneration,
       );
-      if (w.state === "HUMAN_PENDING" && detail.plan?.plan?.task_model === "native-v2") {
-        const body: Record<string, unknown> = {
-          request_id: payload.requestId,
-          root_conversation_id: target.rootId,
-          expected_generation: target.generation,
-          text: payload.sendText,
-          refs: payload.refs,
-          attachment_ids: readyAttachmentIds(payload.attachments),
-          repair_model: repair.selection,
-          remember_for_task: repair.rememberForTask,
-        };
-        if (repair.rememberForTask || repair.selection.mode !== "task-default") {
-          body.expected_spec_revision = spec?.spec_revision ?? 0;
-        }
-        await send(`/workflows/${w.id}/functional-issues`, body);
-        setRepair(defaultRepairPicker());
-        return;
-      }
+      // The normal composer sends the user's message, including at acceptance.
+      // Explicit issue/retest actions remain available in the tool/model dialog.
       await send(`/workflows/${w.id}/conversation-messages`, {
         request_id: payload.requestId,
         root_conversation_id: target.rootId,
@@ -254,7 +223,6 @@ export function TaskInteraction({
 
   return (
     <section className="task-interaction" aria-label="会话输入">
-      <AgyRecoveryPanel workflowId={w.id} onRefresh={refresh} />
       {w.state === "BLOCKED" &&
         w.blocker?.code === "MODEL_QUOTA" &&
         detail.attention?.category === "queue" && (
@@ -364,6 +332,11 @@ export function TaskInteraction({
           />
         </div>
       )}
+      {error && (
+        <p role="alert" className="error">
+          {error}
+        </p>
+      )}
       {showComposer && (
         <div className="composer-anchor">
           {popoverVisible && asideSummary && (
@@ -407,15 +380,6 @@ export function TaskInteraction({
               临时提问 {asides.total}
             </button>
           )}
-          {w.state === "HUMAN_PENDING" && detail.plan?.plan?.task_model === "native-v2" && (
-            <RepairModelPicker
-              value={repair}
-              onChange={setRepair}
-              disabled={pending}
-              plannerProfile={spec?.spec.plannerProfile}
-              executorProfile={spec?.spec.executorProfile}
-            />
-          )}
           <ConversationComposer
             workflowId={w.id}
             draft={draftApi.draft}
@@ -434,20 +398,6 @@ export function TaskInteraction({
             }
           />
         </div>
-      )}
-      {error && (
-        <p role="alert" className="error">
-          {error}
-        </p>
-      )}
-      <WorkflowActivity workflow={w} refresh={refresh} detail={detail} />
-      {detail.queue?.owners?.length > 0 && (
-        <p>
-          占用任务：
-          {detail.queue.owners
-            .map((id: string) => (id === w.id ? "当前任务" : id))
-            .join("、")}
-        </p>
       )}
     </section>
   );

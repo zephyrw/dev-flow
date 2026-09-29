@@ -80,6 +80,15 @@ describe("AGY Account Selector (AC-U04 & AC-U05)", () => {
     expect(result.excluded_accounts[0]?.reason).toBe("missing_required_quota_pools");
   });
 
+  it("prefers more five-hour quota before LRU when weekly quota is equal", () => {
+    const older = buildAccount("older", "Older");
+    const full = buildAccount("full", "Full", "ready", "2026-09-20T11:00:00.000Z");
+    const result = selectCandidates([older, full], [
+      buildSnapshot("older", 1, undefined, 0.2), buildSnapshot("full", 1, undefined, 1),
+    ], ["default"], now);
+    expect(result.ranked_candidates.map(candidate => candidate.account_id)).toEqual(["full", "older"]);
+  });
+
   it("projects an elapsed weekly window even if its last observed balance was positive", () => {
     const snapshot = buildSnapshot("reset", 0.2, new Date(now - 120_000).toISOString());
     const result = selectCandidates([buildAccount("reset", "Reset")], [snapshot], ["default"], now);

@@ -22,6 +22,29 @@ it("structured output guidance retains typed intent and text while input remains
   expect(ExecutorRoundResultSchema.parse(received).status).toBe("completed");
 });
 
+it("Codex executor and planner takeover output schemas contain typed artifact items at both levels", () => {
+  const schema = modelOutputSchema(ExecutorRoundOutputSchema, ["main"]);
+  const artifacts = schema.properties.artifacts.anyOf[0].items;
+  expect(artifacts.anyOf.map((node: any) => node.type)).toEqual(["string", "object"]);
+  expect(schema.properties.delivery.anyOf[0].properties.artifacts.anyOf[0].items).toEqual(artifacts);
+  function check(node: any) {
+    expect(!!node.type || !!node.anyOf || !!node.$ref).toBe(true);
+    if (node.type === "object") {
+      expect(node.additionalProperties).toBe(false);
+      expect(node.required).toEqual(Object.keys(node.properties ?? {}));
+      Object.values(node.properties ?? {}).forEach(check);
+    }
+    if (node.items) check(node.items);
+    node.anyOf?.forEach(check);
+  }
+  check(schema);
+  // Only generation is typed. Existing/native optional material is still accepted.
+  const historical = { status: "completed", artifacts: [{ custom: { previous: true } }],
+    delivery: { artifacts: [{ custom: "legacy" }] } };
+  expect(ExecutorRoundResultSchema.parse(historical)).toEqual(historical);
+  expect(normalizeOptionalDeliveryManifest(historical).artifacts).toEqual(historical.artifacts);
+});
+
 it("optional malformed materials preserve result intent and independently usable report paths", () => {
   const raw = {
     status: "completed",

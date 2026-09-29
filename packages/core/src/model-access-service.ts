@@ -751,8 +751,8 @@ export class ModelAccessService {
       accessModelKey: frozen.accessModelKey,
       verification_method: "native-probe",
       last_success_at: checked,
-      identityConfidence: "verified",
-    });
+      identityConfidence: native.identityConfidence,
+    } satisfies ModelAccessRecord);
     this.putAccess(record);
     return record;
   }
@@ -880,8 +880,8 @@ export class ModelAccessService {
         accessModelKey: frozen.accessModelKey,
         verification_method: "native-probe",
         last_success_at: checked,
-        identityConfidence: "verified",
-      });
+        identityConfidence: native.identityConfidence,
+      } satisfies ModelAccessRecord);
       this.putAccess(record);
       return record;
     } else {

@@ -4,7 +4,7 @@ DevFlow 是一个面向现代 AI 编程助手（Codex、Antigravity CLI、Claude
 
 ## 核心特性
 
-- **跨平台与单进程互斥**：提供用 Go 编写的高性能本地宿主守护进程（`devflow-host`），基于 Windows JobObject / POSIX 进程组精准强杀进程树，并以具名互斥体/flock 维护严格单控制器所有权。
+- **跨平台与单进程互斥**：由 Node 运行时统一承载本地服务、受管进程和 Windows 凭据 worker，通过 koffi 调用原生能力；使用 Windows JobObject / POSIX 进程组管理受管进程树，并维护单控制器所有权。
 - **两道质量防线与自动接管**：
   1. 开发与自测 → 人工前代码质量审查/整改 → 人工功能确认/修复 → 人工后代码质量审查/整改 → 安全本地交付。
   2. 首次发现问题不计失败；两阶段分别在执行模型完成正式整改后，连续三次独立复核仍不合格才由规划模型接管。编译、测试、超时及基础设施失败不计入质量整改次数，也不触发换模型；复核通过清零连续次数。平台调度角色切换，不核验测试证明。
@@ -18,11 +18,12 @@ DevFlow 是一个面向现代 AI 编程助手（Codex、Antigravity CLI、Claude
 
 ## 快速开始
 
-### 运行环境
+### 源码开发环境
 
 - Node.js >= 22.23.2
 - pnpm 11.7.0
-- Go >= 1.24 (用于编译跨平台 Host)
+
+发布包自带 Node 运行时和所需原生依赖；源码构建不需要 Go 工具链。
 
 ### 常用命令
 
@@ -33,14 +34,17 @@ pnpm typecheck
 # 2. 构建服务、runner 和 credential worker
 pnpm build             # 前端与 Node API 构建
 
-# 3. 运行自动化测试（使用上一步生成的受管子进程入口）
-pnpm test:unit         # 单元测试
-pnpm test:integration  # 集成测试
-pnpm test              # 全量自动化测试
+# 3. 按目标文件运行自动化测试（使用上一步生成的受管子进程入口）
+pnpm exec vitest run tests/unit/project-materials.test.ts
+pnpm exec playwright test tests/e2e/plan-review.spec.ts
 
 # 4. 启动服务
 pnpm start             # 启动 DevFlow 本地 API 服务
 ```
+
+测试入口各有边界：`pnpm test` 仅运行 Vitest 的单元与集成用例，`pnpm test:unit` 和 `pnpm test:integration` 分别选取对应目录；浏览器 E2E 使用独立的 `pnpm test:e2e`（Playwright）。`scripts/*.test.mjs` 使用 Node test runner 单独运行，例如 `node --test scripts/install-skills.test.mjs`，不包含在 Vitest 中。
+
+`pnpm test:live:agy`、`pnpm test:live:resume-stop` 与 `pnpm test:live:opentabs` 是独立的真实客户端/浏览器场景，需要可用的外部客户端及对应登录环境，按授权范围单独执行；普通自动化测试通过不代表这些真实场景已经通过。
 
 ## 验证边界
 

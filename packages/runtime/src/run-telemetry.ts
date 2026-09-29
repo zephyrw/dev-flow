@@ -1,3 +1,4 @@
+import { highRiskDiagnostic } from "../../presentation/src/secret-redactor.js";
 /**
  * D02 整合点：decode → adapter 会话分流 → 根身份校验 → ConversationObserver → 根/子 telemetry。
  * D02 的 ConversationService 通过 bindConversationObserver 接入；未接入时本文件 route 纯函数仍按原生身份分流。
@@ -326,10 +327,14 @@ export class RunTelemetry {
         ),
       ),
     } as RunActivity;
-    full.text = boundedPublicText(full.text ?? "", 16000);
-    if (full.command) full.command = boundedPublicText(full.command, 32000);
-    if (full.cwd) full.cwd = boundedPublicText(full.cwd, 4000);
-    if (full.resultText) full.resultText = boundedPublicText(full.resultText, 16000);
+    const sensitive = highRiskDiagnostic(
+      `${previous?.title ?? ""} ${full.title ?? ""} ${full.command ?? ""}`,
+    );
+    full.text = sensitive ? "敏感认证操作：仅保留状态" : boundedPublicText(full.text ?? "", 16000);
+    full.title = sensitive ? "敏感认证操作" : boundedPublicText(full.title ?? "会话活动", 200);
+    full.command = sensitive ? undefined : full.command ? boundedPublicText(full.command, 32000) : undefined;
+    full.cwd = sensitive ? undefined : full.cwd ? boundedPublicText(full.cwd, 4000) : undefined;
+    full.resultText = sensitive ? undefined : full.resultText ? boundedPublicText(full.resultText, 16000) : undefined;
     if (full.status === "active" && full.kind === "tool")
       this.active.set(full.id, full);
     else this.active.delete(full.id);
@@ -422,6 +427,13 @@ export class RunTelemetry {
     if (merged.cwd) merged.cwd = boundedPublicText(merged.cwd, 4000);
     if (merged.result_text)
       merged.result_text = boundedPublicText(merged.result_text, 16000);
+    if (highRiskDiagnostic(`${previous?.title ?? ""} ${merged.title ?? ""} ${item.command ?? previous?.command ?? ""}`)) {
+      merged.title = "敏感认证操作";
+      merged.public_text = "仅保留操作状态";
+      merged.command = undefined;
+      merged.cwd = undefined;
+      merged.result_text = undefined;
+    }
     if (item.status === "active" && item.kind === "tool")
       this.childActive.set(key, merged);
     else this.childActive.delete(key);

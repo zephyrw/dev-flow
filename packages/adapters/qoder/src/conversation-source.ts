@@ -1,3 +1,4 @@
+import { diagnosticClip } from "../../../presentation/src/secret-redactor.js";
 import { z } from "zod";
 import type { SubagentCapabilities } from "../../../contracts/src/conversation.js";
 import { SubagentCapabilitiesSchema } from "../../../contracts/src/conversation.js";
@@ -344,16 +345,16 @@ function contentBlocks(message: unknown): Record<string, unknown>[] {
 }
 
 function publicTextFrom(value: unknown): string | undefined {
-  if (typeof value === "string") return value.slice(0, 16000);
+  if (typeof value === "string") return diagnosticClip(value, 16000)!;
   const record = asRecord(value);
   if (!record) return undefined;
   const direct = stringField(record.text ?? record.result ?? record.public_text);
-  if (direct) return direct.slice(0, 16000);
+  if (direct) return diagnosticClip(direct, 16000)!;
   const blocks = contentBlocks(record);
   const texts = blocks
     .map((block) => stringField(block.text))
     .filter((item): item is string => Boolean(item));
-  return texts.length ? texts.join("\n").slice(0, 16000) : undefined;
+  return texts.length ? diagnosticClip(texts.join("\n"), 16000)! : undefined;
 }
 
 function nestedRecord(value: unknown): Record<string, unknown> | undefined {
@@ -584,7 +585,7 @@ export class QoderStreamMapper {
         payload: DiscoveredPayloadSchema.parse({
           spawn_call_id: callId,
           title,
-          task_summary: summary?.slice(0, 500),
+          task_summary: diagnosticClip(summary, 500),
           child_tools: childTools.length ? childTools : undefined,
           readonly_constrained: constrained,
         }),

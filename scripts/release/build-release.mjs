@@ -37,21 +37,48 @@ export function validateAccountReleaseInputs(
     if (!existsSync(join(root, file)))
       throw new Error("Missing account release input: " + file);
 }
+export function verifyVersionChain({
+  targetTag,
+  expectedVersion,
+  gitSha,
+  expectedGitSha,
+} = {}) {
+  const expectedTag = "v" + expectedVersion;
+  if (targetTag && targetTag !== expectedTag) {
+    throw new Error(
+      `Release tag mismatch: target tag "${targetTag}" does not match package version "${expectedVersion}" (expected "${expectedTag}")`,
+    );
+  }
+  if (expectedGitSha && gitSha && expectedGitSha.trim() !== gitSha.trim()) {
+    throw new Error(
+      `Release git SHA mismatch: expected "${expectedGitSha.trim()}", got "${gitSha.trim()}"`,
+    );
+  }
+}
 export function generateReleaseBundle() {
   validateAccountReleaseInputs();
   const pkg = JSON.parse(readFileSync("package.json", "utf8")),
     version = pkg.version;
-  const platform = process.platform + "-" + process.arch,
-    tag = "v" + version;
+  const platform = process.platform + "-" + process.arch;
   if (
-    !["win32", "darwin", "linux"].includes(process.platform) ||
-    !["x64", "arm64"].includes(process.arch)
+    !["win32-x64", "linux-x64", "darwin-x64", "darwin-arm64"].includes(platform)
   )
     throw new Error("Unsupported platform");
+  const targetTag = process.env.RELEASE_TAG || process.env.GITHUB_REF_NAME;
   const gitRevision = execFileSync("git", ["rev-parse", "HEAD"], {
     encoding: "utf8",
     windowsHide: true,
   }).trim();
+  const expectedGitSha = process.env.RELEASE_GIT_SHA || process.env.GITHUB_SHA;
+
+  verifyVersionChain({
+    targetTag,
+    expectedVersion: version,
+    gitSha: gitRevision,
+    expectedGitSha,
+  });
+
+  const tag = targetTag || "v" + version;
   const root = mkdtempSync(join(tmpdir(), "devflow-release-")),
     payload = join(root, "devflow");
   mkdirSync(payload, { recursive: true });
@@ -127,11 +154,18 @@ export function generateReleaseBundle() {
     })),
   };
   writeFileSync(join(payload, "sbom.json"), JSON.stringify(sbom, null, 2));
+  writeFileSync(join(payload, "release-identity.json"), JSON.stringify({
+    version, tag, git_revision: gitRevision, platform: process.platform, arch: process.arch,
+  }, null, 2));
   const output = resolve("dist/release");
   mkdirSync(output, { recursive: true });
   const asset = "devflow-" + tag + "-" + platform + ".tar.gz",
     path = join(output, asset);
-  execFileSync("tar", ["-czf", path, "-C", root, "devflow"], {
+  // Emit ordinary files, not pnpm cache hardlinks, junctions or host-specific bin links.
+  const portableRoot = join(root, "portable");
+  mkdirSync(portableRoot);
+  cpSync(payload, join(portableRoot, "devflow"), { recursive: true, dereference: true });
+  execFileSync("tar", ["-czf", path, "-C", portableRoot, "devflow"], {
     windowsHide: true,
   });
   const digest = createHash("sha256").update(readFileSync(path)).digest("hex");
@@ -140,12 +174,16 @@ export function generateReleaseBundle() {
     tag,
     version,
     git_revision: gitRevision,
+    git_sha: gitRevision,
     published_at: new Date().toISOString(),
     platforms: [platform],
     components: {
       [platform]: {
         name: asset,
         version,
+        tag,
+        git_revision: gitRevision,
+        git_sha: gitRevision,
         platform: process.platform,
         arch: process.arch,
         sha256: digest,

@@ -608,7 +608,7 @@ function decodeStreamText(
       rootNativeId: state.rootNativeId,
       sessionNativeId: grokSessionId(record) ?? state.rootNativeId,
       kind: "activity",
-      payload: { text: text.slice(0, 500) },
+      payload: { text: "模型输出中（分片正文未记录）" },
     }),
   ];
 }

@@ -69,9 +69,9 @@ export class SwitchOperationExecutor {
         message: `Realm ${options.realmId} not found`,
       };
     }
-    const operation = this.repository.getOperation(options.operationId);
+    const initialOperation = this.repository.getOperation(options.operationId);
     if (
-      !operation ||
+      !initialOperation ||
       !this.authHost.isDomainLockHeld(options.realmId) ||
       realm.service_state !== "running" ||
       realm.pending_operation_id !== options.operationId
@@ -82,6 +82,7 @@ export class SwitchOperationExecutor {
         message: "operation_not_owned",
       };
     }
+    let operation = initialOperation;
     const guard = () => {
       const current = this.repository.getRealm(options.realmId),
         op = this.repository.getOperation(options.operationId);
@@ -160,6 +161,13 @@ export class SwitchOperationExecutor {
       };
     }
     guard();
+    // Close queued admission before taking the consumer/demand snapshot. The
+    // external-process await above may have accepted more queued consumers.
+    operation = this.repository.getOperation(options.operationId)!;
+    operation.phase = "quiescing";
+    operation.revision++;
+    this.repository.saveOperation(operation);
+    options.requiredPoolIds = [...new Set([...options.requiredPoolIds, ...operation.required_pool_ids])];
     const occupancy = (
       await Promise.all(this.consumers.map((c) => c.listOccupancy()))
     ).flat();
@@ -200,8 +208,12 @@ export class SwitchOperationExecutor {
         settings.maintenance.refresh_verified_max_age_hours,
     };
     let accounts = this.repository.listAccounts(options.realmId);
+    // A workflow quota failure is stronger than a stale positive /usage
+    // snapshot. Do not reinstall the account which triggered this operation.
+    const failedQuotaAccount = options.selection.mode === "auto" && options.trigger === "workflow_quota"
+      ? realm.active_account_id : undefined;
     const initialSelection = selectCandidates(
-      accounts,
+      accounts.filter(account => account.id !== failedQuotaAccount),
       this.repository.listQuotaSnapshots(options.realmId),
       options.requiredPoolIds,
       this.clock.now(),
@@ -386,7 +398,7 @@ export class SwitchOperationExecutor {
     } else {
       // 自动选优
       const selResult = selectCandidates(
-        accounts,
+        accounts.filter(account => account.id !== failedQuotaAccount),
         snapshots,
         options.requiredPoolIds,
         now,
@@ -663,6 +675,10 @@ export class SwitchOperationExecutor {
               credential_revision: targetAcc.credential_revision,
               model_id: modelId,
               timeoutMs: settings.probe_timeout_seconds * 1000,
+            }).catch(error => {
+              if (error?.code === "agy_model_quota_exhausted" &&
+                  error.account_id === targetAcc.id && error.model_id === modelId) return false;
+              throw error;
             }))
           ) {
             accessible = false;
@@ -670,6 +686,35 @@ export class SwitchOperationExecutor {
           }
           verifiedModelIds.push(modelId);
         }
+      // Inference may renew the keyring token after the /usage capture. Commit
+      // the renewed bytes only when the installed account's identity still matches.
+      if (!(await this.authHost.compareActive(options.realmId, targetAcc.secret_ref))) {
+        const matchesIdentity = (auth: Partial<AgyAccount["auth"]> | undefined) =>
+          auth?.email?.trim().toLowerCase() === expectedEmail &&
+          (!targetAcc.identity.subject || auth?.subject === targetAcc.identity.subject);
+        const active = await this.authHost.inspectActive(options.realmId);
+        if (!active.exists || !matchesIdentity(active.auth)) {
+          realm.phase = "blocked";
+          this.repository.saveRealm(realm);
+          throw new Error("identity_mismatch");
+        }
+        guard();
+        const renewed = await this.authHost.captureActive(options.realmId, targetAcc.id);
+        if (!matchesIdentity(renewed.auth) ||
+            !(await this.authHost.compareActive(options.realmId, renewed.secret_ref))) {
+          realm.phase = "blocked";
+          this.repository.saveRealm(realm);
+          throw new Error("identity_mismatch");
+        }
+        targetAcc.secret_ref = renewed.secret_ref;
+        targetAcc.credential_revision = renewed.credential_revision;
+        targetAcc.auth = { ...targetAcc.auth, ...renewed.auth };
+        targetAcc.revision++;
+        this.repository.saveAccount(targetAcc);
+        operation.installed_secret_ref = renewed.secret_ref;
+        operation.revision++;
+        this.repository.saveOperation(operation);
+      }
       if (zero || !accessible) {
         if (options.selection.mode === "explicit")
           throw new Error("target_unavailable");

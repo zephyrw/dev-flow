@@ -1,5 +1,5 @@
 import type { AccountCommittedEvent } from "../../agy-accounts/src/index.js";
-import type { ActiveManagedRun } from "./agy-workflow-bridge.js";
+import type { AccountRecoveryRun } from "./agy-workflow-bridge.js";
 import type { Store } from "../../store/src/store.js";
 import type {
   AgySourceCheckpoint,
@@ -30,7 +30,7 @@ export interface RecoveryPlan {
 export class AgyWorkflowRecoveryCoordinator {
   async planRecovery(
     event: AccountCommittedEvent,
-    affectedRuns: ActiveManagedRun[],
+    affectedRuns: AccountRecoveryRun[],
     store?: Store,
     checkpointManager?: AgyRecoveryCheckpointManager,
   ): Promise<RecoveryPlan[]> {

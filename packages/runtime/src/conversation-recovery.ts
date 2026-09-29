@@ -18,7 +18,7 @@ import type { RunContinuation } from "../../contracts/src/tr-handoff.js";
 import {
   CONVERSATION_CONTROL_FENCE,
   ConversationControlRequestSchema,
-  isLiveConversationStatus,
+  collectLiveTargets,
   isRecoveryConversationStatus,
   systemControlClock,
   type ConversationControlClock,
@@ -27,9 +27,13 @@ import {
   type ConversationControlService,
 } from "../../core/src/conversation-control.js";
 import type { ConversationService } from "../../core/src/conversation-service.js";
+import { hasSuccessorRoot } from "../../core/src/conversation-root-order.js";
 import { latestSpec } from "../../core/src/run-profile.js";
+import { continuationMatchesRun } from "../../core/src/conversation-lineage.js";
 import {
   continuationForRecovery,
+  currentContinuation,
+  continuationFromWaiting,
   readWaitingContext,
   waitingPurposeFromRun,
   type WaitingContext,
@@ -68,6 +72,9 @@ export interface RecoveryRunRequest {
 
 export interface RecoveryAttemptObservation {
   conversation_id: string;
+  attempt_id?: string;
+  generation?: number;
+  root_id?: string;
   run_id?: string;
   status: ConversationStatus;
   native_session_id?: string;
@@ -202,8 +209,8 @@ export function buildManifest(input: BuildManifestInput): RecoveryManifest {
     reason: input.reason,
     purpose: input.purpose,
     pending_children: pending.children,
-    completed_children: collectCompletedChildren(input.tree),
-    cancelled_children: collectCancelledChildren(input.tree),
+    completed_children: collectCompletedChildren(input.tree, input.root_conversation_id),
+    cancelled_children: collectCancelledChildren(input.tree, input.root_conversation_id),
     stage: "prepared",
     delivered_count: 0,
     observed_count: 0,
@@ -289,12 +296,12 @@ export class ConversationRecovery {
         409,
       );
     }
-    if (workflow.state === "STOPPED") return;
     const tree = this.requireRootTree(workflowId, request);
     const pause = latestPause(
       this.deps.store,
       workflowId,
       request.root_id,
+      request.expected_generation,
     );
     if (pause && pause.unconfirmed_count > 0) {
       throw new FlowError(
@@ -303,7 +310,7 @@ export class ConversationRecovery {
         409,
       );
     }
-    if (countLiveTargets(tree, request.root_id) > 0) {
+    if (collectLiveTargets(tree, request.root_id, undefined, request.expected_generation).length > 0) {
       throw new FlowError(
         CONVERSATION_ERROR.STOP_UNCONFIRMED,
         "仍有旧子会话可能执行",
@@ -319,17 +326,30 @@ export class ConversationRecovery {
   ): RecoveryArrangement {
     const workflow = this.requireWorkflow(workflowId);
     const tree = this.deps.conversations.getTree(workflowId, request.root_id);
-    const fence = latestFence(this.deps.store, workflowId, request.root_id);
-    const sourceRunId = fence?.run_id ?? workflow.run_id;
+    const rootAttempt = tree.attempts.find((attempt) =>
+      attempt.conversation_id === request.root_id && attempt.generation === request.expected_generation);
+    const fence = latestFence(this.deps.store, workflowId, request.root_id,
+      request.expected_generation, rootAttempt?.run_id);
+    const sourceRunId = fence?.run_id ?? rootAttempt?.run_id ?? workflow.run_id;
     if (!sourceRunId) {
       throw new FlowError("NOT_FOUND", "缺少可恢复的原运行", 404);
     }
     const sourceRun = this.deps.store.get<Run>("run", sourceRunId);
+    if (!sourceRun || sourceRun.workflow_id !== workflowId ||
+      sourceRun.plan_revision !== workflow.plan_revision || sourceRunId !== workflow.run_id ||
+      sourceRun.status === "cancelled" || sourceRun.status === "superseded" ||
+      this.deps.store.get("run_continuation_superseded", sourceRunId))
+      throw new FlowError(CONVERSATION_ERROR.STALE_ROOT, "恢复来源运行已过期", 409);
     const purpose = preservedPurpose(fence, sourceRun, tree, request.root_id);
+    const priorContinuation = fence?.continuation ?? sourceRun?.continuation;
+    const validatedContinuation = sourceRun && priorContinuation &&
+      ["implement", "functional_fix", "planner_takeover", "executor_test", "planner_commit", "quality_review", "planning"].includes(purpose)
+      ? continuationMatchesRun(this.deps.store, { ...sourceRun, purpose: purpose as Run["purpose"] }, priorContinuation) ? priorContinuation : undefined
+      : priorContinuation;
     const ownership = waitingPurposeFromRun(
       purpose,
       fence?.stage ?? sourceRun?.stage ?? workflow.stage,
-      fence?.continuation ?? sourceRun?.continuation,
+      validatedContinuation,
     );
     const planningOnly = isPlanningOnly(this.deps.store, workflow, purpose);
     const profileChanged = hasNextToolChange(this.deps.store, workflow, sourceRun);
@@ -363,8 +383,12 @@ export class ConversationRecovery {
     };
     this.saveState(state);
     this.bindResumeControl(workflowId, request, recoveryId);
+    const waiting = options.waiting ?? readWaitingContext(this.deps.store, workflowId);
+    const acceptedWaiting = waiting && currentContinuation(this.deps.store, workflowId,
+      continuationFromWaiting(waiting), { purpose: ownership.purpose, role: ownership.role,
+        root_id: request.root_id, generation: request.expected_generation }) ? waiting : undefined;
     const continuation = continuationForRecovery(
-      options.waiting ?? readWaitingContext(this.deps.store, workflowId),
+      acceptedWaiting,
       {
         source_run_id: sourceRunId,
         purpose: ownership.purpose,
@@ -484,16 +508,21 @@ export class ConversationRecovery {
       RECOVERY_STATE_KIND,
       workflowId,
     );
-    if (observation.run_id) {
-      const byRun = states.find((item) => {
-        const manifest = this.getManifest(item.recovery_id);
-        return manifest?.target_run_id === observation.run_id;
-      });
-      if (byRun) return byRun;
-    }
-    return states
-      .filter((item) => item.workflow_id === workflowId)
-      .sort((a, b) => b.recovery_id.localeCompare(a.recovery_id))[0];
+    const node = this.deps.store.get<ConversationNode>(CONVERSATION_ENTITY.node, observation.conversation_id);
+    const attempt = node?.current_attempt_id
+      ? this.deps.store.get<ConversationAttempt>(CONVERSATION_ENTITY.attempt, node.current_attempt_id) : undefined;
+    const runId = observation.run_id ?? attempt?.run_id;
+    if (!runId || !node || node.workflow_id !== workflowId ||
+      !attempt || attempt.run_id !== runId ||
+      (observation.attempt_id && observation.attempt_id !== attempt.id) ||
+      (observation.generation !== undefined && observation.generation !== attempt.generation) ||
+      (observation.root_id && observation.root_id !== node.root_id)) return;
+    const workflow = this.deps.store.get<Workflow>("workflow", workflowId);
+    if (workflow?.run_id && workflow.run_id !== runId) return;
+    return states.find((item) => {
+      const manifest = this.getManifest(item.recovery_id);
+      return manifest?.target_run_id === runId && node.root_id === item.root_id;
+    });
   }
 
   private bindResumeControl(
@@ -550,7 +579,7 @@ export class ConversationRecovery {
     const root = all.nodes.find((node) => node.id === request.root_id);
     if (!root)
       throw new FlowError(CONVERSATION_ERROR.NOT_FOUND, "会话根不存在", 404);
-    if (root.id !== root.root_id || hasSuccessorRoot(all, root)) {
+    if (root.id !== root.root_id || hasSuccessorRoot(this.deps.store, all, root)) {
       throw new FlowError(
         CONVERSATION_ERROR.STALE_ROOT,
         "会话根已切换，不能停止新的运行",
@@ -663,10 +692,11 @@ function collectPendingChildren(
 
 function collectCompletedChildren(
   tree: ConversationTreeSnapshot,
+  rootId: string,
 ): RecoveryManifest["completed_children"] {
   const items: RecoveryManifest["completed_children"] = [];
   for (const node of tree.nodes) {
-    if (isAsideNode(node)) continue;
+    if (node.id === rootId || isAsideNode(node)) continue;
     const attempt = latestAttempt(tree.attempts, node.id);
     if (attempt?.status !== "completed") continue;
     items.push({
@@ -677,10 +707,10 @@ function collectCompletedChildren(
   return items;
 }
 
-function collectCancelledChildren(tree: ConversationTreeSnapshot): string[] {
+function collectCancelledChildren(tree: ConversationTreeSnapshot, rootId: string): string[] {
   const ids: string[] = [];
   for (const node of tree.nodes) {
-    if (isAsideNode(node)) continue;
+    if (node.id === rootId || isAsideNode(node)) continue;
     const attempt = latestAttempt(tree.attempts, node.id);
     if (attempt?.status === "cancelled") ids.push(node.id);
   }
@@ -802,10 +832,17 @@ function latestPause(
   store: Store,
   workflowId: string,
   rootId: string,
+  expectedGeneration?: number,
 ): ConversationControl | undefined {
   return store
     .list<ConversationControl>(CONVERSATION_ENTITY.control, workflowId)
-    .filter((item) => item.action === "pause" && item.root_id === rootId)
+    .filter(
+      (item) =>
+        item.action === "pause" &&
+        item.root_id === rootId &&
+        (expectedGeneration === undefined ||
+          item.expected_generation === expectedGeneration),
+    )
     .sort((a, b) => b.updated_at.localeCompare(a.updated_at))[0];
 }
 
@@ -813,10 +850,13 @@ function latestFence(
   store: Store,
   workflowId: string,
   rootId: string,
+  generation: number,
+  runId?: string,
 ): ConversationControlFence | undefined {
   return store
     .list<ConversationControlFence>(CONVERSATION_CONTROL_FENCE, workflowId)
-    .filter((item) => item.root_id === rootId)
+    .filter((item) => item.root_id === rootId && item.expected_generation === generation &&
+      (!runId || item.run_id === runId))
     .sort((a, b) => b.updated_at.localeCompare(a.updated_at))[0];
 }
 
@@ -830,32 +870,6 @@ function findControlByRequest(
     .find((item) => item.request_id === requestId);
 }
 
-function countLiveTargets(
-  tree: ConversationTreeSnapshot,
-  rootId: string,
-): number {
-  return tree.nodes.filter((node) => {
-    if (node.root_id !== rootId) return false;
-    const attempt = latestAttempt(tree.attempts, node.id);
-    return !!attempt && isLiveConversationStatus(attempt.status);
-  }).length;
-}
-
-function hasSuccessorRoot(
-  tree: ConversationTreeSnapshot,
-  root: ConversationNode,
-): boolean {
-  return tree.nodes.some(
-    (node) =>
-      node.id === node.root_id &&
-      node.id !== root.id &&
-      (node.replaces_conversation_id === root.id ||
-        (node.lineage_id === root.lineage_id &&
-          node.adapter_id === root.adapter_id &&
-          node.kind === root.kind &&
-          node.created_at > root.created_at)),
-  );
-}
 
 function isAsideNode(node: ConversationNode): boolean {
   return node.kind === "aside" || node.purpose === "aside";

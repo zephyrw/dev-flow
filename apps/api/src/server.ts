@@ -60,7 +60,7 @@ import {
   modelErrorRetryable,
   registerModelRoutes,
 } from "./model-routes.js";
-import { PlanReviewService } from "../../../packages/core/src/plan-review.js";
+import { PlanReviewService, readPlanMaterial } from "../../../packages/core/src/plan-review.js";
 import { SourceChangeService } from "../../../packages/core/src/source-change.js";
 import { listAttachmentRecords } from "../../../packages/evidence/src/archive-consumer.js";
 import { registerAgyAccountRoutes, registerAgyWorkflowRecoveryRoutes } from "./agy-account-routes.js";
@@ -181,7 +181,7 @@ export async function buildServer(
     runtimeStopPort(engine.runtime as LocalRuntime | undefined),
   );
   engine.pauseTree = async (workflowId, request) => {
-    const fence = existingPauseFence(engine.store, workflowId, request.root_id);
+    const fence = existingPauseFence(engine.store, workflowId, request.root_id, request.expected_generation);
     if (fence) return conversationControls.reconcile(workflowId, fence.control_id);
     return conversationControls.pauseTree(workflowId, request);
   };
@@ -1318,6 +1318,10 @@ export async function buildServer(
     return {
       ...detail,
       events: detail.events.map((e) => engine.store.publicEvent(e)),
+      formal_guidance: publicEvent(engine.store.list<ConversationMessage>(CONVERSATION_ENTITY.message, key)
+        .filter((message) => message.mode === "formal")
+        .map((message) => ({ id: message.id, workflow_id: key, text: message.text,
+          created_at: message.created_at, feedback_id: message.feedback_message_id }))),
       attachment_status: listAttachmentRecords(engine.store, key),
       conversation_tree: conversations.getTree(key),
     };
@@ -1394,143 +1398,29 @@ export async function buildServer(
     human(req);
     const { id: key, documentId } = req.params as any;
     const q = (req.query || {}) as any;
-    const revision = q.revision !== undefined ? Number(q.revision) : undefined;
-
-    // 历史 markdown 下载路由兼容 (progress / tests)
     if (["progress", "tests", "plan-self-check"].includes(documentId)) {
-      const w = engine.get(key);
-      requireCondition(w.plan_revision > 0, "PLAN_MISSING", "尚无计划", 404);
-      engine.exportDocuments(key);
-      const file = join(
-        engine.config.storage_root,
-        "documents",
-        key,
-        "r" + w.plan_revision,
-        {
-          progress: "开发进度.md",
-          tests: "测试进度.md",
-          "plan-self-check": "执行模型计划复核.md",
-        }[documentId as "progress" | "tests" | "plan-self-check"]!,
-      );
-      requireCondition(
-        existsSync(file),
-        "DOCUMENT_MISSING",
-        "简单任务的进度包含在计划中",
-        404,
-      );
-      return reply
-        .type("text/markdown; charset=utf-8")
-        .header(
-          "Content-Disposition",
-          `attachment; filename="${documentId}.md"`,
-        )
-        .send(readFileSync(file));
+      const content = engine.renderProgressDocuments(key)[documentId];
+      requireCondition(content !== undefined, "DOCUMENT_MISSING", "尚无对应进度报告", 404);
+      return reply.type("text/markdown; charset=utf-8")
+        .header("Content-Disposition", `attachment; filename="${documentId}.md"`)
+        .send(content);
     }
-
-    const isMarkdownDownload =
-      q.format === "markdown" || q.download === "1" || q.download === "true";
-
-    const renderPlanAsMarkdown = (planObj: any): string => {
-      if (!planObj) return "";
-      if (typeof planObj === "string") return planObj;
-      if (typeof planObj.markdown === "string" && planObj.markdown.trim()) {
-        return planObj.markdown;
-      }
-      const lines: string[] = [];
-      lines.push(`# ${planObj.title ?? "实施计划"}`);
-      if (planObj.summary || planObj.design_ref?.summary) {
-        lines.push("", "## 背景与目标", String(planObj.design_ref?.summary ?? planObj.summary));
-      }
-      if (Array.isArray(planObj.work_items) && planObj.work_items.length > 0) {
-        lines.push("", "## 主要实施任务");
-        for (const item of planObj.work_items) {
-          lines.push(`- ${item.title ?? item.name ?? item.id}`);
-        }
-      } else if (Array.isArray(planObj.tasks) && planObj.tasks.length > 0) {
-        lines.push("", "## 主要实施任务");
-        for (const item of planObj.tasks) {
-          lines.push(`- ${item.title ?? item.name ?? item.id}`);
-        }
-      }
-      if (Array.isArray(planObj.acceptance_items) && planObj.acceptance_items.length > 0) {
-        lines.push("", "## 主要测试与验收");
-        for (const acc of planObj.acceptance_items) {
-          lines.push(`- ${acc.scenario ?? acc.title ?? acc.id}`);
-        }
-      } else if (Array.isArray(planObj.tests) && planObj.tests.length > 0) {
-        lines.push("", "## 主要测试与验收");
-        for (const tst of planObj.tests) {
-          lines.push(`- ${tst.scenario ?? tst.title ?? tst.id}`);
-        }
-      }
-      return lines.join("\n") + "\n";
-    };
-
-    try {
-      const doc = documentService.getDocument(key, documentId, revision);
-      if (isMarkdownDownload) {
-        return reply
-          .type("text/markdown; charset=utf-8")
-          .header(
-            "Content-Disposition",
-            `attachment; filename="${documentId}-${key}-r${doc.revision}.md"`,
-          )
-          .send(doc.content);
-      }
-      return {
-        ok: true,
-        document: doc,
-      };
-    } catch (err: any) {
-      // D07/D08 规范：文档 hash 不匹配属于需确认的真实错误，绝不静默降级退回
-      if (err?.code && String(err.code).includes("HASH_MISMATCH")) {
-        throw err;
-      }
-      if (documentId === "plan") {
-        const w = engine.get(key);
-        requireCondition(w.plan_revision > 0, "PLAN_MISSING", "尚无计划", 404);
-        const targetRev = revision ?? w.plan_revision;
-        const planRecord =
-          engine.store.get<any>("plan", `${key}-${targetRev}`) ??
-          engine.store.get<any>("plan", `${key}_r${targetRev}`) ??
-          (targetRev === w.plan_revision ? engine.plan(key) : null);
-
-        if (planRecord) {
-          const mdFromDoc = planRecord.plan?.design_ref?.content_hash
-            ? engine.store
-                .list<any>("project_document", key)
-                .find((d) => d.hash === planRecord.plan.design_ref.content_hash)
-                ?.content
-            : undefined;
-          const markdownContent =
-            mdFromDoc ?? renderPlanAsMarkdown(planRecord.plan);
-          const resolvedDoc = {
-            id: planRecord.id ?? `${key}-${targetRev}`,
-            workflow_id: key,
-            document_type: "plan",
-            revision: planRecord.revision ?? targetRev,
-            hash: planRecord.hash ?? w.plan_hash ?? "",
-            content: markdownContent,
-            approved_by_human: Boolean(planRecord.approved_by_human),
-          };
-
-          if (isMarkdownDownload) {
-            return reply
-              .type("text/markdown; charset=utf-8")
-              .header(
-                "Content-Disposition",
-                `attachment; filename="plan-${key}-r${resolvedDoc.revision}.md"`,
-              )
-              .send(resolvedDoc.content);
-          }
-          return {
-            ok: true,
-            document: resolvedDoc,
-          };
-        }
-      }
-      throw err;
+    const isMarkdownDownload = q.format === "markdown" || q.download === "1" || q.download === "true";
+    const document = documentId === "plan"
+      ? (() => {
+          const w = engine.get(key);
+          const plan = readPlanMaterial(engine.store, key, w.plan_revision);
+          return { id: plan.id, workflow_id: key, document_type: "plan", path: plan.path,
+            revision: plan.revision, hash: plan.hash, content: plan.markdown,
+            source_type: plan.source_type, authority_ready: plan.authority_ready };
+        })()
+      : documentService.getDocument(key, documentId);
+    if (isMarkdownDownload) {
+      return reply.type("text/markdown; charset=utf-8")
+        .header("Content-Disposition", `attachment; filename="${documentId}-${key}.md"`)
+        .send(document.content);
     }
+    return { ok: true, document };
   });
 
   // 文档严格核验与审批路由 (RQ-08 & 5.2 节)
@@ -1539,7 +1429,7 @@ export async function buildServer(
     const { id: key, documentId } = req.params as any;
     const documentFields = {
       expected_version: z.number().int().nonnegative(),
-      document_revision: z.number().int().positive(),
+      document_revision: z.number().int().positive().optional(),
       document_hash: z.string().min(1).optional(),
       hash: z.string().min(1).optional(),
       feedback_cursor: z.number().int().nonnegative().default(0),
@@ -1767,17 +1657,23 @@ export async function buildServer(
     const key = Id.parse((req.params as any).id);
     engine.get(key);
     const query = z
-      .object({ plan_revision: z.coerce.number().int().positive() })
+      .object({ plan_revision: z.coerce.number().int().positive().optional() })
       .parse(req.query);
     return engine.store
       .list<any>("aside_session", key)
-      .filter((q) => q.plan_revision === query.plan_revision)
+      .filter((q) => query.plan_revision === undefined || q.plan_revision === query.plan_revision)
       .sort((a, b) => a.created_at.localeCompare(b.created_at));
   });
   app.post("/api/workflows/:id/accept", async (req) => {
     human(req);
     const b = z
-      .object({ binding: z.record(z.string(), z.unknown()) })
+      .object({
+        // The console shares its request envelope with plan approval. These
+        // transport fields do not change the acceptance proof or binding.
+        schema_version: z.literal(2).optional(),
+        request_id: z.string().uuid().optional(),
+        binding: z.record(z.string(), z.unknown()),
+      })
       .strict()
       .parse(req.body);
     const key = Id.parse((req.params as any).id);
@@ -1836,12 +1732,6 @@ export async function buildServer(
     const feedbackMsg = saved?.feedback_message_id
       ? engine.store.get<any>("feedback_message", saved.feedback_message_id)
       : undefined;
-    engine.store.event(key, w.project_id, "UserGuidance", {
-      text: text || saved?.text || "",
-      scope: body.scope ?? "within_plan",
-      status: "received",
-      feedback_id: saved?.feedback_message_id,
-    });
     if (!body.interrupt_requested && body.scope !== "new_scope") {
       await afterConversationMessage(engine, key, submitted);
       return { ok: true, message: feedbackMsg, result: engine.get(key) };
@@ -2253,10 +2143,11 @@ function existingPauseFence(
   store: Store,
   workflowId: string,
   rootId: string,
+  expectedGeneration: number,
 ): ConversationControlFence | undefined {
   return store
     .list<ConversationControlFence>(CONVERSATION_CONTROL_FENCE, workflowId)
-    .filter((item) => item.root_id === rootId && item.dispatch_frozen)
+    .filter((item) => item.root_id === rootId && item.expected_generation === expectedGeneration && item.dispatch_frozen)
     .sort((a, b) => b.updated_at.localeCompare(a.updated_at))[0];
 }
 
@@ -2268,10 +2159,10 @@ async function pauseActiveTree(
   requestId?: string,
 ): Promise<ConversationControlResult | undefined> {
   const tree = conversations.getTree(workflowId);
-  const rootId = tree.active_root_id;
+  const rootId = conversations.resolveControlRoot(workflowId, tree);
   if (!rootId) return undefined;
   const generation = latestRootGeneration(tree.attempts, rootId);
-  const fence = existingPauseFence(store, workflowId, rootId);
+  const fence = existingPauseFence(store, workflowId, rootId, generation);
   if (fence) return controls.reconcile(workflowId, fence.control_id);
   try {
     return await controls.pauseTree(workflowId, {
@@ -2301,7 +2192,7 @@ async function resumeActiveTree(
   body: { request_id?: string; root_id?: string; expected_generation?: number },
 ): Promise<void> {
   const tree = conversations.getTree(workflowId);
-  const rootId = body.root_id ?? tree.active_root_id;
+  const rootId = body.root_id ?? conversations.resolveControlRoot(workflowId, tree);
   if (!rootId) return;
   const request: ConversationControlRequest = {
     request_id:

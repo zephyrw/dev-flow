@@ -8,6 +8,21 @@ import {
 } from "../../packages/presentation/src/conversation-activity.js";
 
 describe("conversation-activity-meaningful (U3 & U4: 执行活动有效投影与增量合并)", () => {
+  it("merged log filtering retains cwd-only and failed tools while removing empty cards", () => {
+    const rows = readableLogs([
+      { id: "empty", kind: "tool", title: "执行命令", text: "", status: "done" },
+      { id: "message", kind: "message", title: "模型输出", text: "", status: "done" },
+      { id: "cwd", kind: "tool", title: "执行命令", text: "", cwd: "/repo", status: "done" },
+      { id: "failed", kind: "tool", title: "执行命令", text: "", status: "error" },
+    ].map((payload, index) => ({
+      event_seq: index + 1, workflow_id: "wf", run_id: "run", created_at: String(index),
+      type: "NativeActivity", payload,
+    })), "wf");
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({ cwd: "/repo" });
+    expect(rows[1]).toMatchObject({ status: "error" });
+  });
+
   it("U4: legacy native completion retains command and path from an earlier increment", () => {
     const events = [
       { event_seq: 2, workflow_id: "wf", run_id: "run", created_at: "later", type: "NativeActivity",

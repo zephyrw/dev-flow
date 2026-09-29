@@ -48,11 +48,11 @@ export const NativeAcceptanceItemSchema = z
 export type NativeAcceptanceItem = z.infer<typeof NativeAcceptanceItemSchema>;
 
 /**
- * native-v2 确定设计正文引用（正文单独存储按哈希去重）
+ * native-v2 项目计划原件引用（旧 content_hash 仅兼容已有数据）
  */
 export const DesignReferenceSchema = z
   .object({
-    content_hash: z.string().min(1),
+    content_hash: z.string().min(1).optional(),
     summary: z.string().min(1),
     file_ref: z.string().optional(),
   })

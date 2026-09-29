@@ -166,6 +166,51 @@ it.each([
   }
 });
 
+it.each([false, true])("authentication output stays suppressed across merged increments (flush=%s)", (flush) => {
+  const s = fixture();
+  try {
+    for (const session of ["root-session", "child-a"]) {
+      const event = {
+        source_id: "fixture", root_native_id: "root-session",
+        session_native_id: session,
+        ...(session === "child-a" ? { parent_native_id: "root-session" } : {}),
+        kind: "activity" as const,
+      };
+      s.telemetry.acceptConversationEvent({ ...event, source_seq: `${session}-1`, payload: {
+        id: "auth", kind: "tool", status: "active", title: "执行命令",
+        command: "tool login", text: "unlabelled-credential", cwd: "private/auth-path",
+        result_text: "unlabelled-credential",
+      } });
+      if (flush) s.telemetry.flush();
+      s.telemetry.acceptConversationEvent({ ...event, source_seq: `${session}-2`, payload: {
+        id: "auth", kind: "tool", status: "done", title: "执行命令",
+        text: "unlabelled-credential", cwd: "private/auth-path", result_text: "unlabelled-credential",
+      } });
+    }
+    s.telemetry.flush();
+    const events = s.store.events("w", 0, 1000);
+    const serialized = JSON.stringify(events);
+    expect(serialized).not.toContain("unlabelled-credential");
+    expect(serialized).not.toContain("private/auth-path");
+    for (const session of ["root-session", "child-a"]) {
+      const activity = events.filter((event) => event.type === "ConversationActivity" &&
+        (event.payload as any).conversation_id === session).at(-1)!.payload as any;
+      expect(activity.status).toBe("completed");
+      expect(activity.title).toContain("敏感认证操作");
+      expect(activity.command).toBeUndefined();
+      expect(activity.cwd).toBeUndefined();
+      expect(activity.result_text).toBeUndefined();
+    }
+    const root = events.filter((event) => event.type === "NativeActivity").at(-1)!.payload as any;
+    expect(root.status).toBe("done");
+    expect(root.resultText).toBeUndefined();
+    expect(s.telemetry.observation.active_tools).toBe(0);
+  } finally {
+    s.telemetry.finish();
+    s.store.close();
+  }
+});
+
 it("route 先区分 root/child，子事件不绑定主会话身份", () => {
   const bound = {
     nativeRootId: "root-session",

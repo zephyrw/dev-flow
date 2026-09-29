@@ -15,6 +15,7 @@ import { WorkspaceReferenceSchema } from "../../contracts/src/feedback.js";
 import { startTask } from "../../core/src/progress.js";
 import { repairFailure } from "../../core/src/repair.js";
 import { batchExecutionInstructions } from "../../core/src/execution-guidance.js";
+import { planningWritingInstructions } from "../../core/src/role-boundaries.js";
 import {
   OperationSchema,
   requestOperation,
@@ -320,7 +321,7 @@ export function makeMcp(engine: Engine, principal: Principal, modelAccess?: Mode
     );
     register(
       "devflow_submit_plan",
-      "提交确定计划及测试定义，进入人工审批；调用后结束本轮，不轮询。",
+      "提交自然语言开发计划及测试场景，进入人工审批；调用后结束本轮，不轮询。" + planningWritingInstructions,
       z.object({
         workflow_id: Id,
         expected_version: z.number().int(),

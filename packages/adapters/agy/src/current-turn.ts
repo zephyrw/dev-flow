@@ -8,10 +8,12 @@ export class CurrentTurn {
   private modelState?: string;
   private modelStep = -1;
   private toolStep = -1;
+  private toolNames = new Map<number, string | undefined>();
   private runtimeFailed = false;
+  private finishArgumentFailures = new Set<number>();
   private toolFailures: { code: string; message: string }[] = [];
   canAttributeFailureToCurrentTurn() {
-    return this.userStep !== undefined && !(this.modelState === "DONE" && this.modelStep > this.toolStep && !this.runtimeFailed);
+    return this.userStep !== undefined && !(this.modelState === "DONE" && this.modelStep > this.toolStep && !this.runtimeFailed && !this.finishArgumentFailures.size);
   }
   accept(event: Record<string, any>) {
     const step = event.event === "step_update" ? event.step_update : undefined;
@@ -22,7 +24,9 @@ export class CurrentTurn {
       this.userStep = step.step_index;
       this.modelState = undefined;
       this.modelStep = this.toolStep = -1;
+      this.toolNames.clear();
       this.runtimeFailed = false;
+      this.finishArgumentFailures.clear();
       this.toolFailures = [];
       return;
     }
@@ -39,8 +43,33 @@ export class CurrentTurn {
       this.modelState = step.state;
       this.modelStep = step.step_index;
     }
-    if (step.step_type === "tool")
+    if (step.step_type === "tool") {
       this.toolStep = Math.max(this.toolStep, step.step_index);
+      const name = step.tool_name ?? step.tool_info?.name ?? this.toolNames.get(step.step_index);
+      this.toolNames.set(step.step_index, name);
+      if (name === "finish" && step.state === "ERROR") {
+        const error = step.tool_info?.error;
+        if (error?.type === "TOOL_ERROR" && typeof error.message === "string" &&
+            error.message.startsWith("invalid arguments:"))
+          this.finishArgumentFailures.add(step.step_index);
+        else this.runtimeFailed = true;
+      }
+    }
+    // AGY emits its finalizer as tool/ACTIVE, then finish/DONE at the same
+    // index. Only that explicitly identified finalizer can retire its tool
+    // marker; ordinary tools still require a later completed model response.
+    if (step.step_type === "finish" && step.state === "DONE" &&
+        this.toolNames.get(step.step_index) === "finish") {
+      this.toolNames.delete(step.step_index);
+      // Only a later corrected response followed by an identified successful
+      // finish resolves argument validation. Runtime/permission failures stay.
+      if (this.modelState === "DONE" && this.modelStep < step.step_index) {
+        for (const failedStep of this.finishArgumentFailures)
+          if (failedStep < this.modelStep) this.finishArgumentFailures.delete(failedStep);
+      }
+      this.toolStep = -1;
+      for (const index of this.toolNames.keys()) this.toolStep = Math.max(this.toolStep, index);
+    }
     if (step.state !== "ERROR") return;
     if (step.step_type !== "tool") {
       this.runtimeFailed = true;
@@ -66,14 +95,6 @@ export class CurrentTurn {
     _previousErrors: string[],
     exit: number | null,
   ) {
-    if (
-      typeof result?.error === "string" &&
-      /bad record mac|local error:\s*tls:|streamGenerateContent/i.test(
-        result.error,
-      )
-    ) {
-      return false;
-    }
     return (
       !!result &&
       [0, 1].includes(exit!) &&
@@ -85,6 +106,7 @@ export class CurrentTurn {
       this.modelState === "DONE" &&
       this.modelStep > this.toolStep &&
       !this.runtimeFailed &&
+      !this.finishArgumentFailures.size &&
       !(Array.isArray(result.denied_actions) && result.denied_actions.length)
     );
   }

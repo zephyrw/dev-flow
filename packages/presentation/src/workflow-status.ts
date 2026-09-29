@@ -124,12 +124,12 @@ export const WORKFLOW_STATE_META: Record<State, WorkflowStateMeta> = {
   },
   STOPPED: {
     label: "已暂停",
-    tone: "neutral",
+    tone: "warning",
     description: "执行已暂停",
   },
   PAUSED: {
     label: "已暂停",
-    tone: "neutral",
+    tone: "warning",
     description: "任务处于暂停状态",
   },
   BLOCKED: {
@@ -158,8 +158,12 @@ export function isKnownWorkflowState(state: string): state is State {
   return (States as readonly string[]).includes(state);
 }
 
-export function formatWorkflowState(state?: string | null): string {
+export function formatWorkflowState(state?: string | null, stage?: string | null): string {
   if (!state) return "未知状态";
+  if (stage === "planner_commit") {
+    if (state === "QUEUED") return "等待提交";
+    if (["EXECUTING", "VERIFYING"].includes(state)) return "提交中";
+  }
   if (isKnownWorkflowState(state)) {
     return WORKFLOW_STATE_META[state].label;
   }
@@ -178,4 +182,22 @@ export function getWorkflowStateDescription(
 ): string | undefined {
   if (!state || !isKnownWorkflowState(state)) return undefined;
   return WORKFLOW_STATE_META[state].description;
+}
+
+/** Display/action availability only; the existing stop API remains authoritative. */
+export function canPauseWorkflow(workflow: { state?: string; run_id?: string | null }, runs: { id: string; status: string }[] = []): boolean {
+  const state = workflow.state ?? "";
+  if (["COMMITTED", "COMPLETED", "COMMITTING", "INTEGRATING", "CLEANUP_PENDING", "COMMIT_PARTIAL", "STOPPED", "PAUSED"].includes(state)) return false;
+  return ["RESEARCHING", "PLANNING", "REPAIR_RESEARCH_REQUIRED", "QUEUED", "EXECUTING", "VERIFYING", "DELIVERY_VERIFYING", "QUALITY_REVIEW", "PLANNER_TAKEOVER", "REVIEW_QUEUED", "REVIEWING", "STOPPING"].includes(state)
+    || runs.some(run => run.id === workflow.run_id && run.status === "running");
+}
+
+export function getWorkflowTone(workflow: { state?: string; blocker?: { code?: string } | null }): WorkflowStateMeta["tone"] {
+  const state = workflow.state;
+  if (state === "BLOCKED" || state === "RECOVERY_REQUIRED") {
+    const code = workflow.blocker?.code;
+    if (!code || ["NEED_USER", "REVIEW_NEEDS_USER", "NEED_PLANNER", "DESIGN_CONFLICT", "SOURCE_CHANGED", "CONTROLLER_RESTARTED", "MODEL_QUOTA"].includes(code)) return "warning";
+    return "error";
+  }
+  return getWorkflowStateTone(state);
 }

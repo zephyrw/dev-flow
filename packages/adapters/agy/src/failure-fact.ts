@@ -19,6 +19,8 @@ export interface AgyFailureFact {
   window?: WindowKind | "unknown";
   reset_at?: string;
   can_switch_account: boolean;
+  /** Unconfirmed provider text needs current quota evidence or a bound quota exit. */
+  requires_quota_verification?: true;
   requires_reauth: boolean;
   observed_at: string;
   raw_message: string;
@@ -45,18 +47,47 @@ function record(value: unknown): Record<string, unknown> | undefined {
     ? (value as Record<string, unknown>)
     : undefined;
 }
+export function isAgyIndividualQuotaError(value: unknown): value is string {
+  return typeof value === "string" &&
+    /^Individual quota reached\.(?: Please upgrade your subscription to increase your limits\.)?(?: Resets in (?:\d+[dhms])+\.?)?$/i.test(value.trim());
+}
+export function hasConflictingAgyFailureDiagnostic(text: string) {
+  return /tls|bad record mac|econn|etimedout|enotfound|network|connection|fetch failed|permission.?denied|unauthorized|unauthenticated|invalid_grant|timeout|timed out/i.test(text);
+}
+
+/** A resumed footer alone is historical. Confirm it only with this process's
+ * quota exit and unfinished current turn, with no conflicting host failure. */
+export function confirmAgyQuotaFailure(fact: AgyFailureFact, completion: {
+  exitCode: number | null; currentTurn: boolean; stderr?: string; terminationReason?: string;
+}): AgyFailureFact {
+  if (!fact.requires_quota_verification || !fact.can_switch_account ||
+      completion.exitCode !== 3 || !completion.currentTurn || completion.terminationReason ||
+      hasConflictingAgyFailureDiagnostic(completion.stderr ?? ""))
+    return fact;
+  const { requires_quota_verification: _, ...confirmed } = fact;
+  return { ...confirmed, reason: "current_turn_quota_exit", raw_message: "current_turn_quota_exit" };
+}
 export function extractAgyFailureFact(input: AgyFailureInput): AgyFailureFact {
   const event = input.event;
   const error = record(event?.error);
   const type = event?.type;
-  const trusted =
+  const boundCurrentEvent =
     input.currentTurn === true &&
     !!input.runId &&
     Number.isSafeInteger(input.authEpoch) &&
     input.authEpoch > 0 &&
     Number.isSafeInteger(input.eventOffset) &&
-    input.eventOffset! >= 0 &&
-    (type === "error" || (type === "result" && !!error));
+    input.eventOffset! >= 0;
+  const trusted = boundCurrentEvent && (type === "error" || (type === "result" && !!error));
+  const result = record(event?.result);
+  // AGY 1.2.x reports quota as a result string, not an error object. A resumed
+  // footer can be historical even after a fresh TLS failure, so this shape
+  // only requests an official quota check; it never proves exhaustion itself.
+  const quotaTextCandidate = boundCurrentEvent && type === "result" &&
+    result?.status === "ERROR" && typeof event?.error === "string" &&
+    result.error === event.error &&
+    !(Array.isArray(result.denied_actions) && result.denied_actions.length) &&
+    isAgyIndividualQuotaError(event.error);
   const code = trusted
     ? String(error?.code ?? event?.code ?? "").toLowerCase()
     : "";
@@ -108,6 +139,10 @@ export function extractAgyFailureFact(input: AgyFailureInput): AgyFailureFact {
     category = "quota_exhausted";
     reason = "quota_exhausted";
     canSwitch = true;
+  } else if (quotaTextCandidate) {
+    category = "quota_exhausted";
+    reason = "provider_result_quota_requires_verification";
+    canSwitch = true;
   } else if (
     /429|rate.limit|resource_exhausted|too many requests/.test(
       code + " " + lower,
@@ -134,7 +169,8 @@ export function extractAgyFailureFact(input: AgyFailureInput): AgyFailureFact {
     reason,
     window:
       category === "quota_exhausted"
-        ? reportedWindow === "weekly" || reportedWindow === "five_hour"
+        ? quotaTextCandidate ? "unknown"
+          : reportedWindow === "weekly" || reportedWindow === "five_hour"
           ? reportedWindow
           : code === "weekly_quota_exhausted"
             ? "weekly"
@@ -143,12 +179,13 @@ export function extractAgyFailureFact(input: AgyFailureInput): AgyFailureFact {
               : "unknown"
         : undefined,
     can_switch_account: canSwitch,
+    ...(quotaTextCandidate && canSwitch ? { requires_quota_verification: true as const } : {}),
     requires_reauth: category === "auth_invalid",
     observed_at: input.observedAt ?? new Date().toISOString(),
     // Do not persist arbitrary raw upstream/log content (which can include credentials).
     raw_message: reason,
-    source_event_type: trusted ? String(type) : undefined,
-    source_offset: trusted ? input.eventOffset : undefined,
+    source_event_type: trusted || quotaTextCandidate ? String(type) : undefined,
+    source_offset: trusted || quotaTextCandidate ? input.eventOffset : undefined,
   };
 }
 export const classifyAgyFailure = extractAgyFailureFact;

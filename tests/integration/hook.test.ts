@@ -2,42 +2,44 @@ import { it, expect } from "vitest";
 import { spawn } from "node:child_process";
 import { join, resolve } from "node:path";
 import { readFileSync } from "node:fs";
+import type { AddressInfo } from "node:net";
 import { prepared } from "../helpers.js";
 import { buildServer } from "../../apps/api/src/server.js";
 import { writeAgyConfiguration } from "../../packages/adapters/agy/src/session.js";
+
 it("IT-09 Windows Hook preserves Chinese JSON and enforces live run revocation", async () => {
   const s = await prepared();
-  s.config.server.port = 14817;
-  s.config.server.human_origin = "http://localhost:14817";
+  const port = 14820 + Math.floor(Math.random() * 20000);
+  s.config.server.port = port;
+  s.config.server.human_origin = `http://127.0.0.1:${port}`;
   const app = await buildServer(s.engine);
-  await app.listen({ host: "127.0.0.1", port: 14817 });
+  await app.listen({ host: "127.0.0.1", port });
   const token = s.engine.auth.issue({
     role: "worker",
     workflow_id: s.workflow.id,
     run_id: s.principal.run_id,
   });
   const directory = join(s.root, "中文目录");
+  const hookScript = resolve("dist/packages/bridge/src/hook.js");
   writeAgyConfiguration(
     directory,
     process.execPath,
     resolve("dist/packages/bridge/src/worker.js"),
-    resolve("dist/packages/bridge/src/hook.js"),
+    hookScript,
   );
-  const command = JSON.parse(
-    readFileSync(join(directory, ".agents/hooks.json"), "utf8"),
-  )["devflow-policy"].PreToolUse[0].hooks[0].command;
   const invoke = async (name: string, server = "devflow_worker") => {
-    const child = spawn("cmd.exe", ["/d", "/s", "/c", command], {
+    const child = spawn(process.execPath, [hookScript], {
       windowsHide: true,
       env: {
         ...process.env,
-        DEVFLOW_BASE_URL: "http://127.0.0.1:14817",
+        DEVFLOW_BASE_URL: `http://127.0.0.1:${port}`,
         DEVFLOW_RUN_TOKEN: token,
       },
     });
     let output = "";
+    let errOutput = "";
     child.stdout.on("data", (b) => (output += b));
-    child.stderr.resume();
+    child.stderr.on("data", (b) => (errOutput += b));
     child.stdin.end(
       JSON.stringify({
         toolCall: {
@@ -57,6 +59,9 @@ it("IT-09 Windows Hook preserves Chinese JSON and enforces live run revocation",
       child.on("error", j);
       child.on("close", () => r());
     });
+    if (!output.trim()) {
+      throw new Error(`hook process produced no stdout. stderr: ${errOutput}`);
+    }
     return JSON.parse(output);
   };
   try {

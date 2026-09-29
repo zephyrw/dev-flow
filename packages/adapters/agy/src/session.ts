@@ -204,7 +204,7 @@ export async function observeAgy(
   }
   const historicalError =
     !reason &&
-    !["MODEL_QUOTA", "MODEL_AUTH"].includes(
+    !["MODEL_QUOTA", "MODEL_AUTH", "MODEL_CONNECTION_FAILED"].includes(
       classifyFailure(diagnosticTail).code,
     ) &&
     currentTurn.staleError(

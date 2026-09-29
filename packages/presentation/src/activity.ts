@@ -1,3 +1,4 @@
+import { publicDiagnostic, diagnosticText } from "./secret-redactor.js";
 import { failureSummary } from "./failure.js";
 import { ReviewActivityStream } from "./review-activity.js";
 import { runtimeFailureResolution } from "../../contracts/src/runtime-failure.js";
@@ -155,7 +156,11 @@ export function workflowProgress(
   const labels = display.native
     ? [...stages.slice(0, 4), "验收前质量审查", "人工验收", "验收后代码复核", "本地提交"]
     : stages;
-  const index = display.native
+  const index = phase === "planner_commit"
+    ? display.native ? 7 : 6
+    : phase === "acceptance_guidance"
+    ? display.native ? 5 : 4
+    : display.native
     ? state === "HUMAN_PENDING" ? 5
       : ["REVIEW_QUEUED", "REVIEWING"].includes(state)
         ? phase === "quality_before_human" ? 4 : 6
@@ -191,15 +196,25 @@ export function workflowProgress(
       : index === undefined
         ? "等待确认阶段"
         : labels[index],
-    next: paused
+    next: w.state === "COMMIT_PARTIAL"
+      ? "保留已有提交和修改；合并交付尚未完成，请处理提交失败原因后核实现场并重试原提交。"
+      : paused
       ? "处理下方问题后，点击“继续这个任务”；保留已有计划和修改，重新核验完成证据。"
+      : phase === "planner_commit"
+        ? state === "QUEUED" ? "等待规划模型继续最后的提交与合并" : "规划模型正在完成最后的提交与合并，保留已完成的开发和测试结果"
+      : phase === "acceptance_guidance"
+        ? state === "QUEUED" ? "你的指导已排队，等待执行模型处理" : "执行模型正在处理你的指导，回复和操作显示在执行过程"
       : phase === "quality_before_human" && ["REVIEWING", "REVIEW_QUEUED"].includes(state)
         ? "规划模型审查代码质量与测试结果，通过后进入人工验收"
         : (next[w.state] ?? "等待工作流更新"),
   };
 }
 /** The original events stay intact; this is only a readable, scoped projection. */
-export function readableLogs(events: any[], workflow: string): LogEntry[] {
+export function readableLogs(events: any[], workflow: string, formalGuidance: Array<{
+  id: string; workflow_id: string; text: string; created_at: string; feedback_id?: string;
+}> = []): LogEntry[] {
+  // Redact display copies without rewriting stored events or execution guidance.
+  events = events.map((event) => publicDiagnostic(event));
   const rows: LogEntry[] = [],
     steps = new Map<string, LogEntry>();
   let repairPending = false;
@@ -351,7 +366,7 @@ export function readableLogs(events: any[], workflow: string): LogEntry[] {
         rows.push(row);
         steps.set(key, row);
       }
-      row.text = (row.text + p.text).slice(-16000);
+      row.text = diagnosticText(row.text + p.text).slice(0, 16000);
       row.raw.push(e);
       row.raw = row.raw.slice(-100);
       continue;
@@ -492,7 +507,9 @@ export function readableLogs(events: any[], workflow: string): LogEntry[] {
           step.step_type === "agent_response"
             ? `模型输出 · ${status}`
             : `收到任务 · ${status}`;
-        if (typeof step.text_delta === "string") row.text += step.text_delta;
+        // Completed telemetry now carries a sanitized full snapshot in text.
+        if (typeof step.text === "string" && step.text.trim()) row.text = diagnosticText(step.text);
+        else if (typeof step.text_delta === "string") row.text = diagnosticText(row.text + step.text_delta);
       }
       continue;
     }
@@ -509,31 +526,55 @@ export function readableLogs(events: any[], workflow: string): LogEntry[] {
       text = `执行模型：${p.init?.model ?? p.model ?? "实际模型未确认"}`;
     }
     if (e.type === "StateChanged") {
-      if (p.to === "QUEUED") {
+      if (p.stage === "planner_commit" && ["QUEUED", "EXECUTING", "VERIFYING"].includes(p.to)) {
+        title = p.to === "QUEUED" ? "本地提交已排队" : "正在本地提交";
+        text = "保留已完成的开发和测试结果，由规划模型继续完成本任务的提交与合并。";
+      } else if (p.to === "QUEUED") {
         title =
           p.stage === "planner_takeover"
             ? "规划模型接手已排队"
             : p.stage === "auto_repair"
               ? "修复已排队"
+            : ["functional_fix", "acceptance_guidance"].includes(p.stage)
+              ? "验收指导已排队"
               : "等待执行";
         text =
           p.stage === "planner_takeover"
             ? "保留已有修改，等待规划模型接手实际修复与自测。"
             : p.stage === "auto_repair"
               ? "保留已有修改和原会话，等待执行模型继续修复。"
+            : ["functional_fix", "acceptance_guidance"].includes(p.stage)
+              ? "保留当前工作区，等待执行模型处理你的验收指导。"
               : "等待可用执行资源。";
       } else if (p.to === "EXECUTING" && p.from === "QUEUED") {
         title =
           p.stage === "planner_takeover"
             ? "规划模型开始修复"
-            : repairPending
+            : p.stage === "executor_test"
+              ? (p.resumed === true ? "继续测试" : "开始测试")
+            : ["functional_fix", "acceptance_guidance"].includes(p.stage)
+              ? "处理验收指导"
+            : p.repair_source === "quality_review"
+              ? "修复代码复核问题"
+            : repairPending || p.resumed === true
               ? "继续开发与自测"
               : "开始开发与自测";
         repairPending = false;
         text =
           p.stage === "planner_takeover"
             ? "正在启动规划模型；收到真实工具事件后展示修改、自测与完成说明。"
-            : "执行模型自主安排本轮开发与自测，完成后交代码质量审查。";
+            : p.stage === "executor_test"
+              ? "由执行模型沿已有进度完成指定测试和必要修复。"
+            : ["functional_fix", "acceptance_guidance"].includes(p.stage)
+              ? "按照你当前的验收指导处理启动验收服务或具体修改，保留已有计划、工作区和执行进度。"
+            : p.repair_source === "quality_review"
+              ? "沿用原批准计划和已有修改，按本轮代码复核问题逐项整改并进行必要测试。"
+            : p.resumed === true
+              ? "保留原计划、已有修改和执行进度，继续处理本轮尚未完成的工作。"
+              : "执行模型自主安排本轮开发与自测，完成后交代码质量审查。";
+      } else if (p.to === "HUMAN_PENDING" && p.guidance_mode === "human_acceptance") {
+        title = "指导处理完成";
+        text = "请查看执行模型的回复和操作结果，继续沟通或实际验收。";
       } else if (p.to === "REVIEW_QUEUED") {
         title = "等待规划模型审查";
         text =
@@ -546,6 +587,9 @@ export function readableLogs(events: any[], workflow: string): LogEntry[] {
           p.stage === "quality_before_human"
             ? "正在审查代码质量，通过后进入人工功能确认。"
             : "正在进行人工后代码质量审查，通过后进入本地提交。";
+      } else if (p.to === "STOPPED") {
+        title = "执行已暂停";
+        text = "已保留原计划、工作区和已有修改。";
       } else if (p.to === "BLOCKED") {
         title =
           runtimeFailureResolution(p.blocker?.code, p.blocker?.message)
@@ -554,6 +598,9 @@ export function readableLogs(events: any[], workflow: string): LogEntry[] {
           p.blocker?.code,
           p.blocker?.message ?? "执行已暂停，等待处理",
         );
+      } else if (p.to === "COMMIT_PARTIAL") {
+        title = "提交合并需要恢复";
+        text = "保留已有提交和修改，合并交付尚未完成；请查看失败原因，核实现场并重试原提交。";
       } else if (p.to === "COMMITTED") {
         title = "本地提交完成";
         text = "已生成本地提交记录，所有交付检查与复核已全部通过";
@@ -572,6 +619,10 @@ export function readableLogs(events: any[], workflow: string): LogEntry[] {
       title = "实现结果已提交";
       text = p.summary ?? p.title ?? p.task_id ?? "";
     }
+    if (e.type === "UserGuidanceCompleted") {
+      title = "执行模型回复";
+      text = p.summary ?? "本轮指导已处理。";
+    }
     if (e.type === "EvidenceInvalidated") continue;
     if (e.type === "CheckOutput") title = "测试输出";
     if (e.type === "FilesChanged") {
@@ -589,6 +640,13 @@ export function readableLogs(events: any[], workflow: string): LogEntry[] {
     if (e.type === "EnvironmentFailed") {
       title = "本机验证副本准备失败";
       text = failureSummary("ENVIRONMENT_FAILED", p.message);
+    }
+    if (e.type === "PlannerIntegrationFailed") {
+      title = "提交合并失败";
+      text = [
+        p.repo_id ? `仓库：${p.repo_id}` : "",
+        p.message || "合并未完成，失败原因未记录。",
+      ].filter(Boolean).join("\n");
     }
     if (["BuildStarted", "BuildReady", "BuildFailed"].includes(e.type)) {
       title =
@@ -632,6 +690,7 @@ export function readableLogs(events: any[], workflow: string): LogEntry[] {
         "TaskStarted",
         "TaskCompleted",
         "EnvironmentFailed",
+        "PlannerIntegrationFailed",
         "BuildStarted",
         "BuildReady",
         "BuildFailed",
@@ -660,13 +719,28 @@ export function readableLogs(events: any[], workflow: string): LogEntry[] {
       kind: "event",
       status:
         e.type === "EnvironmentFailed" ||
+        e.type === "PlannerIntegrationFailed" ||
         e.type === "BuildFailed" ||
-        (e.type === "StateChanged" && p.to === "BLOCKED")
+        (e.type === "StateChanged" && ["BLOCKED", "COMMIT_PARTIAL"].includes(p.to))
           ? "error"
           : e.type === "StateChanged" && p.to === "COMMITTED"
             ? "done"
             : undefined,
     });
+  }
+  // Older composer messages were persisted without a UserGuidance event.
+  // Display those records without rewriting history or treating acceptance as model compliance.
+  for (const message of formalGuidance) {
+    if (message.workflow_id !== workflow || !message.text.trim()) continue;
+    if ([...unique.values()].some((event) => event.type === "UserGuidance" && (
+      event.payload?.message_id === message.id ||
+      (message.feedback_id && event.payload?.feedback_id === message.feedback_id)
+    ))) continue;
+    const next = [...unique.values()].sort((a, b) => a.event_seq - b.event_seq)
+      .find((event) => event.created_at > message.created_at);
+    const sequence = next ? next.event_seq - 0.5 : Math.max(0, ...unique.keys()) + 0.5;
+    rows.push({ key: `guidance:${message.id}`, sequence, created_at: message.created_at,
+      title: "收到你的指导", text: diagnosticText(message.text), kind: "message", raw: [] });
   }
   // Old runs must not continue to look active after a stop/failure or a new run.
   const boundary =
@@ -682,7 +756,11 @@ export function readableLogs(events: any[], workflow: string): LogEntry[] {
   for (const row of rows)
     if (row.status === "active" && row.sequence < boundary)
       row.status = "interrupted";
-  return rows.sort((a, b) => a.sequence - b.sequence);
+  return rows
+    .filter((row) =>
+      (row.kind !== "message" && row.kind !== "tool") || isMeaningfulLogEntry(row),
+    )
+    .sort((a, b) => a.sequence - b.sequence || a.created_at.localeCompare(b.created_at));
 }
 
 /** Keep diagnostics available for progress parsing without putting raw logs in the UI. */

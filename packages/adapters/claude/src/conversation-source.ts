@@ -1,3 +1,4 @@
+import { diagnosticClip } from "../../../presentation/src/secret-redactor.js";
 import type {
   ConversationSourceCursor,
   NativeConversationEvent,
@@ -763,7 +764,7 @@ function nestedObject(
 
 function clip(text: string | undefined, max: number): string | undefined {
   if (!text) return undefined;
-  return text.length > max ? text.slice(0, max) : text;
+  return diagnosticClip(text, max);
 }
 
 function isExactTranscriptPath(filePath: string): boolean {

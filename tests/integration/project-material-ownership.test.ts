@@ -1,5 +1,6 @@
+import { removeDirWithBoundedRetry } from "../fixtures/isolation.js";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, mkdirSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -10,7 +11,7 @@ import {
   getEvidenceMaterialPath,
 } from "../../packages/core/src/project-materials.js";
 import { Store } from "../../packages/store/src/store.js";
-import { readPlanMaterial } from "../../packages/core/src/plan-review.js";
+import { readPlanMaterial, assertPlanMaterialReady } from "../../packages/core/src/plan-review.js";
 import { hash } from "../../packages/core/src/util.js";
 import type {
   ProjectMaterial,
@@ -25,7 +26,7 @@ describe("NV-I14 & NV-U09: 正式项目材料归属与优先读取机制集成�
   let cacheRoot: string;
 
   beforeEach(() => {
-    tempDir = mkdtempSync(join(tmpdir(), "devflow-material-ownership-"));
+    tempDir = mkdtempSync(join(realpathSync(tmpdir()), "devflow-material-ownership-"));
     workspaceRoot = join(tempDir, "workspace");
     cacheRoot = join(tempDir, "cache");
     mkdirSync(workspaceRoot, { recursive: true });
@@ -33,9 +34,7 @@ describe("NV-I14 & NV-U09: 正式项目材料归属与优先读取机制集成�
   });
 
   afterEach(() => {
-    try {
-      rmSync(tempDir, { recursive: true, force: true });
-    } catch {}
+    removeDirWithBoundedRetry(tempDir);
   });
 
   it("正式计划原件写入项目规范目录并返回正确的相对与绝对路径", () => {
@@ -153,7 +152,7 @@ describe("CW4-F03: readPlanMaterial 计划材料归属、版本关联与原件�
   const wsId = "ws-mat-1";
 
   beforeEach(() => {
-    tempDir = mkdtempSync(join(tmpdir(), "devflow-plan-material-"));
+    tempDir = mkdtempSync(join(realpathSync(tmpdir()), "devflow-plan-material-"));
     const dbPath = join(tempDir, "test.db");
     store = new Store(dbPath);
     workspaceRoot = join(tempDir, "workspace");
@@ -169,12 +168,8 @@ describe("CW4-F03: readPlanMaterial 计划材料归属、版本关联与原件�
   });
 
   afterEach(() => {
-    try {
-      store.close();
-    } catch {}
-    try {
-      rmSync(tempDir, { recursive: true, force: true });
-    } catch {}
+    store.close();
+    removeDirWithBoundedRetry(tempDir);
   });
 
   it("新计划按 material_id 优先精确读取；关联材料丢失时不掩盖", () => {
@@ -274,6 +269,8 @@ describe("CW4-F03: readPlanMaterial 计划材料归属、版本关联与原件�
     const res = readPlanMaterial(store, wfId, 2);
     expect(res.source_type).toBe("project");
     expect(res.markdown).toBe(planTextV2);
+    expect(res.authority_ready).toBe(true);
+    expect(assertPlanMaterialReady(store, wfId, 2).markdown).toBe(planTextV2);
   });
 
   it("不同 Run 的同版本材料不能靠首条顺序选取，存在歧义时抛出 409 PLAN_MATERIAL_AMBIGUOUS", () => {
@@ -419,6 +416,8 @@ describe("CW4-F03: readPlanMaterial 计划材料归属、版本关联与原件�
 
     const resLegacy = readPlanMaterial(store, wfId, 1);
     expect(resLegacy.source_type).toBe("platform_legacy");
+    expect(resLegacy.authority_ready).toBe(false);
+    expect(() => assertPlanMaterialReady(store, wfId, 1)).toThrow(/只可查看/);
     expect(resLegacy.markdown).toBe("# 历史旧任务缓存内容");
 
     // 2. pending 状态：材料未落盘但属于本轮生成 (result_pending)
@@ -461,4 +460,145 @@ describe("CW4-F03: readPlanMaterial 计划材料归属、版本关联与原件�
     expect(resPending.source_type).toBe("result_pending");
     expect(resPending.markdown).toBe("# Pending 生成中的正文");
   });
+
+  it("F01_MATERIAL_AUTHORITY: 材料状态为 conflict 时，即使磁盘存在文件也必须抛出 PLAN_MATERIAL_CONFLICT，不得静默读取", () => {
+    const planText = "# 磁盘上的计划文件内容\n";
+    const planPath = join(workspaceRoot, "docs", "plan", "plan-conflict.md");
+    mkdirSync(join(workspaceRoot, "docs", "plan"), { recursive: true });
+    writeFileSync(planPath, planText);
+
+    const conflictMatId = "mat-conflict-test";
+    const mat: ProjectMaterial = {
+      id: conflictMatId,
+      workflow_id: wfId,
+      workspace_id: wsId,
+      path: "docs/plan/plan-conflict.md",
+      kind: "plan",
+      revision: 1,
+      source_hash: hash(planText),
+      status: "conflict", // 标记为冲突
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+    store.put("project_material", conflictMatId, wfId, mat);
+
+    const planRecord: PlanRecord = {
+      id: "plan-rec-conflict",
+      workflow_id: wfId,
+      revision: 1,
+      hash: hash(planText),
+      material_id: conflictMatId,
+      created_at: new Date().toISOString(),
+      plan: { title: "冲突计划", tasks: [] } as any,
+    };
+    store.put("plan", planRecord.id, wfId, planRecord);
+
+    try {
+      readPlanMaterial(store, wfId, 1);
+      expect.unreachable("应当抛出 PLAN_MATERIAL_CONFLICT");
+    } catch (err: any) {
+      expect(err.code).toBe("PLAN_MATERIAL_CONFLICT");
+    }
+  });
+
+  it("F01_MATERIAL_AUTHORITY: 材料状态为 pending 时，即使磁盘存在文件，也仅展示为 result_pending，不得视为 verified", () => {
+    const diskText = "# 磁盘上的旧文件或残留内容\n";
+    const planPath = join(workspaceRoot, "docs", "plan", "plan-pending-disk.md");
+    mkdirSync(join(workspaceRoot, "docs", "plan"), { recursive: true });
+    writeFileSync(planPath, diskText);
+
+    const pendingMatId = "mat-pending-disk-test";
+    const mat: ProjectMaterial = {
+      id: pendingMatId,
+      workflow_id: wfId,
+      workspace_id: wsId,
+      path: "docs/plan/plan-pending-disk.md",
+      kind: "plan",
+      revision: 1,
+      source_hash: "some-pending-hash",
+      status: "pending",
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+    store.put("project_material", pendingMatId, wfId, mat);
+
+    store.put("project_document", "doc-pending-disk", wfId, {
+      id: "doc-pending-disk",
+      workflow_id: wfId,
+      revision: 1,
+      document_type: "plan",
+      content: "# 内存中当前生成的 pending 计划正文",
+    } as any);
+
+    const planRecord: PlanRecord = {
+      id: "plan-pending-disk-rec",
+      workflow_id: wfId,
+      revision: 1,
+      hash: "some-pending-hash",
+      material_id: pendingMatId,
+      created_at: new Date().toISOString(),
+      plan: { title: "待定计划", tasks: [] } as any,
+    };
+    store.put("plan", planRecord.id, wfId, planRecord);
+
+    const res = readPlanMaterial(store, wfId, 1);
+    expect(res.source_type).toBe("result_pending");
+    expect(res.markdown).toBe("# 内存中当前生成的 pending 计划正文");
+  });
+
+  it("F04_LEGACY_READ: 无 material 记录且无权威绑定在无工作区时不得抛出 NO_WORKSPACES，直接走 platform_legacy", () => {
+    const legacyWfId = "wf-legacy-no-workspace";
+    // 注意：legacyWfId 没有任何工作区！
+    store.put("project_document", "doc-pure-legacy", legacyWfId, {
+      id: "doc-pure-legacy",
+      workflow_id: legacyWfId,
+      revision: 1,
+      document_type: "plan",
+      content: "# 纯历史无工作区计划正文",
+    } as any);
+
+    const legacyRecord: PlanRecord = {
+      id: "plan-pure-legacy",
+      workflow_id: legacyWfId,
+      revision: 1,
+      hash: "hash-legacy-noworkspace",
+      created_at: new Date().toISOString(),
+      plan: { title: "无工作区纯历史计划", tasks: [] } as any,
+    };
+    store.put("plan", legacyRecord.id, legacyWfId, legacyRecord);
+
+    // 此时 store.list("workspace", legacyWfId) 为空，不得调用 resolveMaterialLocator 报 NO_WORKSPACES
+    const res = readPlanMaterial(store, legacyWfId, 1);
+    expect(res.source_type).toBe("platform_legacy");
+    expect(res.markdown).toBe("# 纯历史无工作区计划正文");
+  });
+  it("仅 material_path 和匹配 design_ref 没有 verified 记录时仍只读", () => {
+    const text = "# path-only original\n";
+    mkdirSync(join(workspaceRoot, "docs", "plan"), { recursive: true });
+    writeFileSync(join(workspaceRoot, "docs", "plan", "path-only.md"), text);
+    const record: PlanRecord = {
+      id: "plan-path-only", workflow_id: wfId, revision: 1, hash: hash(text),
+      created_at: new Date().toISOString(), material_path: "docs/plan/path-only.md",
+      plan: { title: "path-only", tasks: [], design_ref: { content_hash: hash(text) } } as any,
+    };
+    store.put("plan", record.id, wfId, record);
+    const result = readPlanMaterial(store, wfId, 1);
+    expect(result.source_type).toBe("project");
+    expect(result.markdown).toBe(text);
+    expect(result.authority_ready).toBe(false);
+    expect(() => assertPlanMaterialReady(store, wfId, 1)).toThrow(/只可查看/);
+  });
+
+  it("显式项目路径丢失时不得回退已保存的 DB 正文，缺工作区也拒绝", () => {
+    for (const workflowId of [wfId, "wf-bound-without-workspace"]) {
+      const record: PlanRecord = {
+        id: `plan-${workflowId}`, workflow_id: workflowId, revision: 1, hash: "plan-hash",
+        created_at: new Date().toISOString(), material_path: "docs/plan/missing.md",
+        plan: { title: "bound", tasks: [], markdown: "# DB cached body" } as unknown as PlanRecord["plan"],
+      };
+      store.put("plan", record.id, workflowId, record);
+      expect(() => readPlanMaterial(store, workflowId, 1)).toThrow();
+    }
+  });
+
 });

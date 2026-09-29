@@ -103,12 +103,8 @@ test("build failure retains submitted progress and explains the local verificati
   );
   await expect(page.locator(".task .badge.needs_recheck")).toHaveCount(3);
   await expect(page.locator(".task-module")).not.toContainText("未开始");
-  await page.getByRole("button", { name: "本机验证副本", exact: true }).click();
-  await expect(page.locator(".environment-summary")).toContainText("127.0.0.1");
-  await expect(page.locator(".environment-summary")).toContainText(
-    "端口由本机空闲端口池分配",
-  );
-  await expect(page.locator(".environment-summary")).toContainText("TS1127");
+  await expect(page.getByRole("button", { name: "本机验证副本", exact: true })).toHaveCount(0);
+  await expect(page.locator(".environment-summary")).toHaveCount(0);
   await page.screenshot({
     path: ".cache/resume-loop-incident/local-copy-ui.png",
     fullPage: true,

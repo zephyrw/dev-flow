@@ -169,4 +169,18 @@ describe("SA-D23 conversation role recovery guidance", () => {
     expect(reviewBridgeInstructions()).toContain("继续原复核职责");
     expect(reviewBridgeInstructions()).not.toContain(RECOVERY_GUIDANCE_TEXT);
   });
+
+  it("keeps human-readable planning and original-plan preservation in both initial and resumed planning", () => {
+    for (const text of [planningBridgeInstructions(), planningRecoveryGuidance(manifest({ purpose: "planning" }), caps())]) {
+      expect(text).toContain("先写背景与现状");
+      expect(text).toContain("从什么状态改到什么状态");
+      expect(text).toContain("可能受影响的其他功能");
+      expect(text).toContain("必要的数据设计");
+      expect(text).toContain("Markdown - [ ] 勾选框");
+      expect(text).toContain("真实完成后才改成 - [x]");
+      expect(text).toContain("不枚举所有待修改代码文件");
+      expect(text).toContain("暂停恢复、普通修复和代码复核不授权重写原计划");
+      expect(text).toContain("不要另存多份开发计划或递增文档版本");
+    }
+  });
 });

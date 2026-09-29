@@ -1,3 +1,4 @@
+import { diagnosticText, highRiskDiagnostic } from "../../presentation/src/secret-redactor.js";
 import type { Store } from "../../store/src/store.js";
 import type { NativeConversationEvent } from "../../adapters/sdk/src/interface.js";
 import {
@@ -116,28 +117,73 @@ export class ConversationService {
     return this.diagnostics.slice();
   }
 
+  /** Control/recovery follows the current Run; the display root can belong to an older role. */
+  resolveControlRoot(workflowId: string, tree = this.getTree(workflowId)): string | undefined {
+    const workflow = this.store.get<Workflow>("workflow", workflowId);
+    type SessionRun = Run & { root_session_id?: string };
+    const run = workflow?.run_id ? this.store.get<SessionRun>("run", workflow.run_id) : undefined;
+    if (!run || run.workflow_id !== workflowId) return tree.active_root_id;
+    const adapter = run.adapter ?? run.profile?.adapterId;
+    const nodes = tree.nodes.filter((node) => !adapter || node.adapter_id === adapter);
+    const rootFor = (reference: string | undefined) => {
+      if (!reference) return undefined;
+      const matches = nodes.filter((node) => node.id === reference || node.native_session_id === reference);
+      const roots = [...new Set(matches.map((node) => node.root_id))];
+      return roots.length === 1 ? roots[0] : undefined;
+    };
+    const attemptRoot = (runId: string) => {
+      const attempts = tree.attempts.filter((attempt) => attempt.run_id === runId)
+        .sort((a, b) => b.generation - a.generation);
+      for (const attempt of attempts) {
+        const root = rootFor(attempt.conversation_id);
+        if (root) return root;
+      }
+      return undefined;
+    };
+    const direct = attemptRoot(run.id) ?? rootFor(run.root_session_id) ?? rootFor(run.conversation_id)
+      ?? rootFor(run.continuation?.conversation_id) ?? rootFor(run.continuation_conversation_id);
+    if (direct) return direct;
+    const sourceId = run.continuation?.source_run_id ?? run.dispatch_context?.source_run_id;
+    const source = sourceId ? this.store.get<SessionRun>("run", sourceId) : undefined;
+    if (source?.workflow_id === workflowId && (!adapter || source.adapter === adapter)) {
+      const root = attemptRoot(source.id) ?? rootFor(source.root_session_id) ?? rootFor(source.conversation_id);
+      if (root) return root;
+    }
+    if (run.purpose === "aside") return undefined;
+    const model = run.frozen_invocation?.modelToken ?? run.profile?.modelId;
+    if (!adapter || !model) return undefined;
+    const bindings = this.store.list<{
+      adapter_id: string; canonical_model_id: string; conversation_id?: string; state: string;
+    }>("session_binding", workflowId).filter((binding) => binding.adapter_id === adapter &&
+      binding.canonical_model_id === model && binding.state === "bound");
+    const roots = [...new Set(bindings.map((binding) => rootFor(binding.conversation_id)).filter((root): root is string => !!root))];
+    // Ambiguous/missing ownership must not resume the most recently displayed model.
+    return roots.length === 1 ? roots[0] : undefined;
+  }
+
   getTree(workflowId: string, rootId?: string): ConversationTreeSnapshot {
     const nodes = this.store.list<ConversationNode>(
       CONVERSATION_ENTITY.node,
       workflowId,
     );
-    if (!nodes.length) return this.legacyTree(workflowId);
+    const attempts = this.store.list<ConversationAttempt>(CONVERSATION_ENTITY.attempt, workflowId);
+    const workflow = this.store.get<Workflow>("workflow", workflowId);
+    if (workflow) mergeRunProjections(workflow, this.store.list<Run>("run", workflowId), nodes, attempts);
     const scoped = rootId
-      ? this.store.conversationNodesByRoot<ConversationNode>(rootId).filter(
-          (node) => node.workflow_id === workflowId,
-        )
+      ? nodes.filter((node) => node.root_id === rootId)
       : nodes;
-    const attempts = this.store
-      .list<ConversationAttempt>(CONVERSATION_ENTITY.attempt, workflowId)
+    const scopedAttempts = attempts
       .filter((attempt) => scoped.some((node) => node.id === attempt.conversation_id))
       .sort((a, b) => a.generation - b.generation);
-    const active = resolveActiveRootId(scoped, attempts, rootId);
+    const current = scopedAttempts.find((attempt) => attempt.run_id === workflow?.run_id &&
+      scoped.some((node) => node.id === attempt.conversation_id && node.id === node.root_id));
+    const active = rootId ?? current?.root_id ?? resolveActiveRootId(scoped, scopedAttempts);
     return ConversationTreeSnapshotSchema.parse({
       nodes: scoped,
-      attempts,
+      attempts: scopedAttempts,
       active_root_id: active,
       capabilities:
-        this.capabilities.get(workflowId) ?? unknownSubagentCapabilities(),
+        this.capabilities.get(workflowId) ?? unknownSubagentCapabilities(nodes.every((node) => node.lineage_id.startsWith("legacy:")) ? LEGACY_REASON : undefined),
       cursor: this.store.eventCursor(workflowId),
     });
   }
@@ -219,6 +265,15 @@ export class ConversationService {
     event: NativeConversationEvent,
   ): ConversationApplyResult {
     const diagnostics: ConversationDiagnostic[] = [];
+    const workflow = this.store.get<Workflow>("workflow", ctx.workflow_id);
+    // Native readers can finish after recovery has already advanced the Run.
+    // Fence before identity/node creation so stale discovery cannot move pointers.
+    if (ctx.purpose !== "aside" && workflow?.run_id && workflow.run_id !== ctx.run_id)
+      return emptyResult(this.store.eventCursor(ctx.workflow_id), true);
+    const run = this.store.get<Run>("run", ctx.run_id);
+    if (run && (run.workflow_id !== ctx.workflow_id ||
+      (workflow && run.plan_revision !== workflow.plan_revision)))
+      return emptyResult(this.store.eventCursor(ctx.workflow_id), true);
     const payload = asRecord(event.payload);
     const ids = detachSpawnPlaceholderSession(
       ctx,
@@ -357,7 +412,7 @@ function readString(payload: PayloadRecord, key: string): string | undefined {
 }
 
 function clip(value: string, max: number): string {
-  return value.length <= max ? value : value.slice(0, max);
+  return diagnosticText(value).slice(0, max);
 }
 
 function nativeIds(
@@ -807,8 +862,7 @@ function ensureAttempt(
       )
     : undefined;
   const incoming = readStatus(payload);
-  if (current && !shouldOpenAttempt(current, ctx, event, incoming))
-    return current;
+  if (current && current.run_id === ctx.run_id) return current;
   const timestamp = event.occurred_at ?? now();
   const generation = current ? current.generation + 1 : 0;
   const attempt = ConversationAttemptSchema.parse({
@@ -826,17 +880,6 @@ function ensureAttempt(
   node.current_attempt_id = attempt.id;
   node.updated_at = timestamp;
   return attempt;
-}
-
-function shouldOpenAttempt(
-  current: ConversationAttempt,
-  ctx: ConversationApplyContext,
-  event: NativeConversationEvent,
-  incoming: ConversationStatus | undefined,
-): boolean {
-  if (current.run_id === ctx.run_id) return false;
-  if (event.kind === "discovered" || incoming === "starting") return true;
-  return !isTerminalConversationStatus(current.status);
 }
 
 function readStatus(payload: PayloadRecord): ConversationStatus | undefined {
@@ -1101,7 +1144,7 @@ function emitConversationEvents(
     );
   }
   if (event.kind !== "activity") return;
-  const activity = toActivityPayload(event, payload, applied.node, applied.attempt);
+  const activity = createActivityPayload(event, payload, applied.node, applied.attempt);
   if (!activity) return;
   store.event(
     ctx.workflow_id,
@@ -1112,7 +1155,15 @@ function emitConversationEvents(
   );
 }
 
-function toActivityPayload(
+function redactAndClip(
+  value: string | undefined,
+  max: number,
+): string | undefined {
+  if (value === undefined) return undefined;
+  return clip(value, max);
+}
+
+export function createActivityPayload(
   event: NativeConversationEvent,
   payload: PayloadRecord,
   node: ConversationNode,
@@ -1124,14 +1175,18 @@ function toActivityPayload(
     readString(payload, "source_event_id") ??
     `${event.source_id}:${event.source_seq}`;
   const kind = payload.kind;
+  const sensitive = ["command", "title", "tool", "name"].some((key) => highRiskDiagnostic(readString(payload, key) ?? ""));
+  const text = (key: string, max: number) => sensitive
+    ? (key === "title" ? "敏感认证操作" : undefined)
+    : redactAndClip(readString(payload, key), max);
   const parsed = ConversationActivityPayloadSchema.safeParse({
     conversation_id: node.id,
     attempt_id: attempt.id,
     root_id: node.root_id,
     activity_id: activityId,
     source_event_id: sourceEventId,
-    public_text: clipOptional(readString(payload, "public_text"), PUBLIC_TEXT_MAX),
-    title: clipOptional(readString(payload, "title"), TITLE_MAX),
+    public_text: text("public_text", PUBLIC_TEXT_MAX),
+    title: text("title", TITLE_MAX),
     status: readStatus(payload),
     kind:
       kind === "tool" ||
@@ -1140,13 +1195,15 @@ function toActivityPayload(
       kind === "separator"
         ? kind
         : undefined,
-    command: clipOptional(readString(payload, "command"), COMMAND_MAX),
-    cwd: clipOptional(readString(payload, "cwd"), 4000),
-    result_text: clipOptional(readString(payload, "result_text"), PUBLIC_TEXT_MAX),
+    command: text("command", COMMAND_MAX),
+    cwd: text("cwd", 4000),
+    result_text: text("result_text", PUBLIC_TEXT_MAX),
     replaces_conversation_id: readString(payload, "replaces_conversation_id"),
   });
   return parsed.success ? parsed.data : undefined;
 }
+
+export const toActivityPayload = createActivityPayload;
 
 function collectAncestors(
   store: Store,
@@ -1183,6 +1240,47 @@ function resolveActiveRootId(
   return roots.sort((a, b) => b.updated_at.localeCompare(a.updated_at))[0]?.id;
 }
 
+/** Read-only compatibility projection: native telemetry may exist for one tool but not another. */
+function mergeRunProjections(
+  workflow: Workflow,
+  runs: Run[],
+  nodes: ConversationNode[],
+  attempts: ConversationAttempt[],
+) {
+  for (const run of runs.slice().sort((a, b) => a.started_at.localeCompare(b.started_at))) {
+    // A prepared recovery has no process yet. Do not project it as an unknown
+    // live attempt or advance the stopped generation before dispatch.
+    if (run.status === "queued") continue;
+    if (run.workflow_id !== workflow.id || attempts.some((attempt) => attempt.run_id === run.id &&
+      nodes.some((node) => node.id === attempt.conversation_id && node.id === node.root_id))) continue;
+    // Historical attempts without a native identity cannot be attributed to a reusable session.
+    if (!run.conversation_id && run.id !== workflow.run_id) continue;
+    const kind = run.purpose === "aside" ? "aside" : "main";
+    const matches = run.conversation_id ? nodes.filter((node) => node.id === node.root_id &&
+      node.kind === kind && node.adapter_id === run.adapter &&
+      (node.native_session_id === run.conversation_id || node.id === run.conversation_id)) : [];
+    const existing = matches.length === 1 ? matches[0] : undefined;
+    const projection = projectLegacyRoot(workflow, run, 0);
+    const node = existing ?? projection.nodes[0]!;
+    const previous = attempts.filter((attempt) => attempt.conversation_id === node.id);
+    const newest = previous.slice().sort((a, b) => b.generation - a.generation)[0];
+    // Never give an older, unobserved Run a generation newer than native telemetry.
+    if (existing && newest && run.id !== workflow.run_id &&
+      run.started_at < newest.observed_at && !node.lineage_id.startsWith("legacy:")) continue;
+    const attempt = {
+      ...projection.attempts[0]!,
+      conversation_id: node.id,
+      root_id: node.id,
+      generation: newest ? newest.generation + 1 : 0,
+    };
+    attempts.push(attempt);
+    const updated = { ...node, current_attempt_id: attempt.id,
+      updated_at: run.ended_at ?? run.started_at };
+    if (existing) nodes[nodes.indexOf(existing)] = updated;
+    else nodes.push(updated);
+  }
+}
+
 function projectLegacyRoot(
   workflow: Workflow,
   run: Run,
@@ -1215,6 +1313,7 @@ function projectLegacyRoot(
     status: legacyStatus(run.status),
     observed_at: run.ended_at ?? timestamp,
     freshness: "unavailable",
+    requested_model: run.frozen_invocation?.modelToken ?? run.profile?.modelId,
   });
   return ConversationTreeSnapshotSchema.parse({
     nodes: [node],

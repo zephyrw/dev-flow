@@ -156,11 +156,59 @@ describe("managed account recovery retains frozen model routing", () => {
     expect(binding.frozen_invocation).toEqual(run.frozen_invocation);
   });
 
-  it("rejects a pre-permit account mismatch without asking for a permit", async () => {
+  it("synchronizes a stale stored account to the actual host before asking for a permit", async () => {
     const run = source(); seedAccess(); switchIdentity(); seedAccess();
+    const frozen = structuredClone(run.frozen_invocation);
     const acquire = vi.spyOn(accounts.service, "acquireUsagePermit");
-    await expect(bridge.prepareProfileRun(workflowId, run, "fixture-model")).rejects.toMatchObject({ code: "MODEL_IDENTITY_CHANGED" });
-    expect(acquire).not.toHaveBeenCalled();
+    const binding = await bridge.prepareProfileRun(workflowId, run, "fixture-model");
+    expect(binding?.account_id).toBe(accounts.active());
+    expect(accounts.repository.getRealm(realmId)?.active_account_id).toBe("a");
+    expect(acquire).toHaveBeenCalledOnce();
+    expect(s.store.must<Run>("run", run.id).frozen_invocation).toEqual(frozen);
+  });
+
+  it("writes a newly synchronized account's verified cache only after its model probe and permit succeed", async () => {
+    const run = source();
+    const originalFrozen = structuredClone(run.frozen_invocation!);
+    await accounts.authHost.activateSaved(realmId, "b", "saved-b");
+    let finishProbe!: (success: boolean) => void;
+    let probeStarted!: () => void;
+    const entered = new Promise<void>((resolve) => { probeStarted = resolve; });
+    const probe = vi.spyOn(accounts.probe, "probeModelAccess").mockImplementation(async () => {
+      probeStarted();
+      return new Promise<boolean>((resolve) => { finishProbe = resolve; });
+    });
+    const preparing = bridge.prepareProfileRun(workflowId, run, "fixture-model");
+    // An early failure wins this race instead of hanging on an unstarted probe.
+    await Promise.race([entered, preparing.then(() => { throw new Error("permit returned before probe"); })]);
+    expect(s.store.list("model_access")).toEqual([]);
+    expect(accounts.repository.listPermits(realmId)).toEqual([]);
+    finishProbe(true);
+    const binding = await preparing;
+    expect(probe).toHaveBeenCalledOnce();
+    expect(binding?.account_id).toBe("b");
+    const persisted = s.store.must<Run>("run", run.id);
+    const native = access.resolveNativeConfig(selected);
+    expect(persisted.frozen_invocation).toEqual({ ...originalFrozen, accountScope: native.accountFingerprint });
+    expect(access.assertFrozenAccess(selected, persisted.frozen_invocation!)).toMatchObject({
+      status: "verified", identityConfidence: native.identityConfidence, accountScope: native.accountFingerprint,
+      accessModelKey: "fixture-model", verification_method: "native-probe",
+    });
+  });
+
+  it.each(["refused", "failed"])("does not write verified cache when the new account model probe is %s", async (result) => {
+    const run = source();
+    await accounts.authHost.activateSaved(realmId, "b", "saved-b");
+    const probe = vi.spyOn(accounts.probe, "probeModelAccess").mockImplementation(async () => {
+      expect(s.store.list("model_access")).toEqual([]);
+      if (result === "failed") throw new Error("fixture_model_probe_failure");
+      return false;
+    });
+    await expect(bridge.prepareProfileRun(workflowId, run, "fixture-model")).rejects.toMatchObject({ code: "AGY_ACCOUNT_UNAVAILABLE" });
+    expect(probe).toHaveBeenCalledOnce();
+    expect(s.store.list("model_access")).toEqual([]);
+    expect(accounts.repository.listPermits(realmId)).toEqual([]);
+    expect(s.store.must<Run>("run", run.id).agy_account).toBeUndefined();
   });
 
   it.each(["account", "authorization"])("releases the permit when %s changes during acquisition", async (change) => {
@@ -177,6 +225,23 @@ describe("managed account recovery retains frozen model routing", () => {
     expect(accounts.repository.listPermits(realmId).every((permit) => permit.status === "released")).toBe(true);
     expect(await bridge.listOccupancy()).toEqual([]);
     expect(s.store.must<Run>("run", run.id).agy_account).toBeUndefined();
+  });
+
+  it.each([
+    { status: "login_required" as const, code: "MODEL_LOGIN_REQUIRED" },
+    { status: "model_forbidden" as const, code: "MODEL_FORBIDDEN" },
+    { status: "unavailable" as const, code: "MODEL_UNAVAILABLE" },
+  ])("does not overwrite an existing $status failure as verified during admission", async ({ status, code }) => {
+    const run = source();
+    const original = { ...seedAccess(), status, error_code: code };
+    access.putAccess(original);
+    const acquire = vi.spyOn(accounts.service, "acquireUsagePermit");
+    const probe = vi.spyOn(accounts.probe, "probeModelAccess");
+    await expect(bridge.prepareProfileRun(workflowId, run, "fixture-model")).rejects.toMatchObject({ code });
+    expect(acquire).not.toHaveBeenCalled();
+    expect(probe).not.toHaveBeenCalled();
+    expect(access.getAccess(original.key)).toEqual(original);
+    expect(accounts.repository.listPermits(realmId)).toEqual([]);
   });
 
   it("attaches a same-identity permit without changing the frozen command", async () => {

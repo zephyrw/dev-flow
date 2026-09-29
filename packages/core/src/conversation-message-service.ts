@@ -232,7 +232,7 @@ export class ConversationMessageService {
       route,
       deliveredText,
       files,
-      shouldPause: shouldPauseRoot(route, live),
+      shouldPause: workflow.state !== "HUMAN_PENDING" && shouldPauseRoot(route, live),
     };
   }
 
@@ -269,7 +269,16 @@ export class ConversationMessageService {
         messageId,
       );
     }
-    return this.saveMessage(this.bindDomain(draft, prepared));
+    const saved = this.saveMessage(this.bindDomain(draft, prepared));
+    if (saved.mode === "formal") {
+      this.deps.store.event(saved.workflow_id, prepared.workflow.project_id, "UserGuidance", {
+        text: saved.text,
+        status: "received",
+        feedback_id: saved.feedback_message_id,
+        message_id: saved.id,
+      });
+    }
+    return saved;
   }
 
   private bindDomain(
@@ -443,7 +452,7 @@ function classifyRoute(
   entry: "auto" | "formal" | "aside" | "functional",
 ): MessageRoute {
   if (entry === "aside" || mode === "aside") return "aside";
-  if (entry === "functional" || state === "HUMAN_PENDING") {
+  if (entry === "functional") {
     requireCondition(
       state === "HUMAN_PENDING",
       "INVALID_STATE",
@@ -452,6 +461,9 @@ function classifyRoute(
     );
     return "functional";
   }
+  // The acceptance-stage composer carries instructions, not necessarily defects.
+  // Explicit issue submission above keeps its issue/retest lifecycle.
+  if (state === "HUMAN_PENDING") return "execution";
   if (DISABLED_STATES.has(state)) {
     throw new FlowError(
       CONVERSATION_MESSAGE_ERROR.SEND_DISABLED,

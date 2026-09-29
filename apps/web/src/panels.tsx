@@ -1,5 +1,4 @@
 import React, { useState } from "react";
-import { CommandPreview } from "./command-preview.js";
 export const taskLabels: Record<string, string> = {
   completed: "开发完成",
   active: "进行中",
@@ -15,6 +14,7 @@ function developmentStatus(task: any) {
   return status === "in_progress" ? "active" : status;
 }
 export const caseLabels: Record<string, string> = {
+  unreported: "未回传",
   passed: "已通过",
   failed: "失败",
   skipped: "已跳过",
@@ -254,13 +254,12 @@ export function TestResults({
     unit: "单元测试",
     integration: "集成测试",
     e2e: "浏览器自动测试",
-    opentabs: "E2E（历史浏览器用例）",
+    opentabs: "OpenTabs 真实浏览器核验",
   };
-  const selfTests = detail.native_progress?.tests ?? [];
   return (
     <div className="test-results-container">
       <div className="panel-toolbar-header">
-        <h2>{title ?? "测试结果"}</h2>
+        <h2>{title ?? "测试进度"}</h2>
         <div className="filters">
           <div className="select-wrapper">
             <select
@@ -278,8 +277,6 @@ export function TestResults({
           </div>
         </div>
       </div>
-      <AttachmentArchiveStatus items={detail.attachment_status} />
-      {native && selfTests.length > 0 && <NativeSelfTests runs={selfTests} />}
       <div className="test-layers-list">
         {Object.entries(layers).map(([layer, label]) => {
           const all = progress.cases.filter((c: any) => c.layer === layer),
@@ -291,6 +288,7 @@ export function TestResults({
             (c: any) => c.status === "passed",
           ).length;
           const hasFailed = all.some((c: any) => c.status === "failed");
+          const unreported = all.filter((c: any) => c.status === "unreported").length;
           return (
             <details
               className="task-module test-layer-module"
@@ -305,7 +303,10 @@ export function TestResults({
                 <span
                   className={`module-badge ${hasFailed ? "has-failed" : passedCount === all.length ? "all-done" : ""}`}
                 >
-                  {passedCount} / {all.length} 通过
+                  {unreported === all.length ? "尚未收到测试结果" : <>
+                    {passedCount} / {all.length} {native ? "报告通过" : "通过"}
+                    {unreported > 0 && <> · {unreported} 项未回传</>}
+                  </>}
                 </span>
               </summary>
               <div className="module-tasks-body">
@@ -320,6 +321,11 @@ export function TestResults({
                         {labels[c.status]}
                       </span>
                     </div>
+                    {c.report_source === "executor_report" && <p className="associated-tasks">
+                      执行模型上次报告
+                      {c.reported_at && <> · <time dateTime={c.reported_at}>{new Date(c.reported_at).toLocaleString()}</time></>}
+                    </p>}
+                    {c.summary && <p className="associated-tasks">{c.summary}</p>}
                     <details className="test-case-details">
                       <summary>查看结果证据与关联</summary>
                       <div className="test-spec-box">
@@ -382,36 +388,6 @@ function AttachmentArchiveStatus({ items }: { items?: any[] }) {
           {typeof item.detail === "string" && item.detail && item.state !== "archived" ? (
             <p className="associated-tasks">{item.detail}</p>
           ) : null}
-        </article>
-      ))}
-    </section>
-  );
-}
-
-function NativeSelfTests({ runs }: { runs: any[] }) {
-  const labels: Record<string, string> = {
-    running: "测试运行中",
-    passed: "自测通过",
-    failed: "自测失败",
-    returned: "已返回",
-    interrupted: "已中断",
-  };
-  return (
-    <section className="native-test-progress" aria-label="原生自测进度">
-      {runs.map((run) => (
-        <article
-          className="native-test-run"
-          key={run.key ?? run.sequence ?? run.command}
-        >
-          <div className="test-case-row">
-            <span className={"badge " + run.status}>
-              {labels[run.status] ?? run.status}
-            </span>
-            {run.created_at && (
-              <time>{new Date(run.created_at).toLocaleTimeString()}</time>
-            )}
-          </div>
-          <CommandPreview command={run.command} cwd={run.cwd} />
         </article>
       ))}
     </section>

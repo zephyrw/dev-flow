@@ -8,6 +8,7 @@ import type {
 } from "../../../agy-accounts/src/ports.js";
 import { parseAgyUsageOutput, type ParsedQuotaResult } from "./quota-parser.js";
 import { resolveAgyExecutable } from "./executable-resolver.js";
+import { hasConflictingAgyFailureDiagnostic, isAgyIndividualQuotaError } from "./failure-fact.js";
 
 export interface VerifiedUsageAdapter {
   /** Installed by a code-reviewed official-output adapter, never supplied by HTTP. */
@@ -53,16 +54,6 @@ export function parseModelAccessOutput(
     }
   }
 
-  // 检查是否有错误事件
-  const hasError = events.some(
-    (event) =>
-      event.event === "error" ||
-      event.type === "error" ||
-      (event.result as any)?.status === "ERROR" ||
-      event.is_error === true,
-  );
-  if (hasError) return { success: false, reason: "error_event_present" };
-
   // 必须有本次匹配的初始化事件
   const initEvent = events.find(
     (e) =>
@@ -89,6 +80,18 @@ export function parseModelAccessOutput(
     return { success: false, reason: "model_mismatch" };
   }
 
+  // This probe creates a fresh invocation, never resumes a conversation. Keep
+  // the provider's explicit quota cause after checking the requested model.
+  const last = events.at(-1);
+  if ((last?.event === "result" || last?.type === "result") &&
+      (last?.result as any)?.status === "ERROR" &&
+      isAgyIndividualQuotaError((last?.result as any)?.error) &&
+      !((last?.result as any)?.denied_actions?.length))
+    return { success: false, reason: "agy_model_quota_exhausted" };
+  const hasError = events.some(event => event.event === "error" || event.type === "error" ||
+    (event.result as any)?.status === "ERROR" || event.is_error === true);
+  if (hasError) return { success: false, reason: "error_event_present" };
+
   // 必须有明确成功终态
   const hasSuccessResult = events.some(
     (event) =>
@@ -110,10 +113,20 @@ type ProbeOptions = {
   credential_revision?: number;
   model_id?: string;
 };
+type ModelAccessFlight = {
+  key: string;
+  controller: AbortController;
+  promise: Promise<boolean>;
+  waiters: number;
+  settled: boolean;
+};
 export class AgyAccountProbe implements AccountProbePort {
   private inFlight?: { key: string; promise: Promise<AccountProbeResult> };
+  private identityInFlight = false;
+  private modelAccessFlight?: ModelAccessFlight;
   private modelAccessCache = new Map<string, number>();
   private activeAdapter?: VerifiedUsageAdapter;
+  private adapterRefresh?: Promise<void>;
   private runner?: AuxiliaryProbeRunner;
 
   constructor(
@@ -137,14 +150,34 @@ export class AgyAccountProbe implements AccountProbePort {
       return "";
     }
   }
-  private getAdapter(fingerprint: string): VerifiedUsageAdapter | undefined {
-    if (
-      this.activeAdapter &&
-      this.activeAdapter.executable_fingerprint === fingerprint
-    ) {
-      return this.activeAdapter;
+  private async getAdapter(fingerprint: string): Promise<VerifiedUsageAdapter | undefined> {
+    if (!fingerprint || !this.activeAdapter) return undefined;
+    if (this.activeAdapter.executable_fingerprint === fingerprint) return this.activeAdapter;
+    // A CLI update invalidates cached evidence, not permission to query the CLI.
+    // Share metadata refresh; actual identity, quota and model checks still run.
+    if (this.adapterRefresh) {
+      await this.adapterRefresh;
+      return this.getAdapter(fingerprint);
     }
-    return undefined;
+    const refresh = (async () => {
+      let cliVersion = "unknown";
+      try {
+        const result = await this.execute(["--version"], { timeoutMs: 3000 });
+        if (result.code === 0) cliVersion = /\b(\d+\.\d+\.\d+)\b/.exec(result.stdout)?.[1] ?? "unknown";
+      } catch (error) {
+        if ((error as { code?: string })?.code === "PROCESS_STOP_UNCONFIRMED") throw error;
+        // Version metadata is optional; let the real probe report availability.
+      }
+      this.modelAccessCache.clear();
+      this.activeAdapter = createVerifiedUsageAdapter(fingerprint, cliVersion);
+    })();
+    this.adapterRefresh = refresh;
+    try {
+      await refresh;
+      return this.activeAdapter;
+    } finally {
+      if (this.adapterRefresh === refresh) this.adapterRefresh = undefined;
+    }
   }
   private unknown(fingerprint: string): AccountProbeResult {
     return {
@@ -165,34 +198,43 @@ export class AgyAccountProbe implements AccountProbePort {
   }> {
     options.signal?.throwIfAborted();
     const fingerprint = await this.fingerprint();
-    const adapter = this.getAdapter(fingerprint);
+    const adapter = await this.getAdapter(fingerprint);
     if (!fingerprint || !adapter) {
       throw new Error("identity_unverified: cli_adapter_or_fingerprint_unverified");
     }
-    const result = await this.execute(
-      ["-p", "/usage", "--output-format", "text", "--print-timeout", "15s"],
-      options,
-    );
-    if (result.code !== 0) {
-      throw new Error(`identity_unverified: official cli exited with code ${result.code}`);
+    if (this.identityInFlight || this.inFlight || this.modelAccessFlight)
+      throw new Error("probe_identity_busy");
+    this.identityInFlight = true;
+    try {
+      const result = await this.execute(
+        ["-p", "/usage", "--output-format", "text", "--print-timeout", "15s"],
+        options,
+      );
+      if (result.code !== 0) {
+        throw new Error(`identity_unverified: official cli exited with code ${result.code}`);
+      }
+      const parsed = adapter.parse(result.stdout);
+      const email = parsed.email;
+      if (!email) {
+        throw new Error("identity_unverified: unable to extract email from official cli output");
+      }
+      return {
+        email,
+        cli_version: parsed.cli_version,
+        raw_output: result.stdout,
+      };
+    } finally {
+      this.identityInFlight = false;
     }
-    const parsed = adapter.parse(result.stdout);
-    const email = parsed.email;
-    if (!email) {
-      throw new Error("identity_unverified: unable to extract email from official cli output");
-    }
-    return {
-      email,
-      cli_version: parsed.cli_version,
-      raw_output: result.stdout,
-    };
   }
 
   async probeUsage(options: ProbeOptions = {}): Promise<AccountProbeResult> {
     options.signal?.throwIfAborted();
     const fingerprint = await this.fingerprint();
-    const adapter = this.getAdapter(fingerprint);
+    const adapter = await this.getAdapter(fingerprint);
     if (!fingerprint || !adapter) return this.unknown(fingerprint);
+    if (this.identityInFlight || this.modelAccessFlight)
+      throw new Error("probe_identity_busy");
     const key = JSON.stringify([
       options.account_id,
       options.credential_revision,
@@ -248,8 +290,9 @@ export class AgyAccountProbe implements AccountProbePort {
     modelId: string,
     options: ProbeOptions = {},
   ): Promise<boolean> {
+    options.signal?.throwIfAborted();
     const fingerprint = await this.fingerprint();
-    const adapter = this.getAdapter(fingerprint);
+    const adapter = await this.getAdapter(fingerprint);
     if (
       !adapter ||
       !options.account_id ||
@@ -264,34 +307,88 @@ export class AgyAccountProbe implements AccountProbePort {
       modelId,
       fingerprint,
     ]);
-    if (Date.now() - (this.modelAccessCache.get(key) ?? 0) < 86400000)
+    const lastSuccess = this.modelAccessCache.get(key);
+    if (lastSuccess !== undefined && Date.now() - lastSuccess < 86400000)
       return true;
-    if (this.inFlight) throw new Error("probe_identity_busy");
-    const result = await this.execute(
-      [
-        "--model",
+    if (this.inFlight || this.identityInFlight) throw new Error("probe_identity_busy");
+    if (this.modelAccessFlight) {
+      if (this.modelAccessFlight.key !== key || this.modelAccessFlight.controller.signal.aborted)
+        throw new Error("probe_identity_busy");
+      return this.waitForModelAccess(this.modelAccessFlight, options.signal);
+    }
+    const flight: ModelAccessFlight = {
+      key,
+      controller: new AbortController(),
+      promise: Promise.resolve(false),
+      waiters: 0,
+      settled: false,
+    };
+    this.modelAccessFlight = flight;
+    flight.promise = Promise.resolve().then(async () => {
+      flight.controller.signal.throwIfAborted();
+      const result = await this.execute(
+        [
+          "--model",
+          modelId,
+          "--output-format",
+          "stream-json",
+          "--print-timeout",
+          "10s",
+          "-p",
+          "Reply only OK.",
+        ],
+        { ...options, timeoutMs: options.timeoutMs ?? 15000, signal: flight.controller.signal },
+      );
+      flight.controller.signal.throwIfAborted();
+      const parsed = parseModelAccessOutput(result.stdout, {
         modelId,
-        "--output-format",
-        "stream-json",
-        "--print-timeout",
-        "10s",
-        "-p",
-        "Reply only OK.",
-      ],
-      { ...options, timeoutMs: options.timeoutMs ?? 15000 },
-    );
-    if (result.code !== 0) return false;
-    const parsed = parseModelAccessOutput(result.stdout, {
-      modelId,
-      accountId: options.account_id,
-      cwd: options.cwd,
+        accountId: options.account_id,
+        cwd: options.cwd,
+      });
+      if (result.code === 3 && parsed.reason === "agy_model_quota_exhausted" &&
+          !hasConflictingAgyFailureDiagnostic(result.stderr))
+        throw Object.assign(new Error("agy_model_quota_exhausted"), {
+          code: "agy_model_quota_exhausted", account_id: options.account_id, model_id: modelId,
+        });
+      if (result.code !== 0) return false;
+      if (parsed.success) this.modelAccessCache.set(key, Date.now());
+      return parsed.success;
+    }).finally(() => {
+      flight.settled = true;
+      if (this.modelAccessFlight === flight) this.modelAccessFlight = undefined;
     });
-    return parsed.success;
+    return this.waitForModelAccess(flight, options.signal);
+  }
+
+  private waitForModelAccess(flight: ModelAccessFlight, signal?: AbortSignal): Promise<boolean> {
+    // Each caller owns its wait; stop the shared process only after all callers leave.
+    flight.waiters++;
+    return new Promise<boolean>((resolve, reject) => {
+      let finished = false;
+      const release = () => {
+        if (finished) return false;
+        finished = true;
+        signal?.removeEventListener("abort", abort);
+        flight.waiters--;
+        return true;
+      };
+      const abort = () => {
+        if (!release()) return;
+        reject(signal?.reason ?? new DOMException("Probe cancelled", "AbortError"));
+        if (flight.waiters === 0 && !flight.settled) flight.controller.abort();
+      };
+      flight.promise.then(
+        (value) => { if (release()) resolve(value); },
+        (error) => { if (release()) reject(error); },
+      );
+      signal?.addEventListener("abort", abort, { once: true });
+      if (signal?.aborted) abort();
+    });
   }
   private async execute(
     args: string[],
     options: ProbeOptions,
-  ): Promise<{ code: number | null; stdout: string }> {
+  ): Promise<{ code: number | null; stdout: string; stderr: string }> {
     const resPath = resolveAgyExecutable(this.cliPath);
     const executable = resPath.resolvedPath ?? this.cliPath ?? process.env.AGY_CLI_PATH;
     if (!executable) throw new Error("agy_cli_not_configured");
@@ -312,7 +409,7 @@ export class AgyAccountProbe implements AccountProbePort {
     }
     const hostTimeoutMs = Math.max(
       options.timeoutMs ?? (cliTimeoutMs > 0 ? cliTimeoutMs + 5000 : 35000),
-      cliTimeoutMs > 0 ? cliTimeoutMs + 5000 : 35000,
+      cliTimeoutMs > 0 ? cliTimeoutMs + 5000 : 0,
     );
 
     const lease = {
@@ -330,6 +427,6 @@ export class AgyAccountProbe implements AccountProbePort {
       timeoutMs: hostTimeoutMs,
       signal: options.signal,
     });
-    return { code: res.code, stdout: res.stdout };
+    return { code: res.code, stdout: res.stdout, stderr: res.stderr };
   }
 }

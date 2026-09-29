@@ -55,26 +55,12 @@ export function validatePlan(input: unknown): {
       const item = workItems.find((w: any) => w.id === key);
       requireCondition(item, "TASK_MISSING", `缺失工作项 ${key}`, 422);
       for (const dep of item!.depends_on) visitNative(dep);
-      for (const p of item!.paths) {
-        requireCondition(
-          plan.scope.allowed_paths.includes(p),
-          "SCOPE_MISMATCH",
-          `工作项路径未批准 ${p}`,
-          422,
-        );
-      }
       active.delete(key);
       done.add(key);
     }
     workItemIds.forEach(visitNative);
 
     for (const a of acceptanceItems) {
-      requireCondition(
-        (a.layer as string) !== "opentabs",
-        "BROWSER_LAYER_RETIRED",
-        "原生计划请将浏览器场景纳入 E2E，不再单列 OpenTabs 验收层",
-        422,
-      );
       for (const wid of a.work_item_ids) {
         requireCondition(
           workItemIds.has(wid),
@@ -153,13 +139,6 @@ export function validatePlan(input: unknown): {
         `细项 ${task.id} 缺少模块或可检查的完成条件`,
         422,
       );
-      for (const check of task.completion_checks!)
-        requireCondition(
-          task.paths.includes(check.path),
-          "COMPLETION_SCOPE",
-          "完成检查必须属于该细项的修改范围",
-          422,
-        );
     }
     requireCondition(
       plan.modules!.every((m) => plan.tasks.some((t) => t.module_id === m.id)),
@@ -199,13 +178,6 @@ export function validatePlan(input: unknown): {
         `缺失测试 ${test}`,
         422,
       );
-    for (const p of task.paths)
-      requireCondition(
-        plan.scope.allowed_paths.includes(p),
-        "SCOPE_MISMATCH",
-        `任务路径未批准 ${p}`,
-        422,
-      );
     active.delete(key);
     done.add(key);
   }
@@ -218,15 +190,8 @@ export function validatePlan(input: unknown): {
         `缺失任务 ${key}`,
         422,
       );
-  // Historical plans can still carry OpenTabs evidence; it is not a fourth
-  // required layer. New native plans run browser scenarios as E2E.
-  requireCondition(
-    plan.task_model !== "native-v2" ||
-      !plan.tests.some((test) => test.layer === "opentabs"),
-    "BROWSER_LAYER_RETIRED",
-    "原生计划请将浏览器场景纳入 E2E，不再单列 OpenTabs 验收层",
-    422,
-  );
+  // E2E automation and OpenTabs real-browser verification are distinct items.
+  // Keep their declared layers; OpenTabs does not replace required automation.
   for (const layer of ["unit", "integration", "e2e"])
     requireCondition(
       plan.tests.some((t) => t.layer === layer) ||
@@ -245,32 +210,6 @@ export function validatePlan(input: unknown): {
   const diagrams = [
     ...markdown.matchAll(/^```mermaid\r?\n([\s\S]*?)^```\s*$/gm),
   ].map((m) => m[1]!);
-  requireCondition(
-    diagrams.length >= (plan.complexity === "complex" ? 4 : 1),
-    "DIAGRAM_MISSING",
-    "缺少必需图解",
-    422,
-  );
-  if (plan.complexity === "complex")
-    requireCondition(
-      diagrams.some((d) => d.includes("sequenceDiagram")) &&
-        diagrams.some((d) => /flowchart|graph /.test(d)),
-      "DIAGRAM_TYPE",
-      "复杂计划需要流程图和时序图",
-      422,
-    );
-  requireCondition(
-    (plan.unresolved_decisions?.length ?? 0) === 0,
-    "UNRESOLVED_DECISION",
-    "正式计划存在未解决决策",
-    422,
-  );
-  requireCondition(
-    !/(?:TODO|TBD|待定|待确认)\s*[:：]/i.test(markdown),
-    "UNRESOLVED_DECISION",
-    "正式计划存在未解决决策",
-    422,
-  );
   if (plan.markdown) {
     plan.markdown = plan.markdown.replace(/\r\n/g, "\n");
   }

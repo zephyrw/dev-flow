@@ -1,7 +1,29 @@
 import { test, expect } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { createNative } from "./native-helper.js";
+import { createNative, openFixtureWorkflow } from "./native-helper.js";
+
+test("合并后的任务行状态、全屏阅读与计划问答层级兼容", async ({ page }) => {
+  await openFixtureWorkflow(page);
+  const row = page.locator(".flow-nav-item.active");
+  await expect(row.locator(".dot")).toHaveClass(/workflow-tone-warning/);
+  await row.hover();
+  await expect(row.getByRole("button", { name: "归档", exact: true })).toBeVisible();
+  await page.locator(".tabs").getByRole("button", { name: "开发计划", exact: true }).click();
+  await expect(page.locator(".plan-section-title h2")).toHaveText("开发计划");
+  await page.getByRole("button", { name: "全屏查看", exact: true }).click();
+  const reading = page.getByRole("dialog", { name: "开发计划全屏阅读", exact: true });
+  await expect(reading.getByRole("heading", { name: "开发计划", exact: true })).toBeVisible();
+  await reading.getByRole("button", { name: "计划问答", exact: true }).click();
+  const question = page.getByRole("dialog", { name: "计划问答", exact: true });
+  await expect(question).toBeVisible();
+  await question.getByLabel("向规划模型提问").fill("层级回归，不发送");
+  await question.getByRole("button", { name: "关闭", exact: true }).click();
+  await expect(reading).toBeVisible();
+  await reading.getByRole("button", { name: "退出全屏", exact: true }).click();
+  await expect(reading).not.toBeVisible();
+  await expect(page.getByRole("button", { name: "全屏查看", exact: true })).toBeFocused();
+});
 
 test("计划问答保持审批状态，驳回在原规划会话修正后重新等待批准", async ({
   page,
@@ -18,6 +40,12 @@ test("计划问答保持审批状态，驳回在原规划会话修正后重新�
   await expect(
     actions.getByRole("button", { name: "驳回并修正", exact: true }),
   ).toBeVisible();
+  await page.locator(".tabs").getByRole("button", { name: "开发计划", exact: true }).click();
+  await expect(page.locator(".plan-section-title h2")).toHaveText("开发计划");
+  await page.getByRole("button", { name: "全屏查看", exact: true }).click();
+  const reading = page.getByRole("dialog", { name: "开发计划全屏阅读", exact: true });
+  await expect(reading.getByRole("heading", { name: "开发计划", exact: true })).toBeVisible();
+  await reading.getByRole("button", { name: "退出全屏", exact: true }).click();
   await page.getByRole("button", { name: "计划问答", exact: true }).click();
   let dialog = page.getByRole("dialog", { name: /计划问答/ });
   await expect(
@@ -103,8 +131,9 @@ test("计划问答保持审批状态，驳回在原规划会话修正后重新�
     actions.getByRole("button", { name: "批准当前计划", exact: true }),
   ).toBeVisible();
   await page.getByRole("button", { name: "计划问答", exact: true }).click();
-  dialog = page.getByRole("dialog", { name: /计划问答 · 第 2 版/ });
-  await dialog.getByLabel("向规划模型提问").fill("第二版修改了什么？");
+  dialog = page.getByRole("dialog", { name: "计划问答", exact: true });
+  await expect(dialog).not.toContainText("第 2 版");
+  await dialog.getByLabel("向规划模型提问").fill("当前计划修改了什么？");
   await dialog.getByRole("button", { name: "发送问题", exact: true }).click();
   await expect(dialog.getByLabel("计划问答记录")).toContainText(
     "请补充回滚步骤",

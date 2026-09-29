@@ -34,7 +34,9 @@ import {
   recoveryGuidanceText,
   type RecoveryRunPort,
   type RecoveryRunRequest,
+  storeRecoveryRunPort,
 } from "../../packages/runtime/src/conversation-recovery.js";
+import { currentRunUserGuidance } from "../../packages/runtime/src/profile-runtime.js";
 
 class FakeClock implements ConversationControlClock {
   current = Date.parse("2026-09-20T00:00:00.000Z");
@@ -245,6 +247,108 @@ function resumeBody(rootId: string, requestId = "resume-1") {
   };
 }
 
+async function reusedRootSession(withOldPause = false) {
+  const s = openSession();
+  const first = s.store.must<Run>("run", "run1");
+  const observe = (runId: string, nativeId: string, hour: string) => {
+    const timestamp = `2026-09-20T${hour}:00:00.000Z`;
+    s.store.put("run", runId, "wf1", { ...first, id: runId, started_at: timestamp });
+    return s.conversations.applyEvent(ctx({ run_id: runId, root_native_id: nativeId }), event({
+      source_id: `reuse-${runId}`, source_seq: "1", root_native_id: nativeId, session_native_id: nativeId,
+      occurred_at: timestamp, payload: { status: "running" },
+    })).node!;
+  };
+  const oldRoot = observe("run1", "root-native", "01");
+  if (withOldPause) await s.controls.pauseTree("wf1", {
+    request_id: "old-generation-pause", action: "pause", root_id: oldRoot.id, expected_generation: 0,
+  });
+  const laterRoot = observe("run2", "other-account-root", "02");
+  const reused = observe("run3", "root-native", "03");
+  expect(reused.id).toBe(oldRoot.id);
+  expect(reused.created_at < laterRoot.created_at).toBe(true);
+  s.store.put("workflow", "wf1", "proj1", { ...s.store.must<Workflow>("workflow", "wf1"), run_id: "run3" });
+  const generation = s.conversations.getTree("wf1").attempts.find((a) => a.run_id === "run3" && a.conversation_id === reused.id)!.generation;
+  return { ...s, reused, laterRoot, generation };
+}
+
+describe("reused native roots follow the latest execution instead of node creation", () => {
+  it("can pause and recover the old root after a newer Run reused it", async () => {
+    const s = await reusedRootSession();
+    try {
+      const paused = await s.controls.pauseTree("wf1", {
+        request_id: "pause-reused", action: "pause", root_id: s.reused.id, expected_generation: s.generation,
+      });
+      expect(paused.unconfirmed_count).toBe(0);
+      const result = await s.recovery.arrangeRecovery("wf1", {
+        ...resumeBody(s.reused.id, "resume-reused"), expected_generation: s.generation,
+      }, { reason: "user_resume" });
+      expect(result.manifest.source_run_id).toBe("run3");
+      expect(result.manifest.root_conversation_id).toBe(s.reused.id);
+      expect(s.runPort.requests).toHaveLength(1);
+    } finally { s.store.close(); }
+  });
+
+  it("both entry points reject the superseded root even after its delayed activity event", async () => {
+    const s = await reusedRootSession();
+    try {
+      s.conversations.applyEvent(ctx({ run_id: "run2", root_native_id: "other-account-root" }), event({
+        source_id: "reuse-run2", source_seq: "2", root_native_id: "other-account-root", session_native_id: "other-account-root",
+        occurred_at: "2026-09-20T04:00:00.000Z", kind: "activity", payload: { summary: "delayed older run observation" },
+      }));
+      await expect(s.controls.pauseTree("wf1", {
+        request_id: "pause-superseded", action: "pause", root_id: s.laterRoot.id, expected_generation: 0,
+      })).rejects.toMatchObject({ code: CONVERSATION_ERROR.STALE_ROOT });
+      await expect(s.recovery.arrangeRecovery("wf1", resumeBody(s.laterRoot.id, "resume-superseded"),
+        { reason: "user_resume" })).rejects.toMatchObject({ code: CONVERSATION_ERROR.STALE_ROOT });
+      expect(s.runPort.requests).toHaveLength(0);
+      expect(s.conversations.getTree("wf1").attempts.find((a) => a.run_id === "run3")?.status).toBe("running");
+    } finally { s.store.close(); }
+  });
+
+  it("an older generation fence cannot replace the reused root's failed Run or lose its guidance", async () => {
+    const s = await reusedRootSession(true);
+    try {
+      // Mirror a failed model call followed by Engine.stop while already queued:
+      // there is no new live process to pause, so only an older fence exists.
+      s.conversations.applyEvent(ctx({ run_id: "run3" }), event({
+        source_id: "reuse-run3", source_seq: "2", session_native_id: "root-native", kind: "state",
+        occurred_at: "2026-09-20T03:30:00.000Z", payload: { status: "failed" },
+      }));
+      const source = { ...s.store.must<Run>("run", "run3"), status: "failed" as const,
+        assignment_id: "current-assignment", routing_role: "executor" as const };
+      s.store.put("run", source.id, "wf1", source);
+      s.store.put("workflow", "wf1", "proj1", { ...s.store.must<Workflow>("workflow", "wf1"), state: "STOPPED" });
+      s.store.put("feedback_message", "current-guidance", "wf1", {
+        workflow_id: "wf1", seq: 6, text: "继续本轮，并逐项回答我之前的问题", ack_run: source.id,
+      });
+      for (const fence of s.store.list<any>("conversation_control_fence", "wf1")) {
+        s.store.put("conversation_control_fence", fence.id, "wf1",
+          { ...fence, updated_at: "2026-09-20T05:00:00.000Z", dispatch_frozen: false });
+      }
+      const recovery = new ConversationRecovery({ store: s.store, conversations: s.conversations,
+        controls: s.controls, runPort: storeRecoveryRunPort(s.store), clock: new FakeClock() });
+      const result = await recovery.arrangeRecovery("wf1", {
+        ...resumeBody(s.reused.id, "resume-after-failure"), expected_generation: s.generation,
+      }, { reason: "user_resume" });
+      expect(result.manifest.source_run_id).toBe(source.id);
+      const resumed = s.store.must<Run>("run", result.manifest.target_run_id);
+      expect(resumed.assignment_id).toBe("current-assignment");
+      expect(resumed.continuation).toMatchObject({ kind: "runtime_resume", source_run_id: source.id });
+      expect(currentRunUserGuidance(s.store, "wf1", resumed)?.messages)
+        .toEqual([expect.objectContaining({ seq: 6, text: "继续本轮，并逐项回答我之前的问题" })]);
+    } finally { s.store.close(); }
+  });
+});
+
+async function observeChildPaused(conversations: ConversationService, controls: ConversationControlService, controlId: string) {
+  // Root-only native stop does not itself confirm child exit. Simulate the
+  // adapter's subsequent child state observation before asking to resume.
+  conversations.applyEvent(ctx(), event({ source_id: "src-run1", source_seq: "50", kind: "state",
+    session_native_id: "child-native", parent_native_id: "root-native", payload: { status: "paused", reason: "user_pause" } }));
+  const settled = await controls.reconcile("wf1", controlId);
+  expect(settled.unconfirmed_count).toBe(0);
+}
+
 describe("SA-I10 quota restore reuses purpose and treats delivered as not observed", () => {
   it("reuses original purpose and config, injects manifest, and keeps delivered distinct from observed", async () => {
     const { store, conversations, recovery, runPort } = openSession();
@@ -396,12 +500,14 @@ describe("SA-I12 quota timer, pause, config change and duplicate recover", () =>
     const { conversations, controls, recovery, runPort, store } = openSession();
     const root = discoverRoot(conversations);
     spawnChild(conversations, "child-native", "root-native", "2");
-    await controls.pauseTree("wf1", {
+    const paused = await controls.pauseTree("wf1", {
       request_id: "pause-race",
       action: "pause",
       root_id: root.id,
       expected_generation: 0,
     });
+    expect(paused.unconfirmed_count).toBe(1);
+    await observeChildPaused(conversations, controls, paused.control.id);
     const first = await recovery.arrangeRecovery(
       "wf1",
       resumeBody(root.id, "outbox-1"),
@@ -429,12 +535,14 @@ describe("SA-I12 quota timer, pause, config change and duplicate recover", () =>
       root_id: root.id,
       generation: 0,
     } satisfies ModelRetry);
-    await controls.pauseTree("wf1", {
+    const paused = await controls.pauseTree("wf1", {
       request_id: "pause-quota",
       action: "pause",
       root_id: root.id,
       expected_generation: 0,
     });
+    expect(paused.unconfirmed_count).toBe(1);
+    await observeChildPaused(conversations, controls, paused.control.id);
     expect(store.get("model_retry", "wf1")).toBeUndefined();
     store.put("model_retry", "wf1", "wf1", {
       id: "wf1",
@@ -682,5 +790,37 @@ describe("SA-I13 native failure, quota again, missing reset, live leftover", () 
         reason: "user_resume",
       }),
     ).rejects.toBeInstanceOf(FlowError);
+  });
+});
+
+
+describe("stored recovery run projections", () => {
+  it.each(["executor_test", "functional_fix"] as const)("repeated recovery keeps the stopped generation and purpose %s until launch", async (purpose) => {
+    const s = openSession(purpose, purpose === "functional_fix" ? "acceptance_guidance" : purpose);
+    try {
+      const recovery = new ConversationRecovery({ store: s.store, conversations: s.conversations,
+        controls: s.controls, runPort: storeRecoveryRunPort(s.store), clock: new FakeClock() });
+      const tree = s.conversations.getTree("wf1");
+      const root = tree.active_root_id!;
+      const request = { request_id: "api-resume", action: "resume" as const,
+        root_id: root, expected_generation: tree.attempts.at(-1)!.generation };
+      const first = await recovery.arrangeRecovery("wf1", request, { reason: "user_resume" });
+      const after = s.conversations.getTree("wf1", root);
+      expect(after.attempts).toEqual(tree.attempts);
+      // The API prepares a recovery before resumeApproved performs its own lookup.
+      const repeated = await recovery.arrangeRecovery("wf1", { ...request, request_id: "engine-resume",
+        expected_generation: after.attempts.at(-1)!.generation }, { reason: "user_resume" });
+      expect(repeated.recovery_id).toBe(first.recovery_id);
+      const queued = s.store.must<Run>("run", first.manifest.target_run_id);
+      expect(queued).toMatchObject({ status: "queued", purpose, conversation_id: root });
+      expect(s.store.list<Run>("run", "wf1")).toHaveLength(2);
+      // Once actually launched, the projected new attempt must still block duplicates.
+      s.store.put("run", queued.id, "wf1", { ...queued, status: "running" });
+      const active = s.conversations.getTree("wf1", root);
+      expect(active.attempts.at(-1)).toMatchObject({ run_id: queued.id, status: "running" });
+      await expect(recovery.arrangeRecovery("wf1", { ...request, request_id: "duplicate-after-launch",
+        expected_generation: active.attempts.at(-1)!.generation }, { reason: "user_resume" }))
+        .rejects.toMatchObject({ code: CONVERSATION_ERROR.STOP_UNCONFIRMED });
+    } finally { s.store.close(); }
   });
 });

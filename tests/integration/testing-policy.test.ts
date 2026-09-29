@@ -41,6 +41,11 @@ it("native plan submission and both handoffs preserve new and regression E2E cas
       expect(pkg.instructions).toContain("旧功能回归");
       expect(pkg.instructions).toContain("真实浏览器连接真实应用");
       expect(pkg.instructions).toContain("仍保留用户功能确认");
+      expect(pkg.instructions).toContain("四项结果独立");
+      expect(pkg.instructions).toContain("不跨层映射");
+      expect(pkg.instructions).toContain("E2E 的通过或跳过不代表 OpenTabs 已完成或不适用");
+      expect(pkg.instructions).toContain("保留当前任务已完成且未受影响的结果，仅补未完成项");
+      expect(pkg.instructions).toContain("不凭提示词宣称工具一定可用");
     }
     stored.exemptions = [{ layer: "integration", reason: "无集成边界的任务须保留明确批准的豁免依据" }];
     const pkg = HandoffBuilder.buildResumeHandoff({ ...args, plan: stored, conversationId: "conv-test" });

@@ -128,10 +128,23 @@ describe("配置与计划合同", () => {
       ).cases[0]?.status,
     ).toBe("passed");
   });
-  it("UT-19 redacts secrets from public logs", () =>
+  it("UT-19 redacts secrets from public logs", () => {
     expect(
       redact("Authorization: Bearer abc123 token=verysecret"),
-    ).not.toContain("verysecret"));
+    ).not.toContain("verysecret");
+    expect(
+      redact("git clone http://user:pass123@host:8080/repo.git"),
+    ).toBe("git clone http://user:[REDACTED]@host:8080/repo.git");
+    expect(
+      redact("curl https://secret_token@example.com/api"),
+    ).toBe("curl https://[REDACTED]@example.com/api");
+    expect(
+      redact("app --password mypassword -p shortpass --token tok123 --secret sec456 --api-key key789 --api_key key_999"),
+    ).toBe("app --password [REDACTED] -p [REDACTED] --token [REDACTED] --secret [REDACTED] --api-key [REDACTED] --api_key [REDACTED]");
+    expect(
+      redact('cli --password "quoted pass" -p \'single pass\''),
+    ).toBe("cli --password [REDACTED] -p [REDACTED]");
+  });
   it("UT-20 safely resolves executables and rejects missing binaries with structured errors", () => {
     if (process.platform === "win32") {
       expect(() => executablePath("nonexistent_test_bin_xyz")).toThrow(

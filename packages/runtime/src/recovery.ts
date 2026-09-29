@@ -33,7 +33,10 @@ import {
   readRunContinuation,
   readWaitingContext,
   savePlanningHandoff,
+  saveRunContinuation,
   waitingBelongsToRun,
+  currentContinuation,
+  continuationFromWaiting,
 } from "../../core/src/waiting-context.js";
 import type { WaitingContext } from "../../core/src/waiting-context.js";
 import type { Run, Workflow } from "../../contracts/src/index.js";
@@ -519,6 +522,7 @@ function resumeWaitingIfCurrent(
     archiveStalePlanning(engine, key, waiting);
     return;
   }
+  if (!currentContinuation(engine.store, key, continuationFromWaiting(waiting))) return;
   if (!belongs && !planningSource) return;
   assertResumePreconditions(engine, key, {
     state: isPlanningWaiting(waiting)
@@ -564,6 +568,12 @@ function arrangeConversationRecovery(
   const arranged = session.recovery.commitArrangement(key, session.request, {
     reason,
   });
+  const recoveryRun = engine.store.get<Run>("run", arranged.manifest.target_run_id);
+  if (recoveryRun?.continuation) {
+    // Carry the explicitly arranged paused Run into real dispatch. Otherwise a
+    // stale waiting_context can outrank this recovery in consumeContinuation.
+    saveRunContinuation(engine.store, key, key, recoveryRun.continuation);
+  }
   session.controls.resumeTree(key, session.request);
   return arranged;
 }
@@ -587,7 +597,7 @@ function openConversationRecovery(engine: Engine, key: string) {
     runPort: storeRecoveryRunPort(engine.store),
   });
   const tree = conversations.getTree(key);
-  const rootId = tree.active_root_id;
+  const rootId = conversations.resolveControlRoot(key, tree);
   if (!rootId) return undefined;
   const generation =
     tree.attempts

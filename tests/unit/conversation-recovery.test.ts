@@ -248,6 +248,24 @@ function resumeRequest(rootId: string, requestId = "resume-1") {
 }
 
 describe("SA-U19 conversation recovery set", () => {
+  it("both resume entrypoints reject a live generation-zero child after the root resumes", () => {
+    const { store, conversations, controls, recovery } = openRecovery();
+    try {
+      const root = discoverRoot(conversations);
+      putWorkflow(store, "wf1", "STOPPED", "run2", "implement", "exec");
+      discoverRoot(conversations, ctx({ run_id: "run2" }));
+      const tree = conversations.getTree("wf1", root.id);
+      const rootAttempt = tree.attempts.find((attempt) => attempt.conversation_id === root.id && attempt.generation === 1)!;
+      store.put("conversation_attempt", rootAttempt.id, "wf1", { ...rootAttempt, status: "paused", stop_confirmation: "native" });
+      spawnChild(conversations, "new-child", "root-native", "2", "running", { run_id: "run2" });
+      const request = { ...resumeRequest(root.id), expected_generation: 1 };
+      expect(() => controls.resumeTree("wf1", request)).toThrow("仍有旧子会话可能执行");
+      expect(() => recovery.assertResumeReady("wf1", request)).toThrow("仍有旧子会话可能执行");
+    } finally {
+      store.close();
+    }
+  });
+
   it("excludes completed and cancelled, keeps paused interrupted quota, and nests under the original parent", async () => {
     const { conversations, controls, recovery } = openRecovery();
     const root = discoverRoot(conversations);
@@ -433,4 +451,38 @@ describe("SA-U19 conversation recovery set", () => {
       stage: "prepared",
     } as RecoveryManifest)).toContain(RECOVERY_GUIDANCE_TEXT);
   });
+});
+
+
+it("rejects an explicit old Run observation instead of falling back to active recovery", async () => {
+  const { store, conversations, controls, recovery } = openRecovery();
+  try {
+    const root = discoverRoot(conversations);
+    const child = spawnChild(conversations, "child-native", "root-native", "2");
+    await controls.pauseTree("wf1", { request_id: "pause-late", action: "pause", root_id: root.id, expected_generation: 0 });
+    const arranged = await recovery.arrangeRecovery("wf1", resumeRequest(root.id), { reason: "user_resume" });
+    const before = recovery.getManifest(arranged.recovery_id);
+    expect(recovery.observeAttempt("wf1", { conversation_id: child.id, run_id: "run1", status: "running" })).toBeUndefined();
+    expect(recovery.getManifest(arranged.recovery_id)).toEqual(before);
+    const nextRun = arranged.manifest.target_run_id;
+    putWorkflow(store, "wf1", "EXECUTING", nextRun, "implement", "exec");
+    discoverRoot(conversations, ctx({ run_id: nextRun }));
+    const updated = spawnChild(conversations, "child-native", "root-native", "2", "running", { run_id: nextRun });
+    expect(recovery.observeAttempt("wf1", { conversation_id: updated.id, run_id: nextRun, status: "running" })?.observed_count).toBe(1);
+    expect(recovery.observeAttempt("wf1", { conversation_id: child.id, run_id: "run1", status: "failed" })).toBeUndefined();
+    expect(recovery.getManifest(arranged.recovery_id)?.observed_count).toBe(1);
+  } finally { store.close(); }
+});
+
+it("does not copy a stale workflow waiting into a newly arranged recovery", async () => {
+  const { store, conversations, controls, recovery, runPort } = openRecovery();
+  try {
+    const root = discoverRoot(conversations);
+    await controls.pauseTree("wf1", { request_id: "pause-stale-wait", action: "pause", root_id: root.id, expected_generation: 0 });
+    store.put("waiting_context", "wf1", "wf1", { purpose: "review", role: "planner", run_id: "old-review",
+      intent: "need_user", questions: ["old question"], created_at: new Date().toISOString() });
+    await recovery.arrangeRecovery("wf1", resumeRequest(root.id), { reason: "user_resume" });
+    expect(runPort.requests[0]?.continuation).toMatchObject({ source_run_id: "run1", purpose: "execute", role: "executor" });
+    expect(runPort.requests[0]?.continuation?.questions).toBeUndefined();
+  } finally { store.close(); }
 });

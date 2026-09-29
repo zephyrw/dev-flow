@@ -50,7 +50,7 @@ export const runtimePurposeNames: Record<string, string> = {
   quality_review: "规划模型 · 代码质量复核",
   executor_test: "执行模型 · 测试",
   planner_commit: "规划模型 · 提交代码",
-  functional_fix: "执行模型 · 功能修复",
+  functional_fix: "执行模型 · 验收指导处理",
   aside: "临时提问",
   merge_conflict: "解决合并冲突",
 };
