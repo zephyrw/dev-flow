@@ -232,7 +232,7 @@ export class ConversationMessageService {
       route,
       deliveredText,
       files,
-      shouldPause: shouldPauseRoot(route, live),
+      shouldPause: workflow.state !== "HUMAN_PENDING" && shouldPauseRoot(route, live),
     };
   }
 
@@ -452,7 +452,7 @@ function classifyRoute(
   entry: "auto" | "formal" | "aside" | "functional",
 ): MessageRoute {
   if (entry === "aside" || mode === "aside") return "aside";
-  if (entry === "functional" || state === "HUMAN_PENDING") {
+  if (entry === "functional") {
     requireCondition(
       state === "HUMAN_PENDING",
       "INVALID_STATE",
@@ -461,6 +461,9 @@ function classifyRoute(
     );
     return "functional";
   }
+  // The acceptance-stage composer carries instructions, not necessarily defects.
+  // Explicit issue submission above keeps its issue/retest lifecycle.
+  if (state === "HUMAN_PENDING") return "execution";
   if (DISABLED_STATES.has(state)) {
     throw new FlowError(
       CONVERSATION_MESSAGE_ERROR.SEND_DISABLED,

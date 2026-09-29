@@ -30,3 +30,11 @@ it("does not expose a failed frontend, fabricated address, or an acceptance pane
   expect(render({ ...detail, environment: null })).not.toContain("href=");
   expect(render({ ...detail, workflow: { ...detail.workflow, state: "EXECUTING" } })).toBe("");
 });
+it("shows the native executor's acceptance address even without a platform-managed environment", () => {
+  const html = render({ ...detail, environment: null, acceptance_handoff: {
+    summary: "前后端已启动，请访问 [当前任务验收页面](http://127.0.0.1:16321)。验收后再关闭服务。",
+  } });
+  expect(html).toContain('href="http://127.0.0.1:16321"');
+  expect(html).toContain("前后端已启动");
+  expect(html).not.toContain("释放环境");
+});

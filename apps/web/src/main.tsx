@@ -1,5 +1,6 @@
 import { ExecutionPanel, formatPathSummary } from "./execution-panel.js";
 import { TaskInteraction } from "./interactions.js";
+import { WorkflowActivity } from "./components/WorkflowActivity.js";
 import {
   RuntimeFailureNotice,
   runtimeFailureForTask,
@@ -19,7 +20,7 @@ import { CurrentRuntime } from "./components/CurrentRuntime.js";
 import { WorkflowAttentionBanner } from "./components/WorkflowAttentionBanner.js";
 import { WorkflowOverview } from "./components/WorkflowOverview.js";
 import { WorkflowArchiveAction } from "./components/WorkflowArchiveAction.js";
-import { formatWorkflowState } from "../../../packages/presentation/src/workflow-status.js";
+import { canPauseWorkflow, formatWorkflowState, getWorkflowTone } from "../../../packages/presentation/src/workflow-status.js";
 import { useEventCatchup } from "./use-event-catchup.js";
 import { RequirementComposer } from "./components/RequirementComposer.js";
 import { SourceChangeDialog } from "./components/SourceChangeDialog.js";
@@ -2191,7 +2192,7 @@ function App() {
                       setLocate(undefined);
                     }}
                   >
-                    <i className={"dot " + f.state} />
+                    <i className={`dot workflow-tone-${getWorkflowTone(f)}`} />
                     <span className="flow-title-text">{f.title}</span>
                   </button>
                 ))}
@@ -2267,7 +2268,7 @@ function App() {
                     : "工作流总览"}
               </h1>
               {w && (
-                <span className={"badge " + w.state}>
+                <span className={`badge workflow-tone-${getWorkflowTone(w)}`}>
                   <span className="badge-dot" />
                   {detail.queue?.kind === "preparing"
                     ? w.workspace_mode === "existing_workspace"
@@ -2319,17 +2320,11 @@ function App() {
             <small>正在读取任务详情…</small>
             {flows.some(
               (f) =>
-                f.id === selected &&
-                ![
-                  "COMMITTED",
-                  "COMMITTING",
-                  "COMMIT_PARTIAL",
-                  "STOPPED",
-                ].includes(f.state),
+                f.id === selected && canPauseWorkflow(f),
             ) && (
               <button
-                className="danger"
-                disabled={stopping}
+                className="warning"
+                disabled={stopping || flows.find(f => f.id === selected)?.state === "STOPPING"}
                 onClick={stopSelected}
               >
                 {stopping ? "正在暂停…" : "暂停"}
@@ -2404,7 +2399,7 @@ function App() {
                         <span className="project-label">
                           {projects.find((p) => p.id === f.project_id)?.name}
                         </span>
-                        <span className={"badge " + f.state}>
+                        <span className={`badge workflow-tone-${getWorkflowTone(f)}`}>
                           {formatWorkflowState(f.state)}
                         </span>
                       </div>
@@ -2617,16 +2612,9 @@ function App() {
                               </button>
                             )}
 
-                            {[
-                              "QUEUED",
-                              "EXECUTING",
-                              "VERIFYING",
-                              "REVIEW_QUEUED",
-                              "REVIEWING",
-                              "STOPPING",
-                            ].includes(w.state) && (
+                            {canPauseWorkflow(w, detail.runs) && (
                               <button
-                                className="danger"
+                                className="warning"
                                 disabled={stopping || w.state === "STOPPING"}
                                 onClick={stopSelected}
                               >
@@ -2687,6 +2675,7 @@ function App() {
                   )}
                   <WorkflowAttentionBanner
                     attention={attention}
+                    tone={getWorkflowTone(w)}
                     workflowId={w.id}
                     workflowVersion={w.version}
                     onOpenPlan={() => setTab("plan")}
@@ -3065,7 +3054,11 @@ function App() {
         workflowState={detail?.workflow?.state}
         focusRole={toolDrawerFocus}
         onSpecUpdated={() => void refresh()}
-      />
+      >
+        {isToolDrawerOpen && detail?.workflow && (
+          <WorkflowActivity workflow={detail.workflow} refresh={refresh} detail={detail} />
+        )}
+      </ToolModelDialog>
       <SettingsDialog
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}

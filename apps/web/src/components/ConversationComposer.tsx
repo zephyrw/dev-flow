@@ -20,7 +20,6 @@ import {
 } from "./RequirementComposer.js";
 import {
   COMPOSER_TEXTAREA_ROWS,
-  conversationHandoverHint,
   composerTextareaHeight,
   resolveComposerSendPayload,
   shouldSubmitComposerKey,
@@ -198,11 +197,6 @@ function ActiveComposer({
       : resolved;
   const suggestions =
     parsed.mode === "aside" ? [] : conversationCommandSuggestions(draft.text);
-  const hint = conversationHandoverHint({
-    mode: parsed.mode,
-    readonly: false,
-    receivedFormal: draft.receivedFormal,
-  });
 
   const submit = useCallback(async () => {
     if (submittingRef.current || pending || !payload.canSend) return;
@@ -289,6 +283,11 @@ function ActiveComposer({
           setText(applyConversationCommandSuggestion(draft.text, command))
         }
       />
+      {payload.reason &&
+        !payload.canSend &&
+        payload.reason !== "请输入内容或添加附件" && (
+          <p className="conversation-composer-reason">{payload.reason}</p>
+        )}
       <ComposerInput
         textareaRef={textareaRef}
         text={draft.text}
@@ -317,14 +316,6 @@ function ActiveComposer({
         onCiteWorkspace={() => setReferenceOpenTick((value) => value + 1)}
         onSubmit={submit}
       />
-      {payload.reason &&
-        !payload.canSend &&
-        payload.reason !== "请输入内容或添加附件" && (
-          <p className="conversation-composer-reason">{payload.reason}</p>
-        )}
-      {hint && hint !== "发送后调整当前任务" && (
-        <p className="conversation-composer-hint">{hint}</p>
-      )}
     </div>
   );
 }

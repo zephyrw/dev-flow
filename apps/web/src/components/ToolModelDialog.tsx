@@ -34,6 +34,7 @@ export interface ToolModelDialogProps {
   workflowState?: string;
   focusRole?: string;
   onSpecUpdated?: () => void | Promise<void>;
+  children?: React.ReactNode;
 }
 
 function specProfiles(data: ExecutionSpecPayload): {
@@ -101,6 +102,7 @@ export function ToolModelDialog({
   workflowState,
   focusRole,
   onSpecUpdated,
+  children,
 }: ToolModelDialogProps) {
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -442,6 +444,7 @@ export function ToolModelDialog({
           disabled={readonly || saving || Boolean(pendingSwitch)}
         />
       )}
+      {children}
     </AppDialog>
   );
 }

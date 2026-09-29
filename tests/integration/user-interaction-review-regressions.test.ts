@@ -126,7 +126,8 @@ describe("人工交互复查回归", () => {
     );
     expect(continuation?.answer).toContain("请选择目标环境");
     expect(continuation?.answer).toContain("本地");
-    expect(continuation?.answer).toContain("回答后检查页面状态");
+    expect(continuation?.answer).not.toContain("回答后检查页面状态");
+    expect(continuation?.answer).toContain("本次用户回复，优先于上述历史请求中的冲突建议");
     expect(s.service.getCurrentInteraction(s.workflow.id)).toBeUndefined();
   });
 

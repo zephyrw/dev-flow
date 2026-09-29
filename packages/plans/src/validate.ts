@@ -61,12 +61,6 @@ export function validatePlan(input: unknown): {
     workItemIds.forEach(visitNative);
 
     for (const a of acceptanceItems) {
-      requireCondition(
-        (a.layer as string) !== "opentabs",
-        "BROWSER_LAYER_RETIRED",
-        "原生计划请将浏览器场景纳入 E2E，不再单列 OpenTabs 验收层",
-        422,
-      );
       for (const wid of a.work_item_ids) {
         requireCondition(
           workItemIds.has(wid),
@@ -196,15 +190,8 @@ export function validatePlan(input: unknown): {
         `缺失任务 ${key}`,
         422,
       );
-  // Historical plans can still carry OpenTabs evidence; it is not a fourth
-  // required layer. New native plans run browser scenarios as E2E.
-  requireCondition(
-    plan.task_model !== "native-v2" ||
-      !plan.tests.some((test) => test.layer === "opentabs"),
-    "BROWSER_LAYER_RETIRED",
-    "原生计划请将浏览器场景纳入 E2E，不再单列 OpenTabs 验收层",
-    422,
-  );
+  // E2E automation and OpenTabs real-browser verification are distinct items.
+  // Keep their declared layers; OpenTabs does not replace required automation.
   for (const layer of ["unit", "integration", "e2e"])
     requireCondition(
       plan.tests.some((t) => t.layer === layer) ||

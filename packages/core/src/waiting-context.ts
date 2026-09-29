@@ -1,5 +1,6 @@
 import type { Store } from "../../store/src/store.js";
-import { now } from "./util.js";
+import { now, redact } from "./util.js";
+import type { Run, Workflow } from "../../contracts/src/index.js";
 import type { ExecutionIntent, ReviewIntent } from "./round-intent.js";
 import type {
   PlanningHandoff,
@@ -74,6 +75,21 @@ export function recordExecutionCompletion(
 
 export function readExecutionCompletion(store: Store, runId: string) {
   return store.get<ExecutionCompletion>("execution_completion", runId);
+}
+
+/** Display the executor's handoff; service startup and acceptance remain model/user work. */
+export function humanAcceptanceSummary(store: Store, workflow: Workflow) {
+  if (workflow.state !== "HUMAN_PENDING") return null;
+  const completion = store.list<ExecutionCompletion>("execution_completion", workflow.id)
+    .filter((item) => {
+      const run = store.get<Run>("run", item.run_id);
+      return item.workflow_id === workflow.id && item.intent === "completed" &&
+        !!item.summary?.trim() && run?.workflow_id === workflow.id &&
+        run.plan_revision === workflow.plan_revision && run.status === "completed" &&
+        ["implement", "executor_test", "functional_fix"].includes(run.purpose ?? "implement");
+    })
+    .sort((a, b) => b.recorded_at.localeCompare(a.recorded_at))[0];
+  return completion ? { run_id: completion.run_id, summary: redact(completion.summary!) } : null;
 }
 
 export function saveRunContinuation(

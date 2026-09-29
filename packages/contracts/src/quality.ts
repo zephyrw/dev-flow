@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { Id, RelativePath } from "./base.js";
+import { Id, RelativePath, Layer } from "./base.js";
 import type { Review } from "./index.js";
 
 export type QualityPhase = "before_human" | "after_human";
@@ -63,7 +63,7 @@ export type ImplementationStep = z.infer<typeof ImplementationStepSchema>;
 export const AcceptanceCaseSchema = z
   .object({
     case_id: Id.optional(),
-    layer: z.enum(["unit", "integration", "e2e"]).optional(),
+    layer: Layer.optional(),
     fixtures: z.string().optional(),
     steps: z.array(z.string()).optional().default([]),
     expected_assertions: z.array(z.string()).optional().default([]),

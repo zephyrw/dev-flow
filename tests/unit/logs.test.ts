@@ -1,6 +1,17 @@
 import { it, expect } from "vitest";
 import { readableLogs, userFacingLogs } from "../../apps/web/src/logs.js";
 import { toolSummary } from "../../packages/presentation/src/tool-summary.js";
+import { runtimePurposeNames } from "../../packages/presentation/src/run-observation.js";
+
+it.each([true, false])("labels functional guidance neutrally without declaring a new development cycle (resumed=%s)", resumed => {
+  const events = ["QUEUED", "EXECUTING"].map((to, i) => ({ workflow_id: "w", event_seq: i + 1, created_at: "2026-09-29T02:00:00Z",
+    type: "StateChanged", payload: { from: i === 0 ? "HUMAN_PENDING" : "QUEUED", to, stage: "functional_fix", resumed } }));
+  const rows = readableLogs(events, "w");
+  expect(rows.map(row => row.title)).toEqual(["验收指导已排队", "处理验收指导"]);
+  expect(rows[1]?.text).toContain("启动验收服务或具体修改");
+  expect(rows[1]?.text).not.toContain("本轮开发与自测");
+  expect(runtimePurposeNames.functional_fix).toBe("执行模型 · 验收指导处理");
+});
 
 it.each([true, false])("labels a bound quality repair as remediation rather than implementation (resumed=%s)", (resumed) => {
   const rows = readableLogs([{ workflow_id: "w", event_seq: 1, created_at: "2026-09-28T09:54:06Z",

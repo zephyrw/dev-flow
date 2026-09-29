@@ -19,6 +19,19 @@ const detail = {
   ] },
 };
 
+it("shows automated E2E and OpenTabs verification in separate categories with independent results", () => {
+  const cases = [
+    { id: "E1", test_id: "E1", layer: "e2e", status: "passed", task_ids: [] },
+    { id: "B1", test_id: "B1", layer: "opentabs", status: "unreported", task_ids: [] },
+  ];
+  const html = renderToStaticMarkup(<TestResults detail={{ ...detail, test_progress: { total: 2, passed: 1, cases } }} />);
+  expect(html).toContain("浏览器自动测试");
+  expect(html).toContain("OpenTabs 真实浏览器核验");
+  expect(html).toContain("1 / 1 报告通过");
+  expect(html).toContain("尚未收到测试结果");
+  expect(html).not.toContain("历史浏览器用例");
+});
+
 it("renders categorized reported progress without promoting native command success into completion", () => {
   const html = renderToStaticMarkup(<TestResults detail={detail} />);
   expect(html).toContain("测试进度");

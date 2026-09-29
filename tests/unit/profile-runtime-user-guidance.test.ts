@@ -92,3 +92,67 @@ it("keeps the existing prompt unchanged when this run has no newly assigned feed
   expect(invokePrompt("implement", "HANDOFF.json", "schema.json", undefined, undefined, guidance))
     .toBe(invokePrompt("implement", "HANDOFF.json", "schema.json"));
 });
+
+function resumedRun(id: string, sourceId?: string, extra: Partial<Run> = {}): Run {
+  return { id, workflow_id: "workflow", plan_revision: 1, adapter: "agy", purpose: "functional_fix",
+    stage: "functional_fix", status: "stopped", started_at: "2026-09-29T02:17:11.000Z", package_hash: "package",
+    conversation_id: "original-session", invocation_fingerprint: "identity",
+    ...(sourceId ? { continuation: { kind: "runtime_resume" as const, source_run_id: sourceId, purpose: "execute" as const,
+      role: "executor" as const, conversation_id: "original-session" } } : {}), ...extra };
+}
+
+it("restores exact unfinished guidance through repeated runtime pauses, ordered with new guidance and deduplicated", () => {
+  const { store, put } = fixture();
+  const source = resumedRun("source"), paused = resumedRun("paused", source.id), current = resumedRun("current-run", paused.id);
+  paused.continuation!.conversation_id = "cnv-source-projection";
+  current.continuation!.conversation_id = "cnv-paused-projection";
+  for (const run of [source, paused, current]) store.put("run", run.id, "workflow", run);
+  const original = put(1, "启动前后端。先回答有没有做过 OpenTabs 验收？", { ack_run: source.id });
+  put(2, "端口独立且保留服务", { ack_run: paused.id });
+  put(3, "逐项回答");
+  put(1, original.text, { message_id: "duplicate-record", ack_run: source.id });
+  put(4, "无关历史", { ack_run: "unrelated" });
+  const result = currentRunUserGuidance(store, "workflow", current);
+  expect(result?.messages.map(m => m.seq)).toEqual([1, 2, 3]);
+  expect(result?.messages[0]?.text).toBe(original.text);
+  expect(invokePrompt("functional_fix", "HANDOFF.json", "schema.json", undefined, undefined, result)).toContain(original.text);
+  expect(store.get("feedback_message", original.message_id)).toEqual(original);
+});
+
+it.each(["completed", "completion_record", "aside", "workflow", "plan", "role", "user_answer"])(
+  "does not replay guidance across a %s boundary", boundary => {
+    const { store, put } = fixture();
+    const source = resumedRun("source"), current = resumedRun("current-run", source.id);
+    if (boundary === "completed") source.status = "completed";
+    if (boundary === "completion_record") store.put("execution_completion", source.id, "workflow", { intent: "completed" });
+    if (boundary === "aside") source.purpose = "aside";
+    if (boundary === "workflow") source.workflow_id = "other";
+    if (boundary === "plan") source.plan_revision = 2;
+    if (boundary === "role") source.routing_role = "planner";
+    if (boundary === "user_answer") current.continuation!.kind = "user_answer";
+    for (const run of [source, current]) store.put("run", run.id, run.workflow_id, run);
+    put(1, "旧指导", { ack_run: source.id });
+    expect(currentRunUserGuidance(store, "workflow", current)).toBeUndefined();
+    expect(currentRunUserGuidance(store, "workflow", { ...current, purpose: "aside" })).toBeUndefined();
+  },
+);
+
+it("preserves unfinished task guidance when account or model recovery recreates the native session", () => {
+  const { store, put } = fixture();
+  const source = resumedRun("source"), current = resumedRun("current-run", source.id, {
+    adapter: "codex", conversation_id: "new-native-session", invocation_fingerprint: "new-account-and-model",
+  });
+  for (const run of [source, current]) store.put("run", run.id, "workflow", run);
+  put(1, "请先回答 OpenTabs 是否做过，再启动服务", { ack_run: source.id });
+  expect(currentRunUserGuidance(store, "workflow", current)?.messages.map(m => m.seq)).toEqual([1]);
+});
+
+it("stops before an intermediate completed resume so older already-handled guidance is not replayed", () => {
+  const { store, put } = fixture();
+  const source = resumedRun("source"), completed = resumedRun("completed-resume", source.id, { status: "completed" });
+  const current = resumedRun("current-run", completed.id);
+  for (const run of [source, completed, current]) store.put("run", run.id, "workflow", run);
+  put(1, "此前已落实", { ack_run: source.id });
+  put(2, "只保留新的指导");
+  expect(currentRunUserGuidance(store, "workflow", current)?.messages.map(m => m.seq)).toEqual([2]);
+});

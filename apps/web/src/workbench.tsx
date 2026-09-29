@@ -1,4 +1,6 @@
 import React from "react";
+import Markdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 export function DeliveryStrip({ detail }: { detail: any }) {
   const leaf = detail.plan?.plan.task_model === "leaf-v1";
@@ -149,6 +151,9 @@ export function AcceptanceAccess({ detail, onReleaseEnvironment, onLockBrowser, 
     <section className="panel" id={`human-acceptance-${detail.workflow.id}`} tabIndex={-1} aria-label="人工验收">
       <h2>人工验收</h2>
       <p>请按计划中的验收场景实际操作，确认结果后点击“验收通过，启动复核”。</p>
+      {detail.acceptance_handoff?.summary && <div className="document" aria-label="验收交接说明">
+        <Markdown remarkPlugins={[remarkGfm]}>{detail.acceptance_handoff.summary}</Markdown>
+      </div>}
       <div className="actions">
         {links.map((link: { id: string; origin: string }) => <a key={link.id} className="btn-link" href={link.origin} target="_blank" rel="noreferrer">打开验收页面 ↗</a>)}
         {env && <>

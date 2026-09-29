@@ -379,8 +379,8 @@ export function projectRoleRuntime(
 
     if (isFixerInherited) {
       executorRow.isActive = true;
-      executorRow.activeReason = "当前用于功能修复";
-      executorRow.tooltip = "当前用于功能修复";
+      executorRow.activeReason = "当前用于验收指导处理";
+      executorRow.tooltip = "当前用于验收指导处理";
       return {
         plannerRow,
         executorRow,
@@ -390,7 +390,7 @@ export function projectRoleRuntime(
           adapter: actualAdapter ?? executorProfile?.adapterId,
           model: actualModel ?? executorProfile?.modelId,
           isIndependentReviewer: false,
-          description: "当前修复模型额度（跟随执行）",
+          description: "当前验收指导模型额度（跟随执行）",
         },
       };
     } else {
@@ -406,16 +406,16 @@ export function projectRoleRuntime(
         activeRole: "functional_fixer",
         compactBadge: {
           role: "functional_fixer",
-          label: "修复中",
+          label: "验收指导处理",
           displayText: compactText,
-          tooltip: `独立修复模型：${compactText}`,
+          tooltip: `验收指导处理模型：${compactText}`,
         },
         quotaTarget: {
           role: "functional_fixer",
           adapter: actualAdapter ?? fixerProfile?.adapterId,
           model: actualModel ?? fixerProfile?.modelId,
           isIndependentReviewer: false,
-          description: "当前修复模型额度",
+          description: "当前验收指导模型额度",
         },
       };
     }

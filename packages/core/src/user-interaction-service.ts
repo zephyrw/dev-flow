@@ -14,6 +14,7 @@ import {
   type ConversationAttempt,
 } from "../../contracts/src/index.js";
 import type { Engine } from "./engine.js";
+import { FeedbackService } from "./feedback-service.js";
 import { readWaitingContext, type WaitingContext } from "./waiting-context.js";
 import {
   normalizeInteractionInput,
@@ -547,7 +548,7 @@ export class UserInteractionService {
       let answerText = "";
       if (record.request.kind === "action_required") {
         answerText =
-          "用户已在浏览器/界面中确认完成操作。请复查当前页面现场并继续未完成的业务链路。" +
+          "用户点击了“我已完成，继续”。请根据本次说明核对当前情况并继续。" +
           (payload.answer?.trim()
             ? `\n用户说明: ${payload.answer.trim()}`
             : "");
@@ -564,19 +565,16 @@ export class UserInteractionService {
         answerText = `${choicePart}${freeText}`.trim() || "用户已提供确认。";
       }
 
-      // F06: 如果有原提问或说明，附加原问题快照，保证重构上下文时背景完整
-      if (record.request.question) {
-        answerText = `[针对问题: ${record.request.question}] ${answerText}`;
-      }
-      if (record.request.resume_note) {
-        answerText = `${answerText}\n[继续提示: ${record.request.resume_note}]`;
-      }
+      const latestAnswer = answerText;
+      // Keep the old question as context, never append its resume instructions
+      // after the user's newer correction.
       answerText =
-        `[原请求: ${record.request.title}]\n${record.request.message}\n` +
+        `[历史请求背景: ${record.request.title}]\n${record.request.message}\n` +
+        (record.request.question ? `原问题: ${record.request.question}\n` : "") +
         (record.request.choices?.length
           ? `候选项: ${record.request.choices.map((choice) => choice.label).join("；")}\n`
           : "") +
-        answerText;
+        `[本次用户回复，优先于上述历史请求中的冲突建议]\n${latestAnswer}`;
 
       // F02: 在同一事务中原子更新交互实体、回执并调用 resumeFromWaiting
       this.store.put(USER_INTERACTION_ENTITY, record.id, workflowId, record);
@@ -596,6 +594,18 @@ export class UserInteractionService {
         workflowId,
         receipt,
       );
+
+      // Reuse the normal per-Run guidance cursor. The next Run acknowledges
+      // this message and places it in the native prompt without replaying old
+      // interactions. Only resumeFromWaiting below schedules the continuation.
+      new FeedbackService(this.store).submitFeedback({
+        request_id: `interaction-response:${record.id}:${payload.request_id}`,
+        workflow_id: workflowId,
+        kind: record.role === "planner" ? "planning" : "execution",
+        text: record.request.kind === "action_required" && responsePayload.answer
+          ? responsePayload.answer
+          : latestAnswer,
+      });
 
       // 同步续接现有 continuation / 调度队列
       engine.resumeFromWaiting(workflowId, answerText, waiting);

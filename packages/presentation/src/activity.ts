@@ -516,12 +516,16 @@ export function readableLogs(events: any[], workflow: string, formalGuidance: Ar
             ? "规划模型接手已排队"
             : p.stage === "auto_repair"
               ? "修复已排队"
+            : p.stage === "functional_fix"
+              ? "验收指导已排队"
               : "等待执行";
         text =
           p.stage === "planner_takeover"
             ? "保留已有修改，等待规划模型接手实际修复与自测。"
             : p.stage === "auto_repair"
               ? "保留已有修改和原会话，等待执行模型继续修复。"
+            : p.stage === "functional_fix"
+              ? "保留当前工作区，等待执行模型处理你的验收指导。"
               : "等待可用执行资源。";
       } else if (p.to === "EXECUTING" && p.from === "QUEUED") {
         title =
@@ -529,6 +533,8 @@ export function readableLogs(events: any[], workflow: string, formalGuidance: Ar
             ? "规划模型开始修复"
             : p.stage === "executor_test"
               ? (p.resumed === true ? "继续测试" : "开始测试")
+            : p.stage === "functional_fix"
+              ? "处理验收指导"
             : p.repair_source === "quality_review"
               ? "修复代码复核问题"
             : repairPending || p.resumed === true
@@ -540,6 +546,8 @@ export function readableLogs(events: any[], workflow: string, formalGuidance: Ar
             ? "正在启动规划模型；收到真实工具事件后展示修改、自测与完成说明。"
             : p.stage === "executor_test"
               ? "由执行模型沿已有进度完成指定测试和必要修复。"
+            : p.stage === "functional_fix"
+              ? "按照你当前的验收指导处理启动验收服务或具体修改，保留已有计划、工作区和执行进度。"
             : p.repair_source === "quality_review"
               ? "沿用原批准计划和已有修改，按本轮代码复核问题逐项整改并进行必要测试。"
             : p.resumed === true

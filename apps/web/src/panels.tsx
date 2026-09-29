@@ -254,7 +254,7 @@ export function TestResults({
     unit: "单元测试",
     integration: "集成测试",
     e2e: "浏览器自动测试",
-    opentabs: "E2E（历史浏览器用例）",
+    opentabs: "OpenTabs 真实浏览器核验",
   };
   return (
     <div className="test-results-container">

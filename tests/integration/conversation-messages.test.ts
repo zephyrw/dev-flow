@@ -245,6 +245,15 @@ function resumeMaterials(
 }
 
 describe("SA-I17 conversation message attachment paths", () => {
+  it.each(["你本地启动前后端，我来验收，注意单独worktree用单独端口", "请修复登录按钮无反应的问题"])("keeps acceptance guidance verbatim without classifying its text: %s", async text => {
+    const f = fixture({ "wf-human": "HUMAN_PENDING" });
+    const result = await f.messages.submit("wf-human", payload(f.roots, "wf-human", { text }));
+    expect(result.accepted).toBe(true);
+    expect(f.s.store.list("functional_issue", "wf-human")).toHaveLength(0);
+    expect(f.s.store.list("repair_model_batch", "wf-human")).toHaveLength(0);
+    expect(f.s.store.list<FeedbackMessage>("feedback_message", "wf-human")[0]).toMatchObject({ text, kind: "execution", status: "pending" });
+    expect(f.control.calls).toHaveLength(0);
+  });
   it("publishes formal guidance once on the composer route and keeps aside separate", async () => {
     const f = fixture();
     const request = payload(f.roots, "wf1", { text: "保留已有进度，不要刷新 Token" });
@@ -307,7 +316,7 @@ describe("SA-I17 conversation message attachment paths", () => {
         attachment_ids: [planFile.id],
       }),
     );
-    const functional = await f.messages.submit(
+    const functional = await f.messages.submitFunctional(
       "wf-human",
       payload(f.roots, "wf-human", {
         request_id: "req-human",

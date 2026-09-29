@@ -110,6 +110,7 @@ import {
   isReviewRole,
   isSubsequentExecuteRun,
   readExecutionCompletion,
+  humanAcceptanceSummary,
   readPlanningHandoff,
   readRunContinuation,
   readWaitingContext,
@@ -309,6 +310,7 @@ export class Engine {
       execution_spec: readEffectiveSpec(this.store, this.config, key).spec,
       execution_test_report: this.executionTestReport(key),
       human_accepted: this.displayHumanAccepted(key),
+      acceptance_handoff: humanAcceptanceSummary(this.store, w),
       attention: workflowAttention(this, key),
       loading: true,
       plan: plan
@@ -901,7 +903,7 @@ export class Engine {
       key,
       [w.state],
       state,
-      scope === "new_scope" ? "research" : pausedRun?.stage ?? "execute",
+      scope === "new_scope" ? "research" : pausedRun?.stage ?? (w.state === "HUMAN_PENDING" ? "functional_fix" : "execute"),
       { feedback: [...w.feedback, text], blocker: undefined },
     );
     if (scope === "within_plan") {
@@ -2266,11 +2268,12 @@ export class Engine {
     if (pending.length) {
       this.invalidate(key, "执行期间收到新反馈，进入下一轮落实");
       this.clearCurrentImplementationIntent(key);
-      this.transition(key, [w.state], "QUEUED", "execute", {
+      const purpose = active?.purpose === "functional_fix" ? "functional_fix" : "implement";
+      this.transition(key, [w.state], "QUEUED", purpose === "functional_fix" ? purpose : "execute", {
         feedback: [...w.feedback, ...pending.map((m) => m.text)],
       });
       this.scheduler.enqueue(key, w.project_id);
-      this.store.enqueue(key, "dispatch_run", { purpose: "implement" });
+      this.store.enqueue(key, "dispatch_run", { purpose });
       return;
     }
     this.store.transaction(() => {

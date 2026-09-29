@@ -21,6 +21,7 @@ export interface WorkflowAttentionBannerProps {
   attention: AttentionItem | null;
   workflowId: string;
   workflowVersion: number;
+  tone?: "info" | "warning" | "error" | "success" | "neutral";
   onOpenPlan?: () => void;
   onOpenSourceChange?: () => void;
   onOpenAcceptance?: () => void;
@@ -48,6 +49,7 @@ export function WorkflowAttentionBanner({
   attention,
   workflowId,
   workflowVersion,
+  tone,
   onOpenPlan,
   onOpenSourceChange,
   onOpenAcceptance,
@@ -96,7 +98,7 @@ export function WorkflowAttentionBanner({
 
   return (
     <div
-      className={`attention-strip ${attention.category}`}
+      className={`attention-strip ${tone === "error" ? "error" : attention.category === "error" && tone ? "paused" : attention.category}`}
       role="status"
     >
       <span className="attention-icon" aria-hidden="true">
