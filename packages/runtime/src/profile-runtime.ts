@@ -95,6 +95,7 @@ import { observeCodexAccountQuota } from "./codex-account-quota.js";
 import type { AgyWorkflowBridge } from "./agy-workflow-bridge.js";
 import {
   classifyAgyFailure,
+  confirmAgyQuotaFailure,
   type AgyFailureFact,
 } from "../../adapters/agy/src/failure-fact.js";
 import { CurrentTurn } from "../../adapters/agy/src/current-turn.js";
@@ -491,10 +492,11 @@ export class ProfileRuntime {
     const plan = this.engine.plan(w.id);
     const policy2 = usesPolicyV2({ quality_policy_version: run.quality_policy_version ?? w.quality_policy_version });
     const purpose = run.purpose ?? "implement";
-    const roleSpecific = policy2 && purpose !== "implement";
+    const acceptanceGuidance = run.dispatch_context?.guidance_mode === "human_acceptance";
+    const roleSpecific = acceptanceGuidance || (policy2 && purpose !== "implement");
     const assignment = this.engine.store.get<any>("repair_assignment", w.id);
-    const repair = policy2 ? repairAssignmentForRun(this.engine.store, w, run) : assignment;
-    const sourceReview = repairReviewMaterial(this.engine.store, w, run, repair);
+    const repair = acceptanceGuidance ? undefined : policy2 ? repairAssignmentForRun(this.engine.store, w, run) : assignment;
+    const sourceReview = acceptanceGuidance ? undefined : repairReviewMaterial(this.engine.store, w, run, repair);
 
     const effectiveRun = this.ensureRunApprovalRef(w, run);
     const { instructions: extraInstructions, payload: extraPayload } =
@@ -507,16 +509,20 @@ export class ProfileRuntime {
       );
     const extraInstructionsPrompt =
       formatExecutionInstructionsForPrompt(extraInstructions);
-    const baseInstructions = roleSpecific
+    const baseInstructions = acceptanceGuidance
+      ? "当前任务仍在人工验收阶段，本轮只处理用户普通指导。先响应本轮指导原文，逐项回答问题并说明将执行的动作；由完整原文决定查询、启动服务或修改代码，不把这些指导预设成功能缺陷或整份计划重做。" +
+        "问句如实回答；实际修复代码时完成受影响的必要测试。要求 OpenTabs 时不能用 E2E 结果替代。启动前后端时使用项目既有后台启动方式、独立且未占用的端口，分别检查真实进程及实际访问是否可用，返回实际地址与端口并保留服务供用户验收；不能只发启动命令就声称启动成功，也不能等待常驻前端退出而阻塞后端。" +
+        "完成本轮指导不等于整个开发流程完成，不自行推进测试、代码复核、验收或提交；既有成果和未受影响的测试进度保持，仍由用户决定验收。"
+      : roleSpecific
       ? (["planner_commit", "functional_fix"].includes(purpose) ? "" : executionScopeWithoutTests) + roleBoundaryInstructionsFor(purpose)
       : executionScopeInstructions + "完成本轮开发或整改及必要测试后交代码复核，不自行提交 Git，不代替人工验收。";
 
-    const includeTestingSkills = shouldIncludeExecutionTestingSkill(purpose, run.routing_role);
+    const includeTestingSkills = !acceptanceGuidance && shouldIncludeExecutionTestingSkill(purpose, run.routing_role);
     const executionSkills = includeTestingSkills ? getExecutionSkillResources() : undefined;
     return this.continuationMaterials(
       {
         instructions: baseInstructions + extraInstructionsPrompt +
-          "\n可在顶层或delivery.test_results逐项回传原计划测试结果：test_id用计划测试ID，case_id必须用计划expected_case_ids，不填测试文件路径或类名；按test_result_targets中的test_id/case_id逐项填写。status为passed/failed/skipped/not_run，summary简述结果或未运行原因；只报告你明确确认的场景，need_user时也保留已完成结果，未回传项不会被当作失败或未执行。" + (sourceReview
+          (acceptanceGuidance ? "" : "\n可在顶层或delivery.test_results逐项回传原计划测试结果：test_id用计划测试ID，case_id必须用计划expected_case_ids，不填测试文件路径或类名；按test_result_targets中的test_id/case_id逐项填写。status为passed/failed/skipped/not_run，summary简述结果或未运行原因；只报告你明确确认的场景，need_user时也保留已完成结果，未回传项不会被当作失败或未执行。") + (sourceReview
           ? "\n本轮是代码复核整改。读取 source_review 中的问题正文及 repair_instructions，按问题编号逐项修复并说明处理结果；沿用原批准计划和已有修改，不从头开发，不以整改摘要替代问题正文。" : ""),
         ...(roleSpecific ? {} : { execution_order: batchExecutionInstructions }),
         ...(executionSkills ? { skill_resources: executionSkills } : {}),
@@ -526,16 +532,16 @@ export class ProfileRuntime {
         workflow: w,
         run,
         plan: this.planReference(w),
-        test_result_targets: plan.plan.tests.flatMap(test => test.expected_case_ids.map(case_id => ({ test_id: test.id, case_id, layer: test.layer }))),
+        ...(acceptanceGuidance ? {} : { test_result_targets: plan.plan.tests.flatMap(test => test.expected_case_ids.map(case_id => ({ test_id: test.id, case_id, layer: test.layer }))) }),
         ...(extraPayload ? { approved_execution_instructions: extraPayload } : {}),
         authorities: this.engine.planSelfCheck.authorities(w),
         feedback: this.engine.store.list("feedback_message", w.id),
-        functional_issues: this.engine.store.list("functional_issue", w.id),
+        ...(acceptanceGuidance ? {} : { functional_issues: this.engine.store.list("functional_issue", w.id) }),
         project: this.engine.project(w.project_id),
         workspaces: this.workspaces(w),
         repair_assignment: repair,
         source_review: sourceReview,
-        repair_instructions: policy2 ? repair?.instructions ?? null :
+        repair_instructions: acceptanceGuidance ? null : policy2 ? repair?.instructions ?? null :
           this.engine.store.get<any>("repair_state", w.id)?.instructions ?? repair?.instructions ?? null,
         previous_completion: run.dispatch_context?.source_run_id
           ? this.engine.store.get("execution_completion", run.dispatch_context.source_run_id) ?? null : null,
@@ -559,6 +565,9 @@ export class ProfileRuntime {
   ) {
     const phase =
       w.stage === "quality_before_human" ? "before_human" : "after_human";
+    const afterAcceptanceGuidance = phase === "after_human" && this.engine.store.list<Run>("run", w.id)
+      .some(previous => previous.plan_revision === w.plan_revision && previous.status === "completed" &&
+        previous.dispatch_context?.guidance_mode === "human_acceptance");
     const conflict_background = this.conflictReviewBackground(w.id);
 
     const effectiveRun = this.ensureRunApprovalRef(w, run);
@@ -576,7 +585,9 @@ export class ProfileRuntime {
 
     return this.continuationMaterials(
       {
-        instructions: reviewInstructions + reviewExtraNotice,
+        instructions: reviewInstructions + reviewExtraNotice + (afterAcceptanceGuidance
+          ? "\n验收指导后以当前工作区 diff 为本轮审查依据，snapshot 仅保留历史背景。untracked_paths 中的新文件尚未进入 Git patch，须从工作区读取正文一起审查；不据旧快照遗漏本轮修改。"
+          : ""),
         skill_resources: reviewSkillResources(),
         review_contract: reviewContractContext(this.engine, w, run),
         workflow: w,
@@ -587,7 +598,9 @@ export class ProfileRuntime {
         ...(extraPayload ? { approved_execution_instructions: extraPayload } : {}),
         authorities: this.engine.planSelfCheck.authorities(w),
         snapshot,
-        diff: snapshot ? await this.engine.git.diff(snapshot) : "",
+        diff: afterAcceptanceGuidance ? await this.engine.git.liveDiff(w.id)
+          : snapshot ? await this.engine.git.diff(snapshot) : "",
+        ...(afterAcceptanceGuidance ? { diff_source: "current_workspaces" } : {}),
         completion: this.engine.store.list("delivery", w.id).at(-1),
         project: this.engine.project(w.project_id),
         skill: readFileSync(this.reviewSkill(), "utf8"),
@@ -1151,6 +1164,7 @@ export class ProfileRuntime {
               !previous || accountTurn.canAttributeFailureToCurrentTurn(),
           });
           if (candidate.can_switch_account) accountFailure = candidate;
+          else if (eventType === "result") accountFailure = undefined;
         }
         if (!decodedConversation) telemetry.accept(v);
         if (
@@ -1300,7 +1314,10 @@ export class ProfileRuntime {
       )
         accountWaiting = await this.accountBridge!.observeFailure(
           accountBinding,
-          accountFailure,
+          confirmAgyQuotaFailure(accountFailure, {
+            exitCode: exit.code, currentTurn: !previous || accountTurn.canAttributeFailureToCurrentTurn(),
+            stderr: stderrTail, terminationReason: exit.termination_reason,
+          }),
         );
     } finally {
       if (accountBinding)

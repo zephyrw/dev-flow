@@ -126,4 +126,15 @@ export class FunctionalIssueService {
     const issues = this.listIssues(workflowId);
     return issues.some((i) => i.status !== "confirmed");
   }
+
+  confirmAtAcceptance(workflowId: string): void {
+    const confirmedAt = now();
+    for (const issue of this.listIssues(workflowId)) {
+      if (issue.status === "confirmed") continue;
+      this.store.put("functional_issue", issue.issue_id, workflowId, {
+        ...issue, status: "confirmed", confirmed_at: confirmedAt,
+      });
+    }
+    syncFunctionalAssignmentStatus(this.store, workflowId);
+  }
 }

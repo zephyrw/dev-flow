@@ -208,8 +208,12 @@ export class SwitchOperationExecutor {
         settings.maintenance.refresh_verified_max_age_hours,
     };
     let accounts = this.repository.listAccounts(options.realmId);
+    // A workflow quota failure is stronger than a stale positive /usage
+    // snapshot. Do not reinstall the account which triggered this operation.
+    const failedQuotaAccount = options.selection.mode === "auto" && options.trigger === "workflow_quota"
+      ? realm.active_account_id : undefined;
     const initialSelection = selectCandidates(
-      accounts,
+      accounts.filter(account => account.id !== failedQuotaAccount),
       this.repository.listQuotaSnapshots(options.realmId),
       options.requiredPoolIds,
       this.clock.now(),
@@ -394,7 +398,7 @@ export class SwitchOperationExecutor {
     } else {
       // 自动选优
       const selResult = selectCandidates(
-        accounts,
+        accounts.filter(account => account.id !== failedQuotaAccount),
         snapshots,
         options.requiredPoolIds,
         now,
@@ -671,6 +675,10 @@ export class SwitchOperationExecutor {
               credential_revision: targetAcc.credential_revision,
               model_id: modelId,
               timeoutMs: settings.probe_timeout_seconds * 1000,
+            }).catch(error => {
+              if (error?.code === "agy_model_quota_exhausted" &&
+                  error.account_id === targetAcc.id && error.model_id === modelId) return false;
+              throw error;
             }))
           ) {
             accessible = false;

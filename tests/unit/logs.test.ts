@@ -3,6 +3,15 @@ import { readableLogs, userFacingLogs } from "../../apps/web/src/logs.js";
 import { toolSummary } from "../../packages/presentation/src/tool-summary.js";
 import { runtimePurposeNames } from "../../packages/presentation/src/run-observation.js";
 
+it("projects an acceptance conversation as guidance processing without a new testing cycle", () => {
+  const events = [
+    { from: "HUMAN_PENDING", to: "QUEUED", stage: "acceptance_guidance" },
+    { from: "QUEUED", to: "EXECUTING", stage: "acceptance_guidance" },
+    { from: "EXECUTING", to: "HUMAN_PENDING", stage: "accept", guidance_mode: "human_acceptance" },
+  ].map((payload, i) => ({ workflow_id: "w", event_seq: i + 1, created_at: "2026-09-29T02:00:00Z", type: "StateChanged", payload }));
+  expect(readableLogs(events, "w").map(row => row.title)).toEqual(["验收指导已排队", "处理验收指导", "指导处理完成"]);
+});
+
 it.each([true, false])("labels functional guidance neutrally without declaring a new development cycle (resumed=%s)", resumed => {
   const events = ["QUEUED", "EXECUTING"].map((to, i) => ({ workflow_id: "w", event_seq: i + 1, created_at: "2026-09-29T02:00:00Z",
     type: "StateChanged", payload: { from: i === 0 ? "HUMAN_PENDING" : "QUEUED", to, stage: "functional_fix", resumed } }));

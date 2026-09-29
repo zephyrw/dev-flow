@@ -31,6 +31,30 @@ function deferred<T>() {
 afterEach(() => { vi.restoreAllMocks(); executable.fingerprint = "cli-v1"; });
 
 describe("AGY model access probe cache and shared calls", () => {
+  it("preserves quota failure on fresh matching model probes despite exit 3 and never caches it", async () => {
+    const f = fixture();
+    f.runAuxiliaryProbe.mockResolvedValueOnce({ code: 3, stderr: "", stdout: [
+      JSON.stringify({ event: "init", init: { model } }),
+      JSON.stringify({ event: "result", result: { status: "ERROR", error: "Individual quota reached. Resets in 37m46s." } }),
+    ].join("\n") });
+    await expect(f.probe.probeModelAccess(model, identity)).rejects.toMatchObject({
+      code: "agy_model_quota_exhausted", account_id: identity.account_id, model_id: model,
+    });
+    expect(await f.probe.probeModelAccess(model, identity)).toBe(true);
+    expect(f.runAuxiliaryProbe).toHaveBeenCalledTimes(2);
+  });
+  it.each(["wrong_model", "wrong_exit", "denied", "network", "network_stderr"])("does not label %s as a fresh quota failure", async kind => {
+    const f = fixture();
+    f.runAuxiliaryProbe.mockResolvedValueOnce({ code: kind === "wrong_exit" ? 1 : 3,
+      stderr: kind === "network_stderr" ? "local error: tls: bad record MAC" : "", stdout: [
+      JSON.stringify({ event: "init", init: { model: kind === "wrong_model" ? "different-model" : model } }),
+      JSON.stringify({ event: "result", result: { status: "ERROR",
+        error: kind === "network" ? "local error: tls: bad record MAC" : "Individual quota reached. Resets in 37m46s.",
+        ...(kind === "denied" ? { denied_actions: [{}] } : {}),
+      } }),
+    ].join("\n") });
+    expect(await f.probe.probeModelAccess(model, identity)).toBe(false);
+  });
   it("records only confirmed success and rechecks after the existing 24h TTL", async () => {
     const clock = vi.spyOn(Date, "now").mockReturnValue(100_000);
     const f = fixture();

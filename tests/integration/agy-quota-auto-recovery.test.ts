@@ -4,7 +4,7 @@ import { accountFixture } from "../fixtures/agy-accounts/service-fixture.js";
 import { AgyWorkflowBridge } from "../../packages/runtime/src/agy-workflow-bridge.js";
 import { ModelAccessService } from "../../packages/core/src/model-access-service.js";
 import { bindProfile, buildDispatchContext, frozenInvocationFromProfile } from "../../packages/core/src/run-profile.js";
-import { classifyAgyFailure } from "../../packages/adapters/agy/src/failure-fact.js";
+import { classifyAgyFailure, confirmAgyQuotaFailure } from "../../packages/adapters/agy/src/failure-fact.js";
 import { type Run, type ToolProfile, type Workflow } from "../../packages/contracts/src/index.js";
 import type { AgyRunBinding } from "../../packages/contracts/src/agy-account.js";
 import type { ProcessManager } from "../../packages/process/src/manager.js";
@@ -136,6 +136,111 @@ function quotaText(binding: AgyRunBinding) {
     event: { type: "result", error: message, result: { status: "ERROR", error: message } } });
 }
 const switches = () => accounts.repository.listOperations(realmId).filter((op) => op.kind === "switch");
+
+it.each(["positive", "probe_failure"])("accepts the bound current quota exit even when usage is %s and coalesces two failures", async mode => {
+  const one = source("quota-exit-one"), two = source("quota-exit-two");
+  const a = await started(one), b = await started(two);
+  const verify = vi.spyOn(accounts.service, "verifyActiveQuotaExhausted");
+  probeFails = mode === "probe_failure";
+  for (const [run, binding] of [[one, a], [two, b]] as const) {
+    const fact = confirmAgyQuotaFailure(quotaText(binding), { exitCode: 3, currentTurn: true, stderr: "" });
+    expect(await bridge.observeFailure(binding, fact)).toBe(true);
+    markWaiting(run);
+  }
+  expect(verify).not.toHaveBeenCalled();
+  expect(switches()).toHaveLength(1);
+  probeFails = false;
+  await accounts.service.tick(Date.now());
+  expect(accounts.active()).toBe("b");
+  expect(installs).toHaveBeenCalledTimes(1);
+  expect(restore).toHaveBeenCalledTimes(2);
+});
+
+it.each(["stop", "disable_auto", "stale_epoch"])("does not switch a confirmed quota exit after %s", async change => {
+  const run = source("cancelled-quota");
+  const binding = await started(run);
+  if (change === "stop") s.store.put("run_stop", run.id, run.workflow_id, { reason: "manual" });
+  if (change === "disable_auto") {
+    const policy = accounts.repository.getPolicy(run.workflow_id)!;
+    accounts.repository.savePolicy({ ...policy, revision: policy.revision + 1, auto_switch: false });
+  }
+  if (change === "stale_epoch") {
+    const realm = accounts.repository.getRealm(realmId)!;
+    accounts.repository.saveRealm({ ...realm, auth_epoch: realm.auth_epoch + 1 });
+  }
+  const fact = confirmAgyQuotaFailure(quotaText(binding), { exitCode: 3, currentTurn: true });
+  expect(await bridge.observeFailure(binding, fact)).toBe(false);
+  expect(switches()).toHaveLength(0);
+  expect(installs).not.toHaveBeenCalled();
+});
+
+it("does not install credentials or stop an external CLI for a confirmed quota exit", async () => {
+  const run = source("external-quota");
+  const binding = await started(run);
+  accounts.setExternal([{ pid: 999, exe_path: "external-agy" }]);
+  const stopExternal = vi.spyOn(accounts.processHost, "stopProcess");
+  expect(await bridge.observeFailure(binding, confirmAgyQuotaFailure(quotaText(binding), {
+    exitCode: 3, currentTurn: true,
+  }))).toBe(true);
+  markWaiting(run);
+  await accounts.service.tick(Date.now());
+  expect(installs).not.toHaveBeenCalled();
+  expect(stopExternal).not.toHaveBeenCalled();
+  expect(accounts.active()).toBe("a");
+  expect(restore).not.toHaveBeenCalled();
+});
+
+it("routes a fresh admission quota probe into the same switch and skips a quota-exhausted candidate", async () => {
+  const run = source("quota-probe-admission");
+  vi.spyOn(accounts.probe, "probeModelAccess").mockImplementation(async (model, options) => {
+    if (options?.account_id === "a" || options?.account_id === "b")
+      throw Object.assign(new Error("agy_model_quota_exhausted"), {
+        code: "agy_model_quota_exhausted", account_id: options.account_id, model_id: model,
+      });
+    return true;
+  });
+  await rejectedIntoWait(run);
+  expect(switches()).toHaveLength(1);
+  expect(accounts.repository.listPermits(realmId)).toHaveLength(0);
+  await accounts.service.tick(Date.now());
+  expect(accounts.active()).toBe("c");
+  expect(installs.mock.calls.map((call: unknown[]) => call[1])).toEqual(["b", "c"]);
+  expect(restore).toHaveBeenCalledTimes(1);
+});
+
+it.each(["network_error", "permission_denied", "wrong_binding"])("does not turn a %s probe failure into quota switching", async kind => {
+  const run = source("non-quota-probe");
+  vi.spyOn(accounts.probe, "probeModelAccess").mockRejectedValue(Object.assign(new Error(kind), {
+    code: kind === "wrong_binding" ? "agy_model_quota_exhausted" : kind,
+    account_id: kind === "wrong_binding" ? "other" : "a", model_id: "fixture-model",
+  }));
+  await expect(bridge.prepareRun(request(run))).rejects.toThrow();
+  expect(switches()).toHaveLength(0);
+  expect(installs).not.toHaveBeenCalled();
+});
+
+it("verifies quota across same-account token refresh and records why unconfirmed queries are rejected", async () => {
+  const realm = accounts.repository.getRealm(realmId)!;
+  vi.spyOn(accounts.authHost, "compareActive").mockResolvedValue(false);
+  const inspection = vi.spyOn(accounts.authHost, "inspectActive").mockResolvedValue({
+    exists: true, auth: { email: "a@example.com" },
+  });
+  exhausted = true;
+  const demand = { realm_id: realmId, account_id: "a", auth_epoch: realm.auth_epoch,
+    required_pool_ids: ["fixture-pool"], required_model_ids: ["fixture-model"] };
+  expect(await accounts.service.verifyActiveQuotaExhausted(demand)).toBe(true);
+  probeFails = true;
+  expect(await accounts.service.verifyActiveQuotaExhausted(demand)).toBe(false);
+  expect(accounts.repository.listAudits(realmId)[0]).toMatchObject({
+    action: "quota_verification_rejected", details: { reason: "official_usage_probe_failed" },
+  });
+  inspection.mockResolvedValue({ exists: true, auth: { email: "other@example.com" } });
+  expect(await accounts.service.verifyActiveQuotaExhausted(demand)).toBe(false);
+  expect(accounts.repository.listAudits(realmId)[0]).toMatchObject({
+    action: "quota_verification_rejected", details: { reason: "active_identity_changed" },
+  });
+  expect(installs).not.toHaveBeenCalled();
+});
 
 it("switches once for two running consumers plus an exhausted prelaunch run and preserves all three recovery bindings", async () => {
   const runs = [source("running-executor"), source("running-reviewer", "quality_review"), source("admission-planner", "planning")];
