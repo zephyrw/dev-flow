@@ -23,7 +23,7 @@ export interface WorkflowAttentionBannerProps {
   workflowVersion: number;
   onOpenPlan?: () => void;
   onOpenSourceChange?: () => void;
-  onOpenEnvironment?: () => void;
+  onOpenAcceptance?: () => void;
   onOpenGuidance?: () => void;
 }
 
@@ -50,7 +50,7 @@ export function WorkflowAttentionBanner({
   workflowVersion,
   onOpenPlan,
   onOpenSourceChange,
-  onOpenEnvironment,
+  onOpenAcceptance,
   onOpenGuidance,
 }: WorkflowAttentionBannerProps) {
   if (!attention) return null;
@@ -78,7 +78,7 @@ export function WorkflowAttentionBanner({
         onOpenSourceChange?.();
         break;
       case "acceptance":
-        onOpenEnvironment?.();
+        onOpenAcceptance?.();
         break;
       case "guidance":
         onOpenGuidance?.();
@@ -112,7 +112,7 @@ export function WorkflowAttentionBanner({
           className="btn-attention-action"
           onClick={handleAction}
         >
-          {attention.action}
+          {actionKind === "acceptance" ? "查看人工验收" : attention.action}
         </button>
       )}
     </div>

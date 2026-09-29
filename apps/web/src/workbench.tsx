@@ -132,97 +132,31 @@ export function DeliveryStrip({ detail }: { detail: any }) {
   );
 }
 
-export function EnvironmentSummary({ detail }: { detail: any }) {
-  const env = detail.environment,
-    project = detail.project;
-  // An exit code and stdout prove only that a script ran. Data validation is
-  // reported separately from service health and never inferred from a message.
-  const servicesReady =
-    env?.status === "ready" &&
-    project.services.length > 0 &&
-    project.services.every((s: any) =>
-      env.services.some((a: any) => a.id === s.id && a.status === "ready"),
-    );
-  const ready = servicesReady;
+export function AcceptanceAccess({ detail, onReleaseEnvironment, onLockBrowser, onReleaseBrowser }: {
+  detail: any;
+  onReleaseEnvironment: () => void;
+  onLockBrowser: () => void;
+  onReleaseBrowser: () => void;
+}) {
+  if (!["HUMAN_PENDING", "HUMAN_VERIFY"].includes(detail.workflow?.state)) return null;
+  const env = detail.environment;
+  const links = env?.status === "ready" ? (detail.project?.services ?? []).flatMap((service: any) => {
+    const actual = env.services?.find((entry: any) => entry.id === service.id);
+    return service.port_pool === "frontend" && actual?.status === "ready" && /^https?:\/\//i.test(actual.origin ?? "")
+      ? [{ id: service.id, origin: actual.origin }] : [];
+  }) : [];
   return (
-    <div className="environment-summary">
-      <p className="notice-subtle">
-        本机验证副本用于运行当前任务的代码和浏览器测试，使用独立数据目录。地址为
-        127.0.0.1，端口由本机空闲端口池分配，与工作流控制台分开。
-      </p>
-      <div
-        className={`environment-state-banner ${ready ? "ready" : env?.error ? "error" : "pending"}`}
-      >
-        <span className="status-indicator-dot" />
-        <p className="environment-state">
-          {ready
-            ? "可进行验收"
-            : env?.error
-              ? "本机验证副本启动失败"
-              : servicesReady
-                ? "服务已启动"
-                : env?.status === "starting"
-                  ? "正在准备环境…"
-                  : "验收环境尚未就绪"}
-        </p>
+    <section className="panel" id={`human-acceptance-${detail.workflow.id}`} tabIndex={-1} aria-label="人工验收">
+      <h2>人工验收</h2>
+      <p>请按计划中的验收场景实际操作，确认结果后点击“验收通过，启动复核”。</p>
+      <div className="actions">
+        {links.map((link: { id: string; origin: string }) => <a key={link.id} className="btn-link" href={link.origin} target="_blank" rel="noreferrer">打开验收页面 ↗</a>)}
+        {env && <>
+          <button onClick={onReleaseEnvironment}>释放环境</button>
+          <button onClick={onLockBrowser}>占用人工核验浏览器</button>
+          <button onClick={onReleaseBrowser}>释放人工核验浏览器</button>
+        </>}
       </div>
-      {env?.error && <p className="error">{env.error}</p>}
-      <div className="environment-metrics-card">
-        {(project.services ?? []).map((s: any) => {
-          const actual = env?.services.find((a: any) => a.id === s.id);
-          return (
-            <div className="metric-row" key={s.id}>
-              <span className="metric-title">
-                {s.port_pool === "backend" ? "后端服务" : "前端服务"}
-              </span>
-              <b
-                className={`metric-status ${actual?.status === "ready" ? "ready" : ""}`}
-              >
-                {env?.status === "ready" && actual?.status === "ready"
-                  ? "健康检查通过"
-                  : env?.status === "starting" && actual?.status === "ready"
-                    ? "已启动"
-                    : "未就绪"}
-              </b>
-              {actual?.origin && s.port_pool === "frontend" && (
-                <a
-                  className="btn-link"
-                  href={actual.origin}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  打开验收页面 ↗
-                </a>
-              )}
-            </div>
-          );
-        })}
-        <div className="metric-row">
-          <span className="metric-title">测试数据</span>
-          <span className="metric-desc">
-            {project.data.mode === "external_lock"
-              ? "外部测试资源 · 同一资源排队使用"
-              : "本任务独立目录"}
-          </span>
-        </div>
-        <div className="metric-row">
-          <span className="metric-title">数据准备</span>
-          <b className="metric-status">
-            {project.data.mode === "external_lock"
-              ? "外部测试资源"
-              : project.data.fixture_command_id
-                ? "已配置独立数据"
-                : "未配置外部数据准备"}
-          </b>
-        </div>
-      </div>
-      <details className="environment-details-box">
-        <summary>环境技术详情</summary>
-        <div className="details-content">
-          <p>外部资源：{project.data.resource_id ?? "无"}</p>
-          <pre>{JSON.stringify(env, null, 2)}</pre>
-        </div>
-      </details>
-    </div>
+    </section>
   );
 }

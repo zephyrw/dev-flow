@@ -4906,7 +4906,6 @@ export class Engine {
           "EXECUTING",
           ...(w.state === "PLANNING" && w.run_id ? ["PLANNING"] : []),
           "VERIFYING",
-          "HUMAN_PENDING",
           "REVIEW_QUEUED",
           "REVIEWING",
           "STOPPING",

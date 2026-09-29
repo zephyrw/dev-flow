@@ -135,10 +135,8 @@ test("compact workspace keeps content space and preserves independent live sideb
     .click();
   await expect(page.locator(".logs")).toContainText("wf-b 正在处理");
   await expect(page.locator(".logs")).not.toContainText("wf-a 正在处理");
-  await page.getByRole("button", { name: "本机验证副本", exact: true }).click();
-  await expect(page.locator(".environment-summary")).toContainText(
-    "数据验证尚未完成",
-  );
+  await expect(page.getByRole("button", { name: "本机验证副本", exact: true })).toHaveCount(0);
+  await expect(page.locator(".environment-summary")).toHaveCount(0);
   await expect(page.getByRole("link", { name: "打开验收页面 ↗" })).toHaveCount(
     0,
   );
@@ -150,7 +148,7 @@ test("compact workspace keeps content space and preserves independent live sideb
   await expect(
     page.getByRole("button", { name: "暂停", exact: true }),
   ).toBeEnabled();
-  await page.getByRole("button", { name: "本机验证副本", exact: true }).click();
+  await page.getByRole("button", { name: "概览", exact: true }).click();
   await page.route("http://localhost:14811/", (route) =>
     route.fulfill({
       contentType: "text/html",
@@ -159,7 +157,7 @@ test("compact workspace keeps content space and preserves independent live sideb
   );
   await page.evaluate(() => window.dispatchEvent(new Event("focus")));
   await expect(page.locator(".update-banner")).toContainText("界面已更新");
-  await expect(page.locator(".tabs .active")).toHaveText("本机验证副本");
+  await expect(page.locator(".tabs .active")).toHaveText("概览");
   for (const [width, height] of [
     [1440, 900],
     [1920, 1080],

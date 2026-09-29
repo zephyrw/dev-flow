@@ -1666,7 +1666,13 @@ export async function buildServer(
   app.post("/api/workflows/:id/accept", async (req) => {
     human(req);
     const b = z
-      .object({ binding: z.record(z.string(), z.unknown()) })
+      .object({
+        // The console shares its request envelope with plan approval. These
+        // transport fields do not change the acceptance proof or binding.
+        schema_version: z.literal(2).optional(),
+        request_id: z.string().uuid().optional(),
+        binding: z.record(z.string(), z.unknown()),
+      })
       .strict()
       .parse(req.body);
     const key = Id.parse((req.params as any).id);

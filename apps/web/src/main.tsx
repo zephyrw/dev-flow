@@ -4,7 +4,7 @@ import {
   RuntimeFailureNotice,
   runtimeFailureForTask,
 } from "./components/RuntimeFailureNotice.js";
-import { DeliveryStrip, EnvironmentSummary } from "./workbench.js";
+import { DeliveryStrip, AcceptanceAccess } from "./workbench.js";
 import guideText from "../../../docs/guide/使用指南.md?raw";
 import { TaskTree, TestResults } from "./panels.js";
 import { ReviewResults } from "./components/ReviewResults.js";
@@ -1278,7 +1278,6 @@ const CentralWorkspace = React.memo(
             ["tests", "测试进度"],
             ["diff", "代码变更"],
             ["review", "代码复核"],
-            ["environment", "本机验证副本"],
           ].map(([key, title]) => (
             <button
               key={key}
@@ -1462,63 +1461,6 @@ const CentralWorkspace = React.memo(
               <ReviewResults review={detail.review} />
             </section>
           )}
-          {tab === "environment" && (
-            <section className="panel">
-              <div className="section-title">
-                <h2>本机验证副本</h2>
-                {detail.environment && (
-                  <button
-                    onClick={() =>
-                      void attempt(async () => {
-                        await api(
-                          `/workflows/${selected}/environment/stop`,
-                          {},
-                        );
-                        await refresh();
-                      })
-                    }
-                  >
-                    释放环境
-                  </button>
-                )}
-              </div>
-              <EnvironmentSummary detail={detail} />
-              {detail.environment && (
-                <>
-                  {w.state === "HUMAN_PENDING" && (
-                    <div className="actions">
-                      <button
-                        onClick={() =>
-                          void attempt(async () => {
-                            await api(
-                              `/workflows/${selected}/browser/lock`,
-                              {},
-                            );
-                            setNotice("已保留共享浏览器，完成场景后请释放。");
-                          })
-                        }
-                      >
-                        占用人工核验浏览器
-                      </button>
-                      <button
-                        onClick={() =>
-                          void attempt(async () => {
-                            await api(
-                              `/workflows/${selected}/browser/release`,
-                              {},
-                            );
-                            setNotice("浏览器已释放。");
-                          })
-                        }
-                      >
-                        释放人工核验浏览器
-                      </button>
-                    </div>
-                  )}
-                </>
-              )}
-            </section>
-          )}
         </div>
       </div>
     );
@@ -1645,6 +1587,10 @@ function App() {
     };
   }, []);
   useEffect(() => {
+    if (tab === "environment") {
+      setTab("overview");
+      return;
+    }
     if (selected) sessionStorage.setItem("devflow.tab." + selected, tab);
   }, [tab, selected]);
   const [connected, setConnected] = useState(false);
@@ -2051,7 +1997,7 @@ function App() {
                     category: "acceptance",
                     message: "等待你实际操作验收",
                     at: w.updated_at,
-                    action: "查看本机验证副本",
+                    action: "查看人工验收",
                   }
                 : null;
   const progress = w ? workflowProgress(w, detail.events, {
@@ -2750,13 +2696,31 @@ function App() {
                         version: w.version,
                       })
                     }
-                    onOpenEnvironment={() => setTab("environment")}
+                    onOpenAcceptance={() => {
+                      const card = document.getElementById(`human-acceptance-${w.id}`);
+                      card?.scrollIntoView({ block: "nearest" });
+                      card?.focus();
+                    }}
                     onOpenGuidance={() => {
                       toggleSidebar(true);
                       window.dispatchEvent(new Event("devflow-open-guidance"));
                     }}
                   />
                 </div>
+                <AcceptanceAccess detail={detail}
+                  onReleaseEnvironment={() => void attempt(async () => {
+                    await api(`/workflows/${selected}/environment/stop`, {});
+                    await refresh();
+                  })}
+                  onLockBrowser={() => void attempt(async () => {
+                    await api(`/workflows/${selected}/browser/lock`, {});
+                    setNotice("已保留共享浏览器，完成场景后请释放。");
+                  })}
+                  onReleaseBrowser={() => void attempt(async () => {
+                    await api(`/workflows/${selected}/browser/release`, {});
+                    setNotice("浏览器已释放。");
+                  })}
+                />
                 <RuntimeFailureNotice
                   key={w.id}
                   detail={detail}

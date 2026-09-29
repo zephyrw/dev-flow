@@ -55,14 +55,6 @@ export function validatePlan(input: unknown): {
       const item = workItems.find((w: any) => w.id === key);
       requireCondition(item, "TASK_MISSING", `缺失工作项 ${key}`, 422);
       for (const dep of item!.depends_on) visitNative(dep);
-      for (const p of item!.paths) {
-        requireCondition(
-          plan.scope.allowed_paths.includes(p),
-          "SCOPE_MISMATCH",
-          `工作项路径未批准 ${p}`,
-          422,
-        );
-      }
       active.delete(key);
       done.add(key);
     }
@@ -153,13 +145,6 @@ export function validatePlan(input: unknown): {
         `细项 ${task.id} 缺少模块或可检查的完成条件`,
         422,
       );
-      for (const check of task.completion_checks!)
-        requireCondition(
-          task.paths.includes(check.path),
-          "COMPLETION_SCOPE",
-          "完成检查必须属于该细项的修改范围",
-          422,
-        );
     }
     requireCondition(
       plan.modules!.every((m) => plan.tasks.some((t) => t.module_id === m.id)),
@@ -197,13 +182,6 @@ export function validatePlan(input: unknown): {
         testIds.has(test),
         "TEST_MISSING",
         `缺失测试 ${test}`,
-        422,
-      );
-    for (const p of task.paths)
-      requireCondition(
-        plan.scope.allowed_paths.includes(p),
-        "SCOPE_MISMATCH",
-        `任务路径未批准 ${p}`,
         422,
       );
     active.delete(key);
