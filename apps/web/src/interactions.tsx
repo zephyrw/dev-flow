@@ -1,5 +1,4 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { AgyRecoveryPanel } from "./components/AgyRecoveryPanel.js";
 import { AsidePopover } from "./components/AsidePopover.js";
 import { type ReferenceItem } from "./components/RequirementComposer.js";
 import {
@@ -224,7 +223,6 @@ export function TaskInteraction({
 
   return (
     <section className="task-interaction" aria-label="会话输入">
-      <AgyRecoveryPanel workflowId={w.id} onRefresh={refresh} />
       {w.state === "BLOCKED" &&
         w.blocker?.code === "MODEL_QUOTA" &&
         detail.attention?.category === "queue" && (
