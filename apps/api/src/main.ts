@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { recordController } from "../../../packages/service/src/descriptor.js";
+import { recordController } from "./controller-descriptor.js";
 import { loadConfig } from "../../../packages/contracts/src/config.js";
 import { Store } from "../../../packages/store/src/store.js";
 import { Engine } from "../../../packages/core/src/engine.js";

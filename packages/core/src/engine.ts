@@ -1,3 +1,4 @@
+import { readPlanMaterial } from "./plan-review.js";
 import {
   PlanSelfCheckCoordinator,
   BEFORE_HUMAN_REVIEW_STAGE,
@@ -109,6 +110,7 @@ import {
   clearWaitingContext,
   continuationFromHandoff,
   continuationFromWaiting,
+  currentContinuation,
   isCurrentPlanningSource,
   isOpenPlanningHandoff,
   isPlanningWaiting,
@@ -365,14 +367,15 @@ export class Engine {
     const planData = w.plan_revision
       ? (() => {
           const p = this.plan(key);
-          const body =
-            p.plan.markdown ??
-            this.store
-              .list<any>("project_document", key)
-              .find((d) => d.hash === p.plan.design_ref?.content_hash)
-              ?.content ??
-            "";
-          return { ...p, plan: { ...p.plan, markdown: body } };
+          try {
+            const material = readPlanMaterial(this.store, key, w.plan_revision);
+            return { ...material, plan: { ...material.plan, markdown: material.markdown } };
+          } catch (error) {
+            if (!(error instanceof FlowError)) throw error;
+            // Keep the task usable while showing a material error, never cached authoritative prose.
+            return { ...p, plan: { ...p.plan, markdown: "" }, authority_ready: false,
+              material_error: { code: error.code, message: error.message } };
+          }
         })()
       : null;
     const evidenceList = w.plan_revision ? this.displayEvidence(key) : [];
@@ -899,6 +902,7 @@ export class Engine {
       { feedback: [...w.feedback, text], blocker: undefined },
     );
     if (scope === "within_plan") {
+      new CliDispatchManager(this.store).removeControlReason(key, "workflow_pause");
       this.scheduler.enqueue(key, w.project_id);
       // 功能反馈派发 functional_fix；其他按 implement 处理。
       const feedbackKind = this.store
@@ -1489,6 +1493,10 @@ export class Engine {
   }
   public supersedePendingContinuation(key: string, supersedeHandoff = true) {
     this.clearNetworkRetryTimer(key);
+    const runId = this.get(key).run_id;
+    if (runId) this.store.put("run_continuation_superseded", runId, key, {
+      workflow_id: key, run_id: runId, superseded_at: now(),
+    });
     clearRunContinuation(this.store, key);
     clearWaitingContext(this.store, key);
     const handoff = readPlanningHandoff(this.store, key);
@@ -1513,7 +1521,9 @@ export class Engine {
     const continuation = boundRunContinuation(this.store, w.run_id);
     if (
       !run || run.workflow_id !== key || run.plan_revision !== w.plan_revision ||
-      run.status === "completed" || !isSubsequentExecuteRun(run) ||
+      run.status === "completed" ||
+      this.store.get("run_continuation_superseded", run.id) ||
+      !isSubsequentExecuteRun(run) ||
       continuation?.purpose !== "execute"
     ) return;
     saveRunContinuation(this.store, key, key, continuation);
@@ -1532,34 +1542,17 @@ export class Engine {
   ): RunContinuation | undefined {
     const staged = readRunContinuation(this.store, key);
     const waiting = readWaitingContext(this.store, key);
-    const stagedMatch = staged?.purpose === purpose ? staged : undefined;
-    const waitingMatch =
-      waiting &&
-      waiting.purpose === purpose &&
-      (waiting.continuation ||
-        waiting.intent === "need_user" ||
-        waiting.intent === "unclear")
-        ? continuationFromWaiting(waiting)
-        : undefined;
-    const continuation = stagedMatch ?? waitingMatch ?? this.openRunContinuation(key, purpose);
-    if (!continuation) {
-      if (staged && staged.purpose !== purpose)
-        clearRunContinuation(this.store, key);
-      return;
+    const waitingInput = waiting && (waiting.continuation || waiting.intent === "need_user" || waiting.intent === "unclear")
+      ? continuationFromWaiting(waiting) : undefined;
+    const current = this.openRunContinuation(key, purpose);
+    for (const candidate of [staged, waitingInput, current]) {
+      const accepted = currentContinuation(this.store, key, candidate, { purpose, role });
+      if (accepted) return accepted;
     }
-    return { ...continuation, purpose, role: continuation.role || role };
   }
-  private openRunContinuation(
-    key: string,
-    purpose: RunContinuation["purpose"],
-  ) {
-    const runs = this.store.list<Run>("run", key);
-    for (let i = runs.length - 1; i >= 0; i--) {
-      const run = runs[i]!;
-      if (run.continuation?.purpose !== purpose) continue;
-      if (run.status === "completed" && run.exit_code === 0) continue;
-      return run.continuation;
-    }
+  private openRunContinuation(key: string, purpose: RunContinuation["purpose"]): RunContinuation | undefined {
+    return currentContinuation(this.store, key,
+      boundRunContinuation(this.store, this.get(key).run_id), { purpose });
   }
   private persistBoundContinuation(
     key: string,
@@ -3021,7 +3014,9 @@ export class Engine {
       ).publishDocument(w.id, "plan", normalized, w.plan_revision + 1);
 
       // CW2-D03 / CW3-F11 / CW4-F03: 通过 Locator 定位并写入项目工作区，发布后将真实 material ID/locator 关联到规划版本记录
-      let locator: any;
+      let locator: ReturnType<typeof resolveMaterialLocator> | undefined;
+      let publication: ReturnType<typeof publishProjectMaterialSafely> | undefined;
+      let materialError: string | undefined;
       try {
         locator = resolveMaterialLocator({
           store: this.store,
@@ -3030,13 +3025,17 @@ export class Engine {
           revision: w.plan_revision + 1,
           run_id: runId,
         });
-        publishProjectMaterialSafely({
+        publication = publishProjectMaterialSafely({
           store: this.store,
           locator,
           content: normalized,
           cachePath: doc.path,
         });
-      } catch {}
+      } catch (error) {
+        // Preserve the model result even when its authoritative material cannot
+        // be published. Do not turn a cache document into an executable plan.
+        materialError = error instanceof FlowError ? error.code : "MATERIAL_PUBLICATION_FAILED";
+      }
 
       await this.submitValidatedPlan(
         w.id,
@@ -3049,17 +3048,30 @@ export class Engine {
       if (currentPlan && locator) {
         this.store.put("plan", currentPlan.id, w.id, {
           ...currentPlan,
-          material_id: locator.material_id,
-          material_path: locator.relative_path,
+          material_id: publication?.material.id ?? locator.material_id,
+          material_path: publication?.material.path ?? locator.relative_path,
           run_id: runId,
         });
       }
+      const materialStatus = publication?.material.status ??
+        (materialError?.includes("CONFLICT") ? "conflict" : "pending");
       this.store.put("planning_document", w.id, w.id, {
         document_id: doc.id,
         plan_revision: planRev,
-        material_id: locator?.material_id,
+        material_id: publication?.material.id ?? locator?.material_id,
+        material_status: materialStatus,
+        material_error: materialError,
         run_id: runId,
       });
+      if (materialStatus !== "verified") {
+        const current = this.get(w.id);
+        this.transition(w.id, [current.state], current.state, "material_pending", {
+          blocker: {
+            code: materialStatus === "conflict" ? "MATERIAL_CONFLICT" : "MATERIAL_PENDING",
+            message: "规划已完成，项目材料尚未就绪；修复材料后才能审批和执行",
+          },
+        });
+      }
       this.store.put("run", runId, w.id, {
         ...this.store.must<Run>("run", runId),
         status: "completed",
@@ -3730,11 +3742,13 @@ export class Engine {
       this.commitNativeRepairDecision(w, review, quality, body, withinScope),
     );
     if (body.trim()) {
+      let repairDocumentId: string | undefined;
       try {
         const doc = new DocumentService(
           this.store,
           this.config.storage_root,
         ).publishDocument(w.id, "repair_plan", body, usesPolicyV2(w) ? undefined : w.plan_revision);
+        repairDocumentId = doc.id;
 
         // CW2-D03 / CW3-F11: 通过 Locator 定位并写入项目工作区整改原件，包含真实 run_id/revision
         const locator = resolveMaterialLocator({
@@ -3744,13 +3758,33 @@ export class Engine {
           revision: w.plan_revision,
           run_id: w.run_id,
         });
-        publishProjectMaterialSafely({
+        const publication = publishProjectMaterialSafely({
           store: this.store,
           locator,
           content: body,
           cachePath: doc.path,
         });
-      } catch {}
+        this.store.put("repair_document", w.id, w.id, {
+          document_id: doc.id, plan_revision: w.plan_revision, run_id: w.run_id,
+          material_id: publication.material.id, material_path: publication.material.path,
+          material_status: publication.material.status,
+        });
+        if (publication.material.status !== "verified") {
+          this.block(w.id, new FlowError(
+            publication.material.status === "conflict" ? "MATERIAL_CONFLICT" : "MATERIAL_PENDING",
+            "审查已完成，整改材料尚未就绪；修复材料后继续原整改任务", 409,
+          ));
+        }
+      } catch (error) {
+        const materialError = error instanceof FlowError ? error.code : "MATERIAL_PUBLICATION_FAILED";
+        const materialStatus = materialError.includes("CONFLICT") ? "conflict" : "pending";
+        this.store.put("repair_document", w.id, w.id, {
+          document_id: repairDocumentId, plan_revision: w.plan_revision, run_id: w.run_id,
+          material_status: materialStatus,
+          material_error: materialError,
+        });
+        this.block(w.id, new FlowError(materialStatus === "conflict" ? "MATERIAL_CONFLICT" : "MATERIAL_PENDING", "审查已完成，整改材料尚未就绪", 409));
+      }
     }
     return this.get(w.id);
   }
@@ -4660,6 +4694,8 @@ export class Engine {
           : "runtime_resume",
       ...(userAnswer ? { answer: text } : {}),
     });
+    requireCondition(!!currentContinuation(this.store, key, continuation),
+      "STALE_CONTINUATION", "待答续接不属于当前运行链");
     saveRunContinuation(this.store, key, key, continuation);
     const currentFeedback = Array.isArray(w.feedback) ? w.feedback : [];
     const feedback =

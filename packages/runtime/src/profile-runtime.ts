@@ -1,3 +1,5 @@
+import { DiagnosticRedactionContext, DiagnosticStreamRedactor } from "../../presentation/src/secret-redactor.js";
+import { StringDecoder } from "node:string_decoder";
 import { mkdirSync, readFileSync, existsSync, appendFileSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -97,7 +99,7 @@ import {
 } from "../../adapters/agy/src/failure-fact.js";
 import { CurrentTurn } from "../../adapters/agy/src/current-turn.js";
 import { ModelAccessService } from "../../core/src/model-access-service.js";
-import { readPlanMaterial } from "../../core/src/plan-review.js";
+import { assertPlanMaterialReady, readPlanMaterial } from "../../core/src/plan-review.js";
 import type { SourceInput } from "../../core/src/source-change.js";
 import {
   asideRecoveryGuidance,
@@ -242,7 +244,7 @@ export class ProfileRuntime {
             instructions:
               "只读诊断故障。按当前唯一正式计划定位真实运行或环境故障根因，给出确定修复步骤；诊断不是代码质量审核，不能产出测试真实性核验或证明工具任务；需要改变范围时返回完整正式计划并等待批准。禁止另建替代计划。",
             error,
-            plan: this.engine.plan(w.id),
+            plan: readPlanMaterial(this.engine.store, w.id, w.plan_revision),
             authorities: this.engine.planSelfCheck.authorities(w),
             evidence: this.engine.getEvidence(w.id),
           },
@@ -337,7 +339,8 @@ export class ProfileRuntime {
     request: MergeConflictRequest,
     token?: string,
   ): Promise<MergeConflictReceipt> {
-    const plan = this.engine.plan(w.id);
+    const material = assertPlanMaterialReady(this.engine.store, w.id, w.plan_revision);
+    const plan = { ...material, plan: { ...material.plan, markdown: material.markdown } };
     let diff = "";
     try {
       diff = await git(request.worktree_root, [
@@ -485,7 +488,8 @@ export class ProfileRuntime {
     );
   }
   private executeMaterials(w: Workflow, run: Run) {
-    const plan = this.engine.plan(w.id);
+    const material = assertPlanMaterialReady(this.engine.store, w.id, w.plan_revision);
+    const plan = { ...material, plan: { ...material.plan, markdown: material.markdown } };
     const policy2 = usesPolicyV2({ quality_policy_version: run.quality_policy_version ?? w.quality_policy_version });
     const purpose = run.purpose ?? "implement";
     const roleSpecific = policy2 && purpose !== "implement";
@@ -546,6 +550,8 @@ export class ProfileRuntime {
     const phase =
       w.stage === "quality_before_human" ? "before_human" : "after_human";
     const conflict_background = this.conflictReviewBackground(w.id);
+    const material = assertPlanMaterialReady(this.engine.store, w.id, w.plan_revision);
+    const plan = { ...material, plan: { ...material.plan, markdown: material.markdown } };
 
     const effectiveRun = this.ensureRunApprovalRef(w, run);
     const { instructions: extraInstructions, payload: extraPayload } =
@@ -554,7 +560,7 @@ export class ProfileRuntime {
         w.id,
         effectiveRun,
         w.plan_revision,
-        this.engine.plan(w.id).hash,
+        plan.hash,
       );
     const reviewExtraNotice = extraInstructions?.text
       ? `\n\n## 审批附加执行指令（只读验收依据）\n用户在批准计划时提出了以下附加执行约束，仅作为本次复核时的核验依据，不可越权修改代码：\n${extraInstructions.text}\n`
@@ -569,7 +575,7 @@ export class ProfileRuntime {
         run,
         phase,
         cycle: this.engine.quality.getOrCreateGate(w.id, phase).cycle,
-        plan: this.engine.plan(w.id),
+        plan,
         ...(extraPayload ? { approved_execution_instructions: extraPayload } : {}),
         authorities: this.engine.planSelfCheck.authorities(w),
         snapshot,
@@ -1105,6 +1111,7 @@ export class ProfileRuntime {
         }
       },
     });
+    const diagnosticContext = new DiagnosticRedactionContext();
     const handle = (event: NormalizedEvent, decodedConversation = false) => {
       const v = event.raw as any;
       if (v && typeof v === "object") {
@@ -1132,9 +1139,7 @@ export class ProfileRuntime {
           Array.isArray(v.result?.denied_actions) &&
           v.result.denied_actions.length
         ) {
-          const denied = redact(
-            JSON.stringify({ denied_actions: v.result.denied_actions }),
-          );
+          const denied = JSON.stringify(diagnosticContext.project({ denied_actions: v.result.denied_actions }));
           const cause = classifyFailure(denied);
           permissionFailure = new FlowError(
             cause.code,
@@ -1151,7 +1156,7 @@ export class ProfileRuntime {
           (v.event === "result" && v.result?.error)
         )
           failure ??=
-            "CLI 返回错误：" + redact(JSON.stringify(v)).slice(0, 8000);
+            "CLI 返回错误：" + JSON.stringify(diagnosticContext.project(v)).slice(0, 8000);
         if (v.structured_output) final = v.structured_output;
         if (v.type === "result" && typeof v.result === "string")
           text = v.result;
@@ -1174,16 +1179,24 @@ export class ProfileRuntime {
       if (text.length > 16 * 1024 * 1024)
         throw new Error("模型最终回答超出上限");
     };
+    const diagnosticStreams = {
+      stdout: new DiagnosticStreamRedactor(64 * 1024, diagnosticContext),
+      stderr: new DiagnosticStreamRedactor(64 * 1024, diagnosticContext),
+    };
+    const diagnosticDecoders = { stdout: new StringDecoder("utf8"), stderr: new StringDecoder("utf8") };
     const consume = (
       stream: "stdout" | "stderr",
       data: Buffer | string,
       finalChunk = false,
     ) => {
-      if (data.length)
-        appendFileSync(
-          join(root, stream + ".jsonl"),
-          redact(typeof data === "string" ? data : data.toString("utf8")),
-        );
+      const diagnosticInput = typeof data === "string" ? data : diagnosticDecoders[stream].write(data);
+      const safeDiagnostic = diagnosticStreams[stream].push(
+        diagnosticInput + (finalChunk ? diagnosticDecoders[stream].end() : ""), finalChunk,
+      );
+      if (safeDiagnostic) {
+        appendFileSync(join(root, stream + ".jsonl"), safeDiagnostic);
+        if (stream === "stderr") stderrTail = (stderrTail + safeDiagnostic).slice(-16000);
+      }
       const chunk: HostChunk = {
         stream,
         data,
@@ -1202,27 +1215,28 @@ export class ProfileRuntime {
       try {
         consume("stdout", data);
       } catch (e) {
-        failure = String(e);
+        failure = String(diagnosticContext.project(String(e)));
         void proc.stop();
       }
     });
     proc.on("stderr", (data: Buffer) => {
       try {
-        stderrTail = (stderrTail + data.toString("utf8")).slice(-16000);
+        // Accumulate complete diagnostic records in consume before retaining the tail.
         consume("stderr", data);
       } catch (e) {
-        failure = String(e);
+        failure = String(diagnosticContext.project(String(e)));
         void proc.stop();
       }
     });
     // Process Host startup failures arrive as diagnostics rather than stderr.
     proc.on("diagnostic", (data: unknown) => {
-      const diagnostic = redact(String(data));
+      const projected = diagnosticContext.project(data);
+      const diagnostic = typeof projected === "string" ? projected : JSON.stringify(projected);
       stderrTail = (stderrTail + "\n" + diagnostic).slice(-16000);
       try {
         appendFileSync(join(root, "stderr.jsonl"), diagnostic + "\n");
       } catch (error) {
-        failure ??= String(error);
+        failure ??= String(diagnosticContext.project(String(error)));
         void proc.stop();
       }
     });
@@ -1592,10 +1606,20 @@ export function bindRunConversationObserver(input: {
   hookTelemetryObserverStop(input.telemetry, observer);
   input.telemetry.bindConversationObserver({
     applyConversationEvent(event, route) {
+      // Root identity callbacks also write session bindings outside the tree
+      // service; keep them behind the same current Run/plan fence.
+      const currentWorkflow = input.store.get<Workflow>("workflow", input.workflow.id);
+      if (currentWorkflow && (
+        (ctx.purpose !== "aside" && currentWorkflow.run_id && currentWorkflow.run_id !== input.run.id) ||
+        currentWorkflow.plan_revision !== input.run.plan_revision
+      )) return;
       const applied = conversations.applyEvent(ctx, event);
       if (applied.node && applied.attempt) {
         conversationRecoveryOf(input.store).observeAttempt(input.workflow.id, {
           conversation_id: applied.node.id,
+          attempt_id: applied.attempt.id,
+          generation: applied.attempt.generation,
+          root_id: applied.node.root_id,
           run_id: input.run.id,
           status: applied.attempt.status,
           native_session_id: applied.node.native_session_id,

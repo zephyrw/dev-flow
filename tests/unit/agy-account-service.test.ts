@@ -96,9 +96,24 @@ describe("AGY Account Service Lifecycle & Operations (AC-U17, AC-U18, AC-U20)", 
   afterEach(async () => {
     await service.close();
     store.close();
-    try {
-      rmSync(tmpDir, { recursive: true, force: true });
-    } catch {}
+    let lastErr: unknown;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try {
+        rmSync(tmpDir, {
+          recursive: true,
+          force: true,
+          maxRetries: 3,
+          retryDelay: 50,
+        });
+        lastErr = undefined;
+        break;
+      } catch (err) {
+        lastErr = err;
+      }
+    }
+    if (lastErr) {
+      throw lastErr;
+    }
   });
 
   it("starts and stops the service updating realm state accordingly (AC-U17)", async () => {

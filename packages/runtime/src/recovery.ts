@@ -34,6 +34,8 @@ import {
   readWaitingContext,
   savePlanningHandoff,
   waitingBelongsToRun,
+  currentContinuation,
+  continuationFromWaiting,
 } from "../../core/src/waiting-context.js";
 import type { WaitingContext } from "../../core/src/waiting-context.js";
 import type { Run, Workflow } from "../../contracts/src/index.js";
@@ -519,6 +521,7 @@ function resumeWaitingIfCurrent(
     archiveStalePlanning(engine, key, waiting);
     return;
   }
+  if (!currentContinuation(engine.store, key, continuationFromWaiting(waiting))) return;
   if (!belongs && !planningSource) return;
   assertResumePreconditions(engine, key, {
     state: isPlanningWaiting(waiting)

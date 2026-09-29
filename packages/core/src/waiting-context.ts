@@ -1,3 +1,5 @@
+import type { Run, Workflow } from "../../contracts/src/index.js";
+import { CONVERSATION_ENTITY, type ConversationNode, type ConversationAttempt } from "../../contracts/src/conversation.js";
 import type { Store } from "../../store/src/store.js";
 import { now } from "./util.js";
 import type { ExecutionIntent, ReviewIntent } from "./round-intent.js";
@@ -274,7 +276,7 @@ export function waitingPurposeFromRun(
       phase: reviewPhaseOf(stage) ?? "before_human",
     };
   }
-  if (purpose === "planner_takeover")
+  if (purpose === "planner_takeover" || purpose === "planner_commit")
     return { purpose: "execute", role: "planner", phase: stage };
   return { purpose: "execute", role: "executor", phase: stage };
 }
@@ -286,4 +288,61 @@ function reviewPhaseOf(stage?: string): string | undefined {
   if (stage === "after_human" || stage === "quality_after_human")
     return "after_human";
   return stage === "review" ? "after_human" : undefined;
+}
+
+/** Single admission rule for staged, waiting and bound continuation inputs. */
+export function currentContinuation(
+  store: Store, workflowId: string, candidate: RunContinuation | undefined,
+  expected: { purpose?: WaitingPurpose; role?: WaitingRole; root_id?: string; generation?: number } = {},
+): RunContinuation | undefined {
+  const workflow = store.get<Workflow>("workflow", workflowId);
+  if (!candidate || !workflow?.run_id || !candidate.source_run_id ||
+    (expected.purpose && candidate.purpose !== expected.purpose) ||
+    (expected.role && candidate.role !== expected.role)) return;
+  const waiting = readWaitingContext(store, workflowId);
+  const chain = new Set<string>();
+  let runId: string | undefined = workflow.run_id;
+  let boundParent: RunContinuation | undefined;
+  const currentRun = store.get<Run>("run", workflow.run_id);
+  while (runId && !chain.has(runId)) {
+    const run: Run | undefined = store.get<Run>("run", runId);
+    if (!run || run.workflow_id !== workflowId || run.plan_revision !== workflow.plan_revision ||
+      run.status === "cancelled" || run.status === "superseded" ||
+      store.get("run_continuation_superseded", run.id) || readExecutionCompletion(store, run.id)) return;
+    const pendingAnswer = waiting && (waiting.run_id ?? waiting.source_execution_run_id) === run.id &&
+      waiting.purpose === candidate.purpose && waiting.role === candidate.role &&
+      (waiting.intent === "need_user" || waiting.intent === "unclear" || waiting.continuation);
+    // A persisted successor binding remains authoritative after waiting_context
+    // was consumed. Only ancestors reached through that binding get this exception;
+    // a successful current Run cannot revive its old staged answer.
+    const consumedAnswer = boundParent?.source_run_id === run.id &&
+      boundParent.purpose === candidate.purpose && boundParent.role === candidate.role;
+    if ((run.status === "completed" || run.exit_code === 0) && !pendingAnswer && !consumedAnswer) return;
+    chain.add(run.id);
+    if (run.id === candidate.source_run_id) {
+      const owner = waitingPurposeFromRun(run.purpose, run.stage);
+      if (owner.purpose !== candidate.purpose || owner.role !== candidate.role ||
+        (candidate.purpose === "review" && candidate.phase && owner.phase && candidate.phase !== owner.phase)) return;
+      const conversationId = candidate.conversation_id ?? expected.root_id ?? run.conversation_id;
+      if (conversationId) {
+        // Native Run/session IDs and internal tree node IDs are both persisted.
+        const matches = store.list<ConversationNode>(CONVERSATION_ENTITY.node, workflowId)
+          .filter((item) => item.id === conversationId || item.native_session_id === conversationId || item.native_agent_id === conversationId);
+        const node = matches.length === 1 ? matches[0] : undefined;
+        if (currentRun?.conversation_id) {
+          const currentNodes = store.list<ConversationNode>(CONVERSATION_ENTITY.node, workflowId)
+            .filter((item) => item.id === currentRun.conversation_id || item.native_session_id === currentRun.conversation_id);
+          if (currentNodes.length !== 1 || currentNodes[0]?.id !== node?.id) return;
+        }
+        if (expected.root_id && node?.id !== expected.root_id) return;
+        const attempt = node?.current_attempt_id
+          ? store.get<ConversationAttempt>(CONVERSATION_ENTITY.attempt, node.current_attempt_id) : undefined;
+        if (!node || node.workflow_id !== workflowId || !attempt || !attempt.run_id || !chain.has(attempt.run_id) ||
+          (expected.generation !== undefined && attempt.generation !== expected.generation)) return;
+      }
+      return candidate;
+    }
+    boundParent = run.continuation;
+    runId = boundParent?.source_run_id;
+  }
 }

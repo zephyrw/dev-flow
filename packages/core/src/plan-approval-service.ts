@@ -9,6 +9,7 @@ import {
 } from "./execution-instructions.js";
 import { DocumentService } from "./document-service.js";
 import { canonical, hash, objectHash, now } from "./util.js";
+import { assertPlanMaterialReady } from "./plan-review.js";
 import type { Engine } from "./engine.js";
 
 export interface PlanApprovalExecuteInput {
@@ -123,6 +124,9 @@ export class PlanApprovalService {
           409,
         );
       }
+
+      // Material authority is checked before consuming approval proof or changing state.
+      assertPlanMaterialReady(this.engine.store, workflowId, w.plan_revision);
 
       // 3. 校验文档（若提供 documentId）
       let approvedDoc: any = undefined;

@@ -1,3 +1,4 @@
+import { diagnosticClip, highRiskDiagnostic } from "../../presentation/src/secret-redactor.js";
 /**
  * D02 整合点：decode → adapter 会话分流 → 根身份校验 → ConversationObserver → 根/子 telemetry。
  * D02 的 ConversationService 通过 bindConversationObserver 接入；未接入时本文件 route 纯函数仍按原生身份分流。
@@ -295,9 +296,12 @@ export class RunTelemetry {
         Object.entries(item).filter(([, v]) => v !== undefined && v !== ""),
       ),
     } as RunActivity;
-    full.text = full.text?.slice(0, 16000) ?? "";
-    if (full.command && full.command.length > 32000)
-      full.command = full.command.slice(0, 32000) + "…";
+    const sensitive = highRiskDiagnostic(`${full.title ?? ""} ${full.command ?? ""}`);
+    full.text = sensitive ? "敏感认证操作：仅保留状态" : diagnosticClip(full.text, 16000) ?? "";
+    full.title = sensitive ? "敏感认证操作" : diagnosticClip(full.title, 200) ?? "会话活动";
+    full.command = sensitive ? undefined : diagnosticClip(full.command, 32000);
+    full.cwd = sensitive ? undefined : diagnosticClip(full.cwd, 4000);
+    full.resultText = sensitive ? undefined : diagnosticClip(full.resultText, 16000);
     if (full.status === "active" && full.kind === "tool")
       this.active.set(full.id, full);
     else this.active.delete(full.id);
@@ -374,15 +378,17 @@ export class RunTelemetry {
       root_id: route.rootId,
       activity_id: item.id,
       source_event_id: sourceEventId,
-      public_text: (item.text ?? previous?.public_text ?? "").slice(0, 16000),
-      title: item.title || previous?.title,
+      public_text: diagnosticClip(item.text ?? previous?.public_text ?? "", 16000),
+      title: diagnosticClip(item.title || previous?.title, 200),
       status: conversationStatusFromActivity(item.status),
       kind: item.kind,
-      command:
-        item.command && item.command.length > 32000
-          ? item.command.slice(0, 32000) + "…"
-          : item.command || previous?.command,
+      command: diagnosticClip(item.command || previous?.command, 32000),
     } satisfies ConversationActivityPayload;
+    if (highRiskDiagnostic(`${merged.title ?? ""} ${item.command ?? previous?.command ?? ""}`)) {
+      merged.title = "敏感认证操作";
+      merged.public_text = "仅保留操作状态";
+      merged.command = undefined;
+    }
     if (item.status === "active" && item.kind === "tool")
       this.childActive.set(key, merged);
     else this.childActive.delete(key);

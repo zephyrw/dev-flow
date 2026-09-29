@@ -14,6 +14,39 @@ import { resumeApproved } from "../../packages/runtime/src/recovery.js";
 import { LocalRuntime } from "../../packages/runtime/src/runtime.js";
 import { ProfileRuntime } from "../../packages/runtime/src/profile-runtime.js";
 import type { Run } from "../../packages/contracts/src/index.js";
+import type { RunContinuation } from "../../packages/contracts/src/tr-handoff.js";
+
+it.each(["completed", "superseded", "failed"] as const)("续接回退只允许未完成且未取代的原链：%s", async (status) => {
+  const s = await fixture();
+  try {
+    const current = s.engine.get(s.w.id);
+    const runId = "functional-with-answer";
+    const continuation: RunContinuation = {
+      kind: "user_answer", source_run_id: runId, purpose: "execute", role: "executor",
+      original_text: "上一轮问题", questions: ["上一轮问题"], answer: "上一轮答案",
+    };
+    s.store.put("run", runId, s.w.id, {
+      id: runId, workflow_id: s.w.id, plan_revision: current.plan_revision,
+      adapter: "codex", purpose: "functional_fix", stage: "execute",
+      status: status === "completed" ? "completed" : "failed",
+      exit_code: status === "completed" ? 0 : 1,
+      started_at: new Date().toISOString(), package_hash: "pkg", continuation,
+    } satisfies Run);
+    s.engine.transition(s.w.id, [current.state], "HUMAN_PENDING", "manual_acceptance", { run_id: runId });
+    if (status === "superseded") s.engine.supersedePendingContinuation(s.w.id);
+    const consumer = s.engine as unknown as {
+      consumeContinuation(key: string, purpose: "execute", role: "executor"): RunContinuation | undefined;
+    };
+    expect(consumer.consumeContinuation(s.w.id, "execute", "executor"))
+      .toEqual(status === "failed" ? continuation : undefined);
+    if (status === "completed") {
+      s.engine.feedback(s.w.id, "新的独立功能反馈", "within_plan");
+      expect(consumer.consumeContinuation(s.w.id, "execute", "executor")).toBeUndefined();
+    }
+  } finally {
+    await cleanup(s);
+  }
+});
 
 it("need_user 不生成完成记录，审查不明结论回答后回到原审查", async () => {
   const s = await fixture();

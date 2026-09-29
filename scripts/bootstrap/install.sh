@@ -2,6 +2,7 @@
 # Verified release bootstrap. Source mode requires a complete built bundle.
 set -eu
 source_dir=""
+release_manifest=""
 install_dir="$HOME/.local/share/devflow"
 selected_tools="codex"
 version="latest"
@@ -39,18 +40,26 @@ if [ -z "$source_dir" ]; then
     version="$(curl --fail --location --proto '=https' --tlsv1.2 -o /dev/null -w '%{url_effective}' https://github.com/zephyrw/dev-flow/releases/latest)" || exit 20
     version="${version##*/}"
   fi
-  case "$version" in
-    v[0-9]*) base="https://github.com/zephyrw/dev-flow/releases/download/$version";;
-    *) echo "Invalid version" >&2; exit 30;; esac
+  printf '%s\n' "$version" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?$' >/dev/null || { echo "Invalid version" >&2; exit 30; }
+  base="https://github.com/zephyrw/dev-flow/releases/download/$version"
   asset="devflow-$version-$platform-$arch.tar.gz"
   curl --fail --location --proto '=https' --tlsv1.2 "$base/$asset" -o "$temp/$asset" || exit 20
   curl --fail --location --proto '=https' --tlsv1.2 "$base/$asset.sha256" -o "$temp/$asset.sha256" || exit 20
+  release_manifest="$temp/release-$platform-$arch.json"
+  curl --fail --location --proto '=https' --tlsv1.2 "$base/release-$platform-$arch.json" -o "$release_manifest" || exit 20
+  curl --fail --location --proto '=https' --tlsv1.2 "$base/release-$platform-$arch.json.sha256" -o "$release_manifest.sha256" || exit 20
+  manifest_expected="$(awk 'NR==1 {print $1}' "$release_manifest.sha256")"
+  if command -v sha256sum >/dev/null; then manifest_actual="$(sha256sum "$release_manifest" | awk '{print $1}')"
+  else manifest_actual="$(shasum -a 256 "$release_manifest" | awk '{print $1}')"; fi
+  [ "$manifest_expected" = "$manifest_actual" ] || { echo "Manifest checksum mismatch" >&2; exit 20; }
   expected="$(awk 'NR==1 {print $1}' "$temp/$asset.sha256")"
   if command -v sha256sum >/dev/null; then actual="$(sha256sum "$temp/$asset" | awk '{print $1}')"
   else actual="$(shasum -a 256 "$temp/$asset" | awk '{print $1}')"; fi
   [ "$expected" = "$actual" ] || { echo "Checksum mismatch" >&2; exit 20; }
   tar -tzf "$temp/$asset" > "$temp/entries" || exit 20
   if grep -E '(^/|(^|/)\.\.(/|$)|\\|:)' "$temp/entries" >/dev/null; then echo "Unsafe archive path" >&2; exit 20; fi
+  tar -tvzf "$temp/$asset" > "$temp/types" || exit 20
+  if grep -Ev '^[d-]' "$temp/types" >/dev/null; then echo "Archive links and special files are unsupported" >&2; exit 20; fi
   mkdir "$temp/bundle"
   tar -xzf "$temp/$asset" -C "$temp/bundle" || exit 20
   source_dir="$temp/bundle/devflow"
@@ -60,6 +69,10 @@ node="$source_dir/runtime/node"
 if [ ! -x "$node" ]; then node="$(command -v node)" || exit 40; fi
 [ -f "$source_dir/dist/packages/installer/src/main.js" ] || { echo "Incomplete built bundle" >&2; exit 20; }
 set -- --source "$source_dir" --install-dir "$install_dir" --tools "$selected_tools"
+if [ -n "$release_manifest" ]; then
+  "$node" "$source_dir/dist/packages/installer/src/release-identity.js" "$source_dir" "$release_manifest" "$temp/$asset" "$version" "$base/$asset" || exit 20
+  set -- "$@" --release-manifest "$release_manifest" --release-archive "$temp/$asset" --release-tag "$version" --release-url "$base/$asset"
+fi
 [ -n "$planner_tool" ] && set -- "$@" --planner-tool "$planner_tool"
 [ -n "$planner_model" ] && set -- "$@" --planner-model "$planner_model"
 [ -n "$planner_effort" ] && set -- "$@" --planner-effort "$planner_effort"

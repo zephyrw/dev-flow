@@ -1,3 +1,4 @@
+import { highRiskDiagnostic } from "../../presentation/src/secret-redactor.js";
 import type { Store } from "../../store/src/store.js";
 import { publicEvent, now } from "../../core/src/util.js";
 
@@ -5,6 +6,11 @@ import { publicEvent, now } from "../../core/src/util.js";
 export class AgentTelemetry {
   private events = new Map<string, Record<string, any>>();
   private timer?: NodeJS.Timeout;
+  // Retained independently of timed flushes; never persist an unframed delta.
+  private textFragments = new Map<string, string | null>();
+  private sensitiveSteps = new Set<string>();
+  private sensitiveSaturated = false;
+  private fragmentsSaturated = false;
   constructor(
     private store: Store,
     private workflow: string,
@@ -21,16 +27,46 @@ export class AgentTelemetry {
     const key = step
       ? `step:${conversation}:${this.run}:${step.step_index}`
       : `event:${conversation}:${this.run}:${event.event}`;
+    if (step && highRiskDiagnostic(`${step.tool_name ?? ""} ${JSON.stringify(step.tool_info ?? {})}`)) {
+      if (this.sensitiveSteps.size < 128) this.sensitiveSteps.add(key);
+      else this.sensitiveSaturated = true;
+    }
+    if (step && (this.sensitiveSteps.has(key) || this.sensitiveSaturated)) {
+      event = { event: "step_update", step_update: {
+        conversation_id: conversation, step_index: step.step_index,
+        step_type: step.step_type, state: step.state,
+        text: "敏感认证操作：仅保留状态",
+      } };
+      this.events.set(key, event);
+      if (!this.timer) this.timer = setTimeout(() => this.flush(), 500);
+      return;
+    }
+    if (step && typeof step.text_delta === "string") {
+      const prior = this.textFragments.get(key);
+      if (prior !== null && (this.textFragments.has(key) || !this.fragmentsSaturated)) {
+        if (this.textFragments.size >= 128 && !this.textFragments.has(key)) this.fragmentsSaturated = true;
+        else {
+          const combined = (prior ?? "") + step.text_delta;
+          this.textFragments.set(key, combined.length <= 65536 ? combined : null);
+        }
+      }
+    }
+    if (step) {
+      const { text_delta: _delta, ...withoutDelta } = step;
+      const complete = ["DONE", "ERROR"].includes(step.state);
+      event = { ...event, step_update: { ...withoutDelta,
+        ...(complete && this.textFragments.has(key)
+          ? { text: this.textFragments.get(key) ?? "[分片诊断超过安全缓冲上限，已省略]" } : {}),
+      } };
+      // Keep the bounded prefix for repeated DONE deltas from the same native step.
+    }
     const previous = this.events.get(key)?.step_update;
     if (step && previous)
       event = {
         ...event,
         step_update: {
           ...previous,
-          ...step,
-          ...(typeof step.text_delta === "string"
-            ? { text_delta: (previous.text_delta ?? "") + step.text_delta }
-            : {}),
+          ...event.step_update,
           ...(previous.tool_info || step.tool_info
             ? {
                 tool_info: {

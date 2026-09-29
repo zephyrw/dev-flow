@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
-import { setup, repository, project, plan, proof } from "../helpers.js";
+import { setup, repository, project, plan, proof, publishPlanFixture } from "../helpers.js";
 import { attestFixture } from "../native-fixture.js";
 import { objectHash } from "../../packages/core/src/util.js";
 import { NativeRunRecordReader } from "../../packages/evidence/src/native-run-records.js";
@@ -34,6 +34,7 @@ export async function fixture(
     },
     "create",
   );
+  await s.engine.git.prepare(p, w.id, w.workspace_mode, { main: ri.baseline });
   s.engine.submitPlan(
     w.id,
     {
@@ -44,6 +45,7 @@ export async function fixture(
     w.version,
     "plan",
   );
+  publishPlanFixture(s.engine, w.id);
   const approval = proof(s.engine, w.id, "approve");
   s.engine.approve(w.id, approval.proof, approval.binding);
   mkdirSync(join(ri.repo, ".reports"), { recursive: true });

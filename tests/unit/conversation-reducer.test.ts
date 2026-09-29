@@ -872,4 +872,52 @@ describe("conversation activity paging", () => {
       .nodes.find((node) => node.native_session_id === "child-native")!;
     expect(store.conversationActivities("wf1", child.id).items).toHaveLength(1);
   });
+
+  it("redacts command, public_text, and result_text in ConversationActivityPayload before persisting", () => {
+    const { store, service } = openService();
+    const c = ctx();
+    service.applyEvent(
+      c,
+      event({
+        kind: "discovered",
+        source_seq: "1",
+        session_native_id: "root-native",
+        payload: { title: "主会话" },
+      }),
+    );
+    service.applyEvent(
+      c,
+      event({
+        kind: "activity",
+        source_seq: "2",
+        session_native_id: "root-native",
+        payload: {
+          activity_id: "act-sensitive",
+          kind: "tool",
+          command: "curl -p secret_pwd --password \"super_secret\" --token tok_abc http://user:pass123@internal.host/api",
+          public_text: "Running with --api-key sk-live-secret-key-12345 and password=plain_text_pass",
+          result_text: "Auth success for http://admin:pwd999@api.service.com/status with --secret my_secret_data",
+        },
+      }),
+    );
+    const tree = service.getTree("wf1");
+    const root = tree.nodes.find((node) => node.native_session_id === "root-native")!;
+    const page = store.conversationActivities("wf1", root.id);
+    expect(page.items).toHaveLength(1);
+    const act = page.items[0]!.payload as any;
+    expect(act.command).not.toContain("secret_pwd");
+    expect(act.command).not.toContain("super_secret");
+    expect(act.command).not.toContain("tok_abc");
+    expect(act.command).not.toContain("pass123");
+    expect(act.command).toContain("[REDACTED]");
+
+    expect(act.public_text).not.toContain("sk-live-secret-key-12345");
+    expect(act.public_text).not.toContain("plain_text_pass");
+    expect(act.public_text).toContain("[REDACTED]");
+
+    expect(act.result_text).not.toContain("pwd999");
+    expect(act.result_text).not.toContain("my_secret_data");
+    expect(act.result_text).toContain("[REDACTED]");
+  });
 });
+

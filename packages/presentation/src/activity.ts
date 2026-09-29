@@ -1,3 +1,4 @@
+import { publicDiagnostic, diagnosticText } from "./secret-redactor.js";
 import { failureSummary } from "./failure.js";
 import { ReviewActivityStream } from "./review-activity.js";
 import { runtimeFailureResolution } from "../../contracts/src/runtime-failure.js";
@@ -199,6 +200,8 @@ export function workflowProgress(
 }
 /** The original events stay intact; this is only a readable, scoped projection. */
 export function readableLogs(events: any[], workflow: string): LogEntry[] {
+  // Read-time defense for older diagnostics; do not rewrite historical database rows.
+  events = events.map((event) => publicDiagnostic(event));
   const rows: LogEntry[] = [],
     steps = new Map<string, LogEntry>();
   let repairPending = false;
@@ -350,7 +353,7 @@ export function readableLogs(events: any[], workflow: string): LogEntry[] {
         rows.push(row);
         steps.set(key, row);
       }
-      row.text = (row.text + p.text).slice(-16000);
+      row.text = diagnosticText(row.text + p.text).slice(0, 16000);
       row.raw.push(e);
       row.raw = row.raw.slice(-100);
       continue;
@@ -491,7 +494,7 @@ export function readableLogs(events: any[], workflow: string): LogEntry[] {
           step.step_type === "agent_response"
             ? `模型输出 · ${status}`
             : `收到任务 · ${status}`;
-        if (typeof step.text_delta === "string") row.text += step.text_delta;
+        if (typeof step.text_delta === "string") row.text = diagnosticText(row.text + step.text_delta);
       }
       continue;
     }

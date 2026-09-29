@@ -2678,11 +2678,17 @@ function App() {
                               <>
                                 <button
                                   className="primary"
-                                  disabled={pending}
+                                  disabled={pending || detail?.plan?.authority_ready !== true}
+                                  title={detail?.plan?.material_error?.message ?? (detail?.plan?.authority_ready === true ? undefined : "计划材料尚未核验，只可查看")}
                                   onClick={() => setPlanApprovalTarget(w)}
                                 >
                                   批准当前计划
                                 </button>
+                                {detail?.plan?.authority_ready !== true && (
+                                  <span role="status" className="muted">
+                                    {detail?.plan?.material_error?.message ?? "计划材料尚未核验，暂不可批准。"}
+                                  </span>
+                                )}
                                 <button
                                   className="btn-secondary"
                                   disabled={pending}
@@ -3105,7 +3111,7 @@ function App() {
         <PlanApprovalDialog
           key={`${planApprovalTarget.id}:${planApprovalTarget.plan_revision}`}
           isOpen={!!planApprovalTarget}
-          isStale={detail?.workflow?.id !== planApprovalTarget.id || detail?.workflow?.version !== planApprovalTarget.version || detail?.workflow?.plan_hash !== planApprovalTarget.plan_hash}
+          isStale={detail?.plan?.authority_ready !== true || detail?.workflow?.id !== planApprovalTarget.id || detail?.workflow?.version !== planApprovalTarget.version || detail?.workflow?.plan_hash !== planApprovalTarget.plan_hash}
           onClose={() => setPlanApprovalTarget(null)}
           workflowId={planApprovalTarget.id}
           workflowVersion={planApprovalTarget.version}

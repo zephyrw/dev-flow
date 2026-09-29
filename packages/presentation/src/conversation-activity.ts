@@ -1,3 +1,4 @@
+import { publicDiagnostic } from "./secret-redactor.js";
 import type { LogEntry } from "./activity.js";
 import {
   CONVERSATION_EVENT,
@@ -45,6 +46,7 @@ export function conversationActivityLogEntry(event: {
   created_at: string;
   payload?: ConversationActivityPayload;
 }): LogEntry | undefined {
+  event = publicDiagnostic(event);
   const payload = event.payload;
   if (!payload?.conversation_id || !payload.attempt_id || !payload.activity_id)
     return undefined;

@@ -53,51 +53,5 @@ export function atomicWrite(file: string, content: string | Buffer) {
     }
   }
 }
-export function redact(text: string) {
-  return text
-    .replace(/(Bearer\s+)[A-Za-z0-9._~+/=-]+/gi, "$1[REDACTED]")
-    .replace(
-      /((?:token|secret|password|api[_-]?key)["']?\s*[:=]\s*["']?)[^\s,"'}]+/gi,
-      "$1[REDACTED]",
-    );
-}
-
-/** Redact values, never serialized JSON syntax. Also handles nested tool JSON. */
-export function publicEvent(value: unknown): any {
-  if (typeof value === "string") {
-    const first = value.trimStart()[0];
-    if (first === "{" || first === "[")
-      try {
-        const parsed = JSON.parse(value);
-        if (parsed && typeof parsed === "object")
-          return JSON.stringify(publicEvent(parsed));
-      } catch {
-        /* Ordinary text, including incomplete streamed JSON. */
-      }
-    if (/[\u0000-\u0008\u000e-\u001f]/.test(value)) return "[已省略二进制内容]";
-    return redact(value);
-  }
-  if (Array.isArray(value)) return value.map(publicEvent);
-  if (value && typeof value === "object")
-    return Object.fromEntries(
-      Object.entries(value)
-        .filter(
-          ([key, item]) =>
-            !/thought|reasoning/i.test(key) ||
-            (key === "reasoning_tokens" && typeof item === "number"),
-        )
-        .map(([key, item]) => [
-          key,
-          /secret|token|password|api[_-]?key/i.test(key) &&
-          !(
-            typeof item === "number" &&
-            /^(input|output|cached|reasoning|thinking|cache_read|cache_write|total|prompt|completion)_tokens$/.test(
-              key,
-            )
-          )
-            ? "[REDACTED]"
-            : publicEvent(item),
-        ]),
-    );
-  return value;
-}
+// Compatibility entry points for server callers; rules also run in browser projections.
+export { redactSecrets as redact, publicDiagnostic as publicEvent } from "../../presentation/src/secret-redactor.js";

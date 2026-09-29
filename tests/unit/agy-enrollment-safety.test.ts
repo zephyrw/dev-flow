@@ -9,12 +9,16 @@ function setup(observation: Partial<AccountProbeResult> = {}) {
   const stored: AgyAccount[] = [];
   const repository = { getAccount: (_realm: string, id: string) => stored.find(account => account.id === id),
     listAccounts: () => stored, saveAccount: vi.fn((account: AgyAccount) => stored.push(account)),
-    saveQuotaSnapshot: vi.fn(), transaction: <T>(fn: () => T) => fn() };
+    saveQuotaSnapshot: vi.fn(), transaction: <T>(fn: () => T) => fn(),
+    putRecord: vi.fn(), getRecord: vi.fn(), retainQuotaPools: vi.fn() };
   const auth = { isDomainLockHeld: () => true, inspectActive: async () => ({ exists: true }),
     captureActive: vi.fn(async () => ({ secret_ref: "sec_saved", credential_revision: 3 })),
     clearActiveForLogin: vi.fn(), restoreBackup: vi.fn() };
-  const probe = { probeUsage: vi.fn(async (): Promise<AccountProbeResult> => ({ email: "a@example.com", cli_version: "unknown",
-    windows: [], pools: [], executable_fingerprint: "", capability_verified: false, raw_output: "", ...observation })) };
+  const probe = {
+    probeIdentity: vi.fn(async () => ({ email: observation.email ?? "a@example.com", cli_version: observation.cli_version ?? "unknown", raw_output: "" })),
+    probeUsage: vi.fn(async (): Promise<AccountProbeResult> => ({ email: "a@example.com", cli_version: "unknown",
+      windows: [], pools: [], executable_fingerprint: "", capability_verified: false, raw_output: "", ...observation })),
+  };
   const service = new AgyEnrollmentService(repository as unknown as AgyAccountRepository,
     auth as unknown as AuthHostPort, probe as unknown as AccountProbePort);
   return { service, auth, repository, stored };

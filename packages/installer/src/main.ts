@@ -1,3 +1,4 @@
+import { verifyReleaseIdentity, type ExpectedRelease } from "./release-identity.js";
 import { InstallationStateManager, INSTALL_EXIT_CODES } from "./state.js";
 import { ClientInstaller } from "../../clients/src/installer.js";
 import {
@@ -55,6 +56,7 @@ export interface InstallerRoleInputs {
 }
 
 export interface InstallerRunOptions {
+  expectedRelease?: ExpectedRelease;
   sourceDir?: string;
   targetTools?: string[];
   installRoot?: string;
@@ -75,6 +77,7 @@ export type ApplyInstallerDefaultsResult = {
 };
 
 export function parseInstallerCliArgs(args: string[]): {
+  expectedRelease?: ExpectedRelease;
   sourceDir?: string;
   installRoot?: string;
   targetTools?: string[];
@@ -88,7 +91,10 @@ export function parseInstallerCliArgs(args: string[]): {
     return value;
   };
   const tools = read("--tools");
+  const releaseFields = ["--release-manifest", "--release-archive", "--release-tag", "--release-url"].map(read);
+  if (releaseFields.some(Boolean) && !releaseFields.every(Boolean)) throw new Error("Incomplete release identity");
   return {
+    expectedRelease: releaseFields.every(Boolean) ? { manifestPath: releaseFields[0]!, archivePath: releaseFields[1]!, tag: releaseFields[2]!, url: releaseFields[3]! } : undefined,
     sourceDir: read("--source"),
     installRoot: read("--install-dir"),
     targetTools: tools?.split(","),
@@ -488,6 +494,7 @@ export async function runInstaller(
   let originalPointer: string | undefined;
   let configurationChanged = false;
   let writableStateStarted = false;
+  let identityVerified = false;
   try {
     if (
       !tools.length ||
@@ -504,6 +511,9 @@ export async function runInstaller(
       !/^\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$/.test(version)
     )
       throw new Error("安装包身份或版本不符");
+    if (options.expectedRelease) verifyReleaseIdentity(source, options.expectedRelease);
+    else if (existsSync(join(source, "release-identity.json"))) throw new Error("Release bundle requires verified manifest identity");
+    identityVerified = true;
     const required = [
       "dist/apps/api/src/main.js",
       "dist/apps/api/src/accounts-main.js",
@@ -519,6 +529,7 @@ export async function runInstaller(
       "dist/packages/bridge/src/planner.js",
       "dist/packages/service/src/launcher.js",
       "package.json",
+      ...(options.expectedRelease ? ["release-identity.json"] : []),
       "node_modules/better-sqlite3/package.json",
       "node_modules/koffi/package.json",
       ...[
@@ -557,6 +568,7 @@ export async function runInstaller(
         "packages/skills",
         "node_modules",
         "package.json",
+        ...(options.expectedRelease ? ["release-identity.json"] : []),
       ])
         cpSync(join(source, entry), join(staging, entry), {
           recursive: true,
@@ -802,9 +814,11 @@ export async function runInstaller(
       if (originalPointer !== undefined)
         atomicWrite(join(root, "current.json"), originalPointer);
     }
-    const saved = state.load();
-    saved.last_exit_code = code;
-    state.save(saved);
+    if (identityVerified) {
+      const saved = state.load();
+      saved.last_exit_code = code;
+      state.save(saved);
+    }
     console.error("[DevFlow 安装未完成] " + String(e));
     if (writableStateStarted)
       console.error(
@@ -821,6 +835,7 @@ if (
 ) {
   const parsed = parseInstallerCliArgs(process.argv.slice(2));
   runInstaller({
+    expectedRelease: parsed.expectedRelease,
     sourceDir: parsed.sourceDir,
     installRoot: parsed.installRoot,
     targetTools: parsed.targetTools,

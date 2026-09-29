@@ -28,6 +28,26 @@ const gitWriteEnv = {
   GIT_TERMINAL_PROMPT: "0",
 };
 
+async function assertTargetBranchContainsCandidate(
+  gitRoot: string,
+  targetBranch: string,
+  candidateCommit: string,
+): Promise<boolean> {
+  try {
+    const info = await repositoryInfo(gitRoot);
+    if (info.branch !== targetBranch) return false;
+    const targetRef = (
+      await git(gitRoot, ["rev-parse", "--verify", "refs/heads/" + targetBranch])
+    ).trim();
+    const base = (
+      await git(gitRoot, ["merge-base", candidateCommit, targetRef])
+    ).trim();
+    return base === candidateCommit;
+  } catch {
+    return false;
+  }
+}
+
 export function mergeConflictResolutionInstructions() {
   return (
     "合并发生代码冲突。严格在原批准计划和正式整改范围内解决冲突，同时保留双方有效需求。" +
@@ -261,8 +281,12 @@ export class GitDeliveryCoordinator {
         const prior = this.store.get<IntegrationReceipt>("integration_receipt", this.key(workflowId, ws.repo_id));
         if (prior?.status === "success" && prior.candidate_commit === commit &&
             prior.source_root === sourceRoot && prior.target_branch === targetBranch) {
-          integrations.push(prior);
-          continue;
+          const verified = await assertTargetBranchContainsCandidate(sourceRoot, targetBranch, commit);
+          if (verified) {
+            integrations.push(prior);
+            continue;
+          }
+          requireCondition(false, "TARGET_REF_MISMATCH", "目标分支引用不包含冻结候选提交或已被重置推进");
         }
         if (managed) {
           const base = await git(sourceRoot, ["merge-base", info.head, commit]);
@@ -283,6 +307,8 @@ export class GitDeliveryCoordinator {
             await git(sourceRoot, ["merge", "--ff-only", commit], gitWriteEnv);
           }
         }
+        const targetRefValid = await assertTargetBranchContainsCandidate(sourceRoot, targetBranch, commit);
+        requireCondition(targetRefValid, "MERGE_CONFIRMATION_FAILED", "目标分支未包含冻结候选提交");
         const receipt: IntegrationReceipt = {
           workflow_id: workflowId, repo_id: ws.repo_id, candidate_commit: commit,
           target_branch: targetBranch, source_root: sourceRoot, status: "success", merged_at: now(),
@@ -353,37 +379,52 @@ export class GitDeliveryCoordinator {
     );
     if (w.workspace_mode === "existing_workspace") {
       const integrations: IntegrationReceipt[] = [];
-      for (const record of committed) {
-        const ws = workspaces.find((x) => x.repo_id === record.repo_id)!;
-        requireCondition(
-          !ws.owned,
-          "WORKSPACE_OWNERSHIP_INVALID",
-          "主工作区不能标为任务所有",
-        );
-        requireCondition(
-          (await git(ws.root, ["rev-parse", "HEAD"])) === record.commit,
-          "COMMIT_CONFIRMATION_FAILED",
-          "主工作区提交未确认",
-        );
-        const receipt: IntegrationReceipt = {
-          workflow_id: workflowId,
-          repo_id: ws.repo_id,
-          candidate_commit: record.commit,
-          target_branch: ws.branch,
-          source_root: ws.root,
-          status: "success",
-          merged_at: now(),
-        };
-        this.store.put(
-          "integration_receipt",
-          this.key(workflowId, ws.repo_id),
-          workflowId,
-          receipt,
-        );
-        integrations.push(receipt);
+      try {
+        for (const record of committed) {
+          const ws = workspaces.find((x) => x.repo_id === record.repo_id)!;
+          requireCondition(
+            !ws.owned,
+            "WORKSPACE_OWNERSHIP_INVALID",
+            "主工作区不能标为任务所有",
+          );
+          requireCondition(
+            (await git(ws.root, ["rev-parse", "HEAD"])) === record.commit,
+            "COMMIT_CONFIRMATION_FAILED",
+            "主工作区提交未确认",
+          );
+          const verified = await assertTargetBranchContainsCandidate(
+            ws.root,
+            ws.branch,
+            record.commit,
+          );
+          requireCondition(
+            verified,
+            "MERGE_CONFIRMATION_FAILED",
+            "主工作区目标分支未包含冻结候选提交",
+          );
+          const receipt: IntegrationReceipt = {
+            workflow_id: workflowId,
+            repo_id: ws.repo_id,
+            candidate_commit: record.commit,
+            target_branch: ws.branch,
+            source_root: ws.root,
+            status: "success",
+            merged_at: now(),
+          };
+          this.store.put(
+            "integration_receipt",
+            this.key(workflowId, ws.repo_id),
+            workflowId,
+            receipt,
+          );
+          integrations.push(receipt);
+        }
+        this.update(w, "COMMITTED", "done");
+        return { integrations };
+      } catch (err) {
+        this.update(w, "COMMIT_PARTIAL", "commit_recovery");
+        throw err;
       }
-      this.update(w, "COMMITTED", "done");
-      return { integrations };
     }
     let needsVerification = false;
     const candidates: Candidate[] = [];
@@ -634,49 +675,76 @@ export class GitDeliveryCoordinator {
       );
     }
     const integrations: IntegrationReceipt[] = [];
-    for (const c of candidates) {
-      const prior = this.store.get<IntegrationReceipt>(
-        "integration_receipt",
-        this.key(workflowId, c.repo_id),
-      );
-      if (
-        prior?.candidate_commit === c.candidate_commit &&
-        prior.status === "success"
-      ) {
-        integrations.push(prior);
-        continue;
-      }
-      const current = await repositoryInfo(c.source_root);
-      requireCondition(
-        current.head === c.source_commit && current.branch === c.source_branch,
-        "SOURCE_BUSY",
-        "目标分支发生并发推进",
-      );
-      await git(c.source_root, ["merge", "--ff-only", c.candidate_commit], gitWriteEnv);
-      requireCondition(
-        (await git(c.source_root, ["rev-parse", "HEAD"])) ===
+    try {
+      for (const c of candidates) {
+        const prior = this.store.get<IntegrationReceipt>(
+          "integration_receipt",
+          this.key(workflowId, c.repo_id),
+        );
+        if (
+          prior?.candidate_commit === c.candidate_commit &&
+          prior.status === "success"
+        ) {
+          const verified = await assertTargetBranchContainsCandidate(
+            c.source_root,
+            c.source_branch,
+            c.candidate_commit,
+          );
+          if (verified) {
+            integrations.push(prior);
+            continue;
+          }
+          requireCondition(
+            false,
+            "TARGET_REF_MISMATCH",
+            "目标分支引用不包含冻结候选提交或已被重置推进",
+          );
+        }
+        const current = await repositoryInfo(c.source_root);
+        requireCondition(
+          current.head === c.source_commit && current.branch === c.source_branch,
+          "SOURCE_BUSY",
+          "目标分支发生并发推进",
+        );
+        await git(c.source_root, ["merge", "--ff-only", c.candidate_commit], gitWriteEnv);
+        requireCondition(
+          (await git(c.source_root, ["rev-parse", "HEAD"])) ===
+            c.candidate_commit,
+          "MERGE_CONFIRMATION_FAILED",
+          "合回后的提交未确认",
+        );
+        const verified = await assertTargetBranchContainsCandidate(
+          c.source_root,
+          c.source_branch,
           c.candidate_commit,
-        "MERGE_CONFIRMATION_FAILED",
-        "合回后的提交未确认",
-      );
-      const receipt: IntegrationReceipt = {
-        ...c,
-        target_branch: c.source_branch,
-        merged_at: now(),
-        status: "success",
+        );
+        requireCondition(
+          verified,
+          "MERGE_CONFIRMATION_FAILED",
+          "合回后目标分支未包含候选提交",
+        );
+        const receipt: IntegrationReceipt = {
+          ...c,
+          target_branch: c.source_branch,
+          merged_at: now(),
+          status: "success",
+        };
+        this.store.put(
+          "integration_receipt",
+          this.key(workflowId, c.repo_id),
+          workflowId,
+          receipt,
+        );
+        integrations.push(receipt);
+      }
+      this.update(w, "COMPLETED", "done");
+      return {
+        integrations,
       };
-      this.store.put(
-        "integration_receipt",
-        this.key(workflowId, c.repo_id),
-        workflowId,
-        receipt,
-      );
-      integrations.push(receipt);
+    } catch (err) {
+      this.update(w, "COMMIT_PARTIAL", "commit_recovery");
+      throw err;
     }
-    this.update(w, "COMPLETED", "done");
-    return {
-      integrations,
-    };
   }
   /**
    * 依据 CW2-D01 / §4 第 6 项规范：显式清理增加真正只读 preview

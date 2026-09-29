@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import { Store } from "../../../packages/store/src/store.js";
 import { loadConfig } from "../../../packages/contracts/src/config.js";
 import { acquireControllerLock } from "../../../packages/process/src/controller-lock.js";
-import { recordController } from "../../../packages/service/src/descriptor.js";
+import { recordController } from "./controller-descriptor.js";
 import { bootstrapAccountService } from "./account-service-bootstrap.js";
 import { buildAccountsServer } from "./accounts-server.js";
 const config = loadConfig(process.env.DEVFLOW_CONFIG);

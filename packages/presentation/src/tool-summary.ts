@@ -1,7 +1,14 @@
+import { diagnosticText, highRiskDiagnostic } from "./secret-redactor.js";
 /** Summaries use named tool fields, never arbitrary prompt/code payloads. */
 export function toolSummary(name: string | undefined, args: any) {
+  args ??= {};
+  if (highRiskDiagnostic([name, args.CommandLine, args.command, args.cmd].filter(Boolean).join(" ")))
+    return { title: "敏感认证操作", text: "仅记录操作状态", command: undefined, cwd: undefined };
   const first = (...values: unknown[]) =>
-    values.find((v) => typeof v === "string" && v.trim()) as string | undefined;
+    {
+      const value = values.find((v) => typeof v === "string" && v.trim());
+      return typeof value === "string" ? diagnosticText(value) : undefined;
+    };
   const path = first(
     args.TargetFile,
     args.AbsolutePath,

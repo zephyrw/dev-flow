@@ -1,3 +1,4 @@
+import { diagnosticText, highRiskDiagnostic } from "../../presentation/src/secret-redactor.js";
 import type { Store } from "../../store/src/store.js";
 import type { NativeConversationEvent } from "../../adapters/sdk/src/interface.js";
 import {
@@ -219,6 +220,15 @@ export class ConversationService {
     event: NativeConversationEvent,
   ): ConversationApplyResult {
     const diagnostics: ConversationDiagnostic[] = [];
+    const workflow = this.store.get<Workflow>("workflow", ctx.workflow_id);
+    // Native readers can finish after recovery has already advanced the Run.
+    // Fence before identity/node creation so stale discovery cannot move pointers.
+    if (ctx.purpose !== "aside" && workflow?.run_id && workflow.run_id !== ctx.run_id)
+      return emptyResult(this.store.eventCursor(ctx.workflow_id), true);
+    const run = this.store.get<Run>("run", ctx.run_id);
+    if (run && (run.workflow_id !== ctx.workflow_id ||
+      (workflow && run.plan_revision !== workflow.plan_revision)))
+      return emptyResult(this.store.eventCursor(ctx.workflow_id), true);
     const payload = asRecord(event.payload);
     const ids = detachSpawnPlaceholderSession(
       ctx,
@@ -357,7 +367,7 @@ function readString(payload: PayloadRecord, key: string): string | undefined {
 }
 
 function clip(value: string, max: number): string {
-  return value.length <= max ? value : value.slice(0, max);
+  return diagnosticText(value).slice(0, max);
 }
 
 function nativeIds(
@@ -807,8 +817,7 @@ function ensureAttempt(
       )
     : undefined;
   const incoming = readStatus(payload);
-  if (current && !shouldOpenAttempt(current, ctx, event, incoming))
-    return current;
+  if (current && current.run_id === ctx.run_id) return current;
   const timestamp = event.occurred_at ?? now();
   const generation = current ? current.generation + 1 : 0;
   const attempt = ConversationAttemptSchema.parse({
@@ -826,17 +835,6 @@ function ensureAttempt(
   node.current_attempt_id = attempt.id;
   node.updated_at = timestamp;
   return attempt;
-}
-
-function shouldOpenAttempt(
-  current: ConversationAttempt,
-  ctx: ConversationApplyContext,
-  event: NativeConversationEvent,
-  incoming: ConversationStatus | undefined,
-): boolean {
-  if (current.run_id === ctx.run_id) return false;
-  if (event.kind === "discovered" || incoming === "starting") return true;
-  return !isTerminalConversationStatus(current.status);
 }
 
 function readStatus(payload: PayloadRecord): ConversationStatus | undefined {
@@ -1101,7 +1099,7 @@ function emitConversationEvents(
     );
   }
   if (event.kind !== "activity") return;
-  const activity = toActivityPayload(event, payload, applied.node, applied.attempt);
+  const activity = createActivityPayload(event, payload, applied.node, applied.attempt);
   if (!activity) return;
   store.event(
     ctx.workflow_id,
@@ -1112,7 +1110,15 @@ function emitConversationEvents(
   );
 }
 
-function toActivityPayload(
+function redactAndClip(
+  value: string | undefined,
+  max: number,
+): string | undefined {
+  if (value === undefined) return undefined;
+  return clip(value, max);
+}
+
+export function createActivityPayload(
   event: NativeConversationEvent,
   payload: PayloadRecord,
   node: ConversationNode,
@@ -1124,14 +1130,18 @@ function toActivityPayload(
     readString(payload, "source_event_id") ??
     `${event.source_id}:${event.source_seq}`;
   const kind = payload.kind;
+  const sensitive = ["command", "title", "tool", "name"].some((key) => highRiskDiagnostic(readString(payload, key) ?? ""));
+  const text = (key: string, max: number) => sensitive
+    ? (key === "title" ? "敏感认证操作" : undefined)
+    : redactAndClip(readString(payload, key), max);
   const parsed = ConversationActivityPayloadSchema.safeParse({
     conversation_id: node.id,
     attempt_id: attempt.id,
     root_id: node.root_id,
     activity_id: activityId,
     source_event_id: sourceEventId,
-    public_text: clipOptional(readString(payload, "public_text"), PUBLIC_TEXT_MAX),
-    title: clipOptional(readString(payload, "title"), TITLE_MAX),
+    public_text: text("public_text", PUBLIC_TEXT_MAX),
+    title: text("title", TITLE_MAX),
     status: readStatus(payload),
     kind:
       kind === "tool" ||
@@ -1140,13 +1150,15 @@ function toActivityPayload(
       kind === "separator"
         ? kind
         : undefined,
-    command: clipOptional(readString(payload, "command"), COMMAND_MAX),
-    cwd: clipOptional(readString(payload, "cwd"), 4000),
-    result_text: clipOptional(readString(payload, "result_text"), PUBLIC_TEXT_MAX),
+    command: text("command", COMMAND_MAX),
+    cwd: text("cwd", 4000),
+    result_text: text("result_text", PUBLIC_TEXT_MAX),
     replaces_conversation_id: readString(payload, "replaces_conversation_id"),
   });
   return parsed.success ? parsed.data : undefined;
 }
+
+export const toActivityPayload = createActivityPayload;
 
 function collectAncestors(
   store: Store,

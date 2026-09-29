@@ -184,11 +184,15 @@ export class ConversationControlService {
     const pending = this.unconfirmedStopTargets(workflowId, controlId);
     if (pending.length > 0) {
       const results = await this.invokeStops(pending);
-      this.store.transaction(() =>
-        this.applyStopResults(workflowId, controlId, pending, results),
-      );
+      this.store.transaction(() => {
+        this.applyStopResults(workflowId, controlId, pending, results);
+        this.absorbLateSpawns(workflowId, controlId);
+      });
     }
-    return this.store.transaction(() => this.settle(workflowId, controlId));
+    return this.store.transaction(() => {
+      this.absorbLateSpawns(workflowId, controlId);
+      return this.settle(workflowId, controlId);
+    });
   }
 
   getControl(workflowId: string, controlId: string): ConversationControl {
@@ -254,7 +258,12 @@ export class ConversationControlService {
   ): ConversationControl {
     const workflow = this.requireWorkflow(workflowId);
     const tree = this.assertRootGeneration(workflowId, request);
-    const live = collectLiveTargets(tree, request.root_id);
+    const live = collectLiveTargets(
+      tree,
+      request.root_id,
+      undefined,
+      request.expected_generation,
+    );
     const recovery = collectRecoveryCandidates(tree);
     const control = this.writeControl(
       workflowId,
@@ -305,8 +314,11 @@ export class ConversationControlService {
     request: ConversationControlRequest,
   ) {
     this.assertRootGeneration(workflowId, request);
-    if (this.requireWorkflow(workflowId).state === "STOPPED") return;
-    const pause = this.latestPause(workflowId, request.root_id);
+    const pause = this.latestPause(
+      workflowId,
+      request.root_id,
+      request.expected_generation,
+    );
     if (pause && pause.unconfirmed_count > 0) {
       throw new FlowError(
         CONVERSATION_ERROR.STOP_UNCONFIRMED,
@@ -317,8 +329,10 @@ export class ConversationControlService {
     const live = collectLiveTargets(
       this.conversations.getTree(workflowId, request.root_id),
       request.root_id,
+      undefined,
+      request.expected_generation,
     );
-    if (live.length) {
+    if (live.length > 0) {
       throw new FlowError(
         CONVERSATION_ERROR.STOP_UNCONFIRMED,
         "仍有旧子会话可能执行",
@@ -332,16 +346,33 @@ export class ConversationControlService {
       const control = this.readControl(workflowId, controlId);
       const fence = this.readFence(controlId);
       const tree = this.conversations.getTree(workflowId, control.root_id);
-      const known = new Set(
-        control.targets.map((target) => target.conversation_id),
+      const live = collectLiveTargets(
+        tree,
+        control.root_id,
+        fence.run_id,
+        control.expected_generation,
       );
-      const added = collectLiveTargets(tree, control.root_id, fence.run_id)
-        .filter((target) => !known.has(target.conversation_id));
+      const targets = [...control.targets];
+      const added: ConversationControl["targets"] = [];
+
+      for (const item of live) {
+        const existingAttemptIndex = targets.findIndex(
+          (t) => t.attempt_id && t.attempt_id === item.attempt_id,
+        );
+        if (existingAttemptIndex >= 0) {
+          continue;
+        }
+        // An older attempt can still own a live process after its successor
+        // appears. Keep both pinned identities until each exit is confirmed.
+        targets.push(item);
+        added.push(item);
+      }
+
       if (!added.length) {
         this.refreshRecovery(fence, tree);
         return;
       }
-      control.targets = [...control.targets, ...added];
+      control.targets = targets;
       this.markTargetsPausing(tree, added);
       this.saveControl(control, countUnconfirmed(control, tree));
       this.refreshRecovery(fence, tree);
@@ -356,13 +387,11 @@ export class ConversationControlService {
     const control = this.readControl(workflowId, controlId);
     const fence = this.readFence(controlId);
     const tree = this.conversations.getTree(workflowId, control.root_id);
-    // CW3-F05: 删除逐 child 补停，子 Agent 只观测，停止仅发往根会话
+    // A terminal root can still own live descendants. Keep its frozen attempt
+    // as the sole stop address until the owned tree exit is confirmed.
+    const unresolved = control.targets.some((target) => !isTargetResolved(target, tree, fence.run_id));
     return control.targets
-      .filter(
-        (target) =>
-          target.conversation_id === control.root_id &&
-          !isTargetResolved(target, tree, fence.run_id),
-      )
+      .filter((target) => target.conversation_id === control.root_id && unresolved)
       .map((target) => ({
         conversation_id: target.conversation_id,
         native_session_id: target.native_session_id,
@@ -398,7 +427,8 @@ export class ConversationControlService {
       const target = targets[index]!;
       const result = results[index]!;
       const current = control.targets.find(
-        (item) => item.conversation_id === target.conversation_id,
+        (item) => item.conversation_id === target.conversation_id &&
+          item.attempt_id === target.attempt_id,
       );
       if (!current) continue;
       const attempt = resolveTargetAttempt(current, tree);
@@ -407,6 +437,7 @@ export class ConversationControlService {
         (attempt.status === "completed" || attempt.status === "cancelled")
       ) {
         current.status = attempt.status;
+        current.confirmation = mapStopConfirmation(result, stopKind);
         continue;
       }
       const confirmation = mapStopConfirmation(result, stopKind);
@@ -512,7 +543,6 @@ export class ConversationControlService {
     control: ConversationControl,
     tree: ConversationTreeSnapshot,
   ) {
-    if (tree.capabilities.stop !== "owned-process-tree") return;
     const rootTarget = control.targets.find(
       (target) => target.conversation_id === control.root_id,
     );
@@ -521,11 +551,15 @@ export class ConversationControlService {
       (rootTarget.confirmation === "owned_process_tree" ||
         rootTarget.confirmation === "native");
     if (!rootStopped) return;
+    const confirmation =
+      tree.capabilities.stop === "owned-process-tree"
+        ? "owned_process_tree"
+        : (rootTarget.confirmation ?? "native");
     for (const target of control.targets) {
       if (isTargetResolved(target, tree)) continue;
-      target.confirmation = "owned_process_tree";
+      target.confirmation = confirmation;
       target.status = "paused";
-      this.writePaused(tree, target, "owned_process_tree");
+      this.writePaused(tree, target, confirmation);
     }
   }
 
@@ -714,10 +748,17 @@ export class ConversationControlService {
   private latestPause(
     workflowId: string,
     rootId: string,
+    expectedGeneration?: number,
   ): ConversationControl | undefined {
     return this.store
       .list<ConversationControl>(CONVERSATION_ENTITY.control, workflowId)
-      .filter((item) => item.action === "pause" && item.root_id === rootId)
+      .filter(
+        (item) =>
+          item.action === "pause" &&
+          item.root_id === rootId &&
+          (expectedGeneration === undefined ||
+            item.expected_generation === expectedGeneration),
+      )
       .sort((a, b) => b.updated_at.localeCompare(a.updated_at))[0];
   }
 
@@ -800,27 +841,45 @@ function latestAttempt(
     .at(-1);
 }
 
-function collectLiveTargets(
+export function collectLiveTargets(
   tree: ConversationTreeSnapshot,
   rootId: string,
   runId?: string,
+  expectedGeneration?: number,
 ): ConversationControl["targets"] {
   const targets: ConversationControl["targets"] = [];
+  const rootAttempt = latestAttempt(tree.attempts, rootId);
+  if (!rootAttempt || (
+    expectedGeneration !== undefined &&
+    rootAttempt.generation !== expectedGeneration
+  )) return targets;
+  const frozenRunId = runId ?? rootAttempt.run_id;
   for (const node of tree.nodes) {
     if (node.root_id !== rootId) continue;
-    const attempt = latestAttempt(tree.attempts, node.id);
-    if (!attempt || !isLiveConversationStatus(attempt.status)) continue;
-    if (runId && attempt.run_id !== runId) continue;
-    targets.push(
-      TargetSchema.parse({
-        conversation_id: node.id,
-        attempt_id: attempt.id,
-        native_session_id: node.native_session_id,
-        native_agent_id: node.native_agent_id,
-        confirmation: "unconfirmed",
-        status: "pausing",
-      }),
-    );
+    // Generation is local to a conversation. Children in this frozen Run can
+    // start at zero while the root is already on its second attempt.
+    for (const attempt of tree.attempts) {
+      if (attempt.conversation_id !== node.id ||
+        !isLiveConversationStatus(attempt.status) ||
+        attempt.run_id !== frozenRunId ||
+        (node.id === rootId && attempt.id !== rootAttempt.id)) continue;
+      targets.push(
+        TargetSchema.parse({
+          conversation_id: node.id,
+          attempt_id: attempt.id,
+          native_session_id: node.native_session_id,
+          native_agent_id: node.native_agent_id,
+          confirmation: "unconfirmed",
+          status: "pausing",
+        }),
+      );
+    }
+  }
+  if (targets.length && !targets.some((target) => target.conversation_id === rootId)) {
+    const root = tree.nodes.find((node) => node.id === rootId)!;
+    targets.unshift(TargetSchema.parse({ conversation_id: rootId, attempt_id: rootAttempt.id,
+      native_session_id: root.native_session_id, native_agent_id: root.native_agent_id,
+      confirmation: "unconfirmed", status: rootAttempt.status }));
   }
   return targets;
 }
@@ -854,8 +913,8 @@ function resolveTargetAttempt(
   runId?: string,
 ): ConversationAttempt | undefined {
   if (target.attempt_id) {
-    const pinned = tree.attempts.find((item) => item.id === target.attempt_id);
-    if (pinned) return pinned;
+    return tree.attempts.find((item) => item.id === target.attempt_id &&
+      item.conversation_id === target.conversation_id && (!runId || item.run_id === runId));
   }
   const latest = latestAttempt(tree.attempts, target.conversation_id);
   if (!latest) return undefined;
@@ -871,7 +930,7 @@ function isTargetResolved(
   if (target.confirmation === "native" || target.confirmation === "owned_process_tree")
     return true;
   const attempt = resolveTargetAttempt(target, tree, runId);
-  if (!attempt) return true;
+  if (!attempt) return false;
   return (
     attempt.status === "paused" ||
     attempt.status === "completed" ||

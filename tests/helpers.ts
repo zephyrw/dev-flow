@@ -1,4 +1,5 @@
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { resolveMaterialLocator, publishProjectMaterialSafely } from "../packages/core/src/project-materials.js";
+import { mkdtempSync, mkdirSync, writeFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Store } from "../packages/store/src/store.js";
@@ -22,19 +23,20 @@ export function setup() {
   const instance = loadTestInstanceConfig();
   if (isolated) ensureTestInstanceDirs(instance);
   const root = isolated
-    ? instance.runDirResolved
-    : mkdtempSync(join(tmpdir(), "devflow-test-"));
+    ? mkdtempSync(join(realpathSync(instance.runDirResolved), "fix-"))
+    : mkdtempSync(join(realpathSync(tmpdir()), "devflow-test-"));
+  const storageRoot = join(root, "state");
+  const workspaceRoot = join(root, "worktrees");
+  const sqliteFile = join(storageRoot, "devflow.sqlite");
   const config = ConfigSchema.parse({
-    storage_root: isolated ? instance.storageRoot : join(root, "state"),
-    workspace_root: isolated ? instance.workspaceRoot : join(root, "worktrees"),
+    storage_root: storageRoot,
+    workspace_root: workspaceRoot,
     server: isolated
       ? { port: instance.port, human_origin: instance.humanOrigin }
       : { port: 14810, human_origin: "http://localhost:14810" },
     host: { required: false },
   });
-  const store = new Store(
-    isolated ? instance.sqliteFile : join(root, "state", "devflow.sqlite"),
-  );
+  const store = new Store(sqliteFile);
   const engine = new Engine(store, config);
   return { root, store, engine, config };
 }
@@ -143,15 +145,16 @@ export async function prepared() {
     },
     "fixture",
   );
+  await s.engine.git.prepare(p, w.id, w.workspace_mode, { main: r.baseline });
   s.engine.submitPlan(
     w.id,
     plan(objectHash(p), r.baseline),
     w.version,
     "plan1",
   );
+  publishPlanFixture(s.engine, w.id);
   const approval = proof(s.engine, w.id, "approve");
   s.engine.approve(w.id, approval.proof, approval.binding);
-  await s.engine.git.prepare(p, w.id, w.workspace_mode, { main: r.baseline });
   const current = s.engine.transition(
     w.id,
     ["QUEUED"],
@@ -166,4 +169,13 @@ export async function prepared() {
     expires: Date.now() + 100000,
   };
   return { ...s, ...r, project: p, workflow: current, principal };
+}
+
+/** A positive approval fixture owns a real project original; a DB-only plan is display-only. */
+export function publishPlanFixture(engine: Engine, workflowId: string) {
+  const record = engine.plan(workflowId);
+  const locator = resolveMaterialLocator({ store: engine.store, workflowId, kind: "plan", revision: record.revision });
+  const publication = publishProjectMaterialSafely({ store: engine.store, locator, content: record.plan.markdown ?? "" });
+  if (publication.material.status !== "verified") throw new Error(`Plan fixture publication: ${publication.material.publication_error ?? publication.material.status}`);
+  engine.store.put("plan", record.id, workflowId, { ...record, material_id: publication.material.id, material_path: publication.material.path });
 }

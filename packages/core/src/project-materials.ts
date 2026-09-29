@@ -1,6 +1,6 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, isAbsolute, normalize, relative, resolve, join } from "node:path";
-import { createHash } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
+import { normalize, resolve } from "node:path";
+import { createHash, randomUUID } from "node:crypto";
 import type { Store } from "../../store/src/store.js";
 import {
   FlowError,
@@ -8,8 +8,10 @@ import {
   type Workspace,
   type Project,
   type ProjectMaterial,
+  type Workflow,
 } from "../../contracts/src/index.js";
-import { atomicWrite, now } from "./util.js";
+import { now } from "./util.js";
+import { materialRelativePath, withMaterialRoot, readMaterialFile, publishMaterialFile } from "./material-filesystem.js";
 
 export type ProjectMaterialCategory = "plan" | "review" | "repair" | "process" | "evidence";
 
@@ -45,24 +47,17 @@ function computeSha256(content: string): string {
 
 /**
  * 安全解析相对路径，防止路径穿越和绝对路径注入
+ * F05_FILESYSTEM_BOUNDARY: 先对原始输入检查绝对路径/盘符/UNC路径；按路径段检查'..'父目录段；确保严格位于baseRoot内
  */
-export function sanitizeRelativePath(baseRoot: string, relPath: string): string {
-  const normRel = relPath.replaceAll("\\", "/").replace(/^\/+/, "");
-  if (isAbsolute(normRel) || normRel.includes("..")) {
-    throw new FlowError("INVALID_PATH", `非法相对路径，禁止路径穿越: ${relPath}`, 400);
-  }
-  const resolved = resolve(baseRoot, normRel);
-  const rel = relative(resolve(baseRoot), resolved);
-  if (rel.startsWith("..") || isAbsolute(rel)) {
-    throw new FlowError("PATH_ESCAPE", `路径越界，必须在目标工作区内部: ${relPath}`, 400);
-  }
-  return normRel;
+export function sanitizeRelativePath(_baseRoot: string, relPath: string): string {
+  return materialRelativePath(relPath);
 }
 
 /**
- * 依据 CW2-D03 / CW3-F11 / CW3-F12 规范：解析主工作区及材料 Locator
- * 规则：优先用户指定原件引用，再项目 material_paths，再明确 primary repo，多仓库绝不无脑取首项；
- * 文件名和材料键包含真实 run_id/round/revision
+ * 依据规范解析主工作区及材料 Locator
+ * F02_WORKSPACE_FALLBACK: 显式指定的 preferredWorkspaceId 无效时必须立即抛出 WORKSPACE_NOT_FOUND 错误拒绝，不得回退；
+ * 单工作区自动选择；多工作区必须由 project.primary_repo_id 唯一定位，若未配置或不唯一抛出 WORKSPACE_AMBIGUOUS 错误，
+ * 禁止静默 fallback 到 workspaces[0] 或未声明的属性。
  */
 export function resolveMaterialLocator(options: {
   store: Store;
@@ -88,21 +83,31 @@ export function resolveMaterialLocator(options: {
   let targetWs: Workspace | undefined;
   if (preferredWorkspaceId) {
     targetWs = workspaces.find((w) => w.id === preferredWorkspaceId);
-  }
-
-  if (!targetWs) {
-    // 优先读取 Project 的 primary_repo_id
-    if (project?.primary_repo_id) {
-      targetWs = workspaces.find((w) => w.repo_id === project.primary_repo_id);
-    }
-  }
-
-  if (!targetWs) {
-    targetWs =
-      workspaces.find((w: any) => w.is_primary === true || w.primary === true) ||
-      workspaces.find((w) => w.repo_id === "main") ||
-      workspaces.find((w) => w.repo_id === "primary") ||
-      workspaces[0];
+    requireCondition(targetWs, "WORKSPACE_NOT_FOUND", `显式指定的工作区不存在: ${preferredWorkspaceId}`, 404);
+  } else if (workspaces.length === 1) {
+    targetWs = workspaces[0];
+  } else {
+    // 多工作区必须由 project.primary_repo_id 唯一定位，未配置或不唯一抛出 WORKSPACE_AMBIGUOUS
+    requireCondition(
+      project?.primary_repo_id,
+      "WORKSPACE_AMBIGUOUS",
+      "存在多个工作区但项目未配置 primary_repo_id，无法唯一定位工作区",
+      409,
+    );
+    const matched = workspaces.filter((w) => w.repo_id === project!.primary_repo_id);
+    requireCondition(
+      matched.length > 0,
+      "WORKSPACE_NOT_FOUND",
+      `未找到主代码库 (${project!.primary_repo_id}) 对应的工作区`,
+      404,
+    );
+    requireCondition(
+      matched.length === 1,
+      "WORKSPACE_AMBIGUOUS",
+      `主代码库 (${project!.primary_repo_id}) 对应多个工作区，无法唯一定位`,
+      409,
+    );
+    targetWs = matched[0];
   }
 
   requireCondition(targetWs, "WORKSPACE_NOT_FOUND", "未找到适用的工作区进行材料定位", 404);
@@ -111,7 +116,7 @@ export function resolveMaterialLocator(options: {
   const matPaths = repoConfig?.material_paths;
 
   let relPath: string;
-  if (customRelPath && customRelPath.trim()) {
+  if (customRelPath !== undefined) {
     relPath = sanitizeRelativePath(targetWs.root, customRelPath);
   } else {
     let baseDir: string;
@@ -163,6 +168,9 @@ export function resolveMaterialLocator(options: {
     }
   }
 
+  relPath = sanitizeRelativePath(targetWs.root, relPath);
+  const permitted = [matPaths?.plan_dir ?? "docs/plan", matPaths?.review_dir ?? "docs/plan", matPaths?.repair_dir ?? "docs/plan", matPaths?.process_dir ?? "docs/process", matPaths?.evidence_dir ?? "docs/test/evidence"].map(materialRelativePath);
+  requireCondition(permitted.some((dir) => relPath.startsWith(`${dir}/`)), "INVALID_PATH", "材料路径不在允许的材料目录中", 400);
   const absPath = normalize(resolve(targetWs.root, relPath));
   const materialId = `mat_${workflowId}_${kind}_r${revision}${round !== undefined ? `_round_${round}` : ""}${run_id ? `_run_${run_id}` : ""}`;
 
@@ -183,248 +191,226 @@ export function resolveMaterialLocator(options: {
   };
 }
 
-/**
- * 依据 CW2-D03 / CW3-F11 / §6 规范：安全发布项目材料
- * 1. 既有异内容默认冲突；只有明确更新意图且 expected_hash 匹配才允许覆盖
- * 2. 全新写入必须为 no-replace 独占发布，不改判模型成功事实，落盘失败标 pending
- */
-export function publishProjectMaterialSafely(options: {
-  store: Store;
-  locator: MaterialLocator;
-  content: string;
-  cachePath?: string;
-  expectedHash?: string;
-}): { material: ProjectMaterial; writtenToDisk: boolean } {
-  const { store, locator, content, cachePath, expectedHash } = options;
-  const contentHash = computeSha256(content);
-  const materialId =
-    locator.material_id ??
-    `mat_${locator.workflow_id}_${locator.kind}_r${locator.revision}${locator.round !== undefined ? `_round_${locator.round}` : ""}${locator.run_id ? `_run_${locator.run_id}` : ""}`;
-  const effectiveExpectedHash = expectedHash ?? locator.expected_hash;
+interface MaterialBinding {
+  workflow_id: string;
+  workspace_id: string;
+  repo_id: string;
+  workspace_root: string;
+  root_identity: string;
+  generation: number;
+}
 
-  let writtenToDisk = false;
+function workspaceBinding(store: Store, locator: MaterialLocator, rootIdentity: string): MaterialBinding {
+  const ws = store.get<Workspace>("workspace", locator.workspace_id);
+  requireCondition(ws && ws.workflow_id === locator.workflow_id && ws.repo_id === locator.repo_id && resolve(ws.root) === resolve(locator.workspace_root), "MATERIAL_BINDING_CONFLICT", "材料工作区绑定已变化", 409);
+  const old = store.get<MaterialBinding>("material_binding", locator.workspace_id);
+  if (old) {
+    requireCondition(old.workflow_id === locator.workflow_id && old.repo_id === locator.repo_id && resolve(old.workspace_root) === resolve(ws.root) && old.root_identity === rootIdentity, "MATERIAL_BINDING_CONFLICT", "材料根目录身份已变化，须通过迁移恢复绑定", 409);
+    return old;
+  }
+  const binding: MaterialBinding = { workflow_id: locator.workflow_id, workspace_id: ws.id, repo_id: ws.repo_id, workspace_root: resolve(ws.root), root_identity: rootIdentity, generation: 1 };
+  try { return store.compareAndSwap<MaterialBinding>("material_binding", ws.id, locator.workflow_id, 0, binding).data; }
+  catch (error) {
+    if (!(error instanceof FlowError && error.code === "VERSION_CONFLICT")) throw error;
+    const raced = store.get<MaterialBinding>("material_binding", ws.id);
+    requireCondition(raced && raced.workflow_id === binding.workflow_id && raced.repo_id === binding.repo_id && raced.workspace_root === binding.workspace_root && raced.root_identity === binding.root_identity && raced.generation === 1, "MATERIAL_BINDING_CONFLICT", "材料根目录绑定被其他迁移改变", 409);
+    return raced;
+  }
+}
+
+/** Keep migration/rollback and normal reads on the same declared hash protocol. */
+function materialBodyMatches(material: ProjectMaterial, body: Buffer): boolean {
+  return computeSha256(body.toString("utf8")) === material.source_hash &&
+    (material.protocol_version !== 2 || createHash("sha256").update(body).digest("hex") === material.object_hash);
+}
+
+/** Read-only preflight, used before moving a worktree and again before committing its binding. */
+export function validateMaterialMigration(store: Store, workspaceId: string, root: string): string {
+  const ws = store.must<Workspace>("workspace", workspaceId);
+  const materials = store.list<ProjectMaterial>("project_material", ws.workflow_id).filter((m) => m.workspace_id === ws.id && m.status === "verified");
+  return withMaterialRoot(root, (port) => {
+    for (const material of materials) {
+      requireCondition(!material.repo_id || material.repo_id === ws.repo_id, "MATERIAL_MIGRATION_CONFLICT", "材料工作区归属不一致", 409);
+      resolveMaterialLocator({ store, workflowId: ws.workflow_id, kind: material.kind, revision: material.revision, preferredWorkspaceId: ws.id, customRelPath: material.path });
+      const body = port.read(materialRelativePath(material.path));
+      requireCondition(body && materialBodyMatches(material, body), "MATERIAL_MIGRATION_CONFLICT", "迁移材料原件未通过协议哈希核验，已保留原件和绑定", 409);
+    }
+    port.validate();
+    requireCondition(withMaterialRoot(root, (current) => current.identity) === port.identity, "MATERIAL_MIGRATION_CONFLICT", "材料根目录在迁移核验期间发生变化", 409);
+    return port.identity;
+  });
+}
+
+/** Called by the authorized workspace migration transaction, including rollback. */
+export function migrateMaterialBinding(store: Store, workspaceId: string, newRoot: string): void {
+  // Validate every original before any binding write, including an otherwise idempotent call.
+  const rootIdentity = validateMaterialMigration(store, workspaceId, newRoot);
+  store.transaction(() => {
+    const ws = store.must<Workspace>("workspace", workspaceId);
+    const old = store.getWithVersion<MaterialBinding>("material_binding", workspaceId);
+    if (old && old.data.workspace_root === resolve(newRoot) && old.data.root_identity === rootIdentity && old.data.repo_id === ws.repo_id && old.data.workflow_id === ws.workflow_id) return;
+    const next: MaterialBinding = { workflow_id: ws.workflow_id, workspace_id: ws.id, repo_id: ws.repo_id, workspace_root: resolve(newRoot), root_identity: rootIdentity, generation: (old?.data.generation ?? 0) + 1 };
+    store.compareAndSwap("material_binding", ws.id, ws.workflow_id, old?.version ?? 0, next);
+    for (const material of store.list<ProjectMaterial>("project_material", ws.workflow_id).filter((m) => m.workspace_id === ws.id)) {
+      const current = store.getWithVersion<ProjectMaterial>("project_material", material.id)!;
+      // A pending intent belongs to its frozen old root and is never transplanted.
+      const updated = material.status === "verified"
+        ? { ...material, repo_id: ws.repo_id, workspace_root: next.workspace_root, root_identity: next.root_identity, material_binding_generation: next.generation }
+        : { ...material, status: "conflict" as const, publication_error: "MATERIAL_BINDING_CHANGED" };
+      store.compareAndSwap("project_material", material.id, ws.workflow_id, current.version, { ...updated, updated_at: now() });
+    }
+  });
+}
+
+export function readVerifiedProjectMaterial(store: Store, material: ProjectMaterial): string {
+  requireCondition(material.status === "verified", "PLAN_MATERIAL_CONFLICT", "材料尚未核验", 409);
+  const ws = store.get<Workspace>("workspace", material.workspace_id);
+  requireCondition(ws && ws.workflow_id === material.workflow_id && (!material.repo_id || material.repo_id === ws.repo_id), "PLAN_MATERIAL_CONFLICT", "材料工作区归属不一致", 409);
+  resolveMaterialLocator({ store, workflowId: material.workflow_id, kind: material.kind, revision: material.revision, preferredWorkspaceId: ws.id, customRelPath: material.path });
+  return withMaterialRoot(ws.root, (port) => {
+    if (material.protocol_version === 2 || material.root_identity) assertFrozenBinding(store, material, port.identity);
+    const data = port.read(materialRelativePath(material.path));
+    requireCondition(data, "PLAN_MATERIAL_LOST", "已发布的项目计划原件已丢失，禁止以平台缓存掩盖", 409);
+    const text = data.toString("utf8");
+    requireCondition(materialBodyMatches(material, data), "PLAN_MATERIAL_CONFLICT", "项目中的计划原件已被修改，发生原件冲突", 409);
+    port.validate();
+    requireCondition(withMaterialRoot(ws.root, (current) => current.identity) === port.identity, "MATERIAL_BINDING_CONFLICT", "材料根目录已迁移", 409);
+    if (!material.root_identity && material.protocol_version !== 2) {
+      // Lazy additive v1 mapping: preserve the original ID/path/LF hash and bind only this exact record.
+      const locator = resolveMaterialLocator({ store, workflowId: material.workflow_id, kind: material.kind, revision: material.revision, preferredWorkspaceId: ws.id, customRelPath: material.path });
+      const current = store.getWithVersion<ProjectMaterial>("project_material", material.id);
+      requireCondition(current && current.data.status === "verified" && current.data.path === material.path && current.data.source_hash === material.source_hash, "MATERIAL_BINDING_CONFLICT", "材料记录已被其他操作更新", 409);
+      const binding = workspaceBinding(store, locator, port.identity);
+      store.compareAndSwap("project_material", material.id, material.workflow_id, current.version, { ...current.data, repo_id: ws.repo_id, workspace_root: binding.workspace_root, root_identity: binding.root_identity, material_binding_generation: binding.generation });
+    }
+    return text;
+  });
+}
+
+function assertFrozenBinding(store: Store, material: ProjectMaterial, identity: string): void {
+  const ws = store.get<Workspace>("workspace", material.workspace_id);
+  const binding = store.get<MaterialBinding>("material_binding", material.workspace_id);
+  requireCondition(ws && binding && ws.workflow_id === material.workflow_id && ws.repo_id === material.repo_id && binding.workflow_id === material.workflow_id && binding.repo_id === material.repo_id && binding.generation === material.material_binding_generation && binding.root_identity === identity && material.root_identity === identity && material.workspace_root === binding.workspace_root && resolve(ws.root) === binding.workspace_root, "MATERIAL_BINDING_CONFLICT", "材料发布意图绑定已变化", 409);
+}
+
+function finishIntent(store: Store, material: ProjectMaterial, version: number, content: string): { material: ProjectMaterial; writtenToDisk: boolean } {
   let status: ProjectMaterial["status"] = "pending";
-
+  let publicationError: string | undefined;
   try {
-    if (existsSync(locator.absolute_path)) {
-      const existing = readFileSync(locator.absolute_path, "utf8");
-      const existingHash = computeSha256(existing);
-
-      if (existingHash === contentHash) {
-        // 内容已一致，直接核验通过
-        writtenToDisk = true;
-        status = "verified";
-      } else if (effectiveExpectedHash !== undefined && existingHash === effectiveExpectedHash) {
-        // 明确具有更新意图且预期哈希完全匹配，允许覆盖写入
-        atomicWrite(locator.absolute_path, content);
-        writtenToDisk = true;
-        status = "verified";
-      } else {
-        // CW3-F11: 未传 expectedHash 或预期哈希不匹配时，既有异内容默认判定为冲突，禁止覆盖
-        status = "conflict";
-        writtenToDisk = false;
-      }
-    } else {
-      // 全新写入 (no-replace 独占发布)
-      const targetDir = dirname(locator.absolute_path);
-      if (!existsSync(targetDir)) {
-        mkdirSync(targetDir, { recursive: true });
-      }
-      atomicWrite(locator.absolute_path, content);
-      writtenToDisk = true;
+    requireCondition(computeSha256(content) === material.source_hash, "MATERIAL_CACHE_CONFLICT", "材料恢复缓存已变化", 409);
+    requireCondition(material.operation_id && material.workspace_root && material.protocol_version === 2, "MATERIAL_LEGACY_PENDING", "旧发布意图缺少唯一绑定，不能自动恢复", 409);
+    return withMaterialRoot(material.workspace_root, (port) => {
+      assertFrozenBinding(store, material, port.identity);
+      const logical = material.logical_path && port.read(materialRelativePath(material.logical_path));
+      const logicalHash = logical && computeSha256(logical.toString("utf8"));
+      requireCondition(!logical || logicalHash === material.source_hash || logicalHash === material.expected_source_hash, "MATERIAL_FILE_CONFLICT", "原路径已有不同正文，已保护原件", 409);
+      const path = materialRelativePath(material.path);
+      const body = Buffer.from(content.replace(/\r\n/g, "\n"), "utf8");
+      port.publish(path, body, material.operation_id!);
+      const actual = port.read(path);
+      requireCondition(actual?.equals(body), "MATERIAL_FILE_CONFLICT", "不可变材料对象冲突", 409);
+      // Still within the held directory handles when validating and committing authority.
+      assertFrozenBinding(store, material, port.identity);
+      const currentRootIdentity = withMaterialRoot(material.workspace_root!, (current) => current.identity);
+      requireCondition(currentRootIdentity === port.identity, "MATERIAL_BINDING_CONFLICT", "材料根目录已迁移", 409);
+      port.validate();
       status = "verified";
-    }
-  } catch (err: any) {
-    // 磁盘写入失败时记录 pending，保留模型成功事实并支持后续 outbox 重试
-    status = "pending";
-    writtenToDisk = false;
+      const finalRecord: ProjectMaterial = { ...material, status, publication_error: undefined, updated_at: now() };
+      store.compareAndSwap("project_material", material.id, material.workflow_id, version, finalRecord);
+      return { material: finalRecord, writtenToDisk: true };
+    });
+  } catch (error) {
+    if (error instanceof FlowError && error.code === "VERSION_CONFLICT") throw error;
+    publicationError = error instanceof FlowError ? error.code : "MATERIAL_FS_UNSUPPORTED";
+    status = publicationError.includes("CONFLICT") || publicationError === "MATERIAL_LEGACY_PENDING" ? "conflict" : "pending";
   }
+  const finalRecord: ProjectMaterial = { ...material, status, publication_error: publicationError, updated_at: now() };
+  // The intent's exact CAS version is the only permitted fence. Never merge a newer operation.
+  store.compareAndSwap("project_material", material.id, material.workflow_id, version, finalRecord);
+  return { material: finalRecord, writtenToDisk: false };
+}
 
-  const record: ProjectMaterial = {
-    id: materialId,
-    workflow_id: locator.workflow_id,
-    repo_id: locator.repo_id,
-    workspace_id: locator.workspace_id,
-    path: locator.relative_path,
-    kind: locator.kind,
-    revision: locator.revision,
-    source_hash: contentHash,
-    cache_path: cachePath,
-    status,
-    created_at: now(),
-    updated_at: now(),
+export function publishProjectMaterialSafely(options: {
+  store: Store; locator: MaterialLocator; content: string; cachePath?: string; expectedHash?: string;
+}): { material: ProjectMaterial; writtenToDisk: boolean } {
+  const { store, locator, content, cachePath } = options;
+  resolveMaterialLocator({ store, workflowId: locator.workflow_id, kind: locator.kind, revision: locator.revision, preferredWorkspaceId: locator.workspace_id, customRelPath: locator.relative_path });
+  const contentHash = computeSha256(content);
+  const materialId = locator.material_id ?? `mat_${locator.workflow_id}_${locator.kind}_r${locator.revision}_${locator.run_id ?? "na"}_${locator.round ?? "na"}`;
+  let existing = store.getWithVersion<ProjectMaterial>("project_material", materialId);
+  if (existing) requireCondition(existing.data.workflow_id === locator.workflow_id && existing.data.workspace_id === locator.workspace_id && (!existing.data.repo_id || existing.data.repo_id === locator.repo_id) && existing.data.kind === locator.kind && existing.data.revision === locator.revision && existing.data.run_id === locator.run_id && existing.data.round === locator.round, "MATERIAL_BINDING_CONFLICT", "材料标识已绑定其他来源", 409);
+  if (existing?.data.status === "verified") {
+    // Validate the previous original before allowing a new pointer; never repair missing verified originals from cache.
+    readVerifiedProjectMaterial(store, existing.data);
+    const refreshed = store.getWithVersion<ProjectMaterial>("project_material", materialId);
+    requireCondition(refreshed && refreshed.data.status === "verified" && refreshed.data.path === existing.data.path && refreshed.data.source_hash === existing.data.source_hash && refreshed.data.operation_id === existing.data.operation_id && refreshed.data.workspace_id === existing.data.workspace_id && refreshed.data.run_id === existing.data.run_id, "MATERIAL_BINDING_CONFLICT", "材料引用已前进", 409);
+    existing = refreshed;
+    if (existing.data.source_hash === contentHash) return { material: existing.data, writtenToDisk: true };
+    requireCondition((options.expectedHash ?? locator.expected_hash) === existing.data.source_hash, "MATERIAL_FILE_CONFLICT", "材料更新缺少原版本匹配", 409);
+  } else if (existing) {
+    requireCondition(existing.data.status === "pending" && existing.data.source_hash === contentHash && existing.data.run_id === locator.run_id && existing.data.round === locator.round, "MATERIAL_INTENT_CONFLICT", "存在其他发布意图或冲突", 409);
+    return finishIntent(store, existing.data, existing.version, content);
+  }
+  const operationId = randomUUID();
+  const logical = materialRelativePath(locator.relative_path);
+  const objectPath = `${logical}.object-${operationId}.md`;
+  let binding: MaterialBinding | undefined;
+  let failure: string | undefined;
+  try { binding = withMaterialRoot(locator.workspace_root, (port) => workspaceBinding(store, locator, port.identity)); }
+  catch (e) { failure = e instanceof FlowError ? e.code : "MATERIAL_FS_UNSUPPORTED"; }
+  const intent: ProjectMaterial = {
+    id: materialId, workflow_id: locator.workflow_id, repo_id: locator.repo_id, workspace_id: locator.workspace_id,
+    path: objectPath, logical_path: logical, kind: locator.kind, revision: locator.revision, run_id: locator.run_id, round: locator.round,
+    protocol_version: 2, hash_scheme: "sha256-lf-utf8", source_hash: contentHash, content_hash: contentHash, object_hash: contentHash,
+    operation_id: operationId, expected_material_version: existing?.version ?? 0,
+    expected_source_hash: options.expectedHash ?? locator.expected_hash,
+    workspace_root: resolve(locator.workspace_root), root_identity: binding?.root_identity, material_binding_generation: binding?.generation,
+    cache_path: cachePath, status: failure?.includes("CONFLICT") ? "conflict" : "pending", publication_error: failure, created_at: existing?.data.created_at ?? now(), updated_at: now(),
   };
-
-  store.put("project_material", materialId, locator.workflow_id, record);
-  return { material: record, writtenToDisk };
+  const saved = store.compareAndSwap("project_material", materialId, locator.workflow_id, existing?.version ?? 0, intent);
+  if (!binding) return { material: intent, writtenToDisk: false };
+  return finishIntent(store, intent, saved.version, content);
 }
 
-/**
- * 依据 CW2-D03 / CW3-F12 / §6 规范：按 Locator 精确读取材料
- * 严格区分 result_pending、原件冲突/缺失与历史无 locator 兼容。
- * 原件发布后若丢失，禁止以平台缓存掩盖！
- */
-export function readProjectMaterialByLocator(options: {
-  store: Store;
-  locator: MaterialLocator;
-  fallbackPendingContent?: string;
-  platformCachePath?: string;
-}): MaterialReadResult {
-  const { store, locator, fallbackPendingContent, platformCachePath } = options;
-  const materialId =
-    locator.material_id ??
-    `mat_${locator.workflow_id}_${locator.kind}_r${locator.revision}${locator.round !== undefined ? `_round_${locator.round}` : ""}${locator.run_id ? `_run_${locator.run_id}` : ""}`;
-  
-  let materialRecord = store.get<ProjectMaterial>("project_material", materialId);
-  if (!materialRecord) {
-    // 尝试寻找同 workflow, kind, revision 的材料记录
-    const list = store.list<ProjectMaterial>("project_material", locator.workflow_id);
-    materialRecord = list.find((m) => m.kind === locator.kind && m.revision === locator.revision);
-  }
+export function readProjectMaterialByLocator(options: { store: Store; locator: MaterialLocator; fallbackPendingContent?: string; platformCachePath?: string }): MaterialReadResult {
+  const { store, locator } = options;
+  const candidates = store.list<ProjectMaterial>("project_material", locator.workflow_id).filter((m) => m.kind === locator.kind && m.revision === locator.revision && m.workspace_id === locator.workspace_id && m.run_id === locator.run_id && m.round === locator.round);
+  const material = locator.material_id ? store.get<ProjectMaterial>("project_material", locator.material_id) : candidates.length === 1 ? candidates[0] : undefined;
+  if (!material) return { content: "", exists: false, source: "none", is_conflict: candidates.length > 0, locator };
+  if (material.workflow_id !== locator.workflow_id || material.workspace_id !== locator.workspace_id || material.kind !== locator.kind || material.revision !== locator.revision || material.run_id !== locator.run_id || material.round !== locator.round) return { content: "", exists: false, source: "project_material", is_conflict: true, conflict_reason: "材料不属于请求来源", locator };
+  if (material.status === "pending") return { content: options.fallbackPendingContent ?? "", exists: Boolean(options.fallbackPendingContent), source: "result_pending", locator };
+  try { const content = readVerifiedProjectMaterial(store, material); return { content, exists: true, source: "project_material", locator }; }
+  catch { return { content: "", exists: false, source: "project_material", is_conflict: true, conflict_reason: "材料原件缺失、绑定变化或内容冲突", locator }; }
+}
 
-  // 1. 若记录自身已是冲突状态
-  if (materialRecord?.status === "conflict") {
-    const raw = existsSync(locator.absolute_path) ? readFileSync(locator.absolute_path, "utf8") : "";
-    return {
-      content: raw,
-      exists: !!raw,
-      source: "project_material",
-      is_conflict: true,
-      conflict_reason: "项目材料发布存在内容冲突，已保护原件不被覆盖",
-      locator,
-    };
-  }
-
-  // 2. 若项目原件存在于磁盘，核验内容与哈希
-  if (existsSync(locator.absolute_path)) {
+export function recoverPendingMaterials(store: Store, workflowId?: string): number {
+  let count = 0;
+  for (const item of store.list<ProjectMaterial>("project_material", workflowId).filter((m) => m.status === "pending")) {
+    const current = store.getWithVersion<ProjectMaterial>("project_material", item.id);
+    if (!current || current.data.status !== "pending") continue;
+    const mat = current.data;
+    if (!mat.cache_path || !existsSync(mat.cache_path)) continue;
+    let content: string; try { content = readFileSync(mat.cache_path, "utf8"); } catch { continue; }
     try {
-      const raw = readFileSync(locator.absolute_path, "utf8");
-      const currentHash = computeSha256(raw);
-
-      if (materialRecord && materialRecord.source_hash && currentHash !== materialRecord.source_hash) {
-        return {
-          content: raw,
-          exists: true,
-          source: "project_material",
-          is_conflict: true,
-          conflict_reason: `项目原件已被修改 (预期哈希: ${materialRecord.source_hash.slice(0, 8)}, 当前: ${currentHash.slice(0, 8)})`,
-          locator,
-        };
+      if (finishIntent(store, mat, current.version, content).writtenToDisk) {
+        count++;
+        store.transaction(() => {
+          const doc = store.getWithVersion<{ material_id?: string; plan_revision?: number; run_id?: string; material_status?: string; material_error?: string }>("planning_document", mat.workflow_id);
+          if (doc?.data.material_id !== mat.id || doc.data.plan_revision !== mat.revision || doc.data.run_id !== mat.run_id) return;
+          store.compareAndSwap("planning_document", mat.workflow_id, mat.workflow_id, doc.version, { ...doc.data, material_status: "verified", material_error: undefined });
+          const wf = store.getWithVersion<Workflow>("workflow", mat.workflow_id);
+          if (wf && wf.data.plan_revision === mat.revision && wf.data.stage === "material_pending" && ["PLAN_PENDING", "REPAIR_PLAN_PENDING"].includes(wf.data.state) && ["MATERIAL_PENDING", "MATERIAL_CONFLICT"].includes(wf.data.blocker?.code ?? "")) {
+            store.compareAndSwap("workflow", mat.workflow_id, mat.workflow_id, wf.version, { ...wf.data, stage: "plan_approval", blocker: undefined, version: wf.data.version + 1, updated_at: now() });
+          }
+        });
       }
-      return {
-        content: raw,
-        exists: true,
-        source: "project_material",
-        locator,
-      };
-    } catch (err: any) {
-      // 读取异常处理
     }
+    catch (e) { if (!(e instanceof FlowError && e.code === "VERSION_CONFLICT")) throw e; }
   }
-
-  // 3. 磁盘文件不存在：
-  // 3a. 若材料记录处于 pending 状态，或有当前本轮正文，返回 result_pending
-  if (materialRecord?.status === "pending" || fallbackPendingContent) {
-    const pendingText =
-      fallbackPendingContent ??
-      (platformCachePath && existsSync(platformCachePath) ? readFileSync(platformCachePath, "utf8") : "");
-    if (pendingText) {
-      return {
-        content: pendingText,
-        exists: true,
-        source: "result_pending",
-        locator,
-      };
-    }
-  }
-
-  // 3b. 若材料记录已存在且曾发布成功 (verified)，但磁盘文件丢失：
-  // CW3-F12: 绝不能用平台缓存掩盖已发布原件的丢失！
-  if (materialRecord && materialRecord.status === "verified") {
-    return {
-      content: "",
-      exists: false,
-      source: "project_material",
-      is_conflict: true,
-      conflict_reason: `项目原件已丢失 (${locator.relative_path})，禁止以平台缓存掩盖`,
-      locator,
-    };
-  }
-
-  // 3c. 历史兼容：确无任何项目材料记录时，回退平台缓存
-  if (!materialRecord && platformCachePath && existsSync(platformCachePath)) {
-    try {
-      const legacyContent = readFileSync(platformCachePath, "utf8");
-      return {
-        content: legacyContent,
-        exists: true,
-        source: "platform_legacy",
-        locator,
-      };
-    } catch {}
-  }
-
-  return {
-    content: "",
-    exists: false,
-    source: "none",
-    locator,
-  };
+  return count;
 }
 
-/**
- * 依据 CW3-F12 规范：材料 outbox 恢复与补写对账
- * 在服务启动或恢复时，将 pending 状态的材料安全补写至磁盘，恢复只补写不重走模型业务
- */
-export function reconcileMaterialOutbox(store: Store, workflowId?: string): number {
-  const materials = workflowId
-    ? store.list<ProjectMaterial>("project_material", workflowId)
-    : store.list<ProjectMaterial>("project_material");
-
-  const pendingList = materials.filter((m) => m.status === "pending");
-  let reconciledCount = 0;
-
-  for (const mat of pendingList) {
-    const ws = store.get<Workspace>("workspace", mat.workspace_id);
-    if (!ws || !existsSync(ws.root)) continue;
-
-    const absPath = normalize(resolve(ws.root, mat.path));
-    try {
-      let contentToSave: string | null = null;
-      if (mat.cache_path && existsSync(mat.cache_path)) {
-        contentToSave = readFileSync(mat.cache_path, "utf8");
-      }
-
-      if (!contentToSave) continue;
-
-      if (existsSync(absPath)) {
-        const cur = readFileSync(absPath, "utf8");
-        if (computeSha256(cur) === mat.source_hash) {
-          mat.status = "verified";
-          mat.updated_at = now();
-          store.put("project_material", mat.id, mat.workflow_id, mat);
-          reconciledCount++;
-        } else {
-          mat.status = "conflict";
-          mat.updated_at = now();
-          store.put("project_material", mat.id, mat.workflow_id, mat);
-        }
-      } else {
-        const targetDir = dirname(absPath);
-        if (!existsSync(targetDir)) {
-          mkdirSync(targetDir, { recursive: true });
-        }
-        atomicWrite(absPath, contentToSave);
-        mat.status = "verified";
-        mat.updated_at = now();
-        store.put("project_material", mat.id, mat.workflow_id, mat);
-        reconciledCount++;
-      }
-    } catch {}
-  }
-
-  return reconciledCount;
-}
+export const reconcileMaterialOutbox = recoverPendingMaterials;
 
 // 保持向下兼容的轻量 helper 导出
 export function getPlanMaterialPath(
@@ -433,7 +419,7 @@ export function getPlanMaterialPath(
   revision?: number,
 ) {
   const file = revision !== undefined ? `plan-r${revision}.md` : "plan.md";
-  const rel = `docs/plan/${workflowId}/${file}`;
+  const rel = materialRelativePath(`docs/plan/${workflowId}/${file}`);
   return {
     relativePath: rel,
     absolutePath: normalize(resolve(workspaceRoot, rel)),
@@ -446,7 +432,7 @@ export function getReviewMaterialPath(
   round?: number,
 ) {
   const file = round !== undefined ? `review-r${round}.md` : "review.md";
-  const rel = `docs/plan/${workflowId}/${file}`;
+  const rel = materialRelativePath(`docs/plan/${workflowId}/${file}`);
   return {
     relativePath: rel,
     absolutePath: normalize(resolve(workspaceRoot, rel)),
@@ -458,7 +444,7 @@ export function getProcessMaterialPath(
   workflowId: string,
   filename = "handover.md",
 ) {
-  const rel = `docs/process/${workflowId}/${filename}`;
+  const rel = materialRelativePath(`docs/process/${workflowId}/${filename}`);
   return {
     relativePath: rel,
     absolutePath: normalize(resolve(workspaceRoot, rel)),
@@ -471,7 +457,7 @@ export function getEvidenceMaterialPath(
   round: number = 1,
   filename = "evidence.json",
 ) {
-  const rel = `docs/test/evidence/${workflowId}/${round}/${filename}`;
+  const rel = materialRelativePath(`docs/test/evidence/${workflowId}/${round}/${filename}`);
   return {
     relativePath: rel,
     absolutePath: normalize(resolve(workspaceRoot, rel)),
@@ -493,16 +479,17 @@ export function writeProjectMaterial(options: {
   customRelPath?: string;
 }) {
   let rel = options.customRelPath;
-  if (!rel) {
+  if (rel === undefined) {
     if (options.category === "evidence" || options.category === "test_evidence") {
       rel = `docs/test/evidence/${options.workflowId}/${options.round ?? 1}/${options.filename}`;
     } else {
       rel = `docs/plan/${options.workflowId}/${options.filename}`;
     }
   }
+  rel = materialRelativePath(rel);
+  requireCondition(["docs/plan/", "docs/process/", "docs/test/evidence/"].some((prefix) => rel!.startsWith(prefix)), "INVALID_PATH", "材料路径不在允许目录中", 400);
   const abs = normalize(resolve(options.workspaceRoot, rel));
-  mkdirSync(dirname(abs), { recursive: true });
-  writeFileSync(abs, options.content, "utf8");
+  publishMaterialFile(options.workspaceRoot, rel, Buffer.from(options.content, "utf8"), randomUUID());
   return { relativePath: rel, absolutePath: abs };
 }
 
@@ -511,13 +498,13 @@ export function readProjectMaterial(options: {
   relativePath: string;
   cachePath?: string;
 }) {
-  const abs = normalize(resolve(options.workspaceRoot, options.relativePath));
-  if (existsSync(abs)) {
+  const data = readMaterialFile(options.workspaceRoot, options.relativePath);
+  if (data) {
     return {
       exists: true,
       isFromProject: true,
       isFromCache: false,
-      content: readFileSync(abs, "utf8"),
+      content: data.toString("utf8"),
     };
   }
   if (options.cachePath && existsSync(options.cachePath)) {

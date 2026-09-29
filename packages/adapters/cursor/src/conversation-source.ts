@@ -1,3 +1,4 @@
+import { diagnosticClip } from "../../../presentation/src/secret-redactor.js";
 import { dirname } from "node:path";
 import { z } from "zod";
 import type { SubagentCapabilities } from "../../../contracts/src/conversation.js";
@@ -127,7 +128,7 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 
 function clip(text: string | undefined, max: number): string | undefined {
   if (!text) return undefined;
-  return text.length > max ? text.slice(0, max) : text;
+  return diagnosticClip(text, max);
 }
 
 function occurredAtFrom(

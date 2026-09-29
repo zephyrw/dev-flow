@@ -1,3 +1,4 @@
+import { diagnosticClip } from "../../../presentation/src/secret-redactor.js";
 import { spawnSync } from "node:child_process";
 import { z } from "zod";
 import type { SubagentCapabilities } from "../../../contracts/src/conversation.js";
@@ -348,20 +349,20 @@ function spawnAgentId(item: Record<string, unknown>): string | undefined {
 
 function spawnTitle(item: Record<string, unknown>): string | undefined {
   const agent = asRecord(item.agent);
-  return stringField(
+  return diagnosticClip(stringField(
     item.agent_nickname ??
       item.title ??
       agent?.nickname ??
       agent?.role ??
       item.agent_id,
-  )?.slice(0, 200);
+  ), 200);
 }
 
 function spawnSummary(item: Record<string, unknown>): string | undefined {
   const input = asRecord(item.input) ?? nestedRecord(item.arguments);
-  return stringField(
+  return diagnosticClip(stringField(
     item.task_summary ?? input?.prompt ?? input?.message ?? item.text,
-  )?.slice(0, 500);
+  ), 500);
 }
 
 function itemStatus(item: Record<string, unknown>, eventType: string): string {
@@ -414,28 +415,28 @@ function activityTitle(
 function publicActivityText(item: Record<string, unknown>): string | undefined {
   const type = itemTypeOf(item);
   if (type === "command_execution")
-    return stringField(item.command)?.slice(0, 16000);
-  if (type === "agent_message") return stringField(item.text)?.slice(0, 16000);
-  if (type === "web_search") return stringField(item.query)?.slice(0, 16000);
+    return diagnosticClip(stringField(item.command), 16000);
+  if (type === "agent_message") return diagnosticClip(stringField(item.text), 16000);
+  if (type === "web_search") return diagnosticClip(stringField(item.query), 16000);
   if (type === "mcp_tool_call") {
     const summary = toolSummary(
       stringField(item.tool ?? item.name),
       asRecord(item.arguments) ?? {},
     );
-    return (
+    return diagnosticClip(
       summary.text ||
       stringField(item.tool ?? item.name) ||
       "MCP 工具"
-    )?.slice(0, 16000);
+    , 16000);
   }
   if (type === "file_change") {
     const changes = Array.isArray(item.changes) ? item.changes : [];
     const path = changes
       .map((entry) => stringField(asRecord(entry)?.path))
       .find(Boolean);
-    return path?.slice(0, 16000);
+    return diagnosticClip(path, 16000);
   }
-  return stringField(item.text)?.slice(0, 16000);
+  return diagnosticClip(stringField(item.text), 16000);
 }
 
 function quotaFrom(record: Record<string, unknown>): unknown | undefined {
@@ -596,7 +597,7 @@ function decodeCodexItem(
         title: activityTitle(type, item),
         command:
           type === "command_execution"
-            ? stringField(item.command)?.slice(0, 32000)
+            ? diagnosticClip(stringField(item.command), 32000)
             : undefined,
         status: activityStatus(eventType, item),
       }),

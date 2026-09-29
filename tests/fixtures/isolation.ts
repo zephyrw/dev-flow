@@ -14,6 +14,29 @@ export interface IsolatedTestEnv {
   cleanup: () => Promise<void> | void;
 }
 
+export function removeDirWithBoundedRetry(
+  targetPath: string,
+  maxAttempts = 5,
+): void {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    try {
+      rmSync(targetPath, {
+        recursive: true,
+        force: true,
+        maxRetries: 3,
+        retryDelay: 50,
+      });
+      return;
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  if (lastError) {
+    throw lastError;
+  }
+}
+
 /**
  * 创建完全隔离的测试运行环境，防止修改当前环境配置或污染用户真实目录
  */
@@ -48,19 +71,16 @@ export function createIsolatedTestEnv(): IsolatedTestEnv {
   const cleanup = () => {
     try {
       store.close();
-    } catch {}
+      removeDirWithBoundedRetry(root);
+    } finally {
+      if (oldCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = oldCodexHome;
+      if (oldHome === undefined) delete process.env.HOME;
+      else process.env.HOME = oldHome;
 
-    if (oldCodexHome === undefined) delete process.env.CODEX_HOME;
-    else process.env.CODEX_HOME = oldCodexHome;
-    if (oldHome === undefined) delete process.env.HOME;
-    else process.env.HOME = oldHome;
-
-    if (oldUserProfile === undefined) delete process.env.USERPROFILE;
-    else process.env.USERPROFILE = oldUserProfile;
-
-    try {
-      rmSync(root, { recursive: true, force: true });
-    } catch {}
+      if (oldUserProfile === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = oldUserProfile;
+    }
   };
 
   return {

@@ -60,7 +60,7 @@ import {
   modelErrorRetryable,
   registerModelRoutes,
 } from "./model-routes.js";
-import { PlanReviewService } from "../../../packages/core/src/plan-review.js";
+import { PlanReviewService, readPlanMaterial } from "../../../packages/core/src/plan-review.js";
 import { SourceChangeService } from "../../../packages/core/src/source-change.js";
 import { listAttachmentRecords } from "../../../packages/evidence/src/archive-consumer.js";
 import { registerAgyAccountRoutes, registerAgyWorkflowRecoveryRoutes } from "./agy-account-routes.js";
@@ -1430,107 +1430,29 @@ export async function buildServer(
     const isMarkdownDownload =
       q.format === "markdown" || q.download === "1" || q.download === "true";
 
-    const renderPlanAsMarkdown = (planObj: any): string => {
-      if (!planObj) return "";
-      if (typeof planObj === "string") return planObj;
-      if (typeof planObj.markdown === "string" && planObj.markdown.trim()) {
-        return planObj.markdown;
-      }
-      const lines: string[] = [];
-      lines.push(`# ${planObj.title ?? "实施计划"}`);
-      if (planObj.summary || planObj.design_ref?.summary) {
-        lines.push("", "## 背景与目标", String(planObj.design_ref?.summary ?? planObj.summary));
-      }
-      if (Array.isArray(planObj.work_items) && planObj.work_items.length > 0) {
-        lines.push("", "## 主要实施任务");
-        for (const item of planObj.work_items) {
-          lines.push(`- ${item.title ?? item.name ?? item.id}`);
-        }
-      } else if (Array.isArray(planObj.tasks) && planObj.tasks.length > 0) {
-        lines.push("", "## 主要实施任务");
-        for (const item of planObj.tasks) {
-          lines.push(`- ${item.title ?? item.name ?? item.id}`);
-        }
-      }
-      if (Array.isArray(planObj.acceptance_items) && planObj.acceptance_items.length > 0) {
-        lines.push("", "## 主要测试与验收");
-        for (const acc of planObj.acceptance_items) {
-          lines.push(`- ${acc.scenario ?? acc.title ?? acc.id}`);
-        }
-      } else if (Array.isArray(planObj.tests) && planObj.tests.length > 0) {
-        lines.push("", "## 主要测试与验收");
-        for (const tst of planObj.tests) {
-          lines.push(`- ${tst.scenario ?? tst.title ?? tst.id}`);
-        }
-      }
-      return lines.join("\n") + "\n";
-    };
-
-    try {
-      const doc = documentService.getDocument(key, documentId, revision);
-      if (isMarkdownDownload) {
-        return reply
-          .type("text/markdown; charset=utf-8")
-          .header(
-            "Content-Disposition",
-            `attachment; filename="${documentId}-${key}-r${doc.revision}.md"`,
-          )
-          .send(doc.content);
-      }
-      return {
-        ok: true,
-        document: doc,
-      };
-    } catch (err: any) {
-      // D07/D08 规范：文档 hash 不匹配属于需确认的真实错误，绝不静默降级退回
-      if (err?.code && String(err.code).includes("HASH_MISMATCH")) {
-        throw err;
-      }
-      if (documentId === "plan") {
-        const w = engine.get(key);
-        requireCondition(w.plan_revision > 0, "PLAN_MISSING", "尚无计划", 404);
-        const targetRev = revision ?? w.plan_revision;
-        const planRecord =
-          engine.store.get<any>("plan", `${key}-${targetRev}`) ??
-          engine.store.get<any>("plan", `${key}_r${targetRev}`) ??
-          (targetRev === w.plan_revision ? engine.plan(key) : null);
-
-        if (planRecord) {
-          const mdFromDoc = planRecord.plan?.design_ref?.content_hash
-            ? engine.store
-                .list<any>("project_document", key)
-                .find((d) => d.hash === planRecord.plan.design_ref.content_hash)
-                ?.content
-            : undefined;
-          const markdownContent =
-            mdFromDoc ?? renderPlanAsMarkdown(planRecord.plan);
-          const resolvedDoc = {
-            id: planRecord.id ?? `${key}-${targetRev}`,
-            workflow_id: key,
-            document_type: "plan",
-            revision: planRecord.revision ?? targetRev,
-            hash: planRecord.hash ?? w.plan_hash ?? "",
-            content: markdownContent,
-            approved_by_human: Boolean(planRecord.approved_by_human),
-          };
-
-          if (isMarkdownDownload) {
-            return reply
-              .type("text/markdown; charset=utf-8")
-              .header(
-                "Content-Disposition",
-                `attachment; filename="plan-${key}-r${resolvedDoc.revision}.md"`,
-              )
-              .send(resolvedDoc.content);
-          }
+    const doc = documentId === "plan"
+      ? (() => {
+          const w = engine.get(key);
+          const material = readPlanMaterial(engine.store, key, revision ?? w.plan_revision);
+          const bodyHash = hash(material.markdown.replace(/\r\n/g, "\n"));
+          const document = engine.store.list<any>("project_document", key).find((entry) =>
+            entry.document_type === "plan" && entry.revision === material.revision && entry.hash === bodyHash);
           return {
-            ok: true,
-            document: resolvedDoc,
+            ...document,
+            id: document?.id ?? material.id, workflow_id: key, document_type: "plan",
+            revision: material.revision,
+            hash: material.plan.design_ref?.content_hash ?? hash(material.markdown.replace(/\r\n/g, "\n")),
+            content: material.markdown, source_type: material.source_type,
+            authority_ready: material.authority_ready,
           };
-        }
-      }
-      throw err;
+        })()
+      : documentService.getDocument(key, documentId, revision);
+    if (isMarkdownDownload) {
+      return reply.type("text/markdown; charset=utf-8")
+        .header("Content-Disposition", `attachment; filename="${documentId}-${key}-r${doc.revision}.md"`)
+        .send(doc.content);
     }
+    return { ok: true, document: doc };
   });
 
   // 文档严格核验与审批路由 (RQ-08 & 5.2 节)

@@ -1,3 +1,4 @@
+import { diagnosticClip } from "../../../presentation/src/secret-redactor.js";
 import { StringDecoder } from "node:string_decoder";
 import { z } from "zod";
 import type { SubagentCapabilities } from "../../../contracts/src/conversation.js";
@@ -625,7 +626,8 @@ function textEvents(
       activity_id: stringOf(part.id) ?? "text",
       kind: "message",
       title: "模型输出",
-      public_text: text.slice(0, 16000),
+      // Native text events may be deltas; complete persisted messages use messageEvents.
+      public_text: "模型输出中（分片正文未记录）",
     }),
   );
 }
@@ -722,7 +724,7 @@ function messageEvents(
               activity_id: stringOf(item.id) ?? "text",
               kind: "message",
               title: "模型输出",
-              public_text: stringOf(item.text)?.slice(0, 16000),
+              public_text: diagnosticClip(stringOf(item.text), 16000),
             }),
             String(created),
           ),
@@ -931,7 +933,7 @@ function publicToolText(
 ): string | undefined {
   if (tool === "task") return stringOf(input.description);
   const command = stringOf(input.command) ?? stringOf(input.path) ?? stringOf(input.pattern);
-  return command?.slice(0, 500);
+  return diagnosticClip(command, 500);
 }
 
 function modelFrom(raw: unknown): { actual_model?: string; provider_id?: string; variant?: string } | undefined {

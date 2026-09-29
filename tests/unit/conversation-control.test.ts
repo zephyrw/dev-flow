@@ -7,6 +7,8 @@ import {
   type Workflow,
 } from "../../packages/contracts/src/index.js";
 import type { NativeConversationEvent } from "../../packages/adapters/sdk/src/interface.js";
+import { bindRunConversationObserver } from "../../packages/runtime/src/profile-runtime.js";
+import type { ConversationEventSink, ConversationTelemetryRoute } from "../../packages/runtime/src/run-telemetry.js";
 import {
   ConversationService,
   type ConversationApplyContext,
@@ -347,8 +349,9 @@ describe("SA-U19 conversation control pause intent", () => {
   });
 
   it("rejects stale root and generation without stopping the new run", async () => {
-    const { conversations, controls, stop } = openControl();
+    const { store, conversations, controls, stop } = openControl();
     const old = discoverRoot(conversations);
+    putWorkflow(store, "wf1", "EXECUTING", "run-recreate");
     const replaced = conversations.applyEvent(
       ctx({ run_id: "run-recreate", root_native_id: "root-native-2" }),
       event({
@@ -444,9 +447,43 @@ describe("SA-U19 conversation control pause intent", () => {
 });
 
 describe("SA-U19 conversation control generation fence", () => {
+  it("tracks generation-zero children of a resumed root and absorbs a child discovered during stop", async () => {
+    const { store, conversations, controls, stop } = openControl();
+    try {
+      const root = discoverRoot(conversations);
+      const oldChild = spawnChild(conversations, "old-child", "root-native", "2");
+      putWorkflow(store, "wf1", "EXECUTING", "run2");
+      discoverRoot(conversations, ctx({ run_id: "run2" }));
+      const child = spawnChild(conversations, "new-child", "root-native", "2", "running", { run_id: "run2" });
+      expect(latestStatus(conversations, root.id)?.generation).toBe(1);
+      expect(latestStatus(conversations, child.id)?.generation).toBe(0);
+      let lateChildId: string | undefined;
+      stop.stopConversation = async (target) => {
+        stop.calls.push(target);
+        if (!lateChildId) {
+          // The await boundary must absorb a fresh attempt with its own local generation.
+          await Promise.resolve();
+          lateChildId = spawnChild(conversations, "late-child", "root-native", "3", "running", { run_id: "run2" }).id;
+        }
+        return { accepted: true, confirmation: "exited" };
+      };
+      const result = await controls.pauseTree("wf1", {
+        request_id: "pause-resumed-root", action: "pause", root_id: root.id, expected_generation: 1,
+      });
+      expect(result.status).toBe("pending");
+      expect(result.targets.map((target) => target.conversation_id)).toEqual(expect.arrayContaining([root.id, child.id, lateChildId]));
+      expect(result.targets.some((target) => target.conversation_id === oldChild.id)).toBe(false);
+      expect(result.targets.find((target) => target.conversation_id === lateChildId)?.confirmation).toBe("unconfirmed");
+      expect(stop.calls.map((target) => target.conversation_id)).toEqual([root.id]);
+    } finally {
+      store.close();
+    }
+  });
+
   it("returns VERSION_CONFLICT for an old generation after a new attempt", async () => {
-    const { conversations, controls, stop } = openControl();
+    const { store, conversations, controls, stop } = openControl();
     const root = discoverRoot(conversations);
+    putWorkflow(store, "wf1", "EXECUTING", "run2");
     conversations.applyEvent(
       ctx({ run_id: "run2" }),
       event({
@@ -471,4 +508,71 @@ describe("SA-U19 conversation control generation fence", () => {
     expect(latestStatus(conversations, root.id)?.generation).toBe(1);
     expect(latestStatus(conversations, root.id)?.status).toBe("starting");
   });
+});
+
+
+it("stops a terminal root's owned tree without rewriting its completion", async () => {
+  const { store, conversations, controls, stop } = openControl();
+  try {
+    const root = discoverRoot(conversations);
+    const child = spawnChild(conversations, "live-child", "root-native", "2");
+    const attempt = latestStatus(conversations, root.id)!;
+    store.put(CONVERSATION_ENTITY.attempt, attempt.id, "wf1", { ...attempt, status: "completed" });
+    const result = await controls.pauseTree("wf1", {
+      request_id: "terminal-root-live-child", action: "pause", root_id: root.id, expected_generation: 0,
+    });
+    expect(stop.calls.map((item) => item.conversation_id)).toEqual([root.id]);
+    expect(stop.calls[0]?.attempt_id).toBe(attempt.id);
+    expect(result.unconfirmed_count).toBe(0);
+    expect(latestStatus(conversations, root.id)?.status).toBe("completed");
+    expect(latestStatus(conversations, child.id)?.status).toBe("paused");
+  } finally { store.close(); }
+});
+
+it("ignores old discovery and state after the workflow advances to a recovery Run", () => {
+  const { store, conversations } = openControl();
+  try {
+    const root = discoverRoot(conversations);
+    const child = spawnChild(conversations, "same-child", "root-native", "2");
+    putWorkflow(store, "wf1", "EXECUTING", "run2");
+    discoverRoot(conversations, ctx({ run_id: "run2" }));
+    spawnChild(conversations, "same-child", "root-native", "2", "running", { run_id: "run2" });
+    const before = latestStatus(conversations, child.id)!;
+    for (const kind of ["discovered", "state"] as const) {
+      const result = conversations.applyEvent(ctx(), event({ kind, source_seq: `old-${kind}`,
+        session_native_id: "same-child", parent_native_id: "root-native", payload: { status: "starting" } }));
+      expect(result.skipped).toBe(true);
+    }
+    expect(latestStatus(conversations, child.id)).toEqual(before);
+    expect(latestStatus(conversations, root.id)?.run_id).toBe("run2");
+  } finally { store.close(); }
+});
+
+it.each(["run", "plan"] as const)("does not rebind root identity after the %s advances", async (changed) => {
+  const { store } = openControl();
+  let sink!: ConversationEventSink;
+  const identities: string[] = [];
+  const telemetry = {
+    finish() {},
+    bindConversationContext() {},
+    bindConversationObserver(value: ConversationEventSink) { sink = value; },
+  };
+  try {
+    const workflow = store.must<Workflow>("workflow", "wf1");
+    bindRunConversationObserver({ store, workflow, run: store.must<Run>("run", "run1"),
+      adapter: {} as any, telemetry: telemetry as any, onRootSession: (nativeId) => identities.push(nativeId) });
+    const route: ConversationTelemetryRoute = { scope: "root", applyRootIdentity: true, applyRootModel: true,
+      applyRootQuota: true, nativeConversationId: "root-native", conversationId: "root-native", attemptId: "attempt", rootId: "root-native" };
+    sink.applyConversationEvent(event({ session_native_id: "root-native" }), route);
+    expect(identities).toEqual(["root-native"]);
+    store.put("workflow", "wf1", workflow.project_id, { ...workflow,
+      ...(changed === "run" ? { run_id: "run2" } : { plan_revision: workflow.plan_revision + 1 }) });
+    sink.applyConversationEvent(event({ source_seq: "late", session_native_id: "old-root" }),
+      { ...route, nativeConversationId: "old-root" });
+    expect(identities).toEqual(["root-native"]);
+  } finally {
+    telemetry.finish();
+    await new Promise<void>((done) => setImmediate(done));
+    store.close();
+  }
 });
