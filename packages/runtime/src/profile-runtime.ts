@@ -552,7 +552,7 @@ export class ProfileRuntime {
         integration_repair: policy2 && ["planner_takeover", "planner_commit"].includes(purpose)
           ? this.engine.store.get("planner_integration_repair", w.id) ?? null : null,
         completion_instruction: purpose === "planner_commit" && policy2
-          ? "完成实际提交后输出 JSON {status, summary, repositories: [{repo_id, commit}]}；无须新提交时在摘要说明。需要代码修复报告 need_planner；需要用户协助报告 need_user。"
+          ? "完成实际提交后输出 JSON {status, summary, repositories: [{repo_id, commit}], user_interaction}；无须新提交时在摘要说明。integration_repair 中的合并冲突自动解决并完成必要定向验证，随后返回新提交号。需要用户决定时返回 status: need_user，并提供 user_interaction: {kind: question, title, message, question, choices: [{id, label}], allow_free_text: true}，描述选项及影响；平台弹窗确认后继续当前提交，不能只在日志中提问。"
           : "最终输出 JSON {status, summary, notes, artifacts, user_interaction}。status 只能是 completed、need_planner 或 need_user。若需要人工操作或提问，返回 status 为 need_user 并在 user_interaction 中填入结构化请求。未知状态不会被当成完成。" +
             (purpose === "functional_fix"
               ? "完成指本轮用户指导已落实，不要求重新完成整份计划。summary/notes逐项回答原文中的问题并说明实际操作与结果，未做或无法确认的历史测试如实说明；不能用启动成功代替问题回答或用户要求的浏览器测试。启动服务时返回真实访问URL和端口，保留服务供用户验收；实际修复代码时说明修改及必要测试。历史测试结果不因本轮未运行而改写为失败或未执行。"

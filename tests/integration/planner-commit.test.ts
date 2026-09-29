@@ -4,6 +4,8 @@ import { objectHash } from "../../packages/core/src/util.js";
 import { GitDeliveryCoordinator } from "../../packages/git/src/delivery-coordinator.js";
 import { CliDispatchManager } from "../../packages/runtime/src/cli-dispatch.js";
 import type { Run, Workflow } from "../../packages/contracts/src/index.js";
+import { UserInteractionService } from "../../packages/core/src/user-interaction-service.js";
+import { readBusinessProgress } from "../../packages/core/src/workflow-progress.js";
 import {
   createQualityFlow,
   nextQualityAction,
@@ -120,6 +122,38 @@ function commitRecoveryFixture(purpose = "planner_commit", state: Workflow["stat
 }
 
 describe("planner commit recovery through Engine", () => {
+  it("conflict decision creates a popup request and the answer resumes the same commit role", async () => {
+    const s = commitRecoveryFixture();
+    const dispatch = vi.spyOn(s.engine, "dispatch").mockResolvedValue(undefined);
+    try {
+      s.store.put("run", s.run.id, s.workflow.id, { ...s.run, protocol: "lightweight", status: "completed" });
+      s.store.put("conversation_node", "same-session", s.workflow.id, { id: "same-session", root_id: "same-session",
+        workflow_id: s.workflow.id, current_attempt_id: "commit-attempt", kind: "root", role: "planner" });
+      s.store.put("conversation_attempt", "commit-attempt", s.workflow.id, { id: "commit-attempt", conversation_id: "same-session",
+        workflow_id: s.workflow.id, run_id: s.run.id, generation: 1 });
+      const repair = { source_run_id: "previous-commit", instructions: "处理固定提交冲突",
+        targets: [{ repo_id: "main", source_commit: "a".repeat(40), candidate_commit: "b".repeat(40) }] };
+      s.store.put("planner_integration_repair", s.workflow.id, s.workflow.id, repair);
+      await s.engine.receiveRoundResult(s.workflow.id, s.run.id, { status: "need_user", summary: "两方配置需求互斥，请确认",
+        user_interaction: { kind: "question", title: "确认冲突处理方式", message: "选择兼容模式会保留两方入口",
+          question: "是否保留两方入口？", choices: [{ id: "both", label: "保留两方入口" }], allow_free_text: true } });
+      expect(s.engine.get(s.workflow.id)).toMatchObject({ state: "WAITING_INPUT", stage: "planner_commit" });
+      expect(readBusinessProgress(s.store, s.engine.get(s.workflow.id)).index).toBe(7);
+      const service = new UserInteractionService(s.store);
+      const interaction = service.getCurrentInteraction(s.workflow.id)!;
+      expect(interaction).toMatchObject({ status: "pending", role: "planner", request: { kind: "question", title: "确认冲突处理方式" } });
+      await service.respondInteraction(s.workflow.id, interaction.id, {
+        request_id: "conflict-answer", source_run_id: s.run.id, action: "answer", answer: "保留两方入口",
+      }, s.engine);
+      expect(s.engine.get(s.workflow.id)).toMatchObject({ state: "QUEUED", stage: "planner_commit" });
+      expect(s.store.get("pending_dispatch_purpose", s.workflow.id)).toMatchObject({ purpose: "planner_commit" });
+      expect(s.store.get("run_continuation", s.workflow.id)).toMatchObject({ source_run_id: s.run.id,
+        answer: expect.stringContaining("保留两方入口") });
+      expect(s.store.get("planner_integration_repair", s.workflow.id)).toEqual(repair);
+      expect(s.store.get("acceptance", s.workflow.id)).toMatchObject({ accepted: true });
+      expect(s.store.get("evidence", "tested")).toMatchObject({ status: "passed" });
+    } finally { dispatch.mockRestore(); s.store.close(); }
+  });
   it.each(["planner_commit", "executor_test", "planner_takeover"])("local-console stop and feedback retain %s and its frozen context", async purpose => {
     const s = commitRecoveryFixture(purpose);
     try {
@@ -169,14 +203,16 @@ describe("planner commit recovery through Engine", () => {
     const s = commitRecoveryFixture();
     const integrate = vi.spyOn(GitDeliveryCoordinator.prototype, "integrateCommittedDelivery").mockImplementation(async () => {
       s.engine.transition(s.workflow.id, ["COMMITTING"], "COMMIT_PARTIAL", "commit_recovery");
-      return { integrations: [], repairInstructions: "合并已确认无冲突的固定提交并完成提交" };
+      return { integrations: [], repairInstructions: "自动解决固定提交的冲突并完成提交",
+        repairTargets: [{ repo_id: "main", source_commit: "a".repeat(40), candidate_commit: "b".repeat(40) }] };
     });
     try {
       await (s.engine as any).completePlannerCommit(s.workflow.id, s.run.id, { repositories: [{ repo_id: "main", commit: "b".repeat(40) }] });
       await s.engine.consumeOutbox();
       expect(s.engine.get(s.workflow.id)).toMatchObject({ state: "QUEUED", stage: "planner_commit", snapshot_id: "tested-snapshot" });
       expect(s.store.get("pending_dispatch_purpose", s.workflow.id)).toMatchObject({ purpose: "planner_commit", source_run_id: s.run.id });
-      expect(s.store.get("planner_integration_repair", s.workflow.id)).toMatchObject({ source_run_id: s.run.id });
+      expect(s.store.get("planner_integration_repair", s.workflow.id)).toMatchObject({ source_run_id: s.run.id,
+        targets: [{ repo_id: "main", source_commit: "a".repeat(40), candidate_commit: "b".repeat(40) }] });
       expect(s.store.get("repair_assignment", s.workflow.id)).toBeUndefined();
       expect(s.store.get("evidence", "tested")).toMatchObject({ status: "passed" });
     } finally { integrate.mockRestore(); s.store.close(); }

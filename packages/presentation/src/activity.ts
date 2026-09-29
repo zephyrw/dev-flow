@@ -121,7 +121,7 @@ const stageIndex: Record<string, number> = {
 export function workflowProgress(
   w: any,
   events: any[],
-  display: { native?: boolean; humanAccepted?: boolean } = {},
+  display: { native?: boolean; humanAccepted?: boolean; businessProgress?: { index: number; activity: string; review_phase?: string } } = {},
 ) {
   const completed = ["COMMITTED", "COMPLETED"].includes(w.state);
   const paused = [
@@ -148,14 +148,17 @@ export function workflowProgress(
       }
     }
   }
-  const phase = stageIndex[w.state] === undefined
+  const phase = display.businessProgress?.activity ?? (stageIndex[w.state] === undefined
     ? transitions.slice().reverse().find((e) => e.payload?.to === state)?.payload?.stage ?? w.stage
-    : w.stage;
+    : w.stage);
   // These are existing workflow phases, not new transitions or gates.
   const labels = display.native
     ? [...stages.slice(0, 4), "验收前质量审查", "人工验收", "验收后代码复核", "本地提交"]
     : stages;
-  const index = phase === "planner_commit"
+  const index = display.native && display.businessProgress ? display.businessProgress.index
+    : display.native && ["planner_takeover", "executor_test"].includes(phase) ? 4
+    : display.native && phase === "functional_fix" ? 5
+    : phase === "planner_commit"
     ? display.native ? 7 : 6
     : phase === "acceptance_guidance"
     ? display.native ? 5 : 4
@@ -203,8 +206,14 @@ export function workflowProgress(
         ? state === "QUEUED" ? "等待规划模型继续最后的提交与合并" : "规划模型正在完成最后的提交与合并，保留已完成的开发和测试结果"
       : phase === "acceptance_guidance"
         ? state === "QUEUED" ? "你的指导已排队，等待执行模型处理" : "执行模型正在处理你的指导，回复和操作显示在执行过程"
+      : phase === "executor_test"
+        ? `正在完成整改后测试；完成后进入${index === 6 ? "本地提交" : "人工验收"}，不重复代码复核`
+      : phase === "planner_takeover"
+        ? "规划模型正在修复本轮审查问题，完成后交执行模型测试"
+      : phase === "functional_fix"
+        ? "正在处理人工验收反馈，完成后继续人工验收"
       : phase === "quality_before_human" && ["REVIEWING", "REVIEW_QUEUED"].includes(state)
-        ? "规划模型审查代码质量与测试结果，通过后进入人工验收"
+        ? "规划模型审查代码质量，通过后进入人工验收"
         : (next[w.state] ?? "等待工作流更新"),
   };
 }

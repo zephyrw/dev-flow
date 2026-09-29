@@ -33,6 +33,7 @@ function initRepo(dir: string) {
   shell(dir, ["config", "user.email", "t@example.com"]);
   shell(dir, ["config", "user.name", "t"]);
   shell(dir, ["config", "commit.gpgsign", "false"]);
+  shell(dir, ["config", "core.autocrlf", "false"]);
 }
 function commitAll(dir: string, message: string) {
   shell(dir, ["add", "-A"]);
@@ -567,7 +568,7 @@ describe("planner-commit 真实 Git 集成", () => {
     expect(existsSync(resolve(taskRoot, shell(taskRoot, ["rev-parse", "--git-path", "MERGE_HEAD"])))).toBe(false);
   });
 
-  it("C07 真实内容冲突仅阻塞最终提交，保留双方现场和具体冲突路径，不派发修复测试", async () => {
+  it("C07 真实冲突交模型在最终提交阶段解决，预演保留双方现场，新提交合入双方历史后完成", async () => {
     const { sourceRepo, taskRoot, taskCommit, store, integrate } = await fastForwardFixture("base.txt");
     writeFileSync(join(sourceRepo, "base.txt"), "source branch content\n");
     const sourceCommit = commitAll(sourceRepo, "source changes same line");
@@ -581,11 +582,13 @@ describe("planner-commit 真实 Git 集成", () => {
     for (let attempt = 0; attempt < 2; attempt++) {
       const result = await integrate();
 
-      expect(result.repairInstructions).toBeUndefined();
-      expect(result.integrations[0]).toMatchObject({ status: "failed", candidate_commit: taskCommit });
+      expect(result.repairInstructions).toContain("自动逐项解决冲突");
+      expect(result.repairInstructions).toContain("user_interaction");
+      expect(result.repairInstructions).toContain("base.txt");
+      expect(result.repairTargets).toEqual([{ repo_id: "main", source_commit: sourceCommit, candidate_commit: taskCommit }]);
+      expect(result.integrations).toEqual([]);
       expect(store.must<{ state: string; blocker?: { code: string; message: string } }>("workflow", "wf")).toMatchObject({
         state: "COMMIT_PARTIAL",
-        blocker: { code: "MERGE_CONFLICT", message: expect.stringContaining("base.txt") },
       });
       expect(shell(sourceRepo, ["rev-parse", "HEAD"])).toBe(sourceCommit);
       expect(shell(taskRoot, ["rev-parse", "HEAD"])).toBe(taskCommit);
@@ -599,11 +602,31 @@ describe("planner-commit 真实 Git 集成", () => {
       expect(existsSync(taskMergeHead)).toBe(false);
     }
     const failures = store.events.filter((event) => event.type === "PlannerIntegrationFailed");
-    expect(failures).toHaveLength(2);
-    for (const failure of failures) expect(failure.payload).toMatchObject({
-      repo_id: "main", code: "MERGE_CONFLICT", message: expect.stringContaining("base.txt"),
-    });
+    expect(failures).toHaveLength(0);
     expect(store.get<{ commit: string }>("planner_commit_candidate", "wf:run-1:main")?.commit).toBe(taskCommit);
+
+    store.put("planner_integration_repair", "wf", "wf", { source_run_id: "run-1",
+      targets: [{ repo_id: "main", source_commit: sourceCommit, candidate_commit: taskCommit }] });
+    store.put("workflow", "wf", "p", { ...store.must<object>("workflow", "wf"), run_id: "run-2" });
+    // A model returning the unchanged commit must not cause an automatic retry loop.
+    const incomplete = await integrate();
+    expect(incomplete.repairInstructions).toBeUndefined();
+    expect(store.must<any>("workflow", "wf").blocker.code).toBe("INTEGRATION_REPAIR_INCOMPLETE");
+
+    // Simulate the model's actual Git work, with a real conflict and merge commit.
+    expect(() => shell(taskRoot, ["merge", "--no-commit", "--no-ff", sourceCommit])).toThrow();
+    writeFileSync(join(taskRoot, "base.txt"), "task content\nsource branch content\n");
+    const resolvedCommit = commitAll(taskRoot, "resolve both changes");
+    store.put("workflow", "wf", "p", { ...store.must<object>("workflow", "wf"), run_id: "run-3" });
+    const done = await coordinator(store, scratch("devflow-conflict-done-")).integrateCommittedDelivery("wf", [
+      { repo_id: "main", commit: resolvedCommit },
+    ]);
+    expect(done.integrations[0]?.status).toBe("success");
+    expect(store.must<any>("workflow", "wf").state).toBe("COMPLETED");
+    expect(shell(sourceRepo, ["rev-parse", "HEAD"])).toBe(resolvedCommit);
+    expect(shell(sourceRepo, ["merge-base", taskCommit, resolvedCommit])).toBe(taskCommit);
+    expect(shell(sourceRepo, ["merge-base", sourceCommit, resolvedCommit])).toBe(sourceCommit);
+    expect(readFileSync(join(sourceRepo, "base.txt"), "utf8")).toBe("task content\nsource branch content\n");
   });
 
   it("C08 无须新提交：existing_workspace 不伪造集成成功，也不删除外部改动", async () => {

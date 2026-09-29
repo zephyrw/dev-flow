@@ -9,7 +9,7 @@ const verdictLabels: Record<string, string> = {
   incomplete: "验证不完整", need_user: "需要你的处理",
 };
 
-export function ReviewResults({ review }: { review?: Partial<Review> & { stale?: boolean } | null }) {
+export function ReviewResults({ review, activity }: { review?: Partial<Review> & { stale?: boolean } | null; activity?: string }) {
   if (!review) return <div className="empty">尚无独立复核结果，复核完成后会显示在这里。</div>;
   const findings = Array.isArray(review.findings) ? review.findings : [];
   const questions = Array.isArray(review.unresolved_questions) ? review.unresolved_questions : [];
@@ -17,7 +17,9 @@ export function ReviewResults({ review }: { review?: Partial<Review> & { stale?:
   const verdict = review.verdict ?? review.status;
   return <div className="review-results">
     <p>
-      {review.stale ? "历史复核已失效，请以新一轮结果为准。" : "本轮复核"}
+      {review.stale ? activity === "executor_test" ? "历史复核问题已交整改，目前正在整改后测试。"
+        : activity === "planner_takeover" ? "正在处理本次复核发现的问题。"
+        : "历史复核结果，请结合后续整改进展查看。" : "本轮复核"}
       {verdict && <> · {verdictLabels[verdict] ?? verdict}</>}
     </p>
     {review.summary && <div className="document"><Markdown remarkPlugins={[remarkGfm]}>{review.summary}</Markdown></div>}

@@ -24,6 +24,7 @@ import { assertSelectedSource } from "./source-change.js";
 import { scheduleModelRetry, stageModelRunRetry, type PendingModelRetry } from "./model-retry.js";
 import { currentRunObservation } from "./run-observation.js";
 import { repairFailure, prepareRepairResume } from "./repair.js";
+import { readBusinessProgress, saveBusinessProgress } from "./workflow-progress.js";
 import { normalizeRuntimeFailure } from "../../runtime/src/errors.js";
 import { ModelAccessService } from "./model-access-service.js";
 import type {
@@ -310,6 +311,7 @@ export class Engine {
       workflow: w,
       runtime: currentRunObservation(this.store, w),
       execution_spec: readEffectiveSpec(this.store, this.config, key).spec,
+      business_progress: readBusinessProgress(this.store, w),
       execution_test_report: this.executionTestReport(key),
       human_accepted: this.displayHumanAccepted(key),
       acceptance_handoff: humanAcceptanceSummary(this.store, w),
@@ -393,6 +395,7 @@ export class Engine {
 
     const baseDetail = {
       workflow: w,
+      business_progress: readBusinessProgress(this.store, w),
       runtime: currentRunObservation(this.store, w),
       execution_spec: readEffectiveSpec(this.store, this.config, key).spec,
       human_accepted: this.displayHumanAccepted(key),
@@ -579,6 +582,7 @@ export class Engine {
         updated_at: now(),
       };
       this.store.put("workflow", key, w.project_id, next);
+      saveBusinessProgress(this.store, w, next);
       if (state === "COMMITTED" || state === "COMPLETED") {
         closeOpenRepairBatches(this.store, key);
       }
@@ -1788,14 +1792,24 @@ export class Engine {
     let payload: DeliveryManifest = normalizeOptionalDeliveryManifest(normalized.payload);
 
       // 幂等性检查 (C08 / R11, R12)
-      if (payload.submission_id) {
+      const runScopedDelivery = guidanceRun.protocol === "lightweight" || usesPolicyV2(w);
+      if (runScopedDelivery) {
+        requireCondition(
+          (!payload.workflow_id || payload.workflow_id === key) &&
+          (!payload.run_id || payload.run_id === runId) &&
+          (payload.plan_revision === undefined || payload.plan_revision === w.plan_revision) &&
+          (!payload.plan_hash || payload.plan_hash === w.plan_hash),
+          "ROUND_RESULT_IDENTITY_MISMATCH", "本轮结果与当前运行或批准计划不匹配",
+        );
+      }
+      if (runScopedDelivery || payload.submission_id) {
         const existingDeliveries = this.store.list<Delivery>("delivery", key);
         const matchedDelivery = existingDeliveries.find(
-          (d) => d.manifest.submission_id === payload.submission_id,
+          (d) => runScopedDelivery ? d.run_id === runId : d.manifest.submission_id === payload.submission_id,
         );
         if (matchedDelivery) {
-          const currentHash = objectHash(payload);
-          const existingHash = objectHash(matchedDelivery.manifest);
+          const currentHash = objectHash(runScopedDelivery ? { ...payload, submission_id: undefined } : payload);
+          const existingHash = objectHash(runScopedDelivery ? { ...matchedDelivery.manifest, submission_id: undefined } : matchedDelivery.manifest);
           if (currentHash === existingHash) {
             // 检查该交付对应的修订版本是否已作废
             const revisions = this.store.list<DeliveryRevision>(
@@ -1855,7 +1869,7 @@ export class Engine {
             }
           } else {
             throw new FlowError(
-              "DELIVERY_CONFLICT",
+              runScopedDelivery ? "ROUND_RESULT_CONFLICT" : "DELIVERY_CONFLICT",
               `提交标识 '${payload.submission_id}' 已被使用且清单内容不一致，请更换 submission_id 重试`,
             );
           }
@@ -2138,9 +2152,10 @@ export class Engine {
       const repairInstructions = outcome.repairInstructions;
       if (repairInstructions && this.get(key).state === "COMMIT_PARTIAL") {
         this.store.transaction(() => {
-          this.store.put("planner_integration_repair", key, key, { instructions: repairInstructions, source_run_id: runId });
-          // The coordinator only returns instructions for a conflict-free merge.
-          // This is still final Git work, not another development/testing cycle.
+          this.store.put("planner_integration_repair", key, key, { instructions: repairInstructions,
+            targets: outcome.repairTargets, source_run_id: runId });
+          // Conflict resolution stays in final Git work and uses the normal
+          // planner need_user interaction/continuation when a decision is required.
           this.applyPolicy2Action(key, runId, { kind: "planner_commit" }, "after_human");
         });
         return;
@@ -2356,10 +2371,12 @@ export class Engine {
       .list<any>("feedback_message", key)
       .filter((m) => m.status === "pending");
     if (pending.length) {
-      this.invalidate(key, "执行期间收到新反馈，进入下一轮落实");
+      if (!usesPolicyV2(w)) this.invalidate(key, "执行期间收到新反馈，进入下一轮落实");
       this.clearCurrentImplementationIntent(key);
-      const purpose = active?.purpose === "functional_fix" ? "functional_fix" : "implement";
-      this.transition(key, [w.state], "QUEUED", purpose === "functional_fix" ? purpose : "execute", {
+      const purpose = usesPolicyV2(w) ? active?.purpose ?? "implement"
+        : active?.purpose === "functional_fix" ? "functional_fix" : "implement";
+      this.restoreDispatchContext(key, runId);
+      this.transition(key, [w.state], "QUEUED", purpose === "implement" ? "execute" : purpose, {
         feedback: [...w.feedback, ...pending.map((m) => m.text)],
       });
       this.scheduler.enqueue(key, w.project_id);
@@ -3734,13 +3751,14 @@ export class Engine {
             stageModelRunRetry(this.store, key, runId);
             this.stageExecuteContinuation(key);
             const current = this.get(key);
-            this.invalidate(key, "异常修复，将按原角色继续");
+            // Invocation failure is not a source change; preserve completed work.
+            const failedRun = this.store.must<Run>("run", runId);
+            this.restoreDispatchContext(key, runId);
             this.transition(
               key,
               [current.state],
               "QUEUED",
-              this.store.get<{ planner?: boolean }>("repair_assignment", key)?.planner
-                ? "planner_takeover" : "auto_repair",
+              failedRun.stage,
               {
                 feedback: [...current.feedback, repair.instructions],
                 blocker: undefined,
@@ -4449,7 +4467,8 @@ export class Engine {
       const handoff = this.store.get<{ run_id: string }>("planner_commit_handoff", key);
       const source = handoff ? this.store.get<Run>("run", handoff.run_id) : undefined;
       const stopped = w.run_id ? this.store.get<Run>("run", w.run_id) : undefined;
-      const repair = this.store.get<{ source_run_id: string; instructions?: string }>("planner_integration_repair", key);
+      const repair = this.store.get<{ source_run_id: string; instructions?: string;
+        targets?: Array<{ repo_id: string; source_commit: string; candidate_commit: string }> }>("planner_integration_repair", key);
       const assignment = this.store.get<QualityRepairAssignment>("repair_assignment", key);
       const phase = this.store.get<{ phase: string }>("quality_flow", key)?.phase;
       const linkedRepair = source && (repair?.source_run_id === source.id ||
@@ -4473,10 +4492,11 @@ export class Engine {
         new UserInteractionService(this.store).supersedePendingInteractions(key);
         this.store.put("planner_integration_repair", key, key, {
           source_run_id: source!.id,
+          targets: repair?.targets,
           instructions: "当前提交恢复说明：本轮只完成最终 Git 提交与合并收尾。" +
             "保留已有开发、测试、验收结果和任务工作树中的维护修复；将已完成针对性验证的本任务修改纳入新的最终提交。" +
             "历史反馈中的开发、日志修复、补测与复核要求是已过阶段材料，不据此重开开发、全量测试或代码复核。" +
-            "不伪造测试通过结果，不修改已有测试记录；若出现新的真实冲突或未测代码修改，保留现场并明确报告。" +
+            "不伪造测试通过结果，不修改已有测试记录；按固定提交继续自动解决合并冲突并完成受影响的定向验证。确需用户决定时返回 need_user 和 user_interaction，等待弹窗答复。" +
             (repair?.instructions ? "\n原整合现场说明（仅供理解 Git 状态，阶段安排以上述当前说明为准）：\n" + repair.instructions : ""),
         });
         // Start a new commit round so already-tested maintenance changes are included.
