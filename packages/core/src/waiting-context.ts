@@ -258,7 +258,9 @@ export function continuationForRecovery(
     conversation_id?: string;
   },
 ): RunContinuation {
-  if (waiting) return preserveWaitingOwnership(waiting);
+  if (waiting && waitingBelongsToRun(waiting, fallback.source_run_id) &&
+      waiting.purpose === fallback.purpose && waiting.role === fallback.role)
+    return { ...preserveWaitingOwnership(waiting), source_run_id: fallback.source_run_id };
   return {
     kind: "runtime_resume",
     source_run_id: fallback.source_run_id,
@@ -290,7 +292,7 @@ export function waitingPurposeFromRun(
       phase: reviewPhaseOf(stage) ?? "before_human",
     };
   }
-  if (purpose === "planner_takeover")
+  if (purpose === "planner_takeover" || purpose === "planner_commit")
     return { purpose: "execute", role: "planner", phase: stage };
   return { purpose: "execute", role: "executor", phase: stage };
 }

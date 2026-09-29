@@ -200,6 +200,34 @@ it("shares the operation between two real text failures and a third prelaunch co
   expect(restore, JSON.stringify({ recoveryErrors, operations: switches().map(op => ({ phase: op.phase, error: op.error })) })).toHaveBeenCalledTimes(3);
 });
 
+it("retains all running bindings across same-account token refresh and switches once when that account is exhausted", async () => {
+  const one = source("refresh-one"); const two = source("refresh-two");
+  const a = await started(one); const b = await started(two);
+  const before = accounts.repository.getRealm(realmId)!;
+  const compare = accounts.authHost.compareActive.bind(accounts.authHost);
+  vi.spyOn(accounts.authHost, "compareActive").mockImplementation((realm, ref) =>
+    ref === before.active_secret_ref ? Promise.resolve(false) : compare(realm, ref));
+  vi.spyOn(accounts.authHost, "inspectActive").mockImplementation(async () => ({
+    exists: true, auth: { email: `${accounts.active()}@example.com` },
+  }));
+  await accounts.service.syncActiveAccountFromHost(realmId);
+  const refreshed = accounts.repository.getRealm(realmId)!;
+  expect(refreshed.active_secret_ref).not.toBe(before.active_secret_ref);
+  expect(refreshed.auth_epoch).toBe(a.auth_epoch);
+  const three = source("refresh-third"); const c = await started(three);
+  expect(c.auth_epoch).toBe(a.auth_epoch);
+  exhausted = true;
+  for (const [run, binding] of [[one, a], [two, b], [three, c]] as const) {
+    expect(await bridge.observeFailure(binding, quotaText(binding))).toBe(true);
+    markWaiting(run);
+  }
+  expect(switches()).toHaveLength(1);
+  await accounts.service.tick(Date.now());
+  expect(accounts.active()).toBe("b");
+  expect(installs).toHaveBeenCalledTimes(1);
+  expect(restore, JSON.stringify(recoveryErrors)).toHaveBeenCalledTimes(3);
+});
+
 it("leaves quota rejection manual when automatic switching is disabled", async () => {
   const run = source("auto-off"); await verifyZero();
   const policy = accounts.repository.getPolicy(run.workflow_id)!;

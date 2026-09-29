@@ -19,13 +19,13 @@ type Conversation = { id?: string; fingerprint?: string; run_id?: string; family
 export function continuationMatchesRun(store: Store, run: Pick<Run, "workflow_id" | "purpose" | "routing_role" | "assignment_id" | "plan_revision">,
   value: RunContinuation): boolean {
   const purpose = run.purpose === "quality_review" ? "review" : run.purpose === "planning" ? "planning"
-    : ["implement", "functional_fix", "planner_takeover"].includes(run.purpose ?? "") ? "execute" : undefined;
+    : ["implement", "functional_fix", "planner_takeover", "executor_test", "planner_commit"].includes(run.purpose ?? "") ? "execute" : undefined;
   if (value.purpose !== purpose) return false;
   const source = store.get<Run>("run", value.source_run_id);
   if (source && (source.workflow_id !== run.workflow_id || source.plan_revision !== run.plan_revision)) return false;
   if (purpose === "planning") return true;
   const role = run.routing_role === "planner" || run.routing_role === "reviewer" ||
-    run.purpose === "planner_takeover" || run.purpose === "quality_review" ? "planner" : "executor";
+    run.purpose === "planner_takeover" || run.purpose === "planner_commit" || run.purpose === "quality_review" ? "planner" : "executor";
   if (value.role && value.role !== role) return false;
   if (source?.purpose && source.purpose !== run.purpose) return false;
   if (source?.routing_role) {

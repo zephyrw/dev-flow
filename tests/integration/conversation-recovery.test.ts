@@ -245,6 +245,15 @@ function resumeBody(rootId: string, requestId = "resume-1") {
   };
 }
 
+async function observeChildPaused(conversations: ConversationService, controls: ConversationControlService, controlId: string) {
+  // Root-only native stop does not itself confirm child exit. Simulate the
+  // adapter's subsequent child state observation before asking to resume.
+  conversations.applyEvent(ctx(), event({ source_id: "src-run1", source_seq: "50", kind: "state",
+    session_native_id: "child-native", parent_native_id: "root-native", payload: { status: "paused", reason: "user_pause" } }));
+  const settled = await controls.reconcile("wf1", controlId);
+  expect(settled.unconfirmed_count).toBe(0);
+}
+
 describe("SA-I10 quota restore reuses purpose and treats delivered as not observed", () => {
   it("reuses original purpose and config, injects manifest, and keeps delivered distinct from observed", async () => {
     const { store, conversations, recovery, runPort } = openSession();
@@ -396,12 +405,14 @@ describe("SA-I12 quota timer, pause, config change and duplicate recover", () =>
     const { conversations, controls, recovery, runPort, store } = openSession();
     const root = discoverRoot(conversations);
     spawnChild(conversations, "child-native", "root-native", "2");
-    await controls.pauseTree("wf1", {
+    const paused = await controls.pauseTree("wf1", {
       request_id: "pause-race",
       action: "pause",
       root_id: root.id,
       expected_generation: 0,
     });
+    expect(paused.unconfirmed_count).toBe(1);
+    await observeChildPaused(conversations, controls, paused.control.id);
     const first = await recovery.arrangeRecovery(
       "wf1",
       resumeBody(root.id, "outbox-1"),
@@ -429,12 +440,14 @@ describe("SA-I12 quota timer, pause, config change and duplicate recover", () =>
       root_id: root.id,
       generation: 0,
     } satisfies ModelRetry);
-    await controls.pauseTree("wf1", {
+    const paused = await controls.pauseTree("wf1", {
       request_id: "pause-quota",
       action: "pause",
       root_id: root.id,
       expected_generation: 0,
     });
+    expect(paused.unconfirmed_count).toBe(1);
+    await observeChildPaused(conversations, controls, paused.control.id);
     expect(store.get("model_retry", "wf1")).toBeUndefined();
     store.put("model_retry", "wf1", "wf1", {
       id: "wf1",

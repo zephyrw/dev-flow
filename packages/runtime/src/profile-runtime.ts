@@ -19,7 +19,7 @@ import {
   redact,
   id,
 } from "../../core/src/util.js";
-import { acceptancePreparationInstructions, executionScopeInstructions, executionScopeWithoutTests, roleBoundaryInstructionsFor } from "../../core/src/role-boundaries.js";
+import { acceptancePreparationInstructions, executionScopeInstructions, executionScopeWithoutTests, planningWritingInstructions, roleBoundaryInstructionsFor } from "../../core/src/role-boundaries.js";
 import {
   verifyAndResolveExecutionInstructions,
   formatExecutionInstructionsForPrompt,
@@ -242,7 +242,7 @@ export class ProfileRuntime {
           run,
           {
             instructions:
-              "只读诊断故障。按当前唯一正式计划定位真实运行或环境故障根因，给出确定修复步骤；诊断不是代码质量审核，不能产出测试真实性核验或证明工具任务；需要改变范围时返回完整正式计划并等待批准。禁止另建替代计划。",
+              "只读诊断故障。沿用原计划定位真实运行或环境故障根因，说明问题、目标效果和必要修复事项；诊断不是代码质量审核，不能产出测试真实性核验或证明工具任务。需要改变范围时保留原计划完整正文和已完成进度，明确列出需用户决定的补充并等待授权，不以修订或恢复为由覆盖原需求。" + planningWritingInstructions,
             error,
             plan: this.planReference(w),
             authorities: this.engine.planSelfCheck.authorities(w),
@@ -461,7 +461,7 @@ export class ProfileRuntime {
     return applyPlanningHandoffMaterials(
       {
         instructions:
-          "你是规划模型。读取需求及引用的真实工作区文件，返回唯一正式计划。包含完整需求、确定实施步骤、单元/集成/E2E场景、前端仿人工真实浏览器核验场景、认证判定及受影响旧功能回归；等待用户批准后才实施。只读，不修改代码。如果提供 current_plan，须在同一任务中按用户的规划反馈修正该计划，逐条回应修改意见并提交完整新版，不能自行批准或启动实施。",
+          "你是规划模型。读取用户需求及必要的真实工作区材料，用自然语言交代完整开发工作，等待用户批准后才实施。只调查与规划，不修改产品代码。如果提供 current_plan，先读取原文并保留其完整内容及已完成进度；根据用户明确的规划反馈补充需要改变的事项。返回的 markdown 包含原正文及必要补充，不能只返回恢复摘要或用缩水正文替换原件。不能自行批准或启动实施。" + planningWritingInstructions,
         current_plan: w.plan_revision
           ? this.planReference(w)
           : null,
@@ -484,7 +484,7 @@ export class ProfileRuntime {
     const document = readPlanMaterial(this.engine.store, w.id, w.plan_revision);
     const { markdown: _markdown, ...plan } = record.plan;
     return { ...record, plan, path: document.path,
-      instruction: "读取 path 指向的项目计划原件；模型可在原件中追加进度与未解决问题。" };
+      instruction: "读取 path 指向的项目计划原件；保留原始需求与开发目标，真实完成后更新任务勾选框，可追加进度、未解决问题及用户明确授权的补充，不另存多份计划或用恢复摘要覆盖原文。" };
   }
   private executeMaterials(w: Workflow, run: Run) {
     const plan = this.engine.plan(w.id);
@@ -1450,12 +1450,7 @@ export function currentRunUserGuidance(
   // A runtime pause does not mean the model fulfilled its assigned guidance.
   // Follow only the scheduler-bound unfinished continuation, never general history.
   while (cursor.workflow_id === workflowId && cursor.purpose !== "aside") {
-    const continuation = boundConversationContinuation(store, cursor) ??
-      (["executor_test", "planner_commit"].includes(cursor.purpose ?? "")
-        ? [cursor.continuation, store.get<RunContinuation>("run_continuation", cursor.id)]
-          .find(value => value?.kind === "runtime_resume" && value.purpose === "execute" &&
-            value.role === (cursor.purpose === "planner_commit" ? "planner" : "executor"))
-        : undefined);
+    const continuation = boundConversationContinuation(store, cursor);
     if (continuation?.kind !== "runtime_resume" || assignedRuns.has(continuation.source_run_id)) break;
     const source = store.get<Run>("run", continuation.source_run_id);
     if (!source || source.workflow_id !== workflowId || source.purpose === "aside" ||
@@ -2006,9 +2001,12 @@ function guidanceForRunPurpose(
 export function nativeFailureDiagnostic(event: Record<string, any>): string {
   const error = event.result?.error ?? event.error;
   const deniedActions = event.result?.denied_actions ?? event.denied_actions;
+  // AGY's result also embeds earlier model/business output. That text is not
+  // the provider failure and must not invalidate model login (e.g. an expired
+  // application token mentioned in an old report beside a current quota error).
   const cause = error !== undefined || deniedActions !== undefined
-    ? JSON.stringify({ denied_actions: deniedActions, error }) + " " : "";
-  return "CLI 返回错误：" + redact(cause + JSON.stringify(event)).slice(0, 8000);
+    ? { denied_actions: deniedActions, error } : event;
+  return "CLI 返回错误：" + redact(JSON.stringify(cause)).slice(0, 8000);
 }
 
 function latestUpdated<T extends { updated_at?: string }>(items: T[]) {

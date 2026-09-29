@@ -49,3 +49,15 @@ it("retains non-result top-level errors and leaves unknown failures unknown", ()
   expect(nativeFailureDiagnostic(event)).toBe("CLI 返回错误：" + JSON.stringify(event));
   expect(classifyFailure(nativeFailureDiagnostic(event)).code).toBe("EXECUTION_FAILED");
 });
+
+it("does not invalidate model login because a quota result embeds an old business token error", () => {
+  const diagnostic = nativeFailureDiagnostic({ event: "result", result: {
+    status: "ERROR", error: "Individual quota reached. Resets in 3h54m.",
+    response: "此前业务接口 Access token has expired，缺少 SSO 会话，unauthenticated",
+    structured_output: { summary: "业务接口 token expired", status: "need_user" },
+  } });
+  expect(diagnostic).not.toContain("SSO");
+  expect(diagnostic).not.toContain("token expired");
+  expect(classifyFailure(diagnostic).code).toBe("MODEL_QUOTA");
+  expect((normalizeRuntimeFailure(new FlowError("NATIVE_RUN_FAILED", diagnostic)) as FlowError).code).toBe("MODEL_QUOTA");
+});

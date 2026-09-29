@@ -14,7 +14,9 @@ test("acceptance composer sends questions as original formal guidance and keeps 
       writes.push({ path, body: req.postDataJSON() });
       return route.fulfill({ json: { message_id: "sent", status: "accepted" } });
     }
-    if (path.endsWith("/functional-issues")) return route.fulfill({ json: [{ issue_id: "legacy", description: "旧功能问题", status: "fixing" }] });
+    if (path.endsWith("/functional-issues")) return route.fulfill({ json: [{ issue_id: "legacy", description: "旧功能问题", status: "ready_for_retest", fix_delivery_id: "delivery" }] });
+    if (path.endsWith("/functional-issue-views")) return route.fulfill({ json: [] });
+    if (path.endsWith("/execution-spec")) return route.fulfill({ json: { spec: {}, spec_revision: 1, workflow_version: workflow.version, can_edit: true } });
     if (path.endsWith("/asides")) return route.fulfill({ json: [] });
     if (path.endsWith("/conversations")) return route.fulfill({ json: { nodes: [], attempts: [], roots: [], active_root_id: "root" } });
     if (path.endsWith("/projects")) return route.fulfill({ json: [detail.project] });
@@ -38,5 +40,11 @@ test("acceptance composer sends questions as original formal guidance and keeps 
   await expect(page.locator(".conversation-composer-hint")).toHaveCount(0);
   await expect(page.locator(".task-interaction > :last-child")).toHaveClass("composer-anchor");
   await expect(page.locator(".conversation-composer > :last-child")).toHaveClass("conversation-composer-footer");
+  await page.getByRole("button", { name: "工具与模型", exact: true }).click();
+  const history = page.getByLabel("任务反馈记录");
+  await expect(history).toContainText("旧功能问题");
+  await history.getByRole("button", { name: "复测通过", exact: true }).click();
+  await expect.poll(() => writes.length).toBe(2);
+  expect(writes[1]).toMatchObject({ path: `/api/workflows/${workflow.id}/functional-issues/legacy/confirm`, body: { passed: true, delivery_revision_id: "delivery" } });
   expect(errors).toEqual([]);
 });

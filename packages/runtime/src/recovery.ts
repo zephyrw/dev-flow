@@ -33,6 +33,7 @@ import {
   readRunContinuation,
   readWaitingContext,
   savePlanningHandoff,
+  saveRunContinuation,
   waitingBelongsToRun,
 } from "../../core/src/waiting-context.js";
 import type { WaitingContext } from "../../core/src/waiting-context.js";
@@ -564,6 +565,12 @@ function arrangeConversationRecovery(
   const arranged = session.recovery.commitArrangement(key, session.request, {
     reason,
   });
+  const recoveryRun = engine.store.get<Run>("run", arranged.manifest.target_run_id);
+  if (recoveryRun?.continuation) {
+    // Carry the explicitly arranged paused Run into real dispatch. Otherwise a
+    // stale waiting_context can outrank this recovery in consumeContinuation.
+    saveRunContinuation(engine.store, key, key, recoveryRun.continuation);
+  }
   session.controls.resumeTree(key, session.request);
   return arranged;
 }

@@ -6,7 +6,7 @@ import {
 } from "../../contracts/src/index.js";
 import { recoveryGuidanceText } from "../../runtime/src/conversation-recovery.js";
 import { readOnlyPurpose } from "../../adapters/sdk/src/invocation.js";
-import { roleBoundaryInstructionsFor } from "./role-boundaries.js";
+import { planningWritingInstructions, roleBoundaryInstructionsFor } from "./role-boundaries.js";
 import {
   CURSOR_NO_CHILD_REASON,
   cursorSubagentCapabilities,
@@ -156,7 +156,7 @@ function roleWorkHint(role: RecoveryGuidanceRole): string {
   if (["planner_takeover", "executor_test", "planner_commit", "functional_fix"].includes(role))
     return roleBoundaryInstructionsFor(role);
   if (role === "planning")
-    return "继续原规划用途：只调查和规划，不修改产品代码，不自行批准或启动执行。";
+    return "继续原规划用途：只调查和规划，不修改产品代码，不自行批准或启动执行。" + planningWritingInstructions;
   if (role === "execute")
     return "继续原开发用途：按已批准计划实施，不另建替代计划。";
   if (role === "review")

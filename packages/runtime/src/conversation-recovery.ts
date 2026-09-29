@@ -329,7 +329,7 @@ export class ConversationRecovery {
     const purpose = preservedPurpose(fence, sourceRun, tree, request.root_id);
     const priorContinuation = fence?.continuation ?? sourceRun?.continuation;
     const validatedContinuation = sourceRun && priorContinuation &&
-      ["implement", "functional_fix", "planner_takeover", "quality_review", "planning"].includes(purpose)
+      ["implement", "functional_fix", "planner_takeover", "executor_test", "planner_commit", "quality_review", "planning"].includes(purpose)
       ? continuationMatchesRun(this.deps.store, { ...sourceRun, purpose: purpose as Run["purpose"] }, priorContinuation) ? priorContinuation : undefined
       : priorContinuation;
     const ownership = waitingPurposeFromRun(

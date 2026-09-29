@@ -671,9 +671,16 @@ export class AgyAccountService {
           realm.active_account_id !== matched.id ||
           realm.active_secret_ref !== matched.secret_ref
         ) {
+          // Refreshing the same authenticated account's token is not a switch.
+          // Advancing the epoch here invalidates every still-running consumer
+          // and makes their later quota failures ineligible for auto recovery.
+          const sameIdentity = realm.active_account_id === matched.id &&
+            activeEmail?.trim() === matched.identity.email.trim().toLowerCase() &&
+            (!inspection.auth?.subject || !matched.identity.subject ||
+              inspection.auth.subject === matched.identity.subject);
           realm.active_account_id = matched.id;
           realm.active_secret_ref = matched.secret_ref;
-          realm.auth_epoch++;
+          if (!sameIdentity) realm.auth_epoch++;
           realm.revision++;
           this.repository.saveRealm(realm);
         }
