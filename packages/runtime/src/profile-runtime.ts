@@ -59,6 +59,7 @@ import { createDefaultAdapterRegistry, resolveSessionIdentity } from "../../adap
 import { ExecutionSessionStore } from "../../core/src/execution-session-store.js";
 import { CliDispatchManager, type CliDispatchRecord } from "./cli-dispatch.js";
 import { computeSessionBindingKey } from "../../contracts/src/session-binding.js";
+import { agySessionAcrossAccounts } from "./agy-session-resume.js";
 import { readOnlyPurpose } from "../../adapters/sdk/src/invocation.js";
 import type {
   HostChunk,
@@ -776,10 +777,22 @@ export class ProfileRuntime {
     const sessionKey = computeSessionBindingKey(bindingKey);
     const taskStrategy: "unified" | "legacy" = (w as any).binding_strategy ?? "legacy";
     let sessionBinding: any;
+    const accountRecovery = this.engine.store.get<{
+      decision: string;
+      original_conversation_id?: string;
+    }>("account_recovery_continuation", run.id) ?? (run as any).pending_model_retry?.account_recovery;
 
     if (purpose !== "aside") {
       if (taskStrategy === "unified") {
-        sessionBinding = this.executionSessionStore.getOrCreateBinding(bindingKey, {
+        const exactBinding = this.executionSessionStore.getBinding(bindingKey);
+        // AGY's local history survives credential changes. Reuse the latest
+        // compatible confirmed root without overwriting any historical binding.
+        const agyBinding = (!accountRecovery || accountRecovery.decision === "exact_resume") &&
+          exactBinding?.state !== "unavailable" && exactBinding?.state !== "retired"
+          ? agySessionAcrossAccounts(this.engine.store, bindingKey,
+              accountRecovery?.decision === "exact_resume" ? accountRecovery.original_conversation_id : undefined)
+          : undefined;
+        sessionBinding = agyBinding ?? this.executionSessionStore.getOrCreateBinding(bindingKey, {
           workspace_root: primaryWs?.root ?? "",
           source_root: primaryWs?.source_root ?? primaryWs?.root ?? "",
           repo_id: primaryWs?.repo_id ?? "primary",
@@ -834,10 +847,6 @@ export class ProfileRuntime {
         }
       }
     }
-    const accountRecovery = this.engine.store.get<{
-      decision: string;
-      original_conversation_id?: string;
-    }>("account_recovery_continuation", run.id) ?? (run as any).pending_model_retry?.account_recovery;
     if (accountRecovery && purpose !== "aside") {
       if (accountRecovery.decision === "manual_required") {
         throw new FlowError("ACCOUNT_RECOVERY_MANUAL_REQUIRED", "账号恢复需要人工处理", 409);
