@@ -1072,6 +1072,7 @@ export class ProfileRuntime {
       failure: string | undefined,
       stderrTail = "";
     let permissionFailure: FlowError | undefined;
+    let agyResult: Record<string, any> | undefined;
     const retainConversation = (session?: string) => {
       if (!session) return;
       if (previous && previous.id !== session) return;
@@ -1148,9 +1149,9 @@ export class ProfileRuntime {
     const handle = (event: NormalizedEvent, decodedConversation = false) => {
       const v = event.raw as any;
       if (v && typeof v === "object") {
+        if (profile.adapterId === "agy") accountTurn.accept(v);
         if (accountBinding) {
           this.accountBridge?.observeNativeEvent(run.id, v);
-          accountTurn.accept(v);
           const eventType = v.event ?? v.type;
           const candidate = classifyAgyFailure({
             realmId: accountBinding.realm_id,
@@ -1167,6 +1168,11 @@ export class ProfileRuntime {
           else if (eventType === "result") accountFailure = undefined;
         }
         if (!decodedConversation) telemetry.accept(v);
+        if (profile.adapterId === "agy" && v.event === "result") {
+          // A resumed footer can retain a prior turn's error. Reconcile it only
+          // after this process has exited, without replacing other failures.
+          agyResult = v.result;
+        }
         if (
           profile.adapterId === "agy" &&
           v.event === "result" &&
@@ -1189,7 +1195,7 @@ export class ProfileRuntime {
           v.type === "error" ||
           v.event === "error" ||
           v.type === "turn.failed" ||
-          (v.event === "result" && v.result?.error)
+          (profile.adapterId !== "agy" && v.event === "result" && v.result?.error)
         )
           failure ??= nativeFailureDiagnostic(v);
         if (v.structured_output) final = v.structured_output;
@@ -1271,6 +1277,17 @@ export class ProfileRuntime {
       exit = await proc.completion;
       consume("stdout", "", true);
       consume("stderr", "", true);
+      if (agyResult?.error) {
+        const stderrCode = classifyFailure(stderrTail).code;
+        const stderrFailed = stderrCode !== "EXECUTION_FAILED";
+        if (stderrFailed) failure ??= redact(stderrTail).trim();
+        const reported = accountTurn.reportedFailure(agyResult.response);
+        if (reported) failure ??= `${reported.code}: ${reported.message}`;
+        const historical = exit.code === 0 && !exit.termination_reason &&
+          !failure && !permissionFailure && !this.engine.store.get("run_stop", run.id) &&
+          accountTurn.staleError(agyResult, [], exit.code);
+        if (!historical) failure ??= nativeFailureDiagnostic({ event: "result", result: agyResult });
+      }
     } finally {
       stopQuota?.();
       await sessionObserver?.close();
