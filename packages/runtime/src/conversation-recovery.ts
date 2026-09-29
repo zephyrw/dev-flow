@@ -27,6 +27,7 @@ import {
   type ConversationControlService,
 } from "../../core/src/conversation-control.js";
 import type { ConversationService } from "../../core/src/conversation-service.js";
+import { hasSuccessorRoot } from "../../core/src/conversation-root-order.js";
 import { latestSpec } from "../../core/src/run-profile.js";
 import { continuationMatchesRun } from "../../core/src/conversation-lineage.js";
 import {
@@ -556,7 +557,7 @@ export class ConversationRecovery {
     const root = all.nodes.find((node) => node.id === request.root_id);
     if (!root)
       throw new FlowError(CONVERSATION_ERROR.NOT_FOUND, "会话根不存在", 404);
-    if (root.id !== root.root_id || hasSuccessorRoot(all, root)) {
+    if (root.id !== root.root_id || hasSuccessorRoot(this.deps.store, all, root)) {
       throw new FlowError(
         CONVERSATION_ERROR.STALE_ROOT,
         "会话根已切换，不能停止新的运行",
@@ -846,22 +847,6 @@ function countLiveTargets(
     const attempt = latestAttempt(tree.attempts, node.id);
     return !!attempt && isLiveConversationStatus(attempt.status);
   }).length;
-}
-
-function hasSuccessorRoot(
-  tree: ConversationTreeSnapshot,
-  root: ConversationNode,
-): boolean {
-  return tree.nodes.some(
-    (node) =>
-      node.id === node.root_id &&
-      node.id !== root.id &&
-      (node.replaces_conversation_id === root.id ||
-        (node.lineage_id === root.lineage_id &&
-          node.adapter_id === root.adapter_id &&
-          node.kind === root.kind &&
-          node.created_at > root.created_at)),
-  );
 }
 
 function isAsideNode(node: ConversationNode): boolean {

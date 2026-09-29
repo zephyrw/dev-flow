@@ -6,6 +6,7 @@ import { ProfileRuntime } from "../../packages/runtime/src/profile-runtime.js";
 import { agySessionAcrossAccounts } from "../../packages/runtime/src/agy-session-resume.js";
 import { ExecutionSessionStore } from "../../packages/core/src/execution-session-store.js";
 import { ModelAccessService } from "../../packages/core/src/model-access-service.js";
+import { frozenInvocationFromProfile } from "../../packages/core/src/run-profile.js";
 import { AgyNativeCliAdapter } from "../../packages/adapters/agy/src/adapter.js";
 import { computeSessionBindingKey, computeSessionOwnerKey, type SessionBindingKey } from "../../packages/contracts/src/session-binding.js";
 import type { Run, ToolProfile, Workflow } from "../../packages/contracts/src/index.js";
@@ -51,9 +52,9 @@ function invocationFixture() {
     identity.mockReturnValue({ identityConfidence: "account", accountId: account, accountFingerprint: frozenAccount } as any);
     const profile: ToolProfile = { id: "fixture-agy", revision: 1, adapterId: "agy", executableRef: process.execPath,
       modelSelection: "explicit", modelId: "gemini-fixture", reasoning: { mode: "native-default" }, selectionKind: "fixed", options: {} };
-    const run = { ...s.source, id, purpose, status: "running", profile,
-      frozen_invocation: { executable: process.execPath, accountScope: account, modelToken: "gemini-fixture", modelArgs: ["--model", "gemini-fixture"], effortArgs: [], effortEnv: {} },
-      continuation: { kind: "runtime_resume", purpose: "execute", role: "executor", source_run_id: s.source.id } } as Run;
+    const run: Run = { ...s.source, id, purpose, status: "running", profile,
+      frozen_invocation: { ...frozenInvocationFromProfile(profile, "profile-native"), accountScope: account },
+      continuation: { kind: "runtime_resume", purpose: "execute", role: "executor", source_run_id: s.source.id } };
     s.store.put("run", id, workflow.id, run);
     try {
       return await runtime.invoke(workflow, run, { instructions: "fixture" }, {}, undefined,

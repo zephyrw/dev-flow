@@ -25,6 +25,7 @@ import {
 import type { RunContinuation } from "../../contracts/src/tr-handoff.js";
 import { id } from "./util.js";
 import { ConversationService } from "./conversation-service.js";
+import { hasSuccessorRoot } from "./conversation-root-order.js";
 
 export const PAUSE_HINT_MS = 10_000;
 export const PAUSE_PARTIAL_MS = 30_000;
@@ -283,7 +284,7 @@ export class ConversationControlService {
         "会话根已切换，不能停止新的运行",
         409,
       );
-    if (hasSuccessorRoot(all, root))
+    if (hasSuccessorRoot(this.store, all, root))
       throw new FlowError(
         CONVERSATION_ERROR.STALE_ROOT,
         "会话根已切换，不能停止新的运行",
@@ -772,22 +773,6 @@ function assertSameRequest(
       "同一幂等键的参数不同",
       409,
     );
-}
-
-function hasSuccessorRoot(
-  tree: ConversationTreeSnapshot,
-  root: ConversationNode,
-): boolean {
-  return tree.nodes.some(
-    (node) =>
-      node.id === node.root_id &&
-      node.id !== root.id &&
-      (node.replaces_conversation_id === root.id ||
-        (node.lineage_id === root.lineage_id &&
-          node.adapter_id === root.adapter_id &&
-          node.kind === root.kind &&
-          node.created_at > root.created_at)),
-  );
 }
 
 function latestAttempt(

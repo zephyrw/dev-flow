@@ -245,6 +245,62 @@ function resumeBody(rootId: string, requestId = "resume-1") {
   };
 }
 
+function reusedRootSession() {
+  const s = openSession();
+  const first = s.store.must<Run>("run", "run1");
+  const observe = (runId: string, nativeId: string, hour: string) => {
+    const timestamp = `2026-09-20T${hour}:00:00.000Z`;
+    s.store.put("run", runId, "wf1", { ...first, id: runId, started_at: timestamp });
+    return s.conversations.applyEvent(ctx({ run_id: runId, root_native_id: nativeId }), event({
+      source_id: `reuse-${runId}`, source_seq: "1", root_native_id: nativeId, session_native_id: nativeId,
+      occurred_at: timestamp, payload: { status: "running" },
+    })).node!;
+  };
+  const oldRoot = observe("run1", "root-native", "01");
+  const laterRoot = observe("run2", "other-account-root", "02");
+  const reused = observe("run3", "root-native", "03");
+  expect(reused.id).toBe(oldRoot.id);
+  expect(reused.created_at < laterRoot.created_at).toBe(true);
+  s.store.put("workflow", "wf1", "proj1", { ...s.store.must<Workflow>("workflow", "wf1"), run_id: "run3" });
+  const generation = s.conversations.getTree("wf1").attempts.find((a) => a.run_id === "run3" && a.conversation_id === reused.id)!.generation;
+  return { ...s, reused, laterRoot, generation };
+}
+
+describe("reused native roots follow the latest execution instead of node creation", () => {
+  it("can pause and recover the old root after a newer Run reused it", async () => {
+    const s = reusedRootSession();
+    try {
+      const paused = await s.controls.pauseTree("wf1", {
+        request_id: "pause-reused", action: "pause", root_id: s.reused.id, expected_generation: s.generation,
+      });
+      expect(paused.unconfirmed_count).toBe(0);
+      const result = await s.recovery.arrangeRecovery("wf1", {
+        ...resumeBody(s.reused.id, "resume-reused"), expected_generation: s.generation,
+      }, { reason: "user_resume" });
+      expect(result.manifest.source_run_id).toBe("run3");
+      expect(result.manifest.root_conversation_id).toBe(s.reused.id);
+      expect(s.runPort.requests).toHaveLength(1);
+    } finally { s.store.close(); }
+  });
+
+  it("both entry points reject the superseded root even after its delayed activity event", async () => {
+    const s = reusedRootSession();
+    try {
+      s.conversations.applyEvent(ctx({ run_id: "run2", root_native_id: "other-account-root" }), event({
+        source_id: "reuse-run2", source_seq: "2", root_native_id: "other-account-root", session_native_id: "other-account-root",
+        occurred_at: "2026-09-20T04:00:00.000Z", kind: "activity", payload: { summary: "delayed older run observation" },
+      }));
+      await expect(s.controls.pauseTree("wf1", {
+        request_id: "pause-superseded", action: "pause", root_id: s.laterRoot.id, expected_generation: 0,
+      })).rejects.toMatchObject({ code: CONVERSATION_ERROR.STALE_ROOT });
+      await expect(s.recovery.arrangeRecovery("wf1", resumeBody(s.laterRoot.id, "resume-superseded"),
+        { reason: "user_resume" })).rejects.toMatchObject({ code: CONVERSATION_ERROR.STALE_ROOT });
+      expect(s.runPort.requests).toHaveLength(0);
+      expect(s.conversations.getTree("wf1").attempts.find((a) => a.run_id === "run3")?.status).toBe("running");
+    } finally { s.store.close(); }
+  });
+});
+
 async function observeChildPaused(conversations: ConversationService, controls: ConversationControlService, controlId: string) {
   // Root-only native stop does not itself confirm child exit. Simulate the
   // adapter's subsequent child state observation before asking to resume.
