@@ -8,6 +8,7 @@ import type {
 } from "../../../agy-accounts/src/ports.js";
 import { parseAgyUsageOutput, type ParsedQuotaResult } from "./quota-parser.js";
 import { resolveAgyExecutable } from "./executable-resolver.js";
+import { hasConflictingAgyFailureDiagnostic, isAgyIndividualQuotaError } from "./failure-fact.js";
 
 export interface VerifiedUsageAdapter {
   /** Installed by a code-reviewed official-output adapter, never supplied by HTTP. */
@@ -53,16 +54,6 @@ export function parseModelAccessOutput(
     }
   }
 
-  // 检查是否有错误事件
-  const hasError = events.some(
-    (event) =>
-      event.event === "error" ||
-      event.type === "error" ||
-      (event.result as any)?.status === "ERROR" ||
-      event.is_error === true,
-  );
-  if (hasError) return { success: false, reason: "error_event_present" };
-
   // 必须有本次匹配的初始化事件
   const initEvent = events.find(
     (e) =>
@@ -88,6 +79,18 @@ export function parseModelAccessOutput(
   if (!isMatch) {
     return { success: false, reason: "model_mismatch" };
   }
+
+  // This probe creates a fresh invocation, never resumes a conversation. Keep
+  // the provider's explicit quota cause after checking the requested model.
+  const last = events.at(-1);
+  if ((last?.event === "result" || last?.type === "result") &&
+      (last?.result as any)?.status === "ERROR" &&
+      isAgyIndividualQuotaError((last?.result as any)?.error) &&
+      !((last?.result as any)?.denied_actions?.length))
+    return { success: false, reason: "agy_model_quota_exhausted" };
+  const hasError = events.some(event => event.event === "error" || event.type === "error" ||
+    (event.result as any)?.status === "ERROR" || event.is_error === true);
+  if (hasError) return { success: false, reason: "error_event_present" };
 
   // 必须有明确成功终态
   const hasSuccessResult = events.some(
@@ -316,12 +319,17 @@ export class AgyAccountProbe implements AccountProbePort {
         { ...options, timeoutMs: options.timeoutMs ?? 15000, signal: flight.controller.signal },
       );
       flight.controller.signal.throwIfAborted();
-      if (result.code !== 0) return false;
       const parsed = parseModelAccessOutput(result.stdout, {
         modelId,
         accountId: options.account_id,
         cwd: options.cwd,
       });
+      if (result.code === 3 && parsed.reason === "agy_model_quota_exhausted" &&
+          !hasConflictingAgyFailureDiagnostic(result.stderr))
+        throw Object.assign(new Error("agy_model_quota_exhausted"), {
+          code: "agy_model_quota_exhausted", account_id: options.account_id, model_id: modelId,
+        });
+      if (result.code !== 0) return false;
       if (parsed.success) this.modelAccessCache.set(key, Date.now());
       return parsed.success;
     }).finally(() => {
@@ -359,7 +367,7 @@ export class AgyAccountProbe implements AccountProbePort {
   private async execute(
     args: string[],
     options: ProbeOptions,
-  ): Promise<{ code: number | null; stdout: string }> {
+  ): Promise<{ code: number | null; stdout: string; stderr: string }> {
     const resPath = resolveAgyExecutable(this.cliPath);
     const executable = resPath.resolvedPath ?? this.cliPath ?? process.env.AGY_CLI_PATH;
     if (!executable) throw new Error("agy_cli_not_configured");
@@ -398,6 +406,6 @@ export class AgyAccountProbe implements AccountProbePort {
       timeoutMs: hostTimeoutMs,
       signal: options.signal,
     });
-    return { code: res.code, stdout: res.stdout };
+    return { code: res.code, stdout: res.stdout, stderr: res.stderr };
   }
 }

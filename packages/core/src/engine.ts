@@ -53,6 +53,7 @@ import {
   type Plan,
   type Project,
   type Run,
+  type FeedbackMessage,
   type Snapshot,
   type Evidence,
   type Review,
@@ -560,7 +561,7 @@ export class Engine {
     state: State,
     stage: string,
     patch: Partial<Workflow> = {},
-    event: { resumed?: boolean; repair_source?: "quality_review"; source_review_id?: string } = {},
+    event: { resumed?: boolean; repair_source?: "quality_review"; source_review_id?: string; guidance_mode?: "human_acceptance" } = {},
   ) {
     return this.store.transaction(() => {
       const w = this.get(key);
@@ -795,14 +796,12 @@ export class Engine {
           else if (!this.store.get("functional_retest_ready", key))
             this.quality.assertPassed(key, "before_human");
         }
-        requireCondition(
-          !new FunctionalIssueService(this.store).hasUnresolvedIssues(key),
-          "UNRESOLVED_ISSUES",
-          "存在尚未确认修复的功能问题",
-        );
       }
       this.store.transaction(() => {
         this.auth.consumeProof(proof, "accept", binding);
+        // The explicit overall acceptance is the user's decision. Legacy issue
+        // bookkeeping must not require a second, hidden confirmation first.
+        new FunctionalIssueService(this.store).confirmAtAcceptance(key);
         this.store.put("acceptance", key, key, {
           snapshot_id: w.snapshot_id,
           environment_revision: w.environment_revision,
@@ -886,6 +885,38 @@ export class Engine {
       "FEEDBACK_INVALID",
       "反馈内容无效",
     );
+    const ordinaryAcceptanceGuidance = scope === "within_plan" && w.state === "HUMAN_PENDING" &&
+      !this.store.list<{ text: string; kind?: string; status: string }>("feedback_message", key)
+        .some((message) => message.status === "pending" && message.text === text && message.kind === "functional");
+    if (ordinaryAcceptanceGuidance) {
+      this.store.remove("model_retry", key);
+      this.store.remove("pending_model_retry", key);
+      this.supersedePendingContinuation(key);
+      new UserInteractionService(this.store).supersedePendingInteractions(key);
+      const next = this.transition(key, [w.state], "QUEUED", "acceptance_guidance", {
+        feedback: [...w.feedback, text], blocker: undefined,
+      });
+      this.scheduler.enqueue(key, w.project_id);
+      this.store.enqueue(key, "dispatch_run", { purpose: "functional_fix", guidance_mode: "human_acceptance" });
+      return next;
+    }
+    if (scope === "within_plan" && w.state === "STOPPED") {
+      // A new user instruction explicitly resumes this stopped task; other
+      // dispatch controls (including unconfirmed processes) remain in force.
+      new CliDispatchManager(this.store).removeControlReason(key, "workflow_pause");
+      const stopped = w.run_id ? this.store.get<Run>("run", w.run_id) : undefined;
+      if (stopped?.dispatch_context?.guidance_mode === "human_acceptance" && stopped.status !== "completed") {
+        saveRunContinuation(this.store, key, key, { kind: "runtime_resume", purpose: "execute", role: "executor",
+          source_run_id: stopped.id, conversation_id: stopped.conversation_id });
+        this.restoreDispatchContext(key, stopped.id);
+        const next = this.transition(key, [w.state], "QUEUED", "acceptance_guidance", {
+          feedback: [...w.feedback, text], blocker: undefined,
+        });
+        this.scheduler.enqueue(key, w.project_id);
+        this.store.enqueue(key, "dispatch", {});
+        return next;
+      }
+    }
     if (scope === "within_plan") prepareRepairResume(this, key);
     this.store.remove("model_retry", key);
     if (
@@ -1530,7 +1561,7 @@ export class Engine {
     const pending = this.store.get<Partial<DispatchContext>>("pending_dispatch_purpose", key);
     if (run.status === "completed" && pending?.source_run_id === run.id && pending.purpose) return;
     this.store.put("pending_dispatch_purpose", key, key, {
-      ...buildDispatchContext(this.store, key, run.purpose),
+      ...(run.dispatch_context?.guidance_mode === "human_acceptance" ? {} : buildDispatchContext(this.store, key, run.purpose)),
       ...run.dispatch_context, purpose: run.purpose, logical_round_id: run.logical_round_id,
       assignment_id: run.assignment_id, source_run_id: run.dispatch_context?.source_run_id,
       retry_run_id: this.store.get<PendingModelRetry>("pending_model_retry", key)?.retry_run_id,
@@ -1707,6 +1738,20 @@ export class Engine {
     recordExecutionTestReport(this.store, w, this.store.must<Run>("run", runId), normalized.payload);
     if (normalized.intent !== "completed")
       return this.routeExecutionIntent(key, runId, normalized);
+
+    const guidanceRun = this.store.must<Run>("run", runId);
+    if (guidanceRun.dispatch_context?.guidance_mode === "human_acceptance") {
+      requireCondition(w.state === "EXECUTING" && ["running", "completed"].includes(guidanceRun.status),
+        "INVALID_STATE", "当前指导轮次不能提交结果");
+      const result = normalizeOptionalDeliveryManifest(normalized.payload);
+      const summary = [result.summary, typeof result.notes === "string" ? result.notes : undefined]
+        .filter(Boolean).join("\n\n");
+      recordExecutionCompletion(this.store, { run_id: runId, workflow_id: key, intent: "completed",
+        summary, recorded_at: now() });
+      this.store.event(key, w.project_id, "UserGuidanceCompleted", { summary }, runId);
+      if (guidanceRun.status === "completed") await this.finalizeNativeDelivery(key, runId);
+      return { status: "accepted", state: this.get(key).state, message: "本轮指导回复已记录，任务仍等待人工验收。" };
+    }
 
     let payload: DeliveryManifest = normalizeOptionalDeliveryManifest(normalized.payload);
 
@@ -2206,6 +2251,21 @@ export class Engine {
       (active?.exit_code !== undefined && active.exit_code !== 0)
     )
       return;
+    if (active.dispatch_context?.guidance_mode === "human_acceptance") {
+      const pending = this.store.list<FeedbackMessage>("feedback_message", key).filter((message) => message.status === "pending");
+      if (pending.length) {
+        const ordinary = pending.every((message) => message.kind !== "functional");
+        this.transition(key, [w.state], "QUEUED", ordinary ? "acceptance_guidance" : "functional_fix", {
+          feedback: [...w.feedback, ...pending.map((message) => message.text)],
+        });
+        this.scheduler.enqueue(key, w.project_id);
+        this.store.enqueue(key, "dispatch_run", { purpose: "functional_fix",
+          ...(ordinary ? { guidance_mode: "human_acceptance" } : { repair_kind: "functional" }) });
+      } else {
+        this.transition(key, [w.state], "HUMAN_PENDING", "accept", { blocker: undefined }, { guidance_mode: "human_acceptance" });
+      }
+      return;
+    }
     // 策略 2：规划提交完成后直接本地集成，不走质量复核。
     if (active?.purpose === "planner_commit" && usesPolicyV2(w)) {
       await this.completePlannerCommit(key, runId, completion);
@@ -2795,6 +2855,7 @@ export class Engine {
             planner_takeover: payload.planner_takeover, source_run_id: payload.source_run_id,
             assignment_id: payload.assignment_id, logical_round_id: payload.logical_round_id,
             repair_batch_id: payload.repair_batch_id, functional_fix_intent: payload.functional_fix_intent,
+            guidance_mode: payload.guidance_mode,
             associated_run_id: payload.associated_run_id, retry_run_id: payload.retry_run_id,
           };
           this.store.put("pending_dispatch_purpose", job.workflow_id, job.workflow_id,
@@ -3309,7 +3370,8 @@ export class Engine {
           (w.stage === "planner_commit" || w.stage === "executor_test" || w.stage === "functional_fix" || w.stage === "planner_takeover"
             ? w.stage : assignment?.planner ? "planner_takeover" : "implement");
       const dispatchContext = {
-        ...buildDispatchContext(this.store, key, purpose),
+        ...(pendingPurpose?.guidance_mode === "human_acceptance" || retryRun?.dispatch_context?.guidance_mode === "human_acceptance"
+          ? {} : buildDispatchContext(this.store, key, purpose)),
         ...pendingPurpose,
         ...(retryRun?.dispatch_context ?? {}),
         ...(retryRunId ? { retry_run_id: retryRunId } : {}),
@@ -3322,7 +3384,7 @@ export class Engine {
         purpose,
         dispatchContext,
       );
-      const stage = review
+      const stage = dispatchContext.guidance_mode === "human_acceptance" ? "acceptance_guidance" : review
         ? dispatchContext.review_phase === "before_human" ? BEFORE_HUMAN_REVIEW_STAGE : "review"
         : purpose === "implement" ? "execute" : purpose;
       const pendingRetry = this.store.get<PendingModelRetry>("pending_model_retry", key);
@@ -3387,7 +3449,7 @@ export class Engine {
 
         this.bindAccountRecoveryRun(run, pendingRetry);
 
-        if (!review) {
+        if (!review && dispatchContext.guidance_mode !== "human_acceptance") {
           const assignment = this.store.get<QualityRepairAssignment>(
             "repair_assignment",
             key,
@@ -3400,7 +3462,7 @@ export class Engine {
                 assignment.repair_cycle_id ?? assignment.assignment_id,
             });
           this.startImplementationAttempt(key, runId);
-        } else {
+        } else if (review) {
           this.patchReviewPointer(key, { review_run_id: runId });
         }
         if (profileBinding.assignment_id) bindRepairAssignment(this.store, key, profileBinding.assignment_id);
@@ -3415,7 +3477,7 @@ export class Engine {
           status: "acknowledged",
           ack_run: runId,
         });
-      if (!review) {
+      if (!review && dispatchContext.guidance_mode !== "human_acceptance") {
         markOpenIssuesFixing(this, key, profileBinding.repair_batch_id);
       }
       const timer = setInterval(

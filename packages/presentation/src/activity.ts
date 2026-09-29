@@ -155,7 +155,9 @@ export function workflowProgress(
   const labels = display.native
     ? [...stages.slice(0, 4), "验收前质量审查", "人工验收", "验收后代码复核", "本地提交"]
     : stages;
-  const index = display.native
+  const index = phase === "acceptance_guidance"
+    ? display.native ? 5 : 4
+    : display.native
     ? state === "HUMAN_PENDING" ? 5
       : ["REVIEW_QUEUED", "REVIEWING"].includes(state)
         ? phase === "quality_before_human" ? 4 : 6
@@ -193,6 +195,8 @@ export function workflowProgress(
         : labels[index],
     next: paused
       ? "处理下方问题后，点击“继续这个任务”；保留已有计划和修改，重新核验完成证据。"
+      : phase === "acceptance_guidance"
+        ? state === "QUEUED" ? "你的指导已排队，等待执行模型处理" : "执行模型正在处理你的指导，回复和操作显示在执行过程"
       : phase === "quality_before_human" && ["REVIEWING", "REVIEW_QUEUED"].includes(state)
         ? "规划模型审查代码质量与测试结果，通过后进入人工验收"
         : (next[w.state] ?? "等待工作流更新"),
@@ -519,7 +523,7 @@ export function readableLogs(events: any[], workflow: string, formalGuidance: Ar
             ? "规划模型接手已排队"
             : p.stage === "auto_repair"
               ? "修复已排队"
-            : p.stage === "functional_fix"
+            : ["functional_fix", "acceptance_guidance"].includes(p.stage)
               ? "验收指导已排队"
               : "等待执行";
         text =
@@ -527,7 +531,7 @@ export function readableLogs(events: any[], workflow: string, formalGuidance: Ar
             ? "保留已有修改，等待规划模型接手实际修复与自测。"
             : p.stage === "auto_repair"
               ? "保留已有修改和原会话，等待执行模型继续修复。"
-            : p.stage === "functional_fix"
+            : ["functional_fix", "acceptance_guidance"].includes(p.stage)
               ? "保留当前工作区，等待执行模型处理你的验收指导。"
               : "等待可用执行资源。";
       } else if (p.to === "EXECUTING" && p.from === "QUEUED") {
@@ -536,7 +540,7 @@ export function readableLogs(events: any[], workflow: string, formalGuidance: Ar
             ? "规划模型开始修复"
             : p.stage === "executor_test"
               ? (p.resumed === true ? "继续测试" : "开始测试")
-            : p.stage === "functional_fix"
+            : ["functional_fix", "acceptance_guidance"].includes(p.stage)
               ? "处理验收指导"
             : p.repair_source === "quality_review"
               ? "修复代码复核问题"
@@ -549,13 +553,16 @@ export function readableLogs(events: any[], workflow: string, formalGuidance: Ar
             ? "正在启动规划模型；收到真实工具事件后展示修改、自测与完成说明。"
             : p.stage === "executor_test"
               ? "由执行模型沿已有进度完成指定测试和必要修复。"
-            : p.stage === "functional_fix"
+            : ["functional_fix", "acceptance_guidance"].includes(p.stage)
               ? "按照你当前的验收指导处理启动验收服务或具体修改，保留已有计划、工作区和执行进度。"
             : p.repair_source === "quality_review"
               ? "沿用原批准计划和已有修改，按本轮代码复核问题逐项整改并进行必要测试。"
             : p.resumed === true
               ? "保留原计划、已有修改和执行进度，继续处理本轮尚未完成的工作。"
               : "执行模型自主安排本轮开发与自测，完成后交代码质量审查。";
+      } else if (p.to === "HUMAN_PENDING" && p.guidance_mode === "human_acceptance") {
+        title = "指导处理完成";
+        text = "请查看执行模型的回复和操作结果，继续沟通或实际验收。";
       } else if (p.to === "REVIEW_QUEUED") {
         title = "等待规划模型审查";
         text =
@@ -596,6 +603,10 @@ export function readableLogs(events: any[], workflow: string, formalGuidance: Ar
     if (e.type === "TaskClaimed") {
       title = "实现结果已提交";
       text = p.summary ?? p.title ?? p.task_id ?? "";
+    }
+    if (e.type === "UserGuidanceCompleted") {
+      title = "执行模型回复";
+      text = p.summary ?? "本轮指导已处理。";
     }
     if (e.type === "EvidenceInvalidated") continue;
     if (e.type === "CheckOutput") title = "测试输出";

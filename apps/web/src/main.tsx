@@ -2280,6 +2280,8 @@ function App() {
                       ? "等待模型额度"
                       : w.stage === "auto_repair"
                         ? "准备自动修复"
+                        : w.stage === "acceptance_guidance" && ["QUEUED", "EXECUTING"].includes(w.state)
+                          ? w.state === "QUEUED" ? "指导已排队" : "正在处理指导"
                         : formatWorkflowState(w.state)}
                 </span>
               )}

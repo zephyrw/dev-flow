@@ -499,11 +499,13 @@ export class AgyWorkflowBridge implements AccountConsumerPort {
       runInfo.workflow_id,
       binding.account_policy_revision,
     );
+    const latestPolicy = repository.getPolicy(runInfo.workflow_id);
     if (
       !realm ||
       realm.auth_epoch !== binding.auth_epoch ||
       realm.active_account_id !== binding.account_id ||
       !policy ||
+      latestPolicy?.revision !== policy.revision ||
       !(policy.auto_switch ?? settings?.workflow_auto_switch) ||
       this.engine?.store.get("run_stop", runInfo.run_id)
     )
@@ -540,7 +542,16 @@ export class AgyWorkflowBridge implements AccountConsumerPort {
         required_pool_ids: runInfo.required_pool_ids,
         required_model_ids: runInfo.effective_model_id ? [runInfo.effective_model_id] : [],
       });
-      if (!verified && !joiningSwitch()) return false;
+      if (!verified && !joiningSwitch()) {
+        if (this.engine) {
+          const workflow = this.engine.get(runInfo.workflow_id);
+          this.engine.store.event(workflow.id, workflow.project_id, "AgyAccountQuotaUnconfirmed", {
+            code: "quota_verification_rejected", account_id: binding.account_id, auth_epoch: binding.auth_epoch,
+            message: "历史额度提示未得到本轮退出或当前额度确认；具体原因见账号诊断记录",
+          }, runInfo.run_id);
+        }
+        return false;
+      }
       const current = repository.getRealm(binding.realm_id);
       const currentPolicy = repository.getPolicy(runInfo.workflow_id);
       if (current?.auth_epoch !== binding.auth_epoch || current.active_account_id !== binding.account_id ||

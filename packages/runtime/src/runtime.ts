@@ -89,6 +89,7 @@ import type { AgyAccountService } from "../../agy-accounts/src/service.js";
 import { CurrentTurn } from "../../adapters/agy/src/current-turn.js";
 import {
   classifyAgyFailure,
+  confirmAgyQuotaFailure,
   type AgyFailureFact,
 } from "../../adapters/agy/src/failure-fact.js";
 import {
@@ -940,6 +941,7 @@ export class LocalRuntime implements Runtime {
               !conversation || accountTurn.canAttributeFailureToCurrentTurn(),
           });
           if (candidate.can_switch_account) accountFailure = candidate;
+          else if ((event.event ?? event.type) === "result") accountFailure = undefined;
         }
         if (event.event === "init" && typeof event.conversation_id === "string")
           retainRunConversation(this.engine.store, run, event.conversation_id);
@@ -984,7 +986,12 @@ export class LocalRuntime implements Runtime {
             (!conversation || accountTurn.canAttributeFailureToCurrentTurn()) &&
             (await this.accountBridge!.observeFailure(
               accountBinding,
-              accountFailure,
+              confirmAgyQuotaFailure(accountFailure, {
+                exitCode: error instanceof FlowError ? (error.details as any)?.exit_code ?? null : null,
+                currentTurn: !conversation || accountTurn.canAttributeFailureToCurrentTurn(),
+                stderr: error instanceof FlowError && error.code !== "MODEL_QUOTA" ? error.code : "",
+                terminationReason: proc.termination_reason,
+              }),
             ))
           )
             throw new FlowError(

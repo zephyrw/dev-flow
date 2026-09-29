@@ -1,6 +1,6 @@
 import { it, expect } from "vitest";
 import { CurrentTurn } from "../../packages/adapters/agy/src/current-turn.js";
-import { extractAgyFailureFact } from "../../packages/adapters/agy/src/failure-fact.js";
+import { confirmAgyQuotaFailure, extractAgyFailureFact } from "../../packages/adapters/agy/src/failure-fact.js";
 
 it("requires a new unfinished user turn before attributing a resumed quota error", () => {
   const turn = new CurrentTurn();
@@ -52,3 +52,19 @@ it.each(["unfinished-error", "completed-finish", "tls-with-retained-quota", "no-
     }
   },
 );
+
+it("confirms the real CLI shape: textless current error steps, exact quota footer and exit 3", () => {
+  const turn = new CurrentTurn();
+  for (const [index, type] of [[410, "user_input"], [411, "error_message"], [412, "error_message"]] as const)
+    turn.accept({ event: "step_update", step_update: {
+      conversation_id: "fixture", step_index: index, step_type: type, state: "DONE", duration_seconds: 1,
+    } });
+  const error = "Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 37m46s.";
+  const fact = extractAgyFailureFact({ realmId: "realm", accountId: "account", authEpoch: 45,
+    runId: "run", eventOffset: 13, currentTurn: turn.canAttributeFailureToCurrentTurn(),
+    event: { type: "result", error, result: { status: "ERROR", error, response: "earlier response" } } });
+  expect(confirmAgyQuotaFailure(fact, { exitCode: 3, currentTurn: turn.canAttributeFailureToCurrentTurn() }))
+    .toMatchObject({ reason: "current_turn_quota_exit", can_switch_account: true });
+  expect(confirmAgyQuotaFailure(fact, { exitCode: 1, currentTurn: true, stderr: "local error: tls: bad record MAC" }))
+    .toHaveProperty("requires_quota_verification", true);
+});

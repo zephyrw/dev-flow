@@ -63,6 +63,7 @@ export const DispatchContextSchema = z
     repair_batch_id: z.string().optional(),
     assignment_id: z.string().optional(),
     functional_fix_intent: z.boolean().optional(),
+    guidance_mode: z.literal("human_acceptance").optional(),
     planner_takeover: z.boolean().optional(),
     retry_run_id: z.string().optional(),
     logical_round_id: z.string().optional(),

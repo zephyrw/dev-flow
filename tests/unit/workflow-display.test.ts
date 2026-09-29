@@ -1,6 +1,19 @@
 import { expect, it } from "vitest";
 import { workflowProgress } from "../../packages/presentation/src/activity.js";
 
+it.each(["QUEUED", "EXECUTING", "STOPPED"])("keeps acceptance guidance in human acceptance while %s", state => {
+  const events = [{ workflow_id: "w", event_seq: 1, type: "StateChanged",
+    payload: { from: "QUEUED", to: "EXECUTING", stage: "acceptance_guidance" } }];
+  for (const native of [true, false]) {
+    const p = workflowProgress({ id: "w", state, stage: state === "STOPPED" ? "stopped" : "acceptance_guidance" }, events, { native });
+    expect(p.title).toBe("人工验收");
+    expect(p.done[p.stages.indexOf("人工验收")]).toBe(false);
+    expect(p.paused).toBe(state === "STOPPED");
+    if (state !== "STOPPED") expect(p.next).toContain("指导");
+    expect(p.next).not.toContain("自主开发与自测");
+  }
+});
+
 it("shows the existing before-human review without implying human acceptance or submission", () => {
   const p = workflowProgress(
     { id: "w", state: "REVIEWING", stage: "quality_before_human" },
