@@ -22,7 +22,7 @@ export const PlanQuestionSchema = PlanFeedbackSchema.strict();
 
 import { originalPlanPath, resolveMaterialLocator, readVerifiedProjectMaterial } from "./project-materials.js";
 import { readMaterialFile } from "./material-filesystem.js";
-import { isAbsolute, relative, resolve } from "node:path";
+import { dirname, isAbsolute, relative, resolve } from "node:path";
 import type { ProjectMaterial, Project, Workspace, Run } from "../../contracts/src/index.js";
 
 // Current documents are references; older material records retain their publication fences.
@@ -55,8 +55,15 @@ export function readPlanMaterial(
     requireCondition(path && resolve(path) === resolve(registered.path), "PLAN_MATERIAL_CONFLICT", "计划原件引用与登记路径不一致", 409);
     const workflow = store.get<{ project_id: string }>("workflow", workflowId);
     const project = workflow && store.get<Project>("project", workflow.project_id);
+    const approval = store.get<{ plan_hash: string }>("approval", `${workflowId}-${revision}`);
+    const explicitPath = record.plan.design_ref?.file_ref;
+    // Older multi-repository tasks can reference an approved original in the
+    // parent project docs directory rather than inside either repository.
+    const approvedOriginal = approval?.plan_hash === record.hash && explicitPath &&
+      isAbsolute(explicitPath) && resolve(explicitPath) === resolve(path);
     const roots = [...store.list<Workspace>("workspace", workflowId).map(w => w.root),
-      ...(project?.repositories ?? []).map(r => r.path)];
+      ...(project?.repositories ?? []).map(r => r.path),
+      ...(approvedOriginal ? [dirname(path)] : [])];
     const root = roots.find(candidate => {
       const rel = relative(resolve(candidate), resolve(path));
       return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);

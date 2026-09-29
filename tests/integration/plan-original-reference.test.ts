@@ -1,6 +1,7 @@
 import { afterEach, expect, it } from "vitest";
-import { appendFileSync, existsSync, readFileSync, rmSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, rmSync, mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { setup, project, plan, proof } from "../helpers.js";
 import { objectHash } from "../../packages/core/src/util.js";
 import { assertPlanMaterialReady, readPlanMaterial } from "../../packages/core/src/plan-review.js";
@@ -91,4 +92,31 @@ it.each(["pending", "conflict"] as const)("an explicit %s material cannot be hid
     expect(result.authority_ready).toBe(false);
   }
   expect(() => assertPlanMaterialReady(s.store, s.w.id, s.w.plan_revision)).toThrow();
+});
+
+
+it.each(["approved", "missing-approval", "other-plan"] as const)("registered external original preserves exact plan authorization: %s", (mode) => {
+  const s = fixture();
+  const externalRoot = mkdtempSync(join(tmpdir(), "devflow-approved-original-"));
+  const path = join(externalRoot, "original.md");
+  const body = "# 已批准的原始计划\n";
+  writeFileSync(path, body);
+  try {
+    const record = s.engine.plan(s.w.id);
+    s.store.put("plan", record.id, s.w.id, { ...record, material_path: path,
+      plan: { ...record.plan, design_ref: { file_ref: path, content_hash: "legacy", summary: "original" } } });
+    const doc = s.store.get<any>("project_document", `doc_${s.w.id}_plan`)!;
+    s.store.put("project_document", doc.id, s.w.id, { ...doc, path });
+    if (mode !== "missing-approval") s.store.put("approval", `${s.w.id}-${s.w.plan_revision}`, s.w.id,
+      { plan_hash: mode === "approved" ? record.hash : "different-plan" });
+    if (mode !== "approved") {
+      expect(() => assertPlanMaterialReady(s.store, s.w.id)).toThrow("计划原件必须属于项目或任务工作区");
+      return;
+    }
+    expect(assertPlanMaterialReady(s.store, s.w.id)).toMatchObject({ path, markdown: body, authority_ready: true });
+    appendFileSync(path, "\n进度：已完成第一项\n");
+    expect(readPlanMaterial(s.store, s.w.id, s.w.plan_revision).markdown).toContain("已完成第一项");
+    rmSync(path);
+    expect(() => readPlanMaterial(s.store, s.w.id, s.w.plan_revision)).toThrow("已登记的项目计划原件已丢失");
+  } finally { rmSync(externalRoot, { recursive: true, force: true }); }
 });
