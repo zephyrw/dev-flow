@@ -2282,7 +2282,7 @@ function App() {
                         ? "准备自动修复"
                         : w.stage === "acceptance_guidance" && ["QUEUED", "EXECUTING"].includes(w.state)
                           ? w.state === "QUEUED" ? "指导已排队" : "正在处理指导"
-                        : formatWorkflowState(w.state)}
+                        : formatWorkflowState(w.state, w.stage)}
                 </span>
               )}
             </div>
@@ -2402,7 +2402,7 @@ function App() {
                           {projects.find((p) => p.id === f.project_id)?.name}
                         </span>
                         <span className={`badge workflow-tone-${getWorkflowTone(f)}`}>
-                          {formatWorkflowState(f.state)}
+                          {formatWorkflowState(f.state, f.stage)}
                         </span>
                       </div>
                       <h3>{f.title}</h3>

@@ -158,8 +158,12 @@ export function isKnownWorkflowState(state: string): state is State {
   return (States as readonly string[]).includes(state);
 }
 
-export function formatWorkflowState(state?: string | null): string {
+export function formatWorkflowState(state?: string | null, stage?: string | null): string {
   if (!state) return "未知状态";
+  if (stage === "planner_commit") {
+    if (state === "QUEUED") return "等待提交";
+    if (["EXECUTING", "VERIFYING"].includes(state)) return "提交中";
+  }
   if (isKnownWorkflowState(state)) {
     return WORKFLOW_STATE_META[state].label;
   }

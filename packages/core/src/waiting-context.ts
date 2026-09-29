@@ -2,7 +2,6 @@ import type { Run, Workflow } from "../../contracts/src/index.js";
 import { CONVERSATION_ENTITY, type ConversationNode, type ConversationAttempt } from "../../contracts/src/conversation.js";
 import type { Store } from "../../store/src/store.js";
 import { now, redact } from "./util.js";
-import type { Run, Workflow } from "../../contracts/src/index.js";
 import type { ExecutionIntent, ReviewIntent } from "./round-intent.js";
 import type {
   PlanningHandoff,

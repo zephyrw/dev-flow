@@ -905,6 +905,38 @@ export class Engine {
       // dispatch controls (including unconfirmed processes) remain in force.
       new CliDispatchManager(this.store).removeControlReason(key, "workflow_pause");
       const stopped = w.run_id ? this.store.get<Run>("run", w.run_id) : undefined;
+      const pending = this.store.get<Partial<DispatchContext>>("pending_dispatch_purpose", key);
+      const interruption = this.store.get<{ run_id?: string; prior_state?: string; prior_stage?: string }>("interruption", key);
+      const specialized = ["planner_commit", "executor_test", "planner_takeover"];
+      // A stopped queue may already contain the next role while run_id still points
+      // at the completed previous round. Capture that full context before resuming.
+      const queuedContext = pending?.purpose && specialized.includes(pending.purpose) &&
+        interruption?.run_id === w.run_id && interruption?.prior_state === "QUEUED" &&
+        interruption?.prior_stage === pending.purpose &&
+        (!pending.source_run_id || pending.source_run_id === w.run_id)
+        ? pending : undefined;
+      if (stopped?.workflow_id === key && stopped.plan_revision === w.plan_revision &&
+          (queuedContext || (stopped.status !== "completed" && specialized.includes(stopped.purpose ?? "")))) {
+        this.store.remove("model_retry", key);
+        this.store.remove("pending_model_retry", key);
+        new UserInteractionService(this.store).supersedePendingInteractions(key);
+        if (!queuedContext) {
+          saveRunContinuation(this.store, key, key, {
+            kind: "runtime_resume", purpose: "execute",
+            role: stopped.purpose === "executor_test" ? "executor" : "planner",
+            source_run_id: stopped.id, conversation_id: stopped.conversation_id,
+          });
+          this.restoreDispatchContext(key, stopped.id);
+        }
+        const context = queuedContext ?? this.store.must<Partial<DispatchContext>>("pending_dispatch_purpose", key);
+        const next = this.transition(key, [w.state], "QUEUED", context.purpose!, {
+          feedback: [...w.feedback, text], blocker: undefined,
+        });
+        this.store.put("pending_dispatch_purpose", key, key, context);
+        this.scheduler.enqueue(key, w.project_id);
+        this.store.enqueue(key, "dispatch_run", { ...context, expected_version: next.version });
+        return next;
+      }
       if (stopped?.dispatch_context?.guidance_mode === "human_acceptance" && stopped.status !== "completed") {
         saveRunContinuation(this.store, key, key, { kind: "runtime_resume", purpose: "execute", role: "executor",
           source_run_id: stopped.id, conversation_id: stopped.conversation_id });
@@ -2107,10 +2139,9 @@ export class Engine {
       if (repairInstructions && this.get(key).state === "COMMIT_PARTIAL") {
         this.store.transaction(() => {
           this.store.put("planner_integration_repair", key, key, { instructions: repairInstructions, source_run_id: runId });
-          this.assignPolicy2Repair(this.get(key), repairInstructions, true, "after_human");
-          const flow = ensureQualityFlow(this.store, key);
-          this.store.put("quality_flow", key, key, { ...flow, phase: "after_human", planner_repairs_only: true });
-          this.applyPolicy2Action(key, runId, { kind: "planner_repair" }, "after_human");
+          // The coordinator only returns instructions for a conflict-free merge.
+          // This is still final Git work, not another development/testing cycle.
+          this.applyPolicy2Action(key, runId, { kind: "planner_commit" }, "after_human");
         });
         return;
       }
@@ -4414,6 +4445,47 @@ export class Engine {
 
   async retryCommit(key: string) {
     const w = this.get(key);
+    if (usesPolicyV2(w) && w.state === "STOPPED") {
+      const handoff = this.store.get<{ run_id: string }>("planner_commit_handoff", key);
+      const source = handoff ? this.store.get<Run>("run", handoff.run_id) : undefined;
+      const stopped = w.run_id ? this.store.get<Run>("run", w.run_id) : undefined;
+      const repair = this.store.get<{ source_run_id: string; instructions?: string }>("planner_integration_repair", key);
+      const assignment = this.store.get<QualityRepairAssignment>("repair_assignment", key);
+      const phase = this.store.get<{ phase: string }>("quality_flow", key)?.phase;
+      const linkedRepair = source && (repair?.source_run_id === source.id ||
+        (assignment?.planner === true && assignment.source === "quality_review" &&
+          assignment.source_review_id === source.id && assignment.phase === "after_human" &&
+          assignment.plan_revision === w.plan_revision && assignment.plan_hash === w.plan_hash));
+      requireCondition(source?.workflow_id === key && source.plan_revision === w.plan_revision &&
+        source.purpose === "planner_commit" && source.status === "completed" && phase === "after_human" &&
+        stopped?.workflow_id === key && stopped.plan_revision === w.plan_revision &&
+        ["stopped", "failed"].includes(stopped.status) &&
+        ["implement", "planner_takeover", "planner_commit"].includes(stopped.purpose ?? "") && linkedRepair,
+        "COMMIT_CONTEXT_MISSING", "缺少同一计划的原规划提交及整合恢复上下文；保留现场");
+      await this.waitForIdle(key);
+      requireCondition(this.get(key).version === w.version && this.get(key).run_id === w.run_id,
+        "RUN_REVOKED", "提交恢复现场已变化；保留现场");
+      this.store.transaction(() => {
+        new CliDispatchManager(this.store).removeControlReason(key, "workflow_pause");
+        this.store.remove("model_retry", key);
+        this.store.remove("pending_model_retry", key);
+        this.supersedePendingContinuation(key, false);
+        new UserInteractionService(this.store).supersedePendingInteractions(key);
+        this.store.put("planner_integration_repair", key, key, {
+          source_run_id: source!.id,
+          instructions: "当前提交恢复说明：本轮只完成最终 Git 提交与合并收尾。" +
+            "保留已有开发、测试、验收结果和任务工作树中的维护修复；将已完成针对性验证的本任务修改纳入新的最终提交。" +
+            "历史反馈中的开发、日志修复、补测与复核要求是已过阶段材料，不据此重开开发、全量测试或代码复核。" +
+            "不伪造测试通过结果，不修改已有测试记录；若出现新的真实冲突或未测代码修改，保留现场并明确报告。" +
+            (repair?.instructions ? "\n原整合现场说明（仅供理解 Git 状态，阶段安排以上述当前说明为准）：\n" + repair.instructions : ""),
+        });
+        // Start a new commit round so already-tested maintenance changes are included.
+        // Never rebind the old handoff or replace its frozen candidate with a later HEAD.
+        this.applyPolicy2Action(key, source!.id, { kind: "planner_commit" }, "after_human");
+      });
+      void this.dispatch();
+      return this.get(key);
+    }
     requireCondition(
       w.state === "COMMIT_PARTIAL",
       "INVALID_STATE",

@@ -36,6 +36,7 @@ export function roleBoundaryInstructionsFor(purpose: string): string {
     case "planner_commit":
       return (
         "本轮只执行提交工作：只暂存并提交本任务范围内代码，保留他人修改和已有 index 内容。" +
+        "integration_repair 指定已预演无冲突的固定目标提交时，在任务工作树完成该 Git 合并和提交，仍属于本轮提交工作。实际冲突或文件阻塞时保留现场并报告 need_user，不重启开发测试。" +
         "不重新开一轮泛化审核、不顺手修代码、不主动跑测试。必要代码改动请报告需转入修复链，不要带未测修改直接提交。"
       );
     case "functional_fix":

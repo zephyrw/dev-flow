@@ -1,7 +1,39 @@
 import { it, expect } from "vitest";
-import { readableLogs, userFacingLogs } from "../../apps/web/src/logs.js";
+import { readableLogs, userFacingLogs, workflowProgress } from "../../apps/web/src/logs.js";
 import { toolSummary } from "../../packages/presentation/src/tool-summary.js";
 import { runtimePurposeNames } from "../../packages/presentation/src/run-observation.js";
+
+it("shows the repository and redacted integration failure while keeping partial delivery recoverable", () => {
+  const events = [
+    { workflow_id: "w", event_seq: 1, type: "PlannerIntegrationFailed",
+      payload: { repo_id: "main", message: "Error: SOURCE_BUSY 目标工作区存在未提交改动 --password example-secret" } },
+    { workflow_id: "w", event_seq: 2, type: "StateChanged",
+      payload: { from: "COMMITTING", to: "COMMIT_PARTIAL", stage: "commit_recovery" } },
+    { workflow_id: "other", event_seq: 3, type: "PlannerIntegrationFailed",
+      payload: { repo_id: "unrelated", message: "other failure" } },
+  ];
+  const before = JSON.stringify(events);
+  const rows = userFacingLogs(readableLogs(events, "w"));
+  expect(rows).toHaveLength(2);
+  expect(rows[0]).toMatchObject({ title: "提交合并失败", status: "error" });
+  expect(rows[0]?.text).toContain("仓库：main");
+  expect(rows[0]?.text).toContain("SOURCE_BUSY 目标工作区存在未提交改动");
+  expect(JSON.stringify(rows)).not.toContain("example-secret");
+  expect(rows[1]).toMatchObject({ title: "提交合并需要恢复", status: "error" });
+  expect(rows[1]?.text).toContain("保留已有提交和修改");
+  expect(rows[1]?.text).toContain("合并交付尚未完成");
+  expect(JSON.stringify(events)).toBe(before);
+  const progress = workflowProgress({ id: "w", state: "COMMIT_PARTIAL", stage: "commit_recovery" }, events);
+  expect(progress).toMatchObject({ index: 6, paused: true, completed: false });
+  expect(progress.done[6]).toBe(false);
+  expect(progress.next).toContain("重试原提交");
+});
+
+it("does not invent a cause for integration failure events without a recorded message", () => {
+  const rows = readableLogs([{ workflow_id: "w", event_seq: 1,
+    type: "PlannerIntegrationFailed", payload: {} }], "w");
+  expect(rows[0]).toMatchObject({ title: "提交合并失败", status: "error", text: "合并未完成，失败原因未记录。" });
+});
 
 it("redacts historical guidance display without altering the execution input", () => {
   const guidance = { id: "secret-guidance", workflow_id: "w",

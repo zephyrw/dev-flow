@@ -155,7 +155,9 @@ export function workflowProgress(
   const labels = display.native
     ? [...stages.slice(0, 4), "验收前质量审查", "人工验收", "验收后代码复核", "本地提交"]
     : stages;
-  const index = phase === "acceptance_guidance"
+  const index = phase === "planner_commit"
+    ? display.native ? 7 : 6
+    : phase === "acceptance_guidance"
     ? display.native ? 5 : 4
     : display.native
     ? state === "HUMAN_PENDING" ? 5
@@ -193,8 +195,12 @@ export function workflowProgress(
       : index === undefined
         ? "等待确认阶段"
         : labels[index],
-    next: paused
+    next: w.state === "COMMIT_PARTIAL"
+      ? "保留已有提交和修改；合并交付尚未完成，请处理提交失败原因后核实现场并重试原提交。"
+      : paused
       ? "处理下方问题后，点击“继续这个任务”；保留已有计划和修改，重新核验完成证据。"
+      : phase === "planner_commit"
+        ? state === "QUEUED" ? "等待规划模型继续最后的提交与合并" : "规划模型正在完成最后的提交与合并，保留已完成的开发和测试结果"
       : phase === "acceptance_guidance"
         ? state === "QUEUED" ? "你的指导已排队，等待执行模型处理" : "执行模型正在处理你的指导，回复和操作显示在执行过程"
       : phase === "quality_before_human" && ["REVIEWING", "REVIEW_QUEUED"].includes(state)
@@ -517,7 +523,10 @@ export function readableLogs(events: any[], workflow: string, formalGuidance: Ar
       text = `执行模型：${p.init?.model ?? p.model ?? "实际模型未确认"}`;
     }
     if (e.type === "StateChanged") {
-      if (p.to === "QUEUED") {
+      if (p.stage === "planner_commit" && ["QUEUED", "EXECUTING", "VERIFYING"].includes(p.to)) {
+        title = p.to === "QUEUED" ? "本地提交已排队" : "正在本地提交";
+        text = "保留已完成的开发和测试结果，由规划模型继续完成本任务的提交与合并。";
+      } else if (p.to === "QUEUED") {
         title =
           p.stage === "planner_takeover"
             ? "规划模型接手已排队"
@@ -586,6 +595,9 @@ export function readableLogs(events: any[], workflow: string, formalGuidance: Ar
           p.blocker?.code,
           p.blocker?.message ?? "执行已暂停，等待处理",
         );
+      } else if (p.to === "COMMIT_PARTIAL") {
+        title = "提交合并需要恢复";
+        text = "保留已有提交和修改，合并交付尚未完成；请查看失败原因，核实现场并重试原提交。";
       } else if (p.to === "COMMITTED") {
         title = "本地提交完成";
         text = "已生成本地提交记录，所有交付检查与复核已全部通过";
@@ -625,6 +637,13 @@ export function readableLogs(events: any[], workflow: string, formalGuidance: Ar
     if (e.type === "EnvironmentFailed") {
       title = "本机验证副本准备失败";
       text = failureSummary("ENVIRONMENT_FAILED", p.message);
+    }
+    if (e.type === "PlannerIntegrationFailed") {
+      title = "提交合并失败";
+      text = [
+        p.repo_id ? `仓库：${p.repo_id}` : "",
+        p.message || "合并未完成，失败原因未记录。",
+      ].filter(Boolean).join("\n");
     }
     if (["BuildStarted", "BuildReady", "BuildFailed"].includes(e.type)) {
       title =
@@ -668,6 +687,7 @@ export function readableLogs(events: any[], workflow: string, formalGuidance: Ar
         "TaskStarted",
         "TaskCompleted",
         "EnvironmentFailed",
+        "PlannerIntegrationFailed",
         "BuildStarted",
         "BuildReady",
         "BuildFailed",
@@ -696,8 +716,9 @@ export function readableLogs(events: any[], workflow: string, formalGuidance: Ar
       kind: "event",
       status:
         e.type === "EnvironmentFailed" ||
+        e.type === "PlannerIntegrationFailed" ||
         e.type === "BuildFailed" ||
-        (e.type === "StateChanged" && p.to === "BLOCKED")
+        (e.type === "StateChanged" && ["BLOCKED", "COMMIT_PARTIAL"].includes(p.to))
           ? "error"
           : e.type === "StateChanged" && p.to === "COMMITTED"
             ? "done"

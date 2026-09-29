@@ -1,5 +1,6 @@
 import type { Store } from "../../store/src/store.js";
 import {
+  FlowError,
   requireCondition,
   type Workflow,
   type Workspace,
@@ -17,7 +18,7 @@ import {
 import { git, repositoryInfo, GitManager } from "./git.js";
 import { CurrentDeliveryReader } from "../../evidence/src/current-delivery.js";
 import { QualityCoordinator } from "../../core/src/quality-coordinator.js";
-import { now, hash, id } from "../../core/src/util.js";
+import { now, hash, id, redact } from "../../core/src/util.js";
 import { resolve, relative, isAbsolute, join } from "node:path";
 import { existsSync, realpathSync } from "node:fs";
 
@@ -153,7 +154,7 @@ export class GitDeliveryCoordinator {
       protocol: source?.protocol ?? "lightweight",
     };
   }
-  private update(w: Workflow, state: Workflow["state"], stage: string) {
+  private update(w: Workflow, state: Workflow["state"], stage: string, blocker?: Workflow["blocker"]) {
     this.store.transaction(() => {
       const before = this.workflow(w.id);
       this.store.put("workflow", w.id, w.project_id, {
@@ -162,12 +163,13 @@ export class GitDeliveryCoordinator {
         stage,
         version: before.version + 1,
         updated_at: now(),
-        blocker: undefined,
+        blocker,
       });
       this.store.event(w.id, w.project_id, "StateChanged", {
         from: before.state,
         to: state,
         stage,
+        ...(blocker ? { blocker } : {}),
       });
     });
   }
@@ -245,6 +247,7 @@ export class GitDeliveryCoordinator {
     requireCondition(workspaces.length, "WORKSPACE_MISSING", "缺少工作区");
     const integrations: IntegrationReceipt[] = [];
     const repairs: string[] = [];
+    const failures: Array<{ repo_id: string; code: string; message: string }> = [];
     let failed = false;
 
     for (const ws of workspaces) {
@@ -292,19 +295,32 @@ export class GitDeliveryCoordinator {
           const base = await git(sourceRoot, ["merge-base", info.head, commit]);
           if (base !== commit) {
             if (base !== info.head) {
+              // A clean branch advance is still commit work, not a new development cycle.
+              // Preview without touching either checkout so real conflicts remain recoverable.
+              try {
+                await git(sourceRoot, ["merge-tree", "--write-tree", info.head, commit]);
+              } catch (error) {
+                const detail = error as { code?: unknown; stdout?: string; stderr?: string };
+                if (detail.code !== 1) throw error;
+                throw new FlowError("MERGE_CONFLICT", "提交合并存在冲突，已保留双方工作区，请处理以下冲突后重试原提交：\n" +
+                  redact([detail.stdout, detail.stderr].filter(Boolean).join("\n")));
+              }
               repairs.push(
                 "仓库 " + ws.repo_id + " 的目标分支已推进到 " + info.head +
-                "。在任务工作树 " + ws.root + " 吸收该提交，保留任务与目标分支的有效改动；" +
-                "使用 merge --no-commit --no-ff 并解决相关冲突，保持待提交状态，不运行测试。" +
-                "交执行模型测试后由规划提交轮次完成合并提交。不要在源工作区 cherry-pick 或丢弃任一方历史。",
+                "。本轮仍是最后提交阶段，合并预演无冲突。在任务工作树 " + ws.root + " 吸收这个固定提交，保留双方历史和本任务已有修改；" +
+                "使用 git merge --no-commit --no-ff --no-autostash --no-overwrite-ignore " + info.head +
+                "，随后完成本任务的合并提交并返回新提交号。不要重新开发、复核或运行测试。" +
+                "若实际合并出现冲突或被其他修改阻塞，保留现场并报告 need_user 和具体原因，不自行修复代码或转入开发。不要在源工作区 cherry-pick 或丢弃任一方历史。",
               );
               continue;
             }
-            requireCondition(!(await git(sourceRoot, ["status", "--porcelain"])), "SOURCE_BUSY", "目标工作区存在未提交改动，保留现场后重试");
+            // Project-owned plan files can be untracked in the source checkout.
+            // Preserve them in place; Git rejects overlapping paths atomically.
+            requireCondition(!(await git(sourceRoot, ["status", "--porcelain", "--untracked-files=no"])), "SOURCE_BUSY", "目标工作区存在已跟踪文件的未提交改动，保留现场后重试");
             const current = await repositoryInfo(sourceRoot);
             requireCondition(current.head === info.head && current.branch === targetBranch, "SOURCE_BUSY", "目标分支发生并发变化");
             requireCondition(ownsOperation(), "RUN_REVOKED", "提交收尾已中断");
-            await git(sourceRoot, ["merge", "--ff-only", commit], gitWriteEnv);
+            await git(sourceRoot, ["merge", "--ff-only", "--no-autostash", "--no-overwrite-ignore", commit], gitWriteEnv);
           }
         }
         const targetRefValid = await assertTargetBranchContainsCandidate(sourceRoot, targetBranch, commit);
@@ -321,7 +337,13 @@ export class GitDeliveryCoordinator {
           target_branch: targetBranch, source_root: sourceRoot, status: "failed", merged_at: now(),
         };
         this.store.put("integration_receipt", this.key(workflowId, ws.repo_id), workflowId, receipt);
-        this.store.event(workflowId, w.project_id, "PlannerIntegrationFailed", { repo_id: ws.repo_id, message: String(error) }, w.run_id);
+        const failure = {
+          repo_id: ws.repo_id,
+          code: error instanceof FlowError ? error.code : "GIT_INTEGRATION_FAILED",
+          message: redact(error instanceof Error ? error.message : String(error)),
+        };
+        failures.push(failure);
+        this.store.event(workflowId, w.project_id, "PlannerIntegrationFailed", failure, w.run_id);
         integrations.push(receipt);
         failed = true;
       }
@@ -330,7 +352,11 @@ export class GitDeliveryCoordinator {
       // Worktrees remain available; cleanup still requires the existing explicit selection.
       this.update(this.workflow(workflowId), failed || repairs.length ? "COMMIT_PARTIAL" :
         w.workspace_mode === "existing_workspace" ? "COMMITTED" : "COMPLETED",
-        failed || repairs.length ? "commit_recovery" : "done");
+        failed || repairs.length ? "commit_recovery" : "done",
+        failures.length ? {
+          code: failures[0]!.code,
+          message: failures.map((failure) => "仓库 " + failure.repo_id + "：" + failure.message).join("\n"),
+        } : undefined);
     }
     // Resolve operational errors before asking a model to modify any repository.
     return { integrations, ...(!failed && repairs.length ? { repairInstructions: repairs.join("\n\n") } : {}) };

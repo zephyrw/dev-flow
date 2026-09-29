@@ -549,7 +549,7 @@ export class ProfileRuntime {
           this.engine.store.get<any>("repair_state", w.id)?.instructions ?? repair?.instructions ?? null,
         previous_completion: run.dispatch_context?.source_run_id
           ? this.engine.store.get("execution_completion", run.dispatch_context.source_run_id) ?? null : null,
-        integration_repair: policy2 && purpose === "planner_takeover"
+        integration_repair: policy2 && ["planner_takeover", "planner_commit"].includes(purpose)
           ? this.engine.store.get("planner_integration_repair", w.id) ?? null : null,
         completion_instruction: purpose === "planner_commit" && policy2
           ? "完成实际提交后输出 JSON {status, summary, repositories: [{repo_id, commit}]}；无须新提交时在摘要说明。需要代码修复报告 need_planner；需要用户协助报告 need_user。"
