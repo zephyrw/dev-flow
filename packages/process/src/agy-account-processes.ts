@@ -137,8 +137,10 @@ export class AgyAccountProcessHost implements ProcessHostPort {
   private async inventory(): Promise<ProcessEntry[]> {
     if (process.platform !== "win32")
       throw new Error("AGY_PROCESS_INVENTORY_UNSUPPORTED");
+    // A process can exit after enumeration but before GetOwnerSid. Ignore only
+    // a freshly confirmed missing PID; live/reused PIDs and query errors fail closed.
     const script =
-      "$ErrorActionPreference='Stop'; $sid=[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value; $items=@(Get-CimInstance Win32_Process -ErrorAction Stop | ForEach-Object { $p=$_; if ($p.Name -match '(?i)^agy(?:\\.exe)?$') { $owner=Invoke-CimMethod -InputObject $p -MethodName GetOwnerSid -ErrorAction Stop; if ($owner.ReturnValue -ne 0) { throw 'Cannot establish AGY process owner' }; if ($owner.Sid -eq $sid) { [PSCustomObject]@{pid=[int]$p.ProcessId;parent=[int]$p.ParentProcessId;exe_path=[string]$p.ExecutablePath;name=$p.Name;sid=$sid;create_time=([DateTimeOffset]$p.CreationDate).ToUnixTimeMilliseconds()} } } else { [PSCustomObject]@{pid=[int]$p.ProcessId;parent=[int]$p.ParentProcessId;exe_path='';name=$p.Name} } }); ConvertTo-Json -InputObject $items -Compress";
+      "$ErrorActionPreference='Stop'; $sid=[System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value; $items=@(Get-CimInstance Win32_Process -ErrorAction Stop | ForEach-Object { $p=$_; if ($p.Name -match '(?i)^agy(?:\\.exe)?$') { try { $owner=Invoke-CimMethod -InputObject $p -MethodName GetOwnerSid -ErrorAction Stop; if ($owner.ReturnValue -ne 0) { throw 'Cannot establish AGY process owner' } } catch { $live=@(Get-CimInstance Win32_Process -Filter ('ProcessId = ' + [int]$p.ProcessId) -ErrorAction Stop); if ($live.Count -eq 0) { return }; throw }; if ($owner.Sid -eq $sid) { [PSCustomObject]@{pid=[int]$p.ProcessId;parent=[int]$p.ParentProcessId;exe_path=[string]$p.ExecutablePath;name=$p.Name;sid=$sid;create_time=([DateTimeOffset]$p.CreationDate).ToUnixTimeMilliseconds()} } } else { [PSCustomObject]@{pid=[int]$p.ProcessId;parent=[int]$p.ParentProcessId;exe_path='';name=$p.Name} } }); ConvertTo-Json -InputObject $items -Compress";
     const configuredName = basename(this.options.agyExecutable).replace(
       /'/g,
       "''",
