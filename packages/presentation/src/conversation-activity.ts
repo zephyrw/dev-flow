@@ -62,7 +62,7 @@ function hasSpecificActivityTitle(entry: Partial<LogEntry>): boolean {
   const title = entry.title?.trim();
   if (!title) return false;
   // A message/tool/status label describes the card, not an actual operation.
-  return !/^(会话活动|活动|模型输出|模型步骤|工具操作|执行命令|事件|执行中|执行完成|进行中|完成|工具\s*·\s*MCP)(\s*·\s*(进行中|完成))?$/.test(title);
+  return !/^(会话活动|活动|模型输出|模型步骤|工具操作|执行命令|事件|执行中|执行完成|进行中|完成|工具\s*·\s*MCP|(?:工具\s*·\s*)?call_mcp_tool)(\s*·\s*(进行中|完成))?$/.test(title);
 }
 
 export function isMeaningfulLogEntry(entry: Partial<LogEntry> & { exitCode?: number; error?: string }): boolean {
@@ -100,6 +100,10 @@ export function conversationActivityLogEntry(event: {
   const payload = event.payload;
   if (!payload?.conversation_id || !payload.attempt_id || !payload.activity_id)
     return undefined;
+  // Ignore historical identity-only protocol envelopes on every read path.
+  // Status-only increments still participate in merging a real operation.
+  if (![payload.title, payload.public_text, payload.command, payload.cwd, payload.result_text, (payload as any).resultText]
+    .some((value) => typeof value === "string" && !!value.trim()) && !payload.status) return undefined;
   const kind =
     payload.kind === "separator"
       ? "event"

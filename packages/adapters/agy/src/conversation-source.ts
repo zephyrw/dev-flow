@@ -13,6 +13,7 @@ import {
 import type { SubagentCapabilities } from "../../../contracts/src/conversation.js";
 import { SubagentCapabilitiesSchema } from "../../../contracts/src/conversation.js";
 import { toolSummary, toolOutputSummary } from "../../../presentation/src/tool-summary.js";
+import { modelReplyText } from "../../../presentation/src/model-reply.js";
 import {
   AgyNativeRecordSource,
   agyStepSourceId,
@@ -29,6 +30,7 @@ export const AGY_PAUSE_ATTRIBUTION =
 
 export interface AgyConversationDecodeContext {
   rootNativeId: string;
+  responseTexts?: Map<string, string>;
 }
 
 export function agySubagentCapabilities(cliVersion?: string): SubagentCapabilities {
@@ -192,7 +194,9 @@ function parentActivity(
 ): NativeConversationEvent {
   const info = toolInfo(step);
   const params = publicParameters(info);
-  const summary = toolSummary(typeof name === "string" ? name : undefined, params);
+  const operation = typeof params.ToolName === "string" ? params.ToolName : name;
+  const args = params.Arguments && typeof params.Arguments === "object" ? params.Arguments : params;
+  const summary = toolSummary(typeof operation === "string" ? operation : undefined, args);
   return eventBase(
     context,
     identity.conversation_id,
@@ -200,13 +204,13 @@ function parentActivity(
     "activity",
     {
       activity_id: agyActivityId(identity),
-      title: summary.title ?? (summary.command ? "执行命令" : typeof name === "string" ? name : undefined),
+      title: summary.title ?? (summary.command ? "执行命令" : typeof operation === "string" ? operation : undefined),
       public_text: summary.text.slice(0, 16000),
       status: step.state === "ERROR" ? "failed" : step.state === "DONE" ? "completed" : "running",
       kind: step.step_type === "tool" ? "tool" : "event",
       command: summary.command?.slice(0, 32000),
       cwd: summary.cwd,
-      result_text: toolOutputSummary(info.output, typeof name === "string" ? name : undefined),
+      result_text: toolOutputSummary(info.output, typeof operation === "string" ? operation : undefined),
     },
   );
 }
@@ -251,7 +255,12 @@ function decodeResult(
   const session = String(record.conversation_id ?? event.conversation_id ?? "");
   if (!isAgyConversationId(session)) return [];
   const failed = record.status !== "SUCCESS";
+  const response = modelReplyText(record.response);
   return [
+    ...(response ? [eventBase(context, session, session + ":reply", "activity", {
+      activity_id: session + ":reply", kind: "message", title: "模型回复",
+      public_text: response, status: "completed",
+    })] : []),
     eventBase(context, session, session + ":result", "state", {
       status: failed ? "failed" : "completed",
       reason: failed ? "native_error" : undefined,
@@ -270,18 +279,20 @@ function decodeStep(
   const identity = stepIdentity(session, record.step_index);
   if (!identity) return [];
   if (record.step_type !== "tool") {
-    if (record.step_type === "agent_response" && record.usage) {
-      return [
-        eventBase(
-          context,
-          session,
-          agyActivityId(identity) + ":quota",
-          "quota",
-          record.usage,
-        ),
-      ];
-    }
-    return [];
+    if (record.step_type !== "agent_response") return [];
+    const id = agyActivityId(identity);
+    const previous = context.responseTexts?.get(id) ?? "";
+    const text = typeof record.text === "string" && record.text.trim() ? record.text
+      : previous + (typeof record.text_delta === "string" ? record.text_delta : "");
+    if (text) context.responseTexts?.set(id, text.slice(0, 65536));
+    const events: NativeConversationEvent[] = [];
+    if (text.trim()) events.push(eventBase(context, session, `${id}:${record.state}:${text.length}`, "activity", {
+      activity_id: id, kind: "message", title: "模型回复", public_text: text.slice(0, 65536),
+      status: record.state === "DONE" ? "completed" : record.state === "ERROR" ? "failed" : "running",
+    }));
+    if (record.state === "DONE" || record.state === "ERROR") context.responseTexts?.delete(id);
+    if (record.usage) events.push(eventBase(context, session, id + ":quota", "quota", record.usage));
+    return events;
   }
   const name = toolName(record);
   const info = toolInfo(record);
@@ -320,7 +331,8 @@ export function decodeAgyConversationEvents(
   events: unknown[],
   context: AgyConversationDecodeContext,
 ): NativeConversationEvent[] {
-  return events.flatMap((event) => decodeAgyConversationEvent(event, context));
+  const shared = { ...context, responseTexts: context.responseTexts ?? new Map<string, string>() };
+  return events.flatMap((event) => decodeAgyConversationEvent(event, shared));
 }
 
 function recordConversationId(value: unknown): string | undefined {
@@ -341,6 +353,7 @@ export function agyEventConversationId(event: unknown): string | undefined {
 
 export class AgyConversationDecoder {
   private buffer = "";
+  private responseTexts = new Map<string, string>();
   constructor(private rootNativeId?: string) {}
 
   push(chunk: HostChunk): NativeConversationEvent[] {
@@ -367,7 +380,7 @@ export class AgyConversationDecoder {
     const root = this.rootNativeId ?? agyEventConversationId(parsed);
     if (!root) return [];
     this.rootNativeId = root;
-    return decodeAgyConversationEvent(parsed, { rootNativeId: root });
+    return decodeAgyConversationEvent(parsed, { rootNativeId: root, responseTexts: this.responseTexts });
   }
 }
 
@@ -375,6 +388,7 @@ export class AgyConversationSource implements ConversationRecordSource {
   readonly adapterId = "agy";
   readonly sourceId: string;
   private records: AgyNativeRecordSource;
+  private responseTexts = new Map<string, string>();
   constructor(
     private options: {
       profileRoot: string;
@@ -411,6 +425,7 @@ export class AgyConversationSource implements ConversationRecordSource {
       events.push(
         ...decodeAgyConversationEvent(parsed, {
           rootNativeId: this.options.rootNativeId,
+          responseTexts: this.responseTexts,
         }),
       );
     }

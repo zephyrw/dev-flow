@@ -630,8 +630,13 @@ export function readableLogs(events: any[], workflow: string, formalGuidance: Ar
       text = p.summary ?? p.title ?? p.task_id ?? "";
     }
     if (e.type === "UserGuidanceCompleted") {
-      title = "执行模型回复";
-      text = p.summary ?? "本轮指导已处理。";
+      const reply = [p.summary, p.notes].filter((part): part is string => typeof part === "string" && !!part.trim());
+      if (reply.length) rows.push({
+        key: "event:" + e.event_seq, sequence: e.event_seq, created_at: e.created_at,
+        title: "执行模型回复", text: [...new Set(reply)].join("\n\n"),
+        kind: "message", status: "done", raw: [e],
+      });
+      continue;
     }
     if (e.type === "EvidenceInvalidated") continue;
     if (e.type === "CheckOutput") title = "测试输出";
@@ -772,9 +777,7 @@ export function readableLogs(events: any[], workflow: string, formalGuidance: Ar
     if (row.status === "active" && row.sequence < boundary)
       row.status = "interrupted";
   return rows
-    .filter((row) =>
-      (row.kind !== "message" && row.kind !== "tool") || isMeaningfulLogEntry(row),
-    )
+    .filter(isMeaningfulLogEntry)
     .sort((a, b) => a.sequence - b.sequence || a.created_at.localeCompare(b.created_at));
 }
 

@@ -1169,6 +1169,10 @@ export function createActivityPayload(
   node: ConversationNode,
   attempt: ConversationAttempt,
 ): ConversationActivityPayload | undefined {
+  // Protocol envelopes (user_input, finish, etc.) are not public activities.
+  // Keep status-only updates for identified tools so earlier arguments survive.
+  if (!["public_text", "title", "command", "cwd", "result_text"].some((key) => readString(payload, key)?.trim()) &&
+      !(readString(payload, "activity_id") && readStatus(payload))) return undefined;
   const activityId =
     readString(payload, "activity_id") ?? `${event.source_id}:${event.source_seq}`;
   const sourceEventId =
