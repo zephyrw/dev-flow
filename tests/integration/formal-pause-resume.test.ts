@@ -128,8 +128,9 @@ it.each([false, true])("preparation reuses existing workspaces only when every r
     await s.engine.dispatch();
     const event = s.store.events(s.w.id).findLast((e) => e.type === "PreparationStarted");
     const message = (event?.payload as { message?: string } | undefined)?.message;
-    expect(message).toBe(allPresent ? "正在检查并复用已有工作区" : "正在检查主工作区");
-    expect(s.store.get<any>("queue_wait", s.w.id)?.message).toContain(message);
+    expect(message).toBe(allPresent ? undefined : "正在检查主工作区");
+    expect(s.store.get<any>("queue_wait", s.w.id)?.message)
+      .toContain(allPresent ? "正在连接模型会话" : "正在检查主工作区");
   } finally {
     (s.engine as any).running.delete(s.w.id);
     await cleanup(s);

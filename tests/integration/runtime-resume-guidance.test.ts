@@ -1,4 +1,4 @@
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { setup, repository, project, plan } from "../helpers.js";
 import { objectHash } from "../../packages/core/src/util.js";
 import { FeedbackService } from "../../packages/core/src/feedback-service.js";
@@ -17,6 +17,7 @@ it.each(["executor_test", "planner_commit"] as const)("Engine stop â†’ recover â
   const guidance: Array<ReturnType<typeof currentRunUserGuidance>> = [];
   try {
     const repo = await repository(s.root);
+    const prepareWorkspace = vi.spyOn(s.engine.git, "prepare");
     const p = project(repo.repo); s.store.put("project", p.id, p.id, p);
     const time = new Date().toISOString(), wid = "resume-guidance";
     const w: Workflow = { id: wid, project_id: p.id, title: "resume", request: "preserve current guidance", complexity: "simple",
@@ -77,8 +78,9 @@ it.each(["executor_test", "planner_commit"] as const)("Engine stop â†’ recover â
     await expect.poll(() => observed.length, { timeout: 15000 }).toBe(2);
     await s.engine.waitForIdle(wid);
     expect(observed[1]).toMatchObject({ purpose, continuation: { kind: "runtime_resume", source_run_id: first.id } });
-    expect(guidance[1]?.messages.map(item => item.message_id)).toEqual([message.message_id]);
-    expect(guidance[1]?.messages[0]?.text).toBe(message.text);
+    expect(guidance[1]).toBeUndefined();
+    expect(prepareWorkspace).toHaveBeenCalledTimes(1);
+    expect(s.store.events(wid).filter(event => event.type === "PreparationStarted")).toHaveLength(1);
     expect(JSON.stringify(observed[1]?.continuation)).not.toContain("old-waiting-run");
   } finally {
     release();

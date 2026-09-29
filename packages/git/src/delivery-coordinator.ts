@@ -235,7 +235,8 @@ export class GitDeliveryCoordinator {
   async integrateCommittedDelivery(
     workflowId: string,
     commits: Array<{ repo_id: string; commit: string }> = [],
-  ): Promise<{ integrations: IntegrationReceipt[]; repairInstructions?: string }> {
+  ): Promise<{ integrations: IntegrationReceipt[]; repairInstructions?: string;
+    repairTargets?: Array<{ repo_id: string; source_commit: string; candidate_commit: string }> }> {
     const w = this.workflow(workflowId);
     const ownsOperation = () => {
       const current = this.workflow(workflowId);
@@ -247,6 +248,7 @@ export class GitDeliveryCoordinator {
     requireCondition(workspaces.length, "WORKSPACE_MISSING", "缺少工作区");
     const integrations: IntegrationReceipt[] = [];
     const repairs: string[] = [];
+    const repairTargets: Array<{ repo_id: string; source_commit: string; candidate_commit: string }> = [];
     const failures: Array<{ repo_id: string; code: string; message: string }> = [];
     let failed = false;
 
@@ -281,6 +283,13 @@ export class GitDeliveryCoordinator {
         // Freeze the resolved Git operand once; retry must not silently select a later HEAD.
         commit = saved?.commit ?? await git(ws.root, ["rev-parse", "--verify", "--end-of-options", (reported || "HEAD") + "^{commit}"]);
         if (!saved) this.store.put("planner_commit_candidate", candidateKey, workflowId, { commit, repo_id: ws.repo_id, run_id: w.run_id });
+        const recovery = this.store.get<{ source_run_id: string; targets?: typeof repairTargets }>("planner_integration_repair", workflowId);
+        const target = recovery?.targets?.find((item) => item.repo_id === ws.repo_id);
+        if (target && recovery!.source_run_id !== w.run_id) {
+          for (const ancestor of [target.source_commit, target.candidate_commit])
+            requireCondition(await git(ws.root, ["merge-base", ancestor, commit]) === ancestor,
+              "INTEGRATION_REPAIR_INCOMPLETE", "冲突处理后的提交未包含原任务及固定目标提交，保留现场；不能重复派发同一合并或宣布完成");
+        }
         const prior = this.store.get<IntegrationReceipt>("integration_receipt", this.key(workflowId, ws.repo_id));
         if (prior?.status === "success" && prior.candidate_commit === commit &&
             prior.source_root === sourceRoot && prior.target_branch === targetBranch) {
@@ -295,22 +304,27 @@ export class GitDeliveryCoordinator {
           const base = await git(sourceRoot, ["merge-base", info.head, commit]);
           if (base !== commit) {
             if (base !== info.head) {
-              // A clean branch advance is still commit work, not a new development cycle.
-              // Preview without touching either checkout so real conflicts remain recoverable.
+              // Preview without touching either checkout. Both clean divergence and
+              // content conflicts continue in the planner's final-commit round.
+              let conflictDetail = "";
               try {
                 await git(sourceRoot, ["merge-tree", "--write-tree", info.head, commit]);
               } catch (error) {
                 const detail = error as { code?: unknown; stdout?: string; stderr?: string };
                 if (detail.code !== 1) throw error;
-                throw new FlowError("MERGE_CONFLICT", "提交合并存在冲突，已保留双方工作区，请处理以下冲突后重试原提交：\n" +
-                  redact([detail.stdout, detail.stderr].filter(Boolean).join("\n")));
+                conflictDetail = redact([detail.stdout, detail.stderr].filter(Boolean).join("\n"));
               }
+              repairTargets.push({ repo_id: ws.repo_id, source_commit: info.head, candidate_commit: commit });
               repairs.push(
                 "仓库 " + ws.repo_id + " 的目标分支已推进到 " + info.head +
-                "。本轮仍是最后提交阶段，合并预演无冲突。在任务工作树 " + ws.root + " 吸收这个固定提交，保留双方历史和本任务已有修改；" +
+                "。本轮仍是最后提交阶段，" + (conflictDetail ? "合并预演存在内容冲突。" : "合并预演无冲突。") +
+                "在任务工作树 " + ws.root + " 吸收这个固定提交，保留双方历史和原任务提交 " + commit + "；" +
                 "使用 git merge --no-commit --no-ff --no-autostash --no-overwrite-ignore " + info.head +
-                "，随后完成本任务的合并提交并返回新提交号。不要重新开发、复核或运行测试。" +
-                "若实际合并出现冲突或被其他修改阻塞，保留现场并报告 need_user 和具体原因，不自行修复代码或转入开发。不要在源工作区 cherry-pick 或丢弃任一方历史。",
+                "。若已有 MERGE_HEAD，先核对它属于这个固定提交，沿用现场继续，不重复发起合并。" +
+                "自动逐项解决冲突，结合批准计划和双方修改保留有效行为，禁止整文件选择 ours/theirs、reset、stash 或丢弃任一方历史；不要修改源工作区。" +
+                "冲突解决所需的代码调整和受影响的定向验证属于本轮提交收尾，不重开开发、全量测试或代码复核；完成后提交并返回包含双方历史的新提交号。" +
+                "只有业务取舍不明确、需要额外授权或现场被他人修改阻塞时，保留现场并返回 need_user 和结构化 user_interaction，明确问题、选项与影响，等待用户弹窗答复后继续。" +
+                (conflictDetail ? "\n合并预演冲突信息：\n" + conflictDetail : ""),
               );
               continue;
             }
@@ -359,7 +373,7 @@ export class GitDeliveryCoordinator {
         } : undefined);
     }
     // Resolve operational errors before asking a model to modify any repository.
-    return { integrations, ...(!failed && repairs.length ? { repairInstructions: repairs.join("\n\n") } : {}) };
+    return { integrations, ...(!failed && repairs.length ? { repairInstructions: repairs.join("\n\n"), repairTargets } : {}) };
   }
 
   async executeDelivery(

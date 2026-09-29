@@ -64,6 +64,11 @@ export async function repairFailure(
       "DISK_FULL",
       "PROJECT_CONFIG_CHANGED",
       "APPROVAL_STALE",
+      "DELIVERY_CONFLICT",
+      "ROUND_RESULT_CONFLICT",
+      "ROUND_RESULT_IDENTITY_MISMATCH",
+      "INPUT_DELIVERY_UNKNOWN",
+      "SESSION_CONTINUATION_UNAVAILABLE",
     ].includes(code)
   )
     return null;
@@ -209,8 +214,7 @@ function repairNativeFailure(
   const planner =
     assignment?.planner === true &&
     ["planner_takeover"].includes(run?.purpose);
-  const phase =
-    run?.purpose === "planner_takeover" ? "planner_takeover" : "implementation";
+  const phase = run?.purpose ?? "implement";
   const saved = engine.store.get<any>("repair_state", key);
   const prior = saved?.plan_revision === w.plan_revision ? saved : null;
   const failures: Array<{ run_id: string; planner: boolean }> =
@@ -228,7 +232,12 @@ function repairNativeFailure(
   );
   const delivery = rejectedDeliveryFeedback(engine.store, w);
   const owner = planner ? "规划模型" : "执行模型";
-  const instructions = `${owner}在原批准工作区和范围内实际修复 ${code}：${message}。保留已有实现，定位当前失败目标的根因，按既定设计修复并主动补齐必要遗漏，修复后先重跑该目标，再由负责的子 Agent 并行运行独立的受影响回归目标并说明结果。${batchExecutionInstructions}不得擅自更改原批准计划或关键架构。需要改变范围、权限或外部条件时报告具体阻塞。`;
+  const boundary = phase === "executor_test"
+    ? "继续当前整改后测试，仅修复测试发现的相关问题并定向重跑；保留已完成且未受影响的结果，不重新开发整份计划，不追加代码复核。"
+    : phase === "planner_takeover" ? "继续本轮规划整改，仅修复既定问题并交执行模型测试；本轮不得运行测试。"
+    : phase === "planner_commit" ? "继续本轮本地提交，保留已完成的开发、测试与验收结果；不重新开发。"
+    : batchExecutionInstructions;
+  const instructions = `${owner}继续原用途 ${phase}，处理 ${code}：${message}。${boundary}不得擅自更改原批准计划或关键架构。需要改变范围、权限或外部条件时报告具体阻塞。`;
   engine.store.put("repair_state", key, key, {
     plan_revision: w.plan_revision,
     phase,

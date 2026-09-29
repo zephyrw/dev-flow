@@ -18,17 +18,6 @@ export function toolSummary(name: string | undefined, args: any) {
   );
   const command = first(args.CommandLine, args.command, args.cmd);
   const cwd = first(args.Cwd, args.cwd, args.working_directory);
-  if (
-    path &&
-    /(?:^|[/\\])(?:handoff\.json|HANDOFF\.md)$/i.test(path) &&
-    ["view_file", "sed_file", "devflow_read_file"].includes(name ?? "")
-  )
-    return {
-      title: "读取任务说明",
-      text: "读取本轮任务要求和已有进度",
-      command,
-      cwd,
-    };
   const query = first(
     args.Query,
     args.SearchPattern,

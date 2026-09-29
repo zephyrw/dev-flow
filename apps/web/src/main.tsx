@@ -1482,7 +1482,7 @@ const CentralWorkspace = React.memo(
           {tab === "review" && (
             <section className="panel">
               <h2>独立复核结果</h2>
-              <ReviewResults review={detail.review} />
+              <ReviewResults review={detail.review} activity={detail.business_progress?.activity} />
             </section>
           )}
         </div>
@@ -2048,6 +2048,7 @@ function App() {
   const progress = w ? workflowProgress(w, detail.events, {
     native: detail.plan?.plan?.task_model === "native-v2",
     humanAccepted: detail.human_accepted,
+    businessProgress: detail.business_progress,
   }) : undefined;
   const timeline = w
     ? userFacingLogs(readableLogs(detail.events, selected, detail.formal_guidance), w.run_id)
