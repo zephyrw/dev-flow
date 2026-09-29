@@ -64,3 +64,44 @@ it("does not override current denied actions even with a valid finish terminal",
 it.each([2, -1, null])("does not override abnormal exit %s even with a valid finish terminal", (exit) => {
   expect(observe([user, response, finishStart, finishDone]).staleError(result, [], exit)).toBe(false);
 });
+
+const invalidFinish = step(727, "tool", "ERROR", { tool_name: "finish", tool_info: {
+  name: "finish", error: { type: "TOOL_ERROR", message: "invalid arguments:\n- at '/delivery': missing property 'workflow_id'\n- at '/delivery': got object, want null" },
+} });
+const repairedFinish = [step(728, "agent_response"), step(729, "tool", "ACTIVE", { tool_name: "finish" }), step(729, "finish")];
+it("recognizes a corrected finish argument error using the real 673→727→728→729 sequence", () => {
+  const turn = observe([step(673, "user_input"), step(726, "agent_response"), invalidFinish]);
+  expect(turn.staleError(result, [], 0)).toBe(false);
+  repairedFinish.forEach(e => turn.accept(e));
+  expect(turn.staleError(result, [], 0)).toBe(true);
+  expect(turn.canAttributeFailureToCurrentTurn()).toBe(false);
+});
+it.each([
+  { name: "no later successful finish", tail: [step(728, "agent_response")] },
+  { name: "later finish is still active", tail: repairedFinish.slice(0, 2) },
+  { name: "unidentified finish terminal", tail: [step(728, "agent_response"), step(729, "finish")] },
+  { name: "no corrective model response", tail: repairedFinish.slice(1) },
+  { name: "current provider error", tail: [step(728, "error_message"), ...repairedFinish] },
+])("keeps finish validation pending with $name", ({ tail }) => {
+  expect(observe([step(673, "user_input"), step(726, "agent_response"), invalidFinish, ...tail]).staleError(result, [], 0)).toBe(false);
+});
+it.each([
+  { type: "TOOL_ERROR", message: "permission denied" },
+  { type: "TOOL_ERROR", message: "transport failed" },
+  { type: "PROVIDER_ERROR", message: "invalid arguments: unavailable model" },
+])("never clears other finish errors after a later successful finish: %j", error => {
+  const failed = step(727, "tool", "ERROR", { tool_name: "finish", tool_info: { error } });
+  expect(observe([step(673, "user_input"), failed, ...repairedFinish]).staleError(result, [], 0)).toBe(false);
+});
+it("does not clear another tool's reported execution failure when finish parameters are repaired", () => {
+  const tool = step(725, "tool", "ERROR", { tool_name: "run_command", tool_info: {
+    output: JSON.stringify({ error: { code: "SCOPE_VIOLATION", message: "outside approved scope" } }),
+  } });
+  const turn = observe([step(673, "user_input"), tool, invalidFinish, ...repairedFinish]);
+  expect(turn.reportedFailure("SCOPE_VIOLATION: blocked")).toEqual({ code: "SCOPE_VIOLATION", message: "outside approved scope" });
+});
+it("does not hide real quota exit 3 after a corrected finish", () => {
+  expect(observe([step(673, "user_input"), invalidFinish, ...repairedFinish]).staleError({
+    ...result, error: "Individual quota reached. Resets in 2h27m8s.",
+  }, [], 3)).toBe(false);
+});

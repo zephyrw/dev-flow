@@ -22,7 +22,7 @@ afterEach(() => { vi.restoreAllMocks(); for (const s of stores.splice(0)) s.clos
 
 const quota = "Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 2h27m2s.";
 const tls = "API error: request failed: local error: tls: bad record MAC";
-type Scenario = "completed" | "quota" | "tls" | "stderr_tls" | "stderr_disk" | "stderr_timeout" | "denied" | "terminated" | "top_error" | "reported_tool_error";
+type Scenario = "completed" | "finish_repaired" | "finish_repaired_tool_error" | "quota" | "tls" | "stderr_tls" | "stderr_disk" | "stderr_timeout" | "denied" | "terminated" | "top_error" | "reported_tool_error";
 async function invoke(scenario: Scenario, managed = true) {
   const s = setup(); stores.push(s.store);
   s.store.put("project", "p1", "p1", project(s.root));
@@ -60,7 +60,16 @@ async function invoke(scenario: Scenario, managed = true) {
   if (scenario === "reported_tool_error") events.push(step(814, "tool", "ERROR", { tool_name: "read_file",
     tool_info: { output: JSON.stringify({ error: { code: "FIXTURE_TOOL_FAILURE", message: "fixture tool failed" } }) } }));
   if (scenario !== "quota") events.push(step(815, "agent_response"));
-  const response = scenario === "reported_tool_error" ? "FIXTURE_TOOL_FAILURE" : JSON.stringify(output);
+  if (scenario.startsWith("finish_repaired")) {
+    events.splice(0, events.length, step(673, "user_input"),
+      ...(scenario === "finish_repaired_tool_error" ? [step(725, "tool", "ERROR", { tool_name: "run_command",
+        tool_info: { output: JSON.stringify({ error: { code: "FIXTURE_TOOL_FAILURE", message: "fixture tool failed" } }) } })] : []),
+      step(726, "agent_response"), step(727, "tool", "ACTIVE", { tool_name: "finish" }),
+      step(727, "tool", "ERROR", { tool_name: "finish", tool_info: { name: "finish",
+        error: { type: "TOOL_ERROR", message: "invalid arguments:\n- at '/delivery': missing property 'workflow_id'\n- at '/delivery': got object, want null" } } }),
+      step(728, "agent_response"), step(729, "tool", "ACTIVE", { tool_name: "finish" }), step(729, "finish"));
+  }
+  const response = ["reported_tool_error", "finish_repaired_tool_error"].includes(scenario) ? "FIXTURE_TOOL_FAILURE" : JSON.stringify(output);
   events.push({ event: "result", result: { conversation_id: conversation, status: "ERROR", response,
     error: scenario === "tls" ? tls : quota, structured_output: output,
     ...(scenario === "denied" ? { denied_actions: [{ display_name: "run_command" }] } : {}) } });
@@ -93,6 +102,16 @@ it("still switches for a real unfinished quota turn with exit 3", async () => {
   const f = await invoke("quota");
   await expect(f.result).rejects.toMatchObject({ code: "AGY_ACCOUNT_WAIT" });
   expect(f.bridge.observeFailure).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ reason: "current_turn_quota_exit" }));
+});
+it("delivers the corrected finish output without treating its old quota footer as a new switch request", async () => {
+  const f = await invoke("finish_repaired");
+  await expect(f.result).resolves.toMatchObject({ status: "completed" });
+  expect(f.bridge.observeFailure).not.toHaveBeenCalled();
+});
+it("keeps another tool's execution error after finish parameters are corrected", async () => {
+  const f = await invoke("finish_repaired_tool_error");
+  await expect(f.result).rejects.toMatchObject({ details: { diagnostic: expect.stringContaining("FIXTURE_TOOL_FAILURE") } });
+  expect(f.bridge.observeFailure).not.toHaveBeenCalled();
 });
 it.each(["tls", "stderr_tls", "stderr_disk", "stderr_timeout", "denied", "terminated", "top_error", "reported_tool_error"] as const)("preserves current %s failures", async scenario => {
   const f = await invoke(scenario);
