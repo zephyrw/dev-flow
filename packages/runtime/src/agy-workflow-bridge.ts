@@ -5,6 +5,7 @@ import type {
   AccountCommittedEvent,
   UsagePermit,
 } from "../../agy-accounts/src/index.js";
+import { AccountServiceError, AccountQuotaAdmissionError } from "../../agy-accounts/src/service.js";
 import type {
   AgyRunBinding,
   AgyAccountPolicy,
@@ -12,7 +13,7 @@ import type {
 import type { AgyFailureFact } from "../../adapters/agy/src/failure-fact.js";
 import type { ProcessManager } from "../../process/src/manager.js";
 import type { Engine } from "../../core/src/engine.js";
-import { FlowError, ModelAccessRecordSchema, type Run } from "../../contracts/src/index.js";
+import { FlowError, ModelAccessRecordSchema, type ModelAccessRecord, type Run } from "../../contracts/src/index.js";
 import { objectHash } from "../../core/src/util.js";
 import type { AgyAccountProcessHost } from "../../process/src/agy-account-processes.js";
 import { resumeApproved } from "./recovery.js";
@@ -57,7 +58,12 @@ export interface ActiveManagedRun {
   required_pool_ids: string[];
 }
 
-interface AccountWait extends ActiveManagedRun {
+export type AccountRecoveryRun = Omit<ActiveManagedRun, "permit_id"> & {
+  permit_id?: string;
+  admission_only?: true;
+};
+
+interface AccountWait extends AccountRecoveryRun {
   operation_id: string;
   workflow_version: number;
   plan_revision?: number;
@@ -67,7 +73,7 @@ interface AccountWait extends ActiveManagedRun {
 export class AgyWorkflowBridge implements AccountConsumerPort {
   private activeRuns = new Map<string, ActiveManagedRun>();
   private unregisterFn?: () => void;
-  private saved = new Map<string, ActiveManagedRun[]>();
+  private saved = new Map<string, AccountRecoveryRun[]>();
   private childObservers = new Map<string, AgySubagentObserver>();
 
   constructor(
@@ -75,7 +81,7 @@ export class AgyWorkflowBridge implements AccountConsumerPort {
     private processManager: ProcessManager,
     private onRecoveryNeeded?: (
       event: AccountCommittedEvent,
-      affectedRuns: ActiveManagedRun[],
+      affectedRuns: AccountRecoveryRun[],
     ) => Promise<void>,
     private engine?: Engine,
     private processHost?: AgyAccountProcessHost,
@@ -240,37 +246,14 @@ export class AgyWorkflowBridge implements AccountConsumerPort {
       }
       this.engine.store.put("run", run.id, workflowId, run);
     }
+    let needsAccessRecord = false;
     try {
       access.assertFrozenAccess(run.profile, frozen);
     } catch (err: any) {
-      if (err?.code === "MODEL_VERIFICATION_REQUIRED" || err?.code === "MODEL_IDENTITY_CHANGED") {
-        // 外部已在 CLI/桌面端完成登录且凭据已同步，自动补齐当前同步账号的访问验证记录
-        const newKey = accessRecordId({
-          adapterId: frozen.adapterId,
-          nativeConfigScope: syncedNative.nativeConfigScope,
-          accountFingerprint: frozen.accountScope,
-          providerEndpointFingerprint: frozen.providerScope,
-          accessModelKey: frozen.accessModelKey,
-        });
-        const nowIso = new Date().toISOString();
-        access.putAccess(
-          ModelAccessRecordSchema.parse({
-            key: newKey,
-            status: "verified",
-            checked_at: nowIso,
-            adapterId: frozen.adapterId,
-            cliFingerprint: objectHash({
-              executable: frozen.executable,
-              capabilityRevision: frozen.capabilityRevision,
-            }),
-            accountScope: frozen.accountScope,
-            providerScope: frozen.providerScope,
-            accessModelKey: frozen.accessModelKey,
-            verification_method: "native-probe",
-            last_success_at: nowIso,
-            identityConfidence: "verified",
-          }),
-        );
+      if (err?.code === "MODEL_ACCESS_REQUIRED" || err?.code === "MODEL_VERIFICATION_REQUIRED" || err?.code === "MODEL_IDENTITY_CHANGED") {
+        // Syncing credentials is not model verification. The managed permit
+        // below probes this model; save success only after its identity check.
+        needsAccessRecord = true;
       } else {
         throw err;
       }
@@ -302,10 +285,23 @@ export class AgyWorkflowBridge implements AccountConsumerPort {
       });
     } catch (error) {
       if (error instanceof FlowError) throw error;
+      const rawCode = (error as { code?: unknown } | null)?.code;
+      const safeCode = typeof rawCode === "string" && /^[a-zA-Z][a-zA-Z0-9_]{0,79}$/.test(rawCode)
+        ? rawCode
+        : error instanceof Error && ["probe_identity_busy", "official_usage_probe_failed"].includes(error.message)
+          ? error.message : "unknown";
+      const errorClass = error instanceof AccountServiceError ? "AccountServiceError"
+        : error instanceof Error && /^[a-zA-Z][a-zA-Z0-9_]{0,79}$/.test(error.name)
+          ? error.name : "UnknownError";
+      const diagnostic = { code: safeCode, error_class: errorClass };
+      // Persist only bounded diagnostic identifiers, never raw credential/RPC output.
+      this.engine.store.event(workflowId, this.engine.get(workflowId).project_id,
+        "AgyAccountAdmissionFailed", diagnostic, run.id);
       throw new FlowError(
         "AGY_ACCOUNT_UNAVAILABLE",
         "账号服务、模型额度映射或执行许可尚不可用；请查看账号管理页",
         409,
+        diagnostic,
       );
     }
     try {
@@ -319,6 +315,19 @@ export class AgyWorkflowBridge implements AccountConsumerPort {
           native.accountFingerprint !== frozen.accountScope ||
           native.providerEndpointFingerprint !== frozen.providerScope)
         throw new FlowError("AGY_ACCOUNT_BINDING_STALE", "账号身份在取得执行许可期间已变化，请重新继续任务", 409);
+      if (needsAccessRecord) {
+        const checked = new Date().toISOString();
+        access.putAccess(ModelAccessRecordSchema.parse({
+          key: accessRecordId({ adapterId: frozen.adapterId, nativeConfigScope: native.nativeConfigScope,
+            accountFingerprint: frozen.accountScope, providerEndpointFingerprint: frozen.providerScope,
+            accessModelKey: frozen.accessModelKey }),
+          status: "verified", checked_at: checked, adapterId: frozen.adapterId,
+          cliFingerprint: objectHash({ executable: frozen.executable, capabilityRevision: frozen.capabilityRevision }),
+          accountScope: frozen.accountScope, providerScope: frozen.providerScope,
+          accessModelKey: frozen.accessModelKey, verification_method: "native-probe",
+          last_success_at: checked, identityConfidence: native.identityConfidence,
+        } satisfies ModelAccessRecord));
+      }
       access.assertFrozenAccess(run.profile, frozen);
       this.engine.store.put("run", run.id, workflowId, {
         ...(this.engine.store.get<Run>("run", run.id) ?? run),
@@ -338,7 +347,8 @@ export class AgyWorkflowBridge implements AccountConsumerPort {
 
   // 为即将启动的 AGY 任务申请执行许可
   async prepareRun(req: FrozenAgyRunRequest): Promise<AgyRunBinding> {
-    const permit: UsagePermit = await this.accountService.acquireUsagePermit({
+    let permit: UsagePermit;
+    try { permit = await this.accountService.acquireUsagePermit({
       realm_id: "default-agy-realm",
       consumer_id: req.run_id,
       usage_kind: "execution",
@@ -346,7 +356,11 @@ export class AgyWorkflowBridge implements AccountConsumerPort {
       required_model_ids: [req.effective_model_id],
       policy_revision: req.account_policy_revision,
       allowed_account_ids: req.allowed_account_ids,
-    });
+    }); } catch (error) {
+      if (error instanceof AccountQuotaAdmissionError && await this.waitForAdmissionSwitch(req, error))
+        throw new FlowError("AGY_ACCOUNT_WAIT", "当前账号额度不可用，等待切换后继续原任务", 409);
+      throw error;
+    }
     const repository = this.accountService.getRepository();
     const account = repository.getAccount(permit.realm_id, permit.account_id);
     const settings = repository.getSettings(permit.realm_id);
@@ -388,6 +402,59 @@ export class AgyWorkflowBridge implements AccountConsumerPort {
     });
 
     return binding;
+  }
+
+  private async waitForAdmissionSwitch(req: FrozenAgyRunRequest, error: AccountQuotaAdmissionError) {
+    const engine = this.engine;
+    if (!engine || this.activeRuns.has(req.run_id) || this.processManager.get(req.run_id) ||
+        engine.store.get("process_record", req.run_id)) return false;
+    const repository = this.accountService.getRepository();
+    const realm = repository.getRealm(error.realm_id);
+    const settings = repository.getSettings(error.realm_id);
+    const policy = repository.getPolicy(req.workflow_id);
+    const run = engine.store.get<Run>("run", req.run_id);
+    const w = engine.get(req.workflow_id);
+    if (!realm || realm.active_account_id !== error.account_id || realm.auth_epoch !== error.auth_epoch ||
+        !settings || !policy || policy.revision !== req.account_policy_revision ||
+        !(policy.auto_switch ?? settings.workflow_auto_switch) || !run || run.agy_account ||
+        engine.store.get("run_stop", run.id) ||
+        (run.purpose === "aside" ? this.asideForRun(w.id, run.id)?.status !== "active" : w.run_id !== run.id) ||
+        ["STOPPING", "STOPPED", "COMPLETED", "COMMITTED", "COMMIT_PARTIAL"].includes(w.state)) return false;
+    const pending = error.operation_id ? repository.getOperation(error.operation_id) : undefined;
+    // A queued operation has not captured consumers/selected the target yet.
+    if (error.operation_id && (!pending || pending.phase !== "queued" || pending.cancel_requested)) return false;
+    const info: AccountRecoveryRun = {
+      ...req, account_id: error.account_id, auth_epoch: error.auth_epoch,
+      account_settings_revision: settings.revision, admission_only: true,
+    };
+    const receipt = await this.accountService.requestWorkflowOperation({
+      realm_id: error.realm_id, request_id: `req_admission_${req.run_id}_${error.auth_epoch}`,
+      kind: "switch", workflow_id: w.id, source_run_id: run.id,
+      model_id: req.effective_model_id, required_model_ids: [req.effective_model_id],
+      selection: { mode: "auto" }, expected_epoch: error.auth_epoch,
+      required_pool_ids: req.required_pool_ids, allowed_account_ids: policy.allowed_account_ids,
+      night_pool: policy.night_pool, trigger: "workflow_quota",
+      source_event_key: `${req.run_id}:${error.auth_epoch}:admission`,
+    });
+    if (["failed", "cancelled"].includes(receipt.phase)) return false;
+    this.saveWait(info, receipt.operation_id);
+    return true;
+  }
+
+  private saveWait(runInfo: AccountRecoveryRun, operationId: string) {
+    if (!this.engine) return;
+    const w = this.engine.get(runInfo.workflow_id);
+    const isAside = this.engine.store.must<Run>("run", runInfo.run_id).purpose === "aside";
+    const waitRecord: AccountWait = {
+      ...runInfo, operation_id: operationId,
+      workflow_version: w.version + (isAside || w.state === "BLOCKED" ? 0 : 1),
+      plan_revision: w.plan_revision, plan_hash: w.plan_hash,
+    };
+    this.engine.store.put("agy_account_wait", runInfo.run_id, w.id, waitRecord);
+    if (!isAside) {
+      this.engine.store.put("agy_account_wait", w.id, w.id, waitRecord);
+      this.engine.store.remove("model_retry", w.id);
+    }
   }
 
   // 释放任务
@@ -459,6 +526,35 @@ export class AgyWorkflowBridge implements AccountConsumerPort {
         return false;
     }
 
+    if (fact.requires_quota_verification) {
+      // A peer may already be switching this exact epoch; its consumer snapshot
+      // includes this active Run. Do not wait behind an operation awaiting us.
+      const joiningSwitch = () => {
+        const current = repository.getRealm(binding.realm_id);
+        const pending = current?.pending_operation_id ? repository.getOperation(current.pending_operation_id) : undefined;
+        return pending?.kind === "switch" && pending.trigger === "workflow_quota" &&
+          pending.before_auth_epoch === binding.auth_epoch && !pending.cancel_requested;
+      };
+      const verified = joiningSwitch() || await this.accountService.verifyActiveQuotaExhausted({
+        realm_id: binding.realm_id, account_id: binding.account_id, auth_epoch: binding.auth_epoch,
+        required_pool_ids: runInfo.required_pool_ids,
+        required_model_ids: runInfo.effective_model_id ? [runInfo.effective_model_id] : [],
+      });
+      if (!verified && !joiningSwitch()) return false;
+      const current = repository.getRealm(binding.realm_id);
+      const currentPolicy = repository.getPolicy(runInfo.workflow_id);
+      if (current?.auth_epoch !== binding.auth_epoch || current.active_account_id !== binding.account_id ||
+          currentPolicy?.revision !== policy.revision ||
+          !(currentPolicy.auto_switch ?? repository.getSettings(binding.realm_id)?.workflow_auto_switch) ||
+          this.engine?.store.get("run_stop", runInfo.run_id)) return false;
+      if (this.engine) {
+        const w = this.engine.get(runInfo.workflow_id);
+        const run = this.engine.store.must<Run>("run", runInfo.run_id);
+        if (run.purpose === "aside" ? this.asideForRun(w.id, run.id)?.status !== "active" :
+            w.run_id !== run.id || ["STOPPING", "STOPPED", "COMPLETED", "COMMITTED", "COMMIT_PARTIAL"].includes(w.state)) return false;
+      }
+    }
+
     // This verified current-turn auth failure will become AGY_ACCOUNT_WAIT;
     // invalidate its original identity before that code hides the auth error.
     if (this.engine && fact.category === "auth_invalid") {
@@ -493,22 +589,7 @@ export class AgyWorkflowBridge implements AccountConsumerPort {
           409,
         );
       });
-    if (this.engine) {
-      const w = this.engine.get(runInfo.workflow_id);
-      const isAside = this.engine.store.must<Run>("run", runInfo.run_id).purpose === "aside";
-      const waitRecord = {
-        ...runInfo,
-        operation_id: receipt.operation_id,
-        workflow_version: w.version + (isAside || w.state === "BLOCKED" ? 0 : 1),
-        plan_revision: w.plan_revision,
-        plan_hash: w.plan_hash,
-      };
-      this.engine.store.put("agy_account_wait", runInfo.run_id, w.id, waitRecord);
-      if (!isAside) {
-        this.engine.store.put("agy_account_wait", w.id, w.id, waitRecord);
-        this.engine.store.remove("model_retry", w.id);
-      }
-    }
+    this.saveWait(runInfo, receipt.operation_id);
     return !["failed", "cancelled"].includes(receipt.phase);
   }
 
@@ -516,10 +597,13 @@ export class AgyWorkflowBridge implements AccountConsumerPort {
 
   async listOccupancy(): Promise<ConsumerOccupancy[]> {
     const occs: ConsumerOccupancy[] = [];
-    for (const run of this.activeRuns.values()) {
+    const runs: AccountRecoveryRun[] = [...this.activeRuns.values()];
+    for (const wait of this.engine?.store.list<AccountWait>("agy_account_wait") ?? [])
+      if (wait.admission_only && this.isCurrentWait(wait) && !runs.some(run => run.run_id === wait.run_id)) runs.push(wait);
+    for (const run of runs) {
       occs.push({
         consumer_id: run.run_id,
-        permit_ids: [run.permit_id],
+        permit_ids: run.permit_id ? [run.permit_id] : [],
         required_pool_ids: run.required_pool_ids,
         required_model_ids: run.effective_model_id
           ? [run.effective_model_id]
@@ -532,12 +616,12 @@ export class AgyWorkflowBridge implements AccountConsumerPort {
   }
 
   async prepareSwitch(operationId: string): Promise<{ savedRef: unknown }> {
-    const runs = [...this.activeRuns.values()];
+    const runs: AccountRecoveryRun[] = [...this.activeRuns.values()];
     if (this.engine) {
       const operation = this.accountService.getRepository().getOperation(operationId);
       const originalId = operation?.original_operation_id;
       const previousRuns = originalId
-        ? this.engine.store.get<{ runs: ActiveManagedRun[] }>("agy_workflow_switch", originalId)?.runs ?? []
+        ? this.engine.store.get<{ runs: AccountRecoveryRun[] }>("agy_workflow_switch", originalId)?.runs ?? []
         : [];
       for (const waiting of this.engine.store.list<AccountWait>("agy_account_wait")) {
         const belongsToPrevious = originalId && this.waitBelongsToOperation(waiting, originalId) &&
@@ -616,22 +700,28 @@ export class AgyWorkflowBridge implements AccountConsumerPort {
     // 停止所有属于受管 AGY Run 的进程
     const runs = this.saved.get(operationId) ?? [];
     await Promise.all(
-      runs.map((run) => this.processManager.stop(run.run_id, "account_switch")),
+      runs.filter(run => !run.admission_only).map((run) => this.processManager.stop(run.run_id, "account_switch")),
     );
   }
 
   async confirmStopped(operationId: string): Promise<boolean> {
     const runs =
       this.saved.get(operationId) ??
-      this.engine?.store.get<{ runs: ActiveManagedRun[] }>(
+      this.engine?.store.get<{ runs: AccountRecoveryRun[] }>(
         "agy_workflow_switch",
         operationId,
       )?.runs;
     if (!runs) return false;
     if (runs.some((run) => this.processManager.get(run.run_id))) return false;
-    const stopped = this.processHost
-      ? await this.processHost.confirmJobsStopped(runs.map((run) => run.run_id))
-      : runs.length === 0;
+    // Only an explicitly recorded pre-permit rejection can have no process.
+    // Missing PID/Job on an ordinary Run remains an unknown, not proof of exit.
+    if (runs.some(run => run.admission_only && (!this.engine || run.permit_id ||
+        this.engine.store.get("process_record", run.run_id) ||
+        this.engine.store.get<Run>("run", run.run_id)?.agy_account))) return false;
+    const started = runs.filter(run => !run.admission_only);
+    const stopped = started.length === 0 || (this.processHost
+      ? await this.processHost.confirmJobsStopped(started.map((run) => run.run_id))
+      : false);
     if (!stopped) return false;
 
     // CR20 & CR22: 进程全部确认停止后，冻结执行耗时并增量保存工作区快照
@@ -692,7 +782,7 @@ export class AgyWorkflowBridge implements AccountConsumerPort {
       );
     const affected =
       this.saved.get(event.operation_id) ??
-      this.engine?.store.get<{ runs: ActiveManagedRun[] }>(
+      this.engine?.store.get<{ runs: AccountRecoveryRun[] }>(
         "agy_workflow_switch",
         event.operation_id,
       )?.runs ??

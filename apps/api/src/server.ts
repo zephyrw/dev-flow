@@ -181,7 +181,7 @@ export async function buildServer(
     runtimeStopPort(engine.runtime as LocalRuntime | undefined),
   );
   engine.pauseTree = async (workflowId, request) => {
-    const fence = existingPauseFence(engine.store, workflowId, request.root_id);
+    const fence = existingPauseFence(engine.store, workflowId, request.root_id, request.expected_generation);
     if (fence) return conversationControls.reconcile(workflowId, fence.control_id);
     return conversationControls.pauseTree(workflowId, request);
   };
@@ -1318,6 +1318,10 @@ export async function buildServer(
     return {
       ...detail,
       events: detail.events.map((e) => engine.store.publicEvent(e)),
+      formal_guidance: publicEvent(engine.store.list<ConversationMessage>(CONVERSATION_ENTITY.message, key)
+        .filter((message) => message.mode === "formal")
+        .map((message) => ({ id: message.id, workflow_id: key, text: message.text,
+          created_at: message.created_at, feedback_id: message.feedback_message_id }))),
       attachment_status: listAttachmentRecords(engine.store, key),
       conversation_tree: conversations.getTree(key),
     };
@@ -1394,65 +1398,29 @@ export async function buildServer(
     human(req);
     const { id: key, documentId } = req.params as any;
     const q = (req.query || {}) as any;
-    const revision = q.revision !== undefined ? Number(q.revision) : undefined;
-
-    // 历史 markdown 下载路由兼容 (progress / tests)
     if (["progress", "tests", "plan-self-check"].includes(documentId)) {
-      const w = engine.get(key);
-      requireCondition(w.plan_revision > 0, "PLAN_MISSING", "尚无计划", 404);
-      engine.exportDocuments(key);
-      const file = join(
-        engine.config.storage_root,
-        "documents",
-        key,
-        "r" + w.plan_revision,
-        {
-          progress: "开发进度.md",
-          tests: "测试进度.md",
-          "plan-self-check": "执行模型计划复核.md",
-        }[documentId as "progress" | "tests" | "plan-self-check"]!,
-      );
-      requireCondition(
-        existsSync(file),
-        "DOCUMENT_MISSING",
-        "简单任务的进度包含在计划中",
-        404,
-      );
-      return reply
-        .type("text/markdown; charset=utf-8")
-        .header(
-          "Content-Disposition",
-          `attachment; filename="${documentId}.md"`,
-        )
-        .send(readFileSync(file));
+      const content = engine.renderProgressDocuments(key)[documentId];
+      requireCondition(content !== undefined, "DOCUMENT_MISSING", "尚无对应进度报告", 404);
+      return reply.type("text/markdown; charset=utf-8")
+        .header("Content-Disposition", `attachment; filename="${documentId}.md"`)
+        .send(content);
     }
-
-    const isMarkdownDownload =
-      q.format === "markdown" || q.download === "1" || q.download === "true";
-
-    const doc = documentId === "plan"
+    const isMarkdownDownload = q.format === "markdown" || q.download === "1" || q.download === "true";
+    const document = documentId === "plan"
       ? (() => {
           const w = engine.get(key);
-          const material = readPlanMaterial(engine.store, key, revision ?? w.plan_revision);
-          const bodyHash = hash(material.markdown.replace(/\r\n/g, "\n"));
-          const document = engine.store.list<any>("project_document", key).find((entry) =>
-            entry.document_type === "plan" && entry.revision === material.revision && entry.hash === bodyHash);
-          return {
-            ...document,
-            id: document?.id ?? material.id, workflow_id: key, document_type: "plan",
-            revision: material.revision,
-            hash: material.plan.design_ref?.content_hash ?? hash(material.markdown.replace(/\r\n/g, "\n")),
-            content: material.markdown, source_type: material.source_type,
-            authority_ready: material.authority_ready,
-          };
+          const plan = readPlanMaterial(engine.store, key, w.plan_revision);
+          return { id: plan.id, workflow_id: key, document_type: "plan", path: plan.path,
+            revision: plan.revision, hash: plan.hash, content: plan.markdown,
+            source_type: plan.source_type, authority_ready: plan.authority_ready };
         })()
-      : documentService.getDocument(key, documentId, revision);
+      : documentService.getDocument(key, documentId);
     if (isMarkdownDownload) {
       return reply.type("text/markdown; charset=utf-8")
-        .header("Content-Disposition", `attachment; filename="${documentId}-${key}-r${doc.revision}.md"`)
-        .send(doc.content);
+        .header("Content-Disposition", `attachment; filename="${documentId}-${key}.md"`)
+        .send(document.content);
     }
-    return { ok: true, document: doc };
+    return { ok: true, document };
   });
 
   // 文档严格核验与审批路由 (RQ-08 & 5.2 节)
@@ -1461,7 +1429,7 @@ export async function buildServer(
     const { id: key, documentId } = req.params as any;
     const documentFields = {
       expected_version: z.number().int().nonnegative(),
-      document_revision: z.number().int().positive(),
+      document_revision: z.number().int().positive().optional(),
       document_hash: z.string().min(1).optional(),
       hash: z.string().min(1).optional(),
       feedback_cursor: z.number().int().nonnegative().default(0),
@@ -1689,17 +1657,23 @@ export async function buildServer(
     const key = Id.parse((req.params as any).id);
     engine.get(key);
     const query = z
-      .object({ plan_revision: z.coerce.number().int().positive() })
+      .object({ plan_revision: z.coerce.number().int().positive().optional() })
       .parse(req.query);
     return engine.store
       .list<any>("aside_session", key)
-      .filter((q) => q.plan_revision === query.plan_revision)
+      .filter((q) => query.plan_revision === undefined || q.plan_revision === query.plan_revision)
       .sort((a, b) => a.created_at.localeCompare(b.created_at));
   });
   app.post("/api/workflows/:id/accept", async (req) => {
     human(req);
     const b = z
-      .object({ binding: z.record(z.string(), z.unknown()) })
+      .object({
+        // The console shares its request envelope with plan approval. These
+        // transport fields do not change the acceptance proof or binding.
+        schema_version: z.literal(2).optional(),
+        request_id: z.string().uuid().optional(),
+        binding: z.record(z.string(), z.unknown()),
+      })
       .strict()
       .parse(req.body);
     const key = Id.parse((req.params as any).id);
@@ -1758,12 +1732,6 @@ export async function buildServer(
     const feedbackMsg = saved?.feedback_message_id
       ? engine.store.get<any>("feedback_message", saved.feedback_message_id)
       : undefined;
-    engine.store.event(key, w.project_id, "UserGuidance", {
-      text: text || saved?.text || "",
-      scope: body.scope ?? "within_plan",
-      status: "received",
-      feedback_id: saved?.feedback_message_id,
-    });
     if (!body.interrupt_requested && body.scope !== "new_scope") {
       await afterConversationMessage(engine, key, submitted);
       return { ok: true, message: feedbackMsg, result: engine.get(key) };
@@ -2175,10 +2143,11 @@ function existingPauseFence(
   store: Store,
   workflowId: string,
   rootId: string,
+  expectedGeneration: number,
 ): ConversationControlFence | undefined {
   return store
     .list<ConversationControlFence>(CONVERSATION_CONTROL_FENCE, workflowId)
-    .filter((item) => item.root_id === rootId && item.dispatch_frozen)
+    .filter((item) => item.root_id === rootId && item.expected_generation === expectedGeneration && item.dispatch_frozen)
     .sort((a, b) => b.updated_at.localeCompare(a.updated_at))[0];
 }
 
@@ -2190,10 +2159,10 @@ async function pauseActiveTree(
   requestId?: string,
 ): Promise<ConversationControlResult | undefined> {
   const tree = conversations.getTree(workflowId);
-  const rootId = tree.active_root_id;
+  const rootId = conversations.resolveControlRoot(workflowId, tree);
   if (!rootId) return undefined;
   const generation = latestRootGeneration(tree.attempts, rootId);
-  const fence = existingPauseFence(store, workflowId, rootId);
+  const fence = existingPauseFence(store, workflowId, rootId, generation);
   if (fence) return controls.reconcile(workflowId, fence.control_id);
   try {
     return await controls.pauseTree(workflowId, {
@@ -2223,7 +2192,7 @@ async function resumeActiveTree(
   body: { request_id?: string; root_id?: string; expected_generation?: number },
 ): Promise<void> {
   const tree = conversations.getTree(workflowId);
-  const rootId = body.root_id ?? tree.active_root_id;
+  const rootId = body.root_id ?? conversations.resolveControlRoot(workflowId, tree);
   if (!rootId) return;
   const request: ConversationControlRequest = {
     request_id:

@@ -1,4 +1,11 @@
-import type { QuotaWindow } from "../../contracts/src/agy-account.js";
+import type { AgyAccount, QuotaWindow } from "../../contracts/src/agy-account.js";
+
+export function hasAccountIdentityMismatch(account: AgyAccount): boolean {
+  return Boolean(
+    (account.auth.email && account.auth.email.trim().toLowerCase() !== account.identity.email.trim().toLowerCase()) ||
+    (account.auth.subject && account.identity.subject && account.auth.subject !== account.identity.subject),
+  );
+}
 
 export function modelCovered(patterns: string[], model: string): boolean {
   return patterns.some((pattern) => pattern === "*" || pattern === model ||

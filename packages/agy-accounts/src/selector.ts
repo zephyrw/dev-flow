@@ -1,4 +1,4 @@
-import { hasDualQuotaWindows, requiredQuotaPools } from "./quota.js";
+import { hasAccountIdentityMismatch, hasDualQuotaWindows, requiredQuotaPools } from "./quota.js";
 import type {
   AgyAccount,
   AgyQuotaSnapshot,
@@ -77,6 +77,7 @@ export function evaluateAccountForDemand(
   if (account.state === "disabled") excluded_reasons.push("account_disabled");
   if (account.state === "incompatible") excluded_reasons.push("account_incompatible");
   if (account.state === "reauth_required") excluded_reasons.push("reauth_required");
+  if (hasAccountIdentityMismatch(account)) excluded_reasons.push("account_identity_mismatch");
   if (account.state === "pending_quota") excluded_reasons.push("pending_quota_initialization");
 
   // 2. 白名单
@@ -523,6 +524,11 @@ export function selectCandidates(
     // 周余额降序
     if (b.projected_weekly !== a.projected_weekly) {
       return b.projected_weekly - a.projected_weekly;
+    }
+
+    // 周余额相同时，先选本轮五小时余额更多的账号，再用最近使用时间打平。
+    if (b.min_five_hour !== a.min_five_hour) {
+      return (b.min_five_hour ?? 0) - (a.min_five_hour ?? 0);
     }
 
     // 并列：last_used_at 更早（LRU，更久没用的优先）

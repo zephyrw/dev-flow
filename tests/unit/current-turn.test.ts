@@ -4,7 +4,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { observeAgy } from "../../packages/adapters/agy/src/session.js";
-import type { ManagedProcess } from "../../packages/process/src/manager.js";
+import type { ManagedProcess, ProcessStopReason } from "../../packages/process/src/manager.js";
 
 const oldError = "Individual quota reached. Resets in 2h49m37s.";
 const step = (index: number, type: string, state = "DONE", extra = {}) => ({
@@ -22,12 +22,14 @@ async function observe(
   response: string,
   error: string | null = oldError,
   previousErrors = [oldError],
+  stderr = "",
+  outcome: { denied_actions?: { display_name: string }[]; termination_reason?: ProcessStopReason } = {},
 ) {
   const directory = mkdtempSync(join(tmpdir(), "devflow-current-turn-"));
   const proc = new EventEmitter() as ManagedProcess;
   proc.id = "test-current-turn";
   proc.stop = async () => {};
-  let done!: (value: { code: number }) => void;
+  let done!: (value: Awaited<ManagedProcess["completion"]>) => void;
   proc.completion = new Promise((resolve) => (done = resolve));
   const observed = observeAgy(proc, {
     model: "test-model",
@@ -52,11 +54,13 @@ async function observe(
         status: "ERROR",
         error,
         response,
+        ...(outcome.denied_actions ? { denied_actions: outcome.denied_actions } : {}),
       },
     },
   ])
     proc.emit("stdout", Buffer.from(JSON.stringify(event) + "\n"));
-  done({ code: 1 });
+  if (stderr) proc.emit("stderr", Buffer.from(stderr));
+  done({ code: 1, ...(outcome.termination_reason ? { termination_reason: outcome.termination_reason } : {}) });
   return observed;
 }
 it("resumed scope failure is not replaced by a historical quota footer", async () => {
@@ -135,4 +139,68 @@ it("a model response discussing quota does not itself prove a quota failure", as
       [],
     ),
   ).rejects.toMatchObject({ code: "EXECUTION_FAILED" });
+});
+
+const tlsError = "API error: request failed: local error: tls: bad record MAC";
+it("accepts the current completed turn despite a retained TLS footer", async () => {
+  await expect(
+    observe(
+      [step(447, "user_input"), step(454, "tool"), step(455, "agent_response")],
+      '{"status":"need_user"}',
+      tlsError,
+      [],
+    ),
+  ).resolves.toMatchObject({ conversation: "same-conversation" });
+});
+it("does not ignore a TLS failure reported by this process on stderr", async () => {
+  await expect(
+    observe(
+      [step(447, "user_input"), step(454, "tool"), step(455, "agent_response")],
+      '{"status":"completed"}',
+      tlsError,
+      [],
+      tlsError,
+    ),
+  ).rejects.toMatchObject({ code: "MODEL_CONNECTION_FAILED" });
+});
+it("preserves an init-only TLS failure without a completed new turn", async () => {
+  await expect(observe([], "", tlsError, [])).rejects.toMatchObject({
+    code: "MODEL_CONNECTION_FAILED",
+  });
+});
+
+const finishedTurn = () => [
+  step(480, "user_input"),
+  step(486, "tool"),
+  step(487, "agent_response"),
+  step(488, "tool", "ACTIVE", { tool_name: "finish", tool_info: { name: "finish" } }),
+  step(488, "finish", "DONE"),
+];
+it("accepts a completed finish step following the response despite a retained TLS footer", async () => {
+  await expect(observe(finishedTurn(), '{"status":"completed"}', tlsError, []))
+    .resolves.toMatchObject({ conversation: "same-conversation" });
+});
+it("a completed finish step does not hide this process's stderr connection failure", async () => {
+  await expect(observe(finishedTurn(), '{"status":"completed"}', tlsError, [], tlsError))
+    .rejects.toMatchObject({ code: "MODEL_CONNECTION_FAILED" });
+});
+it("a completed finish step does not hide a current-turn provider error_message", async () => {
+  const events = finishedTurn();
+  events.splice(1, 0, step(485, "error_message", "DONE", { error_info: { message: tlsError } }));
+  await expect(observe(events, '{"status":"need_user"}', tlsError, []))
+    .rejects.toMatchObject({ code: "MODEL_CONNECTION_FAILED" });
+});
+it("a completed finish step does not hide a denied permission", async () => {
+  await expect(observe(finishedTurn(), '{"status":"completed"}', tlsError, [], "", {
+    denied_actions: [{ display_name: "run_command" }],
+  })).rejects.toMatchObject({ code: "NATIVE_PERMISSION_DENIED" });
+});
+it.each([
+  { reason: "manual", code: "MODEL_CONNECTION_FAILED" },
+  { reason: "timeout", code: "TIMEOUT" },
+  { reason: "account_switch", code: "AGY_ACCOUNT_WAIT" },
+] as const)("a completed finish step cannot override $reason termination", async ({ reason, code }) => {
+  await expect(observe(finishedTurn(), '{"status":"completed"}', tlsError, [], "", {
+    termination_reason: reason,
+  })).rejects.toMatchObject({ code, ...(reason === "manual" ? { details: { termination_reason: reason } } : {}) });
 });

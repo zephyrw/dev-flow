@@ -408,7 +408,7 @@ describe("SA-D18 composer helpers", () => {
         readonly: false,
         receivedFormal: true,
       }),
-    ).toBe("指导已接收，正在交接");
+    ).toBe("指导已保存，具体执行与回应见执行过程");
   });
 
   it("reuses RequirementComposer @ search helpers for the plus-menu cite action", () => {

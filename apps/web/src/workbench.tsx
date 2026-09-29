@@ -1,4 +1,6 @@
 import React from "react";
+import Markdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 export function DeliveryStrip({ detail }: { detail: any }) {
   const leaf = detail.plan?.plan.task_model === "leaf-v1";
@@ -15,6 +17,8 @@ export function DeliveryStrip({ detail }: { detail: any }) {
     detail.tasks.filter((t: any) => t.status === "verified").length;
 
   const test = detail.test_progress;
+  const unreported = test?.unreported ?? test?.cases?.filter((c: any) => c.status === "unreported").length ?? 0;
+  const awaitingResults = native && test?.total > 0 && unreported === test.total;
   const taskPercent = total > 0 ? Math.round((completed / total) * 100) : 0;
   const testPercent =
     test?.total > 0 ? Math.round((test.passed / test.total) * 100) : 0;
@@ -95,6 +99,10 @@ export function DeliveryStrip({ detail }: { detail: any }) {
       )}
       {test?.total > 0 && (
         <span className="metric-chip">
+          {awaitingResults ? <>
+            <span className="chip-label">测试进度：</span>
+            <span>尚未收到逐项结果</span>
+          </> : <>
           <span className="chip-label">
             {native ? "计划用例报告通过" : "已通过测试"}
           </span>
@@ -107,40 +115,14 @@ export function DeliveryStrip({ detail }: { detail: any }) {
             value={test.passed}
             max={test.total}
           />
+          {native && unreported > 0 && <span> · {unreported} 项未回传</span>}
+          </>}
         </span>
       )}
       {test?.failed > 0 && (
         <span className="metric-chip error-chip">
           <span className="error-dot" />
           失败 <b>{test.failed}</b>
-        </span>
-      )}
-      {native && detail.native_progress?.tests.length > 0 && (
-        <span className="metric-chip" aria-label="自测执行次数">
-          已执行自测 <b>{detail.native_progress.tests.length}</b> 次
-        </span>
-      )}
-      {native && detail.native_progress?.running > 0 && (
-        <span className="metric-chip">
-          自测运行中 <b>{detail.native_progress.running}</b>
-        </span>
-      )}
-      {native && detail.native_progress?.latest_result && (
-        <span className="metric-chip" aria-label="最近自测结果">
-          最近自测：
-          {detail.native_progress.latest_result.passed !== undefined ? (
-            <>
-              {detail.native_progress.latest_result.status === "failed"
-                ? "命令失败 · "
-                : ""}
-              通过 <b>{detail.native_progress.latest_result.passed}</b> · 失败{" "}
-              <b>{detail.native_progress.latest_result.failed ?? 0}</b>
-            </>
-          ) : detail.native_progress.latest_result.status === "failed" ? (
-            "执行失败"
-          ) : (
-            "结果待确认"
-          )}
         </span>
       )}
       {test?.previously_passed > 0 && (
@@ -152,97 +134,34 @@ export function DeliveryStrip({ detail }: { detail: any }) {
   );
 }
 
-export function EnvironmentSummary({ detail }: { detail: any }) {
-  const env = detail.environment,
-    project = detail.project;
-  // An exit code and stdout prove only that a script ran. Data validation is
-  // reported separately from service health and never inferred from a message.
-  const servicesReady =
-    env?.status === "ready" &&
-    project.services.length > 0 &&
-    project.services.every((s: any) =>
-      env.services.some((a: any) => a.id === s.id && a.status === "ready"),
-    );
-  const ready = servicesReady;
+export function AcceptanceAccess({ detail, onReleaseEnvironment, onLockBrowser, onReleaseBrowser }: {
+  detail: any;
+  onReleaseEnvironment: () => void;
+  onLockBrowser: () => void;
+  onReleaseBrowser: () => void;
+}) {
+  if (!["HUMAN_PENDING", "HUMAN_VERIFY"].includes(detail.workflow?.state)) return null;
+  const env = detail.environment;
+  const links = env?.status === "ready" ? (detail.project?.services ?? []).flatMap((service: any) => {
+    const actual = env.services?.find((entry: any) => entry.id === service.id);
+    return service.port_pool === "frontend" && actual?.status === "ready" && /^https?:\/\//i.test(actual.origin ?? "")
+      ? [{ id: service.id, origin: actual.origin }] : [];
+  }) : [];
   return (
-    <div className="environment-summary">
-      <p className="notice-subtle">
-        本机验证副本用于运行当前任务的代码和浏览器测试，使用独立数据目录。地址为
-        127.0.0.1，端口由本机空闲端口池分配，与工作流控制台分开。
-      </p>
-      <div
-        className={`environment-state-banner ${ready ? "ready" : env?.error ? "error" : "pending"}`}
-      >
-        <span className="status-indicator-dot" />
-        <p className="environment-state">
-          {ready
-            ? "可进行验收"
-            : env?.error
-              ? "本机验证副本启动失败"
-              : servicesReady
-                ? "服务已启动"
-                : env?.status === "starting"
-                  ? "正在准备环境…"
-                  : "验收环境尚未就绪"}
-        </p>
+    <section className="panel" id={`human-acceptance-${detail.workflow.id}`} tabIndex={-1} aria-label="人工验收">
+      <h2>人工验收</h2>
+      <p>请按计划中的验收场景实际操作，确认结果后点击“验收通过，启动复核”。</p>
+      {detail.acceptance_handoff?.summary && <div className="document" aria-label="验收交接说明">
+        <Markdown remarkPlugins={[remarkGfm]}>{detail.acceptance_handoff.summary}</Markdown>
+      </div>}
+      <div className="actions">
+        {links.map((link: { id: string; origin: string }) => <a key={link.id} className="btn-link" href={link.origin} target="_blank" rel="noreferrer">打开验收页面 ↗</a>)}
+        {env && <>
+          <button onClick={onReleaseEnvironment}>释放环境</button>
+          <button onClick={onLockBrowser}>占用人工核验浏览器</button>
+          <button onClick={onReleaseBrowser}>释放人工核验浏览器</button>
+        </>}
       </div>
-      {env?.error && <p className="error">{env.error}</p>}
-      <div className="environment-metrics-card">
-        {(project.services ?? []).map((s: any) => {
-          const actual = env?.services.find((a: any) => a.id === s.id);
-          return (
-            <div className="metric-row" key={s.id}>
-              <span className="metric-title">
-                {s.port_pool === "backend" ? "后端服务" : "前端服务"}
-              </span>
-              <b
-                className={`metric-status ${actual?.status === "ready" ? "ready" : ""}`}
-              >
-                {env?.status === "ready" && actual?.status === "ready"
-                  ? "健康检查通过"
-                  : env?.status === "starting" && actual?.status === "ready"
-                    ? "已启动"
-                    : "未就绪"}
-              </b>
-              {actual?.origin && s.port_pool === "frontend" && (
-                <a
-                  className="btn-link"
-                  href={actual.origin}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  打开验收页面 ↗
-                </a>
-              )}
-            </div>
-          );
-        })}
-        <div className="metric-row">
-          <span className="metric-title">测试数据</span>
-          <span className="metric-desc">
-            {project.data.mode === "external_lock"
-              ? "外部测试资源 · 同一资源排队使用"
-              : "本任务独立目录"}
-          </span>
-        </div>
-        <div className="metric-row">
-          <span className="metric-title">数据准备</span>
-          <b className="metric-status">
-            {project.data.mode === "external_lock"
-              ? "外部测试资源"
-              : project.data.fixture_command_id
-                ? "已配置独立数据"
-                : "未配置外部数据准备"}
-          </b>
-        </div>
-      </div>
-      <details className="environment-details-box">
-        <summary>环境技术详情</summary>
-        <div className="details-content">
-          <p>外部资源：{project.data.resource_id ?? "无"}</p>
-          <pre>{JSON.stringify(env, null, 2)}</pre>
-        </div>
-      </details>
-    </div>
+    </section>
   );
 }

@@ -1,6 +1,57 @@
 import { it, expect } from "vitest";
 import { readableLogs, userFacingLogs } from "../../apps/web/src/logs.js";
 import { toolSummary } from "../../packages/presentation/src/tool-summary.js";
+import { runtimePurposeNames } from "../../packages/presentation/src/run-observation.js";
+
+it("redacts historical guidance display without altering the execution input", () => {
+  const guidance = { id: "secret-guidance", workflow_id: "w",
+    text: "使用 --password sample-guidance-secret 继续处理", created_at: "2026-09-29T02:00:00Z" };
+  const rows = readableLogs([], "w", [guidance]);
+  expect(rows).toHaveLength(1);
+  expect(rows[0]?.text).not.toContain("sample-guidance-secret");
+  expect(guidance.text).toContain("sample-guidance-secret");
+});
+
+it.each([true, false])("labels functional guidance neutrally without declaring a new development cycle (resumed=%s)", resumed => {
+  const events = ["QUEUED", "EXECUTING"].map((to, i) => ({ workflow_id: "w", event_seq: i + 1, created_at: "2026-09-29T02:00:00Z",
+    type: "StateChanged", payload: { from: i === 0 ? "HUMAN_PENDING" : "QUEUED", to, stage: "functional_fix", resumed } }));
+  const rows = readableLogs(events, "w");
+  expect(rows.map(row => row.title)).toEqual(["验收指导已排队", "处理验收指导"]);
+  expect(rows[1]?.text).toContain("启动验收服务或具体修改");
+  expect(rows[1]?.text).not.toContain("本轮开发与自测");
+  expect(runtimePurposeNames.functional_fix).toBe("执行模型 · 验收指导处理");
+});
+
+it.each([true, false])("labels a bound quality repair as remediation rather than implementation (resumed=%s)", (resumed) => {
+  const rows = readableLogs([{ workflow_id: "w", event_seq: 1, created_at: "2026-09-28T09:54:06Z",
+    type: "StateChanged", payload: { from: "QUEUED", to: "EXECUTING", stage: "execute", resumed,
+      repair_source: "quality_review", source_review_id: "review-run" } }], "w");
+  expect(rows[0]).toMatchObject({ title: "修复代码复核问题" });
+  expect(rows[0]?.text).toContain("按本轮代码复核问题逐项整改");
+  expect(rows[0]?.text).not.toContain("自主安排本轮开发");
+});
+
+it("distinguishes a resumed implementation and displays historical formal guidance once", () => {
+  const events = [{ workflow_id: "w", event_seq: 4, created_at: "2026-09-28T08:00:00Z",
+    type: "StateChanged", payload: { from: "QUEUED", to: "EXECUTING", stage: "execute", resumed: true } }];
+  const guidance = { id: "m", workflow_id: "w", text: "Token 已更新，不要刷新", feedback_id: "f",
+    created_at: "2026-09-28T07:59:00Z" };
+  const rows = readableLogs(events, "w", [guidance, { ...guidance, workflow_id: "other" }]);
+  expect(rows.map((row) => row.title)).toEqual(["收到你的指导", "继续开发与自测"]);
+  expect(rows[0]?.text).toBe(guidance.text);
+  expect(rows[1]?.text).toContain("已有修改和执行进度");
+  const savedEvent = { workflow_id: "w", event_seq: 3, created_at: guidance.created_at,
+    type: "UserGuidance", payload: { feedback_id: "f", text: guidance.text } };
+  expect(readableLogs([savedEvent, ...events], "w", [guidance])
+    .filter((row) => row.title === "收到你的指导")).toHaveLength(1);
+  expect(readableLogs([{ ...events[0], payload: { ...events[0]!.payload, resumed: false } }], "w")[0]?.title)
+    .toBe("开始开发与自测");
+  expect(readableLogs([{ ...events[0], payload: { ...events[0]!.payload, stage: "executor_test" } }], "w")[0]?.title)
+    .toBe("继续测试");
+  const paused = readableLogs([{ ...events[0], payload: { to: "STOPPED" } }], "w")[0];
+  expect(paused).toMatchObject({ title: "执行已暂停" });
+  expect(paused?.status).not.toBe("error");
+});
 
 it("renders native commands, file targets and returned output, hiding empty unknown events", () => {
   const tool = (

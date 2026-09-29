@@ -245,6 +245,26 @@ function resumeMaterials(
 }
 
 describe("SA-I17 conversation message attachment paths", () => {
+  it.each(["你本地启动前后端，我来验收，注意单独worktree用单独端口", "请修复登录按钮无反应的问题"])("keeps acceptance guidance verbatim without classifying its text: %s", async text => {
+    const f = fixture({ "wf-human": "HUMAN_PENDING" });
+    const result = await f.messages.submit("wf-human", payload(f.roots, "wf-human", { text }));
+    expect(result.accepted).toBe(true);
+    expect(f.s.store.list("functional_issue", "wf-human")).toHaveLength(0);
+    expect(f.s.store.list("repair_model_batch", "wf-human")).toHaveLength(0);
+    expect(f.s.store.list<FeedbackMessage>("feedback_message", "wf-human")[0]).toMatchObject({ text, kind: "execution", status: "pending" });
+    expect(f.control.calls).toHaveLength(0);
+  });
+  it("publishes formal guidance once on the composer route and keeps aside separate", async () => {
+    const f = fixture();
+    const request = payload(f.roots, "wf1", { text: "保留已有进度，不要刷新 Token" });
+    await f.messages.submit("wf1", request as any);
+    await f.messages.submit("wf1", request as any);
+    await f.messages.submit("wf1", payload(f.roots, "wf1", { request_id: "aside-req", text: "/btw 解释当前进度" }) as any);
+    const guidance = f.s.store.events("wf1", 0, 1000).filter((event) => event.type === "UserGuidance");
+    expect(guidance).toHaveLength(1);
+    expect(guidance[0]?.payload).toMatchObject({ text: request.text, status: "received" });
+    expect(f.s.store.list("feedback_message", "wf1")).toHaveLength(1);
+  });
   it("formal/planning/functional/aside bind ready files and resume the same hash", async () => {
     const f = fixture({
       "wf-exec": "EXECUTING",
@@ -296,7 +316,7 @@ describe("SA-I17 conversation message attachment paths", () => {
         attachment_ids: [planFile.id],
       }),
     );
-    const functional = await f.messages.submit(
+    const functional = await f.messages.submitFunctional(
       "wf-human",
       payload(f.roots, "wf-human", {
         request_id: "req-human",

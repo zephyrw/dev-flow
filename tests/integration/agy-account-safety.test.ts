@@ -125,6 +125,31 @@ describe("AGY durable safety boundary", () => {
     expect(f.repo.getOperation(receipt.operation_id)?.phase).toBe("completed");
   });
 
+  it("commits the same account's refreshed credential after model access verification", async () => {
+    const f = await fixture(); await f.service.start({ realmId, requestId: "start" });
+    f.probe.probeModelAccess = async () => { f.state.active = "renewed_B"; return true; };
+    f.auth.inspectActive = async () => ({ exists: true, auth: { email: "B@example.test" } });
+    f.auth.captureActive = async () => ({ secret_ref: f.state.active, credential_revision: f.state.active === "renewed_B" ? 2 : 1, auth: { email: `${f.state.active.endsWith("B") ? "B" : "A"}@example.test` } });
+    const receipt = await f.service.requestOperation({ realm_id: realmId, request_id: "switch", kind: "switch", selection: { mode: "auto" } });
+    await f.service.tick(now);
+    expect(f.repo.getOperation(receipt.operation_id)?.phase).toBe("completed");
+    expect(f.repo.getFinalAccountCommit(receipt.operation_id)?.secret_ref).toBe("renewed_B");
+    expect(f.repo.getRealm(realmId)?.active_secret_ref).toBe("renewed_B");
+    expect(f.repo.getAccount(realmId, "B")?.credential_revision).toBe(2);
+  });
+
+  it("does not commit or relabel credentials when identity changes during a model probe", async () => {
+    const f = await fixture(); await f.service.start({ realmId, requestId: "start" });
+    f.probe.probeModelAccess = async () => { f.state.active = "external_C"; return true; };
+    f.auth.inspectActive = async () => ({ exists: true, auth: { email: "C@example.test" } });
+    const receipt = await f.service.requestOperation({ realm_id: realmId, request_id: "switch", kind: "switch", selection: { mode: "auto" } });
+    await f.service.tick(now);
+    expect(f.repo.getFinalAccountCommit(receipt.operation_id)).toBeUndefined();
+    expect(f.repo.getRealm(realmId)?.phase).toBe("blocked");
+    expect(f.repo.getAccount(realmId, "B")?.secret_ref).toBe("saved_B");
+    expect(f.state.active).toBe("external_C");
+  });
+
   it("keeps an external-owner wait local and cancellation prevents later switching", async () => {
     const f = await fixture(); await f.service.start({ realmId, requestId: "start" }); f.state.external = true;
     const receipt = await f.service.requestOperation({ realm_id: realmId, request_id: "switch", kind: "switch", selection: { mode: "explicit", account_id: "B" } });
@@ -283,5 +308,157 @@ describe("AGY durable safety boundary", () => {
     await restarted.reconcileStartup(); await restarted.tick(now);
     expect(f.state.writes).toEqual(["B"]); expect(deliveries).toBe(2); expect(f.repo.getOperation(receipt.operation_id)?.phase).toBe("completed");
     await restarted.close();
+  });
+
+  async function quotaOnlyFixture() {
+    const f = await fixture();
+    await f.service.start({ realmId, requestId: "quota-start" });
+    const query = f.probe.probeUsage;
+    f.probe.probeUsage = async (...args) => ({ ...await query(...args), email: undefined });
+    f.auth.inspectActive = async () => ({ exists: true, auth: { email: `${f.state.active.replace("saved_", "")}@example.test` } });
+    f.auth.captureActive = async () => ({ secret_ref: f.state.active, credential_revision: 1,
+      auth: { email: `${f.state.active.replace("saved_", "")}@example.test` } });
+    return f;
+  }
+
+  it("accepts real quota-only /usage on successful release without falsely blocking the account realm", async () => {
+    const f = await quotaOnlyFixture();
+    const permit = await f.service.acquireUsagePermit({ realm_id: realmId, consumer_id: "run", usage_kind: "execution", required_pool_ids: [pool] });
+    f.service.markUsageStarted(permit.permit_id);
+    await f.service.releaseUsagePermit(permit.permit_id, { permit_id: permit.permit_id, success: true });
+    expect(f.repo.getRealm(realmId)).toMatchObject({ phase: "idle", service_state: "running" });
+    expect(f.repo.getRealm(realmId)?.last_error).toBeUndefined();
+    expect(f.repo.getQuotaSnapshot(realmId, "A", pool)?.windows[0]?.remaining_fraction).toBe(0.4);
+  });
+
+  it("rejects actual identity changes even when /usage omits the email", async () => {
+    const f = await quotaOnlyFixture();
+    const permit = await f.service.acquireUsagePermit({ realm_id: realmId, consumer_id: "run", usage_kind: "execution", required_pool_ids: [pool] });
+    const original = f.repo.getQuotaSnapshot(realmId, "A", pool);
+    const query = f.probe.probeUsage;
+    f.probe.probeUsage = async (...args) => { const result = await query(...args); f.state.active = "saved_B"; return result; };
+    await f.service.releaseUsagePermit(permit.permit_id, { permit_id: permit.permit_id, success: true });
+    expect(f.repo.getRealm(realmId)).toMatchObject({ phase: "blocked", last_error: "external_change" });
+    expect(f.repo.getQuotaSnapshot(realmId, "A", pool)).toEqual(original);
+    expect(f.repo.getAccount(realmId, "A")?.secret_ref).toBe("saved_A");
+  });
+
+  it("does not overwrite another account's credential or quota with an incorrectly labelled saved blob", async () => {
+    const f = await quotaOnlyFixture();
+    const originalQuota = f.repo.getQuotaSnapshot(realmId, "B", pool);
+    const activate = f.auth.activateSaved;
+    f.auth.activateSaved = async (realm, account, ref) => activate(realm, account, account === "B" ? "saved_A" : ref);
+    await f.service.syncAndRefreshQuotas(realmId);
+    expect(f.repo.getAccount(realmId, "B")).toMatchObject({ secret_ref: "saved_B", state: "reauth_required" });
+    expect(f.repo.getQuotaSnapshot(realmId, "B", pool)).toEqual(originalQuota);
+    expect(f.state.active).toBe("saved_A");
+  });
+
+  it("rejects an identity change between the quota query and credential capture", async () => {
+    const f = await quotaOnlyFixture();
+    const original = f.repo.getAccount(realmId, "A");
+    f.state.external = true;
+    const compare = f.auth.compareActive;
+    f.auth.compareActive = async (...args) => f.state.probes.length ? false : compare(...args);
+    f.auth.captureActive = async () => ({ secret_ref: "wrong_B", credential_revision: 2, auth: { email: "B@example.test" } });
+    await f.service.syncAndRefreshQuotas(realmId);
+    expect(f.repo.getAccount(realmId, "A")?.secret_ref).toBe(original?.secret_ref);
+    expect(f.repo.getAccount(realmId, "A")?.auth.email).not.toBe("B@example.test");
+    expect(f.repo.getAccount(realmId, "A")?.state).toBe("reauth_required");
+  });
+
+  it("keeps the credential cache key across releases when native credentials have not changed", async () => {
+    const f = await quotaOnlyFixture();
+    let captures = 0;
+    f.auth.captureActive = async () => { captures++; throw new Error("unchanged credentials must reuse snapshot"); };
+    const revisions: Array<number | undefined> = [];
+    f.probe.probeModelAccess = async (_model, options) => { revisions.push(options?.credential_revision); return true; };
+    for (let i = 0; i < 2; i++) {
+      const permit = await f.service.acquireUsagePermit({ realm_id: realmId, consumer_id: `run-${i}`, usage_kind: "execution", required_pool_ids: [pool], required_model_ids: [model] });
+      await f.service.releaseUsagePermit(permit.permit_id, { permit_id: permit.permit_id, success: true });
+    }
+    expect(captures).toBe(0);
+    expect(revisions).toEqual([1, 1]);
+    expect(f.repo.getRealm(realmId)?.last_error).toBeUndefined();
+  });
+
+  it.each(["external", "managed", "permit"])("refreshes only the active account with %s activity and never reinstalls credentials", async (activity) => {
+    const f = await quotaOnlyFixture();
+    if (activity === "external") f.state.external = true;
+    if (activity === "managed") f.processes.listManagedProcesses = async () => [{ pid: 123 }];
+    if (activity === "permit") await f.service.acquireUsagePermit({ realm_id: realmId, consumer_id: "run", usage_kind: "execution", required_pool_ids: [pool] });
+    const view = await f.service.syncAndRefreshQuotas(realmId);
+    expect(view.refresh_scope).toBe("active_only");
+    expect(f.state.probes).toEqual(["A"]);
+    expect(f.state.writes).toEqual([]);
+  });
+
+  it("refreshes all accounts while idle and restores the original account", async () => {
+    const f = await quotaOnlyFixture();
+    const view = await f.service.syncAndRefreshQuotas(realmId);
+    expect(view.refresh_scope).toBe("all");
+    expect(f.state.probes).toEqual(["A", "B", "C"]);
+    expect(f.state.writes).toEqual(["B", "C", "A"]);
+    expect(f.state.active).toBe("saved_A");
+  });
+
+  it.each(["A", "B"])("preserves a switch accepted during the %s quota refresh", async (probingAccount) => {
+    const f = await fixture(); await f.service.start({ realmId, requestId: "start" });
+    let entered!: () => void, finish!: () => void;
+    const ready = new Promise<void>(resolve => { entered = resolve; });
+    const gate = new Promise<void>(resolve => { finish = resolve; });
+    const usage = f.probe.probeUsage;
+    let blocked = false;
+    f.probe.probeUsage = async (...args) => {
+      if (!blocked && f.state.active === `saved_${probingAccount}`) {
+        blocked = true; entered(); await gate;
+      }
+      return usage(...args);
+    };
+    const refreshing = f.service.syncAndRefreshQuotas(realmId);
+    await ready;
+    const receipt = await f.service.requestOperation({ realm_id: realmId, request_id: "during-refresh", kind: "switch", selection: { mode: "explicit", account_id: "B" } });
+    expect(f.repo.getRealm(realmId)?.pending_operation_id).toBe(receipt.operation_id);
+    finish(); await refreshing;
+    f.service.getPresentation(realmId); // The panel's normal polling used to cancel the lost request.
+    expect(f.repo.getRealm(realmId)?.pending_operation_id).toBe(receipt.operation_id);
+    expect(f.repo.getOperation(receipt.operation_id)?.phase).toBe("queued");
+    await f.service.tick(now);
+    expect(f.repo.getOperation(receipt.operation_id)?.phase).toBe("completed");
+    expect(f.state.active).toBe("saved_B");
+  });
+
+  it("does not erase a switch accepted while syncing refreshed native credentials", async () => {
+    const f = await fixture(); await f.service.start({ realmId, requestId: "start" });
+    f.state.active = "renewed_A";
+    let entered!: () => void, finish!: () => void;
+    const ready = new Promise<void>(resolve => { entered = resolve; });
+    const gate = new Promise<void>(resolve => { finish = resolve; });
+    f.auth.inspectActive = async () => { entered(); await gate; return { exists: true, auth: { email: "A@example.test" } }; };
+    const syncing = f.service.syncActiveAccountFromHost(realmId);
+    await ready;
+    const receipt = await f.service.requestOperation({ realm_id: realmId, request_id: "during-sync", kind: "switch", selection: { mode: "explicit", account_id: "B" } });
+    finish(); await syncing; f.service.getPresentation(realmId);
+    expect(f.repo.getRealm(realmId)?.pending_operation_id).toBe(receipt.operation_id);
+    expect(f.repo.getOperation(receipt.operation_id)?.phase).toBe("queued");
+  });
+
+  it("recovers the old missing-email block only after a fresh identity-checked quota query", async () => {
+    const f = await quotaOnlyFixture();
+    f.state.external = true;
+    f.repo.saveRealm({ ...f.repo.getRealm(realmId)!, phase: "blocked", last_error: "external_change" });
+    await f.service.syncAndRefreshQuotas(realmId);
+    expect(f.repo.getRealm(realmId)?.phase).toBe("idle");
+    expect(f.repo.getRealm(realmId)?.last_error).toBeUndefined();
+  });
+
+  it("hides known misattributed quota and excludes that account from automatic selection", async () => {
+    const f = await quotaOnlyFixture();
+    const account = f.repo.getAccount(realmId, "B")!;
+    f.repo.saveAccount({ ...account, auth: { ...account.auth, email: "A@example.test" } });
+    const view = f.service.getPresentation(realmId);
+    expect(view.accounts.find(a => a.id === "B")?.state).toBe("reauth_required");
+    expect(view.snapshots.some(s => s.account_id === "B")).toBe(false);
+    expect(view.candidates.some(c => c.account_id === "B")).toBe(false);
   });
 });

@@ -11,6 +11,32 @@ import { readableLogs } from "../../packages/presentation/src/activity.js";
 const versionError =
   "The 'gpt-6-astra' model requires a newer version of Codex. Please upgrade to the latest app or CLI and try again.";
 
+const agyClosedConnection =
+  'API error (attempt 2): request failed: Post "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse": write tcp 198.18.0.1:60000->198.18.0.95:443: wsasend: An existing connection was forcibly closed by the remote host.';
+
+it("routes the current AGY provider connection closure to finite automatic network retry with a visible cause", () => {
+  expect(classifyFailure(agyClosedConnection)).toMatchObject({ code: "MODEL_CONNECTION_FAILED", retry: "auto" });
+  const failure = normalizeRuntimeFailure(new FlowError("NATIVE_RUN_FAILED", agyClosedConnection)) as FlowError;
+  expect(failure.code).toBe("MODEL_CONNECTION_FAILED");
+  expect((failure.details as any).diagnostic).toBe(agyClosedConnection);
+  expect((failure.details as any).resolution.title).toBe("模型服务连接失败");
+  expect(failureSummary(failure.code, failure.message)).toContain("模型服务连接失败");
+});
+
+it("does not treat an ordinary application wsasend error without the model endpoint as model transport failure", () => {
+  const text = "业务上传组件记录 wsasend: An existing connection was forcibly closed by the remote host.";
+  expect(classifyFailure(text)).toMatchObject({ code: "EXECUTION_FAILED", retry: "manual" });
+  expect(runtimeFailureResolution("", text)).toBeUndefined();
+});
+
+it("keeps denied native actions ahead of a provider connection closure", () => {
+  const text = JSON.stringify({ error: agyClosedConnection, denied_actions: [{ display_name: "run_command" }] });
+  const classified = classifyFailure(text);
+  expect(classified).toMatchObject({ code: "NATIVE_PERMISSION_DENIED", retry: "manual" });
+  const failure = normalizeRuntimeFailure(new FlowError(classified.code, text)) as FlowError;
+  expect(failure.code).toBe("NATIVE_PERMISSION_DENIED");
+});
+
 it.each([
   [versionError, "CLI_VERSION_UNSUPPORTED"],
   ["error: unexpected argument '--json' found", "CLI_VERSION_UNSUPPORTED"],

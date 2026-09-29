@@ -79,13 +79,15 @@ export function accountFixture(store: Store) {
       vault.delete(ref);
     },
   };
-  const windows = (weekly: number) => [
+  const windows = (weekly: number) => {
+    const observedAt = new Date().toISOString();
+    return [
     {
       kind: "weekly" as const,
       duration_minutes: 10080 as const,
       remaining_fraction: weekly,
       reset_at: new Date(Date.now() + 86400000).toISOString(),
-      observed_at: new Date().toISOString(),
+      observed_at: observedAt,
       status: "observed" as const,
     },
     {
@@ -93,10 +95,11 @@ export function accountFixture(store: Store) {
       duration_minutes: 300 as const,
       remaining_fraction: 0.7,
       reset_at: new Date(Date.now() + 3600000).toISOString(),
-      observed_at: new Date().toISOString(),
+      observed_at: observedAt,
       status: "observed" as const,
     },
-  ];
+    ];
+  };
   const probe: AccountProbePort = {
     probeIdentity: async () => ({
       email: `${active}@example.com`,

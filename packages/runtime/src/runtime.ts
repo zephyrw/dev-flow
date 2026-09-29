@@ -5,6 +5,7 @@ import { CodexSessionObserver } from "./codex-session-observer.js";
 import { observeCodexAccountQuota } from "./codex-account-quota.js";
 import { rejectedDeliveryFeedback } from "../../core/src/delivery-feedback.js";
 import { batchExecutionInstructions } from "../../core/src/execution-guidance.js";
+import { planningWritingInstructions } from "../../core/src/role-boundaries.js";
 import { NativeExecutionObserver } from "../../evidence/src/native-execution-observer.js";
 import { reconcileImplementationProofs } from "../../core/src/progress.js";
 import { isLegacyProtocol } from "../../core/src/run-profile.js";
@@ -246,6 +247,7 @@ export class LocalRuntime implements Runtime {
   browser: BrowserGateway;
   private checking = new Set<string>();
   private cancelledRuns = new Set<string>();
+  private executingCalls = new Map<string, number>();
   private preparing = new Map<string, Promise<void>>();
   private preparationProcesses = new Map<string, Set<string>>();
   private adapters = createDefaultAdapterRegistry();
@@ -290,7 +292,7 @@ export class LocalRuntime implements Runtime {
         diff: await this.engine.git.diff(snapshot),
         claims: this.engine.taskStatus(workflow.id),
         skill:
-          "你是故障规划诊断者，只读定位错误并提供确定修复步骤。不是交付复核，不得宣布验收或复核通过。使用 devflow_review 只读材料工具调查相关代码。当前允许范围内的修复返回 requires_plan_change=false,repair_plan=null；必须扩大范围时提供完整 Plan 合同并保持现有项目配置哈希和基线，等待用户审批。诊断失败不能伪造成功。",
+          "你是故障规划诊断者，只读定位错误并说明原因、目标效果和必要的修复事项。不是交付复核，不得宣布验收或复核通过。使用 devflow_review 只读材料工具调查相关代码。当前允许范围内的修复返回 requires_plan_change=false,repair_plan=null；必须扩大范围时在原计划上明确列出需用户决定的补充，响应仍使用现有 Plan 数据格式，保留原任务及进度，等待用户授权。诊断失败不能伪造成功。" + planningWritingInstructions,
       }),
     );
     atomicWrite(
@@ -599,6 +601,24 @@ export class LocalRuntime implements Runtime {
     return current;
   }
   async execute(workflow: Workflow, run: Run, token: string) {
+    const canConfirmNotStarted = !this.engine.store.get("process_record", run.id);
+    this.executingCalls.set(run.id, (this.executingCalls.get(run.id) ?? 0) + 1);
+    try {
+      return await this.executeRun(workflow, run, token);
+    } finally {
+      const remaining = this.executingCalls.get(run.id)! - 1;
+      if (remaining) this.executingCalls.set(run.id, remaining);
+      else this.executingCalls.delete(run.id);
+      // A completed invocation observed from entry, with no start attempt, is
+      // positive evidence. Missing records from historical runs are not.
+      if (canConfirmNotStarted && !remaining && !this.processes.hasStartAttempt(run.id)) {
+        this.engine.store.put("stop_result", run.id, workflow.id, {
+          status: "confirmed_not_started",
+        } satisfies ProcessStopResult);
+      }
+    }
+  }
+  private async executeRun(workflow: Workflow, run: Run, token: string) {
     if (run.deadline_at && Date.now() >= run.deadline_at) {
       throw new FlowError("TIMEOUT", "执行启动前已达到截止时间");
     }

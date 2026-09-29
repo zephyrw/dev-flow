@@ -421,8 +421,16 @@ export function requireCondition(
   if (!value) throw new FlowError(code, message, status);
 }
 
+export const ReportedTestResultSchema = z.object({
+  test_id: z.string().min(1),
+  case_id: z.string().min(1).optional(),
+  status: z.enum(["passed", "failed", "skipped", "not_run"]),
+  summary: z.string().optional(),
+});
+
 export const DeliveryManifestSchema = z
   .object({
+    test_results: z.array(ReportedTestResultSchema).optional(),
     plan_self_check: PlanSelfCheckReportSchema.optional(),
     schema_version: z.string().optional(),
     submission_id: z.string().optional(),
@@ -510,14 +518,25 @@ export const DeliveryManifestSchema = z
   .passthrough();
 // Guide structured-output providers with typed fields, without applying this
 // generation contract as a validation gate to received results.
+const ExecutorArtifactOutputSchema = z.union([
+  z.string(),
+  z.object({
+    path: z.string(),
+    repo_id: z.string().optional(),
+    description: z.string().optional(),
+  }),
+]);
 export const ExecutorRoundOutputSchema = z
   .object({
+    test_results: z.array(ReportedTestResultSchema).optional(),
     status: z.enum(["completed", "need_planner", "need_user", "unclear"]).optional(),
     summary: z.string().optional(),
     notes: z.string().optional(),
-    artifacts: z.array(z.any()).optional(),
+    artifacts: z.array(ExecutorArtifactOutputSchema).optional(),
     repositories: z.array(z.object({ repo_id: z.string(), commit: z.string() })).optional(),
-    delivery: DeliveryManifestSchema.optional(),
+    delivery: DeliveryManifestSchema.extend({
+      artifacts: z.array(ExecutorArtifactOutputSchema).optional(),
+    }).optional(),
   })
   .passthrough();
 // The result envelope accepts optional display material independently of intent.
@@ -549,13 +568,13 @@ export function normalizeOptionalDeliveryManifest(value: unknown): DeliveryManif
     const parsed = schema.safeParse(raw[key]);
     if (parsed.success) fields[key] = parsed.data;
   }
-  for (const key of ["implementations", "test_executions", "acceptance_mappings", "unfinished_items", "plan_conflicts"] as const) {
+  for (const key of ["implementations", "test_executions", "acceptance_mappings", "unfinished_items", "plan_conflicts", "test_results"] as const) {
     const values = raw[key];
     if (!Array.isArray(values)) continue;
     const valid: unknown[] = [];
     for (const item of values) {
       const parsed = DeliveryManifestSchema.shape[key].safeParse([item]);
-      if (parsed.success) valid.push(...parsed.data);
+      if (parsed.success) valid.push(...(parsed.data ?? []));
     }
     fields[key] = valid;
   }

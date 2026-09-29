@@ -8,6 +8,7 @@ export class CurrentTurn {
   private modelState?: string;
   private modelStep = -1;
   private toolStep = -1;
+  private toolNames = new Map<number, string | undefined>();
   private runtimeFailed = false;
   private toolFailures: { code: string; message: string }[] = [];
   canAttributeFailureToCurrentTurn() {
@@ -22,6 +23,7 @@ export class CurrentTurn {
       this.userStep = step.step_index;
       this.modelState = undefined;
       this.modelStep = this.toolStep = -1;
+      this.toolNames.clear();
       this.runtimeFailed = false;
       this.toolFailures = [];
       return;
@@ -39,8 +41,21 @@ export class CurrentTurn {
       this.modelState = step.state;
       this.modelStep = step.step_index;
     }
-    if (step.step_type === "tool")
+    if (step.step_type === "tool") {
       this.toolStep = Math.max(this.toolStep, step.step_index);
+      const name = step.tool_name ?? step.tool_info?.name ?? this.toolNames.get(step.step_index);
+      this.toolNames.set(step.step_index, name);
+      if (name === "finish" && step.state === "ERROR") this.runtimeFailed = true;
+    }
+    // AGY emits its finalizer as tool/ACTIVE, then finish/DONE at the same
+    // index. Only that explicitly identified finalizer can retire its tool
+    // marker; ordinary tools still require a later completed model response.
+    if (step.step_type === "finish" && step.state === "DONE" &&
+        this.toolNames.get(step.step_index) === "finish") {
+      this.toolNames.delete(step.step_index);
+      this.toolStep = -1;
+      for (const index of this.toolNames.keys()) this.toolStep = Math.max(this.toolStep, index);
+    }
     if (step.state !== "ERROR") return;
     if (step.step_type !== "tool") {
       this.runtimeFailed = true;
@@ -66,14 +81,6 @@ export class CurrentTurn {
     _previousErrors: string[],
     exit: number | null,
   ) {
-    if (
-      typeof result?.error === "string" &&
-      /bad record mac|local error:\s*tls:|streamGenerateContent/i.test(
-        result.error,
-      )
-    ) {
-      return false;
-    }
     return (
       !!result &&
       [0, 1].includes(exit!) &&

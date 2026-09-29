@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
-import { normalize, resolve } from "node:path";
+import { isAbsolute, normalize, relative, resolve } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import type { Store } from "../../store/src/store.js";
 import {
@@ -53,6 +53,51 @@ export function sanitizeRelativePath(_baseRoot: string, relPath: string): string
   return materialRelativePath(relPath);
 }
 
+/** Resolve an existing document reference; never select a different copy by hash. */
+export function originalPlanPath(store: Store, workflowId: string, revision?: number): string | undefined {
+  const wf = store.get<any>("workflow", workflowId);
+  const records = store.list<any>("plan", workflowId);
+  const record = records.find(p => p.revision === (revision ?? wf?.plan_revision));
+  const project = wf?.project_id ? store.get<Project>("project", wf.project_id) : undefined;
+  const workspaces = store.list<Workspace>("workspace", workflowId);
+  const roots = [
+    ...workspaces.map(w => ({ repo_id: w.repo_id, root: w.root })),
+    ...(project?.repositories ?? []).map(r => ({ repo_id: r.id, root: r.path })),
+  ];
+  const ref = record?.plan?.design_ref?.file_ref;
+  if (typeof ref === "string" && ref.trim()) {
+    if (isAbsolute(ref)) return normalize(ref);
+    const qualified = roots.find(r => ref.startsWith(r.repo_id + ":"));
+    const root = qualified ?? roots.find(r => r.repo_id === project?.primary_repo_id) ?? roots.find(r => r.repo_id === "main") ?? roots[0];
+    if (root) return resolve(root.root, sanitizeRelativePath(root.root, qualified ? ref.slice(root.repo_id.length + 1) : ref));
+  }
+  const link = store.get<any>("planning_document", workflowId);
+  if (record?.material_path) {
+    if (isAbsolute(record.material_path)) return normalize(record.material_path);
+    if (roots[0]) return resolve(roots[0].root, sanitizeRelativePath(roots[0].root, record.material_path));
+  }
+  const materials = store.list<ProjectMaterial>("project_material", workflowId).filter(m => m.kind === "plan");
+  const material = materials.find(m => m.id === (record?.material_id ?? link?.material_id)) ??
+    materials.find(m => m.id === `mat_${workflowId}_plan`) ??
+    materials.find(m => record?.run_id && m.id === `mat_${workflowId}_plan_r${record.revision}_run_${record.run_id}`) ??
+    materials.find(m => m.revision === (revision ?? wf?.plan_revision));
+  if (material) {
+    const ws = workspaces.find(w => w.id === material.workspace_id);
+    const root = ws?.root ?? roots.find(r => r.repo_id === material.repo_id)?.root;
+    if (root) return resolve(root, sanitizeRelativePath(root, material.path));
+  }
+  const docs = store.list<any>("project_document", workflowId).filter(d => d.document_type === "plan");
+  const doc = docs.find(d => d.id === link?.document_id) ?? docs.find(d => d.id === `doc_${workflowId}_plan`) ??
+    docs.find(d => d.revision === (revision ?? wf?.plan_revision));
+  const platformCopy = doc?.path && (doc.path.replaceAll("\\", "/").includes("/.devflow/documents/") ||
+    doc.path.replaceAll("\\", "/").includes(`/documents/${workflowId}/`));
+  if (doc?.path && !platformCopy && roots.some(root => {
+    const rel = relative(resolve(root.root), resolve(doc.path));
+    return !rel.startsWith("..") && !isAbsolute(rel);
+  })) return doc.path;
+}
+
+
 /**
  * 依据规范解析主工作区及材料 Locator
  * F02_WORKSPACE_FALLBACK: 显式指定的 preferredWorkspaceId 无效时必须立即抛出 WORKSPACE_NOT_FOUND 错误拒绝，不得回退；
@@ -73,12 +118,16 @@ export function resolveMaterialLocator(options: {
   const { store, workflowId, kind, preferredWorkspaceId, customRelPath, run_id, round, expectedHash } = options;
   const revision = options.revision ?? 1;
 
-  const workspaces = store.list<Workspace>("workspace", workflowId);
-  requireCondition(workspaces.length > 0, "NO_WORKSPACES", `工作流 ${workflowId} 无可用工作区`, 404);
-
   // 读取关联的 Project
   const wf = store.get<any>("workflow", workflowId);
   const project = wf?.project_id ? store.get<Project>("project", wf.project_id) : undefined;
+
+  const savedWorkspaces = store.list<Workspace>("workspace", workflowId);
+  const workspaces = savedWorkspaces.length ? savedWorkspaces : (project?.repositories ?? []).map(r => ({
+    id: `project:${r.id}`, repo_id: r.id, root: r.path,
+  } as Workspace));
+  const existingPath = kind === "plan" && customRelPath === undefined ? originalPlanPath(store, workflowId) : undefined;
+  requireCondition(workspaces.length > 0, "NO_WORKSPACES", `工作流 ${workflowId} 无可用工作区`, 404);
 
   let targetWs: Workspace | undefined;
   if (preferredWorkspaceId) {
@@ -112,11 +161,21 @@ export function resolveMaterialLocator(options: {
 
   requireCondition(targetWs, "WORKSPACE_NOT_FOUND", "未找到适用的工作区进行材料定位", 404);
 
+  if (existingPath) {
+    const roots = preferredWorkspaceId ? [targetWs] : [...workspaces,
+      ...(project?.repositories ?? []).map(r => ({ id: `project:${r.id}`, repo_id: r.id, root: r.path } as Workspace))];
+    const root = roots.find(w => { const rel = relative(resolve(w.root), resolve(existingPath)); return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel); });
+    requireCondition(root, "PATH_ESCAPE", "计划原件必须属于项目或任务工作区", 400);
+    targetWs = root;
+  }
+
   const repoConfig = project?.repositories?.find((r) => r.id === targetWs!.repo_id);
   const matPaths = repoConfig?.material_paths;
 
   let relPath: string;
-  if (customRelPath !== undefined) {
+  if (existingPath) {
+    relPath = sanitizeRelativePath(targetWs.root, relative(targetWs.root, existingPath));
+  } else if (customRelPath !== undefined) {
     relPath = sanitizeRelativePath(targetWs.root, customRelPath);
   } else {
     let baseDir: string;
@@ -140,8 +199,7 @@ export function resolveMaterialLocator(options: {
 
     switch (kind) {
       case "plan": {
-        const runPart = run_id ? `-run-${run_id}` : "";
-        relPath = `${baseDir}/${workflowId}/plan-r${revision}${runPart}.md`;
+        relPath = `${baseDir}/${workflowId}/plan.md`;
         break;
       }
       case "review": {

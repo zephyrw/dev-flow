@@ -33,8 +33,6 @@ export interface PlanApprovalDialogProps {
 }
 
 interface DraftRecord {
-  planRevision: number;
-  planHash: string | null;
   text: string;
 }
 
@@ -58,9 +56,6 @@ export function PlanApprovalDialog({
   const [text, setText] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [planMismatchNotice, setPlanMismatchNotice] = useState<string | null>(
-    null,
-  );
   const isComposingRef = useRef(false);
   const [executor, setExecutor] = useState<ToolProfile | null>(null);
   const [editingExecutor, setEditingExecutor] = useState(false);
@@ -122,25 +117,12 @@ export function PlanApprovalDialog({
     currentRequestIdRef.current = crypto.randomUUID();
     lastNormalizedTextRef.current = "";
     setError(null);
-    setPlanMismatchNotice(null);
 
     try {
       const raw = sessionStorage.getItem(storageKey);
       if (raw) {
         const draft: DraftRecord = JSON.parse(raw);
-        if (
-          draft.planRevision === planRevision &&
-          draft.planHash === planHash
-        ) {
-          setText(draft.text || "");
-        } else if (draft.text && draft.text.trim()) {
-          setText(draft.text);
-          setPlanMismatchNotice(
-            "计划已变化（修订版或哈希已更新），原草稿仅供参考，请重新核对后确认。",
-          );
-        } else {
-          setText("");
-        }
+        setText(typeof draft.text === "string" ? draft.text : "");
       } else {
         setText("");
       }
@@ -165,8 +147,6 @@ export function PlanApprovalDialog({
   const isTargetStale = isStale || (
     frozenTargetRef.current !== null &&
     (frozenTargetRef.current.workflowId !== workflowId ||
-      frozenTargetRef.current.planRevision !== planRevision ||
-      frozenTargetRef.current.planHash !== planHash ||
       frozenTargetRef.current.workflowVersion !== workflowVersion ||
       frozenTargetRef.current.snapshotId !== snapshotId ||
       frozenTargetRef.current.environmentRevision !== environmentRevision));
@@ -178,8 +158,6 @@ export function PlanApprovalDialog({
       setText(val);
       try {
         const draft: DraftRecord = {
-          planRevision,
-          planHash,
           text: val,
         };
         sessionStorage.setItem(storageKey, JSON.stringify(draft));
@@ -241,7 +219,7 @@ export function PlanApprovalDialog({
       onClose={onClose}
       busy={isSubmitting}
       title="批准执行计划"
-      subtitle={`计划版本 v${planRevision}`}
+      subtitle="确认当前计划及执行配置"
       width={720}
       isDirty={isDirty && !isSubmitting}
       footer={
@@ -278,7 +256,7 @@ export function PlanApprovalDialog({
           }}
         >
           <div style={{ fontWeight: 600, marginBottom: "4px" }}>
-            {planTitle || `计划版本 v${planRevision}`}
+            {planTitle || "当前执行计划"}
           </div>
           {planSummary && (
             <div style={{ color: "var(--color-text-secondary, #64748b)", marginBottom: "6px" }}>
@@ -287,21 +265,7 @@ export function PlanApprovalDialog({
           )}
         </div>
 
-        {isTargetStale && <div role="alert">任务或计划已变化，请关闭弹窗并重新核对后批准。草稿已保留。</div>}
-        {planMismatchNotice && (
-          <div
-            style={{
-              padding: "8px 12px",
-              background: "#fffbeb",
-              color: "#b45309",
-              border: "1px solid #fde68a",
-              borderRadius: "6px",
-              fontSize: "12px",
-            }}
-          >
-            ⚠️ {planMismatchNotice}
-          </div>
-        )}
+        {isTargetStale && <div role="alert">任务状态已变化，请关闭弹窗并重新核对后批准。草稿已保留。</div>}
 
         {/* 提示文案 */}
         <div

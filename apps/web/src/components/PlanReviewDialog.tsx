@@ -118,7 +118,7 @@ export function PlanReviewDialog({
       >
         <div className="section-title">
           <h2 id="plan-review-title">
-            {reject ? "驳回并修正" : "计划问答"} · 第 {target.plan_revision} 版
+            {reject ? "驳回并修正" : "计划问答"}
           </h2>
           <button disabled={pending} onClick={onClose}>
             关闭
@@ -126,8 +126,8 @@ export function PlanReviewDialog({
         </div>
         <p>
           {reject
-            ? "写明计划中的问题和修改要求。规划模型会修正并提交新版，等待你重新批准后才执行。"
-            : "规划模型将结合这版计划的完整正文回答。提问不改变计划和审批状态；需要修改时可关闭窗口，选择“驳回并修正”。"}
+            ? "写明计划中的问题和修改要求。规划模型会更新当前计划，等待你重新批准后才执行。"
+            : "规划模型将结合当前计划的完整正文回答。提问不改变计划和审批状态；需要修改时可关闭窗口，选择“驳回并修正”。"}
         </p>
         {!reject && (
           <div

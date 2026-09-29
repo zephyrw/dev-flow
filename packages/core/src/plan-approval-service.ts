@@ -12,6 +12,12 @@ import { canonical, hash, objectHash, now } from "./util.js";
 import { assertPlanMaterialReady } from "./plan-review.js";
 import type { Engine } from "./engine.js";
 
+function documentReference(document: any) {
+  if (!document) return undefined;
+  const { content: _content, anchor_map: _anchors, ...reference } = document;
+  return { ...reference, hash: "" };
+}
+
 export interface PlanApprovalExecuteInput {
   workflowId: string;
   requestId: string;
@@ -71,8 +77,6 @@ export class PlanApprovalService {
         expectedVersion,
         binding,
         documentId,
-        documentRevision,
-        documentHash,
         instructionsText: instructions.text,
         instructionsHash: instructions.text_hash,
         schemaVersion,
@@ -91,7 +95,10 @@ export class PlanApprovalService {
       }>("plan_approval_receipt", requestId);
 
       if (cachedReceipt) {
-        if (cachedReceipt.request_digest !== requestDigest) {
+        const legacyDigest = hash(canonical({ workflowId, action: "approve", expectedVersion, binding,
+          documentId, documentRevision, documentHash, instructionsText: instructions.text,
+          instructionsHash: instructions.text_hash, schemaVersion, feedbackCursor }));
+        if (cachedReceipt.request_digest !== requestDigest && cachedReceipt.request_digest !== legacyDigest) {
           throw new FlowError(
             "IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_PAYLOAD",
             `请求 ID ${requestId} 已被用于不同的审批内容，禁止修改重试`,
@@ -102,7 +109,9 @@ export class PlanApprovalService {
           ok: true,
           approval: cachedReceipt.response.approval,
           workflow: cachedReceipt.workflow,
-          document: cachedReceipt.document,
+          document: cachedReceipt.document && this.documentService
+            ? this.documentService.getDocument(workflowId, cachedReceipt.document.document_type, cachedReceipt.document.revision)
+            : documentReference(cachedReceipt.document),
           response: cachedReceipt.response,
         };
       }
@@ -136,18 +145,10 @@ export class PlanApprovalService {
           "project_document",
           documentId,
         );
-        const plan = this.engine.plan(workflowId);
-        const expectedDocHash =
-          plan.plan.design_ref?.content_hash ??
-          hash((plan.plan.markdown ?? "").replace(/\r\n/g, "\n"));
-
-        const passedDocRevision = documentRevision ?? plan.revision;
-        const passedDocHash = documentHash ?? expectedDocHash;
-
         if (
           approvalDocument.id !== documentId ||
-          plan.revision !== passedDocRevision ||
-          expectedDocHash !== passedDocHash
+          approvalDocument.workflow_id !== workflowId ||
+          !["plan", "repair_plan"].includes(approvalDocument.document_type)
         ) {
           throw new FlowError(
             "DOCUMENT_BINDING_INVALID",
@@ -162,8 +163,8 @@ export class PlanApprovalService {
           {
             request_id: requestId,
             expected_version: expectedVersion ?? w.version,
-            document_revision: passedDocRevision,
-            document_hash: passedDocHash,
+            document_revision: approvalDocument.revision,
+            document_hash: approvalDocument.hash,
             feedback_cursor: feedbackCursor,
           },
         );
@@ -195,7 +196,7 @@ export class PlanApprovalService {
         plan_revision: w.plan_revision,
         revision: w.plan_revision,
         plan_hash: w.plan_hash ?? "",
-        document_hash: documentHash ?? null,
+        document_hash: null,
         request_id: requestId,
         approved_at: now(),
         proof: effectiveProof,
@@ -232,7 +233,7 @@ export class PlanApprovalService {
         request_digest: requestDigest,
         response,
         workflow: updatedWorkflow,
-        document: approvedDoc,
+        document: documentReference(approvedDoc),
         created_at: now(),
       });
 

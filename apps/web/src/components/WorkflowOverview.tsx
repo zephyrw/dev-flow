@@ -228,8 +228,8 @@ export function WorkflowOverview({
             {projectName && <span>项目：{projectName}</span>}
             <span>当前阶段：{formatWorkflowState(workflow?.state)}</span>
             <span>
-              计划版本：
-              {workflow?.plan_revision > 0 ? `r${workflow.plan_revision}` : "未生成"}
+              计划：
+              {workflow?.plan_revision > 0 ? "已生成" : "未生成"}
             </span>
           </div>
 

@@ -6,7 +6,7 @@ import {
 } from "../../contracts/src/index.js";
 import { recoveryGuidanceText } from "../../runtime/src/conversation-recovery.js";
 import { readOnlyPurpose } from "../../adapters/sdk/src/invocation.js";
-import { roleBoundaryInstructionsFor } from "./role-boundaries.js";
+import { planningWritingInstructions, roleBoundaryInstructionsFor } from "./role-boundaries.js";
 import {
   CURSOR_NO_CHILD_REASON,
   cursorSubagentCapabilities,
@@ -156,7 +156,7 @@ function roleWorkHint(role: RecoveryGuidanceRole): string {
   if (["planner_takeover", "executor_test", "planner_commit", "functional_fix"].includes(role))
     return roleBoundaryInstructionsFor(role);
   if (role === "planning")
-    return "继续原规划用途：只调查和规划，不修改产品代码，不自行批准或启动执行。";
+    return "继续原规划用途：只调查和规划，不修改产品代码，不自行批准或启动执行。" + planningWritingInstructions;
   if (role === "execute")
     return "继续原开发用途：按已批准计划实施，不另建替代计划。";
   if (role === "review")
@@ -193,20 +193,28 @@ function parentHierarchyHint(manifest: RecoveryManifest): string | undefined {
 }
 
 function skipTerminalHint(manifest: RecoveryManifest): string {
+  // Older persisted manifests may have counted the resumed main conversation
+  // as its own terminal child. It must remain eligible for follow-up work.
+  const completedChildren = manifest.completed_children.filter(
+    (item) => item.conversation_id !== manifest.root_conversation_id,
+  );
+  const cancelledChildren = manifest.cancelled_children.filter(
+    (id) => id !== manifest.root_conversation_id,
+  );
   const lines = [
     "已经完成或用户取消的子任务不要重跑，不自动重启完成/取消项。",
   ];
-  if (manifest.completed_children.length) {
+  if (completedChildren.length) {
     lines.push(
       "已完成、不要重跑：" +
-        manifest.completed_children
+        completedChildren
           .map((item) => item.conversation_id)
           .join("、"),
     );
   }
-  if (manifest.cancelled_children.length) {
+  if (cancelledChildren.length) {
     lines.push(
-      "用户已取消、不要重跑：" + manifest.cancelled_children.join("、"),
+      "用户已取消、不要重跑：" + cancelledChildren.join("、"),
     );
   }
   return lines.join("\n");

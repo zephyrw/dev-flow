@@ -5,14 +5,9 @@ import {
 } from "./plan-self-check.js";
 import { PlanApprovalService } from "./plan-approval-service.js";
 import { projectWorkflowOverview } from "./workflow-overview.js";
+import { recordExecutionTestReport, reportedTestProgress } from "./execution-test-progress.js";
 import type { RunApprovalRef } from "../../contracts/src/plan-approval.js";
 
-import {
-  getPlanMaterialPath,
-  resolveMaterialLocator,
-  publishProjectMaterialSafely,
-  readProjectMaterialByLocator,
-} from "./project-materials.js";
 import { bindProfile, buildDispatchContext, isLegacyProtocol, latestSpec, readEffectiveSpec, type RunPurpose } from "./run-profile.js";
 import { createWorkflowSpec } from "./create-workflow.js";
 import type { DispatchContext } from "../../contracts/src/model-routing.js";
@@ -78,7 +73,6 @@ import type { Config } from "../../contracts/src/config.js";
 import { Store } from "../../store/src/store.js";
 import { Auth, type Principal } from "./auth.js";
 import { atomicWrite, id, now, objectHash, hash } from "./util.js";
-import { parsePlanDiagrams } from "../../plans/src/diagrams.js";
 import { validatePlan } from "../../plans/src/validate.js";
 import { GitDeliveryCoordinator } from "../../git/src/delivery-coordinator.js";
 import {
@@ -117,6 +111,7 @@ import {
   isReviewRole,
   isSubsequentExecuteRun,
   readExecutionCompletion,
+  humanAcceptanceSummary,
   readPlanningHandoff,
   readRunContinuation,
   readWaitingContext,
@@ -127,12 +122,14 @@ import {
   type WaitingContext,
 } from "./waiting-context.js";
 import { UserInteractionService, interactionConversationContext } from "./user-interaction-service.js";
+import { continuationMatchesRun } from "./conversation-lineage.js";
 import type {
   QualityRepairAssignment,
   QualityTransfer,
 } from "../../contracts/src/quality.js";
 import { ConversationService } from "./conversation-service.js";
-import type { ConversationControlRequest } from "./conversation-control.js";
+import { CONVERSATION_CONTROL_FENCE, type ConversationControlFence, type ConversationControlRequest } from "./conversation-control.js";
+import { CONVERSATION_ENTITY, type ConversationControl } from "../../contracts/src/conversation.js";
 
 export interface PlanRecord {
   id: string;
@@ -312,7 +309,9 @@ export class Engine {
       workflow: w,
       runtime: currentRunObservation(this.store, w),
       execution_spec: readEffectiveSpec(this.store, this.config, key).spec,
+      execution_test_report: this.executionTestReport(key),
       human_accepted: this.displayHumanAccepted(key),
+      acceptance_handoff: humanAcceptanceSummary(this.store, w),
       attention: workflowAttention(this, key),
       loading: true,
       plan: plan
@@ -335,7 +334,7 @@ export class Engine {
         verified: tasks.filter((t) => t.status === "verified").length,
         submitted: tasks.filter((t) => t.has_implementation).length,
       },
-      test_progress: testProgress(
+      test_progress: reportedTestProgress(this.store, w, plan?.plan ?? null, testProgress(
         plan?.plan ?? null,
         [
           ...(w.plan_revision ? this.displayEvidence(key) : []),
@@ -344,7 +343,7 @@ export class Engine {
             : this.store.list<Evidence>("development_evidence", key)),
         ],
         w,
-      ),
+      )),
       workspaces: this.store.list("workspace", key),
       environment: this.store.get("environment", key),
       project: this.project(w.project_id),
@@ -380,7 +379,7 @@ export class Engine {
       : null;
     const evidenceList = w.plan_revision ? this.displayEvidence(key) : [];
     const taskList = this.taskStatus(key, verifyFiles);
-    const testProg = testProgress(
+    const testProg = reportedTestProgress(this.store, w, planData?.plan ?? null, testProgress(
       planData ? planData.plan : null,
       [
         ...evidenceList,
@@ -389,7 +388,7 @@ export class Engine {
           : this.store.list<Evidence>("development_evidence", key)),
       ],
       w,
-    );
+    ));
 
     const baseDetail = {
       workflow: w,
@@ -398,6 +397,7 @@ export class Engine {
       human_accepted: this.displayHumanAccepted(key),
       attention: workflowAttention(this, key),
       executor_plan_check: this.planSelfCheck.current(key) ?? null,
+      execution_test_report: this.executionTestReport(key),
       plan: planData,
       workspaces: this.store.list<Workspace>("workspace", key),
       runs: this.store.list<Run>("run", key),
@@ -560,6 +560,7 @@ export class Engine {
     state: State,
     stage: string,
     patch: Partial<Workflow> = {},
+    event: { resumed?: boolean; repair_source?: "quality_review"; source_review_id?: string } = {},
   ) {
     return this.store.transaction(() => {
       const w = this.get(key);
@@ -584,6 +585,7 @@ export class Engine {
         from: w.state,
         to: state,
         stage,
+        ...event,
         ...(patch.blocker
           ? {
               blocker: {
@@ -602,7 +604,6 @@ export class Engine {
     expectedVersion: number,
     idempotency: string,
   ) {
-    await parsePlanDiagrams(input);
     return this.submitPlan(key, input, expectedVersion, idempotency);
   }
   submitPlan(
@@ -696,6 +697,12 @@ export class Engine {
           }
         }
         const revision = w.plan_revision + 1;
+        // Persist only the original project file, never a plan-body snapshot.
+        const document = validated.plan.markdown?.trim()
+          ? new DocumentService(this.store, this.config.storage_root).publishDocument(
+              key, "plan", validated.plan.markdown, revision, validated.plan.design_ref?.file_ref,
+            )
+          : undefined;
         this.supersedePendingContinuation(key, w.state !== "PLANNING");
         if (w.plan_revision > 0) {
           this.invalidate(key, "计划版本变化，旧验收与测试不能沿用");
@@ -706,10 +713,16 @@ export class Engine {
           workflow_id: key,
           revision,
           hash: validated.hash,
-          plan: validated.plan,
+          plan: { ...validated.plan, markdown: undefined },
+          ...(document?.path ? { material_id: undefined, material_path: document.path } : {}),
           created_at: now(),
         };
         this.store.put("plan", record.id, key, record);
+        if (document) {
+          this.store.put("planning_document", key, key, {
+            document_id: document.id, plan_revision: revision, path: document.path,
+          });
+        }
         const state = w.plan_revision ? "REPAIR_PLAN_PENDING" : "PLAN_PENDING";
         const updated = this.transition(
           key,
@@ -893,17 +906,25 @@ export class Engine {
     if (scope === "new_scope" || w.state === "HUMAN_PENDING")
       this.supersedePendingContinuation(key);
     else this.stageExecuteContinuation(key);
+    const pause = w.run_id ? this.store.get<{ source?: string }>("run_stop", w.run_id) : undefined;
+    const pausedRun = scope === "within_plan" && w.state === "STOPPED" && pause?.source === "conversation_control"
+      ? this.store.get<Run>("run", w.run_id!) : undefined;
     const state = scope === "new_scope" ? "REPAIR_RESEARCH_REQUIRED" : "QUEUED";
     const next = this.transition(
       key,
       [w.state],
       state,
-      scope === "new_scope" ? "research" : "execute",
+      scope === "new_scope" ? "research" : pausedRun?.stage ?? (w.state === "HUMAN_PENDING" ? "functional_fix" : "execute"),
       { feedback: [...w.feedback, text], blocker: undefined },
     );
     if (scope === "within_plan") {
       new CliDispatchManager(this.store).removeControlReason(key, "workflow_pause");
       this.scheduler.enqueue(key, w.project_id);
+      if (pausedRun?.purpose && pausedRun.plan_revision === w.plan_revision) {
+        this.restoreDispatchContext(key, pausedRun.id);
+        this.store.enqueue(key, "dispatch", {});
+        return next;
+      }
       // 功能反馈派发 functional_fix；其他按 implement 处理。
       const feedbackKind = this.store
         .list<{ text: string; kind?: string; status: string }>(
@@ -1539,16 +1560,20 @@ export class Engine {
     key: string,
     purpose: RunContinuation["purpose"],
     role: RunContinuation["role"],
+    target?: Pick<Run, "workflow_id" | "purpose" | "routing_role" | "assignment_id" | "plan_revision">,
   ): RunContinuation | undefined {
     const staged = readRunContinuation(this.store, key);
     const waiting = readWaitingContext(this.store, key);
+    const matches = (value: RunContinuation) => value.purpose === purpose &&
+      (target ? continuationMatchesRun(this.store, target, value) : !value.role || value.role === role);
     const waitingInput = waiting && (waiting.continuation || waiting.intent === "need_user" || waiting.intent === "unclear")
       ? continuationFromWaiting(waiting) : undefined;
     const current = this.openRunContinuation(key, purpose);
     for (const candidate of [staged, waitingInput, current]) {
       const accepted = currentContinuation(this.store, key, candidate, { purpose, role });
-      if (accepted) return accepted;
+      if (accepted && matches(accepted)) return accepted;
     }
+    if (staged) clearRunContinuation(this.store, key);
   }
   private openRunContinuation(key: string, purpose: RunContinuation["purpose"]): RunContinuation | undefined {
     return currentContinuation(this.store, key,
@@ -1679,6 +1704,7 @@ export class Engine {
       manifest,
       deliverySubmit ? { deliverySubmit: true } : undefined,
     );
+    recordExecutionTestReport(this.store, w, this.store.must<Run>("run", runId), normalized.payload);
     if (normalized.intent !== "completed")
       return this.routeExecutionIntent(key, runId, normalized);
 
@@ -2241,11 +2267,12 @@ export class Engine {
     if (pending.length) {
       this.invalidate(key, "执行期间收到新反馈，进入下一轮落实");
       this.clearCurrentImplementationIntent(key);
-      this.transition(key, [w.state], "QUEUED", "execute", {
+      const purpose = active?.purpose === "functional_fix" ? "functional_fix" : "implement";
+      this.transition(key, [w.state], "QUEUED", purpose === "functional_fix" ? purpose : "execute", {
         feedback: [...w.feedback, ...pending.map((m) => m.text)],
       });
       this.scheduler.enqueue(key, w.project_id);
-      this.store.enqueue(key, "dispatch_run", { purpose: "implement" });
+      this.store.enqueue(key, "dispatch_run", { purpose });
       return;
     }
     this.store.transaction(() => {
@@ -2416,6 +2443,25 @@ export class Engine {
       stopResult?.status === "confirmed_not_started";
 
     if (isExited) {
+      this.store.transaction(() => {
+        const control = dispatchMgr.getDispatchControl(key);
+        if (!w.run_id || control.writer_state !== "unknown") return;
+        const pendingDispatch = this.store.list<{ state: string }>("cli_dispatch_record", key)
+          .some((d) => ["prepared", "starting", "running", "stopping", "needs_reconcile"].includes(d.state));
+        const otherRunning = this.store.list<Run>("run", key)
+          .some((r) => r.id !== w.run_id && r.status === "running");
+        const unconfirmedProcess = this.store.list<{ status: string; confirmed?: boolean }>("process_record", key)
+          .some((p) => p.status !== "exited" || !p.confirmed);
+        // The current stop receipt resolves only this run. Keep the fence if
+        // any other invocation or process is still active or unconfirmed.
+        if (pendingDispatch || otherRunning || unconfirmedProcess) return;
+        this.store.put("workflow_dispatch_control", key, key, {
+          ...control,
+          writer_state: "idle",
+          revision: control.revision + 1,
+          updated_at: now(),
+        });
+      });
       const next = this.transition(key, ["STOPPING"], "STOPPED", "stopped");
       this.store.event(key, w.project_id, "Stopped", {
         ...interruption,
@@ -2440,8 +2486,9 @@ export class Engine {
   }
   private async pauseActiveConversationTree(key: string) {
     if (!this.pauseTree) return;
-    const tree = new ConversationService(this.store).getTree(key);
-    const rootId = tree.active_root_id;
+    const conversations = new ConversationService(this.store);
+    const tree = conversations.getTree(key);
+    const rootId = conversations.resolveControlRoot(key, tree);
     if (!rootId) return;
     const generation =
       tree.attempts
@@ -3002,40 +3049,10 @@ export class Engine {
       );
       const normalized = result.markdown.replace(/\r\n/g, "\n");
       const plan = result.plan as any;
-      if (plan.design_ref)
-        requireCondition(
-          plan.design_ref.content_hash === hash(normalized),
-          "PLAN_DOCUMENT_HASH_MISMATCH",
-          "规划正文哈希不匹配",
-        );
       const doc = new DocumentService(
         this.store,
         this.config.storage_root,
-      ).publishDocument(w.id, "plan", normalized, w.plan_revision + 1);
-
-      // CW2-D03 / CW3-F11 / CW4-F03: 通过 Locator 定位并写入项目工作区，发布后将真实 material ID/locator 关联到规划版本记录
-      let locator: ReturnType<typeof resolveMaterialLocator> | undefined;
-      let publication: ReturnType<typeof publishProjectMaterialSafely> | undefined;
-      let materialError: string | undefined;
-      try {
-        locator = resolveMaterialLocator({
-          store: this.store,
-          workflowId: w.id,
-          kind: "plan",
-          revision: w.plan_revision + 1,
-          run_id: runId,
-        });
-        publication = publishProjectMaterialSafely({
-          store: this.store,
-          locator,
-          content: normalized,
-          cachePath: doc.path,
-        });
-      } catch (error) {
-        // Preserve the model result even when its authoritative material cannot
-        // be published. Do not turn a cache document into an executable plan.
-        materialError = error instanceof FlowError ? error.code : "MATERIAL_PUBLICATION_FAILED";
-      }
+      ).publishDocument(w.id, "plan", normalized, w.plan_revision + 1, plan.design_ref?.file_ref, true);
 
       await this.submitValidatedPlan(
         w.id,
@@ -3045,33 +3062,20 @@ export class Engine {
       );
       const planRev = this.get(w.id).plan_revision;
       const currentPlan = this.store.get<PlanRecord>("plan", `${w.id}-${planRev}`);
-      if (currentPlan && locator) {
+      if (currentPlan) {
         this.store.put("plan", currentPlan.id, w.id, {
           ...currentPlan,
-          material_id: publication?.material.id ?? locator.material_id,
-          material_path: publication?.material.path ?? locator.relative_path,
+          material_id: undefined,
+          material_path: doc.path,
           run_id: runId,
         });
       }
-      const materialStatus = publication?.material.status ??
-        (materialError?.includes("CONFLICT") ? "conflict" : "pending");
       this.store.put("planning_document", w.id, w.id, {
         document_id: doc.id,
         plan_revision: planRev,
-        material_id: publication?.material.id ?? locator?.material_id,
-        material_status: materialStatus,
-        material_error: materialError,
+        path: doc.path,
         run_id: runId,
       });
-      if (materialStatus !== "verified") {
-        const current = this.get(w.id);
-        this.transition(w.id, [current.state], current.state, "material_pending", {
-          blocker: {
-            code: materialStatus === "conflict" ? "MATERIAL_CONFLICT" : "MATERIAL_PENDING",
-            message: "规划已完成，项目材料尚未就绪；修复材料后才能审批和执行",
-          },
-        });
-      }
       this.store.put("run", runId, w.id, {
         ...this.store.must<Run>("run", runId),
         status: "completed",
@@ -3179,12 +3183,14 @@ export class Engine {
           });
           continue;
         }
+        const reuseWorkspaces = this.project(w.project_id).repositories.every(
+          (repo) => known.some((ws) => ws.repo_id === repo.id && !!ws.root),
+        );
+        const preparationMessage = reuseWorkspaces ? "正在检查并复用已有工作区"
+          : w.workspace_mode === "existing_workspace" ? "正在检查主工作区" : "正在准备独立工作区";
         this.store.put("queue_wait", w.id, w.id, {
           kind: "preparing",
-          message:
-            w.workspace_mode === "existing_workspace"
-              ? "已取得执行名额，正在检查主工作区"
-              : "已取得执行名额，正在准备独立工作区",
+          message: reuseWorkspaces ? preparationMessage : "已取得执行名额，" + preparationMessage,
           owners: [],
         });
         this.store.event(
@@ -3192,10 +3198,7 @@ export class Engine {
           w.project_id,
           "PreparationStarted",
           {
-            message:
-              w.workspace_mode === "existing_workspace"
-                ? "正在检查主工作区"
-                : "正在准备独立工作区",
+            message: preparationMessage,
           },
           runId,
         );
@@ -3326,7 +3329,10 @@ export class Engine {
       const deadline = this.accountRecoveryDeadline(pendingRetry, this.config.timeouts.agent_minutes * 60000);
       const continuationPurpose = review ? "review" : "execute";
       const role = profileBinding.routing_role === "planner" || profileBinding.routing_role === "reviewer" ? "planner" : "executor";
-      const continuation = this.consumeContinuation(key, continuationPurpose, role);
+      const continuation = this.consumeContinuation(key, continuationPurpose, role, {
+        workflow_id: key, purpose, routing_role: profileBinding.routing_role,
+        assignment_id: profileBinding.assignment_id, plan_revision: w.plan_revision,
+      });
 
       const approvalRecord = this.store.get<any>(
         "approval",
@@ -3364,10 +3370,15 @@ export class Engine {
         protocol: "lightweight",
         approval_ref: approvalRef,
       };
+      const resumed = this.store.list<Run>("run", key).some((prior) =>
+        prior.plan_revision === run.plan_revision && prior.purpose === run.purpose &&
+        prior.routing_role === run.routing_role && prior.purpose !== "aside",
+      );
       this.store.transaction(() => {
         w = this.transition(key, [review ? "REVIEW_QUEUED" : "QUEUED"], review ? "REVIEWING" : "EXECUTING", stage, {
           run_id: runId, review_request_id: review ? id("review") : w.review_request_id, blocker: undefined,
-        });
+        }, { resumed, ...(assignment?.source === "quality_review" && assignment.assignment_id === run.assignment_id
+          ? { repair_source: "quality_review" as const, source_review_id: assignment.source_review_id } : {}) });
         this.store.remove("pending_dispatch_purpose", key);
         this.store.remove("queue_wait", key);
         if (continuation)
@@ -3542,7 +3553,19 @@ export class Engine {
           "COMMITTING",
           "HUMAN_PENDING",
         ].includes(w.state);
-      if (ownsRun && e instanceof FlowError && e.code.startsWith("AGY_ACCOUNT_")) {
+      const controlledPause = ownsRun ? this.confirmedConversationPause(key, runId, e) : undefined;
+      if (controlledPause) {
+        const source = this.store.must<Run>("run", runId);
+        const interruption = {
+          category: "pause", source: "conversation_control", at: now(),
+          prior_state: w.state, prior_stage: source.stage, prior_purpose: source.purpose,
+          prior_run_id: runId, run_id: runId, control_id: controlledPause.control_id,
+          message: "会话已按用户请求暂停", next_action: "按原任务继续",
+        };
+        this.store.put("run_stop", runId, key, interruption);
+        this.store.put("interruption", key, key, interruption);
+        this.transition(key, [w.state], "STOPPED", "stopped", { blocker: undefined });
+      } else if (ownsRun && e instanceof FlowError && e.code.startsWith("AGY_ACCOUNT_")) {
         this.block(key, e);
       } else if (ownsRun && !review) {
         const normalized = normalizeRuntimeFailure(e);
@@ -3666,6 +3689,25 @@ export class Engine {
     }
   }
 
+  private confirmedConversationPause(key: string, runId: string, error: unknown) {
+    if (!(error instanceof FlowError) || error.code !== "RUN_REVOKED" ||
+        (error.details as { termination_reason?: string } | undefined)?.termination_reason !== "manual") return;
+    const process = this.store.get<{ status: string; confirmed?: boolean }>("process_record", runId);
+    if (!process?.confirmed || !["exited", "failed"].includes(process.status)) return;
+    return this.store.list<ConversationControlFence>(CONVERSATION_CONTROL_FENCE, key).find((fence) => {
+      if (fence.run_id !== runId || !fence.dispatch_frozen) return false;
+      const control = this.store.get<ConversationControl>(CONVERSATION_ENTITY.control, fence.control_id);
+      // The process exit can precede pauseTree's completion callback. The
+      // owned process-tree receipt confirms stopping without waiting on it.
+      return control?.action === "pause" && control.workflow_id === key &&
+        ["pending", "complete"].includes(control.status) &&
+        (control.status !== "complete" || control.unconfirmed_count === 0) &&
+        !control.targets.some((target) => target.status === "unknown" || target.status === "failed") &&
+        control.root_id === fence.root_id && control.expected_generation === fence.expected_generation &&
+        control.targets.some((target) => target.conversation_id === fence.root_id);
+    });
+  }
+
   private qualityFindingsFromReview(review: Review) {
     const mapped = (review.findings ?? []).map((f, index) => ({
       finding_id: f.id ?? `finding-${index + 1}`,
@@ -3737,55 +3779,9 @@ export class Engine {
       w,
       review,
     );
-    if (review.repair_plan) await parsePlanDiagrams(review.repair_plan);
     this.store.transaction(() =>
       this.commitNativeRepairDecision(w, review, quality, body, withinScope),
     );
-    if (body.trim()) {
-      let repairDocumentId: string | undefined;
-      try {
-        const doc = new DocumentService(
-          this.store,
-          this.config.storage_root,
-        ).publishDocument(w.id, "repair_plan", body, usesPolicyV2(w) ? undefined : w.plan_revision);
-        repairDocumentId = doc.id;
-
-        // CW2-D03 / CW3-F11: 通过 Locator 定位并写入项目工作区整改原件，包含真实 run_id/revision
-        const locator = resolveMaterialLocator({
-          store: this.store,
-          workflowId: w.id,
-          kind: "repair",
-          revision: w.plan_revision,
-          run_id: w.run_id,
-        });
-        const publication = publishProjectMaterialSafely({
-          store: this.store,
-          locator,
-          content: body,
-          cachePath: doc.path,
-        });
-        this.store.put("repair_document", w.id, w.id, {
-          document_id: doc.id, plan_revision: w.plan_revision, run_id: w.run_id,
-          material_id: publication.material.id, material_path: publication.material.path,
-          material_status: publication.material.status,
-        });
-        if (publication.material.status !== "verified") {
-          this.block(w.id, new FlowError(
-            publication.material.status === "conflict" ? "MATERIAL_CONFLICT" : "MATERIAL_PENDING",
-            "审查已完成，整改材料尚未就绪；修复材料后继续原整改任务", 409,
-          ));
-        }
-      } catch (error) {
-        const materialError = error instanceof FlowError ? error.code : "MATERIAL_PUBLICATION_FAILED";
-        const materialStatus = materialError.includes("CONFLICT") ? "conflict" : "pending";
-        this.store.put("repair_document", w.id, w.id, {
-          document_id: repairDocumentId, plan_revision: w.plan_revision, run_id: w.run_id,
-          material_status: materialStatus,
-          material_error: materialError,
-        });
-        this.block(w.id, new FlowError(materialStatus === "conflict" ? "MATERIAL_CONFLICT" : "MATERIAL_PENDING", "审查已完成，整改材料尚未就绪", 409));
-      }
-    }
     return this.get(w.id);
   }
   private persistQualityTransferRecord(
@@ -3815,6 +3811,7 @@ export class Engine {
     w: Workflow,
     transfer: QualityTransfer,
     body: string,
+    review: Review,
   ) {
     const assignmentId =
       transfer.next_assignment_id ?? transfer.assignment?.assignment_id;
@@ -3831,6 +3828,7 @@ export class Engine {
       plan_revision: next.plan_revision,
       plan_hash: next.plan_hash,
       instructions: body,
+      source_review: { ...review, run_id: transfer.review_run_id },
     });
   }
   private carryAcceptanceAfterQualityRepair(
@@ -3861,10 +3859,11 @@ export class Engine {
       review_id: quality.run_id,
     });
   }
-  private assignPolicy2Repair(w: Workflow, body: string, planner: boolean, phase: "before_human" | "after_human") {
+  private assignPolicy2Repair(w: Workflow, body: string, planner: boolean, phase: "before_human" | "after_human", review?: Review) {
     const assignment: QualityRepairAssignment = {
       assignment_id: id("assignment"), planner, phase, source: "quality_review",
       source_review_id: w.run_id!, plan_revision: w.plan_revision, plan_hash: w.plan_hash, instructions: body,
+      ...(review ? { source_review: { ...review, run_id: w.run_id } } : {}),
     };
     this.store.put("repair_assignment", w.id, w.id, assignment);
     this.store.put("quality_repair_assignment", assignment.assignment_id!, w.id, assignment);
@@ -3873,7 +3872,7 @@ export class Engine {
 
   private commitPolicy2RepairDecision(
     w: Workflow,
-    _review: Review,
+    review: Review,
     quality: { verdict?: string; summary?: string; repair_document?: string },
     body: string,
     withinScope: boolean,
@@ -3896,7 +3895,7 @@ export class Engine {
     this.clearCurrentImplementationIntent(w.id);
     if (withinScope) {
       if (action.kind === "executor_repair" || action.kind === "planner_repair")
-        this.assignPolicy2Repair(w, body, action.kind === "planner_repair", flow.phase);
+        this.assignPolicy2Repair(w, body, action.kind === "planner_repair", flow.phase, review);
       this.dispatchPolicy2AfterReview(w.id, action, flow.phase);
     }
   }
@@ -3964,7 +3963,7 @@ export class Engine {
         "quality-" + applied.review_run_id,
       );
     }
-    this.writeRepairAssignment(w, applied, body);
+    this.writeRepairAssignment(w, applied, body, review);
     this.persistQualityTransferRecord(applied, {
       completion_run_id: this.reviewPointer(w.id).completion_run_id,
     });
@@ -4159,6 +4158,7 @@ export class Engine {
     };
     this.store.put("review", review.review_request_id ?? w.run_id!, key, {
       ...review,
+      run_id: w.run_id,
       id: review.review_request_id ?? w.run_id,
       original_result: parsed.data,
     });
@@ -4911,7 +4911,6 @@ export class Engine {
           "EXECUTING",
           ...(w.state === "PLANNING" && w.run_id ? ["PLANNING"] : []),
           "VERIFYING",
-          "HUMAN_PENDING",
           "REVIEW_QUEUED",
           "REVIEWING",
           "STOPPING",
@@ -4938,19 +4937,15 @@ export class Engine {
       }
     this.scheduler.suspectExpired(0);
   }
-  exportDocuments(key: string) {
+  exportDocuments(_key: string) {
+    // Kept for older callers: scheduling never exports or copies documents.
+  }
+  renderProgressDocuments(key: string): Record<string, string> {
+    const documents: Record<string, string> = {};
     try {
       const w = this.get(key);
-      if (!w.plan_revision) return;
+      if (!w.plan_revision) return documents;
       const p = this.plan(key);
-      const root = join(
-        this.config.storage_root,
-        "documents",
-        key,
-        `r${w.plan_revision}`,
-      );
-      mkdirSync(root, { recursive: true });
-      atomicWrite(join(root, "计划.md"), p.plan.markdown ?? "");
       const planCheck = this.planSelfCheck.current(key);
       if (planCheck) {
         const revision =
@@ -4963,9 +4958,8 @@ export class Engine {
           revision &&
           this.store.get<Delivery>("delivery", revision.delivery_id)?.manifest
             .plan_self_check;
-        atomicWrite(
-          join(root, "执行模型计划复核.md"),
-          `# 执行模型正式计划复核\n\n本文件为执行事实记录，不是实施计划。状态：${planCheck.status}；计划版本：${planCheck.plan_revision}。\n\n` +
+        documents["plan-self-check"] =
+          `# 执行模型正式计划复核\n\n本文件为执行事实记录，不是实施计划。状态：${planCheck.status}。\n\n` +
             `请求：${planCheck.id}；源交付：${planCheck.source_delivery_revision_id}；复核轮次：${planCheck.run_id ?? "待调度"}。\n\n` +
             (report
               ? report.checks
@@ -4975,8 +4969,7 @@ export class Engine {
                   )
                   .join("\n")
               : "尚无通过的逐项复核报告。") +
-            "\n",
-        );
+            "\n";
       }
       const allEvidence = [
         ...this.store.list<Evidence>("evidence", key),
@@ -5003,20 +4996,12 @@ export class Engine {
             )}\n\n操作步骤：\n${t.steps.map((step, i) => `${i + 1}. ${step}`).join("\n")}\n\n断言：\n${t.assertions.map((a) => "- " + a).join("\n")}\n\n${e ? `证据：${e.id}\n\n快照：${e.snapshot_id}；环境：${e.environment_revision}\n\n结果：发现 ${e.discovered}，通过 ${e.passed}，失败 ${e.failed}，跳过 ${e.skipped}，退出码 ${e.exit_code}\n\n原始文件：\n${e.files.map((f) => "- " + f.path + " / SHA-256 " + f.hash).join("\n")}` : "尚无运行证据。"}\n`;
         })
         .join("\n");
-      if (p.plan.complexity === "complex") {
-        atomicWrite(
-          join(root, "开发进度.md"),
-          `# 开发进度\n\n计划哈希：${p.hash}\n状态：${w.state}\n\n${tasks}\n`,
-        );
-        atomicWrite(join(root, "测试进度.md"), `# 测试进度\n\n${tests}\n`);
-      } else
-        atomicWrite(
-          join(root, "计划.md"),
-          `${p.plan.markdown}\n\n## 开发进度\n\n${tasks}\n\n## 测试进度\n\n${tests}\n`,
-        );
+      documents.progress = `# 开发进度\n\n状态：${w.state}\n\n${tasks}\n`;
+      documents.tests = `# 测试进度\n\n${tests}\n`;
     } catch {
       // 资料导出与缓存失败不阻塞调度流程
     }
+    return documents;
   }
   // Read-only presentation: keep runner case names in review evidence, but use
   // the submitted plan scene IDs when counting the plan's displayed results.
@@ -5071,6 +5056,24 @@ export class Engine {
     const delivery = this.store.get<Delivery>("delivery", revision.delivery_id);
     if (!delivery || delivery.status !== "passed") return null;
     return { revision, delivery };
+  }
+  /** Present the executor's submitted explanation without promoting its mappings to passed cases. */
+  executionTestReport(key: string) {
+    if (!this.get(key).plan_revision) return null;
+    const active = this.activeNativeDelivery(key);
+    if (!active) return null;
+    const { delivery } = active;
+    const manifest = delivery.manifest;
+    return {
+      delivery_id: delivery.id,
+      run_id: active.revision.run_id ?? delivery.run_id,
+      submitted_at: delivery.submitted_at,
+      summary: manifest.summary ?? "",
+      notes: manifest.notes ?? "",
+      test_executions: manifest.test_executions ?? [],
+      acceptance_mappings: manifest.acceptance_mappings ?? [],
+      unfinished_items: manifest.unfinished_items ?? [],
+    };
   }
   deliveryReportFiles(delivery: Delivery): { path: string; hash: string }[] {
     const w = this.store.get<Workflow>("workflow", delivery.workflow_id);

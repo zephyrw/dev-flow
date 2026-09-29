@@ -1,6 +1,6 @@
 import { test, expect } from "@playwright/test";
 
-test("native work and test progress follow read-only facts while commands stay collapsed", async ({
+test("native work follows read-only facts while test progress excludes command history", async ({
   page,
 }) => {
   const workflow = {
@@ -142,10 +142,10 @@ test("native work and test progress follow read-only facts while commands stay c
   await page.goto(`/?workflow=${workflow.id}`);
   const strip = page.getByLabel("交付进度");
   await expect(strip).toContainText("工作包已开展1/2");
-  await expect(strip.getByLabel("自测执行次数")).toContainText("1 次");
+  await expect(strip.getByLabel("自测执行次数")).toHaveCount(0);
   await expect(strip).not.toContainText("尚未生成细项清单");
   await expect(strip).toContainText("计划用例报告通过0/26");
-  await expect(strip).toContainText(/最近自测：通过\s*3/);
+  await expect(strip).not.toContainText("最近自测");
   await page.getByRole("button", { name: "任务进度", exact: true }).click();
   await expect(page.locator(".task-module")).toHaveCount(2);
   await expect(page.locator(".task")).toHaveCount(2);
@@ -188,34 +188,24 @@ test("native work and test progress follow read-only facts while commands stay c
     );
   await expect.poll(() => !!socket).toBe(true);
   send(1, 1, "ACTIVE");
-  await expect(strip).toContainText(/自测运行中\s*1/);
-  await page.getByRole("button", { name: "测试结果", exact: true }).click();
-  await expect(page.getByLabel("原生自测进度")).toContainText("测试运行中");
+  await expect(strip).not.toContainText("自测运行中");
+  await page.getByRole("button", { name: "测试进度", exact: true }).click();
+  await expect(page.getByLabel("原生自测进度")).toHaveCount(0);
   send(
     2,
     1,
     "DONE",
     " Test Files 1 failed (1)\n Tests no tests\nError: bad config",
   );
-  await expect(
-    page.getByLabel("原生自测进度").locator(".native-test-run").first(),
-  ).toContainText("自测失败");
-  await expect(strip).toContainText("最近自测：执行失败");
+  await expect(strip).not.toContainText("最近自测");
   send(3, 2, "DONE", " Tests 5 passed (5)");
-  await expect(strip).toContainText(/最近自测：通过\s*5\s*· 失败\s*0/);
+  await expect(strip).not.toContainText("最近自测");
   await expect(strip).toContainText("计划用例报告通过0/26");
-  const selfTests = page.getByLabel("原生自测进度");
-  await expect(selfTests.locator(".native-test-run").first()).toContainText(
-    "自测通过",
-  );
-  await expect(selfTests.locator(".command-full:visible")).toHaveCount(0);
-  await selfTests
-    .getByRole("button", { name: "展开命令", exact: true })
-    .first()
-    .click();
-  await expect(selfTests.locator(".command-full:visible")).toHaveText(
-    "pnpm vitest run\nsecond-line-hidden",
-  );
+  const testProgress = page.locator(".test-results-container");
+  await expect(testProgress).toContainText("单元测试");
+  await expect(testProgress).toContainText("0 / 1 报告通过");
+  await expect(testProgress).not.toContainText("pnpm vitest run");
+  await expect(testProgress.locator(".command-full")).toHaveCount(0);
   expect(mutations).toEqual([]);
   await page.screenshot({
     path: ".cache/e2e-native-progress.png",

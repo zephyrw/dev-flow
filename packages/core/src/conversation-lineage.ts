@@ -13,14 +13,33 @@ export function conversationLineageKey(workflowId: string, family: string) {
 }
 type Conversation = { id?: string; fingerprint?: string; run_id?: string; family?: string };
 
+/** Clarification resumes the same job, not an older job sharing the execute bucket.
+ * Legacy Runs without purpose remain compatible when their recorded role/assignment
+ * does not contradict the target. Planning handoffs intentionally cross roles. */
+export function continuationMatchesRun(store: Store, run: Pick<Run, "workflow_id" | "purpose" | "routing_role" | "assignment_id" | "plan_revision">,
+  value: RunContinuation): boolean {
+  const purpose = run.purpose === "quality_review" ? "review" : run.purpose === "planning" ? "planning"
+    : ["implement", "functional_fix", "planner_takeover", "executor_test", "planner_commit"].includes(run.purpose ?? "") ? "execute" : undefined;
+  if (value.purpose !== purpose) return false;
+  const source = store.get<Run>("run", value.source_run_id);
+  if (source && (source.workflow_id !== run.workflow_id || source.plan_revision !== run.plan_revision)) return false;
+  if (purpose === "planning") return true;
+  const role = run.routing_role === "planner" || run.routing_role === "reviewer" ||
+    run.purpose === "planner_takeover" || run.purpose === "planner_commit" || run.purpose === "quality_review" ? "planner" : "executor";
+  if (value.role && value.role !== role) return false;
+  if (source?.purpose && source.purpose !== run.purpose) return false;
+  if (source?.routing_role) {
+    const sourceRole = source.routing_role === "planner" || source.routing_role === "reviewer" ? "planner" : "executor";
+    if (sourceRole !== role) return false;
+  }
+  if ((source?.assignment_id || run.assignment_id) && source?.assignment_id !== run.assignment_id) return false;
+  return true;
+}
+
 /** Only scheduler-bound continuation may influence this Run. */
 export function boundConversationContinuation(store: Store, run: Run): RunContinuation | undefined {
-  const purpose = run.purpose === "quality_review" ? "review" : run.purpose === "planning" ? "planning"
-    : ["implement", "functional_fix", "planner_takeover"].includes(run.purpose ?? "") ? "execute" : undefined;
   for (const value of [run.continuation, store.get<RunContinuation>("run_continuation", run.id)]) {
-    if (!value || value.purpose !== purpose) continue;
-    const source = store.get<Run>("run", value.source_run_id);
-    if (source && source.workflow_id !== run.workflow_id) continue;
+    if (!value || !continuationMatchesRun(store, run, value)) continue;
     return value;
   }
 }

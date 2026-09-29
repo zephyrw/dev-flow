@@ -9,9 +9,7 @@ import {
 import { git, repositoryInfo } from "../../git/src/git.js";
 import { WorkspaceFingerprintService, resolveExcludedRelativePaths } from "../../workspace/src/fingerprint.js";
 import type { Engine } from "./engine.js";
-import { DocumentService } from "./document-service.js";
 import { FeedbackService } from "./feedback-service.js";
-import { readPlanMaterial } from "./plan-review.js";
 import { hash, id, now, objectHash } from "./util.js";
 
 interface SourceVersion {
@@ -283,51 +281,32 @@ export class SourceChangeService {
       });
       let workflow: Workflow;
       if (body.choice === "continue") {
-        const material = readPlanMaterial(
-          this.engine.store,
-          key,
-          w.plan_revision,
-        );
-        const markdown =
-          material.markdown +
-          "\n\n## 本次执行使用的代码版本\n\n" +
-          "用户已查看项目代码更新，选择保留原任务范围、实施步骤和验收要求，使用当前主工作区继续。以下记录替代上文旧的起始代码版本；已有本地修改作为输入保留。\n\n" +
-          preview.repositories
-            .map(
-              (r) =>
-                `- ${r.repo_id}：${r.previous_commit} → ${r.current_commit}（${r.branch}）`,
-            )
-            .join("\n") +
-          "\n";
+        const material = this.engine.plan(key);
+        const { markdown: _markdown, ...originalPlan } = material.plan;
         const plan = {
-          ...material.plan,
+          ...originalPlan,
           revision: w.plan_revision + 1,
-          markdown,
           baselines: Object.fromEntries(
             preview.repositories.map((r) => [r.repo_id, r.current_commit]),
           ),
-          ...(material.plan.design_ref
-            ? {
-                design_ref: {
-                  ...material.plan.design_ref,
-                  content_hash: hash(markdown.replace(/\r\n/g, "\n")),
-                },
-              }
-            : {}),
         };
-        const doc = new DocumentService(
-          this.engine.store,
-          this.engine.config.storage_root,
-        ).publishDocument(key, "plan", markdown, w.plan_revision + 1);
         this.engine.submitPlan(
           key,
           plan,
           w.version,
           "source-choice-" + preview.id,
         );
-        this.engine.store.put("planning_document", key, key, {
-          document_id: doc.id,
-          plan_revision: w.plan_revision + 1,
+        // Code-baseline confirmation changes execution metadata, not the project document.
+        const updatedPlan = this.engine.plan(key);
+        this.engine.store.put("plan", updatedPlan.id, key, {
+          ...updatedPlan,
+          material_id: material.material_id,
+          material_path: material.material_path,
+          document_path: (material as any).document_path,
+        });
+        const document = this.engine.store.get<any>("planning_document", key);
+        if (document) this.engine.store.put("planning_document", key, key, {
+          ...document, plan_revision: w.plan_revision + 1,
         });
         const binding = this.engine.binding(key, "approve");
         const receipt = this.engine.auth.recordConfirmation("approve", binding);

@@ -187,6 +187,15 @@ button.danger:hover {
   border-color: #fca5a5;
 }
 
+button.warning {
+  color: var(--color-warning-text);
+  background: var(--color-warning-bg);
+  border-color: var(--color-warning-border);
+}
+button.warning:hover {
+  border-color: var(--color-warning-text);
+}
+
 button.btn-secondary {
   background: #ffffff;
   color: var(--text-muted);
@@ -483,6 +492,16 @@ aside .mark {
 .dot.RECOVERY_REQUIRED {
   background: var(--color-danger);
 }
+
+.dot.workflow-tone-warning { background: var(--color-warning-text); }
+.dot.workflow-tone-error { background: var(--color-danger); }
+.dot.workflow-tone-info { background: var(--color-info); }
+.dot.workflow-tone-success { background: var(--color-success); }
+.dot.workflow-tone-neutral { background: var(--text-muted); }
+.badge.workflow-tone-warning { color: var(--color-warning-text); background: var(--color-warning-bg); border-color: var(--color-warning-border); }
+.badge.workflow-tone-error { color: var(--color-danger-text); background: var(--color-danger-bg); border-color: var(--color-danger-border); }
+.badge.workflow-tone-info { color: var(--color-info-text); background: var(--color-info-bg); border-color: var(--color-info-border); }
+.badge.workflow-tone-success { color: var(--color-success-text); background: var(--color-success-bg); border-color: var(--color-success-border); }
 
 @keyframes pulse-dot {
   0%,

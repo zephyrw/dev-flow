@@ -1,4 +1,5 @@
-> 当前状态：规划质量修复 run-61e722f7-530b-4e3b-8f74-1646010e2d69 已完成控制器身份记录的批准路径收敛及改后源码阅读。本轮未运行测试、构建、lint、typecheck 或测试证明脚本；此前结果不代表本轮改后代码已通过，回归关注点见文末。
+> 当前状态：规划质量修复 run-350e9905-3c2d-4fe6-a929-c7196e067b59 已吸收固定目标 2006c024 的变更，完成八处冲突消解及改后源码阅读，保留未提交 merge。未运行测试、构建、lint、typecheck 或测试证明脚本；本轮 completed 仅指合并整改完成，执行模型需验证下列回归关注点。
+
 
 # DevFlow 代码复核整改实施与测试执行进度说明
 
@@ -230,3 +231,21 @@
 - [ ] 执行模型回归：两启动模式描述文件及兼容字段；身份不可用时新旧文件状态；新构建包含 `dist/apps/api/src/controller-descriptor.js`；候选安装、停止与清理读取同一身份；PID 复用/错误归属仍拒绝停止。
 
 原计划涉及完整测试、跨平台候选制品及最终提交的验收勾选不因本轮源码阅读改为完成。本轮没有运行任何测试、构建、lint、typecheck 或测试证明脚本，未进行真实付费调用，未启动或停止实际服务，未修改共享凭据，未暂存、提交或推送。`completed` 仅表示本轮修复和阅读自查完成，测试交执行模型。
+
+
+## 固定目标合并整改（run-350e9905，PR-04～08、PR-13）
+
+- 依当前工作包 integration_repair，在本任务工作树对 `2006c0246dac5b9f07cf7fd689a12849286ac9cd` 执行 `git merge --no-commit --no-ff`。HEAD 保持任务提交 `e9614674bbeb483b3091a1dfb92a5aad5badcc3e`；保留双方历史，未提交、未推送，未修改主工作树。目标自动合并内容一并保留。
+- 启动前检查原生子会话，无仍需续接的旧活动子任务；已完成项未重跑。本轮按原分工将材料冲突与运行时冲突分别交给子 Agent，均完成代码修改及阅读自查。
+- 解决 API、Web、engine、plan-review、project-materials、activity、conversation-recovery、profile-runtime 八处冲突，并移除自动合并形成的重复导入。
+- 材料：已登记的单计划原件读取最新正文，不再以正文旧哈希锁住后续进度；直接提交和原生规划两入口登记真实路径并清除旧材料绑定。任意路径不能直接获得审批权限；旧显式材料 ID 的 pending/conflict、对象哈希及迁移约束继续有效。保留目标提交取消独立整改计划副本的行为，整改问题仍随 assignment/source_review 传递。
+- 续接与显示：同时校验当前 Run 来源链和目标 purpose/role/assignment；保留精确根、attempt、generation 围栏与终态过滤，采用目标的最新根排序。API 和 UI 保留材料就绪状态；历史指导的日志副本脱敏，不修改实际执行输入。
+- 诊断：提取当前 provider 原因后使用每个 Run 共享的认证脱敏上下文，保留目标 AGY 恢复与会话配置行为。
+- 仅补充测试源码：`plan-original-reference.test.ts` 的注册/丢失/伪路径/旧状态场景，`profile-runtime-failure-diagnostic.test.ts` 的错误原因和跨流脱敏场景，以及 `logs.test.ts` 的历史指导显示脱敏场景。未执行。
+
+交执行模型的回归关注点：
+
+1. 两个计划入口、正文追加进度、详情/下载/审批/运行时引用使用同一当前原件；原件丢失、路径身份变化、旧 pending/conflict 不得绕过；旧 v2 对象、CRLF 迁移和回滚仍受保护。
+2. implement、planner_takeover、executor_test、planner_commit、quality_review 的暂停恢复归属，assignment 隔离，复用根的新 generation、迟到事件和终态子任务过滤。
+3. AGY 跨账号续接、provider TLS/quota 分类、旧业务文本不污染当前错误；stdout/stderr/失败诊断共享认证脱敏，用户指导显示不泄漏且输入不被改写。
+4. 固定目标带入的现行计划界面、测试进度与会话根显示，原任务的发布门禁和控制器身份记录保持兼容；合并后的完整代码尚未测试，后续应由执行模型测试，再进入原复核与提交阶段。

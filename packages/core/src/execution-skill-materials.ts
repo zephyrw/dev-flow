@@ -16,6 +16,9 @@ export const EXECUTION_TESTING_RESOURCE_PATHS = [
 
 export const REAL_BROWSER_VERIFICATION_PROMPT =
   "自动测试仍按单元、集成、E2E 三层组织；存在前端影响时，执行模型还必须额外使用 OpenTabs 完成一轮仿人工真实浏览器核验。这是执行职责，不是工作流新增阶段或平台验收门槛。" +
+  "E2E 自动化与 OpenTabs 核验是两项独立工作，可以在同一计划中分别使用 e2e 和 opentabs 层级；分别报告结果，不得合并或互相替代。" +
+  "用户原文与已批准计划要求单元、集成、E2E、OpenTabs 四项时，逐项落实；E2E 的通过或跳过不代表 OpenTabs 已完成或不适用。恢复时保留已完成且未受影响的结果，只补尚未完成的项目；缺少 OpenTabs 时实际操作现有 OpenTabs 工具连接的真实浏览器，再说明操作和观察结果，不以自动 E2E 代替。" +
+  "先检查本次实际可用的 OpenTabs 工具与真实浏览器入口，不凭提示词宣称工具一定可用，也不因尚未尝试就宣称不可用；确有工具或环境阻塞时报告具体情况。" +
   "普通本地场景免密优先；确需人工介入时发出 user_interaction 并暂停等待；新 worktree 端口独立且临时配置绝不提交。详细浏览器核验规则请查阅 devflow-test 与 devflow-execute Skill。";
 
 /**

@@ -39,6 +39,7 @@ interface Realm {
 }
 
 interface AccountView {
+  refresh_scope?: "all" | "active_only";
   model_id?: string | null;
   accounts: AgyAccountDto[];
   snapshots: AgyQuotaSnapshot[];
@@ -150,8 +151,9 @@ export const AgyAccountsPanel = forwardRef<
         (op) => !terminalOperation(op.phase),
       );
       setActiveOperation(runningOp ?? null);
-      setNotice("已刷新当前活动账号与额度");
-      setTimeout(() => setNotice(""), 3000);
+      setNotice(updatedView.refresh_scope === "active_only"
+        ? "AGY 正在运行，已仅刷新当前账号；其他账号保留上次额度结果"
+        : "已刷新账号额度");
     } catch (e) {
       const msg = e instanceof Error ? e.message : "刷新账号与额度失败";
       setError(msg);
@@ -183,6 +185,8 @@ export const AgyAccountsPanel = forwardRef<
         })
           .then((updatedView) => {
             setView(updatedView);
+            if (updatedView.refresh_scope === "active_only")
+              setNotice("AGY 正在运行，已仅刷新当前账号；其他账号保留上次额度结果");
           })
           .catch(() => {});
       });

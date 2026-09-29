@@ -187,7 +187,7 @@ describe("W07: 9.5 节双行模型展示真值表测试", () => {
     expect(result.quotaTarget?.isIndependentReviewer).toBe(true);
   });
 
-  it("场景 5: functional_fixer 与执行一致 -> 下行高亮，说明当前用于功能修复", () => {
+  it("场景 5: functional_fixer 与执行一致 -> 下行高亮，说明当前用于验收指导处理", () => {
     const detail = {
       ...baseDetail,
       workflow: { ...baseDetail.workflow, state: "EXECUTING" },
@@ -203,11 +203,11 @@ describe("W07: 9.5 节双行模型展示真值表测试", () => {
     const result = projectRoleRuntime(detail, { connected: true });
     expect(result.plannerRow.isActive).toBe(false);
     expect(result.executorRow.isActive).toBe(true);
-    expect(result.executorRow.activeReason).toBe("当前用于功能修复");
+    expect(result.executorRow.activeReason).toBe("当前用于验收指导处理");
     expect(result.compactBadge).toBeUndefined();
   });
 
-  it("场景 6: functional_fixer 为独立不同配置 -> 两行不高亮，紧凑修复中", () => {
+  it("场景 6: functional_fixer 为独立不同配置 -> 两行不高亮，紧凑验收指导处理", () => {
     const independentFixer: ToolProfile = {
       ...plannerProfile,
       id: "fixer",
@@ -242,7 +242,7 @@ describe("W07: 9.5 节双行模型展示真值表测试", () => {
     const result = projectRoleRuntime(detail, { connected: true });
     expect(result.plannerRow.isActive).toBe(false);
     expect(result.executorRow.isActive).toBe(false);
-    expect(result.compactBadge?.label).toBe("修复中");
+    expect(result.compactBadge?.label).toBe("验收指导处理");
   });
 
   it("场景 7: 同一个模型承担两个角色 -> 仅实际职责对应行高亮，不同时亮", () => {

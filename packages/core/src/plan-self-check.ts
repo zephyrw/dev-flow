@@ -13,6 +13,7 @@ import {
   type PlanSelfCheckRequest,
 } from "../../contracts/src/plan-self-check.js";
 import { id, now, objectHash, hash } from "./util.js";
+import { originalPlanPath } from "./project-materials.js";
 
 export const PLAN_SELF_CHECK_STAGE = "executor_plan_self_check";
 export const BEFORE_HUMAN_REVIEW_STAGE = "quality_before_human";
@@ -37,18 +38,8 @@ export class PlanSelfCheckCoordinator {
       )
       .sort((a, b) => a.revision - b.revision)
       .map((p) => {
-        let markdown = p.plan.markdown;
-        const expected = p.plan.design_ref?.content_hash;
-        if (
-          expected &&
-          (!markdown || hash(markdown.replace(/\r\n/g, "\n")) !== expected)
-        ) {
-          const doc = this.store
-            .list<{ hash: string; content: string }>("project_document", w.id)
-            .find((d) => d.hash === expected);
-          if (doc?.content) markdown = doc.content;
-        }
-        return { ...p, plan: { ...p.plan, markdown } };
+        const { markdown: _markdown, ...plan } = p.plan;
+        return { ...p, plan, document_path: originalPlanPath(this.store, w.id) };
       });
   }
   private context(w: Workflow) {

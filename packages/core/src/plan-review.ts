@@ -20,11 +20,12 @@ export const RejectPlanSchema = PlanFeedbackSchema.extend({
 }).strict();
 export const PlanQuestionSchema = PlanFeedbackSchema.strict();
 
-import { resolveMaterialLocator, readVerifiedProjectMaterial } from "./project-materials.js";
+import { originalPlanPath, resolveMaterialLocator, readVerifiedProjectMaterial } from "./project-materials.js";
 import { readMaterialFile } from "./material-filesystem.js";
-import type { ProjectMaterial, Run } from "../../contracts/src/index.js";
+import { isAbsolute, relative, resolve } from "node:path";
+import type { ProjectMaterial, Project, Workspace, Run } from "../../contracts/src/index.js";
 
-// Native plans store their full prose in project materials or versioned documents, not in the contract.
+// Current documents are references; older material records retain their publication fences.
 export function readPlanMaterial(
   store: Store,
   workflowId: string,
@@ -40,6 +41,34 @@ export function readPlanMaterial(
     workflowId,
   );
   const currentDoc = planDoc?.plan_revision === revision ? planDoc : undefined;
+  // Reference-only documents are current originals, not versioned prose copies.
+  // A path alone is insufficient: require the registered document and its plan link.
+  const registered = store.get<ProjectDocument>("project_document", `doc_${workflowId}_plan`);
+  if (!record.material_id && !currentDoc?.material_id && registered?.path &&
+      registered.workflow_id === workflowId && registered.document_type === "plan" &&
+      registered.revision === revision && registered.hash === "" && !registered.content &&
+      record.material_path && resolve(record.material_path) === resolve(registered.path)) {
+    requireCondition(currentDoc?.material_status !== "pending" && currentDoc?.material_status !== "conflict",
+      currentDoc?.material_status === "conflict" ? "PLAN_MATERIAL_CONFLICT" : "PLAN_MATERIAL_PENDING",
+      "计划原件注册尚未就绪", 409);
+    const path = originalPlanPath(store, workflowId, revision);
+    requireCondition(path && resolve(path) === resolve(registered.path), "PLAN_MATERIAL_CONFLICT", "计划原件引用与登记路径不一致", 409);
+    const workflow = store.get<{ project_id: string }>("workflow", workflowId);
+    const project = workflow && store.get<Project>("project", workflow.project_id);
+    const roots = [...store.list<Workspace>("workspace", workflowId).map(w => w.root),
+      ...(project?.repositories ?? []).map(r => r.path)];
+    const root = roots.find(candidate => {
+      const rel = relative(resolve(candidate), resolve(path));
+      return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
+    });
+    requireCondition(root, "PATH_ESCAPE", "计划原件必须属于项目或任务工作区", 400);
+    const body = readMaterialFile(root, relative(root, path).replaceAll("\\", "/"));
+    requireCondition(body, "PLAN_MATERIAL_LOST", "已登记的项目计划原件已丢失", 409);
+    const markdown = body.toString("utf8");
+    requireCondition(markdown.trim(), "PLAN_DOCUMENT_MISSING", "计划原件正文为空", 409);
+    return { ...record, markdown, path, document_path: path,
+      source_type: "project" as const, authority_ready: true };
+  }
   const materialId = record.material_id ?? currentDoc?.material_id;
   let material = materialId
     ? store.get<ProjectMaterial>("project_material", materialId)
@@ -106,7 +135,7 @@ export function readPlanMaterial(
           (d) =>
             d.revision === revision &&
             ["plan", "repair_plan"].includes(d.document_type) &&
-            (!record.plan.design_ref || d.hash === record.plan.design_ref.content_hash),
+            (!record.plan.design_ref?.content_hash || d.hash === record.plan.design_ref.content_hash),
         );
       markdown = document?.content ?? record.plan.markdown;
       sourceType = "result_pending";
@@ -167,14 +196,16 @@ export function readPlanMaterial(
     409,
   );
   requireCondition(
-    !record.plan.design_ref ||
+    !record.plan.design_ref?.content_hash ||
       hash(markdown.replace(/\r\n/g, "\n")) ===
         record.plan.design_ref.content_hash,
     "PLAN_DOCUMENT_HASH_MISMATCH",
     "计划正文与当前版本不一致",
     409,
   );
-  return { ...record, markdown, source_type: sourceType, authority_ready: material?.status === "verified" && sourceType === "project" };
+  const workspace = material && store.get<Workspace>("workspace", material.workspace_id);
+  const path = material && workspace ? resolve(workspace.root, material.path) : undefined;
+  return { ...record, markdown, path, document_path: path, source_type: sourceType, authority_ready: material?.status === "verified" && sourceType === "project" };
 }
 
 /** One authority verdict for approval and dispatch. Pending/legacy prose is display-only. */

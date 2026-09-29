@@ -280,7 +280,7 @@ export function runtimeFailureResolution(
     )
       cause = "RUNTIME_ACCESS_DENIED";
     else if (
-      /\b(?:ECONNREFUSED|ECONNRESET|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|UND_ERR_CONNECT_TIMEOUT|CERT_HAS_EXPIRED|UNABLE_TO_VERIFY_LEAF_SIGNATURE)\b|certificate verify failed|error sending request|fetch failed|failed to (?:connect|fetch)|"status"\s*:\s*50[0234]\b|\bHTTP\s+50[0234]\b|bad record mac|local error:\s*tls:|streamGenerateContent.*(?:request failed|bad record mac)/i.test(
+      /\b(?:ECONNREFUSED|ECONNRESET|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|UND_ERR_CONNECT_TIMEOUT|CERT_HAS_EXPIRED|UNABLE_TO_VERIFY_LEAF_SIGNATURE)\b|certificate verify failed|error sending request|fetch failed|failed to (?:connect|fetch)|"status"\s*:\s*50[0234]\b|\bHTTP\s+50[0234]\b|bad record mac|local error:\s*tls:|streamGenerateContent.*(?:request failed|bad record mac|wsasend:.*forcibly closed by the remote host)/i.test(
         detail,
       )
     )

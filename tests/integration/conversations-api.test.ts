@@ -12,6 +12,8 @@ import {
   type ConversationApplyContext,
 } from "../../packages/core/src/conversation-service.js";
 import { now } from "../../packages/core/src/util.js";
+import { readableLogs, userFacingLogs } from "../../packages/presentation/src/activity.js";
+import { filterConversationEntries } from "../../apps/web/src/use-conversation-view.js";
 import {
   conversationPlugin,
 } from "../../apps/api/src/routes/conversations.js";
@@ -156,6 +158,81 @@ function seedTree(service: ConversationService) {
 }
 
 describe("SA-I05 conversation query API", () => {
+  it("keeps a current AGY Run visible beside persisted Codex review telemetry", async () => {
+    const { app, s, conversations } = await startApp((service, store) => {
+      seedTree(service);
+      store.put("run", "agy-old", "wf1", runRecord("agy-old", "wf1", {
+        adapter: "agy", conversation_id: "agy-native", status: "completed",
+        started_at: "2026-09-21T00:00:00.000Z",
+      }));
+      store.put("run", "agy-now", "wf1", runRecord("agy-now", "wf1", {
+        adapter: "agy", conversation_id: "agy-native", status: "failed",
+        started_at: "2026-09-22T00:00:00.000Z",
+      }));
+      store.put("run", "aside-old", "wf1", runRecord("aside-old", "wf1", {
+        adapter: "agy", purpose: "aside", conversation_id: "aside-native", status: "completed",
+      }));
+      store.put("run", "other-account", "wf1", runRecord("other-account", "wf1", {
+        adapter: "agy", conversation_id: "other-account-native", status: "completed",
+      }));
+      store.put("workflow", "wf1", "p1", workflow("wf1", "agy-now"));
+    });
+    const cursor = s.store.eventCursor("wf1");
+    const listed = (await app.inject({ method: "GET", url: "/api/workflows/wf1/conversations" })).json();
+    expect(listed.nodes).toHaveLength(1);
+    expect(listed.nodes[0]).toMatchObject({ adapter_id: "agy", kind: "main" });
+    expect(listed.active_root_id).toBe(listed.nodes[0].id);
+    expect(listed.attempts.map((attempt: any) => attempt.run_id)).toEqual(["agy-old", "agy-now"]);
+    expect(listed.attempts.at(-1).status).toBe("failed");
+    // A projected root has no separate activity store; the main view must retain
+    // its existing Run-scoped native activity, without admitting child activity.
+    const logs = userFacingLogs(readableLogs([
+      { workflow_id: "wf1", run_id: "agy-now", event_seq: 100, created_at: now(), type: "NativeActivity",
+        payload: { id: "read-1", kind: "tool", title: "读取文件", status: "completed", text: "src/file.ts" } },
+      { workflow_id: "wf1", run_id: "agy-now", event_seq: 101, created_at: now(), type: "NativeActivity",
+        payload: { id: "command-1", kind: "tool", title: "执行命令", status: "completed", command: "git diff --check" } },
+    ], "wf1"), "agy-now");
+    const visible = filterConversationEntries(logs, listed.active_root_id, listed.active_root_id);
+    expect(visible.filter((entry) => entry.kind === "tool").map((entry) => entry.title))
+      .toEqual(["读取文件", "执行命令"]);
+    expect(filterConversationEntries([...logs, { key: "child-only", sequence: 102, created_at: now(),
+      title: "child", text: "child", raw: [], conversation_id: "child-id" }], listed.active_root_id, listed.active_root_id))
+      .not.toContainEqual(expect.objectContaining({ conversation_id: "child-id" }));
+    const otherRoot = conversations.getTree("wf1").nodes.find((node) => node.native_session_id === "other-account-native")!;
+    expect(otherRoot.id).not.toBe(listed.active_root_id);
+    const current = (await app.inject({ method: "GET", url: `/api/workflows/wf1/conversations/${listed.active_root_id}` })).json();
+    expect(current.run.id).toBe("agy-now");
+    const asideRoot = listed.roots.find((root: any) => root.kind === "aside");
+    expect(asideRoot).toBeDefined();
+    const aside = await app.inject({ method: "GET", url: `/api/workflows/wf1/conversations/${asideRoot.id}` });
+    expect(aside.statusCode).toBe(200);
+    expect(aside.json().run.id).toBe("aside-old");
+    const reviewRoot = conversations.getTree("wf1").nodes.find((node) => node.adapter_id === "codex" && node.kind === "main")!;
+    const history = (await app.inject({ method: "GET", url: `/api/workflows/wf1/conversations?root_id=${reviewRoot.id}` })).json();
+    expect(history.nodes.some((node: any) => node.kind === "subagent")).toBe(true);
+    expect(history.active_root_id).toBe(listed.active_root_id);
+    expect(conversations.getTree("wf1").attempts.filter((attempt) => attempt.run_id === "agy-now")).toHaveLength(1);
+    expect(s.store.eventCursor("wf1")).toBe(cursor);
+    expect(s.store.list("conversation_node", "wf1")).toHaveLength(3);
+  });
+
+  it("projects a new attempt onto only the exact existing native session", async () => {
+    const { app, conversations } = await startApp((service, store) => {
+      seedTree(service);
+      store.put("run", "run-resume", "wf1", runRecord("run-resume", "wf1", {
+        conversation_id: "root-native", purpose: "planner_takeover", status: "failed",
+        started_at: "2099-09-22T00:00:00.000Z",
+      }));
+      store.put("workflow", "wf1", "p1", workflow("wf1", "run-resume"));
+    });
+    const tree = conversations.getTree("wf1");
+    expect(tree.nodes.filter((node) => node.kind === "main")).toHaveLength(1);
+    const details = (await app.inject({ method: "GET", url: `/api/workflows/wf1/conversations/${tree.active_root_id}` })).json();
+    expect(details.run.id).toBe("run-resume");
+    expect(details.attempts.at(-1)).toMatchObject({ run_id: "run-resume", status: "failed" });
+    expect(details.node.current_attempt_id).toBe(details.attempts.at(-1).id);
+  });
+
   it("returns current tree, historical root summaries, capabilities and cursor", async () => {
     const { app, s } = await startApp((service) => {
       const oldRoot = service.applyEvent(
@@ -210,6 +287,7 @@ describe("SA-I05 conversation query API", () => {
       "wf1",
       runRecord("run-new", "wf1", { status: "running" }),
     );
+    s.store.put("workflow", "wf1", "p1", workflow("wf1", "run-new"));
     const listed = await app.inject({
       method: "GET",
       url: "/api/workflows/wf1/conversations",
