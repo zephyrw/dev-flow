@@ -34,7 +34,9 @@ import {
   recoveryGuidanceText,
   type RecoveryRunPort,
   type RecoveryRunRequest,
+  storeRecoveryRunPort,
 } from "../../packages/runtime/src/conversation-recovery.js";
+import { currentRunUserGuidance } from "../../packages/runtime/src/profile-runtime.js";
 
 class FakeClock implements ConversationControlClock {
   current = Date.parse("2026-09-20T00:00:00.000Z");
@@ -245,7 +247,7 @@ function resumeBody(rootId: string, requestId = "resume-1") {
   };
 }
 
-function reusedRootSession() {
+async function reusedRootSession(withOldPause = false) {
   const s = openSession();
   const first = s.store.must<Run>("run", "run1");
   const observe = (runId: string, nativeId: string, hour: string) => {
@@ -257,6 +259,9 @@ function reusedRootSession() {
     })).node!;
   };
   const oldRoot = observe("run1", "root-native", "01");
+  if (withOldPause) await s.controls.pauseTree("wf1", {
+    request_id: "old-generation-pause", action: "pause", root_id: oldRoot.id, expected_generation: 0,
+  });
   const laterRoot = observe("run2", "other-account-root", "02");
   const reused = observe("run3", "root-native", "03");
   expect(reused.id).toBe(oldRoot.id);
@@ -268,7 +273,7 @@ function reusedRootSession() {
 
 describe("reused native roots follow the latest execution instead of node creation", () => {
   it("can pause and recover the old root after a newer Run reused it", async () => {
-    const s = reusedRootSession();
+    const s = await reusedRootSession();
     try {
       const paused = await s.controls.pauseTree("wf1", {
         request_id: "pause-reused", action: "pause", root_id: s.reused.id, expected_generation: s.generation,
@@ -284,7 +289,7 @@ describe("reused native roots follow the latest execution instead of node creati
   });
 
   it("both entry points reject the superseded root even after its delayed activity event", async () => {
-    const s = reusedRootSession();
+    const s = await reusedRootSession();
     try {
       s.conversations.applyEvent(ctx({ run_id: "run2", root_native_id: "other-account-root" }), event({
         source_id: "reuse-run2", source_seq: "2", root_native_id: "other-account-root", session_native_id: "other-account-root",
@@ -297,6 +302,40 @@ describe("reused native roots follow the latest execution instead of node creati
         { reason: "user_resume" })).rejects.toMatchObject({ code: CONVERSATION_ERROR.STALE_ROOT });
       expect(s.runPort.requests).toHaveLength(0);
       expect(s.conversations.getTree("wf1").attempts.find((a) => a.run_id === "run3")?.status).toBe("running");
+    } finally { s.store.close(); }
+  });
+
+  it("an older generation fence cannot replace the reused root's failed Run or lose its guidance", async () => {
+    const s = await reusedRootSession(true);
+    try {
+      // Mirror a failed model call followed by Engine.stop while already queued:
+      // there is no new live process to pause, so only an older fence exists.
+      s.conversations.applyEvent(ctx({ run_id: "run3" }), event({
+        source_id: "reuse-run3", source_seq: "2", session_native_id: "root-native", kind: "state",
+        occurred_at: "2026-09-20T03:30:00.000Z", payload: { status: "failed" },
+      }));
+      const source = { ...s.store.must<Run>("run", "run3"), status: "failed" as const,
+        assignment_id: "current-assignment", routing_role: "executor" as const };
+      s.store.put("run", source.id, "wf1", source);
+      s.store.put("workflow", "wf1", "proj1", { ...s.store.must<Workflow>("workflow", "wf1"), state: "STOPPED" });
+      s.store.put("feedback_message", "current-guidance", "wf1", {
+        workflow_id: "wf1", seq: 6, text: "继续本轮，并逐项回答我之前的问题", ack_run: source.id,
+      });
+      for (const fence of s.store.list<any>("conversation_control_fence", "wf1")) {
+        s.store.put("conversation_control_fence", fence.id, "wf1",
+          { ...fence, updated_at: "2026-09-20T05:00:00.000Z", dispatch_frozen: false });
+      }
+      const recovery = new ConversationRecovery({ store: s.store, conversations: s.conversations,
+        controls: s.controls, runPort: storeRecoveryRunPort(s.store), clock: new FakeClock() });
+      const result = await recovery.arrangeRecovery("wf1", {
+        ...resumeBody(s.reused.id, "resume-after-failure"), expected_generation: s.generation,
+      }, { reason: "user_resume" });
+      expect(result.manifest.source_run_id).toBe(source.id);
+      const resumed = s.store.must<Run>("run", result.manifest.target_run_id);
+      expect(resumed.assignment_id).toBe("current-assignment");
+      expect(resumed.continuation).toMatchObject({ kind: "runtime_resume", source_run_id: source.id });
+      expect(currentRunUserGuidance(s.store, "wf1", resumed)?.messages)
+        .toEqual([expect.objectContaining({ seq: 6, text: "继续本轮，并逐项回答我之前的问题" })]);
     } finally { s.store.close(); }
   });
 });

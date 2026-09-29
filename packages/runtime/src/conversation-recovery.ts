@@ -321,8 +321,11 @@ export class ConversationRecovery {
   ): RecoveryArrangement {
     const workflow = this.requireWorkflow(workflowId);
     const tree = this.deps.conversations.getTree(workflowId, request.root_id);
-    const fence = latestFence(this.deps.store, workflowId, request.root_id);
-    const sourceRunId = fence?.run_id ?? workflow.run_id;
+    const rootAttempt = tree.attempts.find((attempt) =>
+      attempt.conversation_id === request.root_id && attempt.generation === request.expected_generation);
+    const fence = latestFence(this.deps.store, workflowId, request.root_id,
+      request.expected_generation, rootAttempt?.run_id);
+    const sourceRunId = fence?.run_id ?? rootAttempt?.run_id ?? workflow.run_id;
     if (!sourceRunId) {
       throw new FlowError("NOT_FOUND", "缺少可恢复的原运行", 404);
     }
@@ -821,10 +824,13 @@ function latestFence(
   store: Store,
   workflowId: string,
   rootId: string,
+  generation: number,
+  runId?: string,
 ): ConversationControlFence | undefined {
   return store
     .list<ConversationControlFence>(CONVERSATION_CONTROL_FENCE, workflowId)
-    .filter((item) => item.root_id === rootId)
+    .filter((item) => item.root_id === rootId && item.expected_generation === generation &&
+      (!runId || item.run_id === runId))
     .sort((a, b) => b.updated_at.localeCompare(a.updated_at))[0];
 }
 
