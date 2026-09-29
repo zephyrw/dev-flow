@@ -179,7 +179,7 @@ export function nativeProgress(detail: any, changes?: any[]) {
   }
 
   const tasks = (detail.tasks ?? []).map((task: any) => {
-    if (task.status === "verified") return task;
+    if (task.status === "verified" || task.status === "completed" || task.completed) return task;
     const spec = plan.tasks.find((t: any) => t.id === task.id);
     if (!spec) return task;
     const workspaces = (detail.workspaces ?? []).filter(

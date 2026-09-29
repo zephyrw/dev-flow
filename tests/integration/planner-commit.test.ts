@@ -3,7 +3,7 @@ import { setup, project, plan } from "../helpers.js";
 import { objectHash } from "../../packages/core/src/util.js";
 import { GitDeliveryCoordinator } from "../../packages/git/src/delivery-coordinator.js";
 import { CliDispatchManager } from "../../packages/runtime/src/cli-dispatch.js";
-import type { Run, Workflow } from "../../packages/contracts/src/index.js";
+import { FlowError, type Run, type Workflow } from "../../packages/contracts/src/index.js";
 import { UserInteractionService } from "../../packages/core/src/user-interaction-service.js";
 import { readBusinessProgress } from "../../packages/core/src/workflow-progress.js";
 import {
@@ -122,6 +122,53 @@ function commitRecoveryFixture(purpose = "planner_commit", state: Workflow["stat
 }
 
 describe("planner commit recovery through Engine", () => {
+  it.each(["WORKSPACE_MISSING", "WORKSPACE_BUSY", "EACCES", "INTERNAL_FAILURE"])("integration exception %s is handed to the planner", async code => {
+    const s = commitRecoveryFixture();
+    const integrate = vi.spyOn(GitDeliveryCoordinator.prototype, "integrateCommittedDelivery").mockRejectedValue(new FlowError(code, "模拟提交问题"));
+    try {
+      await (s.engine as any).completePlannerCommit(s.workflow.id, s.run.id, {});
+      expect(s.engine.get(s.workflow.id)).toMatchObject({ state: "QUEUED", stage: "planner_commit" });
+      expect(s.store.get<any>("planner_integration_repair", s.workflow.id).instructions).toContain(code);
+      expect(s.store.get<any>("planner_integration_repair", s.workflow.id).instructions).toContain("user_interaction");
+    } finally { integrate.mockRestore(); s.store.close(); }
+  });
+
+  it("repeated integration failure asks the user instead of looping and the answer resumes commit", async () => {
+    const s = commitRecoveryFixture();
+    const dispatch = vi.spyOn(s.engine, "dispatch").mockResolvedValue(undefined);
+    const integrate = vi.spyOn(GitDeliveryCoordinator.prototype, "integrateCommittedDelivery").mockRejectedValue(new FlowError("EACCES", "权限不足"));
+    try {
+      await (s.engine as any).completePlannerCommit(s.workflow.id, s.run.id, {});
+      const next = (id: string) => {
+        s.store.put("run", id, s.workflow.id, { ...s.run, id, conversation_id: undefined, status: "completed", protocol: "lightweight" });
+        s.engine.transition(s.workflow.id, [s.engine.get(s.workflow.id).state], "EXECUTING", "planner_commit", { run_id: id });
+      };
+      next("repair-run");
+      await (s.engine as any).completePlannerCommit(s.workflow.id, "repair-run", {});
+      expect(s.store.get<any>("planner_integration_repair", s.workflow.id).requires_user).toBe(true);
+      next("question-run");
+      await s.engine.receiveRoundResult(s.workflow.id, "question-run", { status: "completed", summary: "仍需要用户开放目录权限" });
+      expect(s.engine.get(s.workflow.id)).toMatchObject({ state: "WAITING_INPUT", stage: "planner_commit" });
+      expect(s.store.get("execution_completion", "question-run")).toBeUndefined();
+      const service = new UserInteractionService(s.store);
+      const interaction = service.getCurrentInteraction(s.workflow.id)!;
+      expect(interaction.request.title).toBe("提交合并需要协助");
+      await service.respondInteraction(s.workflow.id, interaction.id, { request_id: "permission-fixed", source_run_id: "question-run",
+        action: "answer", answer: "权限已恢复，继续" }, s.engine);
+      expect(s.engine.get(s.workflow.id)).toMatchObject({ state: "QUEUED", stage: "planner_commit" });
+      expect(s.store.get<any>("planner_integration_repair", s.workflow.id).requires_user).toBe(false);
+      expect(s.store.get("acceptance", s.workflow.id)).toMatchObject({ accepted: true });
+    } finally { integrate.mockRestore(); dispatch.mockRestore(); s.store.close(); }
+  });
+
+  it.each(["need_planner", "failed"])("commit model status %s becomes a user popup within commit", async status => {
+    const s = commitRecoveryFixture();
+    try {
+      await s.engine.receiveRoundResult(s.workflow.id, s.run.id, { status, summary: "需要确认保留哪种业务行为" });
+      expect(s.engine.get(s.workflow.id)).toMatchObject({ state: "WAITING_INPUT", stage: "planner_commit" });
+      expect(new UserInteractionService(s.store).getCurrentInteraction(s.workflow.id)?.role).toBe("planner");
+    } finally { s.store.close(); }
+  });
   it("conflict decision creates a popup request and the answer resumes the same commit role", async () => {
     const s = commitRecoveryFixture();
     const dispatch = vi.spyOn(s.engine, "dispatch").mockResolvedValue(undefined);

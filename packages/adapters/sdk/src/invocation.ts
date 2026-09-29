@@ -81,6 +81,8 @@ export function clientInvocation(
         'approval_policy="never"',
       );
       if (resume) args.push("resume", resume);
+      if (input.purpose === "planner_commit")
+        args.push("-c", "sandbox_workspace_write.writable_roots=" + JSON.stringify(Object.values(input.workspaceRoots)));
       args.push("--json", "--skip-git-repo-check");
       pushFrozenSelection(args, env, input);
       if (input.outputPath)

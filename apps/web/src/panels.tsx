@@ -101,7 +101,7 @@ export function TaskTree({ detail, title }: { detail: any; title?: string }) {
       )}
       {native && (
         <p className="notice-subtle" aria-label="原生执行">
-          根据实际文件变更和执行记录同步进度；执行模型自主安排开发与自测，工作包完成情况另行核验。
+          根据执行模型的完成回执和实际文件变更同步实施进度；测试结果与仓库提交分别展示。
         </p>
       )}
       {!leaf && !native && (
@@ -139,7 +139,7 @@ export function TaskTree({ detail, title }: { detail: any; title?: string }) {
                 </span>
                 <span className={`module-badge ${isAllDone ? "all-done" : ""}`}>
                   {native
-                    ? `已开展 ${all.filter((t: any) => ["active", "completed", "pending_check"].includes(t.development_status)).length} / ${all.length} · 已交付 ${all.filter((t: any) => t.status === "verified").length} / ${all.length}`
+                    ? `已开展 ${all.filter((t: any) => ["active", "completed", "pending_check"].includes(t.development_status)).length} / ${all.length}`
                     : leaf
                       ? `开发 ${completedCount} / ${all.length} · 验证 ${all.filter((t: any) => t.status === "verified").length} / ${all.length}`
                       : `${all.length} 个工作包`}
@@ -150,10 +150,10 @@ export function TaskTree({ detail, title }: { detail: any; title?: string }) {
                   <div className={`task ${t.implementation_status}`} key={t.id}>
                     <span
                       className={
-                        "checkbox " + (t.status === "verified" ? "checked" : "")
+                        "checkbox " + ((native ? t.completed : t.status === "verified") ? "checked" : "")
                       }
                     >
-                      {t.status === "verified" ? "✓" : ""}
+                      {(native ? t.completed : t.status === "verified") ? "✓" : ""}
                     </span>
                     <div className="task-main">
                       <div className="task-header-row">
@@ -161,8 +161,8 @@ export function TaskTree({ detail, title }: { detail: any; title?: string }) {
                         <span className={`badge ${t.implementation_status}`}>
                           {taskLabels[developmentStatus(t)] ?? "未开始"}
                         </span>
-                        <span className="validation-status">
-                          {native ? "交付记录：" : "验证："}
+                        {!native && <span className="validation-status">
+                          验证：
                           {
                             (
                               {
@@ -176,7 +176,7 @@ export function TaskTree({ detail, title }: { detail: any; title?: string }) {
                                 (t.status === "verified" ? "passed" : "not_run")
                             ]
                           }
-                        </span>
+                        </span>}
                       </div>
                       {t.summary && (
                         <p className="task-summary">

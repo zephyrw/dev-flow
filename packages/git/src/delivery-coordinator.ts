@@ -236,7 +236,8 @@ export class GitDeliveryCoordinator {
     workflowId: string,
     commits: Array<{ repo_id: string; commit: string }> = [],
   ): Promise<{ integrations: IntegrationReceipt[]; repairInstructions?: string;
-    repairTargets?: Array<{ repo_id: string; source_commit: string; candidate_commit: string }> }> {
+    repairTargets?: Array<{ repo_id: string; source_commit: string; candidate_commit: string }>;
+    recoveryFailures?: Array<{ repo_id: string; code: string; message: string }> }> {
     const w = this.workflow(workflowId);
     const ownsOperation = () => {
       const current = this.workflow(workflowId);
@@ -330,7 +331,6 @@ export class GitDeliveryCoordinator {
             }
             // Project-owned plan files can be untracked in the source checkout.
             // Preserve them in place; Git rejects overlapping paths atomically.
-            requireCondition(!(await git(sourceRoot, ["status", "--porcelain", "--untracked-files=no"])), "SOURCE_BUSY", "目标工作区存在已跟踪文件的未提交改动，保留现场后重试");
             const current = await repositoryInfo(sourceRoot);
             requireCondition(current.head === info.head && current.branch === targetBranch, "SOURCE_BUSY", "目标分支发生并发变化");
             requireCondition(ownsOperation(), "RUN_REVOKED", "提交收尾已中断");
@@ -357,7 +357,16 @@ export class GitDeliveryCoordinator {
           message: redact(error instanceof Error ? error.message : String(error)),
         };
         failures.push(failure);
-        this.store.event(workflowId, w.project_id, "PlannerIntegrationFailed", failure, w.run_id);
+        this.store.event(workflowId, w.project_id, "PlannerIntegrationFailed", { ...failure, recovery_scheduled: true }, w.run_id);
+        repairs.push(
+          "仓库 " + ws.repo_id + " 提交合并尚未完成，请在本地提交阶段处理以下实际问题：" + failure.code + "：" + failure.message +
+          "\n登记的任务工作树：" + ws.root + "；登记的源工作区：" + sourceRoot + "；目标分支：" + targetBranch + "；本轮候选提交：" + (commit || commits.find(item => item.repo_id === ws.repo_id)?.commit || "尚未确定，需核对") +
+          "。先检查真实 Git 状态与登记绑定，不能猜测或改写绑定。无关未提交文件不阻止合并；同文件不同位置的修改也应尝试保留双方内容。" +
+          "允许在登记的源工作区完成必要的本地合并，但必须先保存可恢复的原始文件、未跟踪文件和 index，保留原有已暂存/未暂存边界；禁止提交他人的修改、删除锁来抢占、覆盖并发修改或用 reset --hard/clean 丢弃内容。" +
+          "若需暂时移开阻挡文件，先完整备份，合并后恢复并逐项核对；恢复发生冲突时继续处理，不能删掉备份或宣称完成。" +
+          "缺权限、仓库不可用、锁被其他进程占用或无法确保保留现场时，返回 need_user 和 user_interaction，说明具体原因、可选处理及用户操作步骤。" +
+          "已成功仓库保持不动；解决后返回实际候选提交号，平台重新核验。不要重新开发、复核或盲目重复失败命令。",
+        );
         integrations.push(receipt);
         failed = true;
       }
@@ -372,8 +381,8 @@ export class GitDeliveryCoordinator {
           message: failures.map((failure) => "仓库 " + failure.repo_id + "：" + failure.message).join("\n"),
         } : undefined);
     }
-    // Resolve operational errors before asking a model to modify any repository.
-    return { integrations, ...(!failed && repairs.length ? { repairInstructions: repairs.join("\n\n"), repairTargets } : {}) };
+    return { integrations, ...(repairs.length ? { repairInstructions: repairs.join("\n\n"), repairTargets } : {}),
+      ...(failures.length ? { recoveryFailures: failures } : {}) };
   }
 
   async executeDelivery(

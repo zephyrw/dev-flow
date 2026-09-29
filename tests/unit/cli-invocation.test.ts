@@ -84,6 +84,14 @@ describe("NV-U07 & NV-U02: CLI调用参数与手动续接指令", () => {
   });
 
   describe("clientInvocation: codex 适配器参数", () => {
+    it("提交恢复为登记源工作区配置写权限，同时保留任务目录作为 cwd", () => {
+      const roots = { main: "C:/task", "integration-source:main": "C:/source" };
+      const inv = clientInvocation("codex", { ...baseRunContext, purpose: "planner_commit", workspaceRoots: roots,
+        conversationId: "original-session" }, "codex.cmd");
+      expect(inv.cwd).toBe("C:/task");
+      expect(inv.args).toContain("sandbox_workspace_write.writable_roots=" + JSON.stringify(Object.values(roots)));
+      expect(inv.args).toContain("original-session");
+    });
     it("只读阶段生成 sandbox_mode=read-only 与 approval_policy=never", () => {
       const codexContext: RunContext = {
         ...baseRunContext,

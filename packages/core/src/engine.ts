@@ -74,7 +74,7 @@ import {
 import type { Config } from "../../contracts/src/config.js";
 import { Store } from "../../store/src/store.js";
 import { Auth, type Principal } from "./auth.js";
-import { atomicWrite, id, now, objectHash, hash } from "./util.js";
+import { atomicWrite, id, now, objectHash, hash, redact } from "./util.js";
 import { validatePlan } from "../../plans/src/validate.js";
 import { GitDeliveryCoordinator } from "../../git/src/delivery-coordinator.js";
 import {
@@ -332,6 +332,7 @@ export class Engine {
       tasks: [],
       task_counts: {
         total: tasks.length,
+        started: tasks.filter((t) => ["active", "completed", "pending_check"].includes(t.development_status)).length,
         developed: tasks.filter((t) => t.development_status === "completed")
           .length,
         verified: tasks.filter((t) => t.status === "verified").length,
@@ -1605,6 +1606,35 @@ export class Engine {
       retry_run_id: this.store.get<PendingModelRetry>("pending_model_retry", key)?.retry_run_id,
     });
   }
+  returnInputFailureToModel(key: string, runId: string, error: FlowError) {
+    const current = this.get(key);
+    if (current.run_id !== runId || this.store.get("run_stop", runId) ||
+        !["EXECUTING", "VERIFYING"].includes(current.state)) return;
+    const details = error.details as { diagnostic?: string; input_problems?: string[] } | undefined;
+    const message = [
+      "上次模型请求被服务端拒绝，尚未完成当前任务。请在原阶段检查并处理这个输入问题：",
+      redact(details?.diagnostic ?? error.message),
+      ...(details?.input_problems ?? []).map(problem => redact(problem)),
+      "请自行检查相关输入和保存格式后继续原任务；不要重复已经完成的开发和测试。无法自行解决时，通过 need_user 和 user_interaction 说明具体问题并请求协助。",
+    ].join("\n");
+    if (this.store.get("model_input_feedback", runId)) {
+      this.routeExecutionIntent(key, runId, normalizeDeliveredRound({ status: "need_user", summary: message,
+        user_interaction: { kind: "action_required", title: "模型请求仍被拒绝，需要协助",
+          message: message.slice(0, 3900), action_label: "已处理，继续原任务" } }));
+      return;
+    }
+    this.stageExecuteContinuation(key);
+    stageModelRunRetry(this.store, key, runId);
+    const pending = this.store.must<PendingModelRetry>("pending_model_retry", key);
+    this.store.put("pending_model_retry", key, key, { ...pending, input_feedback: message });
+    this.restoreDispatchContext(key, runId);
+    this.transition(key, [current.state], "QUEUED", this.store.must<Run>("run", runId).stage, { blocker: undefined });
+    this.store.event(key, current.project_id, "ModelInputRecoveryScheduled", {
+      code: "MODEL_REQUEST_INVALID", message: "请求错误已返回原执行模型检查处理，保留当前任务与阶段。",
+    }, runId);
+    this.scheduler.enqueue(key, current.project_id);
+  }
+
   stageExecuteContinuation(key: string) {
     const w = this.get(key);
     const run = w.run_id ? this.store.get<Run>("run", w.run_id) : undefined;
@@ -1774,6 +1804,15 @@ export class Engine {
       deliverySubmit ? { deliverySubmit: true } : undefined,
     );
     recordExecutionTestReport(this.store, w, this.store.must<Run>("run", runId), normalized.payload);
+    const commitRecovery = this.store.get<{ requires_user?: boolean; instructions?: string }>("planner_integration_repair", key);
+    if (this.store.must<Run>("run", runId).purpose === "planner_commit" && commitRecovery?.requires_user &&
+        normalized.intent !== "need_user") {
+      return this.routeExecutionIntent(key, runId, normalizeDeliveredRound({ status: "need_user",
+        summary: "提交问题经模型处理后仍未解决，需要你的协助",
+        user_interaction: { kind: "question", title: "提交合并需要协助",
+          message: (normalized.summary || commitRecovery.instructions || "请检查提交现场并提供处理意见").slice(0, 3900),
+          question: "请说明处理意见，或完成所需操作后确认继续", allow_free_text: true } }));
+    }
     if (normalized.intent !== "completed")
       return this.routeExecutionIntent(key, runId, normalized);
 
@@ -2153,13 +2192,7 @@ export class Engine {
       if (this.get(key).run_id !== runId || this.store.get("run_stop", runId)) return;
       const repairInstructions = outcome.repairInstructions;
       if (repairInstructions && this.get(key).state === "COMMIT_PARTIAL") {
-        this.store.transaction(() => {
-          this.store.put("planner_integration_repair", key, key, { instructions: repairInstructions,
-            targets: outcome.repairTargets, source_run_id: runId });
-          // Conflict resolution stays in final Git work and uses the normal
-          // planner need_user interaction/continuation when a decision is required.
-          this.applyPolicy2Action(key, runId, { kind: "planner_commit" }, "after_human");
-        });
+        this.queueCommitRecovery(key, runId, repairInstructions, outcome.repairTargets, outcome.recoveryFailures);
         return;
       }
       if (outcome.integrations.every((item) => item.status === "success")) {
@@ -2173,11 +2206,33 @@ export class Engine {
       }, runId);
     } catch (error) {
       const current = this.get(key);
-      if (current.run_id === runId && ["COMMITTING", "INTEGRATING", "COMMIT_PARTIAL"].includes(current.state))
-        this.transition(key, [current.state], "COMMIT_PARTIAL", "planner_commit", {
-          blocker: { code: "INTEGRATE_FAILED", message: String(error) },
-        });
+      if (current.run_id === runId && !this.store.get("run_stop", runId) &&
+          ["COMMITTING", "INTEGRATING", "COMMIT_PARTIAL"].includes(current.state)) {
+        const code = error instanceof FlowError ? error.code : "INTEGRATE_FAILED";
+        const message = redact(error instanceof Error ? error.message : String(error));
+        this.queueCommitRecovery(key, runId,
+          "提交集成遇到问题：" + code + "：" + message +
+          "。沿用登记工作区、原提交和本地提交阶段检查处理。保留双方历史、未提交文件与暂存状态；工作区占用、权限或绑定问题不能强行绕过。" +
+          "能安全修复就处理后返回实际提交号；不能完成时返回 need_user 和 user_interaction，说明具体原因与用户操作步骤。",
+          undefined, [{ repo_id: "integration", code, message }]);
+      }
     }
+  }
+
+  private queueCommitRecovery(key: string, runId: string, instructions: string,
+    targets?: Array<{ repo_id: string; source_commit: string; candidate_commit: string }>,
+    failures?: Array<{ repo_id: string; code: string; message: string }>) {
+    const current = this.get(key);
+    if (current.run_id !== runId || this.store.get("run_stop", runId)) return;
+    this.store.transaction(() => {
+      const previous = this.store.get<{ failure_signature?: string; targets?: typeof targets }>("planner_integration_repair", key);
+      const signature = failures?.length ? objectHash(failures.map(({ repo_id, code }) => ({ repo_id, code }))) : undefined;
+      const requiresUser = !!signature && signature === previous?.failure_signature;
+      this.store.put("planner_integration_repair", key, key, { source_run_id: runId,
+        targets: targets?.length ? targets : previous?.targets, failure_signature: signature, requires_user: requiresUser,
+        instructions: instructions + (requiresUser ? "\n同类问题经处理仍未解决。本轮必须向用户提问或请求操作，返回 need_user 和具体 user_interaction，不再重复同一失败操作或报告完成。" : "") });
+      this.applyPolicy2Action(key, runId, { kind: "planner_commit" }, "after_human");
+    });
   }
 
   /**
@@ -3292,6 +3347,13 @@ export class Engine {
                 ? (context?.roots[repo.id] ?? repo.path)
                 : join(this.config.workspace_root, w.project_id, w.id, repo.id),
             );
+        const commitPurpose = this.store.get<{ purpose?: string }>("pending_dispatch_purpose", w.id)?.purpose ?? w.stage;
+        if (commitPurpose === "planner_commit" && this.store.get("planner_integration_repair", w.id)) {
+          for (const ws of known) {
+            const source = ws.source_root ?? this.project(w.project_id).repositories.find(repo => repo.id === ws.repo_id)?.path;
+            if (source && !roots.includes(source)) roots.push(source);
+          }
+        }
         const leases = this.scheduler.acquire(w.id, runId, [
           slot,
           ...roots.map((root) => "write:" + root.toLowerCase()),
@@ -3516,6 +3578,8 @@ export class Engine {
         else this.store.put("run", runId, key, run);
 
         this.bindAccountRecoveryRun(run, pendingRetry);
+        if (pendingRetry?.input_feedback)
+          this.store.put("model_input_feedback", run.id, key, { message: pendingRetry.input_feedback });
 
         if (!review && dispatchContext.guidance_mode !== "human_acceptance") {
           const assignment = this.store.get<QualityRepairAssignment>(
@@ -3695,6 +3759,12 @@ export class Engine {
         this.store.put("run_stop", runId, key, interruption);
         this.store.put("interruption", key, key, interruption);
         this.transition(key, [w.state], "STOPPED", "stopped", { blocker: undefined });
+      } else if (ownsRun && this.store.get<Run>("run", runId)?.purpose === "planner_commit" &&
+          ["EXECUTING", "VERIFYING"].includes(this.get(key).state) && !readExecutionCompletion(this.store, runId)) {
+        this.routeExecutionIntent(key, runId, normalizeDeliveredRound({ status: "need_user",
+          summary: "提交模型当前无法继续，需要你的协助",
+          user_interaction: { kind: "action_required", title: "恢复提交处理",
+            message: redact(String(e)).slice(0, 3900), action_label: "已处理，继续提交" } }));
       } else if (ownsRun && e instanceof FlowError && e.code.startsWith("AGY_ACCOUNT_")) {
         this.block(key, e);
       } else if (ownsRun && !review) {
@@ -3722,7 +3792,9 @@ export class Engine {
           key,
         ) ?? { count: 0, last_at: 0 };
 
-        if (isTransientNetwork && retryState.count < 10) {
+        if (errorCode === "MODEL_REQUEST_INVALID" && !this.store.get("run_stop", runId)) {
+          this.returnInputFailureToModel(key, runId, normalized as FlowError);
+        } else if (isTransientNetwork && retryState.count < 10) {
           this.stageExecuteContinuation(key);
           retryState.count += 1;
           retryState.last_at = Date.now();
@@ -4534,7 +4606,12 @@ export class Engine {
     if (usesPolicyV2(w)) {
       const handoff = this.store.get<{ run_id: string; summary?: string; repositories?: Array<{ repo_id: string; commit: string }> }>("planner_commit_handoff", key) ??
         (w.run_id ? readExecutionCompletion(this.store, w.run_id) : undefined);
-      requireCondition(handoff && handoff.run_id === w.run_id, "COMMIT_CONTEXT_MISSING", "缺少原规划提交上下文；保留现场");
+      if (!handoff || handoff.run_id !== w.run_id) {
+        if (w.run_id) this.queueCommitRecovery(key, w.run_id,
+          "缺少原规划提交上下文。请核对登记工作区的实际 Git 历史及任务修改，找回真实候选提交；不能猜测提交号或提交无关内容。无法确定时返回 need_user 和 user_interaction 请用户协助。",
+          undefined, [{ repo_id: "integration", code: "COMMIT_CONTEXT_MISSING", message: "缺少原规划提交上下文" }]);
+        return this.get(key);
+      }
       await this.completePlannerCommit(key, handoff.run_id, handoff);
       return this.get(key);
     }
@@ -4660,6 +4737,9 @@ export class Engine {
     const run = this.store.get<Run>("run", runId);
     const conversationId = run?.conversation_id;
     const plannerRole = run?.routing_role === "planner" || run?.purpose === "planner_takeover" || run?.purpose === "planner_commit";
+    if (["need_planner", "unclear"].includes(normalized.intent) && run?.purpose === "planner_commit" && usesPolicyV2(this.get(key)))
+      return this.routeExecutionIntent(key, runId, normalizeDeliveredRound({ ...normalized.payload,
+        status: "need_user", summary: normalized.summary ?? "提交处理需要你的决定", user_interaction: normalized.user_interaction }));
     if (normalized.intent === "need_planner" && usesPolicyV2(this.get(key)) &&
         (run?.purpose === "executor_test" || run?.purpose === "planner_commit")) {
       const phase = run.dispatch_context?.review_phase ?? ensureQualityFlow(this.store, key).phase;
@@ -4906,6 +4986,11 @@ export class Engine {
     }
     this.restoreDispatchContext(key, waiting.run_id);
     const sourceRun = waiting.run_id ? this.store.get<Run>("run", waiting.run_id) : undefined;
+    if (userAnswer && sourceRun?.purpose === "planner_commit") {
+      const recovery = this.store.get<Record<string, unknown>>("planner_integration_repair", key);
+      if (recovery && (recovery.requires_user || recovery.failure_signature)) this.store.put("planner_integration_repair", key, key,
+        { ...recovery, requires_user: false, failure_signature: undefined });
+    }
     const next = this.transition(key, [w.state], "QUEUED", sourceRun?.stage ?? "execute", {
       feedback,
       blocker: undefined,

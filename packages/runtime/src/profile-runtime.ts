@@ -7,6 +7,7 @@ import { homedir } from "node:os";
 import { z } from "zod";
 import type { Engine } from "../../core/src/engine.js";
 import { profileForRun, bindProfile, invocationFingerprintFromProfile, permissionCategoryForPurpose } from "../../core/src/run-profile.js";
+import { imagePathsInArguments, localImageProblem } from "./image-input.js";
 import { beginRunConversation, retainRunConversation, boundConversationContinuation, continuationSessionToResume } from "../../core/src/conversation-lineage.js";
 export { sessionFamily, conversationLineageKey } from "../../core/src/conversation-lineage.js";
 import {
@@ -869,6 +870,12 @@ export class ProfileRuntime {
       this.engine, w, profile,
       followup ? new Set(messages.flatMap(message => message.attachment_ids ?? [])) : undefined,
     );
+    const imageProblems: string[] = [];
+    inputFiles.attachments = inputFiles.attachments.filter(file => {
+      const problem = file.read_mode === "image" ? localImageProblem(file.absolute_path, file.mime) : undefined;
+      if (problem) imageProblems.push(problem);
+      return !problem;
+    });
     // Material generation is deliberately lazy: a follow-up must not read or
     // regenerate the plan, progress, historical feedback or recovery handoff.
     if (!followup) {
@@ -876,9 +883,11 @@ export class ProfileRuntime {
       atomicWrite(handoff, JSON.stringify(withHandoffAttachments(initialMaterials, inputFiles.attachments), null, 2));
     }
     atomicWrite(schemaPath, JSON.stringify(schema));
-    const prompt = followup
+    const basePrompt = followup
       ? followupText(this.engine.store, run, messages)
       : invokePrompt(purpose, handoff, schemaPath);
+    const inputFeedback = this.engine.store.get<{ message: string }>("model_input_feedback", run.id)?.message;
+    const prompt = [basePrompt, inputFeedback, ...imageProblems].filter(Boolean).join("\n\n");
     const inputReceipt: SessionInputReceipt = {
       run_id: run.id, conversation_id: previous?.id, kind: followup ? "followup" : "stage_start",
       stage_key: inputStageKey(run), message_ids: messages.map(message => message.message_id), state: "prepared",
@@ -894,7 +903,14 @@ export class ProfileRuntime {
       epoch: w.version,
       purpose,
       workspaceRoots: Object.fromEntries(
-        workspaces.map((ws) => [ws.repo_id, ws.root]),
+        workspaces.flatMap((ws) => {
+          const roots = [[ws.repo_id, ws.root]];
+          if (purpose === "planner_commit" && this.engine.store.get("planner_integration_repair", w.id)) {
+            const source = ws.source_root ?? this.engine.project(w.project_id).repositories.find(repo => repo.id === ws.repo_id)?.path;
+            if (source && source !== ws.root) roots.push(["integration-source:" + ws.repo_id, source]);
+          }
+          return roots;
+        }),
       ),
       allowedPaths: [
         ...(w.plan_revision
@@ -1083,6 +1099,7 @@ export class ProfileRuntime {
       failure: string | undefined,
       stderrTail = "";
     let permissionFailure: FlowError | undefined;
+    let lastImagePaths: string[] = [];
     let agyResult: Record<string, any> | undefined;
     const retainConversation = (session?: string) => {
       if (!session) return;
@@ -1172,7 +1189,11 @@ export class ProfileRuntime {
           inputReceipt.conversation_id = conversation;
           this.engine.store.put("session_input", run.id, w.id, inputReceipt);
         }
-        if (profile.adapterId === "agy") accountTurn.accept(v);
+        if (profile.adapterId === "agy") {
+          accountTurn.accept(v);
+          if (v.event === "step_update" && v.step_update?.step_type === "tool" && v.step_update?.state === "DONE")
+            lastImagePaths = imagePathsInArguments(v.step_update?.tool_info?.parameters);
+        }
         if (accountBinding) {
           this.accountBridge?.observeNativeEvent(run.id, v);
           const eventType = v.event ?? v.type;
@@ -1413,6 +1434,9 @@ export class ProfileRuntime {
           executable: invocation.executable,
           executable_ref: profile.executableRef,
           model: profile.modelId,
+          ...(classified.code === "MODEL_REQUEST_INVALID" ? {
+            input_problems: lastImagePaths.map(path => localImageProblem(path)).filter(Boolean),
+          } : {}),
         }),
       );
     }

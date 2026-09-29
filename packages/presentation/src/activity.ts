@@ -306,6 +306,7 @@ export function readableLogs(events: any[], workflow: string, formalGuidance: Ar
       OperationCompleted: "授权操作已结束",
       ResourceWaiting: "等待共享资源",
       ModelRetryScheduled: "等待模型额度恢复",
+      ModelInputRecoveryScheduled: "输入问题已返回执行模型",
       ModelRetryStarted: "额度恢复后继续执行",
       ImplementationReconciled: "已有实现已核对",
     };
@@ -651,11 +652,15 @@ export function readableLogs(events: any[], workflow: string, formalGuidance: Ar
       text = failureSummary("ENVIRONMENT_FAILED", p.message);
     }
     if (e.type === "PlannerIntegrationFailed") {
-      title = "提交合并失败";
+      title = p.recovery_scheduled ? "提交问题已交模型处理" : "提交合并失败";
       text = [
         p.repo_id ? `仓库：${p.repo_id}` : "",
         p.message || "合并未完成，失败原因未记录。",
       ].filter(Boolean).join("\n");
+    }
+    if (e.type === "ModelInputRecoveryScheduled") {
+      title = "输入问题已返回执行模型";
+      text = p.message ?? "执行模型正在检查原始请求错误。";
     }
     if (["BuildStarted", "BuildReady", "BuildFailed"].includes(e.type)) {
       title =
@@ -700,6 +705,7 @@ export function readableLogs(events: any[], workflow: string, formalGuidance: Ar
         "TaskCompleted",
         "EnvironmentFailed",
         "PlannerIntegrationFailed",
+        "ModelInputRecoveryScheduled",
         "BuildStarted",
         "BuildReady",
         "BuildFailed",
@@ -728,7 +734,7 @@ export function readableLogs(events: any[], workflow: string, formalGuidance: Ar
       kind: "event",
       status:
         e.type === "EnvironmentFailed" ||
-        e.type === "PlannerIntegrationFailed" ||
+        (e.type === "PlannerIntegrationFailed" && !p.recovery_scheduled) ||
         e.type === "BuildFailed" ||
         (e.type === "StateChanged" && ["BLOCKED", "COMMIT_PARTIAL"].includes(p.to))
           ? "error"

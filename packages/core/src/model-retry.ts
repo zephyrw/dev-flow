@@ -9,6 +9,7 @@ export type AccountRecoveryContinuationData = AccountRecoveryContinuation;
 export interface PendingModelRetry {
   retry_run_id: string;
   logical_round_id: string;
+  input_feedback?: string;
   account_recovery?: AccountRecoveryRetry["account_recovery"];
 }
 

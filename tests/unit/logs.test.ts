@@ -3,6 +3,14 @@ import { readableLogs, userFacingLogs, workflowProgress } from "../../apps/web/s
 import { toolSummary } from "../../packages/presentation/src/tool-summary.js";
 import { runtimePurposeNames } from "../../packages/presentation/src/run-observation.js";
 
+it("shows automatic integration recovery without a terminal failure badge", () => {
+  const rows = readableLogs([{ workflow_id: "w", event_seq: 1,
+    type: "PlannerIntegrationFailed", payload: { repo_id: "main", message: "EACCES", recovery_scheduled: true } }], "w");
+  expect(rows[0]?.title).toBe("提交问题已交模型处理");
+  expect(rows[0]?.status).toBeUndefined();
+  expect(rows[0]?.text).toContain("EACCES");
+});
+
 it("shows the repository and redacted integration failure while keeping partial delivery recoverable", () => {
   const events = [
     { workflow_id: "w", event_seq: 1, type: "PlannerIntegrationFailed",

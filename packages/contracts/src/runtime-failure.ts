@@ -7,6 +7,11 @@ export interface RuntimeFailureResolution {
 }
 
 const resolutions: Record<string, Omit<RuntimeFailureResolution, "code">> = {
+  MODEL_REQUEST_INVALID: {
+    title: "模型请求参数被拒绝",
+    message: "模型服务拒绝了本轮请求参数，原始错误已保留。",
+    steps: ["将原始错误和相关输入返回执行模型检查；图片损坏时检查本地文件的保存格式。", "无法自行处理时向用户说明具体问题并请求协助。"],
+  },
   SESSION_IDENTITY_UNRESOLVED: {
     title: "执行账号身份无法确认",
     message: "模型尚未启动，当前工具的账号身份未能解析。",
@@ -257,6 +262,8 @@ export function runtimeFailureResolution(
       )
     )
       cause = "MODEL_AUTH";
+    else if (/\bINVALID_ARGUMENT\s*\(code\s+400\)|\bRequest contains an invalid argument\b/i.test(detail))
+      cause = "MODEL_REQUEST_INVALID";
     else if (
       /\b429\b|\bquota\b|rate.?limit|额度(?:不足|用完)|配额(?:不足|耗尽)/i.test(
         detail,

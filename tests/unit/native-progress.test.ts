@@ -70,6 +70,15 @@ function fixture() {
     events: [] as any[],
   };
 }
+it("keeps native completion receipts despite observed changes and completed Git delivery", () => {
+  const detail = fixture();
+  detail.workflow.state = "COMPLETED";
+  Object.assign(detail.tasks[0]!, { completed: true, status: "completed", development_status: "completed", validation_status: "not_certified" });
+  const result = nativeProgress(detail, [{ repo_id: "main", files: [{ path: "src/a.ts", status: "M" }] }]);
+  expect(result.tasks[0]).toEqual(detail.tasks[0]);
+  expect(result.task_counts.developed).toBe(1);
+  expect(result.tasks[1].completed).toBe(false);
+});
 it("projects existing file changes onto only their repository and never grants completion or evidence", () => {
   const d = fixture(),
     original = structuredClone(d);
