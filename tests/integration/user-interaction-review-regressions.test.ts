@@ -51,6 +51,14 @@ describe("人工交互复查回归", () => {
       status: "completed",
       conversation_id: "native-source",
     });
+    store.put(CONVERSATION_ENTITY.node, "root-current", workflow.id, {
+      id: "root-current", root_id: "root-current", workflow_id: workflow.id,
+      native_session_id: "native-source", current_attempt_id: "root-current-attempt",
+    });
+    store.put(CONVERSATION_ENTITY.attempt, "root-current-attempt", workflow.id, {
+      id: "root-current-attempt", conversation_id: "root-current", root_id: "root-current",
+      run_id: "run-source", generation: 3,
+    });
     const record = service.createInteraction({
       workflowId: workflow.id,
       sourceRunId: "run-source",
@@ -129,6 +137,25 @@ describe("人工交互复查回归", () => {
     expect(continuation?.answer).not.toContain("回答后检查页面状态");
     expect(continuation?.answer).toContain("本次用户回复，优先于上述历史请求中的冲突建议");
     expect(s.service.getCurrentInteraction(s.workflow.id)).toBeUndefined();
+  });
+
+  it("同一原生会话跨阶段复用后，当前弹窗的答复仍续接当前运行", async () => {
+    const s = setup();
+    s.store.put(CONVERSATION_ENTITY.node, "old-stage", s.workflow.id, {
+      id: "old-stage", root_id: "old-stage", workflow_id: s.workflow.id,
+      native_session_id: "native-source", current_attempt_id: "old-attempt",
+    });
+    s.store.put(CONVERSATION_ENTITY.attempt, "old-attempt", s.workflow.id, {
+      id: "old-attempt", conversation_id: "old-stage", root_id: "old-stage", run_id: "old-run", generation: 1,
+    });
+    await s.service.respondInteraction(s.workflow.id, s.record.id,
+      { ...s.response, answer: "保留全部历史样式指导，在原会话继续处理图片格式" }, s.engine);
+    expect(s.engine.get(s.workflow.id)).toMatchObject({ state: "QUEUED", stage: "executor_test" });
+    expect(s.store.get<any>("run_continuation", s.workflow.id)).toMatchObject({
+      source_run_id: "run-source", conversation_id: "native-source",
+      answer: expect.stringContaining("保留全部历史样式指导"),
+    });
+    expect(s.store.list<any>("feedback_message", s.workflow.id).at(-1)?.text).toContain("保留全部历史样式指导");
   });
 
   it("outbox 写入失败回滚决定、回执、continuation 与工作流状态", async () => {

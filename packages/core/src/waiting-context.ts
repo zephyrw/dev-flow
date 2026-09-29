@@ -345,11 +345,18 @@ export function currentContinuation(
         // Native Run/session IDs and internal tree node IDs are both persisted.
         const matches = store.list<ConversationNode>(CONVERSATION_ENTITY.node, workflowId)
           .filter((item) => item.id === conversationId || item.native_session_id === conversationId || item.native_agent_id === conversationId);
-        const node = matches.length === 1 ? matches[0] : undefined;
+        // A native session can back multiple stage nodes. Attribute it using
+        // the current attempt's Run, not global uniqueness of the native ID.
+        const owned = matches.filter(item => {
+          const attempt = item.current_attempt_id
+            ? store.get<ConversationAttempt>(CONVERSATION_ENTITY.attempt, item.current_attempt_id) : undefined;
+          return attempt?.run_id && chain.has(attempt.run_id);
+        });
+        const node = owned.length === 1 ? owned[0] : undefined;
         if (currentRun?.conversation_id) {
           const currentNodes = store.list<ConversationNode>(CONVERSATION_ENTITY.node, workflowId)
             .filter((item) => item.id === currentRun.conversation_id || item.native_session_id === currentRun.conversation_id);
-          if (currentNodes.length !== 1 || currentNodes[0]?.id !== node?.id) return;
+          if (!node || !currentNodes.some(item => item.id === node.id)) return;
         }
         if (expected.root_id && node?.id !== expected.root_id) return;
         const attempt = node?.current_attempt_id

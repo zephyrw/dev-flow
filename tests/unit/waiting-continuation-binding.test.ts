@@ -15,6 +15,21 @@ function setup() {
 }
 
 describe("continuation admission before Run creation", () => {
+  it("resolves shared native session IDs by the current Run while rejecting an old stage node", () => {
+    const { store, run, candidate } = setup();
+    try {
+      store.put("run", run.id, "wf", { ...run, purpose: "functional_fix", conversation_id: "shared-native", status: "waiting" });
+      saveWaitingContext(store, "wf", { purpose: "execute", role: "executor", run_id: run.id, intent: "need_user" });
+      for (const [node, owner] of [["old-stage", "old-run"], ["current-stage", run.id]]) {
+        store.put("conversation_node", node!, "wf", { id: node, workflow_id: "wf", native_session_id: "shared-native", current_attempt_id: node + "-attempt" });
+        store.put("conversation_attempt", node + "-attempt", "wf", { id: node + "-attempt", conversation_id: node, run_id: owner, generation: 2 });
+      }
+      const answer = { ...candidate, conversation_id: "shared-native" };
+      expect(currentContinuation(store, "wf", answer)).toEqual(answer);
+      expect(currentContinuation(store, "wf", { ...answer, conversation_id: "old-stage" })).toBeUndefined();
+      expect(currentContinuation(store, "wf", answer, { generation: 1 })).toBeUndefined();
+    } finally { store.close(); }
+  });
   it.each(["need_user", "unclear"] as const)("preserves business %s despite successful CLI exit", (intent) => {
     const { store, candidate } = setup();
     try {
