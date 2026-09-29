@@ -792,3 +792,35 @@ describe("SA-I13 native failure, quota again, missing reset, live leftover", () 
     ).rejects.toBeInstanceOf(FlowError);
   });
 });
+
+
+describe("stored recovery run projections", () => {
+  it.each(["executor_test", "functional_fix"] as const)("repeated recovery keeps the stopped generation and purpose %s until launch", async (purpose) => {
+    const s = openSession(purpose, purpose === "functional_fix" ? "acceptance_guidance" : purpose);
+    try {
+      const recovery = new ConversationRecovery({ store: s.store, conversations: s.conversations,
+        controls: s.controls, runPort: storeRecoveryRunPort(s.store), clock: new FakeClock() });
+      const tree = s.conversations.getTree("wf1");
+      const root = tree.active_root_id!;
+      const request = { request_id: "api-resume", action: "resume" as const,
+        root_id: root, expected_generation: tree.attempts.at(-1)!.generation };
+      const first = await recovery.arrangeRecovery("wf1", request, { reason: "user_resume" });
+      const after = s.conversations.getTree("wf1", root);
+      expect(after.attempts).toEqual(tree.attempts);
+      // The API prepares a recovery before resumeApproved performs its own lookup.
+      const repeated = await recovery.arrangeRecovery("wf1", { ...request, request_id: "engine-resume",
+        expected_generation: after.attempts.at(-1)!.generation }, { reason: "user_resume" });
+      expect(repeated.recovery_id).toBe(first.recovery_id);
+      const queued = s.store.must<Run>("run", first.manifest.target_run_id);
+      expect(queued).toMatchObject({ status: "queued", purpose, conversation_id: root });
+      expect(s.store.list<Run>("run", "wf1")).toHaveLength(2);
+      // Once actually launched, the projected new attempt must still block duplicates.
+      s.store.put("run", queued.id, "wf1", { ...queued, status: "running" });
+      const active = s.conversations.getTree("wf1", root);
+      expect(active.attempts.at(-1)).toMatchObject({ run_id: queued.id, status: "running" });
+      await expect(recovery.arrangeRecovery("wf1", { ...request, request_id: "duplicate-after-launch",
+        expected_generation: active.attempts.at(-1)!.generation }, { reason: "user_resume" }))
+        .rejects.toMatchObject({ code: CONVERSATION_ERROR.STOP_UNCONFIRMED });
+    } finally { s.store.close(); }
+  });
+});

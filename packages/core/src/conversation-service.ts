@@ -1248,6 +1248,9 @@ function mergeRunProjections(
   attempts: ConversationAttempt[],
 ) {
   for (const run of runs.slice().sort((a, b) => a.started_at.localeCompare(b.started_at))) {
+    // A prepared recovery has no process yet. Do not project it as an unknown
+    // live attempt or advance the stopped generation before dispatch.
+    if (run.status === "queued") continue;
     if (run.workflow_id !== workflow.id || attempts.some((attempt) => attempt.run_id === run.id &&
       nodes.some((node) => node.id === attempt.conversation_id && node.id === node.root_id))) continue;
     // Historical attempts without a native identity cannot be attributed to a reusable session.
