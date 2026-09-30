@@ -7,6 +7,19 @@ import { observeAgy } from "../../packages/adapters/agy/src/session.js";
 import type { ManagedProcess, ProcessStopReason } from "../../packages/process/src/manager.js";
 
 const oldError = "Individual quota reached. Resets in 2h49m37s.";
+
+it("current subscription failure overrides the retained quota footer in the legacy runtime", async () => {
+  const stderr = "error: the connection to the agent was interrupted before the response finished: subscriber fell behind updates, stalled for 10s";
+  await expect(observe([step(1758, "user_input"), step(1759, "system_message")], "", oldError, [], stderr))
+    .rejects.toMatchObject({ code: "MODEL_CONNECTION_FAILED", details: { exit_code: 1, diagnostic: stderr, diagnostic_source: "stderr" } });
+});
+
+it("current provider INTERNAL 500 remains a transport failure after a later response and finish", async () => {
+  await expect(observe([step(1912, "user_input"), step(1970, "error_message"),
+    step(1994, "agent_response"), step(1995, "finish")], "本轮输出",
+    "API error (attempt 1): INTERNAL (code 500): Internal error encountered."))
+    .rejects.toMatchObject({ code: "MODEL_CONNECTION_FAILED" });
+});
 const step = (index: number, type: string, state = "DONE", extra = {}) => ({
   event: "step_update",
   step_update: {

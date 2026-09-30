@@ -19,7 +19,7 @@ export interface VerifiedUsageAdapter {
 
 export function createVerifiedUsageAdapter(
   executableFingerprint: string,
-  cliVersion: string = "1.2.7",
+  cliVersion: string = "unknown",
 ): VerifiedUsageAdapter {
   return {
     executable_fingerprint: executableFingerprint,

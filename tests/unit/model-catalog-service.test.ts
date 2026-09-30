@@ -47,6 +47,7 @@ let closeEnv: (() => Promise<void>) | undefined;
 
 afterEach(async () => {
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   if (closeEnv) await closeEnv();
   closeEnv = undefined;
 });
@@ -87,6 +88,87 @@ function openCatalog(control: Record<string, unknown> = {}, executable = FIXTURE
 }
 
 describe("model catalog operations", { timeout: 30000 }, () => {
+  it("does not make an expired Codex native cache fresh after a failed live query", async () => {
+    const env = openCatalog({
+      adapterId: "codex",
+      catalogStdout: readFileSync(join(CATALOG_ROOT, "codex", "models-failure.json"), "utf8"),
+    });
+    const home = join(env.root, "codex-home");
+    mkdirSync(home, { recursive: true });
+    vi.stubEnv("CODEX_HOME", home);
+    const cache = JSON.parse(readFileSync(join(CATALOG_ROOT, "codex", "models-cache.json"), "utf8"));
+    cache.models[0].base_instructions = "Handle DPAPI or permission denied errors without losing user data.";
+    writeFileSync(join(home, "models_cache.json"), JSON.stringify({ ...cache, fetched_at: new Date().toISOString() }));
+    const scope = { adapterId: "codex" as const, executablePath: FIXTURE, nativeConfigScope: "default" };
+    const before = await env.catalog.discover(scope);
+    expect(before.status).toBe("fresh");
+    writeFileSync(join(home, "models_cache.json"), JSON.stringify({ ...cache, fetched_at: "2000-01-01T00:00:00Z" }));
+    const after = await env.catalog.discover(scope);
+    expect(after.status).toBe("failed");
+    expect(after.entries).toEqual(before.entries);
+    expect(after.discoveredAt).toBe(before.discoveredAt);
+    expect(after.errorCode).toBeDefined();
+  });
+
+  it("revalidates an expired directory once and publishes the newly discovered models", async () => {
+    const env = openCatalog();
+    const initial = env.catalog.discoverTools({ request_id: randomUUID(), adapter_ids: ["agy"] });
+    await waitDone(env.catalog, initial.operation.id);
+    const before = env.catalog.getModels("agy");
+    env.store.put("model_catalog", "catalog:" + before.scopeHash, "agy", {
+      ...before,
+      staleAfter: "2000-01-01T00:00:00.000Z",
+    });
+    writeControl(env.logDir, {
+      catalogDelayMs: 100,
+      catalogStdout: readFileSync(join(CATALOG_ROOT, "agy", "models-success.txt"), "utf8")
+        .replaceAll("gemini-3.7-flash-high", "gemini-3.8-flash-high"),
+    });
+    const first = env.catalog.getModels("agy");
+    const second = env.catalog.getModels("agy");
+    expect(first.entries).toEqual(before.entries);
+    expect(["stale", "refreshing"]).toContain(second.status);
+    await env.catalog.close();
+    const after = env.catalog.getModels("agy");
+    expect(after.status).toBe("fresh");
+    expect(after.entries.some((entry) => entry.nativeId === "gemini-3.8-flash-high")).toBe(true);
+    const calls = readFileSync(join(env.logDir, "invocations.jsonl"), "utf8")
+      .trim().split(/\r?\n/).map((line) => JSON.parse(line));
+    expect(calls.filter((call) => call.kind === "catalog")).toHaveLength(2);
+  });
+
+  it("keeps the same catalog identity and manual selections across tool updates", async () => {
+    const env = openCatalog({ versionStdout: "agy 1.2.7" });
+    const scope = {
+      adapterId: "agy" as const, executablePath: FIXTURE, nativeConfigScope: "default",
+      accountFingerprint: "test-account", providerFingerprint: "test-endpoint",
+    };
+    const before = await env.catalog.discover(scope);
+    env.catalog.ensureManualCandidate(scope, "custom-model");
+    writeControl(env.logDir, { versionStdout: "agy 99.0.0" });
+    const after = await env.catalog.discover(scope);
+    expect(after.scopeHash).toBe(before.scopeHash);
+    expect(after.entries.some((entry) => entry.nativeId === "custom-model")).toBe(true);
+    expect(env.store.list("model_catalog", "agy")).toHaveLength(1);
+    expect(after.cliVersion).toBe("agy 99.0.0");
+  });
+
+  it("discovers models even when the tool cannot report its version", async () => {
+    const env = openCatalog({ versionStdout: "unsupported version command", versionExit: 1 });
+    const operation = env.catalog.discoverTools({ request_id: randomUUID(), adapter_ids: ["agy"] });
+    expect((await waitDone(env.catalog, operation.operation.id)).status).toBe("committed");
+    expect(env.catalog.getModels("agy").entries.length).toBeGreaterThan(0);
+    expect(env.catalog.listTools().find((tool) => tool.adapterId === "agy")?.probeStatus).toBe("detected");
+    expect(env.catalog.getModels("agy").cliVersion).toBe("unknown");
+  });
+
+  it("uses a successful help response despite optional environment warnings", async () => {
+    const env = openCatalog({ helpStderr: "WARNING: could not create PATH aliases: Access is denied" });
+    const operation = env.catalog.discoverTools({ request_id: randomUUID(), adapter_ids: ["agy"] });
+    expect((await waitDone(env.catalog, operation.operation.id)).status).toBe("committed");
+    expect(env.catalog.getModels("agy").status).toBe("fresh");
+  });
+
   it("手工 ID 登记 manual candidate，非法 ID 拒绝", () => {
     const env = openCatalog({ adapterId: "agy" });
     const scope = {

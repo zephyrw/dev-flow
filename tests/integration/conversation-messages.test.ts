@@ -5,6 +5,8 @@ import { readFileSync } from "node:fs";
 import { setup } from "../helpers.js";
 import {
   CONVERSATION_ENTITY,
+  AGY_IMAGE_FILE_INPUT,
+  ConversationMessageRequestSchema,
   CONVERSATION_ERROR,
   DEFAULT_ATTACHMENT_PROMPT,
   SubagentCapabilitiesSchema,
@@ -192,6 +194,31 @@ function fixture(states: Record<string, State> = { wf1: "EXECUTING" }) {
   opened.push({ store: s.store });
   return { s, files, conversations, messages, control, roots };
 }
+
+it("accepts AGY PNG after service restart without warming the capability cache", async () => {
+  const f = fixture();
+  const run = f.s.store.must<Run>("run", "run-wf1");
+  run.adapter = "agy";
+  run.profile = { ...PROFILE, adapterId: "agy" };
+  f.s.store.put("run", run.id, "wf1", run);
+  const fresh = new ConversationService(f.s.store);
+  expect(fresh.getTree("wf1").capabilities.file_input).toEqual(AGY_IMAGE_FILE_INPUT);
+  expect(fresh.getTree("wf1").capabilities.discovery).toBe("unknown");
+  const png = await upload(f.files, "wf1", "agy-png", "截图.png", "image/png", PNG_1X1);
+  const messages = new ConversationMessageService({ store: f.s.store, files: f.files,
+    feedback: new FeedbackService(f.s.store), asides: new AsideSessionService(f.s.store),
+    issues: new FunctionalIssueService(f.s.store), conversations: fresh,
+    storageRoot: f.s.config.storage_root, control: f.control });
+  const request = ConversationMessageRequestSchema.parse(payload(f.roots, "wf1", { attachment_ids: [png.id] }));
+  await expect(messages.submit("wf1", request)).resolves.toMatchObject({ accepted: true });
+  await expect(messages.submit("wf1", { ...request, request_id: "stale", expected_generation: 999 }))
+    .rejects.toMatchObject({ code: CONVERSATION_MESSAGE_ERROR.VERSION_CONFLICT });
+  run.adapter = "codex";
+  f.s.store.put("run", run.id, "wf1", run);
+  expect(fresh.getTree("wf1").capabilities.file_input.image).toBe(false);
+  await expect(messages.submit("wf1", { ...request, request_id: "conflict" }))
+    .rejects.toMatchObject({ code: CONVERSATION_MESSAGE_ERROR.PROFILE_NOT_FOUND });
+});
 
 async function startApp(states?: Record<string, State>) {
   const f = fixture(states);

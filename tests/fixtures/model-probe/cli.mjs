@@ -43,10 +43,11 @@ if (kind === "catalog" && Number(control.catalogDelayMs ?? 0) > 0) {
 const adapterId = control.adapterId ?? "codex";
 if (kind === "version") {
   console.log(control.versionStdout ?? versionText(adapterId));
-  process.exit(0);
+  process.exit(control.versionExit ?? 0);
 }
 if (kind === "help") {
   console.log(control.helpStdout ?? helpText(adapterId));
+  process.stderr.write(control.helpStderr ?? "");
   process.exit(0);
 }
 if (kind === "catalog") {

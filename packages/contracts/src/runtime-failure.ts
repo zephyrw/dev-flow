@@ -207,6 +207,11 @@ const resolutions: Record<string, Omit<RuntimeFailureResolution, "code">> = {
   },
 };
 
+/** Only pass current process/provider diagnostics, never model or tool output. */
+export function isRetryableModelTransportFailure(detail: string): boolean {
+  return /bad record mac|local error:\s*tls:|streamGenerateContent.*(?:request failed|bad record mac|wsasend:.*forcibly closed by the remote host)|the connection to the agent was interrupted before the response finished|subscriber fell behind updates, stalled for \d+(?:\.\d+)?s|API error \(attempt \d+\):\s*INTERNAL \(code 500\):\s*Internal error encountered\./i.test(detail);
+}
+
 /** Only classify actual runtime failures, never quoted errors in a delivery/review. */
 export function runtimeFailureResolution(
   code = "",
@@ -264,6 +269,8 @@ export function runtimeFailureResolution(
       cause = "MODEL_AUTH";
     else if (/\bINVALID_ARGUMENT\s*\(code\s+400\)|\bRequest contains an invalid argument\b/i.test(detail))
       cause = "MODEL_REQUEST_INVALID";
+    else if (isRetryableModelTransportFailure(detail))
+      cause = "MODEL_CONNECTION_FAILED";
     else if (
       /\b429\b|\bquota\b|rate.?limit|额度(?:不足|用完)|配额(?:不足|耗尽)/i.test(
         detail,

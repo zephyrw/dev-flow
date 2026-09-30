@@ -6,6 +6,8 @@ import { tmpdir } from "node:os";
 import { setup } from "../helpers.js";
 import type { ToolProfile, Workflow } from "../../packages/contracts/src/index.js";
 import { now } from "../../packages/core/src/util.js";
+import { AGY_IMAGE_FILE_INPUT } from "../../packages/contracts/src/attachment-capabilities.js";
+import { AgyNativeCliAdapter } from "../../packages/adapters/agy/src/adapter.js";
 import { ConversationFileService } from "../../packages/core/src/conversation-files.js";
 import {
   CONVERSATION_INPUT_ERROR,
@@ -93,6 +95,25 @@ function digest(content: Buffer): string {
 }
 
 describe("SA-I16 conversation input managed files", () => {
+  it("delivers uploaded no-extension PNG bytes through the AGY invocation", async () => {
+    const { s, files, workflow } = fixture();
+    const png = await upload(files, "agy-upload", "截图.png", "image/png", PNG_1X1);
+    const profile: ToolProfile = { ...PROFILE, adapterId: "agy" };
+    const resolved = resolveConversationInputAttachments({ files: [png], storageRoot: s.config.storage_root,
+      workflowId: workflow.id, profile, fileInput: AGY_IMAGE_FILE_INPUT });
+    expect(resolved.ok).toBe(true);
+    if (!resolved.ok) throw new Error(resolved.message);
+    const inv = new AgyNativeCliAdapter().buildInvocation({ workflowId: workflow.id, runId: "run1", epoch: 1,
+      stage: "execute", purpose: "implement", workspaceRoots: { main: s.root }, allowedPaths: [],
+      toolProfile: profile, prompt: "查看图片", inputAttachments: resolved.attachments }, "agy");
+    const manifest = JSON.parse(inv.args[inv.args.indexOf("-p") + 1]!.split("\n").at(-1)!);
+    expect(manifest[0].absolute_path).toMatch(/[\\/]content$/);
+    expect(readFileSync(manifest[0].absolute_path)).toEqual(PNG_1X1);
+    expect(inv.args).toContain(resolved.extraReadRoots[0]);
+    const forged = await upload(files, "agy-fake", "fake.png", "image/png", TEXT_BODY);
+    expect(resolveConversationInputAttachments({ files: [forged], storageRoot: s.config.storage_root,
+      workflowId: workflow.id, profile, fileInput: AGY_IMAGE_FILE_INPUT })).toMatchObject({ ok: false });
+  });
   it("reads ready conversation-files bytes from the managed path only", async () => {
     const { s, files, workflow } = fixture();
     const png = await upload(files, "i16-png", "shot.png", "image/png", PNG_1X1);

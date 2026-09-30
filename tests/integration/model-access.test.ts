@@ -167,6 +167,8 @@ function dumpStore(store: { db: { prepare: (sql: string) => { all: () => unknown
 
 function openAccess(control: Record<string, unknown>, verifyTimeoutMs = 4000) {
   const env = setup();
+  // Keep native-cache fallback inside the fixture, independent of the user's account.
+  vi.stubEnv("CODEX_HOME", join(env.root, "empty-codex-home"));
   const logDir = join(env.root, "probe-log");
   mkdirSync(logDir, { recursive: true });
   const probeRoot = join(env.root, "empty-probe");
@@ -1015,6 +1017,17 @@ function managedAccessFixture(
   closeEnv = async () => { await access.close(); await originalClose(); };
   return { env, access, catalog, chosen };
 }
+
+it("preserves model authorization and tool identity across diagnostic version changes", () => {
+  const { access, chosen, catalog } = managedAccessFixture();
+  const before = access.seedVerified(chosen, undefined, { ...catalog, cliVersion: "1.2.7" });
+  const after = access.seedVerified(chosen, undefined, { ...catalog, cliVersion: "99.0.0" });
+  const unknown = access.seedVerified(chosen, undefined, { ...catalog, cliVersion: undefined });
+  expect(after.key).toBe(before.key);
+  expect(after.cliFingerprint).toBe(before.cliFingerprint);
+  expect(unknown.cliFingerprint).toBe(before.cliFingerprint);
+  expect(access.assertCachedAccess(chosen, access.identityFromProfile(chosen), catalog).key).toBe(before.key);
+});
 
 it("managed AGY isolates stable accounts while epoch and credential refresh preserve the same authorization", () => {
   const { env, access, chosen, catalog } = managedAccessFixture();

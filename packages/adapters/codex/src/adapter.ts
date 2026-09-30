@@ -12,7 +12,6 @@ import type { SubagentCapabilities } from "../../../contracts/src/conversation.j
 import {
   CodexConversationDecoder,
   CodexConversationSource,
-  collectInstalledCodexCliVersion,
   codexSubagentCapabilities,
 } from "./conversation-source.js";
 
@@ -34,8 +33,7 @@ export class CodexNativeAdapter extends BaseNativeAgentAdapter {
       "/usr/local/bin",
       "/opt/homebrew/bin",
     ]);
-    const version = options?.cliVersion ?? collectInstalledCodexCliVersion();
-    this.subagents = codexSubagentCapabilities(version);
+    this.subagents = codexSubagentCapabilities(options?.cliVersion);
   }
   getVersionArgs() {
     return ["--version"];

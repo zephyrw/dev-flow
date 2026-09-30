@@ -144,7 +144,7 @@ it.each(["positive", "probe_failure"])("accepts the bound current quota exit eve
   probeFails = mode === "probe_failure";
   for (const [run, binding] of [[one, a], [two, b]] as const) {
     const fact = confirmAgyQuotaFailure(quotaText(binding), { exitCode: 3, currentTurn: true, stderr: "" });
-    expect(await bridge.observeFailure(binding, fact)).toBe(true);
+    expect(await bridge.observeFailure(binding, fact)).toBe("waiting");
     markWaiting(run);
   }
   expect(verify).not.toHaveBeenCalled();
@@ -169,7 +169,7 @@ it.each(["stop", "disable_auto", "stale_epoch"])("does not switch a confirmed qu
     accounts.repository.saveRealm({ ...realm, auth_epoch: realm.auth_epoch + 1 });
   }
   const fact = confirmAgyQuotaFailure(quotaText(binding), { exitCode: 3, currentTurn: true });
-  expect(await bridge.observeFailure(binding, fact)).toBe(false);
+  expect(await bridge.observeFailure(binding, fact)).toBe("not_applicable");
   expect(switches()).toHaveLength(0);
   expect(installs).not.toHaveBeenCalled();
 });
@@ -181,7 +181,7 @@ it("does not install credentials or stop an external CLI for a confirmed quota e
   const stopExternal = vi.spyOn(accounts.processHost, "stopProcess");
   expect(await bridge.observeFailure(binding, confirmAgyQuotaFailure(quotaText(binding), {
     exitCode: 3, currentTurn: true,
-  }))).toBe(true);
+  }))).toBe("waiting");
   markWaiting(run);
   await accounts.service.tick(Date.now());
   expect(installs).not.toHaveBeenCalled();
@@ -287,7 +287,7 @@ it.each(["positive", "probe_failure"])("does not switch for a text quota candida
   probeFails = mode === "probe_failure";
   const fact = quotaText(binding);
   expect(fact.requires_quota_verification).toBe(true);
-  expect(await bridge.observeFailure(binding, fact)).toBe(false);
+  expect(await bridge.observeFailure(binding, fact)).toBe("quota_unconfirmed");
   expect(switches()).toHaveLength(0);
   expect(installs).not.toHaveBeenCalled();
 });
@@ -295,8 +295,8 @@ it.each(["positive", "probe_failure"])("does not switch for a text quota candida
 it("shares the operation between two real text failures and a third prelaunch consumer after official zero verification", async () => {
   const one = source("text-one"); const two = source("text-two"); const three = source("prelaunch");
   const a = await started(one); const b = await started(two); exhausted = true;
-  expect(await bridge.observeFailure(a, quotaText(a))).toBe(true); markWaiting(one);
-  expect(await bridge.observeFailure(b, quotaText(b))).toBe(true); markWaiting(two);
+  expect(await bridge.observeFailure(a, quotaText(a))).toBe("waiting"); markWaiting(one);
+  expect(await bridge.observeFailure(b, quotaText(b))).toBe("waiting"); markWaiting(two);
   const wait = await rejectedIntoWait(three);
   expect(switches()).toHaveLength(1);
   expect(switches()[0]!.operation_id).toBe(wait.operation_id);
@@ -323,7 +323,7 @@ it("retains all running bindings across same-account token refresh and switches 
   expect(c.auth_epoch).toBe(a.auth_epoch);
   exhausted = true;
   for (const [run, binding] of [[one, a], [two, b], [three, c]] as const) {
-    expect(await bridge.observeFailure(binding, quotaText(binding))).toBe(true);
+    expect(await bridge.observeFailure(binding, quotaText(binding))).toBe("waiting");
     markWaiting(run);
   }
   expect(switches()).toHaveLength(1);

@@ -7,8 +7,36 @@ import {
   parseModelAccessOutput,
 } from "../../packages/adapters/agy/src/account-probe.js";
 import { parseAgyUsageOutput } from "../../packages/adapters/agy/src/quota-parser.js";
+import { evaluateAgyCapabilities } from "../../packages/adapters/agy/src/account-capabilities.js";
 
 describe("W02 AGY 发现、能力与真实输出适配测试", () => {
+  it("does not infer account capability from a known or missing tool version", () => {
+    const host = {
+      isWindows: true, hasDpapi: true, hasCredentialManager: true, hasNamedMutex: true,
+    };
+    for (const cliVersion of [undefined, "unknown", "1.2.7", "99.0.0"]) {
+      const unverified = evaluateAgyCapabilities({ ...host, cliVersion, cliSha256: "hash" });
+      expect(unverified.identity.status).toBe("unverified");
+      expect(unverified.dual_quota.status).toBe("unverified");
+      expect(unverified.exact_resume.status).toBe("unverified");
+      const verified = evaluateAgyCapabilities({
+        ...host, cliVersion, identityVerified: true, dualQuotaVerified: true,
+        exactResumeVerified: true, sessionUnavailableVerified: true,
+      });
+      expect(verified.identity.status).toBe("verified");
+      expect(verified.dual_quota.status).toBe("verified");
+      expect(verified.exact_resume.status).toBe("verified");
+      const snapshot = evaluateCapabilitySnapshot(
+        { path: "C:/bin/agy.exe", version: cliVersion },
+        { platform: "win32", dpapi_available: true, cred_manager_available: true, named_mutex_available: true },
+        { identityVerified: true },
+      );
+      expect(snapshot.supported).toBe(true);
+      expect(snapshot.capabilities.identity.status).toBe("verified");
+      expect(snapshot.capabilities.dual_quota.status).toBe("unverified");
+    }
+    expect(evaluateCapabilitySnapshot(null).supported).toBe(false);
+  });
   it("D01: resolveAgyExecutable 默认命令名通过 PATH 解析，明确无效路径报错", () => {
     // 默认命令名
     const resolved = resolveAgyExecutable("agy");

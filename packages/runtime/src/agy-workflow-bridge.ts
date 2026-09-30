@@ -478,20 +478,20 @@ export class AgyWorkflowBridge implements AccountConsumerPort {
   async observeFailure(
     binding: AgyRunBinding,
     fact: AgyFailureFact,
-  ): Promise<boolean> {
+  ): Promise<"waiting" | "quota_unconfirmed" | "not_applicable"> {
     if (
       !fact.can_switch_account ||
       fact.auth_epoch !== binding.auth_epoch ||
       fact.account_id !== binding.account_id ||
       fact.run_id !== binding.source_run_id
     ) {
-      return false; // 不需要或不能切号
+      return "not_applicable"; // 不需要或不能切号
     }
 
     const runInfo = this.activeRuns.get(
       binding.source_run_id ?? binding.permit_id,
     );
-    if (!runInfo) return false;
+    if (!runInfo) return "not_applicable";
     const repository = this.accountService.getRepository();
     const realm = repository.getRealm(binding.realm_id);
     const settings = repository.getSettings(binding.realm_id);
@@ -509,7 +509,7 @@ export class AgyWorkflowBridge implements AccountConsumerPort {
       !(policy.auto_switch ?? settings?.workflow_auto_switch) ||
       this.engine?.store.get("run_stop", runInfo.run_id)
     )
-      return false;
+      return "not_applicable";
     if (this.engine) {
       const workflow = this.engine.get(runInfo.workflow_id);
       const run = this.engine.store.must<Run>("run", runInfo.run_id);
@@ -525,7 +525,7 @@ export class AgyWorkflowBridge implements AccountConsumerPort {
           "COMMIT_PARTIAL",
         ].includes(workflow.state)
       )
-        return false;
+        return "not_applicable";
     }
 
     if (fact.requires_quota_verification) {
@@ -550,19 +550,19 @@ export class AgyWorkflowBridge implements AccountConsumerPort {
             message: "历史额度提示未得到本轮退出或当前额度确认；具体原因见账号诊断记录",
           }, runInfo.run_id);
         }
-        return false;
+        return "quota_unconfirmed";
       }
       const current = repository.getRealm(binding.realm_id);
       const currentPolicy = repository.getPolicy(runInfo.workflow_id);
       if (current?.auth_epoch !== binding.auth_epoch || current.active_account_id !== binding.account_id ||
           currentPolicy?.revision !== policy.revision ||
           !(currentPolicy.auto_switch ?? repository.getSettings(binding.realm_id)?.workflow_auto_switch) ||
-          this.engine?.store.get("run_stop", runInfo.run_id)) return false;
+          this.engine?.store.get("run_stop", runInfo.run_id)) return "not_applicable";
       if (this.engine) {
         const w = this.engine.get(runInfo.workflow_id);
         const run = this.engine.store.must<Run>("run", runInfo.run_id);
         if (run.purpose === "aside" ? this.asideForRun(w.id, run.id)?.status !== "active" :
-            w.run_id !== run.id || ["STOPPING", "STOPPED", "COMPLETED", "COMMITTED", "COMMIT_PARTIAL"].includes(w.state)) return false;
+            w.run_id !== run.id || ["STOPPING", "STOPPED", "COMPLETED", "COMMITTED", "COMMIT_PARTIAL"].includes(w.state)) return "not_applicable";
       }
     }
 
@@ -601,7 +601,7 @@ export class AgyWorkflowBridge implements AccountConsumerPort {
         );
       });
     this.saveWait(runInfo, receipt.operation_id);
-    return !["failed", "cancelled"].includes(receipt.phase);
+    return ["failed", "cancelled"].includes(receipt.phase) ? "not_applicable" : "waiting";
   }
 
   // --- AccountConsumerPort 接口实现 ---

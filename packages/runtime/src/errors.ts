@@ -1,5 +1,5 @@
 import { FlowError } from "../../contracts/src/index.js";
-import { runtimeFailureResolution } from "../../contracts/src/runtime-failure.js";
+import { isRetryableModelTransportFailure, runtimeFailureResolution } from "../../contracts/src/runtime-failure.js";
 import { redact } from "../../core/src/util.js";
 
 export function normalizeRuntimeFailure(error: unknown) {
@@ -48,11 +48,7 @@ export function classifyFailure(text: string) {
       message:
         "AGY 拒绝了原生工具操作，执行已暂停并保留现场。核对客户端权限和具体操作后继续；不会自动重试或改用其他工具绕过拒绝。",
     };
-  if (
-    /bad record mac|local error:\s*tls:|streamGenerateContent.*(?:request failed|bad record mac|wsasend:.*forcibly closed by the remote host)/i.test(
-      lower,
-    )
-  ) {
+  if (isRetryableModelTransportFailure(text)) {
     const res = runtimeFailureResolution("MODEL_CONNECTION_FAILED", text);
     return {
       code: "MODEL_CONNECTION_FAILED",

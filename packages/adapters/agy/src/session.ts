@@ -235,7 +235,13 @@ export async function observeAgy(
         " " +
         diagnosticTail,
     );
-    const classification = classifyFailure(raw);
+    // A resumed footer can retain an older quota error. Current transport
+    // diagnostics own the failure, while explicit permission denial wins.
+    const stderrClassification = classifyFailure(diagnosticTail);
+    const combinedClassification = classifyFailure(raw);
+    const classification = combinedClassification.code !== "NATIVE_PERMISSION_DENIED" &&
+      stderrClassification.code === "MODEL_CONNECTION_FAILED"
+      ? stderrClassification : combinedClassification;
     const deniedActions = Array.isArray(protocol.result?.denied_actions)
       ? protocol.result.denied_actions
       : [];
@@ -264,6 +270,8 @@ export async function observeAgy(
       422,
       {
         exit_code: exit.code,
+        diagnostic: classification === stderrClassification ? diagnosticTail : raw,
+        diagnostic_source: classification === stderrClassification ? "stderr" : "provider_result",
         result: protocol.result,
         ...(deniedTools.length ? { denied_tools: deniedTools } : {}),
         ...(reason ? { termination_reason: reason } : {}),

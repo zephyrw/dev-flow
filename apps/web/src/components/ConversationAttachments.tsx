@@ -9,6 +9,8 @@ import React, {
 } from "react";
 import { fileWithinConversationLimits } from "../../../../packages/contracts/src/conversation-input.js";
 import type { ConversationDraftAttachment } from "../use-conversation-draft.js";
+import type { FileInputCapability } from "../../../../packages/contracts/src/conversation.js";
+import { supportsAttachmentInput, AGY_IMAGE_FORMAT_UNSUPPORTED } from "../../../../packages/contracts/src/attachment-capabilities.js";
 
 export const UNSUPPORTED_ATTACHMENT_TYPE = "当前工具无法读取此附件类型";
 export const INTERRUPTED_ATTACHMENT_UPLOAD = "上传中断，请重新选择";
@@ -23,11 +25,7 @@ export type AttachmentQueueStatus =
   | "ready"
   | "failed";
 
-export type FileInputCapability = {
-  text: boolean;
-  image: boolean;
-  binary: boolean;
-};
+export type { FileInputCapability } from "../../../../packages/contracts/src/conversation.js";
 
 export type AttachmentRecord = {
   clientId: string;
@@ -42,6 +40,7 @@ export type AttachmentRecord = {
   kind: AttachmentKind;
   status: AttachmentQueueStatus;
   supported: boolean;
+  unsupportedReason?: string;
   interrupted: boolean;
   error?: string;
   previewUrl?: string;
@@ -134,7 +133,7 @@ function draftSignature(items: AttachmentRecord[]): string {
   return items
     .map(
       (item) =>
-        `${item.clientId}:${item.fileId ?? ""}:${item.status}:${item.supported}:${item.interrupted}`,
+        `${item.clientId}:${item.fileId ?? ""}:${item.status}:${item.supported}:${item.interrupted}:${item.unsupportedReason ?? ""}`,
     )
     .join("|");
 }
@@ -190,9 +189,15 @@ export function isPreviewableImage(kind: AttachmentKind, mime: string): boolean 
 export function attachmentTypeSupported(
   kind: AttachmentKind,
   capability?: FileInputCapability,
+  mime = "",
 ): boolean {
   if (!capability) return true;
-  return capability[kind];
+  return supportsAttachmentInput(kind, capability, mime);
+}
+
+function unsupportedReason(kind: AttachmentKind, capability?: FileInputCapability): string {
+  return kind === "image" && capability?.image_mime_types
+    ? AGY_IMAGE_FORMAT_UNSUPPORTED : UNSUPPORTED_ATTACHMENT_TYPE;
 }
 
 export function conversationAttachmentLimitReason(params: {
@@ -217,7 +222,7 @@ export function formatAttachmentSize(bytes: number): string {
 
 export function attachmentStatusLabel(item: AttachmentRecord): string {
   if (item.interrupted) return INTERRUPTED_ATTACHMENT_UPLOAD;
-  if (!item.supported) return UNSUPPORTED_ATTACHMENT_TYPE;
+  if (!item.supported) return item.unsupportedReason ?? UNSUPPORTED_ATTACHMENT_TYPE;
   if (item.status === "failed") return item.error || "上传失败";
   if (item.status === "ready") return "已就绪";
   return "上传中";
@@ -230,6 +235,7 @@ export function toDraftAttachment(
     id: item.fileId ?? item.clientId,
     status: item.interrupted ? "failed" : item.status,
     supported: item.supported,
+    unsupportedReason: item.unsupportedReason,
   };
 }
 
@@ -506,7 +512,8 @@ function recordFromFile(
     mime,
     kind,
     status: "pending",
-    supported: attachmentTypeSupported(kind, capability),
+    supported: attachmentTypeSupported(kind, capability, mime),
+    unsupportedReason: unsupportedReason(kind, capability),
     interrupted: false,
     previewUrl: isPreviewableImage(kind, mime)
       ? URL.createObjectURL(file)
@@ -610,10 +617,11 @@ export function applyAttachmentCapability(
   if (!current.length) return;
   let changed = false;
   const next = current.map((item) => {
-    const supported = attachmentTypeSupported(item.kind, capability);
-    if (supported === item.supported) return item;
+    const supported = attachmentTypeSupported(item.kind, capability, item.mime);
+    const reason = unsupportedReason(item.kind, capability);
+    if (supported === item.supported && reason === item.unsupportedReason) return item;
     changed = true;
-    return { ...item, supported };
+    return { ...item, supported, unsupportedReason: reason };
   });
   if (changed) replaceQueue(workflowId, next);
 }
@@ -723,13 +731,13 @@ export function useConversationAttachmentQueue(
   }, [workflowId]);
 
   const capabilityKey = capability
-    ? `${capability.text}:${capability.image}:${capability.binary}`
+    ? JSON.stringify(capability)
     : "";
+  const items = queues.get(workflowId) ?? EMPTY_ITEMS;
   useEffect(() => {
     applyAttachmentCapability(workflowId, capability);
-  }, [capability, capabilityKey, workflowId]);
+  }, [capability, capabilityKey, workflowId, items]);
 
-  const items = queues.get(workflowId) ?? EMPTY_ITEMS;
   const signature = draftSignature(items);
 
   useEffect(() => {

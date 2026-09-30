@@ -164,6 +164,7 @@ export function resolveConversationRuntimeDisplay(
 interface AttachmentSendInput {
   status: string;
   supported: boolean;
+  unsupportedReason?: string;
 }
 
 export function evaluateConversationSend(params: {
@@ -183,7 +184,7 @@ export function evaluateConversationSend(params: {
   );
   if (blocked) {
     if (!blocked.supported)
-      return { can_send: false, reason: "当前工具无法读取此附件类型" };
+      return { can_send: false, reason: blocked.unsupportedReason ?? "当前工具无法读取此附件类型" };
     if (blocked.status === "failed")
       return { can_send: false, reason: "附件上传失败，请重试或移除" };
     return { can_send: false, reason: "附件仍在上传中" };

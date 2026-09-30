@@ -5,19 +5,6 @@ import { promisify } from "node:util";
 
 const execute = promisify(execFile);
 
-export interface CertifiedAdapterEntry {
-  version: string;
-  sha256?: string;
-  adapterRevision: number;
-  capabilities: {
-    identity: boolean;
-    usage: boolean;
-    login: boolean;
-    modelProbe: boolean;
-  };
-  supportedPools: string[];
-}
-
 export interface CapabilitySnapshot {
   cli_path?: string;
   cli_version?: string;
@@ -36,35 +23,6 @@ export interface CapabilitySnapshot {
   };
   supported: boolean;
   reason?: string;
-}
-
-// 经过官方审查认证的已知版本列表（默认为空，或通过显式审查配置录入）
-const certifiedRegistry: CertifiedAdapterEntry[] = [];
-
-export function registerCertifiedAdapter(entry: CertifiedAdapterEntry): void {
-  const existing = certifiedRegistry.findIndex(
-    (e) => e.version === entry.version && (!e.sha256 || !entry.sha256 || e.sha256 === entry.sha256),
-  );
-  if (existing >= 0) {
-    certifiedRegistry[existing] = entry;
-  } else {
-    certifiedRegistry.push(entry);
-  }
-}
-
-export function clearCertifiedAdaptersForTest(): void {
-  certifiedRegistry.length = 0;
-}
-
-export function lookupCertifiedAdapter(
-  version: string,
-  sha256?: string,
-): CertifiedAdapterEntry | undefined {
-  return certifiedRegistry.find((entry) => {
-    if (entry.version !== version) return false;
-    if (entry.sha256 && sha256 && entry.sha256 !== sha256) return false;
-    return true;
-  });
 }
 
 export async function inspectCliBinary(cliPath: string): Promise<{
@@ -113,7 +71,7 @@ export function evaluateCapabilitySnapshot(
 
   const version = cliInfo?.version ?? "unknown";
   const sha256 = cliInfo?.sha256;
-  const hasCli = !!cliInfo && version !== "unknown";
+  const hasCli = !!(cliInfo?.path || cliInfo?.sha256);
 
   // 区分 detected / supported / verified (D02)
   // 必须有真实核验证据才标记为 verified；仅检测到版本不能伪造 verified
@@ -151,12 +109,10 @@ export function evaluateCapabilitySnapshot(
         ? "未检测到已安装的官方 AGY CLI"
         : undefined;
 
-  const certified = hasCli ? lookupCertifiedAdapter(version, sha256) : undefined;
   return {
     cli_path: cliInfo?.path,
     cli_version: version,
     cli_sha256: sha256,
-    adapter_revision: certified?.adapterRevision,
     host_platform: hostCaps?.platform ?? process.platform,
     host_version: hostCaps?.version ?? "unknown",
     dpapi_available: hostCaps?.dpapi_available ?? false,

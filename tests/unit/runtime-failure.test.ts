@@ -11,6 +11,25 @@ import { readableLogs } from "../../packages/presentation/src/activity.js";
 const versionError =
   "The 'gpt-6-astra' model requires a newer version of Codex. Please upgrade to the latest app or CLI and try again.";
 
+it.each([
+  "error: the connection to the agent was interrupted before the response finished: subscriber fell behind updates, stalled for 10s",
+  "API error (attempt 1): INTERNAL (code 500): Internal error encountered.",
+])("classifies the current AGY transport failure for automatic recovery: %s", diagnostic => {
+  expect(classifyFailure(diagnostic)).toMatchObject({ code: "MODEL_CONNECTION_FAILED", retry: "auto" });
+  expect(runtimeFailureResolution("NATIVE_RUN_FAILED", diagnostic)?.code).toBe("MODEL_CONNECTION_FAILED");
+  const combined = `Individual quota reached. Resets in 2h27m12s. ${diagnostic}`;
+  expect(classifyFailure(combined).code).toBe("MODEL_CONNECTION_FAILED");
+  expect(runtimeFailureResolution("", combined)?.code).toBe("MODEL_CONNECTION_FAILED");
+  expect(classifyFailure(JSON.stringify({ error: diagnostic, denied_actions: [{ display_name: "run_command" }] })).code)
+    .toBe("NATIVE_PERMISSION_DENIED");
+});
+
+it.each(["业务接口返回 500", "INTERNAL (code 500)", "subscriber count: 500", "connection count: 500"])(
+  "does not promote an ordinary application diagnostic to model transport failure: %s", diagnostic => {
+    expect(classifyFailure(diagnostic).code).toBe("EXECUTION_FAILED");
+  },
+);
+
 const agyClosedConnection =
   'API error (attempt 2): request failed: Post "https://daily-cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse": write tcp 198.18.0.1:60000->198.18.0.95:443: wsasend: An existing connection was forcibly closed by the remote host.';
 

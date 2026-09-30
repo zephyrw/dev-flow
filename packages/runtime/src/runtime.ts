@@ -925,24 +925,28 @@ export class LocalRuntime implements Runtime {
           if (
             accountBinding &&
             accountFailure &&
+            !(error instanceof FlowError && error.code === "MODEL_CONNECTION_FAILED") &&
             !this.engine.store.get("run_stop", run.id) &&
             !proc.termination_reason &&
-            (!conversation || accountTurn.canAttributeFailureToCurrentTurn()) &&
-            (await this.accountBridge!.observeFailure(
-              accountBinding,
-              confirmAgyQuotaFailure(accountFailure, {
+            (!conversation || accountTurn.canAttributeFailureToCurrentTurn())
+          ) {
+            const fact = confirmAgyQuotaFailure(accountFailure, {
                 exitCode: error instanceof FlowError ? (error.details as any)?.exit_code ?? null : null,
                 currentTurn: !conversation || accountTurn.canAttributeFailureToCurrentTurn(),
                 stderr: error instanceof FlowError && error.code !== "MODEL_QUOTA" ? error.code : "",
                 terminationReason: proc.termination_reason,
-              }),
-            ))
-          )
-            throw new FlowError(
+              });
+            const decision = await this.accountBridge!.observeFailure(accountBinding, fact);
+            if (decision === "waiting") throw new FlowError(
               "AGY_ACCOUNT_WAIT",
               "账号额度或授权不可用，等待切换后继续原任务",
               409,
             );
+            if (fact.requires_quota_verification && error instanceof FlowError && error.code === "MODEL_QUOTA")
+              throw new FlowError("NATIVE_RUN_FAILED",
+                "会话中的历史额度提示未获当前运行确认，原任务已保留。请检查本轮运行诊断后继续。", 422,
+                { exit_code: (error.details as any)?.exit_code, quota_verification: decision });
+          }
           throw error;
         },
       )

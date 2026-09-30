@@ -258,7 +258,7 @@ describe("managed account recovery retains frozen model routing", () => {
       effective_model_id: "fixture-model", account_policy_revision: 1, required_pool_ids: ["fixture-pool"] });
     const fact = classifyAgyFailure({ realmId, accountId: "a", authEpoch: binding.auth_epoch,
       runId: run.id, currentTurn: true, eventOffset: 2, event: { type: "error", code: "auth_invalid" } });
-    expect(await bridge.observeFailure(binding, fact)).toBe(true);
+    expect(await bridge.observeFailure(binding, fact)).toBe("waiting");
     expect(access.getAccess(record.key)?.status).toBe("login_required");
   });
 });

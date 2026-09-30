@@ -3,7 +3,6 @@
     {
       "sourceUrl": "https://code.claude.com/docs/en/model-config",
       "checkedAt": "2026-09-18",
-      "cliVersionConstraint": ">=2.1.270",
       "nativeIdConfirmed": true,
       "nativeId": "claude-fable-5-1",
       "label": "Claude Fable 5.1",

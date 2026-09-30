@@ -146,29 +146,38 @@ describe("SA-U13 Claude conversation source", () => {
   });
 
   it("maps resume by parent, in-process child and background child", () => {
-    expect(claudeResumeContinuation("parent", "2.1.270")).toEqual({
+    expect(claudeResumeContinuation("parent")).toEqual({
       resume: "native",
       continuation: "resume-native",
     });
-    expect(claudeResumeContinuation("task-child", "2.1.270")).toEqual({
+    expect(claudeResumeContinuation("task-child", { nativeResume: true })).toEqual({
       resume: "unavailable",
       continuation: "recreate-after-confirmed-exit",
     });
-    expect(claudeResumeContinuation("background-child", "2.1.270")).toEqual({
+    expect(claudeResumeContinuation("background-child", { nativeResume: true })).toEqual({
       resume: "native",
       continuation: "resume-native",
     });
-    expect(claudeResumeContinuation("background-child", "2.0.12")).toEqual({
+    expect(claudeResumeContinuation("background-child")).toEqual({
       resume: "unavailable",
       continuation: "recreate-after-confirmed-exit",
     });
-    expect(claudeResumeContinuation("parent", "1.9.0")).toEqual({
+    expect(claudeResumeContinuation("parent", { nativeResume: false })).toEqual({
       resume: "unavailable",
       continuation: "recreate-after-confirmed-exit",
     });
     const spawned = decodeLines(fixtureLines("stream-task-spawn.jsonl"), "stream");
     const call = spawned.find((event) => payload(event).event === "task_call");
     expect(payload(call!).continuation).toBe("recreate-after-confirmed-exit");
+  });
+
+  it("keeps session capabilities independent of diagnostic CLI versions", () => {
+    const { cli_version: _diagnostic, ...baseline } = claudeSubagentCapabilities({});
+    for (const cliVersion of ["1.9.0", "2.0.12", "2.1.270", "9.0.0", "nightly"]) {
+      const { cli_version, ...capabilities } = claudeSubagentCapabilities({ cliVersion });
+      expect(cli_version).toBe(cliVersion);
+      expect(capabilities).toEqual(baseline);
+    }
   });
 
   it("proves readonly child tools natively and rejects prompt-only agents", () => {

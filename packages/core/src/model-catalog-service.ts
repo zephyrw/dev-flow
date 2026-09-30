@@ -525,11 +525,10 @@ function pointerId(scope: CatalogScopeInput): string {
   });
 }
 
-function catalogEntityId(scope: CatalogScopeInput, cliVersion: string): string {
+function catalogEntityId(scope: CatalogScopeInput): string {
   return "catalog:" + objectHash({
     adapterId: scope.adapterId,
     executablePath: scope.executablePath,
-    cliVersion,
     nativeConfigScope: scope.nativeConfigScope ?? "default",
     accountFingerprint: scope.accountFingerprint ?? "none",
     providerFingerprint: scope.providerFingerprint ?? "none",
@@ -890,6 +889,11 @@ export class ModelCatalogService {
       freshCached.discoveryStatus !== "missing" &&
       adapterId !== "claude-code"
     ) {
+      if (freshCached.status === "stale" && scope) {
+        // Return the usable directory immediately while revalidating the same
+        // account/provider scope. discover() shares work across service instances.
+        void this.discover(scope).catch(() => {});
+      }
       return freshCached;
     }
     try {
@@ -970,7 +974,7 @@ export class ModelCatalogService {
   }
 
   async close(): Promise<void> {
-    await Promise.all([...this.operationWork.values()]);
+    await Promise.all([...this.operationWork.values(), ...this.inflight.values()]);
   }
 
   ensureManualCandidate(scope: CatalogScopeInput, nativeId: string): ModelEntry {
@@ -1009,7 +1013,7 @@ export class ModelCatalogService {
             scope.adapterId,
             {
               stdout: "",
-              scopeHash: catalogEntityId(scope, "manual").slice(8),
+              scopeHash: catalogEntityId(scope).slice(8),
               cliPath: scope.executablePath,
               nativeConfigScope: scope.nativeConfigScope ?? "default",
               discoveredAt: clock,
@@ -1024,7 +1028,7 @@ export class ModelCatalogService {
     if (scope.nativeConfigProfile) catalog.nativeConfigProfile = scope.nativeConfigProfile;
     const catalogId = previous
       ? "catalog:" + previous.scopeHash
-      : catalogEntityId(scope, "manual");
+      : catalogEntityId(scope);
     this.writeCatalog(scope, catalogId, catalog);
     return entry;
   }
@@ -1380,7 +1384,7 @@ export class ModelCatalogService {
       return "environment-unavailable";
     }
     if (identity.errorCode === "TOOL_NOT_FOUND") return "not-detected";
-    if (identity.cliVersion && !identity.matched) return "identity-mismatch";
+    if (!identity.errorCode && !identity.matched) return "identity-mismatch";
     if (identity.matched) return "detected";
     return "not-detected";
   }
@@ -1404,7 +1408,7 @@ export class ModelCatalogService {
         scope,
         previous,
         "TOOL_IDENTITY_MISMATCH",
-        "版本与帮助未匹配产品身份",
+        "工具帮助未匹配产品身份",
         identity.cliVersion ?? "",
       );
     }
@@ -1450,7 +1454,7 @@ export class ModelCatalogService {
     parsed: ModelCatalog,
   ): ModelCatalog {
     const previous = this.readCached(scope);
-    const entityId = catalogEntityId(scope, cliVersion);
+    const entityId = catalogEntityId(scope);
     const stored = ModelCatalogSchema.parse({
       ...parsed,
       entries: mergeManualEntries(parsed.entries, previous),
@@ -1474,6 +1478,18 @@ export class ModelCatalogService {
     query: LimitedCliResult,
     source?: ModelSource,
   ): ModelCatalog {
+    // Model descriptions and native system instructions can contain words such
+    // as "DPAPI" or "permission denied". A successful structured Codex catalog
+    // takes precedence over free-text error matching.
+    const structured = scope.adapterId === "codex" && query.exitCode === 0 &&
+      !query.timedOut && !query.truncated && !query.spawnError
+      ? parseAdapterCatalog(
+        scope.adapterId, query.stdout, query.stderr, query.truncated,
+        catalogEntityId(scope).slice(8), scope.executablePath, cliVersion,
+        scope.nativeConfigScope ?? "default", source,
+      )
+      : undefined;
+    if (structured?.status === "fresh" && structured.entries.length > 0) return structured;
     const classified = classifySpawnOrOutput(query);
     if (classified) {
       return failedModelCatalog(
@@ -1482,7 +1498,7 @@ export class ModelCatalogService {
           stdout: query.stdout,
           stderr: query.stderr,
           truncated: query.truncated,
-          scopeHash: catalogEntityId(scope, cliVersion).slice(8),
+          scopeHash: catalogEntityId(scope).slice(8),
           cliPath: scope.executablePath,
           cliVersion,
           nativeConfigScope: scope.nativeConfigScope ?? "default",
@@ -1492,12 +1508,12 @@ export class ModelCatalogService {
         classified.message,
       );
     }
-    return parseAdapterCatalog(
+    return structured ?? parseAdapterCatalog(
       scope.adapterId,
       query.stdout,
       query.stderr,
       query.truncated,
-      catalogEntityId(scope, cliVersion).slice(8),
+      catalogEntityId(scope).slice(8),
       scope.executablePath,
       cliVersion,
       scope.nativeConfigScope ?? "default",
@@ -1582,11 +1598,21 @@ export class ModelCatalogService {
     if (scope.nativeConfigProfile && scope.nativeConfigProfile !== "default") return undefined;
     for (const path of codexCachePaths()) {
       if (!existsSync(path)) continue;
+      const text = readFileSync(path, "utf8");
+      let fetchedAt: unknown;
+      try {
+        fetchedAt = asJsonRecord(JSON.parse(text))?.fetched_at;
+      } catch {
+        continue;
+      }
+      // Falling back must not relabel an expired native directory as fresh.
+      const fetchedTime = typeof fetchedAt === "string" ? Date.parse(fetchedAt) : NaN;
+      if (!Number.isFinite(fetchedTime) || fetchedTime + CATALOG_FRESH_MS <= Date.now()) continue;
       const parsed = this.parseQuery(
         scope,
         cliVersion,
         {
-          stdout: readFileSync(path, "utf8"),
+          stdout: text,
           stderr: "",
           exitCode: 0,
           timedOut: false,
@@ -1633,7 +1659,7 @@ export class ModelCatalogService {
         "",
         "",
         false,
-        catalogEntityId(scope, cliVersion || "seed").slice(8),
+        catalogEntityId(scope).slice(8),
         scope.executablePath,
         cliVersion || "seed",
         scope.nativeConfigScope ?? "default",
@@ -1649,7 +1675,7 @@ export class ModelCatalogService {
       {
         stdout: "",
         stderr: errorMessage,
-        scopeHash: catalogEntityId(scope, cliVersion || "unknown").slice(8),
+        scopeHash: catalogEntityId(scope).slice(8),
         cliPath: scope.executablePath,
         cliVersion,
         nativeConfigScope: scope.nativeConfigScope ?? "default",
@@ -1689,34 +1715,25 @@ export class ModelCatalogService {
         errorMessage: "未找到指定 CLI",
       };
     }
-    const version = await this.runCli(scope, ["--version"], this.versionHelpTimeoutMs);
-    const versionError = classifySpawnOrOutput(version);
-    if (versionError) {
-      return {
-        matched: false,
-        errorCode: versionError.code,
-        errorMessage: versionError.message,
-      };
-    }
     const help = await this.runCli(scope, ["--help"], this.versionHelpTimeoutMs);
-    const helpError = classifySpawnOrOutput(help);
+    const matched = help.exitCode === 0 && !help.timedOut && !help.truncated &&
+      !help.spawnError && matchesFingerprint(scope.adapterId, help.stdout);
+    // Successful product help is usable even if the tool emits optional PATH
+    // or cleanup warnings on stderr. Failed commands still retain their cause.
+    const helpError = matched ? undefined : classifySpawnOrOutput(help);
     if (helpError) {
       return {
         matched: false,
-        cliVersion: version.stdout.trim().split(/\r?\n/)[0],
         errorCode: helpError.code,
         errorMessage: helpError.message,
       };
     }
-    const identityText = [
-      version.stdout,
-      version.stderr,
-      help.stdout,
-      help.stderr,
-    ].join("\n");
-    const cliVersion =
-      firstNonEmptyLine(version.stdout) ?? firstNonEmptyLine(version.stderr);
-    const matched = matchesFingerprint(scope.adapterId, identityText);
+    // Version is optional diagnostic metadata. Product identity comes from the
+    // actual help/protocol entry points, never a supported-version range.
+    const version = await this.runCli(scope, ["--version"], this.versionHelpTimeoutMs);
+    const cliVersion = version.exitCode !== 0 || classifySpawnOrOutput(version)
+      ? undefined
+      : firstNonEmptyLine(version.stdout) ?? firstNonEmptyLine(version.stderr);
     return { cliVersion, matched };
   }
 

@@ -266,7 +266,6 @@ export interface ProbeTerminalInput {
 }
 
 export interface ModelSelectionCapability {
-  cliVersion?: string;
   opencodeVariantEncoding?: "flag" | "hash";
   kimiSupportEfforts?: string[];
   kimiProvider?: string;

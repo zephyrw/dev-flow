@@ -10,7 +10,6 @@ import {
   CODEX_UNPAID_REASON,
   continuationForCodexSession,
   collectInstalledCodexCliVersion,
-  codexProtocolCompatible,
   codexSubagentCapabilities,
   parseCodexCliVersion,
   rootProcessExitState,
@@ -174,20 +173,21 @@ describe("SA-U11 Codex conversation source", () => {
     expect(failed?.session_native_id).toBe(CHILD);
   });
 
-  it("does not misidentify unknown-version events as children or activities", () => {
+  it("validates event structure without gating capabilities on a CLI version", () => {
     expect(decodeFixture("unknown-version.jsonl")).toEqual([]);
-    const mismatch = codexSubagentCapabilities("9.0.0");
-    expect(mismatch.discovery).toBe("unknown");
-    expect(mismatch.activity).toBe("unavailable");
-    expect(mismatch.reason).toContain("版本协议不符");
-    expect(codexProtocolCompatible("0.20.0")).toBe(false);
-    expect(codexProtocolCompatible("0.154.0")).toBe(true);
+    const { cli_version: _diagnostic, ...baseline } = codexSubagentCapabilities();
+    for (const version of ["0.20.0", "0.154.0", "1.0.0", "9.0.0", "unknown", "nightly"]) {
+      const { cli_version, ...capabilities } = codexSubagentCapabilities(version);
+      expect(cli_version).toBe(version);
+      expect(capabilities).toEqual(baseline);
+    }
+    expect(baseline.discovery).toBe("native");
+    expect(baseline.activity).toBe("native");
     expect(codexSubagentCapabilities().file_input).toEqual({
       text: true,
       image: true,
       binary: false,
     });
-    expect(mismatch.file_input.image).toBe(false);
   });
 
   it("reads bound session records for per-session model and skips unknown rows", async () => {

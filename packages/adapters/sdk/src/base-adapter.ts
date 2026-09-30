@@ -80,13 +80,17 @@ export abstract class BaseNativeAgentAdapter implements NativeAgentAdapter {
         if (res.error) throw res.error;
         return ((res.stdout ?? "") + "\n" + (res.stderr ?? "")).trim();
       };
-      const out = runCmd(this.getVersionArgs());
       const help = runCmd(["--help"]);
-      // Versions may contain only a semver/date; identity also needs client-specific help.
+      let out = "";
+      try {
+        out = runCmd(this.getVersionArgs());
+      } catch {
+        // A missing version command does not disable a working tool entry point.
+      }
       const identity = new RegExp(this.getProductFingerprint(), "i").test(
-        out + "\n" + help,
+        help,
       );
-      if (!identity) throw new Error("版本与帮助未匹配产品身份");
+      if (!identity) throw new Error("工具帮助未匹配产品身份");
       const headless = /--print|\bexec\b|\brun\b|--prompt/.test(help);
       capabilities.nativeEditing = headless;
       capabilities.terminal = headless;
@@ -101,7 +105,7 @@ export abstract class BaseNativeAgentAdapter implements NativeAgentAdapter {
         version: out.trim(),
         executablePath: path,
         capabilities,
-        unsupportedReason: headless ? undefined : "该版本缺少所需非交互入口",
+        unsupportedReason: headless ? undefined : "工具缺少所需非交互入口",
       };
     } catch (e) {
       return {
