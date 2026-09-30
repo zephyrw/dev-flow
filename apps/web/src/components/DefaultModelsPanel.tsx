@@ -63,6 +63,7 @@ export function DefaultModelsPanel({
   const [error, setError] = useState<string | null>(null);
   const [hasConflict, setHasConflict] = useState(false);
   const [activeTab, setActiveTab] = useState<ConfigTabId>("planner");
+  const [pendingDraft, setPendingDraft] = useState(false);
 
   useEffect(() => { onSavingChange?.(saving); }, [saving, onSavingChange]);
 
@@ -70,15 +71,23 @@ export function DefaultModelsPanel({
   const panelAbort = useRef<AbortController | null>(null);
 
   const applyDefaults = (defaults: DefaultsSnapshot) => {
-    setPlanner(cloneProfile({ ...defaults.plannerProfile, id: "planner" }));
-    setExecutor(cloneProfile({ ...defaults.executorProfile, id: "executor" }));
+    const target = defaults.pendingDraft
+      ? {
+          ...defaults,
+          plannerProfile: defaults.pendingDraft.plannerProfile ?? defaults.plannerProfile,
+          executorProfile: defaults.pendingDraft.executorProfile ?? defaults.executorProfile,
+        }
+      : defaults;
+    setPlanner(cloneProfile({ ...target.plannerProfile, id: "planner" }));
+    setExecutor(cloneProfile({ ...target.executorProfile, id: "executor" }));
     setReviewerBinding(
-      defaults.reviewerBinding
-        ? JSON.parse(JSON.stringify(defaults.reviewerBinding))
+      target.reviewerBinding
+        ? JSON.parse(JSON.stringify(target.reviewerBinding))
         : { mode: "inherit" },
     );
-    setRevision(defaults.revision);
-    onDirtyChange?.(false);
+    setRevision(target.revision);
+    setPendingDraft(Boolean(defaults.pendingDraft));
+    onDirtyChange?.(Boolean(defaults.pendingDraft));
     setHasConflict(false);
     requestId.current = newRequestId();
   };
@@ -236,6 +245,12 @@ export function DefaultModelsPanel({
       {error && (
         <div className="ms-error-bar" role="alert" style={{ marginBottom: "8px" }}>
           {error}
+        </div>
+      )}
+
+      {pendingDraft && (
+        <div className="ms-banner" style={{ padding: "8px 12px", background: "var(--banner-bg, #eff6ff)", borderRadius: "4px", fontSize: "13px", marginBottom: "8px" }}>
+          已载入安装时选择的待验证配置；验证并保存后才替换当前默认值。
         </div>
       )}
 

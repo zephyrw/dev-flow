@@ -14,6 +14,7 @@ async function flushStdout() {
   });
 }
 const heldChildren = [];
+let m = null;
 const args = process.argv.slice(2);
 if (args.includes("--version")) {
   console.log("codex-cli 0.154.0");
@@ -39,18 +40,29 @@ if (pIndex !== -1 && args[pIndex + 1]) {
     prompt = fs.readFileSync(0, "utf8");
   } catch {}
 }
-const file = prompt.match(/(?:(?:完整任务|任务工作包)及唯一正式计划材料：|任务工作包：|请读取工作包\s*)(.+?)(?:。先读取|。必须|。严格|$)/)?.[1]?.trim();
-if (!file) throw new Error("Missing original handoff: prompt was " + JSON.stringify(prompt));
-const m = JSON.parse(fs.readFileSync(file, "utf8")),
-  stage = process.env.DEVFLOW_STAGE;
-const fixture = readFixtureOptions(m);
-writePromptCapture(prompt, file, fixture);
-if (fixture.slowStartMs) await sleep(fixture.slowStartMs);
 const resumeFlag = ["resume", "--resume", "--conversation"].find(flag => args.includes(flag));
 const resumeId = resumeFlag ? args[args.indexOf(resumeFlag) + 1] : "";
-const rootThread = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(resumeId)
-  ? resumeId
-  : randomUUID();
+const sessionIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+if (resumeFlag && !sessionIdPattern.test(resumeId ?? "")) {
+  throw new Error("FIXTURE_SESSION_INVALID: resume requires an original session ID");
+}
+const rootThread = resumeFlag ? resumeId : randomUUID();
+
+const promptHandoffCandidate = prompt.match(/(?:(?:完整任务|任务工作包)及唯一正式计划材料：|任务工作包：|请读取工作包\s*)(.+?)(?:。先读取|。必须|。严格|$)/)?.[1]?.trim();
+const promptHandoffFile = promptHandoffCandidate && path.basename(promptHandoffCandidate) === "HANDOFF.json"
+  ? promptHandoffCandidate
+  : undefined;
+// A diagnostic last-prompt belongs to whichever invocation wrote it most recently.
+// Only the record bound to this native session can restore a resumed context.
+const originalHandoffFile = resumeFlag ? readSessionHandoff(rootThread) : undefined;
+let file = promptHandoffFile ?? originalHandoffFile;
+if (!file) throw new Error("Missing original handoff: prompt was " + JSON.stringify(prompt));
+file = resolveHandoffFile(file);
+m = JSON.parse(fs.readFileSync(file, "utf8"));
+const stage = process.env.DEVFLOW_STAGE;
+const fixture = readFixtureOptions(m);
+writePromptCapture(prompt, file, fixture, rootThread);
+if (fixture.slowStartMs) await sleep(fixture.slowStartMs);
 emit({
   type: "thread.started",
   thread_id: rootThread,
@@ -80,9 +92,16 @@ if (fixture.holdMs) await sleep(fixture.holdMs);
 completeHeldChildren(tree);
 let result;
 if (stage === "planning") {
+  // Sidecar lookup restores context; only a path in this prompt identifies a handoff input.
+  const isFollowupPrompt = Boolean(!promptHandoffFile && prompt.trim());
+  const feedbackText = isFollowupPrompt
+    ? prompt.trim()
+    : m.current_plan
+      ? (m.feedback ?? []).map(f => f.text).join("\n")
+      : "";
   const markdown =
     "# 正式计划\n\n将 app.txt 修改为 after，保留换行及其余文件。使用真实 Node 子进程验证输出，并回归未修改文件。\n" +
-    (m.current_plan ? "\n## 修改说明\n" + m.feedback.map(f => f.text).join("\n") + "\n" : "");
+    (feedbackText ? "\n## 修改说明\n" + feedbackText + "\n" : "");
   result = {
     markdown,
     plan: {
@@ -370,7 +389,40 @@ function readFixtureOptions(handoff) {
   };
 }
 
-function writePromptCapture(prompt, handoffFile, fixture) {
+function resolveHandoffFile(file) {
+  if (typeof file !== "string" || !path.isAbsolute(file) || path.basename(file) !== "HANDOFF.json") {
+    throw new Error("FIXTURE_HANDOFF_INVALID: expected an absolute HANDOFF.json path");
+  }
+  try {
+    const original = fs.realpathSync(file);
+    if (!fs.statSync(original).isFile()) throw new Error("not a file");
+    JSON.parse(fs.readFileSync(original, "utf8"));
+    return original;
+  } catch (error) {
+    throw new Error(`FIXTURE_HANDOFF_UNAVAILABLE: ${file}`, { cause: error });
+  }
+}
+
+function readSessionHandoff(sessionId) {
+  // m is not loaded yet; cwd is the native session's readable root.
+  const sidecar = path.join(process.cwd(), `.devflow-fixture-${sessionId}.json`);
+  let record;
+  try {
+    record = JSON.parse(fs.readFileSync(sidecar, "utf8"));
+  } catch (error) {
+    throw new Error(`FIXTURE_SESSION_UNAVAILABLE: ${sessionId}`, { cause: error });
+  }
+  if (record?.sessionId !== sessionId) {
+    throw new Error(`FIXTURE_SESSION_MISMATCH: ${sessionId}`);
+  }
+  const handoffFile = resolveHandoffFile(record.handoffFile);
+  if (handoffFile !== record.handoffFile) {
+    throw new Error(`FIXTURE_HANDOFF_LOCATION_MISMATCH: ${sessionId}`);
+  }
+  return handoffFile;
+}
+
+function writePromptCapture(prompt, handoffFile, fixture, sessionId) {
   const names = (fixture.attachmentPaths ?? []).map((filePath) =>
     path.basename(filePath),
   );
@@ -385,6 +437,7 @@ function writePromptCapture(prompt, handoffFile, fixture) {
     ? `${prompt}\nattachments:${unique.join(",")}`
     : prompt;
   const payload = {
+    sessionId,
     prompt: text,
     handoffFile,
     stage: process.env.DEVFLOW_STAGE || "",
@@ -393,6 +446,24 @@ function writePromptCapture(prompt, handoffFile, fixture) {
     mixed: fixture.mixed,
     quota: fixture.quota,
   };
+  // Register even the first invocation before announcing the root thread. A
+  // failed registration must fail the invocation, rather than an eventual resume.
+  const sidecarName = `.devflow-fixture-${sessionId}.json`;
+  const sidecar = path.join(process.cwd(), sidecarName);
+  const temporary = `${sidecar}.${process.pid}.tmp`;
+  try {
+    fs.writeFileSync(temporary, JSON.stringify(payload));
+    fs.renameSync(temporary, sidecar);
+  } catch (error) {
+    try { fs.unlinkSync(temporary); } catch {}
+    throw new Error(`FIXTURE_SESSION_REGISTRATION_FAILED: ${sessionId}`, { cause: error });
+  }
+  // Keep repository copies and last-prompt captures for historical diagnostics.
+  for (const dir of fixtureSidecarDirs()) {
+    if (dir !== process.cwd()) {
+      try { fs.writeFileSync(path.join(dir, sidecarName), JSON.stringify(payload)); } catch {}
+    }
+  }
   writeFixtureSidecar(".devflow-fixture-last-prompt.txt", text);
   writeFixtureSidecar(
     ".devflow-fixture-last-prompt.json",

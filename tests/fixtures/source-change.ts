@@ -38,6 +38,7 @@ export async function seedSourceChange(engine: Engine, root: string) {
   engine.submitPlan(
     w.id,
     {
+      markdown,
       task_model: "native-v2",
       revision: 1,
       design_ref: { content_hash: hash(markdown), summary: "修改文本" },

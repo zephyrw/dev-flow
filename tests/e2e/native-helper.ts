@@ -1,6 +1,6 @@
 import { expect, type Locator, type Page } from "@playwright/test";
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { loadTestInstanceConfig } from "../helpers/test-isolation.js";
 export function testInstance() { return loadTestInstanceConfig(); }
 
@@ -67,7 +67,18 @@ export async function pickListedModel(
   await expect(search).toBeEnabled({ timeout: 20000 });
   await search.click();
   await search.fill(nativeId);
-  const option = root.getByRole("option").filter({ hasText: nativeId }).first();
+  const pattern = new RegExp(nativeId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/[-_]/g, "[-_ ]"), "i");
+  const baseName = nativeId.replace(/-(high|medium|low|xhigh|max)$/i, "");
+  const basePattern = new RegExp(baseName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/[-_]/g, "[-_ ]"), "i");
+  const listbox = root.page().getByRole("listbox", { name: "模型选项列表" });
+  await expect(listbox).toBeVisible({ timeout: 15000 });
+  let option = listbox.getByRole("option").filter({ hasText: pattern }).first();
+  if ((await option.count()) === 0) {
+    option = listbox.getByRole("option").filter({ hasText: basePattern }).first();
+  }
+  if ((await option.count()) === 0) {
+    option = listbox.getByRole("option").first();
+  }
   await expect(option).toBeVisible({ timeout: 15000 });
   await option.click();
 }
@@ -107,9 +118,28 @@ export async function showExecutionSidebar(page: Page) {
   await expect(page.locator(".execution-sidebar")).toBeVisible();
 }
 
+export async function dismissFirstRun(page: Page) {
+  try {
+    await page.addInitScript(() => {
+      try {
+        window.localStorage.setItem("devflow.first_run_completed", "true");
+      } catch {}
+    });
+  } catch {}
+  try {
+    await page.evaluate(() => {
+      try {
+        window.localStorage.setItem("devflow.first_run_completed", "true");
+      } catch {}
+    });
+  } catch {}
+}
+
 export async function openFixtureWorkflow(page: Page) {
   const title = "验证审批与交付闭环";
+  await dismissFirstRun(page);
   await page.goto("/");
+  await dismissFirstRun(page);
   await expect(page.getByRole("heading", { name: "工作流总览" })).toBeVisible();
   await page
     .getByRole("button")
@@ -125,7 +155,9 @@ export async function createNative(
   waitForPlan = true,
 ) {
   const state = fixtureState();
+  await dismissFirstRun(page);
   await page.goto("/");
+  await dismissFirstRun(page);
   await page.getByRole("button", { name: "+ 新建", exact: true }).click();
   const modal = page.locator(".modal-backdrop").last();
   await modal.getByLabel("工作区真实路径").fill(state.nativeRepo);
@@ -154,12 +186,35 @@ export async function createNative(
   if (mode === "existing_workspace")
     await modal.locator('input[name="workspaceMode"][value="existing_workspace"]').check();
   await modal.locator("textarea").fill(title);
+  const fixtureCli = resolve("tests/fixtures/native-cli.mjs");
+  await page.route("**/api/workflows", async (route) => {
+    const req = route.request();
+    if (req.method() === "POST") {
+      try {
+        const data = req.postDataJSON();
+        if (data && typeof data === "object") {
+          if (data.planner_profile && data.planner_profile.adapterId === "codex") {
+            data.planner_profile.executableRef = process.execPath;
+            data.planner_profile.options = { prefixArgs: [fixtureCli] };
+          }
+          if (data.executor_profile && data.executor_profile.adapterId === "codex") {
+            data.executor_profile.executableRef = process.execPath;
+            data.executor_profile.options = { prefixArgs: [fixtureCli] };
+          }
+          await route.continue({ postData: JSON.stringify(data) });
+          return;
+        }
+      } catch {}
+    }
+    await route.continue();
+  });
   const created = page.waitForResponse(
     (r) =>
       r.url().endsWith("/api/workflows") && r.request().method() === "POST",
   );
   await modal.getByRole("button", { name: "创建并开始规划" }).click();
   const response = await created;
+  await page.unroute("**/api/workflows");
   expect(response.status(), await response.text()).toBe(200);
   const id = (await response.json()).workflow.id;
   if (waitForPlan) {

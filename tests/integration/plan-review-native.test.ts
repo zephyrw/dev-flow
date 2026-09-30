@@ -1,6 +1,9 @@
 import { expect, it } from "vitest";
 import { join, resolve } from "node:path";
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { setup, repository, project } from "../helpers.js";
 import { objectHash, hash, now } from "../../packages/core/src/util.js";
 import { LocalRuntime } from "../../packages/runtime/src/runtime.js";
@@ -8,6 +11,124 @@ import { DocumentService } from "../../packages/core/src/document-service.js";
 import { ExecutionSpecSchema } from "../../packages/contracts/src/execution-spec.js";
 import { PlanReviewService } from "../../packages/core/src/plan-review.js";
 import { AsideSessionService } from "../../packages/asides/src/service.js";
+
+function fixtureHandoff(root: string, name: string) {
+  const directory = join(root, name);
+  mkdirSync(directory);
+  const file = join(directory, "HANDOFF.json");
+  writeFileSync(file, JSON.stringify({
+    baselines: { main: name },
+    project_config_hash: name,
+    current_plan: { markdown: "# 正式计划" },
+    feedback: [{ text: `旧反馈-${name}` }],
+    question: {},
+  }));
+  return realpathSync(file);
+}
+
+function invokeFixture(root: string, prompt: string, resumeId?: string, stage = "planning") {
+  const invocation = spawnSync(process.execPath, [
+    resolve("tests/fixtures/native-cli.mjs"), "exec",
+    ...(resumeId ? ["resume", resumeId] : []), "-p", prompt,
+  ], {
+    cwd: root,
+    encoding: "utf8",
+    timeout: 10000,
+    env: {
+      ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("DEVFLOW_"))),
+      DEVFLOW_STAGE: stage,
+    },
+  });
+  if (invocation.error) throw invocation.error;
+  const events = invocation.stdout.trim().split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line));
+  const sessionId = events.find(event => event.type === "thread.started")?.thread_id as string | undefined;
+  const message = events.find(event => event.item?.type === "agent_message")?.item.text;
+  return { ...invocation, sessionId, result: message ? JSON.parse(message) : undefined };
+}
+
+it("首轮即登记会话，其他规划及问答覆盖 last-prompt 后首次续接仍恢复原件", () => {
+  const root = mkdtempSync(join(tmpdir(), "devflow-fixture-session-"));
+  try {
+    const original = fixtureHandoff(root, "original");
+    const other = fixtureHandoff(root, "other");
+    const first = invokeFixture(root, `任务工作包及唯一正式计划材料：${original}。先读取当前工作包。`);
+    expect(first.status).toBe(0);
+    expect(first.sessionId).toBeTruthy();
+    const sessionId = first.sessionId!;
+    const sidecar = join(root, `.devflow-fixture-${sessionId}.json`);
+    expect(JSON.parse(readFileSync(sidecar, "utf8"))).toMatchObject({ sessionId, handoffFile: original });
+    expect(invokeFixture(root, `任务工作包：${other}。先读取当前工作包。`).status).toBe(0);
+    const aside = invokeFixture(root, `请读取工作包 ${other}。必须只读。`, undefined, "aside");
+    expect(aside.status).toBe(0);
+    expect(JSON.parse(readFileSync(join(root, ".devflow-fixture-last-prompt.json"), "utf8")).sessionId).toBe(aside.sessionId);
+
+    const feedback = "任务工作包：保留文件要求没落实，请补齐本轮说明";
+    const resumed = invokeFixture(root, feedback, sessionId);
+    expect(resumed.status).toBe(0);
+    expect(resumed.sessionId).toBe(sessionId);
+    expect(resumed.result.plan.baselines).toEqual({ main: "original" });
+    expect(resumed.result.plan.project_config_hash).toBe("original");
+    expect(resumed.result.markdown).toContain(feedback);
+    expect(resumed.result.markdown).not.toContain("旧反馈-");
+
+    // A bound session may receive a new formal HANDOFF at a stage boundary.
+    const stageStart = invokeFixture(root, `任务工作包及唯一正式计划材料：${other}。先读取当前工作包。`, sessionId);
+    expect(stageStart.status).toBe(0);
+    expect(stageStart.sessionId).toBe(sessionId);
+    expect(stageStart.result.plan.baselines).toEqual({ main: "other" });
+    const next = invokeFixture(root, "任务工作包里的要求仍需补齐", sessionId);
+    expect(next.status).toBe(0);
+    expect(next.result.plan.baselines).toEqual({ main: "other" });
+    expect(next.result.markdown).toContain("任务工作包里的要求仍需补齐");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it.each([
+  ["unknown_id", "FIXTURE_SESSION_UNAVAILABLE"],
+  ["missing", "FIXTURE_SESSION_UNAVAILABLE"],
+  ["mismatch", "FIXTURE_SESSION_MISMATCH"],
+  ["malformed", "FIXTURE_SESSION_UNAVAILABLE"],
+  ["original_missing", "FIXTURE_HANDOFF_UNAVAILABLE"],
+  ["location_mismatch", "FIXTURE_HANDOFF_LOCATION_MISMATCH"],
+  ["invalid_id", "FIXTURE_SESSION_INVALID"],
+] as const)("续接 %s 时明确失败，不能从 last-prompt 或新正式路径绕过会话绑定", (failure, errorCode) => {
+  const root = mkdtempSync(join(tmpdir(), "devflow-fixture-session-failure-"));
+  try {
+    const original = fixtureHandoff(root, "original");
+    const other = fixtureHandoff(root, "other");
+    const first = invokeFixture(root, `任务工作包：${original}。先读取当前工作包。`);
+    expect(first.status).toBe(0);
+    expect(first.sessionId).toBeTruthy();
+    const sessionId = first.sessionId!;
+    const sidecar = join(root, `.devflow-fixture-${sessionId}.json`);
+    if (failure === "missing") rmSync(sidecar);
+    if (failure === "mismatch") {
+      const record = JSON.parse(readFileSync(sidecar, "utf8"));
+      writeFileSync(sidecar, JSON.stringify({ ...record, sessionId: randomUUID() }));
+    }
+    if (failure === "malformed") writeFileSync(sidecar, "{");
+    if (failure === "original_missing") rmSync(original);
+    if (failure === "location_mismatch") {
+      const record = JSON.parse(readFileSync(sidecar, "utf8"));
+      writeFileSync(sidecar, JSON.stringify({ ...record, handoffFile: `${root}/original/../original/HANDOFF.json` }));
+    }
+    // There is a usable, unrelated diagnostic capture in the same root.
+    expect(invokeFixture(root, `任务工作包：${other}。先读取当前工作包。`).status).toBe(0);
+    const requestedSession = failure === "invalid_id"
+      ? "not-a-session-id"
+      : failure === "unknown_id" ? randomUUID() : sessionId;
+    for (const prompt of ["任务工作包：请修正本轮计划", `任务工作包：${other}。先读取当前工作包。`]) {
+      const resumed = invokeFixture(root, prompt, requestedSession);
+      expect(resumed.status).not.toBe(0);
+      expect(resumed.stderr).toContain(errorCode);
+      expect(resumed.sessionId).toBeUndefined();
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 it("外部提交且无执行工作区的计划可问答和修正，排队问答仍读取提问时的版本", async () => {
   const s = setup(),
@@ -88,12 +209,15 @@ it("外部提交且无执行工作区的计划可问答和修正，排队问答�
     template_revision: 1,
     created_at: now(),
   });
+  for (const es of s.store.list<any>("execution_spec", w.id)) {
+    s.store.remove("execution_spec", es.id);
+  }
   s.store.put("execution_spec", spec.id, w.id, spec);
   const runtime = new LocalRuntime(s.engine);
   s.engine.runtime = runtime;
   const review = new PlanReviewService(s.engine);
   const wait = async (predicate: () => boolean) => {
-    const deadline = Date.now() + 45000;
+    const deadline = Date.now() + 30000;
     while (!predicate() && Date.now() < deadline) {
       await s.engine.dispatch();
       if (s.engine.get(w.id).state === "BLOCKED")
@@ -127,6 +251,29 @@ it("外部提交且无执行工作区的计划可问答和修正，排队问答�
     await s.engine.waitForIdle(w.id);
     const revised = s.engine.get(w.id);
     expect(revised.plan_revision).toBe(2);
+    const followupTexts = [
+      "任务工作包里的保留文件要求没落实，请补齐第三版说明",
+      "任务工作包：保留文件要求没落实，请补齐第四版说明",
+    ];
+    for (const [index, text] of followupTexts.entries()) {
+      const current = s.engine.get(w.id);
+      review.reject(w.id, {
+        request_id: `reject-again-${index}`,
+        expected_version: current.version,
+        plan_revision: current.plan_revision,
+        plan_hash: current.plan_hash,
+        text,
+      });
+      await wait(() => {
+        const updated = s.engine.get(w.id);
+        return updated.state === "REPAIR_PLAN_PENDING" && updated.plan_revision === index + 3;
+      });
+      await s.engine.waitForIdle(w.id);
+      const document = new DocumentService(s.store, s.root).getDocument(w.id, "plan");
+      expect(document.content).toContain(text);
+      expect(document.content).not.toContain("补充第二版回滚方案");
+    }
+    const latest = s.engine.get(w.id);
     asides.completeSession("other-workflow", occupied.id, "释放槽位");
     await wait(
       () =>
@@ -136,15 +283,17 @@ it("外部提交且无执行工作区的计划可问答和修正，排队问答�
     expect(answered.answer).toContain("计划版本：1");
     expect(answered.answer).toContain("仅正文包含的约束");
     expect(answered.answer).not.toContain("补充第二版回滚方案");
-    expect(s.engine.get(w.id)).toEqual(revised);
+    expect(s.engine.get(w.id)).toEqual(latest);
     expect(s.store.list("workspace", w.id)).toHaveLength(0);
     expect(s.store.list("approval", w.id)).toHaveLength(0);
     const runs = s.store.list<any>("run", w.id);
-    expect(runs.map((r) => r.stage)).toEqual(["planning", "aside"]);
+    expect(runs.map((r) => r.stage)).toEqual(["planning", "planning", "planning", "aside"]);
     expect(runs.every((r) => r.profile.modelId === "fixture-planner")).toBe(
       true,
     );
-    expect(runs[1].plan_revision).toBe(1);
+    expect(runs[1].conversation_id).toBe(runs[0].conversation_id);
+    expect(runs[2].conversation_id).toBe(runs[0].conversation_id);
+    expect(runs[3].plan_revision).toBe(1);
     expect(readFileSync(join(repo.repo, "app.txt"), "utf8")).toBe("before\n");
     const handoff = JSON.parse(
       readFileSync(

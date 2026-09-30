@@ -7,6 +7,56 @@ import { setup } from "../helpers.js";
 import { acquireControllerLock } from "../../packages/process/src/controller-lock.js";
 import { vi } from "vitest";
 
+it("optional cleanup hooks finish before completion and retain the tool exit code", async () => {
+  const s = setup(), manager = new ProcessManager();
+  try {
+    for (const exitCode of [0, 42]) {
+      const order: string[] = [];
+      const proc = manager.start({
+        id: `cleanup-hook-${exitCode}-${crypto.randomUUID()}`,
+        executable: process.execPath,
+        args: ["-e", `process.exit(${exitCode})`],
+        cwd: s.root, env: {}, timeout_ms: 15000,
+      }, {
+        onCleanupStart: () => { order.push("start"); },
+        beforePipesClose: async () => {
+          await new Promise(resolve => setTimeout(resolve, 25));
+          order.push("cleaned");
+        },
+      });
+      expect((await proc.completion).code).toBe(exitCode);
+      order.push("completed");
+      expect(order).toEqual(["start", "cleaned", "completed"]);
+    }
+  } finally {
+    await manager.close();
+    s.store.close();
+  }
+}, 45000);
+
+it("an optional cleanup hook failure refuses successful completion", async () => {
+  const s = setup(), manager = new ProcessManager();
+  let failCleanup = true;
+  const proc = manager.start({
+    id: `cleanup-hook-failure-${crypto.randomUUID()}`,
+    executable: process.execPath, args: ["-e", "process.exit(0)"],
+    cwd: s.root, env: {}, timeout_ms: 15000,
+  }, {
+    beforePipesClose: async () => {
+      if (failCleanup) throw new Error("owned cleanup refused");
+    },
+  });
+  try {
+    await expect(proc.completion).rejects.toMatchObject({ code: "PROCESS_STOP_UNCONFIRMED" });
+    // Join the current failed cleanup before retrying this fixture's final cleanup.
+    await proc.stop().catch(() => {});
+  } finally {
+    failCleanup = false;
+    await manager.close();
+    s.store.close();
+  }
+}, 45000);
+
 function resolvePowerShell(): string | null {
   const checkPwsh = spawnSync("pwsh", ["-NoProfile", "-Command", "$PSVersionTable.PSVersion.Major"], { encoding: "utf8" });
   if (!checkPwsh.error && checkPwsh.status === 0) return "pwsh";

@@ -126,7 +126,8 @@ export function resolveMaterialLocator(options: {
   const workspaces = savedWorkspaces.length ? savedWorkspaces : (project?.repositories ?? []).map(r => ({
     id: `project:${r.id}`, repo_id: r.id, root: r.path,
   } as Workspace));
-  const existingPath = kind === "plan" && customRelPath === undefined ? originalPlanPath(store, workflowId) : undefined;
+  const explicitAbsolute = customRelPath && isAbsolute(customRelPath) ? customRelPath : undefined;
+  const existingPath = explicitAbsolute ?? (kind === "plan" && customRelPath === undefined ? originalPlanPath(store, workflowId, revision) : undefined);
   requireCondition(workspaces.length > 0, "NO_WORKSPACES", `工作流 ${workflowId} 无可用工作区`, 404);
 
   let targetWs: Workspace | undefined;

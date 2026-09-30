@@ -19,6 +19,7 @@ import {
   getAdapterModels,
   refreshAdapterModels,
   isVerifyAbort,
+  accessStatusLabel,
   type AccessState,
   type ApiError,
   verifyModelAccess,
@@ -53,6 +54,8 @@ export function ModelProfileEditor({
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [access, setAccess] = useState<AccessState | null>(null);
+  const [verifying, setVerifying] = useState(false);
   const generation = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
   const verifyGen = useRef(0);
@@ -61,6 +64,8 @@ export function ModelProfileEditor({
   const comboboxRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const verifyTimer = useRef<number | null>(null);
+
+
   // portal 浮层的锚点坐标（fixed 定位，脱离 overflow 裁剪祖先）
   const [listPos, setListPos] = useState<{
     left: number;
@@ -181,6 +186,8 @@ export function ModelProfileEditor({
 
   const runVerify = (candidate: ToolProfile, force = false) => {
     if (disabled || !autoVerify || !candidate.modelId) {
+      setAccess(null);
+      setVerifying(false);
       onAccessChange?.(null);
       return;
     }
@@ -190,29 +197,40 @@ export function ModelProfileEditor({
     verifyGen.current += 1;
     const token = verifyGen.current;
 
-    onAccessChange?.({ status: "checking", message: "正在验证" });
+    setVerifying(true);
+    const checkingState: AccessState = { status: "checking", message: "正在验证" };
+    setAccess(checkingState);
+    onAccessChange?.(checkingState);
     verifyModelAccess(candidate, controller.signal, force)
       .then((state) => {
         if (token !== verifyGen.current) return;
+        setAccess(state);
         onAccessChange?.(state);
       })
       .catch((error) => {
         if (controller.signal.aborted || token !== verifyGen.current) return;
         if (isVerifyAbort(error)) return;
         const api = error as ApiError;
-        onAccessChange?.({
+        const failState: AccessState = {
           status: api.code || "failed",
           message: formatApiError(error),
-        });
+        };
+        setAccess(failState);
+        onAccessChange?.(failState);
+      })
+      .finally(() => {
+        if (token === verifyGen.current) {
+          setVerifying(false);
+        }
       });
   };
 
-  // 访问探测去抖（约 1.5s）：真实模型探测可达 20–60s，不能每次键入/切换都打
+  // 访问探测去抖（约 200ms）
   useEffect(() => {
     if (verifyTimer.current) window.clearTimeout(verifyTimer.current);
     verifyTimer.current = window.setTimeout(() => {
       runVerify(profile, false);
-    }, 1500);
+    }, 200);
     return () => {
       if (verifyTimer.current) window.clearTimeout(verifyTimer.current);
       verifyAbort.current?.abort();
@@ -282,6 +300,7 @@ export function ModelProfileEditor({
   const changeTool = (next: SupportedAdapterId) => {
     setQuery("");
     setOpenList(false);
+    setAccess(null);
     onAccessChange?.(null);
     onChange(blankKeepId(profile.id, next));
   };
@@ -619,6 +638,20 @@ export function ModelProfileEditor({
           )}
         </div>
       )}
+
+      <div className="ms-access" role="status">
+        <span>访问状态：{accessStatusLabel(access)}</span>
+        {profile.modelId && (
+          <button
+            type="button"
+            className="ms-link"
+            disabled={disabled || verifying}
+            onClick={() => runVerify(profile, true)}
+          >
+            {verifying ? "正在验证…" : "重新验证"}
+          </button>
+        )}
+      </div>
     </div>
   );
 }

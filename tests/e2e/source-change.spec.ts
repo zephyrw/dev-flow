@@ -1,22 +1,19 @@
 import { expect, test } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { fixtureState } from "./native-helper.js";
+import { dismissFirstRun, fixturePost } from "./native-helper.js";
 
 for (const choice of ["continue", "replan"] as const) {
   test(`项目代码已更新：${choice === "continue" ? "明确确认后按原计划继续" : "重新规划后等待批准"}`, async ({
     page,
   }) => {
     test.setTimeout(120000);
-    const seeded = await page.request.post("/__fixture/source-change", {
-      headers: { Origin: "http://localhost:14811" },
-      data: { token: fixtureState().shutdownToken },
-    });
-    expect(seeded.status()).toBe(200);
-    const f = await seeded.json();
+    await dismissFirstRun(page);
+    const f = await fixturePost(page, "/__fixture/source-change");
     const get = async () =>
       (await page.request.get(`/api/workflows/${f.id}`)).json();
     await page.goto(`/?workflow=${f.id}`);
+    await dismissFirstRun(page);
     await expect(page.locator(".attention-message")).toContainText(
       "项目代码在计划制定后发生了更新",
     );
