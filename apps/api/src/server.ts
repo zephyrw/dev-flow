@@ -112,6 +112,7 @@ import {
 import {
   resumeApproved,
   reconcileProcesses,
+  reconcileRestartedConversations,
 } from "../../../packages/runtime/src/recovery.js";
 
 export async function buildServer(
@@ -1866,6 +1867,10 @@ export async function buildServer(
     const key = Id.parse((req.params as any).id);
     assertResumeMode(engine, key, (req.body || {}) as Record<string, unknown>);
     const body = (req.body || {}) as any;
+    await engine.waitForIdle(key);
+    await (engine.runtime as LocalRuntime)?.browser?.reconcile(key);
+    await (engine.runtime as LocalRuntime)?.environments?.stop(key).catch(() => {});
+    await reconcileRestartedConversations(engine, key);
     await resumeActiveTree(
       conversationControls,
       conversationRecovery,
@@ -1873,11 +1878,6 @@ export async function buildServer(
       key,
       body,
     );
-    await engine.waitForIdle(key);
-    await (engine.runtime as LocalRuntime)?.browser?.reconcile(key);
-    await (engine.runtime as LocalRuntime)?.environments
-      ?.stop(key)
-      .catch(() => {});
     const result = resumeApproved(engine, key);
     void engine.dispatch();
     return result;

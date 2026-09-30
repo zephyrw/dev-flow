@@ -84,9 +84,13 @@ export function WorkflowOverview({
   onOpenTests,
 }: WorkflowOverviewProps) {
   const goalSummary =
-    overview?.goal?.summary || workflow?.title || "尚未生成任务目标摘要";
+    (overview?.goal?.status !== "missing" && overview?.goal?.summary) ||
+    workflow?.title ||
+    "任务概览";
   const bgSummary =
-    overview?.background?.summary || "当前尚未记录结构化背景与边界约束";
+    overview?.background?.status !== "missing"
+      ? overview?.background?.summary
+      : undefined;
   const bgItems = overview?.background?.items ?? [];
   const findings = overview?.findings ?? [];
   const unresolved = overview?.unresolved ?? [];
@@ -98,6 +102,8 @@ export function WorkflowOverview({
 
   const visibleTasks = tasks.slice(0, 6);
   const visibleTests = tests.slice(0, 6);
+  const hasBackground = Boolean(bgSummary?.trim() || bgItems.length);
+  const hasFindings = findings.length > 0 || unresolved.length > 0;
 
   return (
     <div
@@ -141,16 +147,7 @@ export function WorkflowOverview({
           </span>
           <div>
             <div style={{ fontWeight: 700, fontSize: "14px" }}>
-              本工作流所有阶段已全部通过并已提交入库
-            </div>
-            <div
-              style={{
-                fontSize: "12px",
-                color: "var(--text-secondary, #555)",
-                marginTop: "3px",
-              }}
-            >
-              需求调研、方案批准、开发实施、自动测试、人工验收、独立复核及本地提交均已完整交付。
+              代码已提交至本地仓库
             </div>
           </div>
         </div>
@@ -257,378 +254,372 @@ export function WorkflowOverview({
       </section>
 
       {/* 2. 背景与约束 & 调研结果 */}
-      <div
-        className="overview-grid-row"
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))",
-          gap: "16px",
-        }}
-      >
-        <section
-          className="panel overview-background-card"
+      {(hasBackground || hasFindings) && (
+        <div
+          className="overview-grid-row"
           style={{
-            padding: "16px 18px",
-            borderRadius: "8px",
-            border: "1px solid var(--border-color, #e2e8f0)",
-            background: "#ffffff",
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))",
+            gap: "16px",
           }}
         >
-          <h2
-            style={{
-              margin: "0 0 10px 0",
-              fontSize: "15px",
-              fontWeight: 600,
-              display: "flex",
-              alignItems: "center",
-              gap: "8px",
-            }}
-          >
-            <span aria-hidden="true">📌</span>
-            <span>背景与约束</span>
-          </h2>
-          <p
-            style={{
-              margin: "0 0 10px 0",
-              fontSize: "13px",
-              lineHeight: "1.6",
-              color: "#334155",
-            }}
-          >
-            {bgSummary}
-          </p>
-          {bgItems.length > 0 && (
-            <ul
+          {hasBackground && (
+            <section
+              className="panel overview-background-card"
               style={{
-                margin: 0,
-                paddingLeft: "18px",
-                fontSize: "12px",
-                color: "#475569",
-                display: "flex",
-                flexDirection: "column",
-                gap: "4px",
+                padding: "16px 18px",
+                borderRadius: "8px",
+                border: "1px solid var(--border-color, #e2e8f0)",
+                background: "#ffffff",
               }}
             >
-              {bgItems.map((item, idx) => (
-                <li key={idx}>{item}</li>
-              ))}
-            </ul>
-          )}
-        </section>
-
-        <section
-          className="panel overview-findings-card"
-          style={{
-            padding: "16px 18px",
-            borderRadius: "8px",
-            border: "1px solid var(--border-color, #e2e8f0)",
-            background: "#ffffff",
-          }}
-        >
-          <h2
-            style={{
-              margin: "0 0 10px 0",
-              fontSize: "15px",
-              fontWeight: 600,
-              display: "flex",
-              alignItems: "center",
-              gap: "8px",
-            }}
-          >
-            <span aria-hidden="true">🔍</span>
-            <span>调研结果</span>
-          </h2>
-
-          {findings.length === 0 && unresolved.length === 0 ? (
-            <div style={{ fontSize: "13px", color: "#64748b" }}>
-              <p style={{ margin: "0 0 8px 0" }}>
-                当前计划未提供结构化调研摘要
-              </p>
-              {onOpenPlan && workflow?.plan_revision > 0 && (
-                <button
-                  type="button"
-                  className="btn btn-secondary"
-                  style={{ fontSize: "12px", padding: "3px 8px" }}
-                  onClick={onOpenPlan}
+              <h2
+                style={{
+                  margin: "0 0 10px 0",
+                  fontSize: "15px",
+                  fontWeight: 600,
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "8px",
+                }}
+              >
+                <span aria-hidden="true">📌</span>
+                <span>背景与约束</span>
+              </h2>
+              {bgSummary?.trim() && (
+                <p
+                  style={{
+                    margin: "0 0 10px 0",
+                    fontSize: "13px",
+                    lineHeight: "1.6",
+                    color: "#334155",
+                  }}
                 >
-                  前往完整计划查看
-                </button>
+                  {bgSummary}
+                </p>
               )}
-            </div>
-          ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-              {findings.length > 0 && (
+              {bgItems.length > 0 && (
                 <ul
                   style={{
                     margin: 0,
                     paddingLeft: "18px",
-                    fontSize: "13px",
-                    color: "#334155",
+                    fontSize: "12px",
+                    color: "#475569",
                     display: "flex",
                     flexDirection: "column",
-                    gap: "6px",
+                    gap: "4px",
                   }}
                 >
-                  {findings.slice(0, 5).map((f) => (
-                    <li key={f.id}>
-                      <strong>{f.title}</strong>
-                      {f.description && (
-                        <span style={{ color: "#64748b", marginLeft: "6px" }}>
-                          — {f.description}
-                        </span>
-                      )}
-                    </li>
+                  {bgItems.map((item, idx) => (
+                    <li key={idx}>{item}</li>
                   ))}
                 </ul>
               )}
+            </section>
+          )}
 
-              {unresolved.length > 0 && (
-                <div
-                  style={{
-                    padding: "8px 10px",
-                    background: "#fffbeb",
-                    border: "1px solid #fde68a",
-                    borderRadius: "6px",
-                    fontSize: "12px",
-                    color: "#92400e",
-                  }}
-                >
-                  <div style={{ fontWeight: 600, marginBottom: "4px" }}>
-                    待决问题 ({unresolved.length})：
-                  </div>
-                  <ul style={{ margin: 0, paddingLeft: "16px" }}>
-                    {unresolved.map((u, idx) => (
-                      <li key={idx}>{u}</li>
+          {hasFindings && (
+            <section
+              className="panel overview-findings-card"
+              style={{
+                padding: "16px 18px",
+                borderRadius: "8px",
+                border: "1px solid var(--border-color, #e2e8f0)",
+                background: "#ffffff",
+              }}
+            >
+              <h2
+                style={{
+                  margin: "0 0 10px 0",
+                  fontSize: "15px",
+                  fontWeight: 600,
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "8px",
+                }}
+              >
+                <span aria-hidden="true">🔍</span>
+                <span>调研结果</span>
+              </h2>
+
+              <div
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: "10px",
+                }}
+              >
+                {findings.length > 0 && (
+                  <ul
+                    style={{
+                      margin: 0,
+                      paddingLeft: "18px",
+                      fontSize: "13px",
+                      color: "#334155",
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: "6px",
+                    }}
+                  >
+                    {findings.slice(0, 5).map((f) => (
+                      <li key={f.id}>
+                        <strong>{f.title}</strong>
+                        {f.description && (
+                          <span style={{ color: "#64748b", marginLeft: "6px" }}>
+                            — {f.description}
+                          </span>
+                        )}
+                      </li>
                     ))}
                   </ul>
-                </div>
-              )}
-            </div>
+                )}
+
+                {unresolved.length > 0 && (
+                  <div
+                    style={{
+                      padding: "8px 10px",
+                      background: "#fffbeb",
+                      border: "1px solid #fde68a",
+                      borderRadius: "6px",
+                      fontSize: "12px",
+                      color: "#92400e",
+                    }}
+                  >
+                    <div style={{ fontWeight: 600, marginBottom: "4px" }}>
+                      待决问题 ({unresolved.length})：
+                    </div>
+                    <ul style={{ margin: 0, paddingLeft: "16px" }}>
+                      {unresolved.map((u, idx) => (
+                        <li key={idx}>{u}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            </section>
           )}
-        </section>
-      </div>
+        </div>
+      )}
 
       {/* 3. 主要任务 & 主要测试项 */}
-      <div
-        className="overview-grid-row"
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))",
-          gap: "16px",
-        }}
-      >
-        <section
-          className="panel overview-tasks-card"
+      {(tasks.length > 0 || tests.length > 0) && (
+        <div
+          className="overview-grid-row"
           style={{
-            padding: "16px 18px",
-            borderRadius: "8px",
-            border: "1px solid var(--border-color, #e2e8f0)",
-            background: "#ffffff",
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))",
+            gap: "16px",
           }}
         >
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              marginBottom: "10px",
-            }}
-          >
-            <h2
+          {tasks.length > 0 && (
+            <section
+              className="panel overview-tasks-card"
               style={{
-                margin: 0,
-                fontSize: "15px",
-                fontWeight: 600,
-                display: "flex",
-                alignItems: "center",
-                gap: "8px",
+                padding: "16px 18px",
+                borderRadius: "8px",
+                border: "1px solid var(--border-color, #e2e8f0)",
+                background: "#ffffff",
               }}
             >
-              <span aria-hidden="true">📋</span>
-              <span>主要任务</span>
-            </h2>
-            {tasks.length > 0 && onOpenTasks && (
-              <button
-                type="button"
-                className="btn btn-secondary"
-                style={{ fontSize: "12px", padding: "2px 8px" }}
-                onClick={onOpenTasks}
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  marginBottom: "10px",
+                }}
               >
-                查看全部 {tasks.length} 项
-              </button>
-            )}
-          </div>
-
-          {tasks.length === 0 ? (
-            <div style={{ fontSize: "13px", color: "#64748b" }}>
-              计划尚未生成
-            </div>
-          ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-              {visibleTasks.map((t) => {
-                const meta = TASK_STATUS_META[t.status];
-                return (
-                  <div
-                    key={t.id}
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "space-between",
-                      gap: "10px",
-                      padding: "6px 10px",
-                      borderRadius: "6px",
-                      background: "#f8fafc",
-                      fontSize: "13px",
-                    }}
+                <h2
+                  style={{
+                    margin: 0,
+                    fontSize: "15px",
+                    fontWeight: 600,
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "8px",
+                  }}
+                >
+                  <span aria-hidden="true">📋</span>
+                  <span>主要任务</span>
+                </h2>
+                {tasks.length > 0 && onOpenTasks && (
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    style={{ fontSize: "12px", padding: "2px 8px" }}
+                    onClick={onOpenTasks}
                   >
-                    <span
+                    查看全部 {tasks.length} 项
+                  </button>
+                )}
+              </div>
+
+              <div
+                style={{ display: "flex", flexDirection: "column", gap: "8px" }}
+              >
+                {visibleTasks.map((t) => {
+                  const meta = TASK_STATUS_META[t.status];
+                  return (
+                    <div
+                      key={t.id}
                       style={{
-                        color: "#1e293b",
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                        whiteSpace: "nowrap",
-                      }}
-                      title={t.title}
-                    >
-                      {t.title}
-                    </span>
-                    <span
-                      style={{
-                        display: "inline-flex",
+                        display: "flex",
                         alignItems: "center",
-                        gap: "5px",
-                        padding: "2px 8px",
-                        borderRadius: "999px",
-                        fontSize: "11px",
-                        fontWeight: 600,
-                        background: meta.bg,
-                        color: meta.color,
-                        flexShrink: 0,
+                        justifyContent: "space-between",
+                        gap: "10px",
+                        padding: "6px 10px",
+                        borderRadius: "6px",
+                        background: "#f8fafc",
+                        fontSize: "13px",
                       }}
                     >
                       <span
                         style={{
-                          width: "6px",
-                          height: "6px",
-                          borderRadius: "50%",
-                          background: meta.dot,
+                          color: "#1e293b",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
                         }}
-                      />
-                      {meta.label}
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
+                        title={t.title}
+                      >
+                        {t.title}
+                      </span>
+                      <span
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: "5px",
+                          padding: "2px 8px",
+                          borderRadius: "999px",
+                          fontSize: "11px",
+                          fontWeight: 600,
+                          background: meta.bg,
+                          color: meta.color,
+                          flexShrink: 0,
+                        }}
+                      >
+                        <span
+                          style={{
+                            width: "6px",
+                            height: "6px",
+                            borderRadius: "50%",
+                            background: meta.dot,
+                          }}
+                        />
+                        {meta.label}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
           )}
-        </section>
 
-        <section
-          className="panel overview-tests-card"
-          style={{
-            padding: "16px 18px",
-            borderRadius: "8px",
-            border: "1px solid var(--border-color, #e2e8f0)",
-            background: "#ffffff",
-          }}
-        >
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              marginBottom: "10px",
-            }}
-          >
-            <h2
+          {tests.length > 0 && (
+            <section
+              className="panel overview-tests-card"
               style={{
-                margin: 0,
-                fontSize: "15px",
-                fontWeight: 600,
-                display: "flex",
-                alignItems: "center",
-                gap: "8px",
+                padding: "16px 18px",
+                borderRadius: "8px",
+                border: "1px solid var(--border-color, #e2e8f0)",
+                background: "#ffffff",
               }}
             >
-              <span aria-hidden="true">🧪</span>
-              <span>主要测试项</span>
-            </h2>
-            {tests.length > 0 && onOpenTests && (
-              <button
-                type="button"
-                className="btn btn-secondary"
-                style={{ fontSize: "12px", padding: "2px 8px" }}
-                onClick={onOpenTests}
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  marginBottom: "10px",
+                }}
               >
-                查看全部 {tests.length} 项
-              </button>
-            )}
-          </div>
-
-          {tests.length === 0 ? (
-            <div style={{ fontSize: "13px", color: "#64748b" }}>
-              暂无结构化测试与验收清单
-            </div>
-          ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-              {visibleTests.map((tst) => {
-                const meta = TEST_STATUS_META[tst.status];
-                return (
-                  <div
-                    key={tst.id}
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "space-between",
-                      gap: "10px",
-                      padding: "6px 10px",
-                      borderRadius: "6px",
-                      background: "#f8fafc",
-                      fontSize: "13px",
-                    }}
+                <h2
+                  style={{
+                    margin: 0,
+                    fontSize: "15px",
+                    fontWeight: 600,
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "8px",
+                  }}
+                >
+                  <span aria-hidden="true">🧪</span>
+                  <span>主要测试项</span>
+                </h2>
+                {tests.length > 0 && onOpenTests && (
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    style={{ fontSize: "12px", padding: "2px 8px" }}
+                    onClick={onOpenTests}
                   >
-                    <span
+                    查看全部 {tests.length} 项
+                  </button>
+                )}
+              </div>
+
+              <div
+                style={{ display: "flex", flexDirection: "column", gap: "8px" }}
+              >
+                {visibleTests.map((tst) => {
+                  const meta = TEST_STATUS_META[tst.status];
+                  return (
+                    <div
+                      key={tst.id}
                       style={{
-                        color: "#1e293b",
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                        whiteSpace: "nowrap",
-                      }}
-                      title={tst.scenario}
-                    >
-                      {tst.scenario}
-                    </span>
-                    <span
-                      style={{
-                        display: "inline-flex",
+                        display: "flex",
                         alignItems: "center",
-                        gap: "5px",
-                        padding: "2px 8px",
-                        borderRadius: "999px",
-                        fontSize: "11px",
-                        fontWeight: 600,
-                        background: meta.bg,
-                        color: meta.color,
-                        flexShrink: 0,
+                        justifyContent: "space-between",
+                        gap: "10px",
+                        padding: "6px 10px",
+                        borderRadius: "6px",
+                        background: "#f8fafc",
+                        fontSize: "13px",
                       }}
                     >
                       <span
                         style={{
-                          width: "6px",
-                          height: "6px",
-                          borderRadius: "50%",
-                          background: meta.dot,
+                          color: "#1e293b",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          whiteSpace: "nowrap",
                         }}
-                      />
-                      {meta.label}
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
+                        title={tst.scenario}
+                      >
+                        {tst.scenario}
+                      </span>
+                      <span
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: "5px",
+                          padding: "2px 8px",
+                          borderRadius: "999px",
+                          fontSize: "11px",
+                          fontWeight: 600,
+                          background: meta.bg,
+                          color: meta.color,
+                          flexShrink: 0,
+                        }}
+                      >
+                        <span
+                          style={{
+                            width: "6px",
+                            height: "6px",
+                            borderRadius: "50%",
+                            background: meta.dot,
+                          }}
+                        />
+                        {meta.label}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
           )}
-        </section>
-      </div>
+        </div>
+      )}
 
       {/* 4. 可信状态分布（仅当存在可信统计分母时显示，绝不画假 0% 卡片） */}
       {(taskProgress !== null || testProgress !== null) && (
@@ -753,11 +744,8 @@ export function WorkflowOverview({
               }}
             >
               <span aria-hidden="true">🛡️</span>
-              <span>本版审批附加执行约束</span>
+              <span>执行要求</span>
             </h2>
-            <span style={{ fontSize: "11px", color: "#3b82f6" }}>
-              绑定审批：{constraints.approval_id}
-            </span>
           </div>
           <p
             style={{

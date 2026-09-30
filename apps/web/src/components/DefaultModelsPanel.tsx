@@ -177,7 +177,7 @@ export function DefaultModelsPanel({
         return;
       }
       if (api.code === "IDEMPOTENCY_CONFLICT") {
-        setError("相同请求标识已有不同内容提交，请稍候重试。");
+        setError("本次保存发生冲突，请重试。");
         requestId.current = newRequestId();
         return;
       }

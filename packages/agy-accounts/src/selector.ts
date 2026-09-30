@@ -1,4 +1,4 @@
-import { hasAccountIdentityMismatch, hasDualQuotaWindows, requiredQuotaPools } from "./quota.js";
+import { hasAccountIdentityMismatch, hasDualQuotaWindows, requiredQuotaPools, computeEffectiveWeeklyQuota } from "./quota.js";
 import type {
   AgyAccount,
   AgyQuotaSnapshot,
@@ -140,6 +140,7 @@ export function evaluateAccountForDemand(
   let isProjectedResetAny = false;
   let hasZeroWindowUnreset = false;
   let hasZeroWindowProjected = false;
+  let isProjectedExpiredOrZero = false;
 
   const demandedPools = requiredQuotaPools([...poolSnaps.values()], policy.required_pool_ids, policy.required_model_ids ?? []);
   if (!demandedPools) excluded_reasons.push("missing_required_quota_pools");
@@ -190,21 +191,39 @@ export function evaluateAccountForDemand(
     // 周窗口
     const wkRemain = weeklyWindow.remaining_fraction;
     let effectiveWk = wkRemain ?? 0;
-    const weeklyReset = parseTimeMs(weeklyWindow.reset_at);
-    if (weeklyReset !== null && evaluationTime >= weeklyReset + clockSkewMs) {
-      effectiveWk = 1;
-      isProjectedResetAny = true;
-    }
-    if (wkRemain !== null && wkRemain <= 0) {
-      if (!weeklyReset) {
+    const hasWeeklyReset = Boolean(weeklyWindow.reset_at);
+    const weeklyReset = hasWeeklyReset ? parseTimeMs(weeklyWindow.reset_at) : null;
+    const isResetAtInvalid = hasWeeklyReset && weeklyReset === null;
+
+    if (isResetAtInvalid) {
+      // 非空非法时间：不能恢复100%
+      if (wkRemain !== null && wkRemain <= 0) {
         excluded_reasons.push("weekly_exhausted_unknown_reset");
-      } else if (evaluationTime < weeklyReset + clockSkewMs) {
-        hasZeroWindowUnreset = true;
-        blockingTimes.push(weeklyReset + clockSkewMs);
-      } else {
+      }
+    } else if (!hasWeeklyReset) {
+      // 明确没有重置时间：周额度判定为100%
+      effectiveWk = 1;
+      if (wkRemain !== null && wkRemain < 1) {
+        isProjectedResetAny = true;
+      }
+      if (wkRemain !== null && wkRemain <= 0) {
+        // 实测为 0 但无重置时间（已重置）：作为候选进入核验，不直接发许可
+        isProjectedExpiredOrZero = true;
+        hasZeroWindowProjected = true;
+      }
+    } else if (weeklyReset !== null) {
+      if (evaluationTime >= weeklyReset + clockSkewMs) {
+        // 已到期：周额度为100%
         effectiveWk = 1;
         isProjectedResetAny = true;
-        hasZeroWindowProjected = true;
+        isProjectedExpiredOrZero = true;
+        if (wkRemain !== null && wkRemain <= 0) {
+          hasZeroWindowProjected = true;
+        }
+      } else if (wkRemain !== null && wkRemain <= 0) {
+        // 未到期且实测为0：等待重置
+        hasZeroWindowUnreset = true;
+        blockingTimes.push(weeklyReset + clockSkewMs);
       }
     }
     minWeeklyFraction = Math.min(minWeeklyFraction, effectiveWk);
@@ -220,8 +239,8 @@ export function evaluateAccountForDemand(
   let eligible_for_candidate = false;
 
   if (!hasHardExclusion && !hasZeroWindowUnreset) {
-    if (hasZeroWindowProjected || isProjectedResetAny) {
-      // 实测为 0 但到期重置：不能直接发业务许可，但允许作为候选进入串行核验
+    if (hasZeroWindowProjected || isProjectedExpiredOrZero) {
+      // 实测为 0 或到期重置：不能直接发业务许可，但允许作为候选进入串行核验
       eligible_for_permit = false;
       eligible_for_candidate = true;
     } else if (minWeeklyFraction > 0 && (minFiveHourFraction ?? 0) > 0) {

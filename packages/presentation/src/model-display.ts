@@ -1,4 +1,14 @@
 import type { ModelEntry } from "../../contracts/src/model-catalog.js";
+import type { ConversationRuntimeDisplay } from "../../contracts/src/conversation-input.js";
+
+export function conversationRuntimeLabels(display: ConversationRuntimeDisplay): string[] {
+  return [
+    display.model_source === "actual" || display.model_source === "requested"
+      ? display.model_label : undefined,
+    display.effort_source === "actual" || display.effort_source === "requested"
+      ? display.effort_label : undefined,
+  ].filter((label): label is string => Boolean(label));
+}
 
 export type ModelChoice = {
   choiceId: string;

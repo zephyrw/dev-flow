@@ -7,7 +7,7 @@ import React, {
 } from "react";
 import "./agy-accounts.css";
 import {
-  formatQuotaWindow,
+  formatSnapshotQuotaWindow,
   formatAccountStateLabel,
 } from "../../../../packages/presentation/src/agy-accounts.js";
 import type {
@@ -66,12 +66,15 @@ interface ServiceView extends Realm {
 }
 
 function CompactQuotaBar({
-  window,
+  snapshot,
+  kind,
 }: {
-  window: AgyQuotaSnapshot["windows"][number] | undefined;
+  snapshot: AgyQuotaSnapshot | undefined;
+  kind: AgyQuotaSnapshot["windows"][number]["kind"];
 }) {
+  const window = snapshot?.windows.find((w) => w.kind === kind);
   if (!window) return null;
-  const value = formatQuotaWindow(window);
+  const value = formatSnapshotQuotaWindow(snapshot, kind);
   const percent = value.fraction !== null ? Math.round(value.fraction * 100) : null;
   const tooltip = value.shortResetText
     ? `${value.label}：${value.percentageText}，${value.resetText}`
@@ -462,14 +465,14 @@ export const AgyAccountsPanel = forwardRef<
                     {/* 紧凑额度条 */}
                     <div className="agy-account-quotas">
                       {weeklyWindow ? (
-                        <CompactQuotaBar window={weeklyWindow} />
+                        <CompactQuotaBar snapshot={snapshot} kind="weekly" />
                       ) : (
                         <span className="agy-no-quota">
                           {refreshing ? "周额度探测中..." : "周额度待实测"}
                         </span>
                       )}
                       {shortWindow ? (
-                        <CompactQuotaBar window={shortWindow} />
+                        <CompactQuotaBar snapshot={snapshot} kind="five_hour" />
                       ) : null}
                     </div>
                   </div>

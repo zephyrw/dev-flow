@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { selectCandidates } from "../../packages/agy-accounts/src/selector.js";
+import { selectCandidates, evaluateAccountForDemand } from "../../packages/agy-accounts/src/selector.js";
 import type { AgyAccount, AgyQuotaSnapshot } from "../../packages/contracts/src/agy-account.js";
 
 describe("AGY Account Selector (AC-U04 & AC-U05)", () => {
@@ -22,7 +22,7 @@ describe("AGY Account Selector (AC-U04 & AC-U05)", () => {
   const buildSnapshot = (
     accountId: string,
     weeklyFraction: number,
-    weeklyReset?: string,
+    weeklyReset?: string | null,
     fiveHourFraction: number = 0.8,
   ): AgyQuotaSnapshot => ({
     id: `snap-${accountId}`,
@@ -60,10 +60,11 @@ describe("AGY Account Selector (AC-U04 & AC-U05)", () => {
     const a2 = buildAccount("acc-2", "Account 2");
     const a3 = buildAccount("acc-3", "Account 3");
 
+    const futureReset = new Date(now + 86400000).toISOString();
     const snaps = [
-      buildSnapshot("acc-1", 0.3),
-      buildSnapshot("acc-2", 0.8),
-      buildSnapshot("acc-3", 0.5),
+      buildSnapshot("acc-1", 0.3, futureReset),
+      buildSnapshot("acc-2", 0.8, futureReset),
+      buildSnapshot("acc-3", 0.5, futureReset),
     ];
 
     const result = selectCandidates([a1, a2, a3], snaps, ["default"], now);
@@ -188,5 +189,85 @@ describe("AGY Account Selector (AC-U04 & AC-U05)", () => {
     expect(result.ranked_candidates).toHaveLength(0);
     expect(result.excluded_accounts).toHaveLength(2);
     expect(result.next_eligible_at).toBe(new Date(now + 3600 * 1000 + 60000).toISOString());
+  });
+
+  it("A07: 候选评分使用有效周值；禁用、认证不匹配、能力未验证、未知耗尽原因仍限制使用，不直接授予许可", () => {
+    const a1 = buildAccount("acc-1", "Account 1 (60% no reset)");
+    const a2 = buildAccount("acc-2", "Account 2 (69% expired reset)");
+    const a3 = buildAccount("acc-3", "Account 3 (future 50%)");
+
+    const snaps = [
+      buildSnapshot("acc-1", 0.6, null), // 无重置时间 -> 有效周值恢复为 1
+      buildSnapshot("acc-2", 0.69, new Date(now - 600_000).toISOString()), // 已过期 -> 恢复为 1
+      buildSnapshot("acc-3", 0.5, new Date(now + 86400_000).toISOString()), // 未来 -> 0.5
+    ];
+
+    const result = selectCandidates([a1, a2, a3], snaps, ["default"], now);
+    // a1 和 a2 恢复为 1，排在 a3(0.5) 前面
+    expect(result.ranked_candidates.find(c => c.account_id === "acc-1")?.projected_weekly).toBe(1);
+    expect(result.ranked_candidates.find(c => c.account_id === "acc-1")?.is_projected_reset).toBe(true);
+    expect(result.ranked_candidates.find(c => c.account_id === "acc-2")?.projected_weekly).toBe(1);
+    expect(result.ranked_candidates.find(c => c.account_id === "acc-2")?.is_projected_reset).toBe(true);
+    expect(result.ranked_candidates.find(c => c.account_id === "acc-3")?.projected_weekly).toBe(0.5);
+
+    // 禁用、认证不匹配、能力未验证、未知耗尽原因仍限制使用
+    const aDisabled = buildAccount("acc-disabled", "Disabled", "disabled");
+    const aReauth = buildAccount("acc-reauth", "Reauth", "reauth_required");
+    const aMismatch = buildAccount("acc-mismatch", "Mismatch");
+    aMismatch.identity.email = "mismatch@example.com";
+    aMismatch.auth.email = "other@example.com";
+
+    // 显式过期重置账号：作为候选进入核验，不直接授予业务许可 (eligible_for_permit: false)
+    const evalExpired = evaluateAccountForDemand({
+      account: a2,
+      snapshots: [snaps[1]!],
+      policy: { required_pool_ids: ["default"] },
+      evaluationTime: now,
+    });
+    expect(evalExpired.eligible_for_candidate).toBe(true);
+    expect(evalExpired.eligible_for_permit).toBe(false);
+
+    // 禁用账号：仍限制使用，不直接授予许可且不可作为候选
+    const evalDisabled = evaluateAccountForDemand({
+      account: aDisabled,
+      snapshots: [snaps[0]!],
+      policy: { required_pool_ids: ["default"] },
+      evaluationTime: now,
+    });
+    expect(evalDisabled.eligible_for_candidate).toBe(false);
+    expect(evalDisabled.eligible_for_permit).toBe(false);
+    expect(evalDisabled.excluded_reasons).toContain("account_disabled");
+
+    const snapUnverified = buildSnapshot("acc-unverified", 0.6, null);
+    snapUnverified.capability_verified = false;
+
+    const snapUnknownExhaust = buildSnapshot("acc-unknown", 0.6, null);
+    snapUnknownExhaust.exhausted = { window: "unknown", observed_at: "2026-09-20T11:55:00.000Z" };
+
+    const restricted = selectCandidates(
+      [aDisabled, aReauth, aMismatch, buildAccount("acc-unverified", "Unverified"), buildAccount("acc-unknown", "Unknown")],
+      [snaps[0]!, snaps[0]!, snaps[0]!, snapUnverified, snapUnknownExhaust],
+      ["default"],
+      now,
+    );
+    expect(restricted.ranked_candidates).toHaveLength(0);
+    expect(restricted.excluded_accounts.map(e => e.reason)).toContain("account_disabled");
+    expect(restricted.excluded_accounts.map(e => e.reason)).toContain("reauth_required");
+    expect(restricted.excluded_accounts.map(e => e.reason)).toContain("account_identity_mismatch");
+    expect(restricted.excluded_accounts.map(e => e.reason)).toContain("missing_required_quota_pools");
+    expect(restricted.excluded_accounts.map(e => e.reason)).toContain("quota_exhausted_unknown_window");
+
+    // AGY-WEEKLY-05: 原周额度为0，reset_at为非空非法字符串时，保留weekly_exhausted_unknown_reset排除原因
+    const snapInvalidReset = buildSnapshot("acc-invalid-time", 0.0, "not-a-valid-date");
+    const aInvalidTime = buildAccount("acc-invalid-time", "Invalid Time");
+    const evalInvalidTime = evaluateAccountForDemand({
+      account: aInvalidTime,
+      snapshots: [snapInvalidReset],
+      policy: { required_pool_ids: ["default"] },
+      evaluationTime: now,
+    });
+    expect(evalInvalidTime.eligible_for_candidate).toBe(false);
+    expect(evalInvalidTime.eligible_for_permit).toBe(false);
+    expect(evalInvalidTime.excluded_reasons).toContain("weekly_exhausted_unknown_reset");
   });
 });

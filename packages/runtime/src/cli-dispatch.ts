@@ -674,7 +674,17 @@ export class CliDispatchManager {
 
     this.store.transaction(() => {
       for (const d of dispatches) {
-        if (d.state === "starting" && !d.process_identity?.pid) {
+        const procRecord = processRecords.find((p) => p.id === d.run_id);
+        const isProcExited = procRecord?.status === "exited" && procRecord.confirmed;
+        if (["prepared", "starting", "running", "stopping", "needs_reconcile"].includes(d.state) && isProcExited) {
+          this.store.put("cli_dispatch_record", d.id, workflowId, {
+            ...d, state: "interrupted", error: "关联进程在宿主上已确认为退出", updated_at: now(),
+          });
+          const run = runs.find((r) => r.id === d.run_id);
+          if (run?.status === "running") this.store.put("run", run.id, workflowId, {
+            ...run, status: "stopped", ended_at: now(),
+          });
+        } else if (d.state === "starting" && !d.process_identity?.pid) {
           // 未获得回执且未能确认启动
           const updated: CliDispatchRecord = {
             ...d,
@@ -683,9 +693,7 @@ export class CliDispatchManager {
           };
           this.store.put("cli_dispatch_record", d.id, workflowId, updated);
         } else if (d.state === "running" || d.state === "starting") {
-          const procRecord = processRecords.find((p) => p.id === d.run_id);
           const run = runs.find((r) => r.id === d.run_id);
-          const isProcExited = procRecord && procRecord.status === "exited" && procRecord.confirmed;
           const isRunFinished = run && run.status !== "running";
 
           if (isProcExited || isRunFinished) {

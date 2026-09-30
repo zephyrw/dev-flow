@@ -25,6 +25,9 @@ export const AgyAccountsPage: React.FC = () => {
           height: "fit-content",
         }}
       >
+        <h2 style={{ margin: "0 0 20px 0", fontSize: "20px", fontWeight: "600", color: "#0f172a" }}>
+          AGY 账号与额度管理
+        </h2>
         <AgyAccountsPanel />
       </div>
     </div>

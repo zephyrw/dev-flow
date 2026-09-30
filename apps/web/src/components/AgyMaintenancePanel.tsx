@@ -74,8 +74,8 @@ export function AgyMaintenancePanel({
   const groups: Array<[string, keyof Omit<Report, "generated_at" | "evaluation_time" | "evaluated_night_start" | "evaluated_night_end">]> = [
     ["需重新认证", "reauth_required_accounts"],
     ["授权将在夜间结束前到期", "expiring_refresh_accounts"],
-    ["刷新授权无固定到期（官方未提供）", "unknown_refresh_expiry_accounts"],
-    ["刷新能力未验证", "unverified_refresh_accounts"],
+    ["授权有效期未知", "unknown_refresh_expiry_accounts"],
+    ["授权待核验", "unverified_refresh_accounts"],
     ["双额度待补测", "pending_quota_accounts"],
     ["今晚可用候选", "night_candidates"],
     ["夜间排除原因", "excluded_from_night"],
@@ -92,16 +92,12 @@ export function AgyMaintenancePanel({
       <div className="agy-modal" role="dialog" aria-label="日间维护">
         <h3>日间维护与夜间准备</h3>
         {error && <p role="alert">{error}</p>}
-        <p>
-          这是本地健康报告。备用访问令牌到期不表示需要重新登录；刷新授权无固定到期不代表永久有效。
-        </p>
         {report && (
           <>
             <p>
               报告生成时间：{new Date(report.generated_at).toLocaleString()}
-              {report.evaluation_time && ` · 评价基准时刻：${new Date(report.evaluation_time).toLocaleString()}`}
             </p>
-            {groups.map(([label, key]) => (
+            {groups.filter(([, key]) => report[key].length > 0).map(([label, key]) => (
               <section key={key}>
                 <h4>{label}</h4>
                 {report[key].length ? (
@@ -123,7 +119,7 @@ export function AgyMaintenancePanel({
           </>
         )}
         <fieldset>
-          <legend>选择需要串行核验的账号</legend>
+          <legend>选择需要核验的账号</legend>
           {all.map((e) => (
             <label key={e.id} style={{ display: "block" }}>
               <input
@@ -142,7 +138,7 @@ export function AgyMaintenancePanel({
           ))}
         </fieldset>
         <p>
-          核验使用共享身份切换屏障，并在结束后恢复原身份。操作进度中可以安全取消。
+          核验将切换账号，结束后恢复原账号。可在操作进度中取消。
         </p>
         <div className="agy-header-actions">
           <button className="agy-btn" onClick={onClose}>
@@ -153,7 +149,7 @@ export function AgyMaintenancePanel({
             disabled={busy || !canOperate || !selected.length}
             onClick={() => void check()}
           >
-            串行核验所选账号
+            核验所选账号
           </button>
         </div>
       </div>
