@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { AsidePopover } from "./components/AsidePopover.js";
 import { type ReferenceItem } from "./components/RequirementComposer.js";
 import {
@@ -21,8 +21,7 @@ import {
   writeAsidePromoteDraft,
 } from "./use-project-asides.js";
 import { UserInteractionDialog } from "./components/UserInteractionDialog.js";
-import { getCurrentUserInteraction } from "./components/user-interaction-api.js";
-import type { UserInteractionRecord } from "../../../packages/contracts/src/user-interaction.js";
+import { useCurrentUserInteraction } from "./use-user-interaction.js";
 import "./components/aside-popover.css";
 
 export function TaskInteraction({
@@ -78,60 +77,28 @@ export function TaskInteraction({
     return () => window.removeEventListener("devflow-open-guidance", focus);
   }, [w.id]);
 
-  const [interaction, setInteraction] = useState<UserInteractionRecord | null>(null);
+  const { interaction, setInteraction, fetchError, fetchInteraction } =
+    useCurrentUserInteraction(w.id, w.state);
   const [interactionOpen, setInteractionOpen] = useState(false);
   const dismissedInteractionId = useRef("");
-  const [fetchError, setFetchError] = useState<string>("");
   const activeWorkflow = useRef(w.id);
   activeWorkflow.current = w.id;
   const activeInteraction = useRef(interaction?.id);
   activeInteraction.current = interaction?.id;
-  const requestSequence = useRef(0);
-  const requestController = useRef<AbortController | null>(null);
-  const fetchInteraction = useCallback(async () => {
-    const workflowId = w.id;
-    const sequence = ++requestSequence.current;
-    requestController.current?.abort();
-    const controller = new AbortController();
-    requestController.current = controller;
-    try {
-      const item = await getCurrentUserInteraction(workflowId, controller.signal);
-      if (controller.signal.aborted || activeWorkflow.current !== workflowId || sequence !== requestSequence.current) return;
-      setFetchError("");
-      setInteraction(item);
-      setInteractionOpen(Boolean(item?.status === "pending" && dismissedInteractionId.current !== item.id));
-    } catch {
-      if (controller.signal.aborted || activeWorkflow.current !== workflowId || sequence !== requestSequence.current) return;
-      setFetchError("获取待处理交互失败，点击重试");
-    } finally {
-      if (requestController.current === controller) requestController.current = null;
-    }
-  }, [w.id]);
-
   useEffect(() => {
-    setInteraction(null);
     setInteractionOpen(false);
-    setFetchError("");
     dismissedInteractionId.current = "";
   }, [w.id]);
   useEffect(() => {
-    void fetchInteraction();
-    const handleActivity = () => void fetchInteraction();
-    window.addEventListener("devflow-activity", handleActivity);
-    window.addEventListener("focus", handleActivity);
-    window.addEventListener("online", handleActivity);
-    // Another window's cancellation does not change the workflow state.
-    const timer = w.state === "WAITING_INPUT" ? window.setInterval(() => {
-      if (!requestController.current) handleActivity();
-    }, 3000) : undefined;
-    return () => {
-      requestController.current?.abort();
-      window.clearInterval(timer);
-      window.removeEventListener("devflow-activity", handleActivity);
-      window.removeEventListener("focus", handleActivity);
-      window.removeEventListener("online", handleActivity);
-    };
-  }, [fetchInteraction, w.state]);
+    setInteractionOpen(
+      Boolean(
+        interaction &&
+          interaction.workflow_id === w.id &&
+          interaction.status === "pending" &&
+          dismissedInteractionId.current !== interaction.id,
+      ),
+    );
+  }, [interaction, w.id]);
 
   const act = async (
     fn: () => Promise<any>,

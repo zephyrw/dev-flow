@@ -1678,7 +1678,7 @@ function App() {
     ]);
     setProjects(p);
     setFlows(f);
-    if (next && selection.current === key)
+    if (next && selection.current === key) {
       setDetail((previous: any) => {
         const current = previous?.workflow.id === key ? previous : null;
         if (current?.workflow.version > next.workflow.version) return current;
@@ -1695,6 +1695,10 @@ function App() {
         detailCache.current.set(key, merged);
         return merged;
       });
+      window.dispatchEvent(new CustomEvent("devflow-detail-refreshed", {
+        detail: { workflowId: key },
+      }));
+    }
   };
   useEffect(() => {
     if (selected && tab === "plan")
@@ -1808,7 +1812,12 @@ function App() {
       );
       (window as any).__eventWs = ws;
       ws.onopen = () => {
-        if (!disposed) setConnected(true);
+        if (!disposed) {
+          setConnected(true);
+          window.dispatchEvent(new CustomEvent("devflow-reconnected", {
+            detail: { workflowId: selected },
+          }));
+        }
       };
       ws.onmessage = (e) => {
         if (disposed || selection.current !== selected) return;

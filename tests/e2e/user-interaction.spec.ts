@@ -12,7 +12,9 @@ test("E01 — 真实浏览器中的通用人机交互（操作请求、稍后处
     plan_revision: 1,
   };
 
-  const project = { id: "p1", name: "E2E 项目" };
+  const project = {
+    id: "p1", name: "E2E 项目", data: { mode: "directory" }, repositories: [], commands: [],
+  };
 
   let currentInteraction: any = {
     id: "int-act-e2e-1",
