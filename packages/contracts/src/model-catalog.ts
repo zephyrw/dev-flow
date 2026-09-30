@@ -152,7 +152,6 @@ export const OfficialSeedSchema = z
   .object({
     sourceUrl: z.string().min(1),
     checkedAt: z.string().min(1),
-    cliVersionConstraint: z.string().optional(),
     nativeIdConfirmed: z.boolean(),
     effortEvidence: z.string().optional(),
     nativeId: z.string().optional(),

@@ -1,6 +1,7 @@
 import type { Store } from "../../store/src/store.js";
 import {
   CONVERSATION_ENTITY,
+  AGY_IMAGE_FILE_INPUT,
   CONVERSATION_ERROR,
   ConversationMessageRequestSchema,
   ConversationMessageSchema,
@@ -35,7 +36,6 @@ import type { ConversationService } from "./conversation-service.js";
 import type { AsideSessionService } from "../../asides/src/service.js";
 import {
   CONVERSATION_INPUT_ERROR,
-  type FileInputCapability,
 } from "../../runtime/src/conversation-inputs.js";
 
 export const CONVERSATION_MESSAGE_ERROR = {
@@ -388,14 +388,15 @@ export class ConversationMessageService {
   ) {
     if (files.length === 0) return;
     const tree = this.deps.conversations.getTree(workflow.id);
+    const profile = frozenProfile(this.deps.store, workflow);
     const materials = prepareConversationInputMaterials({
       text: "",
       mode,
       files,
       storageRoot: this.deps.storageRoot,
       workflowId: workflow.id,
-      profile: frozenProfile(this.deps.store, workflow),
-      fileInput: tree.capabilities.file_input as FileInputCapability,
+      profile,
+      fileInput: profile.adapterId === "agy" ? AGY_IMAGE_FILE_INPUT : tree.capabilities.file_input,
     });
     if (materials.resolved.ok) return;
     throw new FlowError(
@@ -548,7 +549,11 @@ function frozenProfile(store: Store, workflow: Workflow): ToolProfile {
     ? store.get<Run>("run", workflow.run_id)
     : undefined;
   const parsed = ToolProfileSchema.safeParse(run?.profile);
-  if (parsed.success) return parsed.data;
+  if (parsed.success) {
+    requireCondition(!run?.adapter || run.adapter === parsed.data.adapterId,
+      CONVERSATION_INPUT_ERROR.PROFILE_NOT_FOUND, "冻结工具配置与当前执行工具不一致", 409);
+    return parsed.data;
+  }
   const fallback = ToolProfileSchema.safeParse({
     id: "profile-default",
     revision: 1,

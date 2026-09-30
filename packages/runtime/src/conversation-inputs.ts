@@ -11,6 +11,10 @@ import {
   type ConversationFile,
   type ResolvedInputAttachment,
   type ToolProfile,
+  type FileInputCapability,
+  supportsAttachmentInput,
+  AGY_IMAGE_FORMAT_UNSUPPORTED,
+  AGY_IMAGE_FILE_INPUT,
 } from "../../contracts/src/index.js";
 import {
   CONVERSATION_FILE_CONTENT,
@@ -33,11 +37,7 @@ export const CONVERSATION_INPUT_ERROR = {
 export type ConversationInputErrorCode =
   (typeof CONVERSATION_INPUT_ERROR)[keyof typeof CONVERSATION_INPUT_ERROR];
 
-export type FileInputCapability = {
-  text: boolean;
-  image: boolean;
-  binary: boolean;
-};
+export type { FileInputCapability } from "../../contracts/src/conversation.js";
 
 export type AttachmentReadMode = ResolvedInputAttachment["read_mode"];
 export type AttachmentDeliveryStrategy = "inline" | "file";
@@ -140,10 +140,9 @@ export function attachmentDeliveryStrategy(
 export function isFileInputSupported(
   readMode: AttachmentReadMode,
   fileInput: FileInputCapability,
+  mime = "",
 ): boolean {
-  if (readMode === "image") return fileInput.image;
-  if (readMode === "text") return fileInput.text;
-  return fileInput.binary;
+  return supportsAttachmentInput(readMode, fileInput, mime);
 }
 
 export function resolveConversationInputAttachments(
@@ -260,10 +259,16 @@ function resolveOneAttachment(
   if (!ready.ok) return ready;
   const mime = resolveEffectiveMime(file);
   const readMode = classifyAttachmentReadMode(mime);
-  if (!isFileInputSupported(readMode, fileInput)) {
+  if (params.profile.adapterId === "agy" && readMode === "image" &&
+      !supportsAttachmentInput("image", AGY_IMAGE_FILE_INPUT, file.detected_mime ?? "")) {
+    return fail(CONVERSATION_INPUT_ERROR.INPUT_UNSUPPORTED,
+      "附件内容不是受支持的 PNG/JPEG 图片", file.id);
+  }
+  if (!isFileInputSupported(readMode, fileInput, mime)) {
     return fail(
       CONVERSATION_INPUT_ERROR.INPUT_UNSUPPORTED,
-      "当前工具无法读取此附件类型",
+      params.profile.adapterId === "agy" && readMode === "image"
+        ? AGY_IMAGE_FORMAT_UNSUPPORTED : "当前工具无法读取此附件类型",
       file.id,
     );
   }

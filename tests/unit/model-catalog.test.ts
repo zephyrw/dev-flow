@@ -210,6 +210,21 @@ describe("model catalog parse", () => {
     );
   });
 
+  it("parses structured Codex models without treating native instructions as failure diagnostics", async () => {
+    const cache = JSON.parse(readFixture("codex", "models-cache.json"));
+    cache.models[0].base_instructions = "Handle DPAPI, permission denied and login required errors.";
+    const catalog = await discoverCodexModels({
+      stdout: JSON.stringify(cache),
+      stderr: "WARNING: could not create PATH aliases: Access is denied",
+      source: "native-cache",
+    });
+    expect(catalog.status).toBe("fresh");
+    expect(catalog.entries.some(entry => entry.nativeId === "gpt-5.6-codex")).toBe(true);
+    const error = await discoverCodexModels({ stdout: readFixture("codex", "models-failure.json") });
+    expect(error.status).toBe("failed");
+    expect(error.entries).toEqual([]);
+  });
+
   it("UT-M11 agy 高档换中档依赖实际 medium slug", async () => {
     const catalog = await discoverAgyModels({
       stdout: readFixture("agy", "models-success.txt"),

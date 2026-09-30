@@ -971,7 +971,6 @@ export class ModelAccessService {
       adapterId: parsedProfile.adapterId,
       cliFingerprint: objectHash({
         path: resolveModelExecutable(parsedProfile),
-        version: resolvedCatalog?.cliVersion ?? "",
       }),
       accountScope: identity.accountFingerprint,
       providerScope: identity.providerEndpointFingerprint,
@@ -1248,7 +1247,6 @@ export class ModelAccessService {
       adapterId: profile.adapterId,
       cliFingerprint: objectHash({
         path: resolveModelExecutable(profile),
-        version: catalog?.cliVersion ?? "",
       }),
       accountScope: identity.accountFingerprint,
       providerScope: identity.providerEndpointFingerprint,

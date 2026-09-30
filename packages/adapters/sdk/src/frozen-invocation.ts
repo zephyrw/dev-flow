@@ -18,7 +18,6 @@ export function selectionCapabilityFromCatalog(
   entry?: ModelEntry,
 ): ModelSelectionCapability {
   return {
-    cliVersion: catalog?.cliVersion,
     opencodeVariantEncoding: catalog?.invocationCapability?.opencodeVariantEncoding,
     ...(entry?.adapterId === "kimi-code"
       ? { kimiProvider: entry.providerId, kimiSupportEfforts: entry.effort.values }

@@ -39,6 +39,7 @@ import {
   type Workflow,
 } from "../../contracts/src/index.js";
 import { id, now } from "./util.js";
+import { AGY_IMAGE_FILE_INPUT } from "../../contracts/src/attachment-capabilities.js";
 import { nativeAdapter, nativeRootForRun } from "./native-session.js";
 import { sessionSourceRun } from "./session-handoff.js";
 
@@ -195,12 +196,19 @@ export class ConversationService {
     const current = scopedAttempts.find((attempt) => attempt.run_id === workflow?.run_id &&
       scoped.some((node) => node.id === attempt.conversation_id && node.id === node.root_id));
     const active = rootId ?? current?.root_id ?? resolveActiveRootId(scoped, scopedAttempts);
+    const capabilities = this.capabilities.get(workflowId) ??
+      unknownSubagentCapabilities(nodes.every((node) => node.lineage_id.startsWith("legacy:")) ? LEGACY_REASON : undefined);
+    const run = workflow?.run_id
+      ? runSummaries?.find((item) => item.id === workflow.run_id) ??
+        (runSummaries ? undefined : this.store.get<Run>("run", workflow.run_id))
+      : undefined;
+    const agy = run?.workflow_id === workflowId && run.profile?.adapterId === "agy" &&
+      (!run.adapter || run.adapter === "agy");
     return ConversationTreeSnapshotSchema.parse({
       nodes: scoped,
       attempts: scopedAttempts,
       active_root_id: active,
-      capabilities:
-        this.capabilities.get(workflowId) ?? unknownSubagentCapabilities(nodes.every((node) => node.lineage_id.startsWith("legacy:")) ? LEGACY_REASON : undefined),
+      capabilities: agy ? { ...capabilities, file_input: AGY_IMAGE_FILE_INPUT } : capabilities,
       cursor: this.store.eventCursor(workflowId),
     });
   }

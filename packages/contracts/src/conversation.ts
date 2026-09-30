@@ -381,8 +381,10 @@ export const FileInputCapabilitySchema = z
     text: z.boolean(),
     image: z.boolean(),
     binary: z.boolean(),
+    image_mime_types: z.array(z.string().min(1)).optional(),
   })
   .strict();
+export type FileInputCapability = z.infer<typeof FileInputCapabilitySchema>;
 
 export const SubagentCapabilitiesSchema = z
   .object({

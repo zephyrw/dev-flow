@@ -899,7 +899,7 @@ export class ProfileRuntime {
     const crossToolHandoff = sessionHandoffForRun(this.engine.store, run, previous?.id);
     const followup = !crossToolHandoff && isSessionFollowup(this.engine.store, run, previous?.id, messages);
     const inputFiles = resolveRunConversationAttachments(
-      this.engine, w, profile,
+      this.engine, w, profile, adapter.subagents?.file_input,
       followup ? new Set(messages.flatMap(message => message.attachment_ids ?? [])) : undefined,
     );
     const imageProblems: string[] = [];
@@ -1421,18 +1421,25 @@ export class ProfileRuntime {
         accountBinding &&
         accountFailure &&
         !permissionFailure &&
+        classifyFailure(failure ?? stderrTail).code !== "MODEL_CONNECTION_FAILED" &&
         !this.engine.store.get("run_stop", run.id) &&
         !exit.termination_reason &&
         (!previous || accountTurn.canAttributeFailureToCurrentTurn()) &&
         (exit.code !== 0 || failure)
-      )
-        accountWaiting = await this.accountBridge!.observeFailure(
-          accountBinding,
-          confirmAgyQuotaFailure(accountFailure, {
-            exitCode: exit.code, currentTurn: !previous || accountTurn.canAttributeFailureToCurrentTurn(),
-            stderr: stderrTail, terminationReason: exit.termination_reason,
-          }),
-        );
+      ) {
+        const fact = confirmAgyQuotaFailure(accountFailure, {
+          exitCode: exit.code, currentTurn: !previous || accountTurn.canAttributeFailureToCurrentTurn(),
+          stderr: stderrTail, terminationReason: exit.termination_reason,
+        });
+        const decision = await this.accountBridge!.observeFailure(accountBinding, fact);
+        accountWaiting = decision === "waiting";
+        if (!accountWaiting && fact.requires_quota_verification &&
+            classifyFailure(failure ?? "").code === "MODEL_QUOTA") {
+          failure = "会话中的历史额度提示未获当前运行确认，原任务已保留。请检查本轮运行诊断后继续。";
+          if (dispatchRecord)
+            dispatchManager.finishDispatch(dispatchId, { exitCode: exit.code, error: failure });
+        }
+      }
     } finally {
       if (accountBinding)
         await this.accountBridge?.releaseRun(
@@ -1474,6 +1481,7 @@ export class ProfileRuntime {
       throw normalizeRuntimeFailure(
         new FlowError(code, diagnostic, 422, {
           diagnostic,
+          diagnostic_source: failure === redact(stderrTail).trim() ? "stderr" : "provider_result",
           exit_code: exit.code,
           termination_reason: exit.termination_reason,
           adapter: profile.adapterId,
@@ -1897,6 +1905,7 @@ function resolveRunConversationAttachments(
   engine: Engine,
   workflow: Workflow,
   profile: ToolProfile,
+  fileInput?: import("../../contracts/src/conversation.js").FileInputCapability,
   selectedIds?: Set<string>,
 ) {
   const files = readyConversationInputFiles(engine, workflow).filter(file => !selectedIds || selectedIds.has(file.id));
@@ -1909,7 +1918,7 @@ function resolveRunConversationAttachments(
     storageRoot: engine.config.storage_root,
     workflowId: workflow.id,
     profile,
-    fileInput: tree.capabilities.file_input,
+    fileInput: fileInput ?? tree.capabilities.file_input,
   });
   if (!resolved.ok) {
     throw new FlowError(resolved.code, resolved.message, 422);

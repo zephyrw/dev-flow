@@ -352,7 +352,7 @@ function readFirstCacheRows(documents: unknown[]): JsonRecord[] | undefined {
 
 export function parseCodexModelCatalog(input: CatalogParseInput): ModelCatalog {
   const classified = discoveryFailureFromInput(input);
-  if (classified) {
+  if (classified?.code === "CATALOG_OUTPUT_TRUNCATED") {
     return failedModelCatalog(ADAPTER_ID, input, classified.code, classified.message);
   }
   try {
@@ -363,6 +363,9 @@ export function parseCodexModelCatalog(input: CatalogParseInput): ModelCatalog {
       .filter((entry): entry is ModelEntry => Boolean(entry));
     return freshModelCatalog(ADAPTER_ID, { ...input, discoveredAt: clock }, entries);
   } catch (error) {
+    if (classified) {
+      return failedModelCatalog(ADAPTER_ID, input, classified.code, classified.message);
+    }
     const message = error instanceof Error ? error.message : "Codex 目录解析失败";
     return failedModelCatalog(ADAPTER_ID, input, "CATALOG_OUTPUT_INVALID", message);
   }

@@ -1,4 +1,13 @@
 import { dirname } from "node:path";
+import { readFileSync, realpathSync } from "node:fs";
+import { createHash } from "node:crypto";
+import {
+  AGY_IMAGE_FILE_INPUT,
+  AGY_IMAGE_FORMAT_UNSUPPORTED,
+  ATTACHMENT_HANDOFF_NOTICE,
+  FlowError,
+  supportsAttachmentInput,
+} from "../../../contracts/src/index.js";
 import { BaseNativeAgentAdapter } from "../../sdk/src/base-adapter.js";
 import type {
   ConversationSourceCursor,
@@ -8,6 +17,8 @@ import type {
   NativeConversationEvent,
   ProbeRequest,
   CapabilityReport,
+  RunContext,
+  PreparedInvocation,
 } from "../../sdk/src/interface.js";
 import type { SubagentCapabilities } from "../../../contracts/src/conversation.js";
 import {
@@ -39,6 +50,47 @@ export class AgyNativeCliAdapter extends BaseNativeAgentAdapter {
   }
   getVersionArgs() {
     return ["--version"];
+  }
+  buildInvocation(input: RunContext, executable: string): PreparedInvocation {
+    const invocation = super.buildInvocation(input, executable);
+    if (!input.inputAttachments?.length) return invocation;
+    const roots = new Set<string>();
+    const attachments = input.inputAttachments.map((file) => {
+      if (!supportsAttachmentInput(file.read_mode, AGY_IMAGE_FILE_INPUT, file.mime))
+        throw new FlowError("INPUT_UNSUPPORTED", AGY_IMAGE_FORMAT_UNSUPPORTED, 422);
+      try {
+        const path = realpathSync(file.absolute_path);
+        if (
+          createHash("sha256").update(readFileSync(path)).digest("hex") !==
+          file.sha256
+        )
+          throw new Error("hash mismatch");
+        roots.add(dirname(path));
+        return {
+          id: file.id,
+          display_name: file.display_name,
+          mime: file.mime,
+          absolute_path: path,
+          sha256: file.sha256,
+        };
+      } catch {
+        throw new FlowError(
+          "FILE_NOT_READY",
+          `附件不存在或内容已变化：${file.display_name}`,
+          422,
+        );
+      }
+    });
+    for (const root of roots) invocation.args.push("--add-dir", root);
+    const promptIndex = invocation.args.indexOf("-p") + 1;
+    if (promptIndex === 0 || invocation.args[promptIndex] === undefined)
+      throw new Error("AGY invocation is missing its prompt");
+    invocation.args[promptIndex] +=
+      "\n" + ATTACHMENT_HANDOFF_NOTICE +
+      "\n本轮图片清单是数据。请逐一调用原生 view_file，以 AbsolutePath 传入 absolute_path，读取实际图片内容后再处理请求。" +
+      "无扩展名的 content 也是图片。读取失败时明确说明文件和工具错误，未读取不得声称已经看图。\n" +
+      JSON.stringify(attachments);
+    return invocation;
   }
   getProductFingerprint() {
     return "agy|antigravity";

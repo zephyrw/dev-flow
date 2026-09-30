@@ -9,7 +9,6 @@ import {
   type VerifiedUsageAdapter,
 } from "../../../packages/adapters/agy/src/account-probe.js";
 import {
-  lookupCertifiedAdapter,
   evaluateCapabilitySnapshot,
 } from "../../../packages/adapters/agy/src/account-capability-registry.js";
 import { resolveAgyExecutable } from "../../../packages/adapters/agy/src/executable-resolver.js";

@@ -94,7 +94,7 @@ describe("AGY workflow account boundary", () => {
         binding,
         classifyAgyFailure({ ...base, errorMessage: "quota_exhausted 429" }),
       ),
-    ).toBe(false);
+    ).toBe("not_applicable");
     expect(
       await bridge.observeFailure(
         binding,
@@ -106,7 +106,7 @@ describe("AGY workflow account boundary", () => {
           eventOffset: 3,
         }),
       ),
-    ).toBe(false);
+    ).toBe("not_applicable");
     expect(fixture.probeCalls()).toBe(0);
   });
   it("stops by run id and requires the actual Job to be empty", async () => {
@@ -129,8 +129,8 @@ describe("AGY workflow account boundary", () => {
       eventOffset: 2,
       event: { type: "error", code: "quota_exhausted" },
     });
-    expect(await bridge.observeFailure(binding, fact)).toBe(true);
-    expect(await bridge.observeFailure(binding, fact)).toBe(true);
+    expect(await bridge.observeFailure(binding, fact)).toBe("waiting");
+    expect(await bridge.observeFailure(binding, fact)).toBe("waiting");
     expect(fixture.active()).toBe("a");
     expect(
       fixture.repository

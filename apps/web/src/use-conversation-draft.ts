@@ -26,6 +26,7 @@ export interface ConversationDraftAttachment {
   id: string;
   status: string;
   supported: boolean;
+  unsupportedReason?: string;
 }
 
 export interface ConversationDraft {

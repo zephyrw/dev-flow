@@ -1,0 +1,140 @@
+{
+  "date": "2026-09-29",
+  "baseline": "08a2d8046c7a240b64d1f09b2ff741e371cefab3",
+  "expected": [
+    "PIC-2581A7EC: red circle, blue near-square rectangle, green triangle",
+    "NEXT-58C3A92E: purple rectangle, orange circle"
+  ],
+  "probes": [
+    {
+      "probe": "fresh-no-extension-png",
+      "cli_version": "1.2.13",
+      "model": "gemini-3.8-flash-high",
+      "conversation_id": "c99e5f4d-6b98-469b-9b5c-0ec3aaab45c3",
+      "request": {
+        "args": [
+          "--model",
+          "gemini-3.8-flash-high",
+          "--effort",
+          "high",
+          "--output-format",
+          "stream-json",
+          "--print-timeout",
+          "2m",
+          "--mode",
+          "plan",
+          "--add-dir",
+          "C:\\Users\\yckj4798\\AppData\\Local\\Temp\\devflow-image-probe-ace53dedb9344f57a561344939d5191a\\images",
+          "-p",
+          "This is an image-reading capability check only. Do not edit files, run shell commands, search directories, or delegate. Call the native view_file tool on exactly this absolute file path: C:\\Users\\yckj4798\\AppData\\Local\\Temp\\devflow-image-probe-ace53dedb9344f57a561344939d5191a\\images\\content. It contains PNG bytes despite having no extension. Read the actual image pixels. Return the exact visible text, then list the shapes and their colors from left to right. If the image cannot be read, state the tool error. Do not infer contents from the filename."
+        ],
+        "cwd": "C:\\Users\\yckj4798\\AppData\\Local\\Temp\\devflow-image-probe-ace53dedb9344f57a561344939d5191a\\workspace"
+      },
+      "tool_calls": [
+        {
+          "state": "ACTIVE",
+          "name": "view_file",
+          "parameters": {
+            "AbsolutePath": "C:\\Users\\yckj4798\\AppData\\Local\\Temp\\devflow-image-probe-ace53dedb9344f57a561344939d5191a\\images\\content"
+          },
+          "error": null
+        },
+        {
+          "state": "DONE",
+          "name": "view_file",
+          "parameters": {
+            "AbsolutePath": "C:\\Users\\yckj4798\\AppData\\Local\\Temp\\devflow-image-probe-ace53dedb9344f57a561344939d5191a\\images\\content"
+          },
+          "error": null
+        }
+      ],
+      "result": {
+        "conversation_id": "c99e5f4d-6b98-469b-9b5c-0ec3aaab45c3",
+        "status": "SUCCESS",
+        "response": "通过调用 `view_file` 工具查看文件 [content](file:///C:/Users/yckj4798/AppData/Local/Temp/devflow-image-probe-ace53dedb9344f57a561344939d5191a/images/content)，成功解析该图片内容如下：\n\n### 可见文本\n`PIC-2581A7EC`\n\n### 图形及颜色（从左至右）\n1. **红色圆形**（Red Circle）\n2. **蓝色正方形**（Blue Square）\n3. **绿色三角形**（Green Triangle）\n",
+        "duration_seconds": 29.4509259,
+        "num_turns": 1,
+        "usage": {
+          "input_tokens": 31485,
+          "output_tokens": 1286,
+          "thinking_tokens": 1053,
+          "cache_read_tokens": 0,
+          "total_tokens": 32771
+        }
+      },
+      "exit_code": 0,
+      "stderr_bytes": 0
+    },
+    {
+      "probe": "resume-chinese-path-jpeg",
+      "cli_version": "1.2.13",
+      "model": "gemini-3.8-flash-high",
+      "conversation_id": "c99e5f4d-6b98-469b-9b5c-0ec3aaab45c3",
+      "request": {
+        "args": [
+          "--model",
+          "gemini-3.8-flash-high",
+          "--effort",
+          "high",
+          "--output-format",
+          "stream-json",
+          "--print-timeout",
+          "2m",
+          "--mode",
+          "accept-edits",
+          "--conversation",
+          "c99e5f4d-6b98-469b-9b5c-0ec3aaab45c3",
+          "--add-dir",
+          "C:\\Users\\yckj4798\\AppData\\Local\\Temp\\devflow-image-probe-ace53dedb9344f57a561344939d5191a\\images",
+          "-p",
+          "Continue the image-reading capability check only. Do not edit files, run commands, search directories, or delegate. Call native view_file on the new synthetic test image at exactly C:\\Users\\yckj4798\\AppData\\Local\\Temp\\devflow-image-probe-ace53dedb9344f57a561344939d5191a\\images\\中文 空格\\第二张.jpg. Return its exact visible text and list the shapes and colors from left to right. Read actual pixels; do not reuse the previous image response or infer from the filename. Report tool errors explicitly."
+        ],
+        "cwd": "C:\\Users\\yckj4798\\AppData\\Local\\Temp\\devflow-image-probe-ace53dedb9344f57a561344939d5191a\\workspace"
+      },
+      "tool_calls": [
+        {
+          "state": "ACTIVE",
+          "name": "view_file",
+          "parameters": {
+            "AbsolutePath": "C:\\Users\\yckj4798\\AppData\\Local\\Temp\\devflow-image-probe-ace53dedb9344f57a561344939d5191a\\images\\中文 空格\\第二张.jpg"
+          },
+          "error": null
+        },
+        {
+          "state": "DONE",
+          "name": "view_file",
+          "parameters": {
+            "AbsolutePath": "C:\\Users\\yckj4798\\AppData\\Local\\Temp\\devflow-image-probe-ace53dedb9344f57a561344939d5191a\\images\\中文 空格\\第二张.jpg"
+          },
+          "error": null
+        }
+      ],
+      "result": {
+        "conversation_id": "c99e5f4d-6b98-469b-9b5c-0ec3aaab45c3",
+        "status": "SUCCESS",
+        "response": "通过调用 `view_file` 工具查看文件 [第二张.jpg](file:///C:/Users/yckj4798/AppData/Local/Temp/devflow-image-probe-ace53dedb9344f57a561344939d5191a/images/中文 空格/第二张.jpg)，成功解析该图片内容如下：\n\n### 可见文本\n`NEXT-58C3A92E`\n\n### 图形及颜色（从左至右）\n1. **紫色矩形**（Purple Rectangle）\n2. **橙色圆形**（Orange Circle）\n",
+        "duration_seconds": 146.375991,
+        "num_turns": 2,
+        "usage": {
+          "input_tokens": 39784,
+          "output_tokens": 2243,
+          "thinking_tokens": 1767,
+          "cache_read_tokens": 28552,
+          "total_tokens": 42027
+        }
+      },
+      "exit_code": 0,
+      "stderr_bytes": 0
+    }
+  ],
+  "fixtures": [
+    {
+      "Hash": "929AADF96C64BC08B7AC6CB5767B5EF154DA293429B61E8870A75299E41D7BCE",
+      "Path": "C:\\Code\\system-handle\\docs\\test\\agy-image-input-20260929\\probe-1.png"
+    },
+    {
+      "Hash": "B9F40EE5E0ABE17C80A0D45FD37759C128B2634B80CFA61C71F71D5E8F5D431F",
+      "Path": "C:\\Code\\system-handle\\docs\\test\\agy-image-input-20260929\\probe-2.jpg"
+    }
+  ]
+}

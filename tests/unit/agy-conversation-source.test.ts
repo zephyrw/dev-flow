@@ -87,7 +87,7 @@ describe("SA-U12 agy conversation source", () => {
       stop: "owned-process-tree",
       resume: "parent-instruction",
       readonly_delegation: "unknown",
-      file_input: { text: false, image: false, binary: false },
+      file_input: { text: false, image: true, binary: false, image_mime_types: ["image/png", "image/jpeg"] },
       cli_version: "1.2.5",
     });
     expect(capabilities.reason).toContain("暂停归属");
@@ -363,7 +363,7 @@ describe("SA-U12 agy conversation source", () => {
       stop: "owned-process-tree",
       resume: "parent-instruction",
       readonly_delegation: "unknown",
-      file_input: { text: false, image: false, binary: false },
+      file_input: { text: false, image: true, binary: false, image_mime_types: ["image/png", "image/jpeg"] },
       cli_version: "1.2.5",
     });
     expect(adapter.subagents.readonly_delegation).not.toBe(false);

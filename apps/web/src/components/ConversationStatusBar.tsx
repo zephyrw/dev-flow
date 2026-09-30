@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
+import { AGY_IMAGE_FILE_INPUT } from "../../../../packages/contracts/src/attachment-capabilities.js";
 import { resolveConversationRuntimeDisplay } from "../../../../packages/core/src/conversation-input.js";
 import type { ConversationRuntimeDisplay } from "../../../../packages/contracts/src/conversation-input.js";
 import {
@@ -19,7 +20,7 @@ export const DEFAULT_ADAPTER_FILE_INPUT: Record<string, FileInputCapability> = {
   qoder: { text: true, image: false, binary: false },
   "cursor-agent": { text: false, image: true, binary: false },
   "grok-build": { text: false, image: false, binary: false },
-  agy: { text: false, image: false, binary: false },
+  agy: AGY_IMAGE_FILE_INPUT,
 };
 
 const UNKNOWN_FILE_INPUT: FileInputCapability = {
@@ -111,6 +112,7 @@ export function resolveFileInputCapability(
   explicit?: FileInputCapability,
   discovery?: string,
 ): FileInputCapability | undefined {
+  if (adapter === "agy") return AGY_IMAGE_FILE_INPUT;
   const fallback = adapter
     ? (DEFAULT_ADAPTER_FILE_INPUT[adapter] ?? UNKNOWN_FILE_INPUT)
     : undefined;
@@ -346,7 +348,7 @@ export function buildComposerRuntime(
     toolLabel,
     adapter,
     fileInput: resolveFileInputCapability(
-      adapter,
+      adapterFromDetail(detail) ?? adapter,
       tree.capabilities?.file_input,
       tree.capabilities?.discovery,
     ),

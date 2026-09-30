@@ -12,6 +12,7 @@ import {
 } from "../../sdk/src/conversation-source.js";
 import type { SubagentCapabilities } from "../../../contracts/src/conversation.js";
 import { SubagentCapabilitiesSchema } from "../../../contracts/src/conversation.js";
+import { AGY_IMAGE_FILE_INPUT } from "../../../contracts/src/attachment-capabilities.js";
 import { toolSummary, toolOutputSummary } from "../../../presentation/src/tool-summary.js";
 import { modelReplyText } from "../../../presentation/src/model-reply.js";
 import {
@@ -40,7 +41,7 @@ export function agySubagentCapabilities(cliVersion?: string): SubagentCapabiliti
     stop: "owned-process-tree",
     resume: "parent-instruction",
     readonly_delegation: "unknown",
-    file_input: { text: false, image: false, binary: false },
+    file_input: AGY_IMAGE_FILE_INPUT,
     cli_version: cliVersion,
     reason: AGY_PAUSE_ATTRIBUTION,
   });

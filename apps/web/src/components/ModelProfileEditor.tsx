@@ -119,7 +119,7 @@ export function ModelProfileEditor({
         setEntriesData({ adapter: nextAdapter, items: result.entries });
         setLoading(false);
       }
-      // 目录缺失 / 旧解析器产物 / 全 manual 候补（旧服务残留）都触发一次真实发现
+      // 过期目录、缺失目录和全 manual 候补都触发一次真实发现。
       const allManual =
         result.entries.length > 0 &&
         result.entries.every((entry) => entry.source === "manual");
@@ -127,6 +127,9 @@ export function ModelProfileEditor({
         !disabled &&
         (result.discoveryStatus === "missing" ||
           result.status === "missing" ||
+          result.status === "stale" ||
+          result.status === "refreshing" ||
+          result.status === "failed" ||
           allManual);
       if (doRefresh || needsRefresh) {
         setRefreshing(true);
@@ -140,6 +143,9 @@ export function ModelProfileEditor({
           // 若已有可用条目（如内置种子或本地配置），刷新失败不清空已有条目
           if (result.entries.length === 0) {
             throw refreshErr;
+          }
+          if (token === generation.current && !controller.signal.aborted) {
+            setLoadError(formatApiError(refreshErr));
           }
         }
       }

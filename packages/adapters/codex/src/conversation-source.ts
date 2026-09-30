@@ -108,12 +108,6 @@ const QuotaPayloadSchema = z
   })
   .strict();
 
-export interface CodexVersionParts {
-  major: number;
-  minor: number;
-  patch: number;
-}
-
 export interface CodexBoundSourceInput {
   filePath: string;
   rootNativeId: string;
@@ -137,31 +131,6 @@ export function parseCodexCliVersion(
   return `${match[1]}.${match[2]}.${match[3]}`;
 }
 
-export function parseCodexVersionParts(
-  version?: string,
-): CodexVersionParts | undefined {
-  const parsed = parseCodexCliVersion(version);
-  if (!parsed) return undefined;
-  const [major, minor, patch] = parsed.split(".").map(Number);
-  if (
-    major === undefined ||
-    minor === undefined ||
-    patch === undefined ||
-    !Number.isInteger(major) ||
-    !Number.isInteger(minor) ||
-    !Number.isInteger(patch)
-  )
-    return undefined;
-  return { major, minor, patch };
-}
-
-export function codexProtocolCompatible(version?: string): boolean {
-  const parts = parseCodexVersionParts(version);
-  if (!parts) return false;
-  if (parts.major !== 0) return false;
-  return parts.minor >= 40;
-}
-
 export function collectInstalledCodexCliVersion(): string | undefined {
   if (cachedInstalledVersion === false) return undefined;
   if (cachedInstalledVersion) return cachedInstalledVersion;
@@ -181,36 +150,21 @@ export function collectInstalledCodexCliVersion(): string | undefined {
   }
 }
 
-export function protocolMismatchReason(version?: string): string {
-  if (!version) return `未能采集本机 Codex 版本；${CODEX_UNPAID_REASON}`;
-  return `版本协议不符：${version}；${CODEX_UNPAID_REASON}`;
-}
-
 export function codexSubagentCapabilities(
   cliVersion?: string,
 ): SubagentCapabilities {
   const version = parseCodexCliVersion(cliVersion) ?? cliVersion;
-  if (version && !codexProtocolCompatible(version)) {
-    return SubagentCapabilitiesSchema.parse({
-      discovery: "unknown",
-      activity: "unavailable",
-      stop: "unavailable",
-      resume: "unavailable",
-      readonly_delegation: "unknown",
-      file_input: { text: false, image: false, binary: false },
-      cli_version: version,
-      reason: protocolMismatchReason(version),
-    });
-  }
+  // These are adapter protocol paths. Actual records are validated by the
+  // decoders; a version string neither proves nor disables those paths.
   return SubagentCapabilitiesSchema.parse({
-    discovery: version ? "native" : "unknown",
-    activity: version ? "native" : "unavailable",
-    stop: version ? "owned-process-tree" : "unavailable",
-    resume: version ? "native" : "unavailable",
+    discovery: "native",
+    activity: "native",
+    stop: "owned-process-tree",
+    resume: "native",
     readonly_delegation: "unknown",
     file_input: { text: true, image: true, binary: false },
     cli_version: version,
-    reason: version ? CODEX_UNPAID_REASON : protocolMismatchReason(version),
+    reason: CODEX_UNPAID_REASON,
   });
 }
 

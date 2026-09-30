@@ -18,6 +18,8 @@ describe("AGY trusted failure facts", () => {
     { exitCode: 1, currentTurn: true, stderr: "" },
     { exitCode: 3, currentTurn: false, stderr: "" },
     { exitCode: 3, currentTurn: true, stderr: "local error: tls: bad record MAC" },
+    { exitCode: 3, currentTurn: true, stderr: "subscriber fell behind updates, stalled for 10s" },
+    { exitCode: 3, currentTurn: true, stderr: "API error (attempt 1): INTERNAL (code 500): Internal error encountered." },
     { exitCode: 3, currentTurn: true, stderr: "permission denied" },
     { exitCode: 3, currentTurn: true, stderr: "", terminationReason: "manual" },
   ])("does not promote a retained quota footer on a conflicting or historical completion: %j", completion => {

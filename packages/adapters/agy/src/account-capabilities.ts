@@ -13,14 +13,15 @@ export interface CapabilityEvaluationInput {
   hasCredentialManager?: boolean;
   hasNamedMutex?: boolean;
   isSyntheticTest?: boolean;
+  identityVerified?: boolean;
+  dualQuotaVerified?: boolean;
+  exactResumeVerified?: boolean;
+  sessionUnavailableVerified?: boolean;
 }
-
-export const KNOWN_OFFICIAL_CLI_VERSIONS = ["1.2.7"];
 
 export function evaluateAgyCapabilities(input: CapabilityEvaluationInput): AgyAccountCapabilities {
   const isWindows = input.isWindows ?? (process.platform === "win32");
   const cliVer = input.cliVersion ?? "unknown";
-  const isKnownCli = KNOWN_OFFICIAL_CLI_VERSIONS.includes(cliVer);
   const isSynthetic = !!input.isSyntheticTest;
 
   const makeItem = (
@@ -58,18 +59,14 @@ export function evaluateAgyCapabilities(input: CapabilityEvaluationInput): AgyAc
 
   return {
     identity: makeItem(
-      isKnownCli || isSynthetic ? "verified" : "unverified",
-      isKnownCli || isSynthetic ? undefined : `CLI version ${cliVer} identity parser not officially certified`,
+      input.identityVerified || isSynthetic ? "verified" : "unverified",
+      input.identityVerified || isSynthetic ? undefined : "Identity output has not been verified",
     ),
     dual_quota: makeItem(
-      isSynthetic
-        ? "verified"
-        : isKnownCli && input.cliSha256
-          ? "verified"
-          : "unverified",
-      isSynthetic || (isKnownCli && input.cliSha256)
+      input.dualQuotaVerified || isSynthetic ? "verified" : "unverified",
+      input.dualQuotaVerified || isSynthetic
         ? undefined
-        : `CLI version ${cliVer} dual-quota parser missing pools or official fingerprint unverified`,
+        : "Dual-quota output has not been verified",
     ),
     interactive_login: makeItem(
       hostReady ? "verified" : "unverified",
@@ -88,12 +85,12 @@ export function evaluateAgyCapabilities(input: CapabilityEvaluationInput): AgyAc
       hostReady ? undefined : "Windows job object isolation not confirmed",
     ),
     exact_resume: makeItem(
-      isKnownCli || isSynthetic ? "verified" : "unverified",
-      isKnownCli || isSynthetic ? undefined : "Cross-account session continuation unverified for this CLI",
+      input.exactResumeVerified || isSynthetic ? "verified" : "unverified",
+      input.exactResumeVerified || isSynthetic ? undefined : "Cross-account session continuation unverified",
     ),
     confirmed_session_unavailable: makeItem(
-      isKnownCli || isSynthetic ? "verified" : "unverified",
-      isKnownCli || isSynthetic ? undefined : "Session unavailable detection unverified for this CLI",
+      input.sessionUnavailableVerified || isSynthetic ? "verified" : "unverified",
+      input.sessionUnavailableVerified || isSynthetic ? undefined : "Session unavailable detection unverified",
     ),
     subagent_observation: makeItem(
       "verified",

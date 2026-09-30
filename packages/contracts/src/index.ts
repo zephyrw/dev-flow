@@ -859,6 +859,7 @@ export * from "./agy-account.js";
 export * from "./agy-recovery.js";
 export * from "./conversation.js";
 export * from "./conversation-input.js";
+export * from "./attachment-capabilities.js";
 export * from "./conversation-guidance.js";
 export * from "./run-observation.js";
 export * from "./session-binding.js";

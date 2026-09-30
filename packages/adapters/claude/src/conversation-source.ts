@@ -71,24 +71,9 @@ export function claudeSourceId(
   return `${CLAUDE_ADAPTER_ID}:${kind}:${id}`;
 }
 
-export function parseClaudeVersion(cliVersion?: string): {
-  major: number;
-  minor: number;
-  patch: number;
-} | undefined {
-  if (!cliVersion) return undefined;
-  const match = cliVersion.match(/(\d+)\.(\d+)\.(\d+)/);
-  if (!match) return undefined;
-  return {
-    major: Number(match[1]),
-    minor: Number(match[2]),
-    patch: Number(match[3]),
-  };
-}
-
 export function claudeResumeContinuation(
   kind: "parent" | "task-child" | "background-child",
-  cliVersion?: string,
+  capability?: { nativeResume: boolean },
 ): {
   resume: SubagentCapabilities["resume"];
   continuation: "resume-native" | "recreate-after-confirmed-exit";
@@ -99,9 +84,8 @@ export function claudeResumeContinuation(
       continuation: "recreate-after-confirmed-exit",
     };
   }
-  const version = parseClaudeVersion(cliVersion);
   if (kind === "background-child") {
-    if (version && (version.major > 2 || (version.major === 2 && version.minor >= 1))) {
+    if (capability?.nativeResume === true) {
       return { resume: "native", continuation: "resume-native" };
     }
     return {
@@ -109,7 +93,7 @@ export function claudeResumeContinuation(
       continuation: "recreate-after-confirmed-exit",
     };
   }
-  if (!version || version.major >= 2) {
+  if (capability?.nativeResume !== false) {
     return { resume: "native", continuation: "resume-native" };
   }
   return {
@@ -126,7 +110,7 @@ export function claudeSubagentCapabilities(input: {
   const readonly = proveReadonlyDelegation(
     input.agents?.[CLAUDE_READONLY_AGENT],
   );
-  const parent = claudeResumeContinuation("parent", input.cliVersion);
+  const parent = claudeResumeContinuation("parent");
   const reasons: string[] = [];
   if (readonly.reason) reasons.push(readonly.reason);
   if (input.agentSpawnAllowed === false) {
