@@ -11,6 +11,10 @@ import {
   type ConversationViewEntry,
 } from "./use-conversation-view.js";
 
+const ActivityMarkdown = React.memo(function ActivityMarkdown({ text }: { text: string }) {
+  return <Markdown remarkPlugins={[remarkGfm]}>{text}</Markdown>;
+});
+
 /** 智能中间截断路径：优先完整显示文件名，有余量时尽量多显示前缀，极窄空间截取文件名后半段 */
 export function formatPathSummary(
   text: string,
@@ -341,7 +345,7 @@ export function ExecutionPanel({
                 <CommandPreview command={e.command} cwd={e.cwd} />
               ) : e.kind === "message" || e.kind === "event" ? (
                 <div className="activity-markdown">
-                  <Markdown remarkPlugins={[remarkGfm]}>{e.text}</Markdown>
+                  <ActivityMarkdown text={e.text} />
                 </div>
               ) : e.kind !== "diagnostic" && e.text ? (
                 <p className="activity-summary" title={e.text}>

@@ -78,6 +78,8 @@ import {
 } from "../../../packages/adapters/sdk/src/index.js";
 import { nativeLaunch } from "../../../packages/adapters/sdk/src/launch.js";
 import { latestSpec, bindProfile } from "../../../packages/core/src/run-profile.js";
+import { currentRunObservation } from "../../../packages/core/src/run-observation.js";
+import { readEffectiveSpec } from "../../../packages/core/src/run-profile.js";
 import type { ToolProfile } from "../../../packages/contracts/src/execution-spec.js";
 import {
   SessionBindingAdoptInputSchema,
@@ -1305,9 +1307,56 @@ export async function buildServer(
   );
   app.post("/api/workflows/:id/issues/:issueId/confirm", handleConfirmIssue);
 
+  // Cache read projections only; no scheduler, validation or workflow mutation.
+  const displayPages = new Map<string, { revision: string; at: number; value: any }>();
   app.get("/api/workflows/:id", async (req) => {
     human(req);
     const key = Id.parse((req.params as any).id);
+    const query = z.object({
+      view: z.enum(["summary", "page", "runtime"]).optional(),
+      after: z.coerce.number().int().nonnegative().optional(),
+      since: z.string().optional(),
+      material: z.string().optional(),
+    }).parse(req.query);
+    if (query.view === "runtime") {
+      const w = engine.get(key);
+      return {
+        workflow: { ...w, feedback: [] },
+        runtime: currentRunObservation(engine.store, w),
+        execution_spec: readEffectiveSpec(engine.store, engine.config, key).spec,
+        conversation_tree: conversations.getTree(key, undefined, engine.store.runSummaries(key)),
+        loading: true, events: [], runs: [], tasks: [], operations: [],
+      };
+    }
+    if (query.view === "page") {
+      const changes = (engine.store.db.prepare("SELECT total_changes() n").get() as { n: number }).n;
+      const revision = `${changes}:${engine.store.db.pragma("data_version", { simple: true })}`;
+      const cached = displayPages.get(key);
+      const fresh = cached?.revision === revision && Date.now() - cached.at < 5000;
+      // A bounded lifetime also refreshes authoritative plan files changed outside SQLite.
+      if (fresh && query.since === revision) return { unchanged: true, display_revision: revision };
+      let page = fresh ? cached.value : undefined;
+      if (!page) {
+        const detail = engine.detail(key, false, true);
+        page = {
+          ...detail,
+          events: detail.events.map(e => engine.store.publicEvent(e)),
+          formal_guidance: publicEvent(engine.store.list<ConversationMessage>(CONVERSATION_ENTITY.message, key)
+            .filter(message => message.mode === "formal")
+            .map(message => ({ id: message.id, workflow_id: key, text: message.text,
+              created_at: message.created_at, feedback_id: message.feedback_message_id }))),
+          attachment_status: listAttachmentRecords(engine.store, key),
+          conversation_tree: conversations.getTree(key, undefined, detail.runs),
+          display_revision: revision,
+          material_revision: objectHash(detail.plan),
+        };
+        displayPages.set(key, { revision, at: Date.now(), value: page });
+        if (displayPages.size > 8) displayPages.delete(displayPages.keys().next().value!);
+      }
+      const result = { ...page, events: query.after === undefined ? page.events : page.events.filter((e: any) => e.event_seq > query.after!) };
+      if (query.material === page.material_revision) delete result.plan;
+      return result;
+    }
     if ((req.query as any)?.view === "summary") {
       return {
         ...engine.summary(key),
@@ -1352,14 +1401,26 @@ export async function buildServer(
       .object({
         before: z.coerce.number().int().positive().optional(),
         limit: z.coerce.number().int().min(1).max(200).default(100),
+        view: z.literal("progress").optional(),
+        since: z.string().datetime().optional(),
       })
       .parse(req.query);
     const events = (
       engine.store.db
         .prepare(
-          "SELECT data FROM events WHERE workflow_id=? AND seq<? ORDER BY seq DESC LIMIT ?",
+          query.view === "progress"
+            ? `SELECT data FROM events WHERE workflow_id=? AND seq<?
+                AND json_extract(data,'$.created_at')>=?
+                AND (json_extract(data,'$.payload.step_update.tool_name') IN
+                  ('run_command','terminal','exec','command_status','manage_task','write_to_file','replace_file_content','multi_replace_file_content')
+                  OR (json_extract(data,'$.type') IN ('ConversationActivity','NativeActivity')
+                    AND json_extract(data,'$.payload.kind')='tool'))
+                ORDER BY seq DESC LIMIT ?`
+            : "SELECT data FROM events WHERE workflow_id=? AND seq<? ORDER BY seq DESC LIMIT ?",
         )
-        .all(key, query.before ?? Number.MAX_SAFE_INTEGER, query.limit) as {
+        .all(...(query.view === "progress"
+          ? [key, query.before ?? Number.MAX_SAFE_INTEGER, query.since ?? "", query.limit]
+          : [key, query.before ?? Number.MAX_SAFE_INTEGER, query.limit])) as {
         data: string;
       }[]
     )

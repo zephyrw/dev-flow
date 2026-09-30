@@ -3,6 +3,19 @@ import { readableLogs, userFacingLogs, workflowProgress } from "../../apps/web/s
 import { toolSummary } from "../../packages/presentation/src/tool-summary.js";
 import { runtimePurposeNames } from "../../packages/presentation/src/run-observation.js";
 
+it("reuses immutable public event copies across projections and skips hidden metadata", () => {
+  let reads = 0;
+  const event = { workflow_id: "cache-w", event_seq: 1, created_at: "2026-09-30T00:00:00Z",
+    type: "UserGuidance", payload: { get text() { reads++; return "hello password=secret-value"; } } };
+  const first = readableLogs([event], "cache-w");
+  const second = readableLogs([event], "cache-w");
+  expect(reads).toBe(1);
+  expect(second).toEqual(first);
+  expect(JSON.stringify(second)).not.toContain("secret-value");
+  expect(readableLogs([{ workflow_id: "cache-w", event_seq: 2, type: "ConversationUpdated",
+    payload: { get text() { throw Error("hidden metadata must not be traversed"); } } }], "cache-w")).toEqual([]);
+});
+
 it("shows automatic integration recovery without a terminal failure badge", () => {
   const rows = readableLogs([{ workflow_id: "w", event_seq: 1,
     type: "PlannerIntegrationFailed", payload: { repo_id: "main", message: "EACCES", recovery_scheduled: true } }], "w");

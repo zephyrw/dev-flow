@@ -355,21 +355,30 @@ export function buildComposerRuntime(
   };
 }
 
-export function useWorkflowComposerRuntime(workflowId: string): ComposerRuntimeModel {
+export function useWorkflowComposerRuntime(workflowId: string, suppliedDetail?: any): ComposerRuntimeModel {
   const [detail, setDetail] = useState<any>(null);
   useEffect(() => {
+    if (suppliedDetail !== undefined) return;
     let cancelled = false;
+    let controller: AbortController | undefined;
+    let queued = false;
     const load = async () => {
+      if (cancelled || document.visibilityState === "hidden") return;
+      if (controller) { queued = true; return; }
+      controller = new AbortController();
       try {
         const response = await fetch(
-          `/api/workflows/${encodeURIComponent(workflowId)}`,
-          { credentials: "same-origin" },
+          `/api/workflows/${encodeURIComponent(workflowId)}?view=runtime`,
+          { credentials: "same-origin", signal: controller.signal },
         );
         if (!response.ok || cancelled) return;
         const data = await response.json();
         if (!cancelled) setDetail(data);
       } catch {
         // 保留上一次成功结果。
+      } finally {
+        controller = undefined;
+        if (queued && !cancelled) { queued = false; void load(); }
       }
     };
     void load();
@@ -377,19 +386,22 @@ export function useWorkflowComposerRuntime(workflowId: string): ComposerRuntimeM
       void load();
     };
     window.addEventListener("devflow-activity", onActivity);
-    const timer = window.setInterval(() => {
-      void load();
-    }, 4000);
+    window.addEventListener("focus", onActivity);
+    window.addEventListener("devflow-reconnected", onActivity);
+    document.addEventListener("visibilitychange", onActivity);
     return () => {
       cancelled = true;
+      controller?.abort();
       window.removeEventListener("devflow-activity", onActivity);
-      window.clearInterval(timer);
+      window.removeEventListener("focus", onActivity);
+      window.removeEventListener("devflow-reconnected", onActivity);
+      document.removeEventListener("visibilitychange", onActivity);
     };
-  }, [workflowId]);
+  }, [workflowId, suppliedDetail !== undefined]);
   const viewedId = readViewedConversationId();
   return useMemo(
-    () => buildComposerRuntime(detail, viewedId),
-    [detail, viewedId],
+    () => buildComposerRuntime(suppliedDetail ?? (detail?.workflow?.id === workflowId ? detail : null), viewedId),
+    [suppliedDetail, detail, viewedId, workflowId],
   );
 }
 

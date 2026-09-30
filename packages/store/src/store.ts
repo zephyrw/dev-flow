@@ -2,7 +2,7 @@ import Database from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { EventEmitter } from "node:events";
-import { FlowError, type DomainEvent } from "../../contracts/src/index.js";
+import { FlowError, type DomainEvent, type Run } from "../../contracts/src/index.js";
 import { canonical, hash, id, now, publicEvent } from "../../core/src/util.js";
 import { runMigrations } from "./migrations/index.js";
 
@@ -123,6 +123,22 @@ export class Store extends EventEmitter {
             )
             .all(kind, owner);
     return (rows as { data: string }[]).map((r) => JSON.parse(r.data) as T);
+  }
+  /** Read only identity/model/status facts; historical execution inputs stay in SQLite. */
+  runSummaries(workflow: string): Run[] {
+    const fields = ["id", "workflow_id", "plan_revision", "plan_hash", "adapter", "purpose",
+      "stage", "status", "profile", "conversation_id", "root_session_id", "started_at",
+      "ended_at", "exit_code", "package_hash", "runtime_flavor", "protocol"];
+    const projection = fields.map(field => `'${field}',json_extract(data,'$.${field}')`).join(",");
+    return (this.db.prepare(`SELECT json_object(${projection},
+      'frozen_invocation',json_object('modelToken',json_extract(data,'$.frozen_invocation.modelToken')))
+      AS data FROM entities WHERE kind='run' AND owner=? ORDER BY rowid`)
+      .all(workflow) as { data: string }[]).map(row => {
+        const run = JSON.parse(row.data);
+        for (const key of Object.keys(run)) if (run[key] === null) delete run[key];
+        if (run.frozen_invocation?.modelToken == null) delete run.frozen_invocation;
+        return run as Run;
+      });
   }
   put(kind: string, key: string, owner: string, data: unknown) {
     this.db

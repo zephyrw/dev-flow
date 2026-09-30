@@ -349,6 +349,7 @@ export function TaskInteraction({
           )}
           <ConversationComposer
             workflowId={w.id}
+            runtimeDetail={detail}
             draft={draftApi.draft}
             setText={draftApi.setText}
             setRefs={draftApi.setRefs}

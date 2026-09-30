@@ -20,6 +20,22 @@ export interface LogEntry {
   command?: string;
   cwd?: string;
 }
+// Immutable event objects are reused across renders and progress projections.
+// Sanitize each object once, before any of its content reaches a display row.
+const publicLogEvents = new WeakMap<object, any>();
+export const NON_LOG_EVENT_TYPES = [
+  "RunObserved", "ConversationDiscovered", "ConversationUpdated",
+  "ConversationControlUpdated", "AsideUpdated",
+];
+function publicLogEvent(event: any) {
+  if (!event || typeof event !== "object") return publicDiagnostic(event);
+  if (NON_LOG_EVENT_TYPES.includes(event.type) || isAsideRun(event.run_id)) return event;
+  const cached = publicLogEvents.get(event);
+  if (cached) return cached;
+  const projected = publicDiagnostic(event);
+  publicLogEvents.set(event, projected);
+  return projected;
+}
 /** Reconcile HTTP snapshots with live events without losing newer streamed output. */
 export function mergeEvents(workflow: string, ...batches: any[][]): any[] {
   const events = new Map<number, any>();
@@ -223,7 +239,7 @@ export function readableLogs(events: any[], workflow: string, formalGuidance: Ar
   id: string; workflow_id: string; text: string; created_at: string; feedback_id?: string;
 }> = []): LogEntry[] {
   // Redact display copies without rewriting stored events or execution guidance.
-  events = events.map((event) => publicDiagnostic(event));
+  events = events.map(publicLogEvent);
   const rows: LogEntry[] = [],
     steps = new Map<string, LogEntry>();
   let repairPending = false;
@@ -256,7 +272,7 @@ export function readableLogs(events: any[], workflow: string, formalGuidance: Ar
       if (isAsideRun(e.run_id)) continue;
       if (p.root_id && p.conversation_id && p.conversation_id !== p.root_id)
         continue;
-      const mapped = conversationActivityLogEntry(e);
+      const mapped = conversationActivityLogEntry(e, true);
       if (!mapped) continue;
       let row = steps.get(mapped.key);
       if (!row) {

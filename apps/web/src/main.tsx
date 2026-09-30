@@ -64,6 +64,7 @@ import {
   isMeaningfulLogEntry,
   mergeConversationLogEntry,
   mergeEvents,
+  NON_LOG_EVENT_TYPES,
   workflowProgress,
 } from "./logs.js";
 import {
@@ -1543,7 +1544,7 @@ function App() {
     [pending, setPending] = useState(false),
     [scope, setScope] = useState("within_plan"),
     [diff, setDiff] = useState<any[]>([]);
-  const detail = useNativeProgress(rawDetail);
+  const detail = useNativeProgress(rawDetail, tab === "tasks" || tab === "tests");
   const [planReview, setPlanReview] = useState<PlanReviewTarget | null>(null);
   const [planApprovalTarget, setPlanApprovalTarget] = useState<any | null>(null);
   const [sourceChange, setSourceChange] = useState<{
@@ -1667,24 +1668,30 @@ function App() {
   }, [selected, tab]);
   const detailCache = useRef(new Map<string, any>());
   const savedCursors = useRef(new Map<string, number>());
+  const refreshFlights = useRef(new Map<string, { promise: Promise<void>; again: boolean }>());
   const fetchVisibleFlows = () => api("/workflows?visibility=visible");
-  const refresh = async () => {
-    const key = selected;
-    const [p, f, next, tree] = await Promise.all([
-      api("/projects"),
-      fetchVisibleFlows(),
-      key ? api("/workflows/" + key) : Promise.resolve(null),
-      key ? loadConversationTree(key) : Promise.resolve(null),
-    ]);
-    setProjects(p);
-    setFlows(f);
-    if (next && selection.current === key) {
+  const readPage = (key: string, signal?: AbortSignal) => {
+    const cached = detailCache.current.get(key);
+    const query = new URLSearchParams({ view: "page" });
+    if (cached && !cached.loading) {
+      query.set("after", String(savedCursors.current.get(key) ?? cached.event_cursor ?? 0));
+      if (cached.display_revision) query.set("since", cached.display_revision);
+      if (cached.material_revision) query.set("material", cached.material_revision);
+    }
+    return api(`/workflows/${key}?${query}`, undefined, signal);
+  };
+  const applyPage = (key: string, next: any) => {
+    if (!next.unchanged && selection.current === key) {
       setDetail((previous: any) => {
         const current = previous?.workflow.id === key ? previous : null;
         if (current?.workflow.version > next.workflow.version) return current;
         const merged = {
+          ...current,
           ...next,
-          conversation_tree: tree ?? next.conversation_tree,
+          // Loading older history is an explicit user action; a status refresh
+          // must not move its pagination cursor back to the recent tail.
+          history_cursor: current?.history_cursor === null ? null
+            : Math.min(current?.history_cursor ?? Infinity, next.history_cursor ?? Infinity),
           events: mergeEvents(
             key,
             current?.events ?? [],
@@ -1693,6 +1700,8 @@ function App() {
           ),
         };
         detailCache.current.set(key, merged);
+        if (detailCache.current.size > 10)
+          detailCache.current.delete(detailCache.current.keys().next().value!);
         return merged;
       });
       window.dispatchEvent(new CustomEvent("devflow-detail-refreshed", {
@@ -1700,8 +1709,23 @@ function App() {
       }));
     }
   };
+  const refresh = (): Promise<void> => {
+    const key = selected;
+    if (!key) return Promise.resolve();
+    const active = refreshFlights.current.get(key);
+    if (active) { active.again = true; return active.promise; }
+    const flight = { promise: Promise.resolve(), again: false };
+    flight.promise = (async () => {
+      do {
+        flight.again = false;
+        applyPage(key, await readPage(key));
+      } while (flight.again && selection.current === key);
+    })().finally(() => refreshFlights.current.delete(key));
+    refreshFlights.current.set(key, flight);
+    return flight.promise;
+  };
   useEffect(() => {
-    if (selected && tab === "plan")
+    if (selected && tab === "plan" && detailCache.current.has(selected))
       void refresh().catch((e) => setError(String(e)));
   }, [selected, tab]);
   useEffect(() => {
@@ -1717,43 +1741,9 @@ function App() {
     const abort = new AbortController();
     const cached = detailCache.current.get(selected);
     setDetail(cached ?? null);
-    void (async () => {
-      const summary = await api(
-        `/workflows/${selected}?view=summary`,
-        undefined,
-        abort.signal,
-      );
-      if (abort.signal.aborted || selection.current !== selected) return;
-      setDetail((previous: any) =>
-        previous?.workflow.id === selected &&
-        !previous.loading &&
-        previous.workflow.version === summary.workflow.version
-          ? previous
-          : summary,
-      );
-      const next = await api(`/workflows/${selected}`, undefined, abort.signal);
-      if (abort.signal.aborted || selection.current !== selected) return;
-      const tree = await loadConversationTree(selected, abort.signal);
-      if (abort.signal.aborted || selection.current !== selected) return;
-      setDetail((previous: any) => {
-        const current = previous?.workflow.id === selected ? previous : null;
-        if (current?.workflow.version > next.workflow.version) return current;
-        const result = {
-          ...next,
-          conversation_tree: tree ?? next.conversation_tree,
-          events: mergeEvents(
-            selected,
-            current?.events ?? [],
-            next.events,
-            eventBuffer.current,
-          ),
-        };
-        detailCache.current.set(selected, result);
-        if (detailCache.current.size > 10)
-          detailCache.current.delete(detailCache.current.keys().next().value!);
-        return result;
-      });
-    })().catch((e) => {
+    void readPage(selected, abort.signal).then(next => {
+      if (!abort.signal.aborted) applyPage(selected, next);
+    }).catch((e) => {
       if (!abort.signal.aborted) setError(String(e));
     });
     return () => abort.abort();
@@ -1806,6 +1796,7 @@ function App() {
       timer: ReturnType<typeof setTimeout>,
       refreshTimer: ReturnType<typeof setTimeout> | undefined,
       streamTimer: ReturnType<typeof setTimeout> | undefined;
+    let observedRuntime: any;
     const connect = () => {
       ws = new WebSocket(
         `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/api/events?workflow_id=${selected}&after=${eventCursor.current}&tail=100`,
@@ -1825,22 +1816,31 @@ function App() {
         if (event.workflow_id !== selected) return;
         eventCursor.current = Math.max(eventCursor.current, event.event_seq);
         savedCursors.current.set(selected, eventCursor.current);
-        eventBuffer.current.push(event);
+        if (event.type === "RunObserved") observedRuntime = event.payload;
+        if (!NON_LOG_EVENT_TYPES.includes(event.type)) eventBuffer.current.push(event);
         if (eventBuffer.current.length > 5000)
           eventBuffer.current.splice(0, eventBuffer.current.length - 5000);
-        if (!streamTimer)
+        if (!streamTimer && (eventBuffer.current.length || observedRuntime))
           streamTimer = setTimeout(() => {
             streamTimer = undefined;
             if (disposed) return;
+            const batch = eventBuffer.current;
+            eventBuffer.current = [];
+            const runtime = observedRuntime;
+            observedRuntime = undefined;
             setDetail((previous: any) => {
               if (previous?.workflow.id !== selected) return previous;
               const next = {
                 ...previous,
-                events: mergeEvents(
+                runtime: runtime?.run_id === previous.workflow.run_id ? runtime : previous.runtime,
+                conversation_tree: previous.conversation_tree ? {
+                  ...previous.conversation_tree, cursor: eventCursor.current,
+                } : previous.conversation_tree,
+                events: batch.length ? mergeEvents(
                   selected,
                   previous.events,
-                  eventBuffer.current,
-                ),
+                  batch,
+                ) : previous.events,
               };
               detailCache.current.set(selected, next);
               return next;
@@ -1859,6 +1859,7 @@ function App() {
             "BuildOutput",
             "ServiceOutput",
             "FixtureOutput",
+            "ConversationActivity",
           ].includes(event.type)
         )
           refreshTimer = setTimeout(() => {
@@ -1866,7 +1867,7 @@ function App() {
             void refresh().catch((e) => {
               if (!disposed) setError(String(e));
             });
-          }, 150);
+          }, 1000);
       };
       ws.onclose = () => {
         if (disposed) return;
@@ -2059,9 +2060,9 @@ function App() {
     humanAccepted: detail.human_accepted,
     businessProgress: detail.business_progress,
   }) : undefined;
-  const timeline = w
+  const timeline = React.useMemo(() => w
     ? userFacingLogs(readableLogs(detail.events, selected, detail.formal_guidance), w.run_id)
-    : [];
+    : [], [selected, detail?.events, detail?.formal_guidance, w?.run_id]);
   const conversationTree = detail?.conversation_tree;
   const conversationView = useConversationView({
     workflowId: selected,
@@ -3157,18 +3158,6 @@ function App() {
       />
     </div>
   );
-}
-
-async function loadConversationTree(workflowId: string, signal?: AbortSignal) {
-  try {
-    return await api(
-      `/workflows/${workflowId}/conversations`,
-      undefined,
-      signal,
-    );
-  } catch {
-    return null;
-  }
 }
 
 function latestConversationGeneration(

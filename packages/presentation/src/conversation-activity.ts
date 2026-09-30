@@ -95,8 +95,10 @@ export function conversationActivityLogEntry(event: {
   event_seq: number;
   created_at: string;
   payload?: ConversationActivityPayload;
-}): LogEntry | undefined {
-  event = publicDiagnostic(event);
+}, alreadyPublic = false): LogEntry | undefined {
+  // readableLogs supplies its cached, sanitized copy; standalone callers still
+  // sanitize untrusted native activity before building any display row.
+  if (!alreadyPublic) event = publicDiagnostic(event);
   const payload = event.payload;
   if (!payload?.conversation_id || !payload.attempt_id || !payload.activity_id)
     return undefined;

@@ -365,7 +365,7 @@ export class Engine {
       active_task: this.store.get("task_activity", key),
     };
   }
-  detail(key: string, verifyFiles = true) {
+  detail(key: string, verifyFiles = true, displayOnly = false) {
     const w = this.get(key);
     const planData = w.plan_revision
       ? (() => {
@@ -395,7 +395,7 @@ export class Engine {
     ));
 
     const baseDetail = {
-      workflow: w,
+      workflow: displayOnly ? { ...w, feedback: [] } : w,
       business_progress: readBusinessProgress(this.store, w),
       runtime: currentRunObservation(this.store, w),
       execution_spec: readEffectiveSpec(this.store, this.config, key).spec,
@@ -405,7 +405,9 @@ export class Engine {
       execution_test_report: this.executionTestReport(key),
       plan: planData,
       workspaces: this.store.list<Workspace>("workspace", key),
-      runs: this.store.list<Run>("run", key),
+      runs: displayOnly
+        ? this.store.runSummaries(key)
+        : this.store.list<Run>("run", key),
       evidence: evidenceList,
       tasks: taskList,
       test_progress: testProg,
@@ -418,11 +420,14 @@ export class Engine {
       events: (() => {
         const rows = this.store.db
           .prepare(
-            "SELECT data FROM events WHERE workflow_id=? AND json_extract(data, '$.type') NOT IN ('ServiceOutput','FixtureOutput','CheckOutput','BuildOutput','AgentEvent','NativeActivity','RunObserved') ORDER BY seq DESC LIMIT 500",
+            displayOnly
+              ? "SELECT data FROM events WHERE workflow_id=? AND json_extract(data, '$.type') NOT IN ('ServiceOutput','FixtureOutput','CheckOutput','BuildOutput','AgentEvent','NativeActivity','RunObserved','ConversationUpdated','ConversationDiscovered','ConversationControlUpdated','AsideUpdated','AgentDiagnostic') ORDER BY seq DESC LIMIT 100"
+              : "SELECT data FROM events WHERE workflow_id=? AND json_extract(data, '$.type') NOT IN ('ServiceOutput','FixtureOutput','CheckOutput','BuildOutput','AgentEvent','NativeActivity','RunObserved') ORDER BY seq DESC LIMIT 500",
           )
           .all(key)
           .map((row: any) => JSON.parse(row.data))
-          .concat(this.store.recentEvents(key, 500));
+          .concat(this.store.recentEvents(key, displayOnly ? 100 : 500)
+            .filter(e => !displayOnly || !["RunObserved", "ConversationUpdated", "ConversationDiscovered", "ConversationControlUpdated", "AsideUpdated", "AgentDiagnostic"].includes(e.type)));
         const seen = new Set<number>();
         const deduped: any[] = [];
         for (const e of rows) {
@@ -445,7 +450,7 @@ export class Engine {
         this.store.get("queue_wait", key),
       development_evidence: this.store.list("development_evidence", key),
       event_cursor: this.store.eventCursor(key),
-      history_cursor: Math.max(1, this.store.eventCursor(key) - 499),
+      history_cursor: Math.max(1, this.store.eventCursor(key) - (displayOnly ? 99 : 499)),
     };
 
     return {

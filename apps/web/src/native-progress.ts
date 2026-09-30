@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { nativeProgress } from "../../../packages/presentation/src/native-progress.js";
 
 /** Read existing APIs only: no model tool call, workflow mutation or runner. */
-export function useNativeProgress(detail: any) {
+export function useNativeProgress(detail: any, observe = true) {
   const workflow = detail?.workflow;
   const native = detail?.plan?.plan?.task_model === "native-v2";
   const binding = native
@@ -13,53 +13,34 @@ export function useNativeProgress(detail: any) {
     changes: any[];
   }>();
   const [history, setHistory] = useState<{ binding: string; events: any[] }>();
+  const observations = useRef(new Map<string, any[]>());
+  const differences = useRef(new Map<string, any[]>());
   const firstRun = (detail?.runs ?? [])
     .filter((r: any) => r.plan_revision === workflow?.plan_revision)
     .map((r: any) => r.started_at)
     .filter(Boolean)
     .sort()[0];
-  // Restore earlier observations without slowing the initial summary or
-  // requesting any extra reporting from the execution model.
+  // One filtered, bounded page restores recent observations on demand. Older
+  // raw execution history remains available through the sidebar history button.
   useEffect(() => {
-    if (!binding || detail.loading || !firstRun || !detail.history_cursor)
+    if (!binding || detail.loading || !firstRun)
       return;
+    const cacheKey = `${binding}:${workflow.run_id ?? ""}`;
+    const cached = observations.current.get(cacheKey);
+    if (cached) { setHistory({ binding, events: cached }); return; }
     const abort = new AbortController();
-    let timer: ReturnType<typeof setTimeout>;
-    let cursor = detail.history_cursor;
-    const collected: any[] = [];
     const page = async () => {
       try {
         const response = await fetch(
-          `/api/workflows/${encodeURIComponent(workflow.id)}/history?before=${cursor}&limit=200`,
+          `/api/workflows/${encodeURIComponent(workflow.id)}/history?view=progress&since=${encodeURIComponent(firstRun)}&limit=200`,
           { signal: abort.signal },
         );
         if (!response.ok) return;
         const result = await response.json();
         if (abort.signal.aborted || !Array.isArray(result.events)) return;
-        collected.push(
-          ...result.events.filter((e: any) => {
-            const step = e.payload?.step_update;
-            return (
-              e.created_at >= firstRun &&
-              [
-                "run_command",
-                "terminal",
-                "exec",
-                "command_status",
-                "manage_task",
-              ].includes(step?.tool_name)
-            );
-          }),
-        );
-        setHistory({ binding, events: [...collected] });
-        if (
-          result.next_before &&
-          result.next_before < cursor &&
-          result.events[0]?.created_at >= firstRun
-        ) {
-          cursor = result.next_before;
-          timer = setTimeout(() => void page(), 250);
-        }
+        observations.current.set(cacheKey, result.events);
+        if (observations.current.size > 8) observations.current.delete(observations.current.keys().next().value!);
+        setHistory({ binding, events: result.events });
       } catch {
         /* Recent live observations remain available on read failure. */
       }
@@ -67,11 +48,16 @@ export function useNativeProgress(detail: any) {
     void page();
     return () => {
       abort.abort();
-      clearTimeout(timer);
     };
-  }, [binding, detail?.loading, firstRun]);
+  }, [binding, workflow?.run_id, detail?.loading, firstRun]);
   useEffect(() => {
     if (!binding || detail.loading) return;
+    const cached = differences.current.get(binding);
+    const polling = observe && ["EXECUTING", "VERIFYING", "QUEUED"].includes(workflow.state);
+    if (cached) {
+      setSnapshot({ binding, changes: cached });
+      if (!polling) return;
+    }
     const abort = new AbortController();
     let timer: ReturnType<typeof setTimeout>;
     const refresh = async () => {
@@ -83,8 +69,11 @@ export function useNativeProgress(detail: any) {
           );
           if (response.ok) {
             const changes = await response.json();
-            if (!abort.signal.aborted && Array.isArray(changes))
+            if (!abort.signal.aborted && Array.isArray(changes)) {
+              differences.current.set(binding, changes);
+              if (differences.current.size > 8) differences.current.delete(differences.current.keys().next().value!);
               setSnapshot({ binding, changes });
+            }
           }
         }
       } catch {
@@ -92,7 +81,7 @@ export function useNativeProgress(detail: any) {
       }
       if (
         !abort.signal.aborted &&
-        ["EXECUTING", "VERIFYING", "QUEUED"].includes(workflow.state)
+        polling
       )
         timer = setTimeout(() => void refresh(), 15000);
     };
@@ -101,7 +90,7 @@ export function useNativeProgress(detail: any) {
       abort.abort();
       clearTimeout(timer);
     };
-  }, [binding, workflow?.state, detail?.loading]);
+  }, [observe, binding, workflow?.state, detail?.loading]);
   return useMemo(() => {
     const projection = nativeProgress(
       history?.binding === binding && detail

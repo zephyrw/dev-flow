@@ -178,14 +178,14 @@ export class ConversationService {
     return roots.length === 1 ? roots[0] : undefined;
   }
 
-  getTree(workflowId: string, rootId?: string): ConversationTreeSnapshot {
+  getTree(workflowId: string, rootId?: string, runSummaries?: Run[]): ConversationTreeSnapshot {
     const nodes = this.store.list<ConversationNode>(
       CONVERSATION_ENTITY.node,
       workflowId,
     );
     const attempts = this.store.list<ConversationAttempt>(CONVERSATION_ENTITY.attempt, workflowId);
     const workflow = this.store.get<Workflow>("workflow", workflowId);
-    if (workflow) mergeRunProjections(workflow, this.store.list<Run>("run", workflowId), nodes, attempts);
+    if (workflow) mergeRunProjections(workflow, runSummaries ?? this.store.list<Run>("run", workflowId), nodes, attempts);
     const scoped = rootId
       ? nodes.filter((node) => node.root_id === rootId)
       : nodes;

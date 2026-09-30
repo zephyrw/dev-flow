@@ -61,6 +61,7 @@ export interface ConversationComposerSubmit {
 
 export function ConversationComposer({
   workflowId,
+  runtimeDetail,
   draft,
   setText,
   setRefs,
@@ -78,6 +79,7 @@ export function ConversationComposer({
   formalBlockedReason,
 }: {
   workflowId: string;
+  runtimeDetail?: any;
   draft: ConversationDraft;
   setText: (text: string) => void;
   setRefs: (refs: ReferenceItem[]) => void;
@@ -105,6 +107,7 @@ export function ConversationComposer({
   return (
     <ActiveComposer
       workflowId={workflowId}
+      runtimeDetail={runtimeDetail}
       draft={draft}
       setText={setText}
       setRefs={setRefs}
@@ -148,6 +151,7 @@ function EndedComposer({
 
 function ActiveComposer({
   workflowId,
+  runtimeDetail,
   draft,
   setText,
   setRefs,
@@ -162,6 +166,7 @@ function ActiveComposer({
   formalBlockedReason,
 }: {
   workflowId: string;
+  runtimeDetail?: any;
   draft: ConversationDraft;
   setText: (text: string) => void;
   setRefs: (refs: ReferenceItem[]) => void;
@@ -180,7 +185,7 @@ function ActiveComposer({
   const [composing, setComposing] = useState(false);
   const [referenceOpenTick, setReferenceOpenTick] = useState(0);
   const { setAttachments } = useConversationDraft(workflowId);
-  const runtime = useWorkflowComposerRuntime(workflowId);
+  const runtime = useWorkflowComposerRuntime(workflowId, runtimeDetail);
   const attachments = useConversationAttachmentQueue(
     workflowId,
     setAttachments,
