@@ -8,8 +8,21 @@ import {
   rmSync,
   readdirSync,
   statSync,
+  lstatSync,
+  realpathSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { acquireInstallTransactionLock } from "./launchers.js";
+import { isWithinRoot } from "./download.js";
+import {
+  readRuntimeFilesManifest,
+  requiredEntries,
+  resolveEntryPath,
+} from "./runtime-files.js";
+import { cleanProcessEnvironment } from "../../process/src/manager.js";
 import {
   applyMigration,
   dryRunMigration,
@@ -68,7 +81,8 @@ export class UpgradeManager {
       if (inspection.active_leases > 0)
         throw new Error("UPGRADE_ACTIVE_LEASE: 请先完成任务停止和资源对账");
       throw new Error(
-        "UPGRADE_NOT_QUIESCENT: " + (inspection.blockers.join("; ") || "未静默"),
+        "UPGRADE_NOT_QUIESCENT: " +
+          (inspection.blockers.join("; ") || "未静默"),
       );
     }
   }
@@ -95,7 +109,7 @@ export class UpgradeManager {
   atomicSwitchCurrent(meta: Record<string, unknown>) {
     try {
       atomicWrite(
-        join(this.options.installDir, "current.json"),
+        join(this.installRoot, "current.json"),
         JSON.stringify(meta, null, 2),
       );
       return true;
@@ -112,7 +126,15 @@ export class UpgradeManager {
     sourceDir: string;
     targetVersion: string;
   }): Promise<{ targetDir: string; digest: string }> {
-    const source = meta.sourceDir;
+    const source = resolve(meta.sourceDir);
+    if (
+      !/^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(
+        meta.targetVersion,
+      )
+    )
+      throw new Error("UPGRADE_CANDIDATE_VERSION_INVALID");
+    if (isWithinRoot(source, this.installRoot))
+      throw new Error("UPGRADE_SOURCE_CONTAINS_INSTALL_ROOT");
     if (!existsSync(join(source, "package.json")))
       throw new Error("UPGRADE_CANDIDATE_INVALID: 候选包缺少 package.json");
     const pkg = JSON.parse(
@@ -123,39 +145,39 @@ export class UpgradeManager {
         `UPGRADE_CANDIDATE_VERSION_MISMATCH: package.json ${pkg.version} != ${meta.targetVersion}`,
       );
 
-    const identityFiles = [
-      "package.json",
-      "build-info.json",
-      "compatibility.json",
-      "dist/apps/api/src/main.js",
-      "dist/packages/process/src/runner-entry.js",
-      "dist/packages/service/src/launcher.js",
-      "dist/packages/cli/src/main.js",
-    ];
-    const present = identityFiles.filter((p) => existsSync(join(source, p)));
-    if (!present.length)
-      throw new Error("UPGRADE_CANDIDATE_INVALID: 候选包缺少身份文件");
-    const digest = hash(
-      present
-        .map((p) => p + ":" + createHash("sha256").update(readFileSync(join(source, p))).digest("hex"))
-        .join("\n"),
-    );
+    const manifest = readRuntimeFilesManifest(source);
+    for (const entry of requiredEntries(manifest)) {
+      const file = join(source, resolveEntryPath(source, entry));
+      if (
+        !isWithinRoot(source, file) ||
+        !existsSync(file) ||
+        (entry.kind === "directory"
+          ? !statSync(file).isDirectory()
+          : !statSync(file).isFile())
+      )
+        throw new Error("UPGRADE_CANDIDATE_INVALID: " + entry.path);
+    }
+    const digest = payloadDigest(source);
 
     const versionsDir = join(this.installRoot, "versions");
     const targetDir = join(versionsDir, meta.targetVersion);
+    if (
+      existsSync(versionsDir) &&
+      !isWithinRoot(realpathSync(this.installRoot), realpathSync(versionsDir))
+    )
+      throw new Error("UPGRADE_VERSION_ROOT_ESCAPE");
+    if (existsSync(targetDir) && lstatSync(targetDir).isSymbolicLink())
+      throw new Error("UPGRADE_TARGET_DIR_CONFLICT");
+    if (source !== resolve(targetDir) && isWithinRoot(source, targetDir))
+      throw new Error("UPGRADE_SOURCE_CONTAINS_TARGET");
     const receiptPath = join(targetDir, "install-source.json");
 
     if (existsSync(receiptPath)) {
-      const receipt = JSON.parse(
-        readFileSync(receiptPath, "utf8"),
-      ) as { digest?: string; version?: string };
-      if (receipt.digest && receipt.digest !== digest) {
-        // U-04: same version + different digest must refuse overwrite.
+      if (payloadDigest(targetDir) !== digest)
         throw new Error(
-          "UPGRADE_SAME_VERSION_DIGEST_MISMATCH: 现有版本内容不同，不能覆盖正在使用的安装目录",
+          "UPGRADE_SAME_VERSION_DIGEST_MISMATCH: 现有版本内容不同，拒绝覆盖",
         );
-      }
-      return { targetDir, digest: receipt.digest ?? digest };
+      return { targetDir, digest };
     }
 
     if (existsSync(targetDir) && !existsSync(receiptPath))
@@ -163,10 +185,13 @@ export class UpgradeManager {
         "UPGRADE_TARGET_DIR_CONFLICT: 目标版本目录已存在但缺少收据，拒绝覆盖",
       );
 
-    const staging = targetDir + ".staging." + hash(String(Date.now())).slice(0, 8);
+    const staging =
+      targetDir + ".staging." + hash(String(Date.now())).slice(0, 8);
     mkdirSync(staging, { recursive: true });
     try {
       copyTreeFull(source, staging);
+      if (payloadDigest(staging) !== digest)
+        throw new Error("UPGRADE_CANDIDATE_CHANGED_DURING_COPY");
       atomicWrite(
         join(staging, "install-source.json"),
         JSON.stringify(
@@ -194,56 +219,69 @@ export class UpgradeManager {
    * §7.2: request maintenance preparation. Does NOT take the controller lock
    * (lock-order red line: service still owns it until it exits).
    */
-  async requestMaintenance(): Promise<void> {
+  private serviceOnline = false;
+
+  async requestMaintenance(transactionId?: string): Promise<void> {
     const storageRoot = this.options.storageRoot ?? this.installRoot;
-    // Best-effort local identity check via health endpoint when provided.
-    if (this.options.serviceOrigin) {
-      try {
-        const health = await fetch(
-          new URL("/api/health", this.options.serviceOrigin),
-          { method: "GET", headers: { accept: "application/json" } },
-        );
-        if (health.ok) {
-          const body = (await health.json()) as Record<string, unknown>;
-          if (body.service === "devflow") {
-            await fetch(
-              new URL("/api/maintenance/prepare", this.options.serviceOrigin),
-              {
-                method: "POST",
-                headers: {
-                  "content-type": "application/json",
-                  origin: this.options.serviceOrigin,
-                },
-                body: JSON.stringify({
-                  transaction_id: readLatestTransactionId(this.installRoot),
-                  target_version: this.options.targetVersion,
-                }),
-              },
-            ).catch(() => undefined);
-          }
-        }
-      } catch {
-        /* Offline service: marker alone is still valid for a cold upgrade. */
-      }
-    }
-    const txId = readLatestTransactionId(this.installRoot);
+    const txId = transactionId ?? readLatestTransactionId(this.installRoot);
     if (!txId)
-      throw new Error(
-        "UPGRADE_TX_REQUIRED: requestMaintenance 需要先 beginUpgradeTransaction",
-      );
-    if (!readMaintenanceMarker(storageRoot)) {
+      throw new Error("UPGRADE_TX_REQUIRED: requestMaintenance 需要事务");
+    const existing = readMaintenanceMarker(storageRoot);
+    if (existing && existing.transaction_id !== txId)
+      throw new Error("UPGRADE_MAINTENANCE_CONFLICT: 先恢复已有维护事务");
+    if (!existing)
       beginMaintenanceMarker({
         storageRoot,
         transaction_id: txId,
         kind: "upgrade",
         target_version: this.options.targetVersion,
       });
-    } else {
-      updateMaintenanceMarker(storageRoot, {
-        block_new_dispatch: true,
-        phase: "requested",
+    this.serviceOnline = false;
+    if (!this.options.serviceOrigin) return;
+    let health: Response;
+    try {
+      health = await fetch(new URL("/api/health", this.options.serviceOrigin), {
+        signal: AbortSignal.timeout(3000),
+        redirect: "error",
       });
+    } catch {
+      // The controller lock still rejects an unreachable but live controller.
+      return;
     }
+    const body = (await health.json()) as Record<string, unknown>;
+    if (
+      !health.ok ||
+      body.service !== "devflow" ||
+      body.instance !== hash(resolve(storageRoot).toLowerCase())
+    )
+      throw new Error("UPGRADE_SERVICE_IDENTITY_MISMATCH");
+    this.serviceOnline = true;
+    await this.maintenanceRequest("prepare", {
+      transaction_id: txId,
+      target_version: this.options.targetVersion,
+    });
+  }
+
+  private async maintenanceRequest(
+    action: string,
+    body: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const response = await fetch(
+      new URL("/api/maintenance/" + action, this.options.serviceOrigin),
+      {
+        method: "POST",
+        redirect: "error",
+        signal: AbortSignal.timeout(15000),
+        headers: {
+          "content-type": "application/json",
+          origin: this.options.serviceOrigin!,
+        },
+        body: JSON.stringify(body),
+      },
+    );
+    if (!response.ok)
+      throw new Error("UPGRADE_MAINTENANCE_REQUEST_FAILED: " + response.status);
+    return (await response.json()) as Record<string, unknown>;
   }
 
   /**
@@ -269,8 +307,16 @@ export class UpgradeManager {
       pause_requested: options.onActiveTasks === "pause-and-update",
     });
 
-    if (options.onActiveTasks === "pause-and-update" && options.pauseCallback)
-      await options.pauseCallback();
+    if (options.onActiveTasks === "pause-and-update") {
+      if (options.pauseCallback) await options.pauseCallback();
+      else if (this.serviceOnline)
+        await this.maintenanceRequest("quiesce", {
+          transaction_id: marker.transaction_id,
+          on_active_tasks: options.onActiveTasks,
+        });
+      else if (!(await inspectQuiesceState(sqlitePath)).can_quiesce)
+        throw new Error("UPGRADE_PAUSE_UNAVAILABLE");
+    }
 
     const timeout = options.timeoutMs ?? 120_000;
     const interval = options.pollIntervalMs ?? 200;
@@ -286,7 +332,7 @@ export class UpgradeManager {
             "；请运行恢复对账（勿将 unknown 批量改为 exited）",
         );
       }
-      if (options.onActiveTasks === "wait" && Date.now() > deadline)
+      if (Date.now() > deadline)
         throw new Error(
           "UPGRADE_QUIESCE_TIMEOUT: 等待任务结束超时（未选择暂停并更新，不强制打断）",
         );
@@ -296,31 +342,74 @@ export class UpgradeManager {
     updateMaintenanceMarker(storageRoot, { phase: "quiescent" });
   }
 
+  async acquireQuiescentController(
+    transactionId: string,
+    acquire = acquireControllerLock,
+    timeoutMs?: number,
+  ): Promise<() => Promise<void>> {
+    const storageRoot = this.options.storageRoot ?? this.installRoot;
+    if (this.serviceOnline) {
+      const stopped = await this.maintenanceRequest("quiesce", {
+        transaction_id: transactionId,
+        on_active_tasks: "wait",
+        shutdown: true,
+      });
+      if (!stopped.can_quiesce) throw new Error("UPGRADE_NOT_QUIESCENT");
+    }
+    const stopDeadline = Date.now() + (timeoutMs ?? 15000);
+    for (;;) {
+      try {
+        return await acquire(storageRoot);
+      } catch (error) {
+        if (
+          !this.serviceOnline ||
+          (error as Error).message !== "CONTROLLER_ALREADY_ACTIVE" ||
+          Date.now() >= stopDeadline
+        )
+          throw error;
+        await new Promise((r) => setTimeout(r, 200));
+      }
+    }
+  }
+
   /**
    * §7.3 state machine: Prepared→(WaitingForIdle)→Quiescent→BackedUp→Migrating→Starting→Verified
    * Failure branches: SafeAbort (no business state written) / RecoveryRequired.
    */
-  async runUpgradeStateMachine(options: UpgradeStateMachineOptions): Promise<UpgradeResult> {
+  async runUpgradeStateMachine(
+    options: UpgradeStateMachineOptions,
+  ): Promise<UpgradeResult> {
     const installRoot = options.installRoot ?? this.installRoot;
-    const storageRoot = options.storageRoot ?? this.options.storageRoot ?? installRoot;
-    const sqlitePath = options.sqlitePath ?? join(storageRoot, "devflow.sqlite");
+    const storageRoot =
+      options.storageRoot ?? this.options.storageRoot ?? installRoot;
+    const sqlitePath =
+      options.sqlitePath ?? join(storageRoot, "devflow.sqlite");
     const configPath = options.configPath ?? join(installRoot, "devflow.yaml");
     const pointerPath = join(installRoot, "current.json");
+    this.options = {
+      ...this.options,
+      installRoot,
+      storageRoot,
+      targetVersion: options.targetVersion,
+      serviceOrigin: options.serviceOrigin ?? this.options.serviceOrigin,
+    };
     const acquire = options.acquireControllerLock ?? acquireControllerLock;
 
     const sourceVersion =
       options.sourceVersion ??
       (existsSync(pointerPath)
-        ? (JSON.parse(readFileSync(pointerPath, "utf8")) as {
-            application_version?: string;
-            version?: string;
-          }).application_version
+        ? (
+            JSON.parse(readFileSync(pointerPath, "utf8")) as {
+              application_version?: string;
+              version?: string;
+            }
+          ).application_version
         : undefined);
 
-    const created_config = !existsSync(configPath);
-    const created_pointer = !existsSync(pointerPath);
-    const config_digest_before = digestFile(configPath);
-    const pointer_digest_before = digestFile(pointerPath);
+    let created_config = !existsSync(configPath);
+    let created_pointer = !existsSync(pointerPath);
+    let config_digest_before = digestFile(configPath);
+    let pointer_digest_before = digestFile(pointerPath);
 
     let phase: UpgradePhase = "begun";
     let tx: UpgradeTransaction | undefined;
@@ -330,8 +419,14 @@ export class UpgradeManager {
     let new_state_write_possible = false;
     let release: (() => Promise<void>) | undefined;
     let markerHeld = false;
+    let releaseInstall: (() => Promise<void>) | undefined;
 
     try {
+      releaseInstall = await acquireInstallTransactionLock(installRoot);
+      created_config = !existsSync(configPath);
+      created_pointer = !existsSync(pointerPath);
+      config_digest_before = digestFile(configPath);
+      pointer_digest_before = digestFile(pointerPath);
       // Prepared: candidate first — must not change current state.
       phase = "prepared";
       const candidate = await this.prepareCandidate({
@@ -343,11 +438,14 @@ export class UpgradeManager {
 
       tx = beginUpgradeTransaction({
         installRoot,
-        kind: options.kind ?? (created_config && created_pointer ? "install" : "upgrade"),
+        kind:
+          options.kind ??
+          (created_config && created_pointer ? "install" : "upgrade"),
         target_version: options.targetVersion,
         target_digest: digest,
         source_version: sourceVersion,
         source_digest: options.sourceDigest,
+        config_path: configPath,
         config_digest_before,
         pointer_digest_before,
         created_config,
@@ -359,8 +457,11 @@ export class UpgradeManager {
 
       // Maintenance handover BEFORE controller lock (§7.2 red line).
       phase = "waiting_for_idle";
-      await this.requestMaintenance();
+      const existingMarker = readMaintenanceMarker(storageRoot);
+      if (existingMarker && existingMarker.transaction_id !== tx.id)
+        throw new Error("UPGRADE_MAINTENANCE_CONFLICT");
       markerHeld = true;
+      await this.requestMaintenance(tx.id);
       await this.waitForQuiescent({
         onActiveTasks: options.onActiveTasks ?? "wait",
         sqlitePath,
@@ -372,12 +473,25 @@ export class UpgradeManager {
 
       // Only after confirmed stop: take controller lock and switch.
       phase = "backed_up";
-      release = await acquire(storageRoot);
+      release = await this.acquireQuiescentController(
+        tx.id,
+        acquire,
+        options.timeoutMs,
+      );
+      await this.assertQuiescent(sqlitePath);
       const backup = await this.backupData(sqlitePath);
       if (backup) backupPaths.push(backup);
-      const configBackup = backupFileCopyIf(configPath, join(installRoot, "backup", "tx", tx.id), "devflow.yaml");
+      const configBackup = backupFileCopyIf(
+        configPath,
+        join(installRoot, "backup", "tx", tx.id),
+        "devflow.yaml",
+      );
       if (configBackup) backupPaths.push(configBackup);
-      const pointerBackup = backupFileCopyIf(pointerPath, join(installRoot, "backup", "tx", tx.id), "current.json");
+      const pointerBackup = backupFileCopyIf(
+        pointerPath,
+        join(installRoot, "backup", "tx", tx.id),
+        "current.json",
+      );
       if (pointerBackup) backupPaths.push(pointerBackup);
       recordTransactionPhase(installRoot, tx.id, "backed_up", {
         backup_paths: backupPaths,
@@ -409,7 +523,11 @@ export class UpgradeManager {
       for (const change of options.managedClients ?? []) {
         const before_hash = digestFile(change.path);
         const backup_path = before_hash
-          ? backupFileCopy(change.path, join(installRoot, "backup", "tx", tx.id, "client"), change.client)
+          ? backupFileCopy(
+              change.path,
+              join(installRoot, "backup", "tx", tx.id, "client"),
+              change.client,
+            )
           : undefined;
         const applied = await change.apply();
         const after_hash = digestFile(change.path);
@@ -444,7 +562,7 @@ export class UpgradeManager {
         const inBootstrap = join(installRoot, "bootstrap", "runtime", binName);
         if (existsSync(inVersion)) resolvedNode = inVersion;
         else if (existsSync(inBootstrap)) resolvedNode = inBootstrap;
-        else resolvedNode = process.execPath;
+        else throw new Error("UPGRADE_TARGET_RUNTIME_MISSING");
       }
       const pointerMeta = {
         version: options.targetVersion,
@@ -452,7 +570,9 @@ export class UpgradeManager {
         root: targetDir,
         config: configPath,
         node: resolvedNode,
-        build_revision: digest,
+        build_revision: JSON.parse(
+          readFileSync(join(targetDir, "build-info.json"), "utf8"),
+        ).build_revision,
         updated_at: now(),
       };
       if (!this.atomicSwitchCurrent(pointerMeta))
@@ -468,6 +588,7 @@ export class UpgradeManager {
       });
 
       phase = "starting";
+      updateMaintenanceMarker(storageRoot, { phase: "starting" });
       if (release) {
         await release();
         release = undefined;
@@ -476,23 +597,53 @@ export class UpgradeManager {
         const started = await options.startTargetService();
         if (!started || !started.ok)
           throw new Error("UPGRADE_TARGET_START_FAILED: 目标版本服务启动失败");
-        if (
-          started.application_version &&
-          started.application_version !== options.targetVersion
-        )
+        if (started.application_version !== options.targetVersion)
           throw new Error(
             `UPGRADE_TARGET_VERSION_MISMATCH: 服务报告 ${started.application_version} != ${options.targetVersion}`,
           );
-      } else if (options.serviceOrigin) {
+      } else if (this.options.serviceOrigin) {
+        const launcher = join(
+          targetDir,
+          "dist/packages/service/src/launcher.js",
+        );
+        await promisify(execFile)(
+          resolvedNode,
+          [
+            "--input-type=module",
+            "-e",
+            "const m=await import(process.argv[1]);await m.ensureService();",
+            pathToFileURL(launcher).href,
+          ],
+          {
+            cwd: targetDir,
+            windowsHide: true,
+            timeout: 150000,
+            env: cleanProcessEnvironment({
+              DEVFLOW_CONFIG: configPath,
+              DEVFLOW_INSTALL_ROOT: installRoot,
+              DEVFLOW_VERSION_ROOT: targetDir,
+              DEVFLOW_UPGRADE_TRANSACTION: tx.id,
+            }),
+          },
+        );
         let verifiedHealth = false;
         for (let i = 0; i < 20; i++) {
           try {
-            const healthResp = await fetch(new URL("/api/health", options.serviceOrigin), {
-              signal: AbortSignal.timeout(1500),
-            });
+            const healthResp = await fetch(
+              new URL("/api/health", this.options.serviceOrigin),
+              {
+                signal: AbortSignal.timeout(1500),
+              },
+            );
             if (healthResp.ok) {
               const body = (await healthResp.json()) as Record<string, unknown>;
-              if (body.service === "devflow") {
+              if (
+                body.service === "devflow" &&
+                body.instance === hash(resolve(storageRoot).toLowerCase()) &&
+                typeof body.runtime_root === "string" &&
+                resolve(body.runtime_root) === resolve(targetDir) &&
+                body.build_revision === pointerMeta.build_revision
+              ) {
                 const liveVersion = body.application_version ?? body.version;
                 if (liveVersion && liveVersion === options.targetVersion) {
                   verifiedHealth = true;
@@ -512,6 +663,8 @@ export class UpgradeManager {
         }
       }
 
+      if (!options.startTargetService && !this.options.serviceOrigin)
+        throw new Error("UPGRADE_TARGET_VERIFICATION_REQUIRED");
       phase = "verified";
       recordTransactionPhase(installRoot, tx.id, "verified", {
         new_state_write_possible: true,
@@ -519,7 +672,11 @@ export class UpgradeManager {
       if (options.writeAccountsLauncher !== false)
         writeAccountsLauncher(installRoot);
       commitUpgradeTransaction(installRoot, tx.id);
-      if (markerHeld) clearMaintenanceMarker(storageRoot);
+      if (
+        markerHeld &&
+        readMaintenanceMarker(storageRoot)?.transaction_id === tx.id
+      )
+        clearMaintenanceMarker(storageRoot);
 
       // U-11: keep at least one known-good version; report safe clean targets.
       const cleanup = listSafeOldVersions(installRoot, options.targetVersion);
@@ -539,8 +696,7 @@ export class UpgradeManager {
     } catch (error) {
       const message = (error as Error).message || String(error);
       const code =
-        (error as { code?: string }).code ??
-        classifyUpgradeErrorCode(message);
+        (error as { code?: string }).code ?? classifyUpgradeErrorCode(message);
       const safeAbort = !new_state_write_possible;
       try {
         failUpgradeTransaction(installRoot, tx?.id ?? "", {
@@ -553,7 +709,10 @@ export class UpgradeManager {
       } catch {
         /* transaction may not exist if prepareCandidate failed first */
       }
-      if (markerHeld) {
+      if (
+        markerHeld &&
+        readMaintenanceMarker(storageRoot)?.transaction_id === tx?.id
+      ) {
         try {
           if (safeAbort) clearMaintenanceMarker(storageRoot);
           else
@@ -562,21 +721,6 @@ export class UpgradeManager {
             });
         } catch {
           /* marker cleanup is best-effort on the failure path */
-        }
-      }
-      // First-install failure: remove only this transaction's empty config/pointer.
-      if (safeAbort && created_config && existsSync(configPath)) {
-        try {
-          rmSync(configPath, { force: true });
-        } catch {
-          /* leave if not removable */
-        }
-      }
-      if (safeAbort && created_pointer && existsSync(pointerPath)) {
-        try {
-          rmSync(pointerPath, { force: true });
-        } catch {
-          /* leave if not removable */
         }
       }
       return {
@@ -599,7 +743,11 @@ export class UpgradeManager {
             ],
       };
     } finally {
-      if (release) await release();
+      try {
+        if (release) await release();
+      } finally {
+        await releaseInstall?.();
+      }
     }
   }
 }
@@ -656,7 +804,12 @@ shell.Run "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden
 // ---------------------------------------------------------------------------
 
 export interface UpgradeResult {
-  status: "verified" | "safe_abort" | "recovery_required" | "no_update" | "blocked";
+  status:
+    | "verified"
+    | "safe_abort"
+    | "recovery_required"
+    | "no_update"
+    | "blocked";
   transaction_id?: string;
   phase: UpgradePhase;
   target_version: string;
@@ -666,7 +819,11 @@ export interface UpgradeResult {
   new_state_write_possible: boolean;
   error?: { code: string; message: string };
   recovery_actions: string[];
-  cleanup_candidates?: Array<{ version: string; safe: boolean; references: string[] }>;
+  cleanup_candidates?: Array<{
+    version: string;
+    safe: boolean;
+    references: string[];
+  }>;
 }
 
 export interface UpgradeStateMachineOptions {
@@ -697,9 +854,7 @@ export interface UpgradeStateMachineOptions {
     checkTargetRef?: boolean;
     apply: () => Promise<{ note?: string } | void> | { note?: string } | void;
   }>;
-  acquireControllerLock?: (
-    root: string,
-  ) => Promise<() => Promise<void>>;
+  acquireControllerLock?: (root: string) => Promise<() => Promise<void>>;
 }
 
 export interface QuiesceInspection {
@@ -783,24 +938,54 @@ export function listSafeOldVersions(
 ): Array<{ version: string; safe: boolean; references: string[] }> {
   const versionsDir = join(installRoot, "versions");
   if (!existsSync(versionsDir)) return [];
-  const results: Array<{ version: string; safe: boolean; references: string[] }> = [];
+  const results: Array<{
+    version: string;
+    safe: boolean;
+    references: string[];
+  }> = [];
   for (const name of readdirSync(versionsDir)) {
     if (name === keepVersion) continue;
-    results.push({ version: name, ...assertOldVersionSafeToClean({ installRoot, version: name }) });
+    results.push({
+      version: name,
+      ...assertOldVersionSafeToClean({ installRoot, version: name }),
+    });
   }
   return results;
 }
 
-function copyTreeFull(source: string, target: string): void {
+function payloadDigest(root: string): string {
+  const digest = createHash("sha256");
+  const walk = (dir: string, prefix: string) => {
+    for (const name of readdirSync(dir).sort()) {
+      if (!prefix && name === "install-source.json") continue;
+      const file = join(dir, name);
+      const rel = prefix + name;
+      const st = lstatSync(file);
+      if (st.isSymbolicLink() || (!st.isDirectory() && !st.isFile()))
+        throw new Error("UPGRADE_UNSAFE_PAYLOAD_ENTRY: " + rel);
+      digest.update(
+        JSON.stringify([rel, st.isDirectory() ? "directory" : "file"]),
+      );
+      if (st.isDirectory()) walk(file, rel + "/");
+      else
+        digest.update(createHash("sha256").update(readFileSync(file)).digest());
+    }
+  };
+  walk(root, "");
+  return digest.digest("hex");
+}
+
+function copyTreeFull(source: string, target: string, top = true): void {
   for (const name of readdirSync(source)) {
-    if (name === ".git" || name === "versions" || name.startsWith(".tmp-") || name.endsWith(".staging"))
-      continue;
+    if (top && name === "install-source.json") continue;
     const from = join(source, name);
     const to = join(target, name);
-    const st = statSync(from);
+    const st = lstatSync(from);
+    if (st.isSymbolicLink() || (!st.isDirectory() && !st.isFile()))
+      throw new Error("UPGRADE_UNSAFE_PAYLOAD_ENTRY: " + from);
     if (st.isDirectory()) {
       mkdirSync(to, { recursive: true });
-      copyTreeFull(from, to);
+      copyTreeFull(from, to, false);
     } else copyFileSync(from, to);
   }
 }
@@ -820,18 +1005,23 @@ function readLatestTransactionId(installRoot: string): string | undefined {
     if (!existsSync(dir)) return undefined;
     const files = readdirSync(dir)
       .filter((f) => f.endsWith(".json"))
-      .sort();
+      .sort(
+        (a, b) =>
+          statSync(join(dir, a)).mtimeMs - statSync(join(dir, b)).mtimeMs,
+      );
     const last = files[files.length - 1];
     if (!last) return undefined;
-    return (JSON.parse(readFileSync(join(dir, last), "utf8")) as UpgradeTransaction)
-      .id;
+    return (
+      JSON.parse(readFileSync(join(dir, last), "utf8")) as UpgradeTransaction
+    ).id;
   } catch {
     return undefined;
   }
 }
 
 function classifyUpgradeErrorCode(message: string): string {
-  if (message.startsWith("UPGRADE_")) return message.split(":")[0] ?? "UPGRADE_FAILED";
+  if (message.startsWith("UPGRADE_"))
+    return message.split(":")[0] ?? "UPGRADE_FAILED";
   if (message.includes("DIGEST")) return "UPGRADE_DIGEST_MISMATCH";
   if (message.includes("MIGRATION")) return "UPGRADE_CONFIG_MIGRATION";
   return "UPGRADE_FAILED";

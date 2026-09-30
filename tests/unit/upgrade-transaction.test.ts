@@ -136,6 +136,28 @@ describe("upgrade transaction log", () => {
     }
   });
 
+  it("restores the explicitly configured path and preserves the default config", () => {
+    const root = tempRoot();
+    try {
+      const config = join(root, "custom.yaml");
+      const defaultConfig = join(root, "devflow.yaml");
+      const backup = join(root, "devflow.yaml.backup");
+      writeFileSync(defaultConfig, "unrelated config");
+      writeFileSync(config, "before");
+      writeFileSync(backup, "before");
+      const tx = beginUpgradeTransaction({ installRoot: root, kind: "upgrade",
+        target_version: "0.3.0", target_digest: "test", config_path: config,
+        config_digest_before: hash(readFileSync(config)) });
+      writeFileSync(config, "after");
+      recordTransactionPhase(root, tx.id, "migrating", {
+        backup_paths: [backup], config_digest_after: hash(readFileSync(config)),
+      });
+      restoreTransactionOwnedChanges(root, tx.id);
+      expect(readFileSync(config, "utf8")).toBe("before");
+      expect(readFileSync(defaultConfig, "utf8")).toBe("unrelated config");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   it("failUpgradeTransaction recovery_required keeps scene and never auto-copies DB back (U-09)", () => {
     const root = tempRoot();
     try {

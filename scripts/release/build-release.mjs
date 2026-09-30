@@ -7,6 +7,8 @@ import {
   cpSync,
   mkdtempSync,
   statSync,
+  readdirSync,
+  rmSync,
 } from "node:fs";
 import { createHash } from "node:crypto";
 import { resolve, join } from "node:path";
@@ -120,6 +122,23 @@ export function generateReleaseBundle() {
     );
   }
 
+  // 2.1 Clean up test/fixture directories in node_modules to guarantee safe decompression on Windows tar
+  function pruneTestDirectories(dir) {
+    if (!existsSync(dir)) return;
+    const entries = readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name === "test" || entry.name === "tests" || entry.name === ".github") {
+          rmSync(fullPath, { recursive: true, force: true });
+        } else {
+          pruneTestDirectories(fullPath);
+        }
+      }
+    }
+  }
+  pruneTestDirectories(join(payload, "node_modules"));
+
   // 3. Native self-check: verify koffi and SQLite load from the packaged payload
   execFileSync(
     process.execPath,
@@ -211,7 +230,10 @@ export function generateReleaseBundle() {
       `Failed to bind immutable release tag into install.ps1: applied=${boundPs1.bindingsApplied}, unreplaced=[${boundPs1.unreplacedPlaceholders.join(", ")}]`,
     );
   }
-  writeFileSync(join(output, "install.ps1"), boundPs1.content);
+  const ps1Content = boundPs1.content.startsWith("\uFEFF")
+    ? boundPs1.content
+    : "\uFEFF" + boundPs1.content;
+  writeFileSync(join(output, "install.ps1"), ps1Content);
 
   // 10. Platform manifest
   const manifest = {

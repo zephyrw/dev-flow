@@ -1,3 +1,4 @@
+import { readMaintenanceMarker } from "../../../packages/installer/src/transaction.js";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Store } from "../../../packages/store/src/store.js";
@@ -17,11 +18,12 @@ const app = buildAccountsServer(accountService, {
   port: config.server.port,
   humanOrigin: config.server.human_origin,
   storageInstance: config.storage_root,
+  onMaintenanceShutdown: close,
 });
 try {
   await app.listen({ port: config.server.port, host: config.server.host });
   await accountService.reconcileStartup();
-  recordController(
+  await recordController(
     config.storage_root,
     fileURLToPath(import.meta.url),
     "accounts",
@@ -35,6 +37,7 @@ try {
 }
 console.log(`DevFlow AGY Accounts ${config.server.human_origin}/accounts`);
 const timer = setInterval(() => {
+  if (readMaintenanceMarker(config.storage_root)?.block_new_dispatch) return;
   void accountService
     .tick(Date.now())
     .catch(() => console.error("账号调度失败，请检查管理状态"));

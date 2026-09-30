@@ -88,6 +88,14 @@ const SUPPORTED_ASSISTANTS: Array<{
   },
 ];
 
+function setupProfile(base: ToolProfile, adapterId: SupportedAdapterId, modelId: string): ToolProfile {
+  const sameAdapter = base.adapterId === adapterId;
+  return {
+    ...(sameAdapter ? base : { id: base.id, revision: base.revision, options: {} }),
+    adapterId, modelId: modelId.trim(), modelSelection: "explicit", selectionKind: "fixed",
+  };
+}
+
 export function FirstRunSetup({ isOpen, onClose, onCompleted }: FirstRunSetupProps) {
   const [step, setStep] = useState<Step>(1);
   const [selectedTool, setSelectedTool] = useState<SupportedAdapterId>("codex");
@@ -115,6 +123,11 @@ export function FirstRunSetup({ isOpen, onClose, onCompleted }: FirstRunSetupPro
     }
   }, [isOpen]);
 
+  useEffect(() => {
+    setPlannerVerifyStatus(null);
+    setExecutorVerifyStatus(null);
+  }, [plannerTool, executorTool, plannerModel, executorModel]);
+
   const handleSkipOrDismiss = () => {
     // R13: 跳过或关闭时仅记录已忽略，严禁写入已完成
     localStorage.setItem("devflow.wizard_dismissed", "true");
@@ -126,25 +139,8 @@ export function FirstRunSetup({ isOpen, onClose, onCompleted }: FirstRunSetupPro
     setSaveError(null);
     try {
       const def = await getModelDefaults();
-      const newPlanner: ToolProfile = {
-        ...def.plannerProfile,
-        adapterId: plannerTool,
-        modelId: plannerModel,
-      };
-      const newExecutor: ToolProfile = {
-        ...def.executorProfile,
-        adapterId: executorTool,
-        modelId: executorModel,
-      };
-      // 切换 adapter 时清除不适用的特定字段
-      if (newPlanner.adapterId !== def.plannerProfile?.adapterId) {
-        delete (newPlanner as any).providerConfigRef;
-        delete (newPlanner as any).executableRef;
-      }
-      if (newExecutor.adapterId !== def.executorProfile?.adapterId) {
-        delete (newExecutor as any).providerConfigRef;
-        delete (newExecutor as any).executableRef;
-      }
+      const newPlanner = setupProfile(def.plannerProfile, plannerTool, plannerModel);
+      const newExecutor = setupProfile(def.executorProfile, executorTool, executorModel);
       await putModelDefaults({
         request_id: newRequestId(),
         expected_defaults_revision: def.revision,
@@ -156,7 +152,9 @@ export function FirstRunSetup({ isOpen, onClose, onCompleted }: FirstRunSetupPro
       const verified = await getModelDefaults();
       if (
         verified.plannerProfile?.adapterId !== plannerTool ||
-        verified.executorProfile?.adapterId !== executorTool
+        verified.executorProfile?.adapterId !== executorTool ||
+        verified.plannerProfile?.modelId !== plannerModel.trim() ||
+        verified.executorProfile?.modelId !== executorModel.trim()
       ) {
         throw new Error("模型配置未能成功读回确认，请重试");
       }
@@ -179,15 +177,7 @@ export function FirstRunSetup({ isOpen, onClose, onCompleted }: FirstRunSetupPro
     setExecutorVerifyStatus("正在验证...");
     try {
       const def = await getModelDefaults();
-      const pProfile: ToolProfile = {
-        id: def.plannerProfile?.id || "planner",
-        revision: def.plannerProfile?.revision || 1,
-        adapterId: plannerTool,
-        modelSelection: "explicit",
-        selectionKind: "fixed",
-        modelId: plannerModel,
-        options: def.plannerProfile?.options ?? {},
-      };
+      const pProfile = setupProfile(def.plannerProfile, plannerTool, plannerModel);
       const pRes = await verifyModelAccess(pProfile, undefined, true);
       setPlannerVerifyStatus(
         pRes.status === "verified"
@@ -200,15 +190,7 @@ export function FirstRunSetup({ isOpen, onClose, onCompleted }: FirstRunSetupPro
 
     try {
       const def = await getModelDefaults();
-      const eProfile: ToolProfile = {
-        id: def.executorProfile?.id || "executor",
-        revision: def.executorProfile?.revision || 1,
-        adapterId: executorTool,
-        modelSelection: "explicit",
-        selectionKind: "fixed",
-        modelId: executorModel,
-        options: def.executorProfile?.options ?? {},
-      };
+      const eProfile = setupProfile(def.executorProfile, executorTool, executorModel);
       const eRes = await verifyModelAccess(eProfile, undefined, true);
       setExecutorVerifyStatus(
         eRes.status === "verified"

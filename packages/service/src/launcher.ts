@@ -1,3 +1,4 @@
+import { readMaintenanceMarker } from "../../installer/src/transaction.js";
 import { assertServiceMode } from "./service-mode.js";
 export { assertServiceMode } from "./service-mode.js";
 import {
@@ -21,9 +22,19 @@ import { cleanProcessEnvironment } from "../../process/src/manager.js";
 
 // Resolve the installation, never the business repository that invoked Codex.
 const moduleDirectory = dirname(fileURLToPath(import.meta.url));
-export const installation = resolve(moduleDirectory, "../../../..");
+export const versionRoot = resolve(moduleDirectory, "../../../..");
+const candidateInstallRoot = resolve(versionRoot, "../..");
+export const installation =
+  existsSync(join(candidateInstallRoot, "current.json")) ||
+  existsSync(join(candidateInstallRoot, "devflow.yaml")) ||
+  existsSync(join(candidateInstallRoot, "bootstrap"))
+    ? candidateInstallRoot
+    : versionRoot;
 const configurationFile =
-  process.env.DEVFLOW_CONFIG ?? join(installation, "devflow.yaml");
+  process.env.DEVFLOW_CONFIG ??
+  (existsSync(join(installation, "devflow.yaml"))
+    ? join(installation, "devflow.yaml")
+    : join(versionRoot, "devflow.yaml"));
 export const configuration = loadConfig(configurationFile);
 export const instanceId = hash(
   resolve(configuration.storage_root).toLowerCase(),
@@ -32,17 +43,14 @@ const tokenFile = join(configuration.storage_root, "codex-planner-token.txt");
 const endpoint = `http://127.0.0.1:${configuration.server.port}`;
 const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 function assertNotUpdating() {
-  const path = join(configuration.storage_root, "maintenance.lock");
-  if (!existsSync(path)) return;
-  try {
-    // The installer holds FileShare.None. An openable marker is left by a crash.
-    const fd = openSync(path, "r+");
-    closeSync(fd);
-    rmSync(path);
-  } catch (error: any) {
-    if (error.code === "ENOENT") return;
-    throw new Error("DevFlow 正在更新，请等安装窗口完成后再打开任务。");
+  const marker = readMaintenanceMarker(configuration.storage_root);
+  if (marker) {
+    const handover = process.env.DEVFLOW_UPGRADE_TRANSACTION;
+    if (handover === marker.transaction_id && marker.phase === "starting") return;
+    throw new Error("DevFlow 正在更新或等待恢复，请先完成维护事务。");
   }
+  if (existsSync(join(configuration.storage_root, "maintenance.lock")))
+    throw new Error("DevFlow 维护标记缺少事务信息，请先检查恢复状态。");
 }
 
 async function running(mode: "full" | "accounts") {
@@ -75,7 +83,7 @@ async function running(mode: "full" | "accounts") {
   if (
     status.runtime_backend !== "node-v1" ||
     typeof status.runtime_root !== "string" ||
-    canonical(status.runtime_root) !== canonical(installation)
+    canonical(status.runtime_root) !== canonical(versionRoot)
   )
     throw new Error(
       "本端口运行的是另一版本安装，请先停止旧服务再启动当前版本。",
@@ -138,7 +146,7 @@ export function assertBuildIdentity(status: {
   const expected =
     expectedBuildIdentity.application_version || expectedBuildIdentity.build_revision
       ? expectedBuildIdentity
-      : readExpectedBuildIdentityFromInstall(installation);
+      : readExpectedBuildIdentityFromInstall(versionRoot);
   const liveVersion = status.application_version;
   const liveRevision = status.build_revision;
   const liveProtocol = status.service_protocol_version;
@@ -225,7 +233,7 @@ export async function ensureService(mode: "full" | "accounts" = "full") {
         bind: "127.0.0.1",
       };
     const entry = join(
-      installation,
+      versionRoot,
       mode === "accounts"
         ? "dist/apps/api/src/accounts-main.js"
         : "dist/apps/api/src/main.js",
@@ -233,7 +241,7 @@ export async function ensureService(mode: "full" | "accounts" = "full") {
     // R09 修复：不再检查 host.executable（已移除）
     // 检查入口文件和 credential-worker 是否存在
     const credentialWorker = join(
-      installation,
+      versionRoot,
       "dist/packages/agy-accounts/src/credential-worker.js",
     );
     if (!existsSync(entry))
@@ -251,7 +259,7 @@ export async function ensureService(mode: "full" | "accounts" = "full") {
     try {
       assertNotUpdating();
       const child = spawn(process.execPath, [entry], {
-        cwd: installation,
+        cwd: versionRoot,
         detached: true,
         windowsHide: true,
         stdio: ["ignore", output, errors],

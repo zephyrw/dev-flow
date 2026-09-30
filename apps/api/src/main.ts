@@ -1,3 +1,4 @@
+import { readMaintenanceMarker } from "../../../packages/installer/src/transaction.js";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { recordController } from "../../../packages/service/src/descriptor.js";
@@ -60,6 +61,7 @@ const app = await buildServer(engine, {
   accountService,
   onMaintenancePrepare,
   onMaintenanceQuiesce,
+  onMaintenanceShutdown: () => close(),
 });
 try {
   await app.listen({ host: config.server.host, port: config.server.port });
@@ -72,9 +74,11 @@ await accountService.reconcileStartup();
 // Bind first: a duplicate controller must fail before mutating persisted runs.
 engine.recover();
 const workspaceObserver = new WorkspaceObserver(engine);
-recordController(config.storage_root, fileURLToPath(import.meta.url), "full");
+await recordController(config.storage_root, fileURLToPath(import.meta.url), "full");
 console.log(`DevFlow ${config.server.human_origin}`);
 const tick = setInterval(() => {
+  maintenanceBlocked = !!readMaintenanceMarker(config.storage_root)?.block_new_dispatch;
+  engine.maintenanceBlocked = maintenanceBlocked;
   if (maintenanceBlocked) return;
   void engine.dispatch().catch((e) => console.error("调度失败", String(e)));
   void resumeModelWaits(engine).catch((e) =>
@@ -85,6 +89,8 @@ const tick = setInterval(() => {
     .catch((e) => console.error("账号调度tick失败", String(e)));
 }, 5000);
 const maintenance = setInterval(() => {
+  maintenanceBlocked = !!readMaintenanceMarker(config.storage_root)?.block_new_dispatch;
+  engine.maintenanceBlocked = maintenanceBlocked;
   if (maintenanceBlocked) return;
   try {
     archiveLogs(engine);

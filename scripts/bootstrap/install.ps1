@@ -22,7 +22,8 @@ param(
   [string]$PlannerEffort = "",
   [string]$ExecutorTool = "",
   [string]$ExecutorModel = "",
-  [string]$ExecutorEffort = ""
+  [string]$ExecutorEffort = "",
+  [int]$Port = 0
 )
 
 $ErrorActionPreference = "Stop"
@@ -355,6 +356,7 @@ function Invoke-DevflowBootstrapMain {
     if ($ExecutorTool) { $nodeArgs += @("--executor-tool", $ExecutorTool) }
     if ($ExecutorModel) { $nodeArgs += @("--executor-model", $ExecutorModel) }
     if ($ExecutorEffort) { $nodeArgs += @("--executor-effort", $ExecutorEffort) }
+    if ($Port -gt 0) { $nodeArgs += @("--port", $Port.ToString()) }
     if ($NoOpen) { $nodeArgs += @("--no-open") }
     if ($RequireReady) { $nodeArgs += @("--require-ready") }
 

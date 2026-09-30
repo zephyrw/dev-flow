@@ -11,6 +11,7 @@ import {
 import { bindProfile, buildDispatchContext, isLegacyProtocol, type RunPurpose } from "./run-profile.js";
 import type { DispatchContext } from "../../contracts/src/model-routing.js";
 import { bindRepairAssignment, closeOpenRepairBatches } from "./repair-model-service.js";
+import { readMaintenanceMarker } from "../../installer/src/transaction.js";
 import { QualityCoordinator } from "./quality-coordinator.js";
 import { DocumentService } from "./document-service.js";
 import {
@@ -3073,7 +3074,7 @@ export class Engine {
   }
 
   async dispatch() {
-    if (this.maintenanceBlocked || this.dispatching || !this.runtime) return;
+    if (this.maintenanceBlocked || readMaintenanceMarker(this.config.storage_root)?.block_new_dispatch || this.dispatching || !this.runtime) return;
     this.dispatching = true;
     try {
       await this.consumeOutbox();

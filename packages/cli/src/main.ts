@@ -4,7 +4,18 @@
  * Parse the command first and load business modules only when needed so that
  * --help / --version keep working when config or database is damaged.
  */
-import { readFileSync, existsSync, mkdirSync, cpSync, readdirSync, rmSync, openSync, closeSync, writeFileSync, statSync } from "node:fs";
+import {
+  readFileSync,
+  existsSync,
+  mkdirSync,
+  cpSync,
+  readdirSync,
+  rmSync,
+  openSync,
+  closeSync,
+  writeFileSync,
+  statSync,
+} from "node:fs";
 import { resolve, join, dirname } from "node:path";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -18,7 +29,12 @@ import {
 } from "../../installer/src/context.js";
 
 const args = process.argv.slice(2);
-const command = args[0] && !args[0].startsWith("-") ? args[0] : args[0] === "help" ? "help" : args[0];
+const command =
+  args[0] && !args[0].startsWith("-")
+    ? args[0]
+    : args[0] === "help"
+      ? "help"
+      : args[0];
 
 let cachedContext: InstallationContext | null = null;
 function getInstallationContext(): InstallationContext {
@@ -145,7 +161,9 @@ async function commandStatus(): Promise<number> {
     const pointer = JSON.parse(
       readFileSync(join(ctx.installRoot, "current.json"), "utf8"),
     );
-    installedVersion = String(pointer.application_version ?? pointer.version ?? "unknown");
+    installedVersion = String(
+      pointer.application_version ?? pointer.version ?? "unknown",
+    );
   } catch {
     /* keep 未安装 */
   }
@@ -153,7 +171,10 @@ async function commandStatus(): Promise<number> {
     const state = JSON.parse(
       readFileSync(join(ctx.installRoot, "state.json"), "utf8"),
     );
-    setupStatus = state?.result?.setup?.status ?? state?.result?.software?.status ?? "unknown";
+    setupStatus =
+      state?.result?.setup?.status ??
+      state?.result?.software?.status ??
+      "unknown";
   } catch {
     /* keep */
   }
@@ -234,7 +255,11 @@ async function commandDoctor(): Promise<number> {
   add(
     "bundled-node",
     hasNode,
-    existsSync(bundledNode) ? bundledNode : existsSync(bootstrapNode) ? bootstrapNode : undefined,
+    existsSync(bundledNode)
+      ? bundledNode
+      : existsSync(bootstrapNode)
+        ? bootstrapNode
+        : undefined,
   );
 
   try {
@@ -269,7 +294,10 @@ async function commandDoctor(): Promise<number> {
       health?.runtime_backend ?? undefined,
     );
     add("runtime-backend", health?.runtime_backend === "node-v1");
-    add("build-identity", Boolean(health?.application_version || health?.build_revision));
+    add(
+      "build-identity",
+      Boolean(health?.application_version || health?.build_revision),
+    );
   } catch (error) {
     add("service", false, String(error));
   }
@@ -309,7 +337,9 @@ interface ControllerRecord {
   mode?: string;
 }
 
-function readControllerRecord(storageRoot: string): ControllerRecord | undefined {
+function readControllerRecord(
+  storageRoot: string,
+): ControllerRecord | undefined {
   const file = join(storageRoot, "controller-process.json");
   if (!existsSync(file)) return undefined;
   try {
@@ -320,108 +350,115 @@ function readControllerRecord(storageRoot: string): ControllerRecord | undefined
 }
 
 function processAlive(pid: number): boolean {
+  if (!Number.isSafeInteger(pid) || pid <= 1)
+    throw new Error("INVALID_CONTROLLER_PID");
   try {
     process.kill(pid, 0);
     return true;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
-    return false;
+    throw error;
   }
 }
 
 async function commandStop(): Promise<number> {
-  // Only stop processes this installation owns. Never taskkill /IM node.exe.
   const ctx = getInstallationContext();
   const config = await loadConfigSafe();
-  const storageRoot = config?.storage_root
-    ? resolve(dirname(ctx.configPath), config.storage_root)
-    : ctx.storageRoot;
-  const record = readControllerRecord(storageRoot);
+  const record = readControllerRecord(config.storage_root);
   if (!record) {
     console.log("没有正在运行的 DevFlow 服务记录。");
     return INSTALL_EXIT_CODES.SUCCESS;
   }
-  const expectedEntries = [
-    join(ctx.versionRoot, "dist", "apps", "api", "src", "main.js"),
-    join(ctx.versionRoot, "dist", "apps", "api", "src", "accounts-main.js"),
-  ].map((p) => resolve(p));
-  const recordEntry = resolve(record.entry);
-  if (!expectedEntries.includes(recordEntry)) {
-    console.error("进程记录不属于此 DevFlow 安装，未停止任何程序。");
-    return INSTALL_EXIT_CODES.CONFIGURATION_CONFLICT;
-  }
+  const canonical = (p: string) =>
+    process.platform === "win32" ? resolve(p).toLowerCase() : resolve(p);
+  const expectedEntries = ["main.js", "accounts-main.js"].map((p) =>
+    canonical(join(ctx.versionRoot, "dist/apps/api/src", p)),
+  );
+  if (
+    typeof record.entry !== "string" ||
+    !expectedEntries.includes(canonical(record.entry))
+  )
+    throw new Error("进程记录不属于此 DevFlow 安装，未停止任何程序。");
   if (!processAlive(record.pid)) {
     console.log("服务已退出。");
     return INSTALL_EXIT_CODES.SUCCESS;
   }
-  // Identity re-check: refuse recycled PIDs when creation time is known.
+  const native = await (
+    await import("../../process/src/native/index.js")
+  ).getNativeAsync();
+  const creation = native.getProcessCreationTime(record.pid);
+  if (creation == null || String(creation) !== record.started)
+    throw new Error(
+      "无法确认控制器进程身份，拒绝停止；请从原服务窗口安全退出。",
+    );
+  const { hash } = await import("../../core/src/util.js");
+  const health = await fetch(
+    `http://127.0.0.1:${config.server.port}/api/health`,
+    {
+      signal: AbortSignal.timeout(3000),
+      redirect: "error",
+    },
+  );
+  const identity = (await health.json()) as Record<string, unknown>;
+  if (
+    !health.ok ||
+    identity.service !== "devflow" ||
+    identity.instance !== hash(resolve(config.storage_root).toLowerCase()) ||
+    typeof identity.runtime_root !== "string" ||
+    canonical(identity.runtime_root) !== canonical(ctx.versionRoot)
+  )
+    throw new Error("服务身份不匹配，未发送停机请求。");
+  const { readMaintenanceMarker, clearMaintenanceMarker } = await import(
+    "../../installer/src/transaction.js"
+  );
+  if (readMaintenanceMarker(config.storage_root))
+    throw new Error("存在维护事务，请先完成或恢复该事务。");
+  const transactionId = "stop-" + crypto.randomUUID();
+  let safeToClear = false;
   try {
-    const native = await import("../../process/src/native/index.js");
-    const anyNative = await native.getNativeAsync();
-    if ("getProcessCreationTime" in anyNative) {
-      const creation = (anyNative as any).getProcessCreationTime(record.pid);
-      if (creation != null && record.started) {
-        const expected = String(record.started);
-        if (creation && expected && !String(creation).includes(expected.slice(0, 10))) {
-          console.error("进程 PID 属于已复用的外部进程，拒绝停止。");
-          return INSTALL_EXIT_CODES.CONFIGURATION_CONFLICT;
-        }
-      }
-    }
-  } catch {
-    /* native optional for stop */
-  }
-
-  // Graceful stop via local protocol first
-  let stoppedGracefully = false;
-  try {
-    if (config?.server?.port) {
-      const shutdownResp = await fetch(
-        `http://127.0.0.1:${config.server.port}/api/maintenance/quiesce`,
-        {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-            origin: config.server.human_origin ?? `http://127.0.0.1:${config.server.port}`,
-          },
-          body: JSON.stringify({ on_active_tasks: "wait" }),
-          signal: AbortSignal.timeout(3000),
+    const response = await fetch(
+      `http://127.0.0.1:${config.server.port}/api/maintenance/quiesce`,
+      {
+        method: "POST",
+        redirect: "error",
+        signal: AbortSignal.timeout(75000),
+        headers: {
+          "content-type": "application/json",
+          origin: config.server.human_origin,
         },
-      ).catch(() => undefined);
-      if (shutdownResp?.ok) {
-        for (let i = 0; i < 40; i++) {
-          if (!processAlive(record.pid)) {
-            stoppedGracefully = true;
-            break;
-          }
-          await new Promise((r) => setTimeout(r, 100));
-        }
-      }
+        body: JSON.stringify({
+          on_active_tasks: "wait",
+          shutdown: true,
+          transaction_id: transactionId,
+        }),
+      },
+    );
+    if (!response.ok || !(await response.json() as { can_quiesce?: boolean }).can_quiesce) {
+      safeToClear = true;
+      throw new Error("服务仍有活动任务或不支持安全停机，未强制结束。");
     }
-  } catch {
-    /* fallback to signal */
-  }
-
-  if (stoppedGracefully || !processAlive(record.pid)) {
-    console.log("DevFlow 服务已停止。");
-    return INSTALL_EXIT_CODES.SUCCESS;
-  }
-
-  try {
-    process.kill(record.pid, "SIGTERM");
-    for (let i = 0; i < 30; i++) {
-      if (!processAlive(record.pid)) break;
+    for (let i = 0; i < 150; i++) {
+      const current = native.getProcessCreationTime(record.pid);
+      if (
+        current == null ||
+        String(current) !== record.started ||
+        !processAlive(record.pid)
+      ) {
+        safeToClear = true;
+        console.log("DevFlow 服务已停止。");
+        return INSTALL_EXIT_CODES.SUCCESS;
+      }
       await new Promise((r) => setTimeout(r, 100));
     }
-    if (processAlive(record.pid)) {
-      console.error("服务未在时限内退出；未强制结束，请检查受管任务。");
-      return INSTALL_EXIT_CODES.SERVICE_UNHEALTHY;
+    throw new Error("服务未在时限内退出，未强制结束，请检查受管任务。");
+  } finally {
+    if (readMaintenanceMarker(config.storage_root)?.transaction_id === transactionId) {
+      if (safeToClear) clearMaintenanceMarker(config.storage_root);
+      else {
+        const { updateMaintenanceMarker } = await import("../../installer/src/transaction.js");
+        updateMaintenanceMarker(config.storage_root, { phase: "recovery_required" });
+      }
     }
-    console.log("DevFlow 服务已停止。");
-    return INSTALL_EXIT_CODES.SUCCESS;
-  } catch (error) {
-    console.error("停止失败：" + String(error));
-    return INSTALL_EXIT_CODES.SERVICE_UNHEALTHY;
   }
 }
 
@@ -432,7 +469,9 @@ async function commandUpdate(): Promise<number> {
   const storageRoot = config?.storage_root
     ? resolve(dirname(ctx.configPath), config.storage_root)
     : ctx.storageRoot;
-  const serviceOrigin = config?.server?.human_origin ?? `http://127.0.0.1:${config?.server?.port ?? 4810}`;
+  const serviceOrigin =
+    config?.server?.human_origin ??
+    `http://127.0.0.1:${config?.server?.port ?? 4810}`;
 
   let sourceDir = "";
   let targetVersion = "";
@@ -455,15 +494,21 @@ async function commandUpdate(): Promise<number> {
       return INSTALL_EXIT_CODES.SUCCESS;
     }
     if (!targetVersion) {
-      console.log(`当前已是最新版本 (${currentVersion})，未发现待安装的更新包。`);
+      console.log(
+        `当前版本 ${currentVersion}。尚未检查远程更新；请使用正式安装脚本，或通过 --source 指定更新包。`,
+      );
       return INSTALL_EXIT_CODES.SUCCESS;
     }
-    throw new Error(`请使用 --source 指定更新包路径或通过正式安装脚本执行更新。`);
+    throw new Error(
+      `请使用 --source 指定更新包路径或通过正式安装脚本执行更新。`,
+    );
   }
 
   if (!targetVersion) {
     try {
-      const pkg = JSON.parse(readFileSync(join(sourceDir, "package.json"), "utf8"));
+      const pkg = JSON.parse(
+        readFileSync(join(sourceDir, "package.json"), "utf8"),
+      );
       targetVersion = String(pkg.version);
     } catch {
       throw new Error(`候选目录缺少有效的 package.json: ${sourceDir}`);
@@ -485,7 +530,6 @@ async function commandUpdate(): Promise<number> {
       installRoot: ctx.installRoot,
       storageRoot,
       configPath: ctx.configPath,
-      nodePath: ctx.nodePath,
       serviceOrigin,
       onActiveTasks: "wait",
     });
@@ -498,14 +542,23 @@ async function commandUpdate(): Promise<number> {
         console.log(`当前已是最新版本 (${currentVersion})，无需更新。`);
         return INSTALL_EXIT_CODES.SUCCESS;
       case "blocked":
-        console.error(`更新被阻止：${result.error?.message ?? "存在运行中的活跃任务"}`);
+        console.error(
+          `更新被阻止：${result.error?.message ?? "存在运行中的活跃任务"}`,
+        );
         return INSTALL_EXIT_CODES.NEEDS_USER_ACTION;
       case "safe_abort":
-        console.error(`更新未完成并已安全撤销修改：${result.error?.message ?? "未知错误"}`);
+        console.error(
+          `更新未完成并已安全撤销修改：${result.error?.message ?? "未知错误"}`,
+        );
         return INSTALL_EXIT_CODES.DOWNLOAD_VERIFICATION_FAILED;
       case "recovery_required":
-        console.error(`更新中断并保留现场，需进行恢复：${result.error?.message}`);
-        console.error("恢复动作建议：" + (result.recovery_actions.join(", ") || "请运行 devflow doctor"));
+        console.error(
+          `更新中断并保留现场，需进行恢复：${result.error?.message}`,
+        );
+        console.error(
+          "恢复动作建议：" +
+            (result.recovery_actions.join(", ") || "请运行 devflow doctor"),
+        );
         return INSTALL_EXIT_CODES.SERVICE_UNHEALTHY;
       default:
         console.error("更新返回未知状态。");
@@ -519,110 +572,111 @@ async function commandUpdate(): Promise<number> {
 
 async function commandUninstall(): Promise<number> {
   const ctx = getInstallationContext();
-  const installRoot = ctx.installRoot;
-  const binDir = join(installRoot, "bin");
-
-  try {
-    // 1. 先安全请求停机
-    await commandStop().catch(() => undefined);
-
-    // 2. 读取安装收据，仅移除收据记录的属于本实例的入口
-    let installedEntries: Array<{ path: string; kind?: string }> = [];
-    const currentPointerFile = join(installRoot, "current.json");
-    if (existsSync(currentPointerFile)) {
-      try {
-        const pointer = JSON.parse(readFileSync(currentPointerFile, "utf8"));
-        const versionRoot = pointer.root;
-        const receiptPath = join(versionRoot, "install-source.json");
-        if (existsSync(receiptPath)) {
-          const receipt = JSON.parse(readFileSync(receiptPath, "utf8"));
-          if (Array.isArray(receipt.installed_entries)) {
-            installedEntries = receipt.installed_entries;
-          }
-        }
-      } catch {
-        /* fallback */
-      }
-    }
-
-    // 3. 移除属于本实例的入口
-    if (installedEntries.length > 0) {
-      for (const entry of installedEntries) {
-        if (existsSync(entry.path)) {
-          try {
-            rmSync(entry.path, { force: true, recursive: true });
-          } catch {}
-        }
-      }
-    } else {
-      if (process.platform === "win32") {
-        rmSync(join(binDir, "devflow.cmd"), { force: true });
-        const startMenu = join(
-          homedir(),
-          "AppData",
-          "Roaming",
-          "Microsoft",
-          "Windows",
-          "Start Menu",
-          "Programs",
-          "DevFlow",
-        );
-        rmSync(startMenu, { recursive: true, force: true });
-      } else {
-        rmSync(join(binDir, "devflow"), { force: true });
-        const localLink = join(homedir(), ".local", "bin", "devflow");
-        if (existsSync(localLink)) {
-          try {
-            const { realpathSync } = await import("node:fs");
-            const real = realpathSync(localLink);
-            if (real.startsWith(binDir)) {
-              rmSync(localLink, { force: true });
-            }
-          } catch {}
-        }
-        rmSync(
-          join(homedir(), ".local", "share", "applications", "devflow.desktop"),
-          { force: true },
-        );
-      }
-    }
-
-    // 4. 清理 PATH 环境变量块（Unix）
-    if (process.platform !== "win32") {
-      try {
-        const { removeShellPathBlock } = await import(
-          "../../installer/src/launchers.js"
-        );
-        const rc = join(
-          homedir(),
-          process.platform === "darwin" ? ".zshrc" : ".bashrc",
-        );
-        removeShellPathBlock(rc);
-      } catch {}
-    }
-
-    console.log(
-      "已移除 DevFlow 应用入口。项目、任务数据与用户凭据已保留（未删除）。",
+  const { readFileSync, lstatSync, readlinkSync } = await import("node:fs");
+  const { hash } = await import("../../core/src/util.js");
+  const {
+    removeShellPathBlock,
+    readWindowsUserPathFromRegistry,
+    writeWindowsUserPathToRegistry,
+  } = await import("../../installer/src/launchers.js");
+  const receiptFile = join(ctx.installRoot, "entry-receipt.json");
+  if (!existsSync(receiptFile)) {
+    console.error(
+      "缺少可验证的入口收据，已保留现有文件；请先用新安装器修复安装。",
     );
-    return INSTALL_EXIT_CODES.SUCCESS;
-  } catch (error) {
-    console.error("卸载入口失败：" + String(error));
     return INSTALL_EXIT_CODES.CONFIGURATION_CONFLICT;
   }
+  const receipt = JSON.parse(readFileSync(receiptFile, "utf8"));
+  const canonical = (p: string) =>
+    process.platform === "win32" ? resolve(p).toLowerCase() : resolve(p);
+  if (
+    typeof receipt.install_root !== "string" ||
+    canonical(receipt.install_root) !== canonical(ctx.installRoot) ||
+    !Array.isArray(receipt.installed_entries)
+  )
+    throw new Error("入口收据无效");
+  const code = await commandStop();
+  if (code !== INSTALL_EXIT_CODES.SUCCESS) return code;
+  const binDir = join(ctx.installRoot, "bin");
+  const allowed = new Set(
+    [
+      join(binDir, process.platform === "win32" ? "devflow.cmd" : "devflow"),
+      join(ctx.installRoot, "open-accounts.ps1"),
+      join(ctx.installRoot, "打开 AGY 账号管理.vbs"),
+      ...(process.platform === "win32"
+        ? [
+            join(
+              homedir(),
+              "AppData/Roaming/Microsoft/Windows/Start Menu/Programs/DevFlow/DevFlow.cmd",
+            ),
+          ]
+        : [
+            join(homedir(), ".local/bin/devflow"),
+            join(homedir(), ".local/share/applications/devflow.desktop"),
+          ]),
+    ].map(canonical),
+  );
+  const preserved: string[] = [];
+  const remove: string[] = [];
+  for (const entry of receipt.installed_entries) {
+    if (typeof entry.path !== "string" || !allowed.has(canonical(entry.path)))
+      throw new Error("入口收据包含未授权的删除路径");
+    try {
+      const stat = lstatSync(entry.path);
+      const owned =
+        entry.kind === "symlink"
+          ? stat.isSymbolicLink() && readlinkSync(entry.path) === entry.target
+          : stat.isFile() &&
+            !stat.isSymbolicLink() &&
+            entry.hash === hash(readFileSync(entry.path));
+      if (owned) remove.push(entry.path);
+      else preserved.push(entry.path);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  }
+  for (const file of remove) rmSync(file, { force: true });
+  if (receipt.path_added === binDir && !preserved.length) {
+    if (process.platform === "win32") {
+      const current = readWindowsUserPathFromRegistry();
+      if (current === undefined)
+        throw new Error("无法读取用户 PATH，未清理 PATH");
+      const next = current
+        .split(";")
+        .filter((p) => !p.trim() || canonical(p.trim()) !== canonical(binDir))
+        .join(";");
+      if (next !== current) writeWindowsUserPathToRegistry(next);
+    } else {
+      const rc = join(
+        homedir(),
+        process.platform === "darwin" ? ".zshrc" : ".bashrc",
+      );
+      removeShellPathBlock(rc, binDir);
+    }
+  }
+  if (preserved.length) {
+    console.error("已保留用户修改过的入口：" + preserved.join("、"));
+    return INSTALL_EXIT_CODES.CONFIGURATION_CONFLICT;
+  }
+  console.log("已移除 DevFlow 应用入口。项目、任务数据与用户凭据已保留。");
+  return INSTALL_EXIT_CODES.SUCCESS;
 }
 
 async function commandAdvanced(name: string): Promise<number> {
   const config = await loadConfigSafe();
   const { stringify } = await import("yaml");
   const { z } = await import("zod");
-  const { PlanSchema, ReviewSchema, ProjectSchema } =
-    await import("../../contracts/src/index.js");
+  const { PlanSchema, ReviewSchema, ProjectSchema } = await import(
+    "../../contracts/src/index.js"
+  );
   const { validatePlan } = await import("../../plans/src/validate.js");
   const { parsePlanDiagrams } = await import("../../plans/src/diagrams.js");
   const { ConfigSchema } = await import("../../contracts/src/config.js");
   const { Store } = await import("../../store/src/store.js");
   const { Engine } = await import("../../core/src/engine.js");
-  const { atomicWrite, hash, objectHash } = await import("../../core/src/util.js");
+  const { atomicWrite, hash, objectHash } = await import(
+    "../../core/src/util.js"
+  );
   const { BrowserRecipeSchema } = await import("../../runtime/src/recipe.js");
   const { executablePath } = await import("../../process/src/executable.js");
   const { resumeApproved, reconcileProcesses } = await import(
@@ -674,7 +728,9 @@ async function commandAdvanced(name: string): Promise<number> {
     requireCondition(args[1], "ARGUMENT", "需要目标目录");
     const target = resolve(args[1]);
     mkdirSync(target, { recursive: true });
-    for (const file of readdirSync(resolve("packages/skills"))) {
+    for (const file of readdirSync(
+      join(getInstallationContext().versionRoot, "packages/skills"),
+    )) {
       const dest = join(target, file);
       requireCondition(
         !existsSync(dest),
@@ -682,12 +738,18 @@ async function commandAdvanced(name: string): Promise<number> {
         `已存在 ${dest}；请先审查版本差异`,
       );
     }
-    for (const file of readdirSync(resolve("packages/skills")))
-      cpSync(resolve("packages/skills", file), join(target, file), {
-        recursive: true,
-        errorOnExist: true,
-        force: false,
-      });
+    for (const file of readdirSync(
+      join(getInstallationContext().versionRoot, "packages/skills"),
+    ))
+      cpSync(
+        join(getInstallationContext().versionRoot, "packages/skills", file),
+        join(target, file),
+        {
+          recursive: true,
+          errorOnExist: true,
+          force: false,
+        },
+      );
     console.log("DevFlow Skill 已安装到 " + target);
     return INSTALL_EXIT_CODES.SUCCESS;
   }
@@ -735,7 +797,9 @@ async function commandAdvanced(name: string): Promise<number> {
       requireCondition(args[1], "ARGUMENT", "缺少项目 JSON 路径");
       console.log(
         JSON.stringify(
-          await engine.registerProject(JSON.parse(readFileSync(args[1], "utf8"))),
+          await engine.registerProject(
+            JSON.parse(readFileSync(args[1], "utf8")),
+          ),
           null,
           2,
         ),

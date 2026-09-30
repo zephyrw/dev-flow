@@ -33,6 +33,11 @@ function makeCandidate(source: string, version: string): void {
   }));
   mkdirSync(join(source, "dist"), { recursive: true });
   writeFileSync(join(source, "dist", "entry.js"), "export default 1;\n");
+  writeFileSync(join(source, "runtime-files.json"), JSON.stringify({ entries: [
+    { path: "package.json", category: "app", required: true },
+    { path: "build-info.json", category: "compliance", required: true },
+    { path: "dist/entry.js", category: "app", required: true },
+  ] }));
 }
 
 function fakeControllerLock() {
@@ -91,6 +96,29 @@ describe("UpgradeManager.prepareCandidate", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  it("rejects a changed payload leaf even when build identity files are unchanged", async () => {
+    const root = tempRoot();
+    try {
+      const source = join(root, "source");
+      makeCandidate(source, "0.3.0");
+      const manager = new UpgradeManager({ installDir: root, targetVersion: "0.3.0" });
+      await manager.prepareCandidate({ sourceDir: source, targetVersion: "0.3.0" });
+      writeFileSync(join(source, "dist", "entry.js"), "changed application code");
+      await expect(manager.prepareCandidate({ sourceDir: source, targetVersion: "0.3.0" }))
+        .rejects.toThrow(/DIGEST_MISMATCH/);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it("rejects candidate paths outside the versions directory", async () => {
+    const root = tempRoot();
+    try {
+      const manager = new UpgradeManager({ installDir: root, targetVersion: "../escape" });
+      await expect(manager.prepareCandidate({ sourceDir: root, targetVersion: "../escape" }))
+        .rejects.toThrow(/VERSION_INVALID/);
+      expect(existsSync(join(root, "versions"))).toBe(false);
+    } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
   it("rejects version mismatch against package.json", async () => {

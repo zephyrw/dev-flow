@@ -33,6 +33,7 @@ planner_effort=""
 executor_tool=""
 executor_model=""
 executor_effort=""
+port=""
 temp=""
 setup_url=""
 setup_pending=0
@@ -110,6 +111,11 @@ parse_args() {
       --executor-effort)
         [ "$#" -ge 2 ] || usage_error "缺少参数值: $1"
         executor_effort=$2
+        shift 2
+        ;;
+      --port)
+        [ "$#" -ge 2 ] || usage_error "缺少参数值: $1"
+        port=$2
         shift 2
         ;;
       *)
@@ -489,6 +495,7 @@ run_installer_and_map_exit() {
   [ -n "$executor_tool" ] && set -- "$@" --executor-tool "$executor_tool"
   [ -n "$executor_model" ] && set -- "$@" --executor-model "$executor_model"
   [ -n "$executor_effort" ] && set -- "$@" --executor-effort "$executor_effort"
+  [ -n "$port" ] && set -- "$@" --port "$port"
   [ "$no_open" -eq 1 ] && set -- "$@" --no-open
   [ "$require_ready" -eq 1 ] && set -- "$@" --require-ready
 

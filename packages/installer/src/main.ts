@@ -1,3 +1,8 @@
+import {
+  beginUpgradeTransaction, recordTransactionPhase, commitUpgradeTransaction,
+  failUpgradeTransaction, readMaintenanceMarker, clearMaintenanceMarker,
+  updateMaintenanceMarker, digestFile,
+} from "./transaction.js";
 import { InstallationStateManager, INSTALL_EXIT_CODES } from "./state.js";
 import { ClientInstaller } from "../../clients/src/installer.js";
 import {
@@ -37,6 +42,7 @@ import {
   renameSync,
   rmSync,
   lstatSync,
+  readlinkSync,
   statSync,
 } from "node:fs";
 import { execFile } from "node:child_process";
@@ -108,6 +114,7 @@ export function parseInstallerCliArgs(args: string[]): {
   roleInputs: InstallerRoleInputs;
   requireReady: boolean;
   noOpen: boolean;
+  port?: number;
 } {
   const read = (name: string) => {
     const i = args.indexOf(name);
@@ -117,6 +124,7 @@ export function parseInstallerCliArgs(args: string[]): {
     return value;
   };
   const tools = read("--tools");
+  const rawPort = read("--port");
   return {
     sourceDir: read("--source"),
     installRoot: read("--install-dir"),
@@ -132,6 +140,7 @@ export function parseInstallerCliArgs(args: string[]): {
     },
     requireReady: args.includes("--require-ready"),
     noOpen: args.includes("--no-open"),
+    port: rawPort ? Number(rawPort) : undefined,
   };
 }
 
@@ -647,6 +656,10 @@ export async function runInstaller(
   let originalPointer: string | undefined;
   let configurationChanged = false;
   let writableStateStarted = false;
+  let maintenanceTransaction: string | undefined;
+  let maintenanceStorage: string | undefined;
+  let ownedConfigDigest: string | null | undefined;
+  let ownedPointerDigest: string | null | undefined;
   const layout = ensureInstallLayout(root);
   try {
     state.updateResult({ software: { status: "downloading" } });
@@ -892,17 +905,27 @@ export async function runInstaller(
     code = INSTALL_EXIT_CODES.CONFIGURATION_CONFLICT;
     const config = join(root, "devflow.yaml");
     const currentPointer = join(root, "current.json");
-    const upgrade = new UpgradeManager({
-      installDir: root,
-      targetVersion: version,
-    });
     if (existsSync(config)) {
       originalConfig = readFileSync(config, "utf8");
       const previous = loadConfig(config);
-      releaseController = await acquireControllerLock(previous.storage_root);
+      if (readMaintenanceMarker(previous.storage_root))
+        throw new Error("已有维护事务尚未完成，请先恢复该事务");
+      const upgrade = new UpgradeManager({ installDir: root, installRoot: root,
+        targetVersion: version, storageRoot: previous.storage_root,
+        serviceOrigin: previous.server.human_origin });
+      const tx = beginUpgradeTransaction({ installRoot: root, kind: "upgrade",
+        target_version: version, target_digest: productDigest,
+        config_path: config, config_digest_before: digestFile(config),
+        pointer_digest_before: digestFile(currentPointer) });
+      maintenanceTransaction = tx.id;
+      maintenanceStorage = previous.storage_root;
+      await upgrade.requestMaintenance(tx.id);
       const sqlite = join(previous.storage_root, "devflow.sqlite");
+      await upgrade.waitForQuiescent({ onActiveTasks: "wait", sqlitePath: sqlite });
+      releaseController = await upgrade.acquireQuiescentController(tx.id);
       await upgrade.assertQuiescent(sqlite);
-      await upgrade.backupData(sqlite);
+      const backup = await upgrade.backupData(sqlite);
+      recordTransactionPhase(root, tx.id, "backed_up", { backup_paths: backup ? [backup] : [] });
     } else {
       releaseController = await acquireControllerLock(join(root, "state"));
     }
@@ -932,6 +955,7 @@ export async function runInstaller(
         ),
       );
     else migrateAccountConfiguration(config);
+    ownedConfigDigest = digestFile(config);
     const configured = loadConfig(config);
     let accountPrerequisite = "unsupported_platform";
     if (process.platform === "win32") {
@@ -991,7 +1015,12 @@ export async function runInstaller(
       updated_at: now(),
     };
     writeCurrentPointer(root, pointer);
+    ownedPointerDigest = digestFile(currentPointer);
     writableStateStarted = true;
+    if (maintenanceStorage && maintenanceTransaction) {
+      updateMaintenanceMarker(maintenanceStorage, { phase: "starting" });
+      recordTransactionPhase(root, maintenanceTransaction, "starting", { new_state_write_possible: true });
+    }
     const defaultsResult = applyInstallerModelDefaultsFromConfigFile(
       config,
       roleInputs,
@@ -1011,13 +1040,18 @@ export async function runInstaller(
       ],
       {
         cwd: target,
-        env: cleanProcessEnvironment({ DEVFLOW_CONFIG: config }),
+        env: cleanProcessEnvironment({ DEVFLOW_CONFIG: config,
+          ...(maintenanceTransaction ? { DEVFLOW_UPGRADE_TRANSACTION: maintenanceTransaction } : {}) }),
         windowsHide: true,
         timeout: 150000,
       },
     );
-    writeCurrentPointer(root, pointer);
     writeAccountsLauncher(root);
+    if (maintenanceStorage && maintenanceTransaction) {
+      commitUpgradeTransaction(root, maintenanceTransaction);
+      clearMaintenanceMarker(maintenanceStorage);
+      maintenanceStorage = undefined;
+    }
 
     // Stable entry + user PATH / menu (absolute open does not wait for PATH refresh).
     let openHint = loaded.server.human_origin;
@@ -1055,10 +1089,24 @@ export async function runInstaller(
         const receiptFile = join(target, "install-source.json");
         if (existsSync(receiptFile)) {
           const currentReceipt = JSON.parse(readFileSync(receiptFile, "utf8"));
-          currentReceipt.installed_entries = [
-            ...stable.binPaths.map((p) => ({ path: p, kind: "file" })),
-            ...stable.menuPaths.map((p) => ({ path: p, kind: "start_menu" })),
-          ];
+          const ownedPaths = [...stable.binPaths, ...stable.menuPaths,
+            join(root, "open-accounts.ps1"), join(root, "打开 AGY 账号管理.vbs")];
+          currentReceipt.installed_entries = ownedPaths.map((p) =>
+            lstatSync(p).isSymbolicLink()
+              ? { path: p, kind: "symlink", target: readlinkSync(p) }
+              : { path: p, kind: "file", hash: hash(readFileSync(p)) });
+          const ownershipFile = join(root, "entry-receipt.json");
+          const previousOwnership = existsSync(ownershipFile)
+            ? JSON.parse(readFileSync(ownershipFile, "utf8")) : {};
+          atomicWrite(ownershipFile, JSON.stringify({
+            install_root: root, installed_entries: [
+              ...(Array.isArray(previousOwnership.installed_entries)
+                ? previousOwnership.installed_entries.filter((entry: { path: string }) =>
+                    !currentReceipt.installed_entries.some((current: { path: string }) => current.path === entry.path)) : []),
+              ...currentReceipt.installed_entries,
+            ],
+            path_added: pathAdded ?? previousOwnership.path_added,
+          }, null, 2));
           if (pathAdded) currentReceipt.path_added = pathAdded;
           atomicWrite(receiptFile, JSON.stringify(currentReceipt, null, 2));
         }
@@ -1158,10 +1206,25 @@ export async function runInstaller(
     return exitCode;
   } catch (e) {
     if (configurationChanged && !writableStateStarted) {
-      if (originalConfig !== undefined)
-        atomicWrite(join(root, "devflow.yaml"), originalConfig);
-      if (originalPointer !== undefined)
-        atomicWrite(join(root, "current.json"), originalPointer);
+      if (ownedConfigDigest && digestFile(join(root, "devflow.yaml")) === ownedConfigDigest) {
+        if (originalConfig !== undefined) atomicWrite(join(root, "devflow.yaml"), originalConfig);
+        else rmSync(join(root, "devflow.yaml"), { force: true });
+      }
+      if (ownedPointerDigest && digestFile(join(root, "current.json")) === ownedPointerDigest) {
+        if (originalPointer !== undefined) atomicWrite(join(root, "current.json"), originalPointer);
+        else rmSync(join(root, "current.json"), { force: true });
+      }
+    }
+    if (maintenanceStorage && maintenanceTransaction &&
+        readMaintenanceMarker(maintenanceStorage)?.transaction_id === maintenanceTransaction) {
+      failUpgradeTransaction(root, maintenanceTransaction, {
+        phase: writableStateStarted ? "starting" : "migrating", code: "INSTALL_FAILED",
+        message: e instanceof Error ? e.message : String(e),
+        mode: writableStateStarted ? "recovery_required" : "safe_abort",
+        new_state_write_possible: writableStateStarted, restore_transaction_owned: false,
+      });
+      if (writableStateStarted) updateMaintenanceMarker(maintenanceStorage, { phase: "recovery_required" });
+      else clearMaintenanceMarker(maintenanceStorage);
     }
     state.updateResult({
       software: {
@@ -1179,8 +1242,7 @@ export async function runInstaller(
       );
     return code;
   } finally {
-    await releaseController?.();
-    await releaseInstall?.();
+    try { await releaseController?.(); } finally { await releaseInstall?.(); }
   }
 }
 
@@ -1196,6 +1258,7 @@ if (
     roleInputs: parsed.roleInputs,
     requireReady: parsed.requireReady,
     noOpen: parsed.noOpen,
+    port: parsed.port,
   }).then((code) => {
     process.exitCode = code;
   });

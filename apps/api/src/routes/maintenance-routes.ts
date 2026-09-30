@@ -18,8 +18,12 @@ export interface MaintenanceRouteOptions {
   storageRoot: string;
   storageInstance?: string;
   /** Optional hook so Stream E can pause the real scheduler. */
+  onShutdown?: () => Promise<void>;
   onQuiesce?: (mode: "wait" | "pause-and-update") => Promise<void>;
-  onPrepare?: (body: { transaction_id?: string; target_version?: string }) => Promise<void> | void;
+  onPrepare?: (body: {
+    transaction_id?: string;
+    target_version?: string;
+  }) => Promise<void> | void;
 }
 
 const prepareBody = z.object({
@@ -29,6 +33,7 @@ const prepareBody = z.object({
 });
 
 const quiesceBody = z.object({
+  shutdown: z.boolean().default(false),
   on_active_tasks: z.enum(["wait", "pause-and-update"]),
   transaction_id: z.string().optional(),
 });
@@ -85,9 +90,18 @@ export function registerMaintenanceRoutes(
     };
   });
 
-  app.post("/api/maintenance/prepare", async (req) => {
+  app.post("/api/maintenance/prepare", async (req, reply) => {
     options.human(req);
     const body = prepareBody.parse(req.body ?? {});
+    const marker = readMaintenanceMarker(storageRoot);
+    if (
+      marker &&
+      body.transaction_id &&
+      marker.transaction_id !== body.transaction_id
+    )
+      return reply
+        .code(409)
+        .send({ ok: false, error: "MAINTENANCE_TRANSACTION_CONFLICT" });
     if (options.onPrepare) await options.onPrepare(body);
     const transaction_id = body.transaction_id ?? "unspecified";
     const existing = readMaintenanceMarker(storageRoot);
@@ -112,10 +126,22 @@ export function registerMaintenanceRoutes(
     };
   });
 
-  app.post("/api/maintenance/quiesce", async (req) => {
+  app.post("/api/maintenance/quiesce", async (req, reply) => {
     options.human(req);
     const body = quiesceBody.parse(req.body ?? {});
     const marker = readMaintenanceMarker(storageRoot);
+    if (
+      marker &&
+      body.transaction_id &&
+      marker.transaction_id !== body.transaction_id
+    )
+      return reply
+        .code(409)
+        .send({ ok: false, error: "MAINTENANCE_TRANSACTION_CONFLICT" });
+    if (body.shutdown && !options.onShutdown)
+      return reply
+        .code(409)
+        .send({ ok: false, error: "MAINTENANCE_SHUTDOWN_UNSUPPORTED" });
     if (!marker) {
       const transaction_id = body.transaction_id ?? "unspecified";
       beginMaintenanceMarker({
@@ -135,6 +161,11 @@ export function registerMaintenanceRoutes(
     if (options.onQuiesce) await options.onQuiesce(body.on_active_tasks);
     const sqlitePath = join(storageRoot, "devflow.sqlite");
     const inspection = await inspectSqlite(sqlitePath);
+    if (body.shutdown && inspection.can_quiesce) {
+      reply.raw.once("finish", () => {
+        void options.onShutdown!().catch((error) => app.log.error(error));
+      });
+    }
     return {
       ok: true,
       on_active_tasks: body.on_active_tasks,

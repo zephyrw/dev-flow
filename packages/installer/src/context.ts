@@ -12,6 +12,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve, join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parse } from "yaml";
 import { homedir } from "node:os";
 import { resolveLayout } from "./launchers.js";
 
@@ -92,16 +93,17 @@ export function resolveInstallationContext(options?: {
   configPath = resolve(configPath);
 
   // 4. Resolve storageRoot from config or default to installRoot/state
-  let storageRoot = join(installRoot, "state");
+  let storageRoot = join(dirname(configPath), ".devflow");
+  let workspaceRoot = join(dirname(configPath), ".devflow", "worktrees");
   if (existsSync(configPath)) {
     try {
-      const content = readFileSync(configPath, "utf8");
-      const match = content.match(/^storage_root:\s*["']?([^"'\r\n]+)["']?/m);
-      if (match && match[1]) {
-        storageRoot = resolve(dirname(configPath), match[1].trim());
-      }
+      const config = parse(readFileSync(configPath, "utf8"));
+      if (typeof config?.storage_root === "string")
+        storageRoot = resolve(dirname(configPath), config.storage_root);
+      if (typeof config?.workspace_root === "string")
+        workspaceRoot = resolve(dirname(configPath), config.workspace_root);
     } catch {
-      /* ignore */
+      // Help/version remain available; commands that need config validate it.
     }
   }
 
@@ -120,8 +122,6 @@ export function resolveInstallationContext(options?: {
       nodePath = versionNode;
     }
   }
-
-  const workspaceRoot = process.cwd();
 
   return {
     installRoot,

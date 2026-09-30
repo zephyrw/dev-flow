@@ -39,6 +39,7 @@ export interface BaseServerOptions {
     transaction_id?: string;
     target_version?: string;
   }) => Promise<void> | void;
+  onMaintenanceShutdown?: () => Promise<void>;
   onMaintenanceQuiesce?: (mode: "wait" | "pause-and-update") => Promise<void>;
 }
 
@@ -158,7 +159,7 @@ export function createBaseServer(options: BaseServerOptions) {
       !req.url.startsWith("/api/worker/")
     ) {
       const marker = readMaintenanceMarker(maintenanceStorageRoot);
-      if (marker && marker.block_new_dispatch && !isMaintenanceMarkerExpired(marker))
+      if (marker && marker.block_new_dispatch)
         requireCondition(
           false,
           "MAINTENANCE_ACTIVE",
@@ -263,6 +264,7 @@ export function createBaseServer(options: BaseServerOptions) {
     storageInstance: options.storageInstance,
     onPrepare: options.onMaintenancePrepare,
     onQuiesce: options.onMaintenanceQuiesce,
+    onShutdown: options.onMaintenanceShutdown,
   });
   if (options.registerStatic !== false) {
     const webRoot = resolve(options.webRoot ?? "dist/web");

@@ -114,6 +114,7 @@ export async function buildServer(
       transaction_id?: string;
       target_version?: string;
     }) => Promise<void> | void;
+    onMaintenanceShutdown?: () => Promise<void>;
     onMaintenanceQuiesce?: (mode: "wait" | "pause-and-update") => Promise<void>;
   } = {},
 ) {
@@ -128,6 +129,7 @@ export async function buildServer(
     writeContentTypeAllowed,
     onMaintenancePrepare: options.onMaintenancePrepare,
     onMaintenanceQuiesce: options.onMaintenanceQuiesce,
+    onMaintenanceShutdown: options.onMaintenanceShutdown,
   });
   await app.register(websocket, { options: { maxPayload: 65536 } });
   app.get("/api/projects", async (req) => {

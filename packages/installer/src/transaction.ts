@@ -52,6 +52,7 @@ export interface UpgradeTransaction {
   source_digest?: string;
   target_version: string;
   target_digest: string;
+  config_path?: string;
   config_digest_before?: string | null;
   pointer_digest_before?: string | null;
   /** Extra ownership hashes so SafeAbort can restore only this transaction's writes. */
@@ -143,6 +144,7 @@ export interface BeginUpgradeTransactionInput {
   target_digest: string;
   source_version?: string;
   source_digest?: string;
+  config_path?: string;
   config_digest_before?: string | null;
   pointer_digest_before?: string | null;
   created_config?: boolean;
@@ -162,6 +164,7 @@ export function beginUpgradeTransaction(
     source_digest: input.source_digest,
     target_version: input.target_version,
     target_digest: input.target_digest,
+    config_path: input.config_path,
     config_digest_before: input.config_digest_before ?? null,
     pointer_digest_before: input.pointer_digest_before ?? null,
     config_digest_after: null,
@@ -284,7 +287,7 @@ export function restoreTransactionOwnedChanges(
 } {
   const record = readTransaction(installRoot, id);
   if (!record) throw new Error(`UPGRADE_TX_NOT_FOUND: ${id}`);
-  const configPath = join(installRoot, "devflow.yaml");
+  const configPath = record.config_path ?? join(installRoot, "devflow.yaml");
   const pointerPath = join(installRoot, "current.json");
   const config = restoreOwnedFile(
     configPath,
@@ -306,7 +309,7 @@ export function restoreTransactionOwnedChanges(
       const current = fileDigest(change.path);
       if (current === undefined)
         return { ...change, status: "skipped", note: "missing" };
-      if (change.after_hash && current !== change.after_hash)
+      if (!change.after_hash || current !== change.after_hash)
         return {
           ...change,
           status: "user_modified_preserved",
@@ -315,6 +318,10 @@ export function restoreTransactionOwnedChanges(
       if (change.backup_path && existsSync(change.backup_path)) {
         copyFileSync(change.backup_path, change.path);
         return { ...change, status: "restored" };
+      }
+      if (!change.before_hash) {
+        unlinkSync(change.path);
+        return { ...change, status: "restored", note: "removed_created_file" };
       }
       return { ...change, status: "skipped", note: "no_backup" };
     },

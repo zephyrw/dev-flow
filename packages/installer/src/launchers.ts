@@ -18,6 +18,7 @@ import {
   realpathSync,
   renameSync,
   symlinkSync,
+  lstatSync,
 } from "node:fs";
 import { dirname, join, resolve, sep, relative, isAbsolute, basename } from "node:path";
 import { homedir, tmpdir } from "node:os";
@@ -301,14 +302,18 @@ function devflowCmdScript(installRoot: string): string {
   // Absolute paths only; independent of cwd and PATH refresh timing.
   return [
     "@echo off",
-    'setlocal',
-    'set "DEVFLOW_INSTALL_ROOT=' + installRoot.replace(/\\/g, "\\\\") + '"',
-    'set "DEVFLOW_ENTRY=' + resolveLayout(installRoot).entryMjs.replace(/\\/g, "\\\\") + '"',
-    'set "DEVFLOW_NODE=' + resolveLayout(installRoot).bootstrapNode.replace(/\\/g, "\\\\") + '"',
+    'setlocal DisableDelayedExpansion',
+    'set "DEVFLOW_INSTALL_ROOT=' + installRoot.replace(/%/g, '%%') + '"',
+    'set "DEVFLOW_ENTRY=' + resolveLayout(installRoot).entryMjs.replace(/%/g, '%%') + '"',
+    'set "DEVFLOW_NODE=' + resolveLayout(installRoot).bootstrapNode.replace(/%/g, '%%') + '"',
     '"%DEVFLOW_NODE%" "%DEVFLOW_ENTRY%" %*',
-    "endlocal",
+    "endlocal & exit /b %errorlevel%",
     "",
   ].join("\r\n");
+}
+
+function shellQuote(value: string): string {
+  return "'" + value.replace(/'/g, "'\"'\"'") + "'";
 }
 
 function devflowShScript(installRoot: string): string {
@@ -316,9 +321,9 @@ function devflowShScript(installRoot: string): string {
   return [
     "#!/bin/sh",
     "# DevFlow stable entry — managed by the DevFlow installer.",
-    "DEVFLOW_INSTALL_ROOT=" + JSON.stringify(installRoot),
-    "DEVFLOW_NODE=" + JSON.stringify(layout.bootstrapNode),
-    "DEVFLOW_ENTRY=" + JSON.stringify(layout.entryMjs),
+    "DEVFLOW_INSTALL_ROOT=" + shellQuote(installRoot),
+    "DEVFLOW_NODE=" + shellQuote(layout.bootstrapNode),
+    "DEVFLOW_ENTRY=" + shellQuote(layout.entryMjs),
     'exec "$DEVFLOW_NODE" "$DEVFLOW_ENTRY" "$@"',
     "",
   ].join("\n");
@@ -333,11 +338,29 @@ export function writeStableEntry(
   const binPaths: string[] = [];
   const menuPaths: string[] = [];
   const conflicts: string[] = [];
+  let prior: Array<{ path: string; hash?: string }> = [];
+  try {
+    prior = JSON.parse(readFileSync(join(installRoot, "entry-receipt.json"), "utf8")).installed_entries ?? [];
+  } catch { /* No ownership proof: existing different files are preserved. */ }
+  const writeEntry = (file: string, content: string): boolean => {
+    try {
+      const stat = lstatSync(file);
+      const previous = prior.find((entry) => resolve(entry.path) === resolve(file));
+      if (!stat.isFile() || stat.isSymbolicLink() ||
+          (readFileSync(file, "utf8") !== content && previous?.hash !== hash(readFileSync(file)))) {
+        conflicts.push(file);
+        return false;
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    atomicWrite(file, content);
+    return true;
+  };
 
   if (process.platform === "win32") {
     const cmdPath = join(layout.binDir, "devflow.cmd");
-    atomicWrite(cmdPath, devflowCmdScript(installRoot));
-    binPaths.push(cmdPath);
+    if (writeEntry(cmdPath, devflowCmdScript(installRoot))) binPaths.push(cmdPath);
     const startMenu = join(
       home,
       "AppData",
@@ -350,11 +373,11 @@ export function writeStableEntry(
     );
     mkdirSync(startMenu, { recursive: true });
     const menuCmd = join(startMenu, "DevFlow.cmd");
-    atomicWrite(menuCmd, devflowCmdScript(installRoot));
-    menuPaths.push(menuCmd);
+    if (writeEntry(menuCmd, devflowCmdScript(installRoot))) menuPaths.push(menuCmd);
   } else {
     const shPath = join(layout.binDir, "devflow");
-    atomicWrite(shPath, devflowShScript(installRoot));
+    if (!writeEntry(shPath, devflowShScript(installRoot)))
+      return { binPaths, menuPaths, conflicts, absoluteOpenHint: layout.entryMjs };
     try {
       chmodSync(shPath, 0o755);
     } catch {}
@@ -363,11 +386,11 @@ export function writeStableEntry(
     const userBin = join(home, ".local", "bin");
     mkdirSync(userBin, { recursive: true });
     const linkPath = join(userBin, "devflow");
-    if (existsSync(linkPath)) {
+    if (existsSync(linkPath) || (() => { try { return lstatSync(linkPath).isSymbolicLink(); } catch { return false; } })()) {
       let owned = false;
       try {
         const real = realpathSync(linkPath);
-        owned = real === shPath || isInside(layout.binDir, real);
+        owned = lstatSync(linkPath).isSymbolicLink() && real === realpathSync(shPath);
       } catch {
         owned = false;
       }
@@ -391,7 +414,7 @@ export function writeStableEntry(
       mkdirSync(appsDir, { recursive: true });
       const desktop = join(appsDir, "devflow.desktop");
       const escapedShPath = shPath.includes(" ") ? `"${shPath}"` : shPath;
-      atomicWrite(
+      const desktopWritten = writeEntry(
         desktop,
         [
           "[Desktop Entry]",
@@ -404,7 +427,7 @@ export function writeStableEntry(
           "",
         ].join("\n"),
       );
-      menuPaths.push(desktop);
+      if (desktopWritten) menuPaths.push(desktop);
     }
   }
 
@@ -462,9 +485,7 @@ function renderPathBlock(binDir: string, platform = process.platform): string {
   }
   return (
     PATH_BLOCK_START +
-    '\nexport PATH="' +
-    binDir.replace(/"/g, '\\"') +
-    ':$PATH"\n' +
+    '\nexport PATH=' + shellQuote(binDir) + ':"$PATH"\n' +
     PATH_BLOCK_END +
     "\n"
   );
@@ -501,6 +522,7 @@ export function upsertShellPathBlock(
 
 export function removeShellPathBlock(
   rcPath: string,
+  expectedBinDir?: string,
 ): ShellBlockResult {
   const existing = existsSync(rcPath) ? readFileSync(rcPath, "utf8") : "";
   const startIndex = existing.indexOf(PATH_BLOCK_START);
@@ -508,6 +530,9 @@ export function removeShellPathBlock(
   if (startIndex < 0 || endIndex < startIndex) {
     return { path: rcPath, changed: false, content: existing };
   }
+  if (expectedBinDir && existing.slice(startIndex, endIndex + PATH_BLOCK_END.length) !==
+      renderPathBlock(expectedBinDir).trimEnd())
+    return { path: rcPath, changed: false, content: existing };
   const before = existing.slice(0, startIndex);
   const after = existing.slice(endIndex + PATH_BLOCK_END.length).replace(/^\r?\n/, "");
   const next = (before + after).replace(/\n{3,}/g, "\n\n");
@@ -545,7 +570,7 @@ export function readWindowsUserPathFromRegistry(): string | undefined {
       const match = out.match(/Path\s+REG_(?:EXPAND_)?SZ\s+(.*)/i);
       return match && match[1] ? match[1].trim() : undefined;
     } catch {
-      return undefined;
+      throw new Error("无法读取用户 PATH，拒绝覆盖未知配置");
     }
   }
 }
@@ -559,10 +584,9 @@ export function writeWindowsUserPathToRegistry(newPath: string): void {
         "-NoProfile",
         "-NonInteractive",
         "-Command",
-        `[Environment]::SetEnvironmentVariable('Path', $args[0], 'User')`,
-        newPath,
+        "[Environment]::SetEnvironmentVariable('Path', $env:DEVFLOW_USER_PATH_VALUE, 'User')",
       ],
-      { encoding: "utf8", windowsHide: true, timeout: 8000 },
+      { encoding: "utf8", windowsHide: true, timeout: 8000, env: { ...process.env, DEVFLOW_USER_PATH_VALUE: newPath } },
     );
   } catch {
     try {
@@ -572,7 +596,7 @@ export function writeWindowsUserPathToRegistry(newPath: string): void {
         { encoding: "utf8", windowsHide: true, timeout: 5000 },
       );
     } catch {
-      /* best-effort */
+      throw new Error("无法写入用户 PATH");
     }
   }
 }
