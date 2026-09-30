@@ -24,7 +24,7 @@ function run(id: string, selected: ToolProfile): Run {
     purpose: "implement", stage: "execute", status: "running", started_at: now(), package_hash: "pkg" };
 }
 
-it("跨 ProfileRuntime 与 agy 的 A-B-A 在 B 尚未产生会话时也不能复活旧 A", () => {
+it("跨工具 A-B-A 保留原 A 会话，B 的未启动记录和 A 的延迟事件不覆盖当前运行", () => {
   const s = setup(); stores.push(s.store);
   const a = run("run-a", profile("cursor-agent", "model-a"));
   const b = run("run-b", profile("agy", "model-b"));
@@ -40,7 +40,7 @@ it("跨 ProfileRuntime 与 agy 的 A-B-A 在 B 尚未产生会话时也不能复
     .toMatchObject({ run_id: b.id, fingerprint: b.invocation_fingerprint });
   retainRunConversation(s.store, a, "late-a");
   expect(s.store.get<any>("conversation", a.workflow_id)?.id).toBeUndefined();
-  expect(beginRunConversation(s.store, run("run-a2", a.profile!))).toBeUndefined();
+  expect(beginRunConversation(s.store, run("run-a2", a.profile!))?.id).toBe("conversation-a");
 });
 
 it("两个 agy 入口沿用最近兼容会话，并同时更新共享记录", () => {
@@ -149,7 +149,7 @@ it("历史任务首轮继续使用轻量入口，历史已冻结 legacy Run 仍�
   expect(selectRuntimePath(s.engine, s.workflow, historical)).toBe("legacy-managed");
 });
 
-it("审查追问同绑定续原会话，换模型完整交接且 A-B-A 不复活旧会话", () => {
+it("审查追问同工具换模型续原会话，跨工具交接后切回保留原会话", () => {
   const s = setup(); stores.push(s.store);
   const source = { ...run("review-a", profile("codex", "review-model-a")), purpose: "quality_review" as const };
   s.store.put("run", source.id, source.workflow_id, source);
@@ -158,6 +158,8 @@ it("审查追问同绑定续原会话，换模型完整交接且 A-B-A 不复活
     source_run_id: source.id, conversation_id: "review-session-a", questions: ["确认范围"], answer: "仅当前变更" };
   const same = { ...source, id: "review-a2", continuation };
   expect(beginRunConversation(s.store, same)?.id).toBe("review-session-a");
+  const modelChanged = { ...run("review-a-sol", profile("codex", "review-model-sol")), purpose: "quality_review" as const, continuation };
+  expect(beginRunConversation(s.store, modelChanged)?.id).toBe("review-session-a");
   const changed = { ...run("review-b", profile("agy", "review-model-b")), purpose: "quality_review" as const, continuation };
   const runtime = new ProfileRuntime(s.engine, {} as ProcessManager) as unknown as {
     continuationMaterials(materials: Record<string, unknown>, run: Run): Record<string, unknown>;
@@ -166,5 +168,5 @@ it("审查追问同绑定续原会话，换模型完整交接且 A-B-A 不复活
   expect(materials).toMatchObject({ plan: { markdown: "approved plan" }, questions: ["确认范围"], answer: "仅当前变更" });
   expect(beginRunConversation(s.store, changed)).toBeUndefined();
   retainRunConversation(s.store, changed, "review-session-b");
-  expect(beginRunConversation(s.store, { ...source, id: "review-a3", continuation })).toBeUndefined();
+  expect(beginRunConversation(s.store, { ...source, id: "review-a3", continuation })?.id).toBe("review-session-a");
 });

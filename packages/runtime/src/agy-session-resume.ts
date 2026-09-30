@@ -10,7 +10,6 @@ export function agySessionAcrossAccounts(store: Store, key: SessionBindingKey, p
     .filter((binding) => binding.state === "bound" && !!binding.conversation_id &&
       binding.workflow_id === key.workflow_id && binding.adapter_id === key.adapter_id &&
       binding.host_id === key.host_id && binding.client_scope_id === key.client_scope_id &&
-      binding.canonical_model_id === key.canonical_model_id &&
       binding.workspace_identity === key.workspace_identity &&
       (!preferredConversationId || binding.conversation_id === preferredConversationId))
     .filter((binding) => {

@@ -39,6 +39,8 @@ import {
   type Workflow,
 } from "../../contracts/src/index.js";
 import { id, now } from "./util.js";
+import { nativeAdapter, nativeRootForRun } from "./native-session.js";
+import { sessionSourceRun } from "./session-handoff.js";
 
 export interface ConversationApplyContext {
   project_id: string;
@@ -150,12 +152,27 @@ export class ConversationService {
       if (root) return root;
     }
     if (run.purpose === "aside") return undefined;
-    const model = run.frozen_invocation?.modelToken ?? run.profile?.modelId;
-    if (!adapter || !model) return undefined;
+    if (!adapter) return undefined;
     const bindings = this.store.list<{
       adapter_id: string; canonical_model_id: string; conversation_id?: string; state: string;
-    }>("session_binding", workflowId).filter((binding) => binding.adapter_id === adapter &&
-      binding.canonical_model_id === model && binding.state === "bound");
+      host_id?: string; client_scope_id?: string; provider_account_scope?: string; workspace_identity?: string;
+      latest_run_id?: string; updated_at?: string;
+    }>("session_binding", workflowId).filter((binding) => binding.adapter_id === adapter && binding.state === "bound");
+    const contextSource = sessionSourceRun(this.store, run);
+    if (contextSource && nativeAdapter(contextSource) === adapter) {
+      const nativeId = nativeRootForRun(this.store, contextSource);
+      const bound = bindings.find(binding => binding.conversation_id === nativeId);
+      const root = bound && rootFor(bound.conversation_id);
+      if (root) return root;
+    }
+    const scopes = new Set(bindings.map(binding => JSON.stringify([
+      binding.host_id, binding.client_scope_id, binding.provider_account_scope, binding.workspace_identity,
+    ])));
+    if (scopes.size === 1) {
+      const latest = bindings.sort((a, b) => (b.updated_at ?? "").localeCompare(a.updated_at ?? ""))[0];
+      const root = latest && rootFor(latest.conversation_id);
+      if (root) return root;
+    }
     const roots = [...new Set(bindings.map((binding) => rootFor(binding.conversation_id)).filter((root): root is string => !!root))];
     // Ambiguous/missing ownership must not resume the most recently displayed model.
     return roots.length === 1 ? roots[0] : undefined;

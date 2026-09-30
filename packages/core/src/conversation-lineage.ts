@@ -1,6 +1,8 @@
 import type { Run } from "../../contracts/src/index.js";
 import type { RunContinuation } from "../../contracts/src/tr-handoff.js";
 import type { Store } from "../../store/src/store.js";
+import { nativeAdapter, nativeRootForRun, nativeSessionScope, sameNativeSessionScope, profileSessionScopeMatches } from "./native-session.js";
+import type { ToolProfile } from "../../contracts/src/index.js";
 
 export function sessionFamily(purpose: string, runId: string): string {
   if (["implement", "plan_self_check", "functional_fix", "planner_takeover", "merge_conflict"].includes(purpose)) return "execution";
@@ -11,7 +13,10 @@ export function sessionFamily(purpose: string, runId: string): string {
 export function conversationLineageKey(workflowId: string, family: string) {
   return workflowId + ":lineage:" + family;
 }
-type Conversation = { id?: string; fingerprint?: string; run_id?: string; family?: string };
+type Conversation = { id?: string; fingerprint?: string; run_id?: string; family?: string; profile?: ToolProfile; scope?: string };
+export function toolConversationKey(run: Run): string {
+  return run.workflow_id + ":lineage:tool:" + nativeAdapter(run);
+}
 
 /** Clarification resumes the same job, not an older job sharing the execute bucket.
  * Legacy Runs without purpose remain compatible when their recorded role/assignment
@@ -65,29 +70,31 @@ function lineageFamily(store: Store, run: Run): string {
 }
 
 function previousConversation(store: Store, run: Run, family: string) {
-  return store.get<Conversation>("native_conversation", conversationLineageKey(run.workflow_id, family)) ??
+  const perTool = store.get<Conversation>("native_conversation", toolConversationKey(run));
+  const legacy = store.get<Conversation>("native_conversation", conversationLineageKey(run.workflow_id, family)) ??
     (family === "execution" ? store.get<Conversation>("conversation", run.workflow_id) : undefined);
+  return perTool ?? (legacy && (legacy.profile?.adapterId === nativeAdapter(run) ||
+    (legacy.run_id && nativeAdapter(store.get<Run>("run", legacy.run_id) ?? run) === nativeAdapter(run))) ? legacy : undefined);
 }
 
 export function continuationSessionToResume(store: Store, run: Run, fingerprint = run.invocation_fingerprint) {
   const continuation = boundConversationContinuation(store, run);
-  if (!continuation || !fingerprint) return undefined;
+  if (!continuation) return undefined;
   const source = store.get<Run>("run", continuation.source_run_id);
   if (!source || source.workflow_id !== run.workflow_id) return undefined;
+  if (nativeAdapter(source) !== nativeAdapter(run)) return undefined;
   const family = lineageFamily(store, run);
   const previous = previousConversation(store, run, family);
   const sourceFingerprint = source.invocation_fingerprint ?? source.model_binding?.invocation_fingerprint ??
     (previous?.run_id === source.id ? previous.fingerprint : undefined);
-  if (sourceFingerprint !== fingerprint) return undefined;
-  const id = continuation.conversation_id ?? source.conversation_id ??
-    (previous?.run_id === source.id ? previous.id : undefined);
+  if (!sameNativeSessionScope(source, run) && !(fingerprint && sourceFingerprint === fingerprint)) return undefined;
+  const id = nativeRootForRun(store, source) ?? (previous?.run_id === source.id ? previous.id : undefined);
   if (!id) return undefined;
-  if (previous && (previous.fingerprint !== fingerprint || previous.id !== id)) return undefined;
   return { id };
 }
 
 /** All launchers occupy one lineage before spawning, even before a session ID. */
-export function beginRunConversation(store: Store, run: Run, fingerprint = run.invocation_fingerprint) {
+export function beginRunConversation(store: Store, run: Run, fingerprint = run.invocation_fingerprint, selected?: { id: string } | null) {
   const family = lineageFamily(store, run);
   const key = conversationLineageKey(run.workflow_id, family);
   const previous = previousConversation(store, run, family);
@@ -124,13 +131,18 @@ export function beginRunConversation(store: Store, run: Run, fingerprint = run.i
     }
   }
 
-  const compatible = !!fingerprint && previous?.fingerprint === fingerprint && (!previous.family || previous.family === family);
-  const resume = continuation
-    ? continuationSessionToResume(store, run, fingerprint)
-    : compatible && previous?.id ? { id: previous.id } : undefined;
-  const current = { ...(resume ?? {}), fingerprint, family, profile: run.profile, run_id: run.id };
+  const priorRun = previous?.run_id ? store.get<Run>("run", previous.run_id) : undefined;
+  const compatible = previous?.scope ? previous.scope === nativeSessionScope(run) :
+    priorRun ? sameNativeSessionScope(priorRun, run) : profileSessionScopeMatches(previous?.profile, run) ||
+      (!!fingerprint && previous?.fingerprint === fingerprint);
+  const resume = selected !== undefined ? selected ?? undefined :
+    (continuation ? continuationSessionToResume(store, run, fingerprint) : undefined) ??
+      (compatible && previous?.id ? { id: previous.id } : undefined);
+  const current = { ...(resume ?? {}), fingerprint, family, profile: run.profile, run_id: run.id, scope: nativeSessionScope(run) };
   store.put("run_conversation_lineage", run.id, run.workflow_id, { family });
   store.put("native_conversation", key, run.workflow_id, current);
+  // A different tool starting without a root must not discard this tool's history.
+  if (resume) store.put("native_conversation", toolConversationKey(run), run.workflow_id, current);
   if (family === "execution") store.put("conversation", run.workflow_id, run.workflow_id, current);
   return resume;
 }
@@ -140,8 +152,9 @@ export function retainRunConversation(store: Store, run: Run, conversationId: st
   const key = conversationLineageKey(run.workflow_id, family);
   const current = store.get<Conversation>("native_conversation", key);
   if (current?.run_id && current.run_id !== run.id) return;
-  const record = { id: conversationId, fingerprint, family, profile: run.profile, run_id: run.id };
+  const record = { id: conversationId, fingerprint, family, profile: run.profile, run_id: run.id, scope: nativeSessionScope(run) };
   store.put("native_conversation", key, run.workflow_id, record);
+  store.put("native_conversation", toolConversationKey(run), run.workflow_id, record);
   if (family === "execution") store.put("conversation", run.workflow_id, run.workflow_id, record);
   const saved = store.get<Run>("run", run.id);
   if (saved) store.put("run", run.id, run.workflow_id, { ...saved, conversation_id: conversationId });

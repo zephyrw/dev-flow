@@ -2,14 +2,18 @@ import type { FeedbackMessage, Run } from "../../contracts/src/index.js";
 import { FlowError } from "../../contracts/src/index.js";
 import type { Store } from "../../store/src/store.js";
 import { boundConversationContinuation } from "./conversation-lineage.js";
+import { nativeAdapter } from "./native-session.js";
 
 export interface SessionInputReceipt {
   run_id: string;
   conversation_id?: string;
-  kind: "stage_start" | "followup";
+  kind: "stage_start" | "followup" | "cross_tool_handoff";
   stage_key: string;
   message_ids: string[];
   state: "prepared" | "started" | "delivered";
+  target_adapter?: string;
+  handoff_source_run_id?: string;
+  handoff_context_hash?: string;
 }
 
 export function inputStageKey(run: Run): string {
@@ -54,7 +58,8 @@ export function isSessionFollowup(store: Store, run: Run, conversationId: string
   const continuation = boundConversationContinuation(store, run);
   if (!conversationId) {
     const source = continuation && store.get<Run>("run", continuation.source_run_id);
-    if ((source?.purpose === run.purpose && source?.conversation_id) || run.dispatch_context?.guidance_mode === "human_acceptance")
+    const changedTool = source && nativeAdapter(source) !== nativeAdapter(run);
+    if (!changedTool && ((source?.purpose === run.purpose && source?.conversation_id) || run.dispatch_context?.guidance_mode === "human_acceptance"))
       throw new FlowError("SESSION_CONTINUATION_UNAVAILABLE", "原会话不可恢复，未新建会话或重新注入任务，请处理会话绑定", 409);
     return false;
   }

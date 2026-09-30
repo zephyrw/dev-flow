@@ -63,6 +63,8 @@ import { ExecutionSessionStore } from "../../core/src/execution-session-store.js
 import { CliDispatchManager, type CliDispatchRecord } from "./cli-dispatch.js";
 import { computeSessionBindingKey } from "../../contracts/src/session-binding.js";
 import { agySessionAcrossAccounts } from "./agy-session-resume.js";
+import { nativeRootForRun } from "../../core/src/native-session.js";
+import { sessionSourceRun, sessionHandoffForRun, sessionHandoffMaterials, writeSessionHandoffHistory } from "../../core/src/session-handoff.js";
 import { readOnlyPurpose } from "../../adapters/sdk/src/invocation.js";
 import type {
   HostChunk,
@@ -696,6 +698,30 @@ export class ProfileRuntime {
       return await this.invokePrepared(w, run, materials, schema, token, planningWorkspaces, accountBinding);
     } catch (error) {
       if (accountBinding) await this.accountBridge?.releaseRun(run.id, false, "invocation_failed");
+      const receipt = this.engine.store.get<SessionInputReceipt>("session_input", run.id);
+      const transition = sessionSourceRun(this.engine.store, run);
+      const diagnostic = error instanceof FlowError && typeof error.details === "object" && error.details
+        ? String((error.details as { diagnostic?: string }).diagnostic ?? error.message)
+        : error instanceof Error ? error.message : String(error);
+      const definitelyMissing = /no saved session found with (?:id|identifier)|(?:session|conversation)(?: with (?:id|identifier) [\w-]+)? (?:does not exist|not found)|(?:会话|对话)[^\n]{0,80}(?:不存在|未找到)/i.test(diagnostic) &&
+        !/unauthorized|quota|rate limit|timeout|connection|credential|permission|额度|网络|超时|鉴权|权限/i.test(diagnostic);
+      if (definitelyMissing && transition && transition.adapter !== profile.adapterId && receipt?.conversation_id &&
+          receipt.state !== "delivered" && !this.engine.store.get("session_recreate_run", run.id) &&
+          !this.engine.store.get("run_stop", run.id)) {
+        const binding = this.executionSessionStore.listBindings(w.id).find(b =>
+          b.adapter_id === profile.adapterId && b.conversation_id === receipt.conversation_id && b.state === "bound");
+        if (binding) {
+          this.executionSessionStore.reserveAfterMissingRoot({ ...binding, canonical_model_id: profile.modelId ?? binding.canonical_model_id }, receipt.conversation_id);
+          this.engine.store.put("session_recreate_run", run.id, w.id, { native_session_id: receipt.conversation_id, reason: diagnostic });
+          this.engine.store.put("session_input_attempt", run.id + ":missing-root", w.id, receipt);
+          this.engine.store.put("session_input", run.id, w.id, { ...receipt, state: "prepared", conversation_id: undefined });
+          const retry = { ...this.engine.store.must<Run>("run", run.id), status: "running" as const,
+            conversation_id: undefined, root_session_id: undefined, ended_at: undefined, exit_code: undefined };
+          this.engine.store.put("run", run.id, w.id, retry);
+          this.engine.store.event(w.id, w.project_id, "SessionRecreatedAfterMissingRoot", { adapter: profile.adapterId, reason: "native_session_not_found" }, run.id);
+          return this.invoke(w, retry, materials, schema, token, planningWorkspaces);
+        }
+      }
       throw error;
     }
   }
@@ -772,6 +798,8 @@ export class ProfileRuntime {
     const sessionKey = computeSessionBindingKey(bindingKey);
     const taskStrategy: "unified" | "legacy" = (w as any).binding_strategy ?? "legacy";
     let sessionBinding: any;
+    const sourceRun = sessionSourceRun(this.engine.store, run);
+    const sourceNativeId = sourceRun ? nativeRootForRun(this.engine.store, sourceRun) : undefined;
     const accountRecovery = this.engine.store.get<{
       decision: string;
       original_conversation_id?: string;
@@ -780,6 +808,8 @@ export class ProfileRuntime {
     if (purpose !== "aside") {
       if (taskStrategy === "unified") {
         const exactBinding = this.executionSessionStore.getBinding(bindingKey);
+        const reusableBinding = accountRecovery?.decision === "recreate_root" ? undefined :
+          this.executionSessionStore.findReusableBinding(bindingKey, sourceNativeId);
         // AGY's local history survives credential changes. Reuse the latest
         // compatible confirmed root without overwriting any historical binding.
         const agyBinding = (!accountRecovery || accountRecovery.decision === "exact_resume") &&
@@ -787,7 +817,7 @@ export class ProfileRuntime {
           ? agySessionAcrossAccounts(this.engine.store, bindingKey,
               accountRecovery?.decision === "exact_resume" ? accountRecovery.original_conversation_id : undefined)
           : undefined;
-        sessionBinding = agyBinding ?? this.executionSessionStore.getOrCreateBinding(bindingKey, {
+        sessionBinding = reusableBinding ?? agyBinding ?? this.executionSessionStore.getOrCreateBinding(bindingKey, {
           workspace_root: primaryWs?.root ?? "",
           source_root: primaryWs?.source_root ?? primaryWs?.root ?? "",
           repo_id: primaryWs?.repo_id ?? "primary",
@@ -802,7 +832,8 @@ export class ProfileRuntime {
       } else {
         // CW3-F03: 缺策略的历史任务按 legacy 只读核验，未处理旧候选/pending 阻止误建根，绝不隐式建 binding
         const existingBindings = this.executionSessionStore.listBindings(w.id);
-        const matchBinding = existingBindings.find((b) => computeSessionBindingKey(b) === sessionKey);
+        const matchBinding = this.executionSessionStore.findReusableBinding(bindingKey, sourceNativeId) ??
+          existingBindings.find((b) => computeSessionBindingKey(b) === sessionKey);
         if (matchBinding) {
           if (matchBinding.state === "unavailable" || matchBinding.state === "retired") {
             throw new FlowError(
@@ -865,7 +896,8 @@ export class ProfileRuntime {
       this.engine.store.put("feedback_message", deferred.message_id, w.id,
         { ...deferred, status: "pending", ack_run: undefined });
     }
-    const followup = isSessionFollowup(this.engine.store, run, previous?.id, messages);
+    const crossToolHandoff = sessionHandoffForRun(this.engine.store, run, previous?.id);
+    const followup = !crossToolHandoff && isSessionFollowup(this.engine.store, run, previous?.id, messages);
     const inputFiles = resolveRunConversationAttachments(
       this.engine, w, profile,
       followup ? new Set(messages.flatMap(message => message.attachment_ids ?? [])) : undefined,
@@ -879,7 +911,14 @@ export class ProfileRuntime {
     // Material generation is deliberately lazy: a follow-up must not read or
     // regenerate the plan, progress, historical feedback or recovery handoff.
     if (!followup) {
-      const initialMaterials = typeof materials === "function" ? await materials() : materials;
+      let initialMaterials = typeof materials === "function" ? await materials() : materials;
+      if (crossToolHandoff) {
+        const historyPath = join(root, "CROSS_TOOL_HISTORY.jsonl");
+        writeSessionHandoffHistory(this.engine.store, run, crossToolHandoff, historyPath);
+        initialMaterials = { ...(initialMaterials as object), cross_tool_handoff: {
+          ...sessionHandoffMaterials(this.engine.store, run, crossToolHandoff), history_file: historyPath,
+        } };
+      }
       atomicWrite(handoff, JSON.stringify(withHandoffAttachments(initialMaterials, inputFiles.attachments), null, 2));
     }
     atomicWrite(schemaPath, JSON.stringify(schema));
@@ -889,13 +928,20 @@ export class ProfileRuntime {
     const inputFeedback = this.engine.store.get<{ message: string }>("model_input_feedback", run.id)?.message;
     const prompt = [basePrompt, inputFeedback, ...imageProblems].filter(Boolean).join("\n\n");
     const inputReceipt: SessionInputReceipt = {
-      run_id: run.id, conversation_id: previous?.id, kind: followup ? "followup" : "stage_start",
+      run_id: run.id, conversation_id: previous?.id, kind: crossToolHandoff ? "cross_tool_handoff" : followup ? "followup" : "stage_start",
       stage_key: inputStageKey(run), message_ids: messages.map(message => message.message_id), state: "prepared",
+      target_adapter: profile.adapterId,
+      ...(crossToolHandoff ? { handoff_source_run_id: crossToolHandoff.source_run_id,
+        handoff_context_hash: crossToolHandoff.context_hash } : {}),
     };
     this.engine.store.put("session_input", run.id, w.id, inputReceipt);
     atomicWrite(join(root, "input.json"), JSON.stringify({ ...inputReceipt, text: prompt }, null, 2));
     // Keep model handoff lineage without letting legacy pointers override the binding.
-    beginRunConversation(this.engine.store, run, fingerprint);
+    beginRunConversation(this.engine.store, run, fingerprint, previous ?? null);
+    this.engine.store.event(w.id, w.project_id, "SessionContinuationSelected", {
+      adapter: profile.adapterId, model: profile.modelId, native_session_id: previous?.id,
+      mode: crossToolHandoff ? previous ? "resume_with_handoff" : "start_with_handoff" : previous ? "resume" : "start",
+    }, run.id);
     const context = {
       workflowId: w.id,
       runId: run.id,
@@ -992,7 +1038,7 @@ export class ProfileRuntime {
 
     // CW2-F08 / CW2-D04: 正式模型调用必须接入统一派发门面与占用管理
     const dispatchManager = new CliDispatchManager(this.engine.store, this.processes);
-    const dispatchId = `disp_${w.id}_${run.id}`;
+    const dispatchId = `disp_${w.id}_${run.id}` + (this.engine.store.get("session_recreate_run", run.id) ? "_recreated" : "");
     let dispatchRecord: any;
     if (purpose !== "aside") {
       dispatchRecord = dispatchManager.prepareDispatch({

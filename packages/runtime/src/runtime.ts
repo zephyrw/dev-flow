@@ -55,6 +55,8 @@ import {
   type RunPurpose,
 } from "../../core/src/run-profile.js";
 import { beginRunConversation, retainRunConversation } from "../../core/src/conversation-lineage.js";
+import { sessionHandoffForRun, sessionHandoffMaterials, writeSessionHandoffHistory } from "../../core/src/session-handoff.js";
+import { inputStageKey, type SessionInputReceipt } from "../../core/src/session-input.js";
 import { ProcessManager, type ProcessStopResult } from "../../process/src/manager.js";
 import { executablePath } from "../../process/src/executable.js";
 import { JsonLines, AgyProtocol } from "../../adapters/agy/src/protocol.js";
@@ -674,7 +676,8 @@ export class LocalRuntime implements Runtime {
     const launcher = runLauncherSelection(run);
     const conversation = compatibleConversation(this.engine, run);
     const messages = pendingRunMessages(this.engine.store, workflow.id, run);
-    const followup = isSessionFollowup(this.engine.store, run, conversation?.id, messages);
+    const crossToolHandoff = sessionHandoffForRun(this.engine.store, run, conversation?.id);
+    const followup = !crossToolHandoff && isSessionFollowup(this.engine.store, run, conversation?.id, messages);
     if (!followup) {
       if (isNativeV2) {
         const fullPkg = HandoffBuilder.buildFullHandoff({
@@ -690,9 +693,21 @@ export class LocalRuntime implements Runtime {
         }, null, 2));
       }
     }
-    const prompt = followup ? followupText(this.engine.store, run, messages)
+    let prompt = followup ? followupText(this.engine.store, run, messages)
       : isNativeV2 ? nativeLaunchInstruction(directory, "full")
       : "首先调用 devflow_execute_context，读取批准计划与 Skill，完成当前阶段任务后返回结果。";
+    let crossToolReceipt: SessionInputReceipt | undefined;
+    if (crossToolHandoff) {
+      const history = join(directory, "CROSS_TOOL_HISTORY-" + run.id + ".jsonl");
+      const handoff = join(directory, "CROSS_TOOL_HANDOFF-" + run.id + ".json");
+      writeSessionHandoffHistory(this.engine.store, run, crossToolHandoff, history);
+      atomicWrite(handoff, JSON.stringify({ ...sessionHandoffMaterials(this.engine.store, run, crossToolHandoff), history_file: history }, null, 2));
+      prompt += "\n先读取跨工具任务交接文件 " + handoff + "，补齐最新进展后继续。";
+      crossToolReceipt = { run_id: run.id, conversation_id: conversation?.id, kind: "cross_tool_handoff",
+        stage_key: inputStageKey(run), message_ids: messages.map(m => m.message_id), state: "prepared",
+        target_adapter: run.adapter, handoff_source_run_id: crossToolHandoff.source_run_id, handoff_context_hash: crossToolHandoff.context_hash };
+      this.engine.store.put("session_input", run.id, workflow.id, crossToolReceipt);
+    }
     this.assertRun(workflow.id, run.id, ["EXECUTING"]);
     const remainingMs = run.deadline_at
       ? Math.max(0, run.deadline_at - Date.now())
@@ -764,6 +779,16 @@ export class LocalRuntime implements Runtime {
         if (event.type === "started" && Number.isSafeInteger(event.pid))
           this.accountBridge?.attachProcess(accountBinding, event.pid);
       });
+    if (crossToolReceipt) {
+      crossToolReceipt.state = "started";
+      this.engine.store.put("session_input", run.id, workflow.id, crossToolReceipt);
+      void proc.ready.catch(() => {
+        if (!proc.pid && crossToolReceipt?.state === "started") {
+          crossToolReceipt.state = "prepared";
+          this.engine.store.put("session_input", run.id, workflow.id, crossToolReceipt);
+        }
+      });
+    }
     const accountTurn = new CurrentTurn();
     let accountFailure: AgyFailureFact | undefined;
     let accountEventOffset = 0;
@@ -834,6 +859,12 @@ export class LocalRuntime implements Runtime {
         this.preparing.has(run.id) ||
         this.checking.has(workflow.id),
       onEvent: (event) => {
+        if (crossToolReceipt && event.event === "step_update" &&
+            (event.step_update as any)?.step_type === "user_input" && (event.step_update as any)?.state === "DONE") {
+          crossToolReceipt.state = "delivered";
+          crossToolReceipt.conversation_id = conversationRoot;
+          this.engine.store.put("session_input", run.id, workflow.id, crossToolReceipt);
+        }
         if (accountBinding) {
           this.accountBridge?.observeNativeEvent(run.id, event);
           accountTurn.accept(event);

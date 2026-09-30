@@ -91,6 +91,52 @@ export class ExecutionSessionStore {
     return this.store.list<SessionBinding>("session_binding", workflowId);
   }
 
+  /** Keep the persisted model keys; select confirmed roots independently of model. */
+  findReusableBinding(key: SessionBindingKey, preferredNativeId?: string): SessionBinding | undefined {
+    const candidates = this.listBindings(key.workflow_id).filter(binding =>
+      binding.state === "bound" && !!binding.conversation_id &&
+      binding.adapter_id === key.adapter_id && binding.host_id === key.host_id &&
+      binding.client_scope_id === key.client_scope_id &&
+      binding.provider_account_scope === key.provider_account_scope &&
+      binding.workspace_identity === key.workspace_identity &&
+      (!binding.latest_run_id || this.store.get<{ purpose?: string }>("run", binding.latest_run_id)?.purpose !== "aside"));
+    const preferred = preferredNativeId && candidates.find(binding => binding.conversation_id === preferredNativeId);
+    const selected = preferred || candidates.sort((a, b) => b.updated_at.localeCompare(a.updated_at) || a.id.localeCompare(b.id))[0];
+    if (selected?.conversation_id) {
+      const owner = this.store.get<{ workflow_id: string }>("session_owner_index", computeSessionOwnerKey({
+        ...selected, conversation_id: selected.conversation_id,
+      }));
+      requireCondition(!owner || owner.workflow_id === key.workflow_id,
+        "SESSION_ALREADY_OWNED", "原生会话已由其他任务认领", 409);
+    }
+    return selected;
+  }
+
+  /** A confirmed missing native root is archived; its history is never overwritten. */
+  reserveAfterMissingRoot(key: SessionBindingKey, nativeId: string): SessionBinding {
+    return this.store.transaction(() => {
+      const context = this.getBinding(key) ?? this.listBindings(key.workflow_id).find(b =>
+        b.adapter_id === key.adapter_id && b.conversation_id === nativeId);
+      for (const binding of this.listBindings(key.workflow_id).filter(b =>
+        b.adapter_id === key.adapter_id && b.client_scope_id === key.client_scope_id &&
+        b.host_id === key.host_id && b.provider_account_scope === key.provider_account_scope &&
+        b.workspace_identity === key.workspace_identity && b.conversation_id === nativeId && b.state === "bound"))
+        this.updateBindingState(binding.id, binding.revision, "unavailable");
+      const keyStr = computeSessionBindingKey(key);
+      const previous = this.getBinding(key);
+      if (previous?.conversation_id) {
+        const archiveKey = "retired:" + previous.id;
+        this.store.put("session_binding", archiveKey, key.workflow_id, { ...previous, state: "retired", revision: previous.revision + 1, updated_at: now() });
+        this.store.put("session_binding_by_id", previous.id, key.workflow_id, { keyStr: archiveKey });
+        this.store.remove("session_binding", keyStr);
+      }
+      return this.getOrCreateBinding(key, {
+        workspace_root: context?.workspace_root ?? "", source_root: context?.source_root ?? "",
+        repo_id: context?.repo_id ?? "primary",
+      });
+    });
+  }
+
   /**
    * 首次 CLI 结构化 init 确认 conversationId 时立即持久化保存（不等整轮成功）
    * 根 ID 一旦确认不可直接被其他不同 ID 覆写
