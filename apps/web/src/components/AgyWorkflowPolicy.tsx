@@ -66,7 +66,7 @@ export function AgyWorkflowPolicy({ workflowId }: { workflowId: string }) {
       if (!response.ok)
         throw new Error(value.error?.message ?? "保存账号策略失败");
       setPolicy(value);
-      setNotice("账号策略已保存，仅对后续执行生效；当前运行使用原冻结策略。");
+      setNotice("账号策略已保存，将在后续执行时生效。");
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -129,7 +129,7 @@ export function AgyWorkflowPolicy({ workflowId }: { workflowId: string }) {
           </label>
           {policy.allowed_account_ids !== null && (
             <fieldset>
-              <legend>允许的账号（空集合表示不允许任何账号）</legend>
+              <legend>允许的账号（至少选择一个才能自动切换）</legend>
               {accounts.map((account) => (
                 <label key={account.id} style={{ display: "block" }}>
                   <input
@@ -165,11 +165,10 @@ export function AgyWorkflowPolicy({ workflowId }: { workflowId: string }) {
             >
               <option value="exact_only">暂停，保持原会话</option>
               <option value="recreate_after_confirmed_unavailable" disabled>
-                建立接替会话（能力待验证，当前不可用）
+                建立接替会话（暂不可用）
               </option>
             </select>
           </label>
-          <p>原会话不可用时，本版本暂停等待处理；已有接替策略仅保留配置意图。</p>
           <label style={{ display: "block" }}>
             夜间候选
             <select

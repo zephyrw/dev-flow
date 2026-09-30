@@ -222,7 +222,7 @@ export function ExecutionPanel({
           <h2>执行过程</h2>
           <span
             className={`conn-pill ${connected ? "connected" : "reconnecting"}`}
-            title="页面与服务的事件连接状态；模型活动见右上角当前运行信息"
+            title={connected ? "已连接" : "正在重新连接服务"}
           >
             <span className="conn-dot" />
             <small>{connected ? "已连接" : "重连中"}</small>

@@ -19,7 +19,7 @@ const resolutions: Record<string, Omit<RuntimeFailureResolution, "code">> = {
   },
   SESSION_IDENTITY_CHANGED: {
     title: "执行账号已变化",
-    message: "当前账号与本轮冻结配置不一致，已保留现场。",
+    message: "执行账号已变化，请确认当前账号后继续。",
     steps: ["核对当前账号，使用模型切换或账号恢复入口继续原任务。"],
   },
   CLI_VERSION_UNSUPPORTED: {
@@ -75,7 +75,7 @@ const resolutions: Record<string, Omit<RuntimeFailureResolution, "code">> = {
   },
   MODEL_IDENTITY_CHANGED: {
     title: "模型账号身份已变化",
-    message: "当前账号与本轮冻结的授权身份不一致，工具未启动。",
+    message: "执行账号已变化，需要重新验证模型访问权限。",
     steps: ["确认当前账号及本轮模型，在“工具与模型”中完成访问验证。", "确认后继续原任务。"],
   },
   MODEL_FORBIDDEN: {
@@ -93,7 +93,7 @@ const resolutions: Record<string, Omit<RuntimeFailureResolution, "code">> = {
   },
   MODEL_CONNECTION_FAILED: {
     title: "模型服务连接失败",
-    message: "无法连接模型服务，或服务暂时不可用，本轮没有形成有效修复结果。",
+    message: "无法连接模型服务，或服务暂时不可用。",
     steps: [
       "检查当前 CLI 使用的服务地址、网络、代理和证书，以及服务方的运行状态。",
       "连接恢复后继续原任务；不要通过关闭证书校验或更换账号绕过问题。",
@@ -174,7 +174,7 @@ const resolutions: Record<string, Omit<RuntimeFailureResolution, "code">> = {
   TIMEOUT: {
     title: "运行达到时限",
     message:
-      "本轮达到执行或等待时限，现有修改与日志已保留，尚不能据此判定代码修复失败。",
+      "运行已超时，现有修改与日志已保留。",
     steps: [
       "查看最后一条执行记录，确认工具是在等待网络、授权、长时间命令还是模型响应。",
       "处理对应阻塞，必要时调整该步骤的时限，再继续原任务。",
@@ -182,7 +182,7 @@ const resolutions: Record<string, Omit<RuntimeFailureResolution, "code">> = {
   },
   NATIVE_RUN_FAILED: {
     title: "工具运行异常，原因待确认",
-    message: "命令行工具未正常完成，当前证据不足以判定模型修改失败。",
+    message: "执行工具异常退出，原因待确认。",
     steps: [
       "查看本轮执行记录中的第一条错误、退出码及实际 CLI 路径。",
       "先确认工具可启动、登录有效且模型可访问；处理具体原因后继续原任务。",
@@ -191,15 +191,15 @@ const resolutions: Record<string, Omit<RuntimeFailureResolution, "code">> = {
   EXECUTION_FAILED: {
     title: "工具运行异常，原因待确认",
     message:
-      "执行工具未给出有效结果，需要先核对运行错误，尚不能判定模型修改失败。",
+      "执行工具未能完成任务，请查看错误记录并处理。",
     steps: [
       "查看本轮第一条错误、退出码、工具路径及登录状态。",
-      "处理已确认的运行问题后继续；原因不明时保留日志供排查，不重复消耗模型整改次数。",
+      "处理运行问题后继续；原因不明时保留日志供排查。",
     ],
   },
   INTERNAL_FAILURE: {
     title: "平台运行异常",
-    message: "DevFlow 在运行过程中发生未分类异常，不能据此判定模型修改失败。",
+    message: "DevFlow 运行异常，当前任务已暂停。",
     steps: [
       "查看本轮原始错误及平台日志，核对配置、工具入口和运行环境。",
       "处理确认的原因后继续原任务；现有计划与工作区保留。",
