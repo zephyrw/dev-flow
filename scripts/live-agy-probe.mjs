@@ -20,7 +20,11 @@ const args = [
   "-p",
   `This is an authorized DevFlow integration test. Do not call any tools or read any files. Reply exactly: ${marker}`,
 ];
-const child = spawn("C:/Users/yckj4798/AppData/Local/agy/bin/agy.exe", args, {
+const defaultAgy = process.env.LOCALAPPDATA
+  ? join(process.env.LOCALAPPDATA, "agy", "bin", "agy.exe")
+  : "agy";
+const executable = process.env.AGY_EXECUTABLE ?? defaultAgy;
+const child = spawn(executable, args, {
   cwd: root,
   windowsHide: true,
   stdio: ["ignore", "pipe", "pipe"],

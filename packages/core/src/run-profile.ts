@@ -75,7 +75,6 @@ type PlannerTakeoverRecord = {
 
 const PLANNER_RUN_PURPOSES = new Set([
   "planning",
-  "quality_review",
   "planner_takeover",
   "planner_commit",
   "aside",

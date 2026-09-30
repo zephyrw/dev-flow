@@ -1,4 +1,9 @@
-﻿[CmdletBinding()]
+﻿# DevFlow 开发者源码安装入口（非普通用户首页入口）。
+# 普通用户请使用已发布的一行安装（见 README / docs/guide/安装与升级.md）。
+# 本脚本仅从源码树安装/同步开发环境；维护锁与 runtime 的 maintenance-state.json
+# 协同，避免更新期间旧启动器误判。FileShare.None 是 Windows 专用句柄互斥，
+# 不得假设其它平台有同等语义（POSIX 依赖 maintenance-state.json + 过期恢复）。
+[CmdletBinding()]
 param(
   [string]$PlannerTool,
   [string]$PlannerModel,
@@ -8,6 +13,7 @@ param(
   [string]$ExecutorEffort
 )
 $ErrorActionPreference = 'Stop'
+Write-Host '[开发者源码安装] 从本仓库源码安装/同步 DevFlow（普通用户请使用发布版一行安装）'
 $devflowRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 Set-Location -LiteralPath $devflowRoot
 if (!(Get-Command pnpm.cmd -ErrorAction SilentlyContinue)) {
@@ -27,8 +33,22 @@ try {
 $stateRoot = if ([IO.Path]::IsPathRooted($configured)) { [IO.Path]::GetFullPath($configured) } else { [IO.Path]::GetFullPath((Join-Path $devflowRoot $configured)) }
 New-Item -ItemType Directory -Path $stateRoot -Force | Out-Null
 $maintenancePath = Join-Path $stateRoot 'maintenance.lock'
+$maintenanceStatePath = Join-Path $stateRoot 'maintenance-state.json'
 $startupPath = Join-Path $stateRoot 'startup-lock.json'
+# Windows-only exclusive handle (FileShare.None). Cross-platform identity lives
+# in maintenance-state.json (see packages/installer/src/transaction.ts).
 $maintenance = [IO.File]::Open($maintenancePath, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+$maintenanceTxId = [guid]::NewGuid().ToString('N')
+$markerJson = @{
+  transaction_id = $maintenanceTxId
+  kind = 'install'
+  phase = 'requested'
+  created_at = (Get-Date).ToUniversalTime().ToString('o')
+  updated_at = (Get-Date).ToUniversalTime().ToString('o')
+  expires_at = ([DateTimeOffset]::UtcNow.AddMinutes(30)).ToString('o')
+  block_new_dispatch = $true
+} | ConvertTo-Json -Compress
+[IO.File]::WriteAllText($maintenanceStatePath, $markerJson)
 $ownsStartup = $false
 try {
   # Drain an in-flight launch before stopping; hold the same start lock during update.
@@ -70,4 +90,5 @@ try {
   if ($ownsStartup) { Remove-Item -LiteralPath $startupPath -ErrorAction SilentlyContinue }
   $maintenance.Dispose()
   Remove-Item -LiteralPath $maintenancePath -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $maintenanceStatePath -ErrorAction SilentlyContinue
 }

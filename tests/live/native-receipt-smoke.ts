@@ -52,9 +52,13 @@ const prompt =
   "This is an isolated native-tool integration fixture, already prepared. Work only inside " +
   root +
   ". Use your native run_command terminal tool to run exactly: node --test --test-reporter=junit --test-reporter-destination=.reports/unit.xml test.cjs . Set Cwd to the fixture directory. If asynchronous, use command_status until completed. Do not edit any files or access another project. Do not use DevFlow MCP, do not plan a project. After the one test command, report its actual exit code and stop.";
+const defaultAgy = process.env.LOCALAPPDATA
+  ? join(process.env.LOCALAPPDATA, "agy", "bin", "agy.exe")
+  : "agy";
+const executable = process.env.AGY_EXECUTABLE ?? defaultAgy;
 const proc = manager.start({
   id: "native-live-" + Date.now(),
-  executable: "C:/Users/yckj4798/AppData/Local/agy/bin/agy.exe",
+  executable,
   args: agyArguments("gemini-3.7-flash-high", prompt, 3,resumeConversation),
   cwd: root,
   env: {},

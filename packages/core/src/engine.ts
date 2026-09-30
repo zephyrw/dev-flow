@@ -12,6 +12,7 @@ import { bindProfile, buildDispatchContext, isLegacyProtocol, latestSpec, readEf
 import { createWorkflowSpec } from "./create-workflow.js";
 import type { DispatchContext } from "../../contracts/src/model-routing.js";
 import { bindRepairAssignment, closeOpenRepairBatches } from "./repair-model-service.js";
+import { readMaintenanceMarker } from "../../installer/src/transaction.js";
 import { QualityCoordinator } from "./quality-coordinator.js";
 import { DocumentService } from "./document-service.js";
 import {
@@ -254,6 +255,7 @@ export class Engine {
     return new QualityCoordinator(this.store);
   }
   runtime?: Runtime;
+  maintenanceBlocked: boolean = false;
   pauseTree?: (
     workflowId: string,
     request: ConversationControlRequest,
@@ -266,6 +268,12 @@ export class Engine {
   private clearNetworkRetryTimer(key: string) {
     clearTimeout(this.networkRetryTimers.get(key));
     this.networkRetryTimers.delete(key);
+  }
+  hasActiveRuns(): boolean {
+    return this.running.size > 0;
+  }
+  getActiveWorkflowIds(): string[] {
+    return Array.from(this.running);
   }
   async waitForIdle(key: string) {
     const deadline = Date.now() + 30000;
@@ -3287,7 +3295,7 @@ export class Engine {
   }
 
   async dispatch() {
-    if (this.dispatching || !this.runtime) return;
+    if (this.maintenanceBlocked || readMaintenanceMarker(this.config.storage_root)?.block_new_dispatch || this.dispatching || !this.runtime) return;
     this.dispatching = true;
     try {
       await this.consumeOutbox();

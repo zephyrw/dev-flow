@@ -11,7 +11,7 @@
   "scripts": {
     "dev": "tsx watch apps/api/src/main.ts",
     "dev:web": "vite --config apps/web/vite.config.ts",
-    "build": "tsc -p tsconfig.build.json && vite build --config apps/web/vite.config.ts",
+    "build": "tsc -p tsconfig.build.json && vite build --config apps/web/vite.config.ts && node scripts/build-resources.mjs",
     "typecheck": "tsc --noEmit",
     "start": "node dist/apps/api/src/main.js",
     "cli": "tsx packages/cli/src/main.ts",
@@ -23,10 +23,13 @@
     "test:live:resume-stop": "tsx tests/live/agy-resume-stop.ts",
     "test:live:opentabs": "tsx tests/live/browser-gateway.ts",
     "schemas": "tsx scripts/export-schemas.ts",
-    "check": "pnpm run typecheck && pnpm test && pnpm run build",
+    "check": "pnpm run typecheck && pnpm run build && pnpm test",
     "start:accounts": "node dist/apps/api/src/accounts-main.js",
     "open:accounts": "node dist/packages/service/src/open.js --accounts",
-    "open": "node dist/packages/service/src/open.js"
+    "open": "node dist/packages/service/src/open.js",
+    "release:build": "node scripts/release/build-release.mjs",
+    "release:verify": "node scripts/release/verify-release.mjs",
+    "release:assemble": "node scripts/release/assemble-release.mjs"
   },
   "dependencies": {
     "@fastify/static": "10.1.3",

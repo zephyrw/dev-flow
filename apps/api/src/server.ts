@@ -120,15 +120,27 @@ export async function buildServer(
     webRoot?: string;
     accountService?: AgyAccountService;
     developmentFrontendOrigin?: string;
+    onMaintenancePrepare?: (body: {
+      transaction_id?: string;
+      target_version?: string;
+    }) => Promise<void> | void;
+    onMaintenanceShutdown?: () => Promise<void>;
+    onMaintenanceQuiesce?: (mode: "wait" | "pause-and-update") => Promise<void>;
   } = {},
 ) {
   const { app, humanCheck: human } = createBaseServer({
     get port() { return engine.config.server.port; },
     humanOrigin: engine.config.server.human_origin,
     developmentFrontendOrigin: options.developmentFrontendOrigin,
-    mode: "full", storageInstance: engine.config.storage_root, registerStatic: false,
+    mode: "full",
+    storageInstance: engine.config.storage_root,
+    storageRoot: engine.config.storage_root,
+    registerStatic: false,
     errorRetryable: modelErrorRetryable,
     writeContentTypeAllowed,
+    onMaintenancePrepare: options.onMaintenancePrepare,
+    onMaintenanceQuiesce: options.onMaintenanceQuiesce,
+    onMaintenanceShutdown: options.onMaintenanceShutdown,
   });
   await app.register(websocket, { options: { maxPayload: 65536 } });
   app.get("/api/projects", async (req) => {

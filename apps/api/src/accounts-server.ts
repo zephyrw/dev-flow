@@ -8,6 +8,7 @@ export interface AccountsServerOptions {
   humanOrigin: string;
   webRoot?: string;
   storageInstance?: string;
+  onMaintenanceShutdown?: () => Promise<void>;
 }
 
 export function buildAccountsServer(
@@ -24,6 +25,7 @@ export function buildAccountsServer(
     },
     webRoot: options.webRoot,
     storageInstance: options.storageInstance,
+    onMaintenanceShutdown: options.onMaintenanceShutdown,
   });
 
   registerAgyAccountRoutes(app, accountService, humanCheck);

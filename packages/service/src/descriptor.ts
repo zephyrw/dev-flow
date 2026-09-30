@@ -1,31 +1,28 @@
-import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { atomicWrite } from "../../core/src/util.js";
-export function recordController(storage: string, entry: string, mode: "full" | "accounts" = "full") {
-  if (process.platform !== "win32") return;
-  const started = execFileSync(
-    "powershell.exe",
-    [
-      "-NoProfile",
-      "-NonInteractive",
-      "-Command",
-      "(Get-Process -Id ([int]$env:DEVFLOW_DESCRIPTOR_PID)).StartTime.ToUniversalTime().ToString('o')",
-    ],
-    {
-      env: { ...process.env, DEVFLOW_DESCRIPTOR_PID: String(process.pid) },
-      windowsHide: true,
-      encoding: "utf8",
-      timeout: 30000,
-    },
-  ).trim();
+import { getNativeAsync } from "../../process/src/native/index.js";
+
+export async function recordController(
+  storage: string,
+  entry: string,
+  mode: "full" | "accounts" = "full",
+) {
+  const native = await getNativeAsync();
+  const creation = native.getProcessCreationTime(process.pid);
+  if (creation == null) throw new Error("CONTROLLER_IDENTITY_UNAVAILABLE");
   atomicWrite(
     join(storage, "controller-process.json"),
-    JSON.stringify({
-      pid: process.pid,
-      started,
-      executable: process.execPath,
-      entry,
-      mode,
-    }),
+    JSON.stringify(
+      {
+        pid: process.pid,
+        started: String(creation),
+        executable: process.execPath,
+        entry,
+        mode,
+        protocol: "node-v1",
+      },
+      null,
+      2,
+    ),
   );
 }

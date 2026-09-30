@@ -19,7 +19,10 @@ mkdirSync(output, { recursive: true });
 const first = JSON.parse(readFileSync(join(directory, "summary.json"), "utf8"));
 const manager = new ProcessManager(),
   model = "gemini-3.7-flash-high";
-const executable = "C:/Users/yckj4798/AppData/Local/agy/bin/agy.exe";
+const defaultAgy = process.env.LOCALAPPDATA
+  ? join(process.env.LOCALAPPDATA, "agy", "bin", "agy.exe")
+  : "agy";
+const executable = process.env.AGY_EXECUTABLE ?? defaultAgy;
 try {
   const proc = manager.start({
     id: "resume-" + crypto.randomUUID(),
