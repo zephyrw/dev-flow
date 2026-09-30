@@ -79,6 +79,7 @@ export function accountFixture(store: Store) {
       vault.delete(ref);
     },
   };
+  let customWindows: ((activeId: string) => any[]) | null = null;
   const windows = (weekly: number) => {
     const observedAt = new Date().toISOString();
     return [
@@ -108,7 +109,7 @@ export function accountFixture(store: Store) {
     }),
     probeUsage: async () => {
       calls++;
-      const observed = windows(active === "b" ? 0.9 : 0.5);
+      const observed = customWindows ? customWindows(active) : windows(active === "b" ? 0.9 : 0.5);
       return {
         email: `${active}@example.com`,
         cli_version: "2.0.0",
@@ -195,5 +196,8 @@ export function accountFixture(store: Store) {
       external = value;
     },
     active: () => active,
+    setCustomWindows: (fn: ((activeId: string) => any[]) | null) => {
+      customWindows = fn;
+    },
   };
 }

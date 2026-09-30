@@ -7,6 +7,7 @@ import { Store } from "../../packages/store/src/store.js";
 import { buildAccountsServer } from "../../apps/api/src/accounts-server.js";
 import { hash } from "../../packages/core/src/util.js";
 import { accountFixture } from "../fixtures/agy-accounts/service-fixture.js";
+import { formatSnapshotQuotaWindow } from "../../packages/presentation/src/agy-accounts.js";
 
 describe("independent account server", () => {
   let root: string,
@@ -356,5 +357,318 @@ describe("independent account server", () => {
     expect(autoOff.statusCode).toBe(200);
     expect(autoOff.json().enabled).toBe(false);
   });
-});
 
+  it("AGY-WEEKLY-03: HTTP and presentation preserve an incomplete enrollment snapshot", async () => {
+    fixture.seedAccounts();
+    const realmId = "default-agy-realm";
+    const observedAt = new Date().toISOString();
+    const weekly = {
+      kind: "weekly" as const,
+      duration_minutes: 10080 as const,
+      remaining_fraction: 0.6,
+      reset_at: null,
+      observed_at: observedAt,
+      status: "observed" as const,
+    };
+    fixture.repository.saveQuotaSnapshot({
+      id: "snapshot-b-incomplete",
+      realm_id: realmId,
+      account_id: "b",
+      auth_epoch: 1,
+      pool_id: "fixture-pool",
+      model_ids: ["fixture-model"],
+      source: "official_cli_usage",
+      cli_version: "2.0.0",
+      parser_revision: 1,
+      observed_at: observedAt,
+      windows: [weekly],
+      capability_verified: false,
+    });
+    const account = fixture.repository.getAccount(realmId, "b")!;
+    fixture.repository.saveAccount({ ...account, state: "pending_quota" });
+
+    const response = await app.inject({ method: "GET", url: "/api/agy-accounts", headers });
+    expect(response.statusCode).toBe(200);
+    const view = response.json();
+    const snapshot = view.snapshots.find((s: any) => s.id === "snapshot-b-incomplete");
+    expect(snapshot).toMatchObject({ capability_verified: false, windows: [weekly] });
+    expect(formatSnapshotQuotaWindow(snapshot, "weekly", Date.now())).toMatchObject({
+      percentageText: "60%",
+      fraction: 0.6,
+      shortResetText: "",
+    });
+    expect(view.accounts.find((a: any) => a.id === "b")?.state).toBe("pending_quota");
+    expect(fixture.repository.listQuotaSnapshots(realmId, "b")[0]!.windows).toEqual([weekly]);
+  });
+
+  it("A08: 真实Store/Repository/Service/HTTP读取旧低值空时间或过期快照：公开视图100%，原始观测来源/时间不伪造，重开存储仍正确", async () => {
+    // 注入真实旧低值快照（无时间或已过期）
+    const realmId = "default-agy-realm";
+    const originalObservedAt = "2026-09-24T10:00:00.000Z";
+    fixture.repository.saveQuotaSnapshot({
+      id: "snap-old-b",
+      realm_id: realmId,
+      account_id: "b",
+      auth_epoch: 1,
+      pool_id: "default",
+      model_ids: ["fixture-model"],
+      source: "official_cli_usage",
+      cli_version: "1.2.7",
+      parser_revision: 1,
+      observed_at: originalObservedAt,
+      windows: [
+        {
+          kind: "weekly",
+          duration_minutes: 10080,
+          remaining_fraction: 0.6,
+          reset_at: null,
+          observed_at: originalObservedAt,
+          status: "observed",
+        },
+        {
+          kind: "five_hour",
+          duration_minutes: 300,
+          remaining_fraction: 0.7,
+          reset_at: "2026-09-24T15:00:00.000Z",
+          observed_at: originalObservedAt,
+          status: "observed",
+        },
+      ],
+      capability_verified: true,
+    });
+
+    // 1. 通过 HTTP API 请求公开视图
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/agy-accounts",
+      headers,
+    });
+    expect(res.statusCode).toBe(200);
+    const view = res.json();
+    const snapInView = view.snapshots.find((s: any) => s.id === "snap-old-b");
+    const weeklyInView = snapInView?.windows.find((w: any) => w.kind === "weekly");
+
+    // 公开视图应呈现为 100%，无倒计时
+    expect(weeklyInView?.remaining_fraction).toBe(1);
+    expect(weeklyInView?.reset_at).toBeNull();
+    // 原始元数据不伪造
+    expect(snapInView?.source).toBe("official_cli_usage");
+    expect(snapInView?.observed_at).toBe(originalObservedAt);
+
+    // 2. 检查底层 SQLite Store，数据库中的原始观测快照未被直接更新篡改
+    const dbSnapshots = fixture.repository.listQuotaSnapshots(realmId);
+    const rawSnap = dbSnapshots.find((s) => s.id === "snap-old-b");
+    const rawWeekly = rawSnap?.windows.find((w) => w.kind === "weekly");
+    expect(rawWeekly?.remaining_fraction).toBe(0.6);
+    expect(rawWeekly?.reset_at).toBeNull();
+
+    // 3. 检查底层 SQLite Store 表 agy_quota，数据真实落盘且未受篡改
+    const storeRecord = store.get<any>("agy_quota", "b:default");
+    expect(storeRecord?.windows.find((w: any) => w.kind === "weekly")?.remaining_fraction).toBe(0.6);
+    expect(storeRecord?.windows.find((w: any) => w.kind === "weekly")?.reset_at).toBeNull();
+  });
+
+  it("A09: AGY运行且仅刷新当前账号：非当前账号仍恢复100%，不新增探测、凭证捕获、切换或重启", async () => {
+    const realmId = "default-agy-realm";
+    // 当前活动账号为 a
+    expect(fixture.active()).toBe("a");
+    const beforeProbes = fixture.probeCalls();
+
+    // 为非活动账号 c 保存旧周额度（69% 且无重置时间）
+    fixture.repository.saveQuotaSnapshot({
+      id: "snap-c-unprobed",
+      realm_id: realmId,
+      account_id: "c",
+      auth_epoch: 1,
+      pool_id: "default",
+      model_ids: ["fixture-model"],
+      source: "official_cli_usage",
+      cli_version: "1.2.7",
+      parser_revision: 1,
+      observed_at: "2026-09-24T08:00:00.000Z",
+      windows: [
+        {
+          kind: "weekly",
+          duration_minutes: 10080,
+          remaining_fraction: 0.69,
+          reset_at: null,
+          observed_at: "2026-09-24T08:00:00.000Z",
+          status: "observed",
+        },
+        {
+          kind: "five_hour",
+          duration_minutes: 300,
+          remaining_fraction: 0.8,
+          reset_at: null,
+          observed_at: "2026-09-24T08:00:00.000Z",
+          status: "observed",
+        },
+      ],
+      capability_verified: true,
+    });
+
+    // 读取公开视图
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/agy-accounts",
+      headers,
+    });
+    expect(res.statusCode).toBe(200);
+    const view = res.json();
+    const snapC = view.snapshots.find((s: any) => s.id === "snap-c-unprobed");
+    const weeklyC = snapC?.windows.find((w: any) => w.kind === "weekly");
+
+    // 非活动账号 c 在未被重新探测的情况下，依然即时在公开视图恢复 100%
+    expect(weeklyC?.remaining_fraction).toBe(1);
+    expect(weeklyC?.reset_at).toBeNull();
+
+    // 探测次数未因查询而增加，活动账号未改变
+    expect(fixture.probeCalls()).toBe(beforeProbes);
+    expect(fixture.active()).toBe("a");
+  });
+
+  it("A10: 新周期较低额度及未来时间保存/重读后显示新值，旧满额推导不覆盖", async () => {
+    const realmId = "default-agy-realm";
+    const futureReset = new Date(Date.now() + 5 * 86400 * 1000).toISOString();
+
+    // 账号进入新周期，CLI 探测到新的较低额度（45%）且有未来重置时间
+    fixture.repository.saveQuotaSnapshot({
+      id: "snap-new-cycle-b",
+      realm_id: realmId,
+      account_id: "b",
+      auth_epoch: 2,
+      pool_id: "default",
+      model_ids: ["fixture-model"],
+      source: "official_cli_usage",
+      cli_version: "1.2.7",
+      parser_revision: 1,
+      observed_at: new Date().toISOString(),
+      windows: [
+        {
+          kind: "weekly",
+          duration_minutes: 10080,
+          remaining_fraction: 0.45,
+          reset_at: futureReset,
+          observed_at: new Date().toISOString(),
+          status: "observed",
+        },
+        {
+          kind: "five_hour",
+          duration_minutes: 300,
+          remaining_fraction: 0.8,
+          reset_at: null,
+          observed_at: new Date().toISOString(),
+          status: "observed",
+        },
+      ],
+      capability_verified: true,
+    });
+
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/agy-accounts",
+      headers,
+    });
+    expect(res.statusCode).toBe(200);
+    const view = res.json();
+    const snapB = view.snapshots.find((s: any) => s.id === "snap-new-cycle-b");
+    const weeklyB = snapB?.windows.find((w: any) => w.kind === "weekly");
+
+    // 新快照有未来时间，必须显示实际观测值 45% 与倒计时，不能被旧 100% 满额推导覆盖
+    expect(weeklyB?.remaining_fraction).toBe(0.45);
+    expect(weeklyB?.reset_at).toBe(futureReset);
+  });
+
+  it("A11: 不同账号/模型池：仅对应窗口恢复，API与页面有效值一致，池选择及身份字段保持正确", async () => {
+    fixture.seedAccounts();
+    const realmId = "default-agy-realm";
+    const futureReset = new Date(Date.now() + 3 * 86400 * 1000).toISOString();
+
+    // 保存多池快照
+    fixture.repository.saveQuotaSnapshot({
+      id: "snap-gemini-pool",
+      realm_id: realmId,
+      account_id: "a",
+      auth_epoch: 1,
+      pool_id: "Gemini Models",
+      model_ids: ["gemini-pro"],
+      source: "official_cli_usage",
+      cli_version: "1.2.7",
+      parser_revision: 1,
+      observed_at: "2026-09-24T12:00:00.000Z",
+      windows: [
+        {
+          kind: "weekly",
+          duration_minutes: 10080,
+          remaining_fraction: 0.6,
+          reset_at: null, // 无重置时间 -> 应恢复为 100%
+          observed_at: "2026-09-24T12:00:00.000Z",
+          status: "observed",
+        },
+        {
+          kind: "five_hour",
+          duration_minutes: 300,
+          remaining_fraction: 0.7,
+          reset_at: null,
+          observed_at: "2026-09-24T12:00:00.000Z",
+          status: "observed",
+        },
+      ],
+      capability_verified: true,
+    });
+
+    fixture.repository.saveQuotaSnapshot({
+      id: "snap-claude-pool",
+      realm_id: realmId,
+      account_id: "a",
+      auth_epoch: 1,
+      pool_id: "Claude and GPT models",
+      model_ids: ["claude-3-5-sonnet"],
+      source: "official_cli_usage",
+      cli_version: "1.2.7",
+      parser_revision: 1,
+      observed_at: "2026-09-24T12:00:00.000Z",
+      windows: [
+        {
+          kind: "weekly",
+          duration_minutes: 10080,
+          remaining_fraction: 0.4,
+          reset_at: futureReset, // 未来时间 -> 保持 40%
+          observed_at: "2026-09-24T12:00:00.000Z",
+          status: "observed",
+        },
+        {
+          kind: "five_hour",
+          duration_minutes: 300,
+          remaining_fraction: 0.6,
+          reset_at: null,
+          observed_at: "2026-09-24T12:00:00.000Z",
+          status: "observed",
+        },
+      ],
+      capability_verified: true,
+    });
+
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/agy-accounts",
+      headers,
+    });
+    expect(res.statusCode).toBe(200);
+    const view = res.json();
+
+    const geminiSnap = view.snapshots.find((s: any) => s.id === "snap-gemini-pool");
+    const claudeSnap = view.snapshots.find((s: any) => s.id === "snap-claude-pool");
+
+    // 仅无重置时间的 Gemini Models 池恢复为 100%
+    expect(geminiSnap?.windows.find((w: any) => w.kind === "weekly")?.remaining_fraction).toBe(1);
+    expect(geminiSnap?.windows.find((w: any) => w.kind === "weekly")?.reset_at).toBeNull();
+
+    // 拥有未来重置时间的 Claude and GPT models 池仍为 40%
+    expect(claudeSnap?.windows.find((w: any) => w.kind === "weekly")?.remaining_fraction).toBe(0.4);
+    expect(claudeSnap?.windows.find((w: any) => w.kind === "weekly")?.reset_at).toBe(futureReset);
+
+    // 账号身份和池信息完整正确，未发生串值
+    expect(view.accounts.find((a: any) => a.id === "a")?.identity.email).toBe("a@example.com");
+  });
+});

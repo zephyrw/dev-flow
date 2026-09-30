@@ -117,22 +117,32 @@ function shouldDropUnstartedReset(
       const rawResetStr = tableMatch[4]?.trim();
       const kind: WindowKind =
         kindStr === "Weekly Limit Remaining" ? "weekly" : "five_hour";
-      const remaining = pctStr.endsWith("%") ? Number(pctStr.slice(0, -1)) / 100 : NaN;
+      const pctNumStr = pctStr.endsWith("%") ? pctStr.slice(0, -1).trim() : null;
+      const isValidPctFormat = pctNumStr !== null && pctNumStr.length > 0 && /^\d+(?:\.\d+)?$/.test(pctNumStr);
+      const remaining = isValidPctFormat ? Number(pctNumStr) / 100 : NaN;
       const validRemaining =
         Number.isFinite(remaining) && remaining >= 0 && remaining <= 1 ? remaining : null;
 
       let resetAt: string | null = null;
-      if (
-        rawResetStr &&
-        !["-", "—", "none", "n/a", "null", "unknown"].includes(
-          rawResetStr.toLowerCase(),
-        )
-      ) {
-        resetAt = parseRelativeResetToIso(rawResetStr, Date.parse(observedAt));
+      let hasInvalidReset = false;
+      if (rawResetStr) {
+        const lower = rawResetStr.toLowerCase();
+        if (["-", "—", "none", "n/a", "null"].includes(lower)) {
+          resetAt = null;
+        } else if (lower === "unknown") {
+          hasInvalidReset = true;
+        } else {
+          resetAt = parseRelativeResetToIso(rawResetStr, Date.parse(observedAt));
+          if (!resetAt) {
+            hasInvalidReset = true;
+          }
+        }
       }
 
+      const finalRemaining = hasInvalidReset ? null : validRemaining;
+
       // 如果额度为 100% 且重置时间未启动，则没有重置时间
-      if (shouldDropUnstartedReset(validRemaining, resetAt, observedAt, kind)) {
+      if (shouldDropUnstartedReset(finalRemaining, resetAt, observedAt, kind)) {
         resetAt = null;
       }
 
@@ -140,7 +150,7 @@ function shouldDropUnstartedReset(
         poolName,
         kind,
         resetAt,
-        remaining: validRemaining,
+        remaining: finalRemaining,
       });
     }
   }
@@ -205,31 +215,71 @@ function shouldDropUnstartedReset(
         );
         const match = values.length === 1 ? quotaPattern.exec(values[0]!) : null;
         const remaining = match ? Number(match[1]) / 100 : null;
+        const inlineReset = match?.[2]?.trim();
         const resets = lines.filter((line) =>
           line.startsWith(label + " resets "),
         );
-        const separateReset =
-          resets.length === 1
-            ? new RegExp("^" + label + " resets (?:in|at):? (.+)$").exec(
-                resets[0]!,
-              )?.[1]
-            : undefined;
-        const resetValue = match?.[2] ?? separateReset;
-        const valid =
+        let separateReset: string | undefined;
+        let hasInvalidReset = false;
+        let hasConflict = false;
+
+        if (resets.length > 1) {
+          hasConflict = true;
+        } else if (resets.length === 1) {
+          const sepMatch = new RegExp("^" + label + " resets (?:in|at):?\\s*(.+)$").exec(resets[0]!);
+          if (!sepMatch || !sepMatch[1]) {
+            hasInvalidReset = true;
+          } else {
+            separateReset = sepMatch[1].trim();
+          }
+        }
+
+        const resolveResetVal = (val: string | undefined): { isSpecified: boolean; resetAt: string | null; invalid: boolean } => {
+          if (!val) return { isSpecified: false, resetAt: null, invalid: false };
+          const lower = val.toLowerCase();
+          if (["-", "—", "none", "n/a", "null"].includes(lower)) {
+            return { isSpecified: true, resetAt: null, invalid: false };
+          }
+          if (lower === "unknown") {
+            return { isSpecified: true, resetAt: null, invalid: true };
+          }
+          const parsed = parseRelativeResetToIso(val, Date.parse(observedAt));
+          if (!parsed) {
+            return { isSpecified: true, resetAt: null, invalid: true };
+          }
+          return { isSpecified: true, resetAt: parsed, invalid: false };
+        };
+
+        const inlineRes = resolveResetVal(inlineReset);
+        const sepRes = resolveResetVal(separateReset);
+
+        if (inlineRes.invalid || sepRes.invalid) {
+          hasInvalidReset = true;
+        }
+
+        let resetAt: string | null = null;
+        if (inlineRes.isSpecified && sepRes.isSpecified) {
+          if (inlineRes.resetAt !== sepRes.resetAt) {
+            hasConflict = true;
+          } else {
+            resetAt = inlineRes.resetAt;
+          }
+        } else if (inlineRes.isSpecified) {
+          resetAt = inlineRes.resetAt;
+        } else if (sepRes.isSpecified) {
+          resetAt = sepRes.resetAt;
+        } else {
+          resetAt = null;
+        }
+
+        let valid =
+          !hasInvalidReset &&
+          !hasConflict &&
           remaining !== null &&
           Number.isFinite(remaining) &&
           remaining >= 0 &&
           remaining <= 1;
-        let resetAt: string | null = null;
-        if (
-          resetValue &&
-          resets.length <= 1 &&
-          !["-", "—", "none", "n/a", "null", "unknown"].includes(
-            resetValue.trim().toLowerCase(),
-          )
-        ) {
-          resetAt = parseRelativeResetToIso(resetValue, Date.parse(observedAt));
-        }
+
         if (shouldDropUnstartedReset(valid ? remaining : null, resetAt, observedAt, kind)) {
           resetAt = null;
         }

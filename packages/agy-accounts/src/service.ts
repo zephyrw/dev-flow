@@ -1,4 +1,4 @@
-import { hasAccountIdentityMismatch, hasDualQuotaWindows, modelCovered } from "./quota.js";
+import { hasAccountIdentityMismatch, hasDualQuotaWindows, modelCovered, resolveEffectiveQuotaWindows } from "./quota.js";
 import { randomUUID, createHash } from "node:crypto";
 import { z } from "zod";
 import {
@@ -489,11 +489,18 @@ export class AgyAccountService {
       realm = this.repository.getRealm(realmId);
     const storedAccounts = this.repository.listAccounts(realmId);
     const mismatchedIds = new Set(storedAccounts.filter(hasAccountIdentityMismatch).map(a => a.id));
+    const nowMs = this.clock.now();
     const accounts = storedAccounts.map(a => mismatchedIds.has(a.id)
       ? { ...a, state: "reauth_required" as const } : a),
-      snapshots = this.repository.listQuotaSnapshots(realmId).filter(s => !mismatchedIds.has(s.account_id));
+      rawSnapshots = this.repository.listQuotaSnapshots(realmId).filter(s => !mismatchedIds.has(s.account_id));
+    const snapshots = rawSnapshots.map(s => ({
+      ...s,
+      windows: s.capability_verified !== false
+        ? resolveEffectiveQuotaWindows(s.windows, nowMs)
+        : s.windows,
+    }));
     const pools = ["global"];
-    const selection = selectCandidates(accounts, snapshots, pools, this.clock.now(), {
+    const selection = selectCandidates(accounts, rawSnapshots, pools, nowMs, {
       required_model_ids: settings.standalone_model_id ? [settings.standalone_model_id] : [],
       reset_clock_skew_seconds: settings.reset_clock_skew_seconds,
     });

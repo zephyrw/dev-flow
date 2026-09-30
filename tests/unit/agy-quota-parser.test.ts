@@ -64,4 +64,88 @@ describe("labelled synthetic usage format (not a verified production capability)
     expect(claudeFiveHour?.remaining_fraction).toBe(1);
     expect(claudeFiveHour?.reset_at).toBeNull();
   });
+
+  it("A05: 真实表格与兼容文本：明确无时间可恢复；非法时间、unknown、重复冲突及不完整窗口不能成为有效满额", () => {
+    const observedAt = "2026-09-24T13:00:00.000Z";
+
+    // 1. 真实表格：明确无时间（无第4列或带有'-'）
+    const tableNoReset = [
+      "Gemini Models\tWeekly Limit Remaining\t60%",
+      "Gemini Models\tFive Hour Limit Remaining\t80%\t2026-09-24T17:00:00Z",
+    ].join("\n");
+    const parsedTable = parseAgyUsageOutput(tableNoReset, { observedAt });
+    const pool = parsedTable.pools.find((p) => p.pool_id === "Gemini Models");
+    const wWeekly = pool?.windows.find((w) => w.kind === "weekly");
+    expect(wWeekly).toMatchObject({
+      status: "observed",
+      remaining_fraction: 0.6,
+      reset_at: null,
+    });
+
+    // 2. 兼容文本：明确无时间（仅有 quota 声明，无 resets 声明）
+    const textNoReset = [
+      "Weekly quota: 69% remaining",
+      "5-Hour quota: 70% remaining",
+      "5-Hour resets in: 2h",
+    ].join("\n");
+    const parsedText = parseAgyUsageOutput(textNoReset, { observedAt });
+    expect(parsedText.windows[0]).toMatchObject({
+      status: "observed",
+      remaining_fraction: 0.69,
+      reset_at: null,
+    });
+
+    // 3. 表格与文本中的 unknown 或非法时间：不能折叠成合法无时间，必须标记为 missing
+    const tableUnknown = [
+      "Gemini Models\tWeekly Limit Remaining\t60%\tunknown",
+      "Gemini Models\tFive Hour Limit Remaining\t80%\t2026-09-24T17:00:00Z",
+    ].join("\n");
+    const parsedUnknown = parseAgyUsageOutput(tableUnknown, { observedAt });
+    const pUnknown = parsedUnknown.pools.find((p) => p.pool_id === "Gemini Models");
+    expect(pUnknown?.windows.find((w) => w.kind === "weekly")?.status).toBe("missing");
+
+    const textInvalid = [
+      "Weekly quota: 60% remaining, resets in: garbage-time",
+      "5-Hour quota: 70% remaining",
+    ].join("\n");
+    const parsedInvalid = parseAgyUsageOutput(textInvalid, { observedAt });
+    expect(parsedInvalid.windows[0]?.status).toBe("missing");
+
+    // 4. 重复冲突行：不能成为有效满额
+    const tableConflict = [
+      "Gemini Models\tWeekly Limit Remaining\t60%",
+      "Gemini Models\tWeekly Limit Remaining\t80%",
+      "Gemini Models\tFive Hour Limit Remaining\t80%\t2026-09-24T17:00:00Z",
+    ].join("\n");
+    const parsedConflict = parseAgyUsageOutput(tableConflict, { observedAt });
+    const pConflict = parsedConflict.pools.find((p) => p.pool_id === "Gemini Models");
+    expect(pConflict?.windows.every((w) => w.status === "missing")).toBe(true);
+
+    // 5. AGY-WEEKLY-02: 完整表格中周额度为裸百分号“%”，不能被转换为0，必须标记为missing
+    const tableBarePercent = [
+      "Gemini Models\tWeekly Limit Remaining\t%",
+      "Gemini Models\tFive Hour Limit Remaining\t80%\t2026-09-24T17:00:00Z",
+    ].join("\n");
+    const parsedBarePct = parseAgyUsageOutput(tableBarePercent, { observedAt });
+    const pBarePct = parsedBarePct.pools.find((p) => p.pool_id === "Gemini Models");
+    expect(pBarePct?.windows.find((w) => w.kind === "weekly")?.status).toBe("missing");
+    expect(pBarePct?.windows.find((w) => w.kind === "weekly")?.remaining_fraction).toBeNull();
+
+    // 6. AGY-WEEKLY-01: 兼容文本内联与单独来源冲突，或格式非法的单独重置行，必须保持missing
+    const textConflictSources = [
+      "Weekly quota: 60% remaining, resets at: -",
+      "Weekly resets in: 2d",
+      "5-Hour quota: 70% remaining",
+    ].join("\n");
+    const parsedConflictSources = parseAgyUsageOutput(textConflictSources, { observedAt });
+    expect(parsedConflictSources.windows[0]?.status).toBe("missing");
+
+    const textInvalidSeparate = [
+      "Weekly quota: 60% remaining",
+      "Weekly resets invalid-format-without-prefix",
+      "5-Hour quota: 70% remaining",
+    ].join("\n");
+    const parsedInvalidSep = parseAgyUsageOutput(textInvalidSeparate, { observedAt });
+    expect(parsedInvalidSep.windows[0]?.status).toBe("missing");
+  });
 });

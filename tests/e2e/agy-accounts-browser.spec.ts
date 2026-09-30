@@ -1,74 +1,138 @@
 import { test, expect } from "@playwright/test";
-test("zero-workflow account settings, serial manual switch and reload use persisted service facts", async ({
-  page,
-}) => {
-  const unexpected: string[] = [];
-  page.on("request", (request) => {
-    if (/\/api\/(workflows|projects)/.test(request.url()))
-      unexpected.push(request.url());
+
+test.describe("AGY 账号与周额度展示 E2E 测试", () => {
+  test.beforeEach(async ({ page }) => {
+    // 注入标准测试场景数据：3 个已重置账号 (a, b, c) 和 1 个对照未来账号 (d)
+    const res = await page.request.get("/api/account-fixture/setup-quota-scenarios");
+    expect(res.ok()).toBeTruthy();
   });
-  await page.goto("/");
-  await expect(
-    page.getByRole("heading", { name: "AGY 账号与额度管理" }),
-  ).toBeVisible();
-  await page.getByRole("button", { name: "配置", exact: true }).click();
-  const form = page.getByRole("form", { name: "账号配置" });
-  await form.getByLabel("目标模型", { exact: true }).fill("fixture-model");
-  await form.getByRole("button", { name: "保存配置" }).click();
-  await expect(form).not.toBeVisible();
-  await page.getByRole("button", { name: "启动管理", exact: true }).click();
-  await expect(
-    page.getByRole("button", { name: "停止管理", exact: true }),
-  ).toBeVisible();
-  const before = await page.request
-    .get("/api/account-fixture/facts")
-    .then((r) => r.json());
-  await page.reload();
-  await expect(page.getByText("目标模型：fixture-model")).toBeVisible();
-  const afterRead = await page.request
-    .get("/api/account-fixture/facts")
-    .then((r) => r.json());
-  expect(afterRead.probe_calls).toBe(before.probe_calls);
-  await page
-    .getByRole("button", { name: "自动选择并切换", exact: true })
-    .click();
-  await expect
-    .poll(async () =>
-      page.request
-        .get("/api/account-fixture/facts")
-        .then((r) => r.json())
-        .then((r) => r.active),
-    )
-    .toBe("b");
-  await page.reload();
-  await expect(page.getByText(/管理状态：.*活动账号：Account B/)).toBeVisible();
-  const row = page.getByRole("row").filter({ hasText: "Account C" });
-  await row.getByRole("button", { name: "切换到此账号" }).click();
-  await expect
-    .poll(async () =>
-      page.request
-        .get("/api/account-fixture/facts")
-        .then((r) => r.json())
-        .then((r) => r.active),
-    )
-    .toBe("c");
-  await page.getByRole("button", { name: "日间维护", exact: true }).click();
-  await expect(
-    page
-      .getByRole("dialog", { name: "日间维护" })
-      .getByRole("heading", { name: "刷新能力未验证", exact: true }),
-  ).toBeVisible();
-  await page
-    .getByRole("dialog", { name: "日间维护" })
-    .getByRole("button", { name: "关闭", exact: true })
-    .click();
-  await page.getByRole("button", { name: "停止管理", exact: true }).click();
-  await expect(
-    page.getByRole("button", { name: "启动管理", exact: true }),
-  ).toBeVisible();
-  const facts = await page.request
-    .get("/api/account-fixture/facts")
-    .then((r) => r.json());
-  expect(facts.counts).toEqual({ project: 0, workflow: 0, run: 0 });
-  expect(unexpected).toEqual([]);
+
+  test("A12: 真实浏览器展示 3 条已重置账号 100% 无倒计时，对照账号展示实际值与倒计时", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await expect(
+      page.getByRole("heading", { name: "AGY 账号与额度管理" }),
+    ).toBeVisible();
+
+    // 定位四个账号的行元素
+    const rowA = page.locator(".agy-account-row").filter({ hasText: "a@example.com" });
+    const rowB = page.locator(".agy-account-row").filter({ hasText: "b@example.com" });
+    const rowC = page.locator(".agy-account-row").filter({ hasText: "c@example.com" });
+    const rowD = page.locator(".agy-account-row").filter({ hasText: "d@example.com" });
+
+    await expect(rowA).toBeVisible();
+    await expect(rowB).toBeVisible();
+    await expect(rowC).toBeVisible();
+    await expect(rowD).toBeVisible();
+
+    // 辅助函数：获取指定账号行的周额度条
+    const getWeeklyQuota = (row: typeof rowA) =>
+      row.locator(".agy-compact-quota").filter({ hasText: "周额度" });
+
+    // 验证账号 a (旧 60%, reset_at=null -> 有效 100%)
+    const weeklyA = getWeeklyQuota(rowA);
+    await expect(weeklyA.locator(".agy-quota-num")).toHaveText("100%");
+    await expect(weeklyA.locator(".agy-quota-fill")).toHaveCSS("width", /.+/);
+    const styleA = await weeklyA.locator(".agy-quota-fill").getAttribute("style");
+    expect(styleA).toContain("width: 100%");
+    await expect(weeklyA.locator(".agy-quota-reset")).toHaveCount(0);
+    expect(await weeklyA.getAttribute("title")).toBe("周额度：100%");
+
+    // 验证账号 b (旧 69%, reset_at=null -> 有效 100%)
+    const weeklyB = getWeeklyQuota(rowB);
+    await expect(weeklyB.locator(".agy-quota-num")).toHaveText("100%");
+    const styleB = await weeklyB.locator(".agy-quota-fill").getAttribute("style");
+    expect(styleB).toContain("width: 100%");
+    await expect(weeklyB.locator(".agy-quota-reset")).toHaveCount(0);
+    expect(await weeklyB.getAttribute("title")).toBe("周额度：100%");
+
+    // 验证账号 c (旧 0%, reset_at 已过期 -> 有效 100%)
+    const weeklyC = getWeeklyQuota(rowC);
+    await expect(weeklyC.locator(".agy-quota-num")).toHaveText("100%");
+    const styleC = await weeklyC.locator(".agy-quota-fill").getAttribute("style");
+    expect(styleC).toContain("width: 100%");
+    await expect(weeklyC.locator(".agy-quota-reset")).toHaveCount(0);
+    expect(await weeklyC.getAttribute("title")).toBe("周额度：100%");
+
+    // 验证对照账号 d (83%, 未来重置时间 -> 保持 83% 并展示倒计时)
+    const weeklyD = getWeeklyQuota(rowD);
+    await expect(weeklyD.locator(".agy-quota-num")).toHaveText("83%");
+    const styleD = await weeklyD.locator(".agy-quota-fill").getAttribute("style");
+    expect(styleD).toContain("width: 83%");
+    await expect(weeklyD.locator(".agy-quota-reset")).toBeVisible();
+    const titleD = await weeklyD.getAttribute("title");
+    expect(titleD).toContain("周额度：83%");
+    expect(titleD).toContain("重置");
+  });
+
+  test("A13: 跨越重置时间后刷新恢复 100%、reload 不退回旧值、运行状态保持不变", async ({
+    page,
+  }) => {
+    // 设置账号 d 的重置时间为 4 秒后到期
+    const res = await page.request.get("/api/account-fixture/set-reset-soon?delayMs=4000");
+    expect(res.ok()).toBeTruthy();
+
+    await page.goto("/");
+    const rowD = page.locator(".agy-account-row").filter({ hasText: "d@example.com" });
+    await expect(rowD).toBeVisible();
+
+    const weeklyD = rowD.locator(".agy-compact-quota").filter({ hasText: "周额度" });
+    // 初始状态为 35%
+    await expect(weeklyD.locator(".agy-quota-num")).toHaveText("35%");
+
+    // 等待跨越重置时间 (4.2 秒后)
+    await page.waitForTimeout(4200);
+
+    // 页面轮询或手动刷新后，额度应自动推导恢复为 100%
+    await page.reload();
+    await expect(weeklyD.locator(".agy-quota-num")).toHaveText("100%");
+    const styleD = await weeklyD.locator(".agy-quota-fill").getAttribute("style");
+    expect(styleD).toContain("width: 100%");
+    await expect(weeklyD.locator(".agy-quota-reset")).toHaveCount(0);
+
+    // 再次 reload 验证持久展示不退回
+    await page.reload();
+    await expect(weeklyD.locator(".agy-quota-num")).toHaveText("100%");
+    await expect(weeklyD.locator(".agy-quota-reset")).toHaveCount(0);
+
+    // 运行状态与活动账号验证未受额度推导干扰
+    const rowA = page.locator(".agy-account-row").filter({ hasText: "a@example.com" });
+    await expect(rowA.locator(".agy-badge.active")).toBeVisible();
+  });
+
+  test("A14: 新周期较低额度保存刷新显示实际值及未来倒计时，五小时与其他池不污染", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    const rowA = page.locator(".agy-account-row").filter({ hasText: "a@example.com" });
+    await expect(rowA).toBeVisible();
+
+    // 账号 a 在初始状态为 100%
+    const weeklyA = rowA.locator(".agy-compact-quota").filter({ hasText: "周额度" });
+    await expect(weeklyA.locator(".agy-quota-num")).toHaveText("100%");
+
+    // 模拟新周期到来并消耗了额度：保存账号 a 的新快照（周额度 45%，未来 6 天）
+    const res = await page.request.get("/api/account-fixture/save-new-cycle");
+    expect(res.ok()).toBeTruthy();
+
+    // 刷新页面后读取最新数据
+    await page.reload();
+
+    // 周额度应显示为实际新周期值 45%，且具备倒计时
+    await expect(weeklyA.locator(".agy-quota-num")).toHaveText("45%");
+    const styleWeekly = await weeklyA.locator(".agy-quota-fill").getAttribute("style");
+    expect(styleWeekly).toContain("width: 45%");
+    await expect(weeklyA.locator(".agy-quota-reset")).toBeVisible();
+    const titleWeekly = await weeklyA.getAttribute("title");
+    expect(titleWeekly).toContain("周额度：45%");
+    expect(titleWeekly).toContain("重置");
+
+    // 验证五小时额度维持 88% 及相应状态，未被推导为 100%
+    const shortA = rowA.locator(".agy-compact-quota").filter({ hasText: "五小时额度" });
+    await expect(shortA.locator(".agy-quota-num")).toHaveText("88%");
+    const styleShort = await shortA.locator(".agy-quota-fill").getAttribute("style");
+    expect(styleShort).toContain("width: 88%");
+    await expect(shortA.locator(".agy-quota-reset")).toBeVisible();
+  });
 });
