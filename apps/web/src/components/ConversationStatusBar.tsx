@@ -8,6 +8,7 @@ import {
   runtimeToolNames,
 } from "../../../../packages/presentation/src/run-observation.js";
 import type { RunObservation } from "../../../../packages/contracts/src/run-observation.js";
+import { conversationRuntimeLabels } from "../../../../packages/presentation/src/model-display.js";
 import { CONVERSATION_SEARCH_PARAM } from "../use-conversation-view.js";
 import type { FileInputCapability } from "./ConversationAttachments.js";
 
@@ -157,12 +158,12 @@ export function conversationIdleCaption(input: {
   nextConfigLabel?: string;
 }): string | undefined {
   if (input.active || !input.workflowState) return undefined;
-  const last = input.lastModelLabel || "工具默认，实际未报告";
-  const next = input.nextConfigLabel || "工具默认，实际未报告";
+  const last = input.lastModelLabel;
+  const next = input.nextConfigLabel;
   if (WAITING_PLAN_STATES.has(input.workflowState)) {
-    return `等待规划 · 下一轮配置 ${next}`;
+    return ["等待规划", next && `下一轮配置 ${next}`].filter(Boolean).join(" · ");
   }
-  return `已暂停 · 上次模型 ${last}`;
+  return ["已暂停", last && `上次模型 ${last}`].filter(Boolean).join(" · ");
 }
 
 export function latestAttemptFor(
@@ -337,7 +338,7 @@ export function buildComposerRuntime(
     lastModelLabel: lastModel,
     nextConfigLabel: nextConfig,
   });
-  const modelLine = [toolLabel, runtime.model_label, runtime.effort_label]
+  const modelLine = [toolLabel, ...conversationRuntimeLabels(runtime)]
     .filter(Boolean)
     .join(" · ");
   return {

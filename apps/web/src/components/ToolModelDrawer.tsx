@@ -346,7 +346,6 @@ export function ToolModelDrawer({
   };
 
   const active = payload?.active_run;
-  const requested = active?.requested;
   const observed = active?.observed;
 
   return (
@@ -379,37 +378,22 @@ export function ToolModelDrawer({
         )}
         {success && <div className="ms-success">{success}</div>}
         {loading ? (
-          <div className="ms-muted">正在读取规格...</div>
+          <div className="ms-muted">正在读取模型配置…</div>
         ) : (
           <>
             <section className="ms-card" aria-label="当前轮">
               <h4>当前轮</h4>
               {active ? (
                 <>
-                  <p>
-                    角色：{active.role} · 配置 r{active.bound_spec_revision}
-                  </p>
-                  <p>请求配置：{profileSummary(active.profile)}</p>
-                  {requested?.modelId && (
-                    <p className="ms-muted">
-                      绑定请求：{requested.adapterId} / {requested.modelId}
-                      {requested.reasoning?.mode === "explicit"
-                        ? ` / ${requested.reasoning.value}`
-                        : ""}
-                      （不是服务端确认）
-                    </p>
-                  )}
-                  {observed?.model || observed?.effort ? (
+                  <p>所选配置：{profileSummary(active.profile)}</p>
+                  {(observed?.model || observed?.effort) && (
                     <p className="ms-observed">
-                      实际观察：{observed?.model ?? "未报告模型"}
-                      {observed?.effort ? ` / ${observed.effort}` : ""}
+                      当前使用：{[observed?.model, observed?.effort].filter(Boolean).join(" / ")}
                     </p>
-                  ) : (
-                    <p className="ms-observed">实际观察：尚未从运行报告确认</p>
                   )}
                 </>
               ) : (
-                <p className="ms-muted">当前没有已绑定的运行轮次</p>
+                <p className="ms-muted">当前没有执行中的任务</p>
               )}
             </section>
 
@@ -417,7 +401,7 @@ export function ToolModelDrawer({
               <section className="ms-card" aria-label="本次指派">
                 <h4>本次修复指派</h4>
                 <p className="ms-hint">
-                  本次人工指定覆盖自动分配。保存只影响后续 Run，不会改当前运行。
+                  保存后用于后续修复，当前执行继续使用原配置。
                 </p>
                 {batches.map((view) => {
                   const picker = pickerForBatch(view.batch.id, view);
@@ -428,9 +412,6 @@ export function ToolModelDrawer({
                       <strong>
                         {kindLabel}
                         {view.batch.phase ? ` · ${view.batch.phase}` : ""}
-                        {view.assignment
-                          ? ` · r${view.assignment.revision}`
-                          : " · 尚未指定覆盖"}
                       </strong>
                       <p className="ms-muted">
                         {view.assignment
@@ -488,7 +469,6 @@ export function ToolModelDrawer({
 
             <section className="ms-card" aria-label="后续分配">
               <h4>后续分配</h4>
-              <p className="ms-muted">配置版本 r{revision}</p>
               <ModelProfileEditor
                 profile={planner}
                 toolLabel="规划工具"

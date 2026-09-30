@@ -119,7 +119,7 @@ it("unknown native failures request diagnosis rather than a model repair", () =>
     new FlowError("NATIVE_RUN_FAILED", "process exited 17"),
   ) as FlowError;
   expect(error.code).toBe("NATIVE_RUN_FAILED");
-  expect(error.message).toContain("证据不足");
+  expect(error.message).toContain("原因待确认");
   expect((error.details as any).diagnostic).toBe("process exited 17");
 });
 

@@ -33,7 +33,6 @@ export function ModelSettingsDrawer({
     blankProfile("executor", "agy"),
   );
   const [revision, setRevision] = useState(0);
-  const [source, setSource] = useState("");
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -66,7 +65,6 @@ export function ModelSettingsDrawer({
     setExecutor(cloneProfile({ ...defaults.executorProfile, id: "executor" }));
     setRevision(defaults.revision);
     revisionRef.current = defaults.revision;
-    setSource(defaults.source ?? "");
     dirtyRef.current = false;
     setConflict(null);
     requestId.current = newRequestId();
@@ -187,7 +185,6 @@ export function ModelSettingsDrawer({
       revisionRef.current = nextRevision;
       dirtyRef.current = false;
       setConflict(null);
-      setSource("user");
       setPendingDraft(false);
       setSuccess("默认配置已保存，只影响以后新建的任务");
       requestId.current = newRequestId();
@@ -231,11 +228,6 @@ export function ModelSettingsDrawer({
             已载入安装时选择的待验证配置；验证并保存后才替换当前默认值。
           </p>
         )}
-        <p className="ms-muted">
-          存储来源：当前 DevFlow 实例
-          {source ? ` · ${source}` : ""}
-          {revision ? ` · r${revision}` : ""}
-        </p>
         {conflict && (
           <p className="ms-error" role="alert">
             {conflict}

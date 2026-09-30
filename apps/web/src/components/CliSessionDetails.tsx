@@ -565,7 +565,7 @@ export function CliSessionDetails({ workflowId }: CliSessionDetailsProps) {
                 color: currentBinding.state === "bound" ? "#1a7f37" : "#9a6700",
               }}
             >
-              {currentBinding.state === "bound" ? "已绑定" : currentBinding.state} (r{currentBinding.revision})
+              {currentBinding.state === "bound" ? "已绑定" : currentBinding.state}
             </span>
           )}
         </div>
@@ -644,7 +644,7 @@ export function CliSessionDetails({ workflowId }: CliSessionDetailsProps) {
           <div style={{ gridColumn: "span 2" }}>
             <span style={{ color: "#57606a" }}>精确会话 ID：</span>
             <code style={{ marginLeft: "4px", fontSize: "11px", color: "#0969da" }}>
-              {currentBinding.conversation_id || "尚未确认（首次运行结构化回执时写入）"}
+              {currentBinding.conversation_id || "等待会话启动"}
             </code>
           </div>
         </div>
