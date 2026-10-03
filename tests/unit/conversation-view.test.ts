@@ -12,6 +12,7 @@ import {
   CONVERSATION_INVALID_NOTICE,
   ConversationRequestGuard,
   buildConversationPath,
+  formatConversationSessionIdentity,
   publicConversationText,
   readConversationDraftMarker,
   readConversationSearchParam,
@@ -34,7 +35,7 @@ function node(
     workflow_id: extra.workflow_id ?? "wf1",
     root_id: extra.root_id ?? "root1",
     parent_id: extra.parent_id,
-    kind: extra.parent_id ? "subagent" : "main",
+    kind: extra.kind ?? (extra.parent_id ? "subagent" : "main"),
     adapter_id: "codex",
     title: extra.title ?? id,
     purpose: "implement",
@@ -87,6 +88,35 @@ const tree = [
 
 beforeEach(() => {
   resetConversationViewStores();
+});
+
+describe("conversation session identity", () => {
+  it.each([
+    ["临时提问", "临时提问"],
+    ["主会话", "临时提问"],
+    ["兼容历史任务名称", "临时提问 · 兼容历史任务名称"],
+    ["为什么这里重试", "临时提问 · 为什么这里重试"],
+  ])("identifies an independent aside root titled %s", (title, expected) => {
+    expect(formatConversationSessionIdentity({
+      node: node("aside1", { kind: "aside", root_id: "aside1", title }),
+      workspaceMode: "new_worktree",
+      isChildView: true,
+      selectedTitle: title,
+    })).toBe(expected);
+  });
+
+  it("keeps historical formal roots and actual children distinct", () => {
+    expect(formatConversationSessionIdentity({
+      node: node("old-root", { root_id: "old-root", title: "任务长名称" }),
+      workspaceMode: "new_worktree",
+      isChildView: true,
+    })).toBe("worktree 会话");
+    expect(formatConversationSessionIdentity({
+      node: node("child1", { parent_id: "root1", title: "开发测试" }),
+      selectedTitle: "开发测试",
+      isChildView: true,
+    })).toBe("开发测试");
+  });
 });
 
 describe("SA-U03 conversation view", () => {
@@ -351,10 +381,10 @@ describe("SA-U03 conversation view", () => {
       }),
     );
     expect(html).toContain("执行过程");
-    expect(html).toContain("已连接");
-    expect(html).toContain("复制公开文本");
+    expect(html).not.toContain("已连接");
+    expect(html).not.toContain("复制公开文本");
     expect(html).toContain("加载更早的执行记录");
-    expect(html).toContain("核心接口测试 · 正在工作");
+    expect(html).not.toContain("核心接口测试 · 正在工作");
     expect(html).toContain("work-card");
     expect(html).not.toContain("task-interaction");
     expect(html).not.toContain("发送");
@@ -375,7 +405,7 @@ describe("SA-U03 conversation view", () => {
         ),
       }),
     );
-    expect(rootHtml).toContain("重连中");
+    expect(rootHtml).not.toContain("重连中");
     expect(rootHtml).toContain("task-interaction");
     expect(rootHtml).toContain("发送");
   });

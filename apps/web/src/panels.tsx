@@ -32,7 +32,10 @@ const attachmentLabels: Record<string, string> = {
 };
 export function TaskTree({ detail, title }: { detail: any; title?: string }) {
   const [filter, setFilter] = useState(""),
-    [state, setState] = useState("all");
+    [state, setState] = useState("all"),
+    [expandedTasks, setExpandedTasks] = useState<Record<string, boolean>>({});
+  const toggleTask = (id: string) =>
+    setExpandedTasks((prev) => ({ ...prev, [id]: !prev[id] }));
   const leaf = detail.plan?.plan.task_model === "leaf-v1";
   const native = detail.plan?.plan.task_model === "native-v2";
   const structured =
@@ -146,84 +149,105 @@ export function TaskTree({ detail, title }: { detail: any; title?: string }) {
                 </span>
               </summary>
               <div className="module-tasks-body">
-                {visible.map((t: any) => (
-                  <div className={`task ${t.implementation_status}`} key={t.id}>
-                    <span
-                      className={
-                        "checkbox " + ((native ? t.completed : t.status === "verified") ? "checked" : "")
-                      }
-                    >
-                      {(native ? t.completed : t.status === "verified") ? "✓" : ""}
-                    </span>
-                    <div className="task-main">
-                      <div className="task-header-row">
-                        <b className="task-title">{t.title}</b>
-                        <span className={`badge ${t.implementation_status}`}>
-                          {taskLabels[developmentStatus(t)] ?? "未开始"}
-                        </span>
-                        {!native && <span className="validation-status">
-                          验证：
-                          {
-                            (
-                              {
-                                passed: "已通过",
-                                failed: "失败",
-                                stale: "需重测",
-                                not_run: "未验证",
-                              } as Record<string, string>
-                            )[
-                              t.validation_status ??
-                                (t.status === "verified" ? "passed" : "not_run")
-                            ]
-                          }
-                        </span>}
-                      </div>
-                      {t.summary && (
-                        <p className="task-summary">
-                          {native && t.status === "verified"
-                            ? "已收到实现与测试交付记录；质量审核和人工验收分别记录。"
-                            : t.summary}
-                        </p>
-                      )}
-                      {t.recheck_reason && (
-                        <p className="notice-subtle">{t.recheck_reason}</p>
-                      )}
-                      <details className="task-inner-details">
-                        <summary>查看实现细节与完成条件</summary>
-                        <div className="task-spec-box">
-                          {detail.plan?.plan?.tasks?.find(
-                            (x: any) => x.id === t.id,
-                          )?.implementation && (
-                            <div className="spec-field">
-                              <span className="field-label">实现指引：</span>
-                              <p className="field-value">
-                                {
-                                  detail.plan?.plan?.tasks?.find(
-                                    (x: any) => x.id === t.id,
-                                  )?.implementation
-                                }
-                              </p>
-                            </div>
+                {visible.map((t: any) => {
+                  const taskSpec = detail.plan?.plan?.tasks?.find(
+                    (x: any) => x.id === t.id,
+                  );
+                  const hasDetails = Boolean(
+                    taskSpec?.implementation || taskSpec?.completion,
+                  );
+                  const isExpanded = Boolean(expandedTasks[t.id]);
+                  return (
+                    <div className={`task ${t.implementation_status}`} key={t.id}>
+                      <div className="task-main">
+                        <div className="task-header-row">
+                          {hasDetails ? (
+                            <button
+                              type="button"
+                              className={`task-title-btn ${isExpanded ? "expanded" : ""}`}
+                              onClick={() => toggleTask(t.id)}
+                              aria-expanded={isExpanded}
+                              title={
+                                isExpanded
+                                  ? "收起实现细节与完成条件"
+                                  : "展开实现细节与完成条件"
+                              }
+                            >
+                              <span
+                                className="task-expand-chevron"
+                                aria-hidden="true"
+                              >
+                                {isExpanded ? "▾" : "▸"}
+                              </span>
+                              <b className="task-title">{t.title}</b>
+                            </button>
+                          ) : (
+                            <span className="task-title-static">
+                              <b className="task-title">{t.title}</b>
+                            </span>
                           )}
-                          {detail.plan?.plan?.tasks?.find(
-                            (x: any) => x.id === t.id,
-                          )?.completion && (
-                            <div className="spec-field">
-                              <span className="field-label">完成条件：</span>
-                              <p className="field-value">
-                                {
-                                  detail.plan?.plan?.tasks?.find(
-                                    (x: any) => x.id === t.id,
-                                  )?.completion
-                                }
-                              </p>
-                            </div>
+                          <span className={`badge ${t.implementation_status}`}>
+                            {taskLabels[developmentStatus(t)] ?? "未开始"}
+                          </span>
+                          {!native && (
+                            <span className="validation-status">
+                              验证：
+                              {
+                                (
+                                  {
+                                    passed: "已通过",
+                                    failed: "失败",
+                                    stale: "需重测",
+                                    not_run: "未验证",
+                                  } as Record<string, string>
+                                )[
+                                  t.validation_status ??
+                                    (t.status === "verified"
+                                      ? "passed"
+                                      : "not_run")
+                                ]
+                              }
+                            </span>
                           )}
                         </div>
-                      </details>
+                        {t.summary && (
+                          <p className="task-summary">
+                            {native && t.status === "verified"
+                              ? "已收到实现与测试交付记录；质量审核和人工验收分别记录。"
+                              : t.summary}
+                          </p>
+                        )}
+                        {t.recheck_reason && (
+                          <p className="notice-subtle">{t.recheck_reason}</p>
+                        )}
+                        {hasDetails && isExpanded && (
+                          <div
+                            className="task-spec-box"
+                            role="region"
+                            aria-label={`${t.title} 实现细节`}
+                          >
+                            {taskSpec?.implementation && (
+                              <div className="spec-field">
+                                <span className="field-label">实现指引：</span>
+                                <p className="field-value">
+                                  {taskSpec.implementation}
+                                </p>
+                              </div>
+                            )}
+                            {taskSpec?.completion && (
+                              <div className="spec-field">
+                                <span className="field-label">完成条件：</span>
+                                <p className="field-value">
+                                  {taskSpec.completion}
+                                </p>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </details>
           );

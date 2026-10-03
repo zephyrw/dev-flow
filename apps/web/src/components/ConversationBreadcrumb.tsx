@@ -9,7 +9,7 @@ export function ConversationBreadcrumb({
   items: ConversationBreadcrumbItem[];
   onSelect: (conversationId: string) => void;
 }) {
-  if (items.length === 0) return null;
+  if (items.length <= 1) return null;
   return (
     <nav className="conversation-breadcrumb" aria-label="会话路径">
       <ol className="conversation-breadcrumb-list">

@@ -149,6 +149,31 @@ export function shouldRenderConversationInteraction(isChildView: boolean) {
   return !isChildView;
 }
 
+export function formatConversationSessionIdentity({
+  node,
+  workspaceMode,
+  isChildView,
+  selectedTitle,
+}: {
+  node?: ConversationNode;
+  workspaceMode?: string;
+  isChildView?: boolean;
+  selectedTitle?: string;
+}): string {
+  const rootLabel = workspaceMode === "new_worktree" ? "worktree 会话" : "主会话";
+  if (!node) return isChildView ? selectedTitle || "子会话" : rootLabel;
+  if (node.kind === "aside") {
+    const title = node.title.trim();
+    return title && !["临时提问", "主会话", "worktree 会话"].includes(title)
+      ? `临时提问 · ${title}`
+      : "临时提问";
+  }
+  if (node.kind === "main" || !node.parent_id || node.id === node.root_id) {
+    return rootLabel;
+  }
+  return selectedTitle || node.title || "子会话";
+}
+
 export function readConversationSearchParam(search: string): string | undefined {
   const raw = new URLSearchParams(
     search.startsWith("?") ? search.slice(1) : search,

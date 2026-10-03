@@ -527,7 +527,7 @@ function ComposerInput({
         className="conversation-composer-input"
         rows={COMPOSER_TEXTAREA_ROWS}
         value={text}
-        placeholder="输入指导，或输入 /btw、/side 临时提问。输入 @ 引用文件或目录"
+        placeholder="输入指导，或输入 /btw 临时提问。输入 @ 引用文件或目录"
         onChange={(event) => search.handleTextChange(event)}
         onKeyDown={handleKeyDown}
         onCompositionStart={markImeStart}
@@ -597,24 +597,32 @@ function ComposerFooter({
         disabled={pending || !canSend}
         onClick={() => void onSubmit()}
       >
-        ↑
+        <svg
+          width="15"
+          height="15"
+          viewBox="0 0 24 24"
+          fill="currentColor"
+          aria-hidden="true"
+        >
+          <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" />
+        </svg>
       </button>
     </div>
   );
 }
 
 function PlusMenu({
-  textareaRef,
-  text,
-  setText,
+  textareaRef: _textareaRef,
+  text: _text,
+  setText: _setText,
   onUploadLocal,
-  onCiteWorkspace,
+  onCiteWorkspace: _onCiteWorkspace,
 }: {
   textareaRef: React.RefObject<HTMLTextAreaElement | null>;
   text: string;
   setText: (text: string) => void;
   onUploadLocal: () => void;
-  onCiteWorkspace: () => void;
+  onCiteWorkspace?: () => void;
 }) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
@@ -627,26 +635,12 @@ function PlusMenu({
     return () => window.removeEventListener("mousedown", close);
   }, [open]);
 
-  const citeWorkspace = () => {
-    const el = textareaRef.current;
-    const cursor = el?.selectionStart ?? text.length;
-    const next = startWorkspaceReferenceDraft(text, cursor);
-    setText(next.text);
-    onCiteWorkspace();
-    setOpen(false);
-    requestAnimationFrame(() => {
-      if (!textareaRef.current) return;
-      textareaRef.current.focus();
-      textareaRef.current.setSelectionRange(next.cursor, next.cursor);
-    });
-  };
-
   return (
     <div className="conversation-composer-plus-wrap" ref={wrapRef}>
       <button
         type="button"
         className="conversation-composer-plus"
-        aria-label="添加附件或引用"
+        aria-label="添加附件"
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
@@ -664,9 +658,6 @@ function PlusMenu({
             }}
           >
             上传本地文件
-          </button>
-          <button type="button" role="menuitem" onClick={citeWorkspace}>
-            引用工作区文件或目录
           </button>
         </div>
       )}

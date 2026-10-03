@@ -45,3 +45,18 @@ it("renders an absent review without prescribing a workflow stage", () => {
   expect(html).toContain("尚无独立复核结果");
   expect(html).not.toContain("人工验收通过后");
 });
+
+it("renders neutral findings summary when changes_required has empty findings", () => {
+  const html = renderToStaticMarkup(<ReviewResults review={{ verdict: "changes_required", findings: [] }} />);
+  expect(html).toContain("需要整改");
+  expect(html).toContain("暂无问题明细");
+  expect(html).not.toContain("未发现问题");
+});
+
+it("renders '未发现问题' when passed with empty findings", () => {
+  const html = renderToStaticMarkup(<ReviewResults review={{ verdict: "pass", findings: [] }} />);
+  expect(html).toContain("通过");
+  expect(html).toContain("未发现问题");
+  expect(html).not.toContain("暂无问题明细");
+});
+

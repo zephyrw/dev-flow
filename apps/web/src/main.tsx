@@ -39,6 +39,7 @@ import {
 } from "./components/SubagentWorkCard.js";
 import { ConversationBreadcrumb } from "./components/ConversationBreadcrumb.js";
 import {
+  formatConversationSessionIdentity,
   useConversationView,
 } from "./use-conversation-view.js";
 import {
@@ -1199,6 +1200,7 @@ const CentralWorkspace = React.memo(
       [planMarkdown],
     );
     const tocItems = planDocument.toc;
+    const hasToc = tocItems.length > 0;
 
     const scrollToHeading = (id: string) => {
       const el = Array.from(reading.contentRef.current?.querySelectorAll<HTMLElement>("[id]") ?? [])
@@ -1209,8 +1211,8 @@ const CentralWorkspace = React.memo(
     };
 
     const planBodyContent = detail.plan ? (
-      <div key={`${w.id}:${w.plan_revision}:${w.plan_hash}:${planFullscreen}`} className={`plan-viewer-body ${showToc ? "has-toc" : ""}`}>
-        {showToc && (
+      <div key={`${w.id}:${w.plan_revision}:${w.plan_hash}:${planFullscreen}`} className={`plan-viewer-body ${hasToc && showToc ? "has-toc" : ""}`}>
+        {hasToc && showToc && (
           <aside className="plan-toc-sidebar" aria-label="文档大纲">
             <div className="toc-header">
               <span className="toc-title">目录导航</span>
@@ -1219,20 +1221,16 @@ const CentralWorkspace = React.memo(
               </span>
             </div>
             <div className="toc-items-container" ref={reading.tocRef}>
-              {tocItems.length > 0 ? (
-                <ul className="toc-list">
-                  {tocItems.map((item) => (
-                    <li
-                      key={item.id}
-                      className={`toc-item level-${item.level}`}
-                    >
-                      <PlanTocButton text={item.text} onClick={() => scrollToHeading(item.id)} />
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <div className="toc-empty">未发现标题章节</div>
-              )}
+              <ul className="toc-list">
+                {tocItems.map((item) => (
+                  <li
+                    key={item.id}
+                    className={`toc-item level-${item.level}`}
+                  >
+                    <PlanTocButton text={item.text} onClick={() => scrollToHeading(item.id)} />
+                  </li>
+                ))}
+              </ul>
             </div>
           </aside>
         )}
@@ -1296,7 +1294,7 @@ const CentralWorkspace = React.memo(
               fill="currentColor"
               aria-hidden="true"
             >
-              <path d="M5.92 6.03a1.5 1.5 0 0 1 2.9-.57.5.5 0 0 0 .96-.28 2.5 2.5 0 1 0-4.83.95c.06.32.33.62.66.79.43.23.63.45.68.74.05.3.06.57.06.87a.5.5 0 0 0 1 0c0-.36-.02-.7-.1-1.07-.1-.44-.37-.77-.87-1.04a1.05 1.05 0 0 1-.5-.39zm1.08 5.47a.75.75 0 1 1 1.5 0 .75.75 0 0 1-1.5 0zM0 2a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H4.414a1 1 0 0 0-.707.293L1.354 15.646A.5.5 0 0 1 .5 15.293V13H2a1 1 0 0 0 1-1V2a1 1 0 0 0-1-1H2a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1h.5a.5.5 0 0 1 0 1H2a2 2 0 0 1-2-2V2z" />
+              <path d="M8 1a7 7 0 0 0-7 7c0 1.63.56 3.13 1.5 4.34L1.22 15a.5.5 0 0 0 .62.62l2.66-1.28A6.97 6.97 0 0 0 8 15a7 7 0 1 0 0-14zm0 1.2a5.8 5.8 0 0 1 5.8 5.8c0 3.2-2.6 5.8-5.8 5.8a5.77 5.77 0 0 1-2.73-.68.5.5 0 0 0-.42-.03l-2.07 1 1-2.07a.5.5 0 0 0-.03-.42A5.76 5.76 0 0 1 2.2 8a5.8 5.8 0 0 1 5.8-5.8zm-.05 2.55c-1.15 0-1.95.77-1.95 1.75a.6.6 0 1 0 1.2 0c0-.38.32-.65.75-.65.46 0 .8.27.8.65 0 .32-.2.53-.55.76-.46.3-.95.73-.95 1.44v.25a.6.6 0 1 0 1.2 0v-.15c0-.33.22-.53.58-.78.47-.32.92-.74.92-1.52 0-1.04-.89-1.75-2-1.75zm.05 5.5a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5z" />
             </svg>
           </button>
         )}
@@ -1316,7 +1314,7 @@ const CentralWorkspace = React.memo(
                 fill="currentColor"
                 aria-hidden="true"
               >
-                <path d="M5.5 0a.5.5 0 0 1 .5.5v4A1.5 1.5 0 0 1 4.5 6h-4a.5.5 0 0 1 0-1h4a.5.5 0 0 0 .5-.5v-4a.5.5 0 0 1 .5-.5zm5 0a.5.5 0 0 1 .5.5v4a.5.5 0 0 0 .5.5h4a.5.5 0 0 1 0 1h-4A1.5 1.5 0 0 1 10 4.5v-4a.5.5 0 0 1 .5-.5zM0 10.5a.5.5 0 0 1 .5-.5h4A1.5 1.5 0 0 1 6 11.5v4a.5.5 0 0 1-1 0v-4a.5.5 0 0 0-.5-.5h-4a.5.5 0 0 1-.5-.5zm10 1a1.5 1.5 0 0 1 1.5-1.5h4a.5.5 0 0 1 0 1h-4a.5.5 0 0 0-.5.5v4a.5.5 0 0 1-1 0v-4z" />
+                <path d="M5.5 1.5a.75.75 0 0 1 .75.75v3.25h3.25a.75.75 0 0 1 0 1.5H5.75A.75.75 0 0 1 5 6.25V2.25a.75.75 0 0 1 .75-.75zm5 0a.75.75 0 0 1 .75.75v4a.75.75 0 0 1-.75.75h-4a.75.75 0 0 1 0-1.5h3.25V2.25a.75.75 0 0 1 .75-.75zM1.5 10.5h3.25V13.75a.75.75 0 0 1-1.5 0v-2.5h-2.5a.75.75 0 0 1 0-1.5zm8.25 0h4.75a.75.75 0 0 1 0 1.5h-2.5v2.5a.75.75 0 0 1-1.5 0v-3.25a.75.75 0 0 1-.75-.75z" />
               </svg>
             ) : (
               <svg
@@ -1326,7 +1324,7 @@ const CentralWorkspace = React.memo(
                 fill="currentColor"
                 aria-hidden="true"
               >
-                <path d="M1.5 1a.5.5 0 0 0-.5.5v4a.5.5 0 0 1-1 0v-4A1.5 1.5 0 0 1 1.5 0h4a.5.5 0 0 1 0 1h-4zm10-1a.5.5 0 0 1 0 1h4a.5.5 0 0 1 .5.5v4a.5.5 0 0 1-1 0v-4a.5.5 0 0 0-.5-.5h-4zM0 11.5a.5.5 0 0 1 1 0v4a.5.5 0 0 0 .5.5h4a.5.5 0 0 1 0 1h-4A1.5 1.5 0 0 1 0 15.5v-4zm15.5-.5a.5.5 0 0 1 .5.5v4a1.5 1.5 0 0 1-1.5 1.5h-4a.5.5 0 0 1 0-1h4a.5.5 0 0 0 .5-.5v-4a.5.5 0 0 1 .5-.5z" />
+                <path d="M1.5 1h4a.75.75 0 0 1 0 1.5H2.5v3a.75.75 0 0 1-1.5 0V1.5A.5.5 0 0 1 1.5 1zm9 0h4a.5.5 0 0 1 .5.5v4a.75.75 0 0 1-1.5 0v-3h-3a.75.75 0 0 1 0-1.5zm-9 9.5a.75.75 0 0 1 .75.75v3h3a.75.75 0 0 1 0 1.5h-4a.5.5 0 0 1-.5-.5v-4a.75.75 0 0 1 .75-.75zm13.75 0a.75.75 0 0 1 .75.75v4a.5.5 0 0 1-.5.5h-4a.75.75 0 0 1 0-1.5h3v-3a.75.75 0 0 1 .75-.75z" />
               </svg>
             )}
           </button>
@@ -1406,7 +1404,7 @@ const CentralWorkspace = React.memo(
               <div className="section-title plan-section-title">
                 <div className="plan-title-left">
                   <h2>开发计划</h2>
-                  {detail.plan && (
+                  {detail.plan && hasToc && (
                     <button
                       type="button"
                       className={`btn-secondary btn-toc-toggle ${showToc ? "active" : ""}`}
@@ -1437,7 +1435,7 @@ const CentralWorkspace = React.memo(
                 <div className="section-title plan-section-title plan-fullscreen-title">
                   <div className="plan-title-left">
                     <h2>开发计划</h2>
-                    {detail.plan && (
+                    {detail.plan && hasToc && (
                       <button
                         type="button"
                         className={`btn-secondary btn-toc-toggle ${showToc ? "active" : ""}`}
@@ -2225,7 +2223,7 @@ function App() {
             setDetail(null);
           }}
         >
-          <span className="nav-icon">◫</span> 工作流总览
+          <span className="nav-icon">◫</span> 任务总览
         </button>
         <div
           style={{
@@ -2353,16 +2351,6 @@ function App() {
             </span>{" "}
             向导
           </button>
-          <div className="connection-status">
-            <span className={"dot " + (connected ? "COMMITTED" : "")} />{" "}
-            <span className="connection-status-text">
-              {selected
-                ? connected
-                  ? "实时连接已建立"
-                  : "正在连接事件流"
-                : "本机工作台"}
-            </span>
-          </div>
         </div>
       </aside>
       <main>
@@ -2412,7 +2400,7 @@ function App() {
                     ? (w?.title ??
                       flows.find((f) => f.id === selected)?.title ??
                       "加载中…")
-                    : "工作流总览"}
+                    : "任务总览"}
               </h1>
               {w && (
                 <span className={`badge workflow-tone-${getWorkflowTone(w)}`}>
@@ -2901,6 +2889,13 @@ function App() {
                       onSelect={conversationView.selectConversation}
                     />
                   }
+                  sessionIdentity={formatConversationSessionIdentity({
+                    node: ((conversationTree?.nodes ?? []) as ConversationNode[])
+                      .find((node) => node.id === conversationView.selectedConversationId),
+                    workspaceMode: w?.workspace_mode,
+                    isChildView: conversationView.isChildView,
+                    selectedTitle: conversationView.breadcrumb.at(-1)?.title,
+                  })}
                   viewedRuntime={conversationView.viewedRuntimeText}
                   notice={conversationView.notice}
                   workflowId={selected}

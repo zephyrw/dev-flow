@@ -101,6 +101,7 @@ export function ExecutionPanel({
   workflowId,
   conversationId,
   isChildView,
+  sessionIdentity,
   onCopyPublicText,
 }: {
   entries: LogEntry[];
@@ -119,6 +120,7 @@ export function ExecutionPanel({
   workflowId?: string;
   conversationId?: string;
   isChildView?: boolean;
+  sessionIdentity?: string;
   onCopyPublicText?: (text: string) => void;
 }) {
   const scroll = useRef<HTMLDivElement>(null);
@@ -220,22 +222,14 @@ export function ExecutionPanel({
       <div className="execution-heading">
         <div className="execution-heading-left">
           <h2>执行过程</h2>
-          <span
-            className={`conn-pill ${connected ? "connected" : "reconnecting"}`}
-            title="页面与服务的事件连接状态；模型活动见右上角当前运行信息"
-          >
-            <span className="conn-dot" />
-            <small>{connected ? "已连接" : "重连中"}</small>
-          </span>
-          <button
-            type="button"
-            className="btn-text"
-            onClick={copyPublic}
-            aria-label="复制公开文本"
-            title="复制公开文本"
-          >
-            {copied ? "已复制" : "复制公开文本"}
-          </button>
+          {sessionIdentity && (
+            <span
+              className="execution-session-badge"
+              title={sessionIdentity}
+            >
+              {sessionIdentity}
+            </span>
+          )}
         </div>
         <button
           className="btn-icon-close"
@@ -266,16 +260,6 @@ export function ExecutionPanel({
         </p>
       )}
       {breadcrumb}
-      {viewedRuntime && (
-        <p
-          className="conversation-view-runtime"
-          title={
-            typeof viewedRuntime === "string" ? viewedRuntime : undefined
-          }
-        >
-          {viewedRuntime}
-        </p>
-      )}
       <div
         className="logs timeline-stream"
         ref={scroll}

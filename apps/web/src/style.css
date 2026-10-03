@@ -546,12 +546,23 @@ aside .mark {
   transition: color var(--transition);
 }
 
-.flow-nav-item:hover .flow-nav-btn {
-  color: #f1f5f9;
+.flow-nav-btn,
+.flow-nav-btn:hover,
+.flow-nav-btn:focus,
+.flow-nav-btn:active {
+  background: transparent !important;
+  border: 0 !important;
+  box-shadow: none !important;
 }
 
-.flow-nav-item.active .flow-nav-btn {
-  color: #ffffff;
+.flow-nav-item:hover .flow-nav-btn,
+.flow-nav-btn:hover {
+  color: #f1f5f9 !important;
+}
+
+.flow-nav-item.active .flow-nav-btn,
+.flow-nav-item.active .flow-nav-btn:hover {
+  color: #ffffff !important;
 }
 
 .flow-nav-btn .flow-title-text {
@@ -1724,10 +1735,41 @@ select:focus {
   gap: 10px;
 }
 
+.task-title-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: transparent !important;
+  border: none !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  box-shadow: none !important;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+}
+
+.task-title-btn:hover .task-title {
+  color: var(--primary);
+}
+
+.task-chevron {
+  font-size: 10px;
+  color: var(--text-light);
+  display: inline-block;
+  transition: transform var(--transition);
+}
+
+.task-chevron.expanded {
+  transform: rotate(90deg);
+}
+
 .task-title {
   font-size: 13.5px;
   font-weight: 600;
   color: var(--text-main);
+  transition: color var(--transition);
 }
 
 .task-summary {
@@ -1929,6 +1971,22 @@ select:focus {
 .execution-heading h2 {
   font-size: 14px;
   font-weight: 700;
+}
+
+.execution-session-badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 11px;
+  font-weight: 500;
+  padding: 1px 8px;
+  border-radius: var(--radius-full);
+  background: #ffffff;
+  border: 1px solid var(--border-medium);
+  color: var(--text-muted);
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .conn-pill {
@@ -2917,6 +2975,18 @@ select:focus {
   min-width: 0;
 }
 
+.file-diff-modal pre.file-diff,
+.diff-code-scroll.file-diff {
+  border-radius: 0 !important;
+  padding: 0 !important;
+  max-height: none !important;
+}
+
+.file-diff-modal pre.file-diff {
+  padding: 16px !important;
+  max-height: 65vh !important;
+}
+
 .diff-loading-state,
 .diff-empty-state,
 .diff-no-selection {
@@ -3337,17 +3407,24 @@ select:focus {
 }
 
 .plan-toc-sidebar {
-  width: min(240px, 40%);
-  flex-shrink: 0;
+  position: relative !important;
+  width: min(240px, 40%) !important;
+  height: auto !important;
+  max-height: 100% !important;
+  top: auto !important;
+  bottom: auto !important;
+  left: auto !important;
+  right: auto !important;
+  z-index: 1 !important;
+  flex-shrink: 0 !important;
   background: var(--bg-surface-subtle);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-lg);
-  padding: 12px 10px;
-  display: flex;
+  padding: 12px 10px !important;
+  display: flex !important;
   flex-direction: column;
   gap: 8px;
   min-height: 0;
-  max-height: 100%;
   box-sizing: border-box;
   overflow: hidden;
 }
@@ -3646,15 +3723,19 @@ select:focus {
 }
 
 /* Responsive Media Queries */
-@media (max-width: 1280px) {
+@media (max-width: 1280px) and (min-width: 901px) {
   .workflow-workbench-layout.with-execution .execution-sidebar,
   .workspace-columns.with-execution .execution-sidebar {
-    position: absolute;
-    right: 0;
-    top: 0;
-    bottom: 0;
-    z-index: 10;
-    box-shadow: -10px 0 25px rgba(0, 0, 0, 0.1);
+    position: relative;
+    max-width: 40%;
+    min-width: 260px;
+    flex-shrink: 1;
+    z-index: 2;
+    box-shadow: none;
+  }
+  .workflow-workbench-layout.with-execution .workflow-main-column {
+    flex: 1 1 60%;
+    min-width: 300px;
   }
 }
 
@@ -3673,6 +3754,30 @@ select:focus {
   .workbench > main {
     margin-left: 68px;
     padding: 12px 14px;
+  }
+  .workflow-workbench-layout.with-execution {
+    flex-direction: column !important;
+    overflow-y: auto !important;
+    gap: 16px;
+  }
+  .workflow-workbench-layout.with-execution > .workflow-main-column {
+    width: 100% !important;
+    min-width: 0 !important;
+    /* Keep the reader bounded: fullscreen snapshots belong to content/toc scrolls. */
+    flex: 0 0 max(640px, 75vh) !important;
+    overflow: hidden !important;
+  }
+  .workflow-workbench-layout.with-execution .execution-sidebar {
+    width: 100% !important;
+    min-width: 0 !important;
+    max-width: none !important;
+    flex: 0 0 auto !important;
+    flex-shrink: 1 !important;
+    min-height: 360px;
+    position: relative !important;
+  }
+  .workflow-workbench-layout.with-execution > .execution-sidebar .resize-handle {
+    display: none;
   }
   .stage-track {
     overflow-x: auto;
@@ -3843,4 +3948,177 @@ select:focus {
 .guidance-actions button {
   padding: 5px 12px;
   font-size: 12.5px;
+}
+
+/* ==========================================================================
+   Modern Review Results Layout (W11)
+   ========================================================================== */
+
+.review-results {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.review-header-summary {
+  padding: 16px 20px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+}
+
+.review-header-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.review-status-lead {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-main);
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.review-verdict-badge {
+  font-size: 11.5px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface-subtle);
+  color: var(--text-muted);
+  border: 1px solid var(--border-medium);
+}
+
+.review-verdict-badge.pass {
+  background: var(--color-success-bg);
+  border-color: var(--color-success-border);
+  color: var(--color-success-text);
+}
+
+.review-verdict-badge.warn {
+  background: var(--color-warning-bg);
+  border-color: var(--color-warning-border);
+  color: var(--color-warning-text);
+}
+
+.review-badge-metrics {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.review-metric-pill {
+  font-size: 11.5px;
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+  background: var(--bg-surface-subtle);
+  color: var(--text-muted);
+  border: 1px solid var(--border-subtle);
+}
+
+.review-summary-content {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.review-snapshot-details {
+  font-size: 12px;
+  color: var(--text-muted);
+  padding: 6px 12px;
+  background: var(--bg-surface-subtle);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle);
+}
+
+.review-snapshot-details summary {
+  cursor: pointer;
+  font-weight: 500;
+}
+
+.review-findings-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.review-finding-card {
+  padding: 14px 18px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-xs);
+}
+
+.finding-header h3 {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text-main);
+  margin: 0;
+}
+
+.finding-location {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--primary);
+  margin: 4px 0 10px;
+}
+
+.finding-fields-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: var(--bg-surface-subtle);
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-subtle);
+}
+
+.finding-field-item {
+  font-size: 12px;
+  line-height: 1.5;
+  margin: 0;
+  color: var(--text-main);
+}
+
+.finding-field-item .field-tag {
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.review-repair-section {
+  padding: 14px 18px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+
+.review-repair-section h3,
+.review-section-block h3 {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-main);
+  margin: 0 0 8px;
+}
+
+.review-section-block {
+  padding: 12px 16px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+}
+
+.review-bullets-list,
+.review-files-list {
+  margin: 0;
+  padding-left: 20px;
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.6;
 }
