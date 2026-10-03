@@ -99,12 +99,6 @@ export function TaskTree({ detail, title }: { detail: any; title?: string }) {
       {leaf && submitted > 0 && (
         <p className="notice-subtle" aria-label="实现记录">
           已提交实现 {submitted}/{detail.tasks.length}
-          。基础测试未通过会标为“自检未通过”，实现记录保留；完成统计按当前测试结果计算。
-        </p>
-      )}
-      {native && (
-        <p className="notice-subtle" aria-label="原生执行">
-          根据执行模型的完成回执和实际文件变更同步实施进度；测试结果与仓库提交分别展示。
         </p>
       )}
       {!leaf && !native && (

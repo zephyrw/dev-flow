@@ -44,10 +44,12 @@ export function readPlanMaterial(
   // Reference-only documents are current originals, not versioned prose copies.
   // A path alone is insufficient: require the registered document and its plan link.
   const registered = store.get<ProjectDocument>("project_document", `doc_${workflowId}_plan`);
+  const effectiveMaterialPath = record.material_path ?? registered?.path;
   if (!record.material_id && !currentDoc?.material_id && registered?.path &&
       registered.workflow_id === workflowId && registered.document_type === "plan" &&
-      registered.revision === revision && registered.hash === "" && !registered.content &&
-      record.material_path && resolve(record.material_path) === resolve(registered.path)) {
+      registered.revision === revision &&
+      registered.hash === "" && !registered.content &&
+      effectiveMaterialPath && resolve(effectiveMaterialPath) === resolve(registered.path)) {
     requireCondition(currentDoc?.material_status !== "pending" && currentDoc?.material_status !== "conflict",
       currentDoc?.material_status === "conflict" ? "PLAN_MATERIAL_CONFLICT" : "PLAN_MATERIAL_PENDING",
       "计划原件注册尚未就绪", 409);
@@ -121,6 +123,7 @@ export function readPlanMaterial(
   }
 
   let markdown: string | undefined;
+  let locator: any;
   let sourceType: "project" | "result_pending" | "platform_legacy" = "project";
 
   if (material) {
@@ -186,13 +189,52 @@ export function readPlanMaterial(
       sourceType = "platform_legacy";
     } else {
       // A bound plan never becomes a legacy DB copy merely because its original disappeared.
-      requireCondition(record.material_path, "PLAN_MATERIAL_LOST", "已绑定计划缺少项目材料定位", 409);
-      const locator = resolveMaterialLocator({ store, workflowId, kind: "plan", revision, customRelPath: record.material_path });
+      requireCondition(effectiveMaterialPath, "PLAN_MATERIAL_LOST", "已绑定计划缺少项目材料定位", 409);
+      locator = resolveMaterialLocator({ store, workflowId, kind: "plan", revision, customRelPath: effectiveMaterialPath });
       const raw = readMaterialFile(locator.workspace_root, locator.relative_path);
-      requireCondition(raw, "PLAN_MATERIAL_LOST", "已绑定的计划原件已丢失", 409);
-      markdown = raw.toString("utf8");
-      sourceType = "project";
+      const expectedHash = record.plan.design_ref?.content_hash;
+      const fileHash = raw ? hash(raw.toString("utf8").replace(/\r\n/g, "\n")) : undefined;
+      const isFileValid = Boolean(raw) && (!expectedHash || fileHash === expectedHash);
 
+      const currentWf = store.get<{ plan_revision: number }>("workflow", workflowId);
+      const isCurrentVersion = !currentWf || currentWf.plan_revision === revision;
+
+      if (isFileValid) {
+        markdown = raw!.toString("utf8");
+        sourceType = "project";
+      } else if (!isCurrentVersion) {
+        // 仅在历史版本上允许从快照回退供旧问答只读阅读，但不得获得当前权威资格
+        const snapshot = store.get<{ content: string; hash: string }>(
+          "plan_revision_content",
+          `${workflowId}-${revision}`,
+        );
+        if (
+          snapshot?.content &&
+          (!expectedHash || (snapshot.hash ?? hash(snapshot.content.replace(/\r\n/g, "\n"))) === expectedHash)
+        ) {
+          markdown = snapshot.content;
+          sourceType = "platform_legacy";
+        } else {
+          const document = store
+            .list<ProjectDocument>("project_document", workflowId)
+            .find(
+              (d) =>
+                d.revision === revision &&
+                ["plan", "repair_plan"].includes(d.document_type),
+            );
+          if (document?.content && (!expectedHash || hash(document.content.replace(/\r\n/g, "\n")) === expectedHash)) {
+            markdown = document.content;
+            sourceType = "platform_legacy";
+          }
+        }
+      }
+
+      if (!markdown) {
+        requireCondition(raw, "PLAN_MATERIAL_LOST", "已绑定的计划原件已丢失", 409);
+        requireCondition(fileHash === expectedHash, "PLAN_DOCUMENT_HASH_MISMATCH", "计划正文与当前版本不一致", 409);
+        markdown = raw!.toString("utf8");
+        sourceType = "project";
+      }
     }
   }
 
@@ -211,8 +253,9 @@ export function readPlanMaterial(
     409,
   );
   const workspace = material && store.get<Workspace>("workspace", material.workspace_id);
-  const path = material && workspace ? resolve(workspace.root, material.path) : undefined;
-  return { ...record, markdown, path, document_path: path, source_type: sourceType, authority_ready: material?.status === "verified" && sourceType === "project" };
+  const path = locator?.absolute_path ?? (material && workspace ? resolve(workspace.root, material.path) : undefined);
+  const isAuthoritative = sourceType === "project" && (material ? material.status === "verified" : Boolean(record.material_path));
+  return { ...record, markdown, path, document_path: path, source_type: sourceType, authority_ready: isAuthoritative };
 }
 
 /** One authority verdict for approval and dispatch. Pending/legacy prose is display-only. */

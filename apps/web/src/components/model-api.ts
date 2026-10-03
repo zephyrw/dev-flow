@@ -817,9 +817,6 @@ export function formatApiError(error: unknown): string {
   if (typeof error === "string") return error;
   const api = error as ApiError;
   if (api.message) {
-    if (api.code && api.code !== "INVALID_RESPONSE") {
-      return `${api.message}（${api.code}）`;
-    }
     return api.message;
   }
   if (error instanceof Error) return error.message;

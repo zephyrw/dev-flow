@@ -14,7 +14,7 @@ import type { DispatchContext } from "../../contracts/src/model-routing.js";
 import { bindRepairAssignment, closeOpenRepairBatches } from "./repair-model-service.js";
 import { readMaintenanceMarker } from "../../installer/src/transaction.js";
 import { QualityCoordinator } from "./quality-coordinator.js";
-import { DocumentService } from "./document-service.js";
+import { DocumentService, type ProjectDocument } from "./document-service.js";
 import {
   AsideSessionService,
   ASIDE_TIMEOUT_MS,
@@ -727,19 +727,22 @@ export class Engine {
           this.invalidate(key, "计划版本变化，旧验收与测试不能沿用");
           if (w.run_id) this.auth.revokeRun(w.run_id);
         }
+        const existingDoc = !document ? this.store.get<ProjectDocument>("project_document", `doc_${key}_plan`) : undefined;
+        const materialPath = document?.path ?? (existingDoc?.path ? existingDoc.path : undefined);
         const record: PlanRecord = {
           id: `${key}-${revision}`,
           workflow_id: key,
           revision,
           hash: validated.hash,
           plan: { ...validated.plan, markdown: undefined },
-          ...(document?.path ? { material_id: undefined, material_path: document.path } : {}),
+          ...(materialPath ? { material_id: undefined, material_path: materialPath } : {}),
           created_at: now(),
         };
         this.store.put("plan", record.id, key, record);
-        if (document) {
+        if (document || existingDoc) {
+          const docRef = document ?? existingDoc!;
           this.store.put("planning_document", key, key, {
-            document_id: document.id, plan_revision: revision, path: document.path,
+            document_id: docRef.id, plan_revision: revision, path: docRef.path,
           });
         }
         const state = w.plan_revision ? "REPAIR_PLAN_PENDING" : "PLAN_PENDING";
@@ -3218,6 +3221,7 @@ export class Engine {
       this.bindAccountRecoveryRun(bound, pendingRetry);
       this.store.remove("pending_model_retry", w.id);
       this.store.remove("pending_dispatch_purpose", w.id);
+      this.store.remove("queue_wait", w.id);
       return bound;
     });
     for (const msg of this.store

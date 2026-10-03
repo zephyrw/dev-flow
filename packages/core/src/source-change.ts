@@ -308,6 +308,10 @@ export class SourceChangeService {
         if (document) this.engine.store.put("planning_document", key, key, {
           ...document, plan_revision: w.plan_revision + 1,
         });
+        const projectDoc = this.engine.store.get<any>("project_document", `doc_${key}_plan`);
+        if (projectDoc) this.engine.store.put("project_document", projectDoc.id, key, {
+          ...projectDoc, revision: w.plan_revision + 1,
+        });
         const binding = this.engine.binding(key, "approve");
         const receipt = this.engine.auth.recordConfirmation("approve", binding);
         workflow = this.engine.approve(key, receipt, binding);

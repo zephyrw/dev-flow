@@ -163,6 +163,14 @@ const CATALOG_MODELS: Array<{
     adapterId: "cursor-agent",
     models: [
       {
+        id: "grok-4.7",
+        label: "Grok 4.7",
+        values: ["low", "medium", "high", "xhigh"],
+        defaultValue: "high",
+        fixedValue: "high",
+        transport: "none",
+      },
+      {
         id: "cursor-grok-4.6-high",
         label: "Grok 4.6 High",
         values: ["low", "medium", "high", "xhigh"],

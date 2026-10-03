@@ -4,7 +4,7 @@ import type {
   AgyQuotaSnapshot,
 } from "../../../../packages/contracts/src/agy-account.js";
 import { agyApi } from "./agy-api.js";
-import { formatQuotaWindow } from "../../../../packages/presentation/src/agy-accounts.js";
+import { formatSnapshotQuotaWindow } from "../../../../packages/presentation/src/agy-accounts.js";
 interface View {
   realm: { active_account_id?: string | null; service_state?: string };
   accounts: AgyAccountDto[];
@@ -38,12 +38,8 @@ export function AgyRuntimeAccount({ modelId }: { modelId?: string }) {
       !!modelId &&
       s.model_ids.includes(modelId),
   );
-  const weekly = formatQuotaWindow(
-    snapshot?.windows.find((w) => w.kind === "weekly"),
-  );
-  const short = formatQuotaWindow(
-    snapshot?.windows.find((w) => w.kind === "five_hour"),
-  );
+  const weekly = formatSnapshotQuotaWindow(snapshot, "weekly");
+  const short = formatSnapshotQuotaWindow(snapshot, "five_hour");
   return (
     <a
       href="/accounts"
@@ -55,7 +51,7 @@ export function AgyRuntimeAccount({ modelId }: { modelId?: string }) {
     >
       账号管理
       {account
-        ? `：${account.identity.email} · 上次实测周 ${weekly.percentageText} / 五小时 ${short.percentageText}`
+        ? `：${account.identity.email} · 周额度 ${weekly.percentageText} / 五小时 ${short.percentageText}`
         : "：未纳入管理"}
     </a>
   );

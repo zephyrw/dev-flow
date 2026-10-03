@@ -1264,7 +1264,7 @@ const CentralWorkspace = React.memo(
       </div>
     ) : (
       <div className="empty">
-        计划尚未提交。先由 GPT-6 完成调研和任务拆解。
+        正在调研和制定计划…
       </div>
     );
 
@@ -2814,7 +2814,7 @@ function App() {
                 <div className="workspace-columns">
                   {detail.loading ? (
                     <section className="panel" role="status">
-                      正在加载任务明细，状态和操作已可用…
+                      正在加载任务明细…
                     </section>
                   ) : (
                     <CentralWorkspace

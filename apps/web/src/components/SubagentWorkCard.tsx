@@ -17,7 +17,7 @@ export const PAUSE_ALL_LABEL = "暂停当前主工作会话及全部子 Agent";
 export const WORK_CARD_PREFERENCE_PREFIX = "devflow.subagent-work-card.";
 
 export type WorkCardPreference = "expanded" | "collapsed";
-export type WorkCardVisibility = "hidden" | "capability" | "complete" | "active";
+export type WorkCardVisibility = "hidden" | "complete" | "active";
 
 export type WorkCardNode = Pick<
   ConversationNode,
@@ -69,7 +69,6 @@ export type SubagentWorkCardModel = {
   rows: SubagentWorkRow[];
   historyRows: SubagentWorkRow[];
   chips: WorkCardChip[];
-  capabilityNotice?: string;
   hasActiveWork: boolean;
 };
 
@@ -170,19 +169,6 @@ export function isSettledConversationStatus(status: ConversationStatus): boolean
   return status === "completed" || status === "cancelled";
 }
 
-export function subagentCapabilityNotice(
-  capabilities: SubagentCapabilities,
-): string | undefined {
-  const discovery = capabilities.discovery;
-  if (discovery === "native" || discovery === "scoped-record") return undefined;
-  const reason = capabilities.reason?.trim();
-  if (reason) return reason;
-  if (discovery === "unavailable") {
-    return "当前工具无法读取子 Agent，不能据此认为没有子 Agent。";
-  }
-  return "当前工具尚未报告子 Agent 能力，不能据此认为没有子 Agent。";
-}
-
 export function latestAttemptByConversation(
   attempts: WorkCardAttempt[],
 ): WorkCardAttempt[] {
@@ -214,10 +200,9 @@ export function buildSubagentWorkCardModel(input: {
   const { rows, historyRows } = splitWorkRows(nodes, attempts, byId);
   const hasActiveWork = counts.working > 0;
   const visibility = workCardVisibility(
-    nodes.length,
+    rows.length + historyRows.length,
     counts,
     attempts,
-    input.capabilities,
   );
   return {
     visibility,
@@ -226,7 +211,6 @@ export function buildSubagentWorkCardModel(input: {
     rows,
     historyRows,
     chips: workCardChips(counts),
-    capabilityNotice: subagentCapabilityNotice(input.capabilities),
     hasActiveWork,
   };
 }
@@ -235,13 +219,6 @@ export function SubagentWorkCard(props: SubagentWorkCardProps) {
   const model = buildSubagentWorkCardModel(props);
   useAutoExpandWorkCard(props, model.hasActiveWork);
   if (model.visibility === "hidden") return null;
-  if (model.visibility === "capability") {
-    return (
-      <section className="subagent-work-card" aria-label="子 Agent 工作卡">
-        <p className="subagent-work-card-capability">{model.capabilityNotice}</p>
-      </section>
-    );
-  }
   if (model.visibility === "complete") {
     return (
       <CompleteWorkCard
@@ -393,13 +370,8 @@ function workCardVisibility(
   subagentCount: number,
   counts: ConversationWorkCounts,
   attempts: WorkCardAttempt[],
-  capabilities: SubagentCapabilities,
 ): WorkCardVisibility {
-  if (subagentCount === 0) {
-    const discovery = capabilities.discovery;
-    if (discovery === "native" || discovery === "scoped-record") return "hidden";
-    return "capability";
-  }
+  if (subagentCount === 0) return "hidden";
   if (isAllComplete(counts, attempts)) return "complete";
   return "active";
 }

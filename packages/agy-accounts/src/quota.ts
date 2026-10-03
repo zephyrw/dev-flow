@@ -51,3 +51,98 @@ export function requiredQuotaPools<T extends { pool_id: string; model_ids: strin
   if (!models.every((model) => [...selected.values()].some((pool) => modelCovered(pool.model_ids, model)))) return null;
   return [...selected.values()];
 }
+
+export interface EffectiveWeeklyQuotaResult {
+  fraction: number | null;
+  isProjectedReset: boolean;
+  isValid: boolean;
+  hasInvalidResetAt: boolean;
+}
+
+export function computeEffectiveWeeklyQuota(
+  window: QuotaWindow | undefined,
+  nowMs: number = Date.now(),
+  clockSkewMs: number = 0,
+): EffectiveWeeklyQuotaResult {
+  if (
+    !window ||
+    window.kind !== "weekly" ||
+    window.status !== "observed" ||
+    typeof window.remaining_fraction !== "number" ||
+    !Number.isFinite(window.remaining_fraction) ||
+    window.remaining_fraction < 0 ||
+    window.remaining_fraction > 1
+  ) {
+    return {
+      fraction: null,
+      isProjectedReset: false,
+      isValid: false,
+      hasInvalidResetAt: false,
+    };
+  }
+
+  // 1. 周额度没有重置时间（null 或空字符串）：判定为 100%
+  if (!window.reset_at) {
+    return {
+      fraction: 1,
+      isProjectedReset: window.remaining_fraction < 1,
+      isValid: true,
+      hasInvalidResetAt: false,
+    };
+  }
+
+  // 2. 有重置时间，检查是否合法时间
+  const resetMs = Date.parse(window.reset_at);
+  if (!Number.isFinite(resetMs)) {
+    // 非空非法时间：保留原状态/异常，不能误变满额
+    return {
+      fraction: window.remaining_fraction,
+      isProjectedReset: false,
+      isValid: false,
+      hasInvalidResetAt: true,
+    };
+  }
+
+  // 3. 当前时间大于或等于重置时间（包含等于边界）：已到期恢复 100%
+  if (nowMs >= resetMs + clockSkewMs) {
+    return {
+      fraction: 1,
+      isProjectedReset: window.remaining_fraction < 1,
+      isValid: true,
+      hasInvalidResetAt: false,
+    };
+  }
+
+  // 4. 重置时间在未来：保留实际观测值
+  return {
+    fraction: window.remaining_fraction,
+    isProjectedReset: false,
+    isValid: true,
+    hasInvalidResetAt: false,
+  };
+}
+
+export function resolveEffectiveQuotaWindows(
+  windows: QuotaWindow[],
+  nowMs: number = Date.now(),
+): QuotaWindow[] {
+  // 不完整窗口集合不得投影满额，保留原始观测及 pending_quota 状态
+  if (!hasDualQuotaWindows(windows)) {
+    return windows;
+  }
+  return windows.map((w) => {
+    if (w.kind !== "weekly") return w;
+    const eff = computeEffectiveWeeklyQuota(w, nowMs);
+    if (!eff.isValid || eff.hasInvalidResetAt || eff.fraction === null) {
+      return w;
+    }
+    if (eff.isProjectedReset || (w.remaining_fraction === 1 && w.reset_at && eff.fraction === 1 && nowMs >= Date.parse(w.reset_at))) {
+      return {
+        ...w,
+        remaining_fraction: 1,
+        reset_at: null,
+      };
+    }
+    return w;
+  });
+}

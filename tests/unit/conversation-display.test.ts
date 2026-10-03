@@ -237,14 +237,11 @@ describe("SA-U02 conversation display", () => {
     expect(readable.counts.working).toBe(0);
   });
 
-  it("shows a capability notice when discovery is unknown or unavailable", () => {
+  it("hides empty cards when discovery is unknown or unavailable", () => {
     const unknown = model({
       capabilities: unknownSubagentCapabilities(),
     });
-    expect(unknown.visibility).toBe("capability");
-    expect(unknown.capabilityNotice).toBe(
-      "当前工具尚未报告子 Agent 能力，不能据此认为没有子 Agent。",
-    );
+    expect(unknown.visibility).toBe("hidden");
     const unavailable = model({
       capabilities: {
         ...unknownSubagentCapabilities(),
@@ -252,8 +249,8 @@ describe("SA-U02 conversation display", () => {
         reason: "当前 CLI 无法列出子 Agent",
       },
     });
-    expect(unavailable.visibility).toBe("capability");
-    expect(unavailable.capabilityNotice).toBe("当前 CLI 无法列出子 Agent");
+    expect(unavailable.visibility).toBe("hidden");
+    expect(model({ nodes: [node("child", { parent_id: "root1" })] }).visibility).toBe("hidden");
   });
 
   it("shows 子 Agent · 已完成 N and keeps history rows", () => {

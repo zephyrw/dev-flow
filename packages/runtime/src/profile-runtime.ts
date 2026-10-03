@@ -284,8 +284,9 @@ export class ProfileRuntime {
       plan_hash?: string;
     },
   ) {
-    const plan = w.plan_revision
-      ? readPlanMaterial(this.engine.store, w.id, w.plan_revision)
+    const targetRevision = question.plan_revision ?? w.plan_revision;
+    const plan = targetRevision
+      ? readPlanMaterial(this.engine.store, w.id, targetRevision)
       : null;
     const value = await this.invoke(
       w,
@@ -491,7 +492,7 @@ export class ProfileRuntime {
     const record = this.engine.plan(w.id);
     const document = readPlanMaterial(this.engine.store, w.id, w.plan_revision);
     const { markdown: _markdown, ...plan } = record.plan;
-    return { ...record, plan, path: document.path,
+    return { ...record, plan, path: document.path, markdown: document.markdown,
       instruction: "读取 path 指向的项目计划原件；保留原始需求与开发目标，真实完成后更新任务勾选框，可追加进度、未解决问题及用户明确授权的补充，不另存多份计划或用恢复摘要覆盖原文。" };
   }
   private executeMaterials(w: Workflow, run: Run) {
@@ -1624,6 +1625,7 @@ function asideQuestionMaterials(
           revision: plan.revision,
           hash: plan.hash,
           path: plan.path,
+          markdown: plan.markdown,
         }
       : null,
     plan_summary: asidePlanSummary(plan),

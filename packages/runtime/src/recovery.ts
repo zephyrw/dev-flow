@@ -204,6 +204,7 @@ import { ConversationService } from "../../core/src/conversation-service.js";
 import {
   ConversationControlService,
   type StopPort,
+  type StopPortTarget,
 } from "../../core/src/conversation-control.js";
 import {
   ConversationRecovery,
@@ -360,6 +361,55 @@ export function reconcileProcesses(engine: Engine, key: string) {
   });
   return results;
 }
+/** Rebuild the pause receipt lost with the controller, using whole-tree exit facts. */
+export async function reconcileRestartedConversations(engine: Engine, key: string) {
+  const w = engine.get(key);
+  if (w.state !== "RECOVERY_REQUIRED" || w.blocker?.code !== "CONTROLLER_RESTARTED") return;
+  const run = w.run_id ? engine.store.get<Run>("run", w.run_id) : undefined;
+  requireCondition(run && engine.store.get("process_record", run.id),
+    "PROCESS_RECORD_MISSING", "缺少中断运行的进程登记，不能确认旧会话已停止");
+  // Validate every registered tree before releasing leases or changing conversations.
+  reconcileProcesses(engine, key);
+  const conversations = new ConversationService(engine.store);
+  const tree = conversations.getTree(key);
+  const rootId = conversations.resolveControlRoot(key, tree);
+  if (rootId) {
+    const controls = new ConversationControlService(engine.store, conversations, {
+      async stopConversation(target: StopPortTarget) {
+        const attempt = target.attempt_id
+          ? engine.store.get<import("../../contracts/src/index.js").ConversationAttempt>(CONVERSATION_ENTITY.attempt, target.attempt_id)
+          : undefined;
+        const record = attempt && engine.store.get<Record<string, unknown>>("process_record", attempt.run_id);
+        const confirmed = attempt?.workflow_id === key && record &&
+          observeProcessRecordSync(record).state === "confirmed_exited";
+        return { accepted: !!confirmed, confirmation: confirmed ? "exited" : "unknown" };
+      },
+    });
+    const generation = Math.max(...tree.attempts.filter(a => a.conversation_id === rootId).map(a => a.generation));
+    const pause = await controls.pauseTree(key, {
+      request_id: `restart:${key}:${rootId}:${generation}`, action: "pause",
+      root_id: rootId, expected_generation: generation,
+    });
+    requireCondition(pause.unconfirmed_count === 0, "STOP_UNCONFIRMED", "仍有旧子会话可能执行");
+  }
+  engine.store.transaction(() => {
+    // Do not reuse an interruption from an earlier user pause or an older role.
+    const interruption = {
+      category: "pause", source: "controller", at: now(),
+      prior_run_id: run!.id, run_id: run!.id, prior_purpose: run!.purpose,
+      prior_stage: run!.stage, review_phase: run!.dispatch_context?.review_phase,
+      repair_batch_id: run!.repair_batch_id, logical_round_id: run!.logical_round_id,
+      message: "服务重启中断了执行，旧进程树已确认退出", next_action: "继续原任务",
+    };
+    engine.store.put("interruption", key, key, interruption);
+    engine.store.put("run_stop", run!.id, key, interruption);
+    if (run!.status === "running") engine.store.put("run", run!.id, key, {
+      ...run, status: "stopped", ended_at: now(),
+    });
+    engine.store.event(key, w.project_id, "RestartConversationsReconciled", { run_id: run!.id });
+  });
+}
+
 export function resumeApproved(
   engine: Engine,
   key: string,

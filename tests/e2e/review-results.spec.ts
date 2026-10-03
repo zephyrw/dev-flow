@@ -1,10 +1,25 @@
 import { test, expect } from "@playwright/test";
 
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => {
+    window.localStorage.setItem("devflow.first_run_completed", "true");
+  });
+});
+
 test("review tab renders current findings and repair instructions without legacy coverage", async ({ page }) => {
   const workflow = { id: "wf-review-results", project_id: "p1", title: "代码复核结果展示",
     state: "EXECUTING", stage: "execute", plan_revision: 1, run_id: "repair-run", version: 4 };
+  const project = {
+    id: "p1",
+    name: "隔离展示测试",
+    repositories: [{ id: "main", path: "/tmp/repo" }],
+    commands: [],
+    services: [],
+    data: { mode: "directory" as const },
+    browser_scenes: [],
+  };
   const detail = {
-    workflow, project: { id: "p1", name: "隔离展示测试" },
+    workflow, project,
     plan: { plan: { task_model: "leaf-v1", modules: [], tasks: [], tests: [] } },
     tasks: [], test_progress: { total: 1, passed: 0, failed: 0, cases: [] }, evidence: [], runs: [], events: [], attention: null,
     review: { verdict: "changes_required", plan_revision: 1, summary: "只读复核确认十项需修复的代码问题。",
@@ -18,7 +33,7 @@ test("review tab renders current findings and repair instructions without legacy
   await page.route("**/api/**", (route) => {
     const path = new URL(route.request().url()).pathname;
     if (path.endsWith("/functional-issues") || path.endsWith("/asides")) return route.fulfill({ json: [] });
-    if (path.endsWith("/projects")) return route.fulfill({ json: [detail.project] });
+    if (path.endsWith("/projects")) return route.fulfill({ json: [project] });
     if (path.endsWith("/workflows")) return route.fulfill({ json: [workflow] });
     return route.fulfill({ json: detail });
   });

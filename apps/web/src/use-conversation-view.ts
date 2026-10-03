@@ -6,6 +6,7 @@ import type {
 } from "../../../packages/contracts/src/conversation.js";
 import { resolveConversationRuntimeDisplay } from "../../../packages/core/src/conversation-input.js";
 import { runtimeToolNames } from "../../../packages/presentation/src/run-observation.js";
+import { conversationRuntimeLabels } from "../../../packages/presentation/src/model-display.js";
 import type { LogEntry } from "./logs.js";
 
 export const CONVERSATION_SEARCH_PARAM = "conversation";
@@ -504,8 +505,7 @@ export function viewedConversationRuntimeText(input: {
     input.title,
     conversationStatusLabel(input.status),
     tool,
-    runtime.model_label,
-    runtime.effort_label,
+    ...conversationRuntimeLabels(runtime),
   ]
     .filter(Boolean)
     .join(" · ");

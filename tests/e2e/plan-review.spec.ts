@@ -1,7 +1,13 @@
 import { test, expect } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { createNative, openFixtureWorkflow } from "./native-helper.js";
+import { createNative, openFixtureWorkflow, testInstance } from "./native-helper.js";
+
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => {
+    window.localStorage.setItem("devflow.first_run_completed", "true");
+  });
+});
 
 test("合并后的任务行状态、全屏阅读与计划问答层级兼容", async ({ page }) => {
   await openFixtureWorkflow(page);
@@ -167,7 +173,7 @@ test("驳回遇到计划更新时保留意见并显示错误，取消不更改�
   await dialog.getByLabel("修改意见（必填）").fill("不要丢失我的修改意见");
   const w = before.workflow;
   const result = await page.request.post(`/api/workflows/${id}/plan/reject`, {
-    headers: { Origin: "http://localhost:14811" },
+    headers: { Origin: testInstance().humanOrigin },
     data: {
       request_id: "other-client",
       expected_version: w.version,

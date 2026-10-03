@@ -36,6 +36,11 @@ export interface ProcessStopOptions {
   expectedPid?: number;
   checkNotStarted?: boolean;
 }
+export interface ProcessCleanupHooks {
+  onCleanupStart?: () => void;
+  /** Clean caller-owned descendants before inherited output pipes are judged closed. */
+  beforePipesClose?: () => Promise<void>;
+}
 export interface ProcessStopResult {
   status:
     | "confirmed_exited"
@@ -57,8 +62,8 @@ export interface ManagedProcess extends EventEmitter {
   ready: Promise<void>;
   completion: Promise<Completion>;
   stop: (reason?: ProcessStopReason) => Promise<void>;
-  pauseOutput?: () => void;
-  resumeOutput?: () => void;
+  pauseOutput?: (stream?: "stdout" | "stderr") => void;
+  resumeOutput?: (stream?: "stdout" | "stderr") => void;
   termination_reason?: ProcessStopReason;
   writeStdin: (value: string) => void;
   endStdin: () => void;
@@ -131,7 +136,7 @@ export class ProcessManager {
   setAdmissionGuard(guard?: (spec: ProcessSpec) => void) {
     this.admission = guard;
   }
-  start(spec: ProcessSpec): ManagedProcess {
+  start(spec: ProcessSpec, cleanupHooks: ProcessCleanupHooks = {}): ManagedProcess {
     this.startAttempts.add(spec.id);
     if (this.closing)
       throw new FlowError("PROCESS_MANAGER_CLOSING", "进程管理器正在关闭", 503);
@@ -203,6 +208,7 @@ export class ProcessManager {
         clearTimers();
         let confirmed = false;
         try {
+          cleanupHooks.onCleanupStart?.();
           if (child?.pid && !bound) {
             child.kill();
             const deadline = Date.now() + 5000;
@@ -283,6 +289,8 @@ export class ProcessManager {
               await new Promise((resolve) => setTimeout(resolve, 25));
             confirmed = child.exitCode !== null || child.signalCode !== null;
           } else confirmed = true;
+          if (confirmed && cleanupHooks.beforePipesClose)
+            await cleanupHooks.beforePipesClose();
           if (confirmed && child?.pid) {
             const deadline = Date.now() + 5000;
             while (!pipesClosed && Date.now() < deadline)
@@ -354,8 +362,8 @@ export class ProcessManager {
       }
       await finish(-1);
     };
-    events.pauseOutput = () => child?.stdout?.pause();
-    events.resumeOutput = () => child?.stdout?.resume();
+    events.pauseOutput = (stream = "stdout") => child?.[stream]?.pause();
+    events.resumeOutput = (stream = "stdout") => child?.[stream]?.resume();
     events.writeStdin = (value) => {
       if (!started || !child?.stdin?.writable)
         throw new Error("PROCESS_STDIN_CLOSED");

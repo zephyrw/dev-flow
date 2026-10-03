@@ -54,6 +54,17 @@ export class DocumentService {
       catch (error: any) { if (error?.code !== "EEXIST") throw error; }
     } else if (updateOriginal) {
       requireCondition(content.trim().length > 0, "EMPTY_DOCUMENT", "文档正文不能为空", 400);
+      if (existsSync(path) && existing?.revision && revision && revision > existing.revision) {
+        try {
+          const oldContent = readFileSync(path, "utf8");
+          this.store.put("plan_revision_content", `${workflowId}-${existing.revision}`, workflowId, {
+            workflow_id: workflowId,
+            revision: existing.revision,
+            content: oldContent,
+            hash: hash(oldContent.replace(/\r\n/g, "\n")),
+          });
+        } catch {}
+      }
       writeFileSync(path, content.replace(/\r\n/g, "\n"), "utf8");
     }
     const metadata = {

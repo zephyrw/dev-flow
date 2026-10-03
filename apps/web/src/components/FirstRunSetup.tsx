@@ -346,7 +346,7 @@ export function FirstRunSetup({ isOpen, onClose, onCompleted }: FirstRunSetupPro
                   🧠 规划与复核（Planner & Reviewer）
                 </div>
                 <div style={{ fontSize: "12px", color: "#57606a", marginBottom: "12px" }}>
-                  负责需求调研、制定结构化计划、审查代码质量并给出修改意见。
+                  负责需求调研、制定计划、审查代码质量并给出修改意见。
                 </div>
                 <label style={{ fontSize: "12px", display: "block", marginBottom: "4px" }}>负责工具：</label>
                 <select
