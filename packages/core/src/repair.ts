@@ -69,6 +69,11 @@ export async function repairFailure(
       "ROUND_RESULT_IDENTITY_MISMATCH",
       "INPUT_DELIVERY_UNKNOWN",
       "SESSION_CONTINUATION_UNAVAILABLE",
+      "PLAN_MATERIAL_CONFLICT",
+      "PLAN_MATERIAL_PENDING",
+      "PLAN_MATERIAL_LOST",
+      "PLAN_DOCUMENT_MISSING",
+      "PLAN_DOCUMENT_HASH_MISMATCH",
     ].includes(code)
   )
     return null;

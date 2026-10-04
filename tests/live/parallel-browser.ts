@@ -124,7 +124,7 @@ try {
         passed: true,
         environments: envs,
         results,
-        shared_lease_released: !s.store.get("lease", "browser:shared"),
+        browser_leases_released: !s.store.list<any>("lease").some(l => l.id.startsWith("browser:")),
       },
       null,
       2,

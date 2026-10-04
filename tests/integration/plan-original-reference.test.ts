@@ -1,6 +1,6 @@
 import { afterEach, expect, it } from "vitest";
-import { appendFileSync, existsSync, readFileSync, rmSync, mkdtempSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { appendFileSync, existsSync, readFileSync, rmSync, mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
+import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { setup, project, plan, proof } from "../helpers.js";
 import { objectHash } from "../../packages/core/src/util.js";
@@ -20,7 +20,7 @@ function fixture() {
   s.engine.submitPlan(w.id, input, w.version, "plan");
   return { ...s, w: s.engine.get(w.id) };
 }
-it("stores one original, accepts appended progress and hands models only its path", () => {
+it("stores one original and hands models its path and current text after appended progress", () => {
   const s = fixture();
   const material = readPlanMaterial(s.store, s.w.id, s.w.plan_revision);
   expect(material.path).toBeTruthy();
@@ -34,7 +34,7 @@ it("stores one original, accepts appended progress and hands models only its pat
   const runtime = new ProfileRuntime(s.engine, {} as any) as any;
   const materials = runtime.planReference(s.w);
   expect(materials.path).toBe(material.path);
-  expect(JSON.stringify(materials)).not.toContain("已完成开发");
+  expect(materials.markdown).toBe(current.markdown);
   expect(materials.plan.markdown).toBeUndefined();
   s.engine.exportDocuments(s.w.id);
   expect(existsSync(join(s.config.storage_root, "documents"))).toBe(false);
@@ -58,6 +58,39 @@ it("does not reject free-form progress or unresolved issues in the document", ()
   input.markdown = "# 工作计划\nTODO: 等待接口方确认\n";
   input.unresolved_decisions = ["外部接口尚未恢复"];
   expect(() => validatePlan(input)).not.toThrow();
+});
+
+it.each(["relative", "repo-qualified"])("keeps the approved %s original after an execution worktree is registered", (mode) => {
+  const s = fixture();
+  const original = readPlanMaterial(s.store, s.w.id, s.w.plan_revision);
+  const record = s.engine.plan(s.w.id);
+  const ref = `docs/plan/${s.w.id}/plan.md`;
+  // The default original has this path; both copies may later exist and differ.
+  expect(original.path).toBe(join(s.root, ref));
+  s.store.put("plan", record.id, s.w.id, { ...record,
+    plan: { ...record.plan, design_ref: { summary: "原件", file_ref: mode === "repo-qualified" ? `main:${ref}` : ref } } });
+  const authorization = proof(s.engine, s.w.id, "approve");
+  s.engine.approve(s.w.id, authorization.proof, authorization.binding);
+  const workspaceRoot = join(s.root, ".worktrees", s.w.id, "main");
+  s.store.put("workspace", "execution-ws", s.w.id, { id: "execution-ws", workflow_id: s.w.id,
+    repo_id: "main", root: workspaceRoot, source_root: s.root });
+  mkdirSync(dirname(join(workspaceRoot, ref)), { recursive: true });
+  writeFileSync(join(workspaceRoot, ref), "# 工作树中的其他副本\n");
+  const after = assertPlanMaterialReady(s.store, s.w.id, s.w.plan_revision);
+  expect(after.path).toBe(original.path);
+  expect(after.markdown).toBe(original.markdown);
+  const runtime = new ProfileRuntime(s.engine, {} as any) as any;
+  expect(runtime.planReference(s.engine.get(s.w.id)).path).toBe(original.path);
+  s.engine.exportDocuments(s.w.id);
+  expect(s.store.get<any>("project_document", `doc_${s.w.id}_plan`).path).toBe(original.path);
+});
+
+it("still rejects a changed relative reference instead of silently reading another original", () => {
+  const s = fixture();
+  const record = s.engine.plan(s.w.id);
+  s.store.put("plan", record.id, s.w.id, { ...record,
+    plan: { ...record.plan, design_ref: { summary: "其他计划", file_ref: "docs/plan/other.md" } } });
+  expect(() => readPlanMaterial(s.store, s.w.id, s.w.plan_revision)).toThrow("计划原件引用与登记路径不一致");
 });
 
 it("never rescues a missing registered original from stale plan prose", () => {

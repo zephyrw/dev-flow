@@ -249,7 +249,22 @@ export class LocalRuntime implements Runtime {
   processes: ProcessManager;
   environments: Environments;
   browser: BrowserGateway;
-  private checking = new Set<string>();
+  private checking = new Map<string, string>();
+  private beginCheck(workflow: string, run: string, invocation: string) {
+    this.checking.set(invocation, workflow);
+    const lock = this.engine.store.get<{ check_ids?: string[] }>("check_lock", workflow);
+    this.engine.store.put("check_lock", workflow, workflow, {
+      run_id: run, check_ids: [...(lock?.check_ids ?? []), invocation],
+    });
+  }
+  private endCheck(workflow: string, invocation: string) {
+    this.checking.delete(invocation);
+    const lock = this.engine.store.get<{ run_id: string; check_ids?: string[] }>("check_lock", workflow);
+    if (!lock?.check_ids?.includes(invocation)) return;
+    const ids = lock?.check_ids?.filter(value => value !== invocation) ?? [];
+    if (ids.length) this.engine.store.put("check_lock", workflow, workflow, { ...lock, check_ids: ids });
+    else this.engine.store.remove("check_lock", workflow);
+  }
   private cancelledRuns = new Set<string>();
   private executingCalls = new Map<string, number>();
   private preparing = new Map<string, Promise<void>>();
@@ -498,9 +513,7 @@ export class LocalRuntime implements Runtime {
     this.engine.store.put("check_process", processId, principal.run_id!, {
       id: processId,
     });
-    this.engine.store.put("check_lock", workflow.id, workflow.id, {
-      run_id: principal.run_id,
-    });
+    this.beginCheck(workflow.id, principal.run_id!, processId);
     let output = "";
     try {
       const proc = this.processes.start({
@@ -560,7 +573,7 @@ export class LocalRuntime implements Runtime {
       throw error;
     } finally {
       this.engine.store.remove("check_process", processId);
-      this.engine.store.remove("check_lock", workflow.id);
+      this.endCheck(workflow.id, processId);
     }
   }
   constructor(private engine: Engine) {
@@ -855,9 +868,9 @@ export class LocalRuntime implements Runtime {
       log: join(directory, run.id + ".jsonl"),
       idle_ms: this.engine.config.timeouts.idle_minutes * 60000,
       isWaiting: () =>
-        !!this.engine.store.get("resource_wait", workflow.id) ||
+        this.engine.store.list("resource_wait", workflow.id).length > 0 ||
         this.preparing.has(run.id) ||
-        this.checking.has(workflow.id),
+        [...this.checking.values()].includes(workflow.id),
       onEvent: (event) => {
         if (crossToolReceipt && event.event === "step_update" &&
             (event.step_update as any)?.step_type === "user_input" && (event.step_update as any)?.state === "DONE") {
@@ -1098,37 +1111,9 @@ export class LocalRuntime implements Runtime {
         .flatMap((t) => t.paths);
       assertMeaningfulTestFiles(ws.root, [...new Set(paths)]);
     }
-    // A workflow shares its frozen phase and may share command report paths.
-    // Different workflows remain independent users of the global test slots.
-    const unique = workflow.id;
-    requireCondition(
-      !this.checking.has(unique),
-      "CHECK_RUNNING",
-      "该工作流已有检查正在执行，请等待完成后运行下一项",
-    );
-    this.checking.add(unique);
-    let slot: string;
-    try {
-      slot = await this.engine.scheduler.waitForCapacity(
-        "test",
-        this.engine.config.scheduler.heavy_tests,
-        workflow.id,
-        principal.run_id!,
-        () => {
-          this.engine.worker(principal, workflow.id);
-          this.assertRun(workflow.id, principal.run_id!, [
-            development ? "EXECUTING" : "VERIFYING",
-          ]);
-        },
-      );
-    } catch (error) {
-      this.checking.delete(unique);
-      throw error;
-    }
-    this.checking.add(unique);
-    this.engine.store.put("check_lock", workflow.id, workflow.id, {
-      run_id: principal.run_id,
-    });
+    const unique = id("check");
+    this.beginCheck(workflow.id, principal.run_id!, unique);
+    let resourceKeys: string[] = [];
     const assertCurrent = () => {
       const current = this.assertRun(workflow.id, principal.run_id!, [
         "EXECUTING",
@@ -1154,7 +1139,7 @@ export class LocalRuntime implements Runtime {
       this.engine.config.storage_root,
       "evidence",
       workflow.id,
-      id("check"),
+      unique,
     );
     try {
       assertCurrent();
@@ -1201,6 +1186,7 @@ export class LocalRuntime implements Runtime {
           workflow.id,
           principal.run_id!,
           test.scene_id!,
+          unique,
         );
         files = [output];
         requireCondition(
@@ -1231,7 +1217,16 @@ export class LocalRuntime implements Runtime {
         const workspace = command.repo_id
           ? workspaces.find((w) => w.repo_id === command.repo_id)!
           : workspaces[0]!;
-        report = safePath(workspace.root, command.report_path!, true);
+        const dynamicReport = [...command.args, ...Object.values(command.env)]
+          .some(value => value.includes("${DEVFLOW_REPORT_PATH}"));
+        report = dynamicReport
+          ? join(dir, "command-report." + (command.parser === "junit" ? "xml" : "json"))
+          : safePath(workspace.root, command.report_path!, true);
+        resourceKeys = dynamicReport ? [] : ["report:" + report.toLowerCase()];
+        await this.engine.scheduler.waitForResources(
+          workflow.id, unique, resourceKeys, assertCurrent, unique,
+        );
+        assertCurrent();
         restoreReport = takeReportSlot(report);
         mkdirSync(dirname(report), { recursive: true });
         const env = this.engine.store.get<{
@@ -1259,7 +1254,7 @@ export class LocalRuntime implements Runtime {
           cwd: command.cwd
             ? safePath(workspace.root, command.cwd)
             : workspace.root,
-          env: { ...command.env, ...variables },
+          env: { ...Object.fromEntries(Object.entries(command.env).map(([key, value]) => [key, expand(value, variables)])), ...variables },
           timeout_ms: test.timeout_seconds * 1000,
         });
         log = join(dir, "output.log");
@@ -1447,12 +1442,11 @@ export class LocalRuntime implements Runtime {
     } finally {
       restoreReport?.();
       if (processId) this.engine.store.remove("check_process", processId);
-      this.checking.delete(unique);
-      this.engine.store.remove("check_lock", workflow.id);
+      this.endCheck(workflow.id, unique);
       this.engine.scheduler.release(
         workflow.id,
-        principal.run_id!,
-        [slot!],
+        unique,
+        resourceKeys,
         true,
       );
     }

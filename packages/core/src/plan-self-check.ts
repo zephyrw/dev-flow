@@ -39,7 +39,9 @@ export class PlanSelfCheckCoordinator {
       .sort((a, b) => a.revision - b.revision)
       .map((p) => {
         const { markdown: _markdown, ...plan } = p.plan;
-        return { ...p, plan, document_path: originalPlanPath(this.store, w.id) };
+        return { ...p, plan: { ...plan,
+          scope: { ...plan.scope, allowed_paths: [], repository_paths: {} } },
+          document_path: originalPlanPath(this.store, w.id) };
       });
   }
   private context(w: Workflow) {

@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import type { QuotaBucket } from "../../../../packages/contracts/src/run-observation.js";
 import { visibleRunObservation } from "../../../../packages/presentation/src/run-observation.js";
 import { projectRoleRuntime } from "../../../../packages/presentation/src/role-runtime.js";
+import { effectiveRuntimeQuotaWindows } from "../../../../packages/presentation/src/agy-accounts.js";
 import { QuotaPopover, QuotaWindowData } from "./QuotaPopover.js";
 import "./current-runtime.css";
 
@@ -118,7 +119,7 @@ export function CurrentRuntime({
   let fiveHourData: QuotaWindowData | null = null;
 
   if (matchedBucket?.windows) {
-    for (const window of matchedBucket.windows) {
+    for (const window of effectiveRuntimeQuotaWindows(matchedBucket, observation?.adapter ?? "", quota?.observed_at ?? "", now)) {
       const winMins = window.window_minutes;
       const remainingPercent =
         typeof window.used_percent === "number" &&

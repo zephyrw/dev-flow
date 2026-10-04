@@ -10,7 +10,7 @@ import { hash } from "../../core/src/util.js";
 import { safePath } from "../../workspace/src/files.js";
 import { invalidateTaskProofs } from "../../core/src/progress.js";
 
-/** Watch approved source paths only. File checks happen after changes, never
+/** Watch task location hints only. File checks happen after changes, never
  * while rendering a page. Delivery still performs a full snapshot check. */
 export class WorkspaceObserver {
   private watches = new Map<string, FSWatcher>();
@@ -40,10 +40,10 @@ export class WorkspaceObserver {
                 return;
               const plan = this.engine.plan(current.id).plan;
               const normalized = file.toString().replaceAll("\\", "/");
-              const path = (
-                plan.scope.repository_paths[ws.repo_id] ??
-                plan.scope.allowed_paths
-              ).find((p) => p.toLowerCase() === normalized.toLowerCase());
+              const path = plan.tasks
+                .filter(task => !task.repo_id || task.repo_id === ws.repo_id)
+                .flatMap(task => task.paths)
+                .find(p => p.toLowerCase() === normalized.toLowerCase());
               if (!path) return;
               const key = ws.id + ":" + path;
               clearTimeout(this.timers.get(key));

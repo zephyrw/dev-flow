@@ -275,6 +275,28 @@ export async function resumeModelWaits(engine: Engine, at = Date.now()) {
     }
   }
 }
+/** Correct orphaned Run labels only when the whole registered process tree has exited. */
+export function reconcileInactiveRuns(engine: Engine) {
+  const reconciled: string[] = [];
+  for (const run of engine.store.list<Run>("run")) {
+    if (run.status !== "running") continue;
+    const w = engine.store.get<Workflow>("workflow", run.workflow_id);
+    if (!w || !["COMMITTED", "COMPLETED", "STOPPED", "BLOCKED", "CANCELLED", "HUMAN_PENDING"].includes(w.state)) continue;
+    const processes = engine.store.list<Record<string, unknown>>("process_record", w.id);
+    if (!processes.some(record => record.id === run.id) ||
+        !processes.every(record => observeProcessRecordSync(record).state === "confirmed_exited") ||
+        engine.store.list<Lease>("lease", w.id).some(lease => lease.run_id === run.id)) continue;
+    engine.store.transaction(() => {
+      engine.store.put("run", run.id, w.id, { ...run, status: "stopped", ended_at: now() });
+      engine.store.event(w.id, w.project_id, "RunExitReconciled", {
+        run_id: run.id, prior_status: "running", workflow_state: w.state, reason: "registered_process_tree_exited",
+      }, run.id);
+    });
+    reconciled.push(run.id);
+  }
+  return reconciled;
+}
+
 export function reconcileProcesses(engine: Engine, key: string) {
   const w = engine.get(key);
   requireCondition(
@@ -311,7 +333,7 @@ export function reconcileProcesses(engine: Engine, key: string) {
   });
   const leases = engine.store.list<Lease>("lease", key);
   requireCondition(
-    !leases.some((l) => l.id === "browser:shared"),
+    !leases.some((l) => l.id.startsWith("browser:")),
     "BROWSER_RECONCILIATION_REQUIRED",
     "浏览器租约需要先检查并关闭本轮创建的标签页",
   );

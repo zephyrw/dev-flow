@@ -31,7 +31,9 @@ async function resumeFromNotice(
   setPending(true);
   setError("");
   try {
-    if (resolution.code === "MODEL_QUOTA") {
+    if (resolution.code === "NATIVE_PERMISSION_DENIED") {
+      await send(`/workflows/${workflow.id}/native-permissions/request`, { expected_version: workflow.version });
+    } else if (resolution.code === "MODEL_QUOTA") {
       await send(`/workflows/${workflow.id}/browser/reconcile`, {});
       await send(`/workflows/${workflow.id}/environment/stop`, {}).catch(
         () => {},
@@ -138,7 +140,7 @@ export function RuntimeFailureNotice({
             )
           }
         >
-          {pending ? "正在恢复…" : "已处理，继续原任务"}
+          {pending ? "正在处理…" : resolution.code === "NATIVE_PERMISSION_DENIED" ? "查看并处理授权" : "已处理，继续原任务"}
         </button>
       )}
       {error && (

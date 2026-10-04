@@ -539,7 +539,7 @@ export function makeMcp(engine: Engine, principal: Principal, modelAccess?: Mode
       );
       register(
         "devflow_apply_files",
-        "按批准的精确路径修改文件。expected_hash 必须匹配当前内容；新文件为 null。",
+        "修改任务工作区中的相关文件。计划路径仅作定位；expected_hash 必须匹配当前内容，新文件为 null。",
         repo.extend({
           changes: z
             .array(
@@ -573,19 +573,10 @@ export function makeMcp(engine: Engine, principal: Principal, modelAccess?: Mode
               "TASK_NOT_STARTED",
               "修改前先开始当前仓库的细项任务",
             );
-            requireCondition(
-              a.changes.every((c: any) => task.paths.includes(c.path)),
-              "TASK_SCOPE",
-              "文件不属于当前细项，不能扩大修改范围",
-            );
           }
           return f.broker.apply(
             f.root,
-            {
-              ...scope,
-              allowed_paths:
-                scope.repository_paths[a.repo_id] ?? scope.allowed_paths,
-            },
+            scope,
             a.changes,
           );
         },

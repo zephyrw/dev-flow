@@ -182,12 +182,11 @@ export class FileBroker {
     );
     const prepared = changes.map((c) => {
       requireCondition(
-        scope.allowed_paths.includes(c.path) &&
-          !scope.protected_paths.some(
+        !scope.protected_paths.some(
             (p) => c.path === p || c.path.startsWith(p + "/"),
           ),
-        "SCOPE_DENIED",
-        `未批准路径 ${c.path}`,
+        "PROTECTED_PATH",
+        `不能修改受保护路径 ${c.path}`,
         403,
       );
       if (!scope.allow_dependency_changes)

@@ -11,7 +11,7 @@
   "scripts": {
     "dev": "tsx watch apps/api/src/main.ts",
     "dev:web": "vite --config apps/web/vite.config.ts",
-    "build": "tsc -p tsconfig.build.json && vite build --config apps/web/vite.config.ts && node scripts/build-resources.mjs",
+    "build": "node scripts/build-workspace.mjs",
     "typecheck": "tsc --noEmit",
     "start": "node dist/apps/api/src/main.js",
     "cli": "tsx packages/cli/src/main.ts",

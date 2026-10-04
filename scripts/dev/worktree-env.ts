@@ -522,8 +522,8 @@ export async function reservePorts(
     const baseConfig = existsSync(configPath)
       ? loadConfig(configPath)
       : ConfigSchema.parse({});
-    const frontendPort = await findAvailablePort(...baseConfig.ports.frontend);
-    const backendPort = await findAvailablePort(...baseConfig.ports.backend);
+    const frontendPort = await findAvailablePort(...(baseConfig.ports.frontend ?? [49152, 65535] as const));
+    const backendPort = await findAvailablePort(...(baseConfig.ports.backend ?? [49152, 65535] as const));
     const testPort = await findAvailablePort(24811, 24950);
 
     const instanceType = options?.instanceType || "dev";

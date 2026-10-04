@@ -3,9 +3,9 @@
   "type": "object",
   "properties": {
     "schema_version": {
-      "default": 1,
+      "default": 2,
       "type": "number",
-      "const": 1
+      "const": 2
     },
     "server": {
       "type": "object",
@@ -34,9 +34,128 @@
       ],
       "additionalProperties": false
     },
+    "retain_services_on_stop": {
+      "default": false,
+      "type": "boolean"
+    },
     "storage_root": {
       "default": ".devflow",
       "type": "string"
+    },
+    "agy_accounts": {
+      "type": "object",
+      "properties": {
+        "standalone_model_id": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "workflow_auto_switch": {
+          "default": true,
+          "type": "boolean"
+        },
+        "pause_managed_for_manual_switch": {
+          "default": true,
+          "type": "boolean"
+        },
+        "switch_gap_seconds": {
+          "default": 3,
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        },
+        "reset_clock_skew_seconds": {
+          "default": 60,
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "probe_timeout_seconds": {
+          "default": 30,
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        },
+        "switch_timeout_seconds": {
+          "default": 300,
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        },
+        "max_candidates_per_operation": {
+          "default": 20,
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        },
+        "local_snapshot_stale_hours": {
+          "default": 24,
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        },
+        "maintenance": {
+          "type": "object",
+          "properties": {
+            "timezone": {
+              "default": "Asia/Shanghai",
+              "type": "string"
+            },
+            "local_report_time": {
+              "default": "17:30",
+              "type": "string"
+            },
+            "night_start": {
+              "default": "20:00",
+              "type": "string"
+            },
+            "night_end": {
+              "default": "08:00",
+              "type": "string"
+            },
+            "refresh_verified_max_age_hours": {
+              "default": 24,
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            },
+            "auto_network_check": {
+              "default": false,
+              "type": "boolean",
+              "const": false
+            }
+          },
+          "required": [
+            "timezone",
+            "local_report_time",
+            "night_start",
+            "night_end",
+            "refresh_verified_max_age_hours",
+            "auto_network_check"
+          ],
+          "additionalProperties": false
+        },
+        "enabled": {
+          "default": false,
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "standalone_model_id",
+        "workflow_auto_switch",
+        "pause_managed_for_manual_switch",
+        "switch_gap_seconds",
+        "reset_clock_skew_seconds",
+        "probe_timeout_seconds",
+        "switch_timeout_seconds",
+        "max_candidates_per_operation",
+        "local_snapshot_stale_hours",
+        "maintenance",
+        "enabled"
+      ],
+      "additionalProperties": false
     },
     "workspace_root": {
       "default": ".devflow/worktrees",
@@ -48,12 +167,12 @@
         "executor": {
           "default": "gemini-3.8-flash-high",
           "type": "string",
-          "const": "gemini-3.8-flash-high"
+          "minLength": 1
         },
         "reviewer": {
           "default": "gpt-6-astra",
           "type": "string",
-          "const": "gpt-6-astra"
+          "minLength": 1
         },
         "effort": {
           "default": "high",
@@ -90,28 +209,28 @@
       "type": "object",
       "properties": {
         "executors": {
-          "default": 3,
+          "description": "已弃用，仅兼容旧配置，不限制任务并行数量",
           "type": "integer",
           "exclusiveMinimum": 0,
-          "maximum": 16
+          "maximum": 9007199254740991
         },
         "reviewers": {
-          "default": 1,
+          "description": "已弃用，仅兼容旧配置，不限制任务并行数量",
           "type": "integer",
           "exclusiveMinimum": 0,
-          "maximum": 4
+          "maximum": 9007199254740991
         },
         "heavy_tests": {
-          "default": 2,
+          "description": "已弃用，仅兼容旧配置，不限制测试并行数量",
           "type": "integer",
           "exclusiveMinimum": 0,
-          "maximum": 8
+          "maximum": 9007199254740991
         },
         "live_environments": {
-          "default": 6,
+          "description": "已弃用，仅兼容旧配置，不限制验证环境数量",
           "type": "integer",
           "exclusiveMinimum": 0,
-          "maximum": 16
+          "maximum": 9007199254740991
         },
         "aging_minutes": {
           "default": 10,
@@ -121,10 +240,6 @@
         }
       },
       "required": [
-        "executors",
-        "reviewers",
-        "heavy_tests",
-        "live_environments",
         "aging_minutes"
       ],
       "additionalProperties": false
@@ -133,10 +248,6 @@
       "type": "object",
       "properties": {
         "frontend": {
-          "default": [
-            15173,
-            15272
-          ],
           "type": "array",
           "prefixItems": [
             {
@@ -155,10 +266,6 @@
           "maxItems": 2
         },
         "backend": {
-          "default": [
-            18081,
-            18180
-          ],
           "type": "array",
           "prefixItems": [
             {
@@ -184,27 +291,7 @@
         }
       },
       "required": [
-        "frontend",
-        "backend",
         "bind_retries"
-      ],
-      "additionalProperties": false
-    },
-    "host": {
-      "type": "object",
-      "properties": {
-        "executable": {
-          "default": "",
-          "type": "string"
-        },
-        "required": {
-          "default": true,
-          "type": "boolean"
-        }
-      },
-      "required": [
-        "executable",
-        "required"
       ],
       "additionalProperties": false
     },
@@ -305,12 +392,13 @@
   "required": [
     "schema_version",
     "server",
+    "retain_services_on_stop",
     "storage_root",
+    "agy_accounts",
     "workspace_root",
     "models",
     "scheduler",
     "ports",
-    "host",
     "opentabs",
     "timeouts",
     "retention"

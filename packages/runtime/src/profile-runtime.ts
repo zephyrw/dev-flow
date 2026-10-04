@@ -6,6 +6,9 @@ import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
 import { z } from "zod";
 import type { Engine } from "../../core/src/engine.js";
+import { pauseForNativePermission, bindNativePermission } from "../../core/src/native-permission.js";
+import { installAgyPermissionHook } from "../../adapters/agy/src/permission-hook.js";
+import { AgyDeniedCalls } from "../../adapters/agy/src/permission-calls.js";
 import { profileForRun, bindProfile, invocationFingerprintFromProfile, permissionCategoryForPurpose } from "../../core/src/run-profile.js";
 import { imagePathsInArguments, localImageProblem } from "./image-input.js";
 import { beginRunConversation, retainRunConversation, boundConversationContinuation, continuationSessionToResume } from "../../core/src/conversation-lineage.js";
@@ -492,7 +495,8 @@ export class ProfileRuntime {
     const record = this.engine.plan(w.id);
     const document = readPlanMaterial(this.engine.store, w.id, w.plan_revision);
     const { markdown: _markdown, ...plan } = record.plan;
-    return { ...record, plan, path: document.path, markdown: document.markdown,
+    return { ...record, plan: { ...plan,
+      scope: { ...plan.scope, allowed_paths: [], repository_paths: {} } }, path: document.path, markdown: document.markdown,
       instruction: "读取 path 指向的项目计划原件；保留原始需求与开发目标，真实完成后更新任务勾选框，可追加进度、未解决问题及用户明确授权的补充，不另存多份计划或用恢复摘要覆盖原文。" };
   }
   private executeMaterials(w: Workflow, run: Run) {
@@ -960,9 +964,6 @@ export class ProfileRuntime {
         }),
       ),
       allowedPaths: [
-        ...(w.plan_revision
-          ? this.engine.plan(w.id).plan.scope.allowed_paths
-          : []),
         ...inputFiles.extraReadRoots,
       ],
       toolProfile: profile,
@@ -1052,6 +1053,10 @@ export class ProfileRuntime {
       });
     }
 
+    const permissionGrant = profile.adapterId === "agy"
+      ? bindNativePermission(this.engine.store, { ...run, conversation_id: previous?.id ?? run.conversation_id }) : undefined;
+    const restorePermissionHook = permissionGrant
+      ? installAgyPermissionHook(invocation.cwd, root, permissionGrant) : undefined;
     let proc: ReturnType<ProcessManager["start"]>;
     try {
       if (dispatchRecord) dispatchManager.claimStarting(dispatchId);
@@ -1078,6 +1083,7 @@ export class ProfileRuntime {
         }
       });
     } catch (err: any) {
+      restorePermissionHook?.();
       if (accountBinding) await this.accountBridge?.releaseRun(run.id, false, "spawn_failed");
       if (dispatchRecord) {
         dispatchManager.finishDispatch(dispatchId, { exitCode: 1, error: err.message });
@@ -1146,6 +1152,7 @@ export class ProfileRuntime {
       failure: string | undefined,
       stderrTail = "";
     let permissionFailure: FlowError | undefined;
+    const permissionCalls = new AgyDeniedCalls((session, index) => agyRecords.read(session, index));
     let lastImagePaths: string[] = [];
     let agyResult: Record<string, any> | undefined;
     const retainConversation = (session?: string) => {
@@ -1238,9 +1245,17 @@ export class ProfileRuntime {
         }
         if (profile.adapterId === "agy") {
           accountTurn.accept(v);
+          permissionCalls.accept(v, conversation);
+          if (permissionCalls.immediate && !permissionFailure && purpose !== "aside") {
+            permissionFailure = new FlowError("NATIVE_PERMISSION_DENIED", "AGY 原生工具需要你授权本次操作", 422);
+            const interaction = pauseForNativePermission(this.engine, run, permissionCalls.immediate, permissionFailure.message);
+            if (interaction) void proc.stop();
+          }
           if (v.event === "step_update" && v.step_update?.step_type === "tool" && v.step_update?.state === "DONE")
             lastImagePaths = imagePathsInArguments(v.step_update?.tool_info?.parameters);
         }
+        const attributedResult = profile.adapterId === "agy" && v.event === "result"
+          ? permissionCalls.currentResult(v.result) : v.result;
         if (accountBinding) {
           this.accountBridge?.observeNativeEvent(run.id, v);
           const eventType = v.event ?? v.type;
@@ -1250,7 +1265,7 @@ export class ProfileRuntime {
             authEpoch: accountBinding.auth_epoch,
             runId: run.id,
             conversationId: conversation,
-            event: { ...v, type: eventType, error: v.error ?? v.result?.error },
+            event: { ...v, result: attributedResult, type: eventType, error: v.error ?? attributedResult?.error },
             eventOffset: accountEventOffset++,
             currentTurn:
               !previous || accountTurn.canAttributeFailureToCurrentTurn(),
@@ -1262,19 +1277,18 @@ export class ProfileRuntime {
         if (profile.adapterId === "agy" && v.event === "result") {
           // A resumed footer can retain a prior turn's error. Reconcile it only
           // after this process has exited, without replacing other failures.
-          agyResult = v.result;
+          agyResult = attributedResult;
         }
         if (
           profile.adapterId === "agy" &&
           v.event === "result" &&
           Array.isArray(v.result?.denied_actions) &&
-          v.result.denied_actions.length
+          v.result.denied_actions.length && permissionCalls.currentDenial
         ) {
           const denied = JSON.stringify(diagnosticContext.project({ denied_actions: v.result.denied_actions }));
-          const cause = classifyFailure(denied);
           permissionFailure = new FlowError(
-            cause.code,
-            cause.message + " " + denied.slice(0, 1500),
+            "NATIVE_PERMISSION_DENIED",
+            "AGY 原生工具需要处理权限。" + denied.slice(0, 1500),
             422,
           );
         }
@@ -1286,7 +1300,7 @@ export class ProfileRuntime {
           v.type === "turn.failed" ||
           (profile.adapterId !== "agy" && v.event === "result" && v.result?.error)
         )
-          failure ??= nativeFailureDiagnostic(v, diagnosticContext);
+          failure ??= nativeFailureDiagnostic({ ...v, result: attributedResult }, diagnosticContext);
         if (v.structured_output) final = v.structured_output;
         if (v.type === "result" && typeof v.result === "string")
           text = v.result;
@@ -1387,6 +1401,7 @@ export class ProfileRuntime {
         if (!historical) failure ??= nativeFailureDiagnostic({ event: "result", result: agyResult });
       }
     } finally {
+      restorePermissionHook?.();
       stopQuota?.();
       await sessionObserver?.close();
       telemetry.finish(
@@ -1411,7 +1426,8 @@ export class ProfileRuntime {
     retainConversation(conversation);
     this.engine.store.put("run", run.id, w.id, {
       ...this.engine.store.must<Run>("run", run.id),
-      status: exit.code === 0 && !failure ? "completed" : "failed",
+      status: permissionFailure && this.engine.get(w.id).state === "WAITING_INPUT" ? "waiting"
+        : exit.code === 0 && !failure && !permissionFailure ? "completed" : "failed",
       ended_at: new Date().toISOString(),
       exit_code: exit.code,
       conversation_id: conversation,
@@ -1451,6 +1467,8 @@ export class ProfileRuntime {
     }
     if (permissionFailure) {
       retainConversation(conversation);
+      if (!exit.termination_reason && purpose !== "aside")
+        pauseForNativePermission(this.engine, run, permissionCalls.denied, permissionFailure.message);
       throw permissionFailure;
     }
     if (

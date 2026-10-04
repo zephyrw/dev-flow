@@ -16,7 +16,12 @@ const apiPort = parsePort(process.env.DEVFLOW_API_PORT, 4810);
 
 export default defineConfig({
   root: fileURLToPath(new URL(".", import.meta.url)),
-  plugins: [react()],
+  plugins: [react(), {
+    name: "devflow-build-identity",
+    transformIndexHtml: () => process.env.DEVFLOW_BUILD_REVISION ? [{
+      tag: "meta", attrs: { name: "devflow-build-revision", content: process.env.DEVFLOW_BUILD_REVISION }, injectTo: "head",
+    }] : [],
+  }],
   build: { outDir: "../../dist/web", emptyOutDir: true },
   server: {
     host: "127.0.0.1",

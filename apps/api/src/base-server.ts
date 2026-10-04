@@ -56,7 +56,8 @@ export function loadBuildIdentity(runtimeRoot: string): BuildIdentity {
     service_protocol_version: "1",
   };
   try {
-    const buildInfoPath = join(runtimeRoot, "build-info.json");
+    const buildInfoPath = existsSync(join(runtimeRoot, "dist", "build-info.json"))
+      ? join(runtimeRoot, "dist", "build-info.json") : join(runtimeRoot, "build-info.json");
     if (existsSync(buildInfoPath)) {
       const info = JSON.parse(readFileSync(buildInfoPath, "utf8")) as {
         application_version?: string;

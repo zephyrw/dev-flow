@@ -84,15 +84,13 @@ export class Environments {
       data_dir: join(this.engine.config.storage_root, "data", workflow.id),
       services: [],
     };
-    await this.engine.scheduler.waitForCapacity(
-      "environment",
-      this.engine.config.scheduler.live_environments,
+    await this.engine.scheduler.waitForResources(
       workflow.id,
       env.id,
-      assertActive,
       project.data.mode === "external_lock"
         ? ["data:" + project.data.resource_id]
         : [],
+      assertActive,
     );
     try {
       this.engine.store.put("environment", workflow.id, workflow.id, env);
@@ -421,7 +419,22 @@ export class Environments {
     pool: "frontend" | "backend",
     excluded = new Set<number>(),
   ) {
-    const [start, end] = this.engine.config.ports[pool];
+    const range = this.engine.config.ports[pool];
+    if (!range) {
+      for (let attempt = 0; attempt < 100; attempt++) {
+        const port = await new Promise<number>((resolvePort, reject) => {
+          const server = net.createServer();
+          server.once("error", reject);
+          server.listen({ host: "127.0.0.1", port: 0, exclusive: true }, () => {
+            const address = server.address() as net.AddressInfo;
+            server.close(error => error ? reject(error) : resolvePort(address.port));
+          });
+        });
+        if (!excluded.has(port) && this.engine.scheduler.acquire(workflow, run, ["port:" + port])) return port;
+      }
+      throw new Error("系统未能分配独立测试端口");
+    }
+    const [start, end] = range;
     for (let port = start; port <= end; port++) {
       if (
         excluded.has(port) ||

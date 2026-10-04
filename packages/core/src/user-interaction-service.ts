@@ -5,6 +5,7 @@ import {
   type UserInteractionReceipt,
 } from "../../contracts/src/user-interaction.js";
 import { id, now } from "./util.js";
+import { decideNativePermission, hasNativeMcpToolPermission } from "./native-permission.js";
 import {
   FlowError,
   CONVERSATION_ENTITY,
@@ -540,6 +541,7 @@ export class UserInteractionService {
       }
 
       // 5. 确认/回答分支
+      const nativeDecision = decideNativePermission(this.store, record, payload.choice_id);
       record.status = "answered";
       record.responded_at = respondedAt;
       record.response = responsePayload;
@@ -565,6 +567,11 @@ export class UserInteractionService {
         answerText = `${choicePart}${freeText}`.trim() || "用户已提供确认。";
       }
 
+      if (nativeDecision) answerText = record.request.message + "\n" + (nativeDecision === "allow"
+        ? payload.choice_id === "allow_tool" || hasNativeMcpToolPermission(this.store) && record.request.message.includes("工具：call_mcp_tool")
+          ? "用户已永久授权整个 call_mcp_tool 工具，所有 MCP 服务、子工具和任意参数均已授权，当前及后续任务持续有效。请继续原任务，无需为此工具重复请求授权。"
+          : "用户已明确授权上述具体工具调用一次。请在原会话中按原参数重试本次操作；其他工具、参数或目标未获此授权。"
+        : "用户拒绝了上述工具调用。不要重试或换工具绕过该操作；继续允许范围内的工作，受阻部分如实说明。");
       const latestAnswer = answerText;
       // Keep the old question as context, never append its resume instructions
       // after the user's newer correction.

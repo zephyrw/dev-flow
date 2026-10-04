@@ -657,23 +657,11 @@ export class Engine {
         const validated = validatePlan(input);
         const p = this.project(w.project_id);
         if (p.repositories.length > 1) {
-          for (const repo of p.repositories)
-            requireCondition(
-              validated.plan.scope.repository_paths[repo.id],
-              "REPOSITORY_SCOPE_REQUIRED",
-              "多仓计划必须按仓库分别声明修改范围",
-            );
           for (const task of validated.plan.tasks)
             requireCondition(
-              task.repo_id &&
-                validated.plan.scope.repository_paths[task.repo_id] &&
-                task.paths.every((path) =>
-                  validated.plan.scope.repository_paths[
-                    task.repo_id!
-                  ]!.includes(path),
-                ),
+              task.repo_id && p.repositories.some(repo => repo.id === task.repo_id),
               "TASK_REPOSITORY_REQUIRED",
-              "多仓任务必须绑定仓库及其批准路径",
+              "多仓任务必须关联已登记的仓库",
             );
         }
         requireCondition(
@@ -1513,16 +1501,6 @@ export class Engine {
         "RUN_REVOKED",
         "冻结期间任务已经变化，请重新读取当前状态",
       );
-      const plan = this.plan(key).plan;
-      for (const r of snapshot.repositories)
-        for (const p of r.changed_paths)
-          requireCondition(
-            (
-              plan.scope.repository_paths[r.repo_id] ?? plan.scope.allowed_paths
-            ).includes(p),
-            "SCOPE_VIOLATION",
-            `发现范围外修改 ${p}`,
-          );
       this.transition(key, ["EXECUTING"], "VERIFYING", "tests", {
         snapshot_id: snapshot.id,
       });
@@ -2832,7 +2810,7 @@ export class Engine {
         if (
           this.store
             .list<Run>("run", job.workflow_id)
-            .some((r) => r.purpose === "aside" && r.status === "running")
+            .some((r) => r.purpose === "aside" && r.status === "running" && (r as Run & { aside_id?: string }).aside_id === aside.id)
         )
           continue;
         const w = this.get(job.workflow_id),
@@ -3331,26 +3309,7 @@ export class Engine {
         }
         if (this.running.has(w.id)) continue;
         const review = w.state === "REVIEW_QUEUED";
-        const slot = this.scheduler.capacity(
-          review ? "reviewer" : "executor",
-          review
-            ? this.config.scheduler.reviewers
-            : this.config.scheduler.executors,
-        );
-        if (!slot) {
-          this.store.put("queue_wait", w.id, w.id, {
-            kind: "capacity",
-            resource: review ? "reviewer" : "executor",
-            message: review ? "等待独立复核名额" : "等待执行模型名额",
-            owners: this.store
-              .list<any>("lease")
-              .filter((l) =>
-                l.id.startsWith(review ? "reviewer:" : "executor:"),
-              )
-              .map((l) => l.owner),
-          });
-          continue;
-        }
+        // 用户决定启动多少任务；只对实际共享的工作目录获取写锁。
         const runId = id("run");
         const known = this.store.list<Workspace>("workspace", w.id);
         const context = this.store.get<{ roots: Record<string, string> }>(
@@ -3371,21 +3330,21 @@ export class Engine {
             if (source && !roots.includes(source)) roots.push(source);
           }
         }
-        const leases = this.scheduler.acquire(w.id, runId, [
-          slot,
-          ...roots.map((root) => "write:" + root.toLowerCase()),
-        ]);
+        const keys = roots.map(root => review
+          ? `read:${root.toLowerCase()}::${runId}`
+          : "write:" + root.toLowerCase());
+        const leases = this.scheduler.acquire(w.id, runId, keys);
         if (!leases) {
           const owners = this.store
             .list<any>("lease")
             .filter((l) =>
-              roots.some((root) => l.id === "write:" + root.toLowerCase()),
+              keys.some(key => this.scheduler.conflicts(key, l.id)),
             )
             .map((l) => l.owner);
           this.store.put("queue_wait", w.id, w.id, {
             kind: "workspace",
             resource: roots.join("、"),
-            message: "等待工作目录写入权限",
+            message: review ? "等待正在修改的代码版本稳定" : "等待工作目录写入权限",
             owners,
           });
           continue;
@@ -3397,7 +3356,7 @@ export class Engine {
           : w.workspace_mode === "existing_workspace" ? "正在检查主工作区" : "正在准备独立工作区";
         this.store.put("queue_wait", w.id, w.id, {
           kind: "preparing",
-          message: reuseWorkspaces ? preparationMessage : "已取得执行名额，" + preparationMessage,
+          message: preparationMessage,
           owners: [],
         });
         if (!reuseWorkspaces) this.store.event(
@@ -5156,6 +5115,7 @@ export class Engine {
       );
   }
   recover() {
+    new AsideSessionService(this.store).promoteNextQueued();
     for (const w of this.list()) {
       if (
         w.state !== "BLOCKED" ||

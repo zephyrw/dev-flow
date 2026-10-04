@@ -36,7 +36,7 @@ export function readPlanMaterial(
     .find((p) => p.revision === revision);
   requireCondition(record, "PLAN_MISSING", "计划版本不存在", 404);
 
-  const planDoc = store.get<{ material_id?: string; run_id?: string; plan_revision?: number; material_status?: string }>(
+  const planDoc = store.get<{ document_id?: string; material_id?: string; run_id?: string; plan_revision?: number; material_status?: string }>(
     "planning_document",
     workflowId,
   );
@@ -44,6 +44,10 @@ export function readPlanMaterial(
   // Reference-only documents are current originals, not versioned prose copies.
   // A path alone is insufficient: require the registered document and its plan link.
   const registered = store.get<ProjectDocument>("project_document", `doc_${workflowId}_plan`);
+  requireCondition(!currentDoc?.document_id || currentDoc.material_id || record.material_id ||
+    (registered?.id === currentDoc.document_id && registered.workflow_id === workflowId &&
+      registered.document_type === "plan" && registered.revision === revision),
+    "PLAN_MATERIAL_LOST", "计划原件登记记录已丢失或不属于当前版本", 409);
   const effectiveMaterialPath = record.material_path ?? registered?.path;
   if (!record.material_id && !currentDoc?.material_id && registered?.path &&
       registered.workflow_id === workflowId && registered.document_type === "plan" &&

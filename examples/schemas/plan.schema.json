@@ -4,10 +4,40 @@
   "properties": {
     "task_model": {
       "type": "string",
-      "const": "leaf-v1"
+      "enum": [
+        "legacy",
+        "leaf-v1",
+        "native-v2"
+      ]
+    },
+    "revision": {
+      "default": 1,
+      "type": "integer",
+      "exclusiveMinimum": 0,
+      "maximum": 9007199254740991
+    },
+    "design_ref": {
+      "type": "object",
+      "properties": {
+        "content_hash": {
+          "type": "string",
+          "minLength": 1
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1
+        },
+        "file_ref": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "summary"
+      ],
+      "additionalProperties": false
     },
     "modules": {
-      "minItems": 1,
+      "default": [],
       "type": "array",
       "items": {
         "type": "object",
@@ -19,6 +49,17 @@
           "title": {
             "type": "string",
             "minLength": 1
+          },
+          "description": {
+            "type": "string"
+          },
+          "paths": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024
+            }
           }
         },
         "required": [
@@ -28,9 +69,132 @@
         "additionalProperties": false
       }
     },
+    "work_items": {
+      "minItems": 1,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,95}$"
+          },
+          "module_id": {
+            "type": "string",
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,95}$"
+          },
+          "repo_id": {
+            "type": "string",
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,95}$"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": {
+            "type": "string"
+          },
+          "paths": {
+            "default": [],
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024
+            }
+          },
+          "depends_on": {
+            "default": [],
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,95}$"
+            }
+          },
+          "acceptance_ids": {
+            "default": [],
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,95}$"
+            }
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "paths",
+          "depends_on",
+          "acceptance_ids"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "acceptance_items": {
+      "minItems": 1,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,95}$"
+          },
+          "work_item_ids": {
+            "minItems": 1,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,95}$"
+            }
+          },
+          "module_id": {
+            "type": "string",
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,95}$"
+          },
+          "layer": {
+            "type": "string",
+            "enum": [
+              "unit",
+              "integration",
+              "e2e",
+              "opentabs"
+            ]
+          },
+          "scenario": {
+            "type": "string",
+            "minLength": 1
+          },
+          "expected_outcome": {
+            "type": "string",
+            "minLength": 1
+          },
+          "timeout_seconds": {
+            "default": 300,
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "maximum": 7200
+          }
+        },
+        "required": [
+          "id",
+          "work_item_ids",
+          "layer",
+          "scenario",
+          "expected_outcome",
+          "timeout_seconds"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "feedback_cursor": {
+      "default": 0,
+      "type": "integer",
+      "minimum": -9007199254740991,
+      "maximum": 9007199254740991
+    },
     "markdown": {
-      "type": "string",
-      "minLength": 80
+      "type": "string"
     },
     "complexity": {
       "type": "string",
@@ -40,10 +204,10 @@
       ]
     },
     "reason": {
-      "type": "string",
-      "minLength": 1
+      "type": "string"
     },
     "decisions": {
+      "default": [],
       "type": "array",
       "items": {
         "type": "object",
@@ -69,14 +233,24 @@
       }
     },
     "unresolved_decisions": {
-      "minItems": 0,
-      "maxItems": 0,
+      "default": [],
       "type": "array",
       "items": {
         "type": "string"
       }
     },
     "scope": {
+      "default": {
+        "repository_paths": {},
+        "allowed_paths": [],
+        "protected_paths": [
+          ".git",
+          ".agents",
+          ".codex"
+        ],
+        "allow_dependency_changes": false,
+        "allow_public_api_changes": false
+      },
       "type": "object",
       "properties": {
         "repository_paths": {
@@ -87,7 +261,6 @@
             "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,95}$"
           },
           "additionalProperties": {
-            "minItems": 1,
             "type": "array",
             "items": {
               "type": "string",
@@ -97,7 +270,7 @@
           }
         },
         "allowed_paths": {
-          "minItems": 1,
+          "default": [],
           "type": "array",
           "items": {
             "type": "string",
@@ -135,7 +308,7 @@
       "additionalProperties": false
     },
     "tasks": {
-      "minItems": 1,
+      "default": [],
       "type": "array",
       "items": {
         "type": "object",
@@ -196,7 +369,7 @@
             }
           },
           "paths": {
-            "minItems": 1,
+            "default": [],
             "type": "array",
             "items": {
               "type": "string",
@@ -250,7 +423,7 @@
       }
     },
     "tests": {
-      "minItems": 1,
+      "default": [],
       "type": "array",
       "items": {
         "type": "object",
@@ -371,9 +544,9 @@
     }
   },
   "required": [
-    "markdown",
-    "complexity",
-    "reason",
+    "revision",
+    "modules",
+    "feedback_cursor",
     "decisions",
     "unresolved_decisions",
     "scope",

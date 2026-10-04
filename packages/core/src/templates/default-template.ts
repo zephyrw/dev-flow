@@ -2,7 +2,7 @@ import { parse } from "yaml";
 
 export const DEFAULT_TEMPLATE_YAML = `
 id: native-development
-revision: 7
+revision: 8
 task_model: native-v2
 quality_policy_version: 2
 roles:
@@ -39,10 +39,6 @@ feedback:
   auto_reconfirm_after_final_test: false
   references: files_and_directories
   aside: isolated_readonly
-resources:
-  foreground_ai_slots: 1
-  live_environments: 1
-  aside_slots: 1
 `;
 
 export interface WorkflowTemplate {
@@ -77,7 +73,8 @@ export interface WorkflowTemplate {
     references: string;
     aside: string;
   };
-  resources: {
+  /** Deprecated compatibility metadata; never used for admission. */
+  resources?: {
     foreground_ai_slots: number;
     live_environments: number;
     aside_slots: number;

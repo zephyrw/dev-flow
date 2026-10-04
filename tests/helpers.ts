@@ -1,5 +1,5 @@
 import { resolveMaterialLocator, publishProjectMaterialSafely } from "../packages/core/src/project-materials.js";
-import { mkdtempSync, mkdirSync, writeFileSync, realpathSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Store } from "../packages/store/src/store.js";
@@ -175,7 +175,8 @@ export async function prepared() {
 export function publishPlanFixture(engine: Engine, workflowId: string) {
   const record = engine.plan(workflowId);
   const locator = resolveMaterialLocator({ store: engine.store, workflowId, kind: "plan", revision: record.revision });
-  const publication = publishProjectMaterialSafely({ store: engine.store, locator, content: record.plan.markdown ?? "" });
+  const content = record.plan.markdown ?? (record.material_path ? readFileSync(record.material_path, "utf8") : "");
+  const publication = publishProjectMaterialSafely({ store: engine.store, locator, content });
   if (publication.material.status !== "verified") throw new Error(`Plan fixture publication: ${publication.material.publication_error ?? publication.material.status}`);
   engine.store.put("plan", record.id, workflowId, { ...record, material_id: publication.material.id, material_path: publication.material.path });
 }
