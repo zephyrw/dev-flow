@@ -66,6 +66,7 @@ export interface AccountProbeResult {
     pool_id: string;
     model_ids: string[];
     windows: QuotaWindow[];
+    capability_verified?: boolean;
   }>;
   executable_fingerprint: string;
   capability_verified: boolean;
@@ -78,6 +79,12 @@ export interface AccountProbeOptions {
   account_id?: string;
   credential_revision?: number;
   model_id?: string;
+}
+
+export interface ModelProbeLifecycle {
+  binding: { realm_id: string; account_id: string; auth_epoch: number; permit_id: string };
+  started(pid?: number): void;
+  stopped(): void;
 }
 
 export interface AccountIdentityResult {
@@ -128,6 +135,7 @@ export interface ProcessHostPort {
   findExternalAgyProcesses(): Promise<ExternalProcessInfo[]>;
   stopProcess(pid: number, reason: string): Promise<boolean>;
   confirmProcessesStopped(pids: number[], timeoutMs: number): Promise<boolean>;
+  confirmPermitStopped?(permit: import("../../contracts/src/agy-account.js").AgyUsagePermit): Promise<boolean>;
 }
 
 export interface ConsumerOccupancy {

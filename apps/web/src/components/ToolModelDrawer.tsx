@@ -227,7 +227,7 @@ export function ToolModelDrawer({
     setError(null);
     setSuccess(null);
     try {
-      await verifyDraft();
+      // The server pauses this exact Run before probing a different AGY category.
       await postModelSwitch(workflowId, {
         ...writeBody(),
         expected_workflow_version: workflowVersion,
@@ -473,12 +473,14 @@ export function ToolModelDrawer({
                 profile={planner}
                 toolLabel="规划工具"
                 disabled={readonly}
+                isFutureConfig={true}
                 onChange={setPlanner}
               />
               <ModelProfileEditor
                 profile={executor}
                 toolLabel="执行工具"
                 disabled={readonly}
+                isFutureConfig={true}
                 onChange={setExecutor}
               />
               <details
@@ -533,6 +535,7 @@ export function ToolModelDrawer({
                           profile={binding.profile}
                           toolLabel={roleTitle(role)}
                           disabled={readonly}
+                          isFutureConfig={true}
                           onChange={(profile) =>
                             setOverrides((current) => ({
                               ...current,

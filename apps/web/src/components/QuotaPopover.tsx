@@ -9,6 +9,8 @@ export interface QuotaWindowData {
 }
 
 export interface QuotaPopoverProps {
+  categoryLabel?: string;
+  showUnknownWindows?: boolean;
   weeklyData?: QuotaWindowData | null;
   fiveHourData?: QuotaWindowData | null;
   isStale?: boolean;
@@ -116,7 +118,24 @@ function QuotaRow({ title, data }: { title: string; data: QuotaWindowWithData })
   );
 }
 
+function UnknownQuotaRow({ title }: { title: string }) {
+  return (
+    <div className="quota-row">
+      <div className="quota-row-info">
+        <div className="quota-row-title">{title}</div>
+        <div className="quota-row-subtitle">待实测 / 暂不可用</div>
+      </div>
+      <div className="quota-row-visual">
+        <span className="quota-percent-text">未知</span>
+        <ProgressRing percent={null} />
+      </div>
+    </div>
+  );
+}
+
 export function QuotaPopover({
+  categoryLabel,
+  showUnknownWindows = false,
   weeklyData,
   fiveHourData,
   isStale = false,
@@ -211,14 +230,19 @@ export function QuotaPopover({
 
       {isOpen && (
         <div className="quota-popover-content" ref={popoverRef} role="tooltip">
-          {/* 额度行：仅在拿到真实数据时渲染（20x Pro 无 5 小时限额 ⇒ 该行不出现） */}
-          {hasQuotaData(weeklyData) && (
+          {categoryLabel && (
+            <div className="quota-category-title" style={{ fontSize: "12px", fontWeight: "600", color: "#1e293b", paddingBottom: "6px", marginBottom: "6px", borderBottom: "1px solid #e2e8f0" }}>
+              {categoryLabel}
+            </div>
+          )}
+          {/* AGY 固定展示两个窗口；其他工具保留没有限额时隐藏该行的行为。 */}
+          {hasQuotaData(weeklyData) ? (
             <QuotaRow title="周额度剩余" data={weeklyData} />
-          )}
-          {hasQuotaData(fiveHourData) && (
+          ) : showUnknownWindows ? <UnknownQuotaRow title="周额度剩余" /> : null}
+          {hasQuotaData(fiveHourData) ? (
             <QuotaRow title="5小时额度剩余" data={fiveHourData} />
-          )}
-          {!hasQuotaData(weeklyData) && !hasQuotaData(fiveHourData) && (
+          ) : showUnknownWindows ? <UnknownQuotaRow title="5小时额度剩余" /> : null}
+          {!showUnknownWindows && !hasQuotaData(weeklyData) && !hasQuotaData(fiveHourData) && (
             <div className="quota-row-subtitle">暂无额度数据</div>
           )}
 

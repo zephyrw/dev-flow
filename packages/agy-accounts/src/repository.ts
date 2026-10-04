@@ -243,7 +243,7 @@ export class AgyAccountRepository {
     return AgyUsagePermitSchema.parse(raw);
   }
 
-  listPermits(realmId: string): AgyUsagePermit[] {
+  listPermits(realmId?: string): AgyUsagePermit[] {
     const rows = this.store.list<unknown>("agy_usage", realmId);
     return rows.map((r) => AgyUsagePermitSchema.parse(r));
   }

@@ -6,7 +6,7 @@ import type {
 } from "../../contracts/src/agy-account.js";
 import type { AgyAccountRepository } from "./repository.js";
 import type { AuthHostPort, AccountProbePort, AccountProbeResult } from "./ports.js";
-import { hasDualQuotaWindows, modelCovered } from "./quota.js";
+import { isQuotaPoolVerified, modelCovered } from "./quota.js";
 import { AgyLoginLauncher } from "./login.js";
 export interface EnrollmentResult {
   success: boolean;
@@ -172,9 +172,12 @@ export class AgyEnrollmentService {
     if (existing && !verified) {
       return { success: false, error: "quota_capability_unavailable" };
     }
-    const pools = verified ? observation!.pools.filter((pool) =>
-      pool.model_ids.length > 0 && (!context.model_id || modelCovered(pool.model_ids, context.model_id!))) : [];
-    const complete = pools.length > 0 && pools.every((pool) => hasDualQuotaWindows(pool.windows));
+    const pools = verified ? observation!.pools : [];
+    const targetPools = pools.filter(pool => !context.model_id || modelCovered(pool.model_ids, context.model_id));
+    const validPools = pools.filter(pool => isQuotaPoolVerified(observation!, pool));
+    const complete = context.model_id
+      ? targetPools.length > 0 && targetPools.every(pool => isQuotaPoolVerified(observation!, pool))
+      : validPools.length > 0;
     if (existing && !complete) return { success: false, error: "quota_capability_unavailable" };
 
     const accountId = existing?.id ?? candidateId;
@@ -183,7 +186,7 @@ export class AgyEnrollmentService {
     this.requireContext(realmId, context);
     const timestamp = new Date().toISOString();
     const state: AccountState = !complete ? "pending_quota" :
-      pools.some((pool) => pool.windows.some((window) => window.remaining_fraction === 0))
+      validPools.every((pool) => pool.windows.some((window) => window.remaining_fraction === 0))
         ? "waiting_quota" : "ready";
     const account: AgyAccount = {
       ...existing,
@@ -214,7 +217,7 @@ export class AgyEnrollmentService {
       auth_epoch: context.auth_epoch, pool_id: pool.pool_id, model_ids: pool.model_ids,
       plan_tier: observation?.plan_tier, source: "official_cli_usage",
       cli_version: observation!.cli_version, executable_fingerprint: observation!.executable_fingerprint,
-      capability_verified: true, parser_revision: 2, observed_at: timestamp, windows: pool.windows,
+      capability_verified: isQuotaPoolVerified(observation!, pool), parser_revision: 2, observed_at: timestamp, windows: pool.windows,
     }));
     this.repository.transaction(() => {
       if (existing && this.repository.getAccount(realmId, existing.id)?.revision !== existing.revision)

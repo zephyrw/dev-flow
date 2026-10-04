@@ -1,6 +1,13 @@
 import { z } from "zod";
 import { Id } from "./base.js";
 
+export interface AgyManagementSelectionContext {
+  model_id: string | null;
+  category: "gemini" | "other" | "unknown" | null;
+  source: "standalone_model" | "active_category" | "none";
+  required_pool_ids: string[];
+}
+
 export const AccountStateSchema = z.enum([
   "pending_quota",
   "ready",
@@ -205,6 +212,9 @@ export const UsagePermitStatusSchema = z.enum([
 ]);
 export type UsagePermitStatus = z.infer<typeof UsagePermitStatusSchema>;
 
+export const AgyModelCategorySchema = z.enum(["gemini", "other", "unknown"]);
+export type AgyModelCategory = z.infer<typeof AgyModelCategorySchema>;
+
 export const AgyUsagePermitSchema = z.object({
   permit_id: Id,
   realm_id: z.string().min(1),
@@ -220,6 +230,8 @@ export const AgyUsagePermitSchema = z.object({
   required_pool_ids: z.array(z.string()).default([]),
   allowed_account_ids: z.array(Id).nullable().default(null),
   policy_revision: z.number().int().nonnegative().optional(),
+  model_id: z.string().optional(),
+  model_category: AgyModelCategorySchema.optional(),
 });
 export type AgyUsagePermit = z.infer<typeof AgyUsagePermitSchema>;
 

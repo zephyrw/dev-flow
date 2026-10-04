@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type {
   AgyAccountService,
   AccountConsumerPort,
@@ -9,6 +10,7 @@ import { AccountServiceError, AccountQuotaAdmissionError } from "../../agy-accou
 import type {
   AgyRunBinding,
   AgyAccountPolicy,
+  AgyUsagePermit,
 } from "../../contracts/src/agy-account.js";
 import type { AgyFailureFact } from "../../adapters/agy/src/failure-fact.js";
 import type { ProcessManager } from "../../process/src/manager.js";
@@ -32,6 +34,10 @@ import {
 } from "./agy-workspace-checkpoint.js";
 import { AgyWorkflowRecoveryCoordinator } from "./agy-workflow-recovery.js";
 import { AsideSessionService } from "../../asides/src/service.js";
+import type { RunTelemetry } from "./run-telemetry.js";
+import type { QuotaBucket } from "../../contracts/src/run-observation.js";
+import { getAgyModelCategory } from "../../adapters/agy/src/model-configuration.js";
+import { computeEffectiveWeeklyQuota, modelCovered, resolveEffectiveQuotaWindows } from "../../agy-accounts/src/quota.js";
 
 export interface FrozenAgyRunRequest {
   allowed_account_ids?: string[] | null;
@@ -216,13 +222,65 @@ export class AgyWorkflowBridge implements AccountConsumerPort {
     modelId: string | undefined,
     profileId?: string,
   ): Promise<AgyRunBinding | undefined> {
-    if (!this.isManaged()) return undefined;
-    if (!modelId)
+    const targetModel = modelId ?? run.frozen_invocation?.modelToken ?? run.profile?.modelId;
+    if (!targetModel)
       throw new FlowError(
         "AGY_ACCOUNT_MODEL_REQUIRED",
         "账号管理需要任务明确选择模型，不能猜测 CLI 默认模型的额度池",
         409,
       );
+    const category = getAgyModelCategory(targetModel);
+    if (category === "unknown") {
+      throw new FlowError("AGY_MODEL_UNKNOWN", `无法确认模型 ${targetModel} 的类别，禁止启动`, 409);
+    }
+
+    if (!this.isManaged()) {
+      const active = this.accountService.getActiveCategory("default-agy-realm");
+      if (active.category && active.category !== category) {
+        const activeDesc = active.category === "gemini" ? "Gemini 类" : "其他模型类（Claude / GPT）";
+        const targetDesc = category === "gemini" ? "Gemini 类" : "其他模型类（Claude / GPT）";
+        throw new FlowError(
+          "AGY_CATEGORY_CONFLICT",
+          `全部同时占用 AGY 的任务只能使用同一类别：Gemini 类或其他模型类；当前已有任务正在占用 ${activeDesc}，无法同时启动 ${targetDesc} 任务。`,
+          409,
+        );
+      }
+      const permitId = `unmanaged_${randomUUID()}`;
+      const permit: AgyUsagePermit = {
+        permit_id: permitId,
+        realm_id: "default-agy-realm",
+        account_id: "unmanaged",
+        auth_epoch: 1,
+        consumer_id: run.id,
+        usage_kind: "execution",
+        status: "issued",
+        issued_at: new Date().toISOString(),
+        required_pool_ids: [],
+        allowed_account_ids: null,
+        model_id: targetModel,
+        model_category: category,
+      };
+      this.accountService.getRepository().savePermit(permit);
+      this.activeRuns.set(run.id, {
+        workflow_id: workflowId,
+        run_id: run.id,
+        permit_id: permitId,
+        account_id: "unmanaged",
+        auth_epoch: 1,
+        effective_model_id: targetModel,
+        required_pool_ids: [],
+      });
+      return {
+        realm_id: "default-agy-realm",
+        account_id: "unmanaged",
+        auth_epoch: 1,
+        account_policy_revision: 0,
+        credential_revision_at_start: 0,
+        account_settings_revision_at_start: 0,
+        permit_id: permitId,
+        source_run_id: run.id,
+      };
+    }
     let frozen = run.frozen_invocation ?? run.model_binding?.frozen_invocation;
     if (!this.engine || !run.profile || !frozen || frozen.adapterId !== "agy" || frozen.modelToken !== modelId)
       throw new FlowError("AGY_ACCOUNT_BINDING_MISSING", "受管执行缺少一致的冻结模型配置", 409);
@@ -285,6 +343,9 @@ export class AgyWorkflowBridge implements AccountConsumerPort {
       });
     } catch (error) {
       if (error instanceof FlowError) throw error;
+      if (error instanceof AccountServiceError && error.code === "agy_category_conflict") {
+        throw new FlowError("AGY_CATEGORY_CONFLICT", error.message, 409);
+      }
       const rawCode = (error as { code?: unknown } | null)?.code;
       const safeCode = typeof rawCode === "string" && /^[a-zA-Z][a-zA-Z0-9_]{0,79}$/.test(rawCode)
         ? rawCode
@@ -345,6 +406,102 @@ export class AgyWorkflowBridge implements AccountConsumerPort {
     if (run) run.process_id = pid;
   }
 
+  observeAccountQuota(
+    runId: string,
+    modelId: string | undefined,
+    telemetry: RunTelemetry,
+  ): () => void {
+    let stopped = false;
+    const targetModel = modelId ?? this.activeRuns.get(runId)?.effective_model_id;
+    if (!targetModel) return () => {};
+    const category = getAgyModelCategory(targetModel);
+    if (category === "unknown") return () => {};
+
+    const syncQuota = () => {
+      if (stopped) return;
+      try {
+        const repo = this.accountService.getRepository();
+        const binding = this.activeRuns.get(runId);
+        // Only a frozen, proven account binding can identify these observations.
+        if (!binding || binding.account_id === "unmanaged") return;
+        const targetAccountId = binding.account_id;
+        const realm = repo.getRealm("default-agy-realm");
+        if (realm?.active_account_id !== targetAccountId || realm.auth_epoch !== binding.auth_epoch) return;
+
+        const allSnapshots = repo.listQuotaSnapshots("default-agy-realm")
+          .filter((s) => s.account_id === targetAccountId && s.auth_epoch === binding.auth_epoch &&
+            Number.isFinite(Date.parse(s.observed_at)) && Date.parse(s.observed_at) <= Date.now());
+
+        const targetSnapshots = allSnapshots.filter((s) => {
+          if (!modelCovered(s.model_ids, targetModel)) return false;
+          if (s.pool_id.toLowerCase() === "global") return true;
+          if (category === "gemini") {
+            return s.pool_id === "Gemini Models" || s.pool_id.toLowerCase().includes("gemini");
+          } else if (category === "other") {
+            return (
+              s.pool_id === "Claude and GPT models" ||
+              s.pool_id.toLowerCase().includes("claude") ||
+              s.pool_id.toLowerCase().includes("gpt")
+            );
+          }
+          return false;
+        });
+
+        if (targetSnapshots.length === 0) return;
+        const categorySnapshots = targetSnapshots.filter(snapshot => snapshot.pool_id.toLowerCase() !== "global");
+        const displaySnapshots = categorySnapshots;
+
+        const nowMs = Date.now();
+        const buckets: QuotaBucket[] = displaySnapshots.map((s) => ({
+          id: s.pool_id,
+          model: targetModel,
+          windows: s.capability_verified !== true ? [] :
+            resolveEffectiveQuotaWindows(s.windows, nowMs).flatMap((w) => {
+              if (w.status !== "observed" || typeof w.remaining_fraction !== "number" ||
+                  !Number.isFinite(w.remaining_fraction) || w.remaining_fraction < 0 || w.remaining_fraction > 1 ||
+                  !Number.isFinite(Date.parse(w.observed_at)) || Date.parse(w.observed_at) > nowMs ||
+                  s.windows.filter(original => original.kind === w.kind).length !== 1 ||
+                  !["weekly", "five_hour"].includes(w.kind)) return [];
+              if (w.kind === "weekly" && !computeEffectiveWeeklyQuota(w, nowMs).isValid) return [];
+              const windowMinutes = w.duration_minutes;
+              if (!Number.isFinite(windowMinutes) || windowMinutes! <= 0) return [];
+              const resetMs = w.reset_at ? Date.parse(w.reset_at) : NaN;
+              return [{
+                used_percent: Math.round((1 - w.remaining_fraction) * 100),
+                window_minutes: windowMinutes!,
+                resets_at: Number.isFinite(resetMs) ? resetMs / 1000 : undefined,
+              }];
+            }),
+        }));
+        if (!buckets.length) buckets.push({
+          id: category === "gemini" ? "Gemini Models" : "Claude and GPT models",
+          model: targetModel,
+          windows: [],
+        });
+
+        // The oldest displayed pool controls freshness, not the current poll time.
+        const sourceSnapshots = displaySnapshots.length ? displaySnapshots : targetSnapshots;
+        const observedAt = sourceSnapshots.reduce((oldest, snapshot) =>
+          Date.parse(snapshot.observed_at) < Date.parse(oldest) ? snapshot.observed_at : oldest,
+          sourceSnapshots[0]!.observed_at);
+        telemetry.accountQuota(buckets, observedAt);
+      } catch {
+        // 保留未知状态边界，忽略临时读取异常
+      }
+    };
+
+    syncQuota();
+    const timer = setInterval(() => syncQuota(), 60000);
+    if (typeof (timer as any)?.unref === "function") {
+      (timer as any).unref();
+    }
+
+    return () => {
+      stopped = true;
+      clearInterval(timer);
+    };
+  }
+
   // 为即将启动的 AGY 任务申请执行许可
   async prepareRun(req: FrozenAgyRunRequest): Promise<AgyRunBinding> {
     let permit: UsagePermit;
@@ -359,6 +516,8 @@ export class AgyWorkflowBridge implements AccountConsumerPort {
     }); } catch (error) {
       if (error instanceof AccountQuotaAdmissionError && await this.waitForAdmissionSwitch(req, error))
         throw new FlowError("AGY_ACCOUNT_WAIT", "当前账号额度不可用，等待切换后继续原任务", 409);
+      if (error instanceof AccountServiceError && error.code === "agy_category_conflict")
+        throw new FlowError("AGY_CATEGORY_CONFLICT", error.message, 409);
       throw error;
     }
     const repository = this.accountService.getRepository();
@@ -464,14 +623,45 @@ export class AgyWorkflowBridge implements AccountConsumerPort {
     reason?: string,
   ): Promise<void> {
     const run = this.activeRuns.get(runId);
-    if (!run) return;
-    this.activeRuns.delete(runId);
-    this.childObservers.delete(runId);
-    await this.accountService.releaseUsagePermit(run.permit_id, {
-      permit_id: run.permit_id,
-      success,
-      reason,
-    });
+    const repository = this.accountService.getRepository();
+    const permits = repository.listPermits("default-agy-realm").filter(p =>
+      p.consumer_id === runId && (p.status === "issued" || p.status === "started") &&
+      (!run || p.permit_id === run.permit_id));
+    for (const permit of permits) {
+      let confirmed = false;
+      try {
+        const record = this.engine?.store.get<{ agy_account?: AgyRunBinding }>("process_record", runId);
+        if (record) {
+          const binding = record.agy_account;
+          if (binding?.permit_id !== permit.permit_id || binding.realm_id !== permit.realm_id ||
+              binding.account_id !== permit.account_id || binding.auth_epoch !== permit.auth_epoch) {
+            // A fresh issued permit can fail before replacing a previous,
+            // confirmed-exited attempt of the same Run (session recreation).
+            confirmed = !!run && permit.status === "issued" && !this.processManager.get(runId) &&
+              (await this.processHost?.confirmJobsStopped([runId]) ?? false);
+          } else {
+            confirmed = await this.processHost?.confirmPermitStopped(permit) ?? false;
+          }
+        } else if (this.processManager.get(runId)) {
+          confirmed = (await this.processManager.observe(runId)).state === "confirmed_exited";
+        } else if (run && (permit.status === "issued" && !this.processManager.hasStartAttempt(runId) || reason === "spawn_failed")) {
+          // The current invocation failed before any managed process was created.
+          confirmed = true;
+        } else if (this.processManager.hasStartAttempt(runId)) {
+          confirmed = (await this.processManager.observe(runId)).state === "confirmed_exited";
+        }
+      } catch {
+        // Unknown process ownership/exit retains both occupancy and recovery data.
+      }
+      if (!confirmed) continue;
+      const current = repository.getPermit(permit.permit_id);
+      if (!current || current.status !== permit.status || current.process_id !== permit.process_id) continue;
+      await this.accountService.releaseUsagePermit(permit.permit_id, { permit_id: permit.permit_id, success, reason });
+      if (this.activeRuns.get(runId)?.permit_id === permit.permit_id) {
+        this.activeRuns.delete(runId);
+        this.childObservers.delete(runId);
+      }
+    }
   }
 
   // 观察到运行时失败
@@ -606,9 +796,19 @@ export class AgyWorkflowBridge implements AccountConsumerPort {
 
   // --- AccountConsumerPort 接口实现 ---
 
+  private liveActiveRuns(): AccountRecoveryRun[] {
+    for (const [id, run] of this.activeRuns) {
+      if (this.accountService.getRepository().getPermit(run.permit_id)?.status === "released") {
+        this.activeRuns.delete(id);
+        this.childObservers.delete(id);
+      }
+    }
+    return [...this.activeRuns.values()];
+  }
+
   async listOccupancy(): Promise<ConsumerOccupancy[]> {
     const occs: ConsumerOccupancy[] = [];
-    const runs: AccountRecoveryRun[] = [...this.activeRuns.values()];
+    const runs = this.liveActiveRuns();
     for (const wait of this.engine?.store.list<AccountWait>("agy_account_wait") ?? [])
       if (wait.admission_only && this.isCurrentWait(wait) && !runs.some(run => run.run_id === wait.run_id)) runs.push(wait);
     for (const run of runs) {
@@ -627,7 +827,7 @@ export class AgyWorkflowBridge implements AccountConsumerPort {
   }
 
   async prepareSwitch(operationId: string): Promise<{ savedRef: unknown }> {
-    const runs: AccountRecoveryRun[] = [...this.activeRuns.values()];
+    const runs = this.liveActiveRuns();
     if (this.engine) {
       const operation = this.accountService.getRepository().getOperation(operationId);
       const originalId = operation?.original_operation_id;
@@ -734,6 +934,7 @@ export class AgyWorkflowBridge implements AccountConsumerPort {
       ? await this.processHost.confirmJobsStopped(started.map((run) => run.run_id))
       : false);
     if (!stopped) return false;
+    for (const run of started) await this.releaseRun(run.run_id, false, "account_switch");
 
     // CR20 & CR22: 进程全部确认停止后，冻结执行耗时并增量保存工作区快照
     if (this.engine) {

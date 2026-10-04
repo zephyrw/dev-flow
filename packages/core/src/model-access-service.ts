@@ -1,4 +1,8 @@
-import { createHmac } from "node:crypto";
+import { createHmac, randomUUID } from "node:crypto";
+import { ProcessManager } from "../../process/src/manager.js";
+import { observeProcessRecord } from "../../process/src/process-protocol.js";
+import type { ModelProbeLifecycle } from "../../agy-accounts/src/ports.js";
+import { nativeLaunch } from "../../adapters/sdk/src/launch.js";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { z } from "zod";
@@ -37,6 +41,7 @@ import { CATALOG_OUTPUT_LIMIT } from "../../contracts/src/model-catalog.js";
 import { isDiscoveryEnvironmentError } from "../../adapters/sdk/src/catalog-parse.js";
 import {
   ModelCatalogService,
+  collectSafeEnv,
   startLimitedCli,
   type CatalogScopeInput,
   type LimitedCliHandle,
@@ -46,6 +51,8 @@ import { id, now, objectHash, redact } from "./util.js";
 
 const ACCESS_KIND = "model_access";
 const JOB_KIND = "model_verification_job";
+const PROBE_PROCESS_KIND = "model_probe_process";
+type ProbeProcessReference = { job_id: string; process_id: string; access_key: string };
 const FORBIDDEN_PROBE_FLAGS = [
   "--force",
   "--always-approve",
@@ -89,8 +96,12 @@ export type ModelAccessServiceOptions = {
   probeRoot?: string;
   verifyTimeoutMs?: number;
   probeAdapter?: ProbeAdapter;
+  withAgyCategoryVerification?: <T>(
+    modelId: string,
+    verify: (lifecycle: ModelProbeLifecycle) => Promise<T>,
+  ) => Promise<T>;
   withManagedAccountVerification?: <T>(
-    identity: ManagedAgyModelIdentity,
+    identity: ManagedAgyModelIdentity & { modelId?: string; categoryPermitId?: string },
     verify: () => Promise<T>,
   ) => Promise<T>;
   candidateVerifier?: (
@@ -547,6 +558,8 @@ export class ModelAccessService {
   private readonly hmacKey: Buffer;
   private readonly probeRoot: string;
   private readonly options: ModelAccessServiceOptions;
+  private readonly agyProbeProcesses: ProcessManager;
+  private readonly agyProbeLifecycles = new Map<string, ModelProbeLifecycle>();
 
   constructor(store: Store, options: ModelAccessServiceOptions = {}) {
     this.store = store;
@@ -554,6 +567,18 @@ export class ModelAccessService {
     this.probeRoot = options.probeRoot ?? join(dirname(store.file), "model-probe");
     this.verifyTimeoutMs = options.verifyTimeoutMs ?? VERIFY_JOB_TIMEOUT_MS;
     this.hmacKey = this.loadHmacKey();
+    this.agyProbeProcesses = new ProcessManager((spec, event) => {
+      const previous = this.store.get<Record<string, unknown>>("process_record", spec.id);
+      this.store.put("process_record", spec.id, spec.agy_account?.realm_id ?? spec.id, {
+        ...previous, id: spec.id, ...event, agy_account: spec.agy_account,
+      });
+      const lifecycle = this.agyProbeLifecycles.get(spec.id);
+      if (event.status === "running") lifecycle?.started(typeof event.pid === "number" ? event.pid : undefined);
+      if (event.confirmed === true && (event.status === "exited" || event.status === "failed")) {
+        lifecycle?.stopped();
+        this.agyProbeLifecycles.delete(spec.id);
+      }
+    });
   }
 
   private readonly store: Store;
@@ -623,6 +648,26 @@ export class ModelAccessService {
 
   async verify(req: VerifyAccessRequest): Promise<VerifyAccessOutcome> {
     return this.beginVerify(req);
+  }
+
+  async verifyAndWait(profile: ToolProfile): Promise<void> {
+    this.assertProfileSupported(profile);
+    const outcome = await this.verify({ request_id: randomUUID(), profile });
+    if (outcome.statusCode === 202) {
+      let job = outcome.job;
+      while (job.status === "queued" || job.status === "checking") {
+        if (this.closed || Date.now() > Date.parse(job.deadline_at) + 1000) {
+          await this.cancel(job.id);
+          throw new FlowError("MODEL_PROBE_TIMEOUT", "目标模型核验超时，任务保持暂停", 503);
+        }
+        await new Promise(resolve => setTimeout(resolve, 50));
+        job = this.getVerification(job.id);
+      }
+      if (job.status !== "verified") {
+        throw new FlowError(job.error_code ?? "MODEL_ACCESS_REQUIRED", job.error_message ?? "目标模型未通过访问核验，任务保持暂停", 422);
+      }
+    }
+    this.assertCachedAccess(profile, this.identityFromProfile(profile));
   }
 
   private beginVerify(req: VerifyAccessRequest): VerifyAccessOutcome {
@@ -985,16 +1030,33 @@ export class ModelAccessService {
 
   async cancel(jobId: string): Promise<ModelVerificationJob> {
     const job = this.getVerification(jobId);
-    if (this.isTerminal(job.status)) return job;
-    this.cancelledJobs.add(jobId);
     const live = this.live.get(jobId);
-    if (live) {
-      await live.handle.cancel();
-      this.live.delete(jobId);
-      if (this.inflight.get(live.accessKey) === jobId) {
-        this.inflight.delete(live.accessKey);
+    const reference = this.store.get<ProbeProcessReference>(PROBE_PROCESS_KIND, jobId);
+    if (this.isTerminal(job.status) && !live && !reference) return job;
+    this.cancelledJobs.add(jobId);
+    try {
+      if (live) {
+        await live.handle.cancel();
+      } else if (reference) {
+        // A restored job must confirm its exact durable attempt, not infer exit
+        // from a missing in-memory handle after controller recovery.
+        const record = this.store.get<Record<string, unknown>>("process_record", reference.process_id);
+        const binding = record?.agy_account as { permit_id?: string } | undefined;
+        if (!record || binding?.permit_id !== reference.process_id ||
+            (await observeProcessRecord(record)).state !== "confirmed_exited")
+          throw new FlowError("PROCESS_STOP_UNCONFIRMED", "AGY 核验进程尚未确认退出，保留类别占用", 409);
       }
+    } catch (error) {
+      this.finishFailure(job, {
+        status: "environment_error", errorCode: "PROCESS_STOP_UNCONFIRMED", retryable: true,
+        message: `${error instanceof Error ? error.message : "核验进程停止未确认"}；类别占用已保留，请重试取消以重新确认停止`,
+      });
+      // Keep the handle, inflight key and durable association for another cancel.
+      return this.getVerification(jobId);
     }
+    this.live.delete(jobId);
+    this.store.remove(PROBE_PROCESS_KIND, jobId);
+    this.cancelledJobs.delete(jobId);
     if (this.inflight.get(job.access_key) === jobId) this.inflight.delete(job.access_key);
     const cancelled = ModelVerificationJobSchema.parse({
       ...job,
@@ -1006,22 +1068,82 @@ export class ModelAccessService {
     });
     this.store.put(JOB_KIND, jobId, job.access_key, cancelled);
     const record = this.getAccess(job.access_key);
-    if (record && record.status === "checking") {
+    if (record && (record.status === "checking" || record.error_code === "PROCESS_STOP_UNCONFIRMED")) {
       this.putAccess({
         ...record,
         status: record.last_success_at ? "verified" : "unverified",
         checked_at: now(),
+        error_code: undefined,
       });
     }
     return cancelled;
   }
 
   async close(): Promise<void> {
-    const jobs = [...new Set([...this.live.keys(), ...this.inflight.values()])];
+    const jobs = [...new Set([...this.live.keys(), ...this.inflight.values(),
+      ...this.store.list<ProbeProcessReference>(PROBE_PROCESS_KIND).map(ref => ref.job_id)])];
     for (const jobId of jobs) {
       await this.cancel(jobId);
     }
     this.closed = true;
+    await this.agyProbeProcesses.close();
+    // Manager shutdown may have confirmed a retry after the first cancellation
+    // was unknown. Settle the retained jobs only after that confirmation.
+    for (const jobId of jobs) {
+      if (this.live.has(jobId) || this.store.get(PROBE_PROCESS_KIND, jobId)) await this.cancel(jobId);
+    }
+  }
+
+  private startAgyProbe(
+    job: ModelVerificationJob,
+    invocation: PreparedInvocation,
+    timeoutMs: number,
+    lifecycle: ModelProbeLifecycle,
+  ): LimitedCliHandle {
+    const processId = lifecycle.binding.permit_id;
+    const launch = nativeLaunch(invocation.executable, "agy");
+    this.store.put(PROBE_PROCESS_KIND, job.id, job.access_key, {
+      job_id: job.id, process_id: processId, access_key: job.access_key,
+    });
+    lifecycle.started();
+    this.agyProbeLifecycles.set(processId, lifecycle);
+    let proc: ReturnType<ProcessManager["start"]>;
+    try {
+      proc = this.agyProbeProcesses.start({
+        id: processId, executable: launch.executable, args: [...launch.prefix, ...invocation.args],
+        cwd: invocation.cwd, env: { ...collectSafeEnv(), ...invocation.env, ...(this.options.extraEnv ?? {}) },
+        stdin: invocation.stdin, timeout_ms: timeoutMs, deadline_at: Date.now() + timeoutMs,
+        agy_account: lifecycle.binding,
+      });
+    } catch (error) {
+      this.store.remove(PROBE_PROCESS_KIND, job.id);
+      this.agyProbeLifecycles.delete(processId);
+      lifecycle.stopped();
+      throw error;
+    }
+    const chunks = { stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) };
+    let truncated = false;
+    let cancelled = false;
+    for (const stream of ["stdout", "stderr"] as const) {
+      proc.on(stream, (data: Buffer | string) => {
+        const next = Buffer.concat([chunks[stream], Buffer.isBuffer(data) ? data : Buffer.from(data)]);
+        truncated ||= next.length > CATALOG_OUTPUT_LIMIT;
+        chunks[stream] = next.subarray(0, CATALOG_OUTPUT_LIMIT);
+      });
+    }
+    return {
+      result: proc.completion.then(completion => ({
+        stdout: chunks.stdout.toString("utf8"), stderr: chunks.stderr.toString("utf8"),
+        exitCode: completion.code, pid: proc.pid, timedOut: completion.termination_reason === "timeout",
+        cancelled, truncated,
+      })),
+      cancel: async () => {
+        cancelled = true;
+        const result = await this.agyProbeProcesses.stop(processId, "manual");
+        if (result.status !== "confirmed_exited" && result.status !== "confirmed_not_started")
+          throw new FlowError("PROCESS_STOP_UNCONFIRMED", "AGY 核验进程尚未确认退出，保留类别占用", 409);
+      },
+    };
   }
 
   private requireVerifiedRecord(accessKey: string): ModelAccessRecord {
@@ -1277,6 +1399,7 @@ export class ModelAccessService {
       return;
     }
     try {
+      let probeLifecycle: ModelProbeLifecycle | undefined;
       const probe = async (): Promise<LimitedCliResult> => {
         if (this.closed || this.cancelledJobs.has(job.id) || this.isTerminal(this.getVerification(job.id).status)) {
           throw new FlowError("CANCELLED", "验证已取消", 409);
@@ -1291,7 +1414,9 @@ export class ModelAccessService {
         );
         const invocation = applyNativeProfileArgs(prepared, profile);
         assertProbeSafe(invocation, this.probeRoot);
-        const handle = startLimitedCli({
+        const handle = profile.adapterId === "agy" && probeLifecycle
+          ? this.startAgyProbe(job, invocation, remainingMs, probeLifecycle)
+          : startLimitedCli({
           adapterId: profile.adapterId,
           executable: invocation.executable,
           args: invocation.args,
@@ -1308,36 +1433,62 @@ export class ModelAccessService {
         });
         return handle.result;
       };
-      let result: LimitedCliResult;
-      if (managed) {
-        if (!this.options.withManagedAccountVerification) {
-          throw new FlowError("VERIFICATION_ENVIRONMENT_UNAVAILABLE", "受管 AGY 验证需要账号服务协调", 503);
+      const coordinatedProbe = async (): Promise<LimitedCliResult> => {
+        if (managed) {
+          if (!this.options.withManagedAccountVerification) {
+            throw new FlowError("VERIFICATION_ENVIRONMENT_UNAVAILABLE", "受管 AGY 验证需要账号服务协调", 503);
+          }
+          const result = await this.options.withManagedAccountVerification({
+            ...managed, modelId: profile.modelId, categoryPermitId: probeLifecycle?.binding.permit_id,
+          }, probe);
+          const current = readManagedAgyModelIdentity(this.store);
+          if (!current || current.realmId !== managed.realmId || current.accountId !== managed.accountId ||
+              current.authEpoch !== managed.authEpoch) {
+            throw new FlowError("MODEL_IDENTITY_CHANGED", "验证期间 AGY 账号身份已变化，请重新验证", 409);
+          }
+          return result;
         }
-        result = await this.options.withManagedAccountVerification(managed, probe);
-        if (this.closed || this.cancelledJobs.has(job.id)) return;
-        const current = readManagedAgyModelIdentity(this.store);
-        if (!current || current.realmId !== managed.realmId || current.accountId !== managed.accountId ||
-            current.authEpoch !== managed.authEpoch) {
-          throw new FlowError("MODEL_IDENTITY_CHANGED", "验证期间 AGY 账号身份已变化，请重新验证", 409);
-        }
-      } else {
         // An unmanaged probe may not outlive enabling managed ownership either.
         if (profile.adapterId === "agy" && readManagedAgyModelIdentity(this.store)) {
           throw new FlowError("MODEL_IDENTITY_CHANGED", "AGY 账号管理状态已变化，请重新验证", 409);
         }
-        result = await probe();
+        const result = await probe();
         if (profile.adapterId === "agy" && readManagedAgyModelIdentity(this.store)) {
           throw new FlowError("MODEL_IDENTITY_CHANGED", "验证期间 AGY 账号管理状态已变化，请重新验证", 409);
         }
+        return result;
+      };
+      let result: LimitedCliResult;
+      if (profile.adapterId === "agy") {
+        if (!this.options.withAgyCategoryVerification || !profile.modelId) {
+          throw new FlowError("VERIFICATION_ENVIRONMENT_UNAVAILABLE", "AGY 验证需要共同类别准入协调", 503);
+        }
+        result = await this.options.withAgyCategoryVerification(profile.modelId, async lifecycle => {
+          probeLifecycle = lifecycle;
+          return coordinatedProbe();
+        });
+      } else {
+        result = await coordinatedProbe();
       }
+      if (this.closed || this.cancelledJobs.has(job.id)) return;
       this.applyProbeResult(job, selection, result);
     } catch (error) {
-      this.failProbeLaunch(job, error);
+      if (error instanceof FlowError && error.code === "PROCESS_STOP_UNCONFIRMED") {
+        this.cancelledJobs.add(job.id);
+        this.finishFailure(job, {
+          status: "environment_error", errorCode: error.code, retryable: true,
+          message: `${error.message}；类别占用已保留，请重试取消以重新确认停止`,
+        });
+      } else {
+        this.failProbeLaunch(job, error);
+      }
     } finally {
-      this.live.delete(job.id);
-      this.cancelledJobs.delete(job.id);
-      if (this.inflight.get(job.access_key) === job.id) {
-        this.inflight.delete(job.access_key);
+      if (!this.cancelledJobs.has(job.id)) {
+        this.live.delete(job.id);
+        this.store.remove(PROBE_PROCESS_KIND, job.id);
+        if (this.inflight.get(job.access_key) === job.id) {
+          this.inflight.delete(job.access_key);
+        }
       }
     }
   }

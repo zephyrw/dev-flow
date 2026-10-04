@@ -13,12 +13,36 @@ export class AgyReconciler {
     private processHost: ProcessHostPort,
   ) {}
 
+  async reconcilePermits(realmId: string): Promise<void> {
+    if (!this.authHost.isDomainLockHeld(realmId)) throw new Error("domain_lock_lost");
+    const activePermits = this.repository
+      .listPermits(realmId)
+      .filter((p) => p.status === "issued" || p.status === "started");
+    if (activePermits.length === 0) return;
+
+    for (const permit of activePermits) {
+      if (await this.processHost.confirmPermitStopped?.(permit)) {
+        if (!this.authHost.isDomainLockHeld(realmId)) throw new Error("domain_lock_lost");
+        const current = this.repository.getPermit(permit.permit_id);
+        // Do not overwrite a start/process attachment that raced the observation.
+        if (!current || current.status !== permit.status || current.process_id !== permit.process_id) continue;
+        this.repository.savePermit({
+          ...current,
+          status: "released",
+          released_at: new Date().toISOString(),
+        });
+      }
+    }
+  }
+
   async reconcileStartup(realmId: string): Promise<void> {
     const realm = this.repository.getRealm(realmId);
     if (!realm) return;
 
     if (!this.authHost.isDomainLockHeld(realmId))
       throw new Error("domain_lock_lost");
+
+    await this.reconcilePermits(realmId);
 
     // desired_enabled=false 现场处理 (AGF-D06, CR11)
     if (!realm.desired_enabled) {

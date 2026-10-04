@@ -9,6 +9,84 @@ const root = mkdtempSync(join(tmpdir(), "devflow-accounts-browser-"));
 const store = new Store(join(root, "devflow.sqlite"));
 const fixture = accountFixture(store);
 fixture.seedAccounts();
+
+const initialNow = Date.now();
+const initialFutureReset = new Date(initialNow + 2 * 86400 * 1000).toISOString();
+const initialNowIso = new Date(initialNow).toISOString();
+
+fixture.probe.probeUsage = async () => {
+  const curNow = Date.now();
+  const curIso = new Date(curNow).toISOString();
+  const curReset = new Date(curNow + 2 * 86400 * 1000).toISOString();
+  return {
+    email: `${fixture.active()}@example.com`,
+    cli_version: "1.2.7",
+    windows: [
+      { kind: "weekly" as const, duration_minutes: 10080 as const, remaining_fraction: 0.9, reset_at: curReset, observed_at: curIso, status: "observed" as const },
+      { kind: "five_hour" as const, duration_minutes: 300 as const, remaining_fraction: 0.85, reset_at: curReset, observed_at: curIso, status: "observed" as const },
+    ],
+    pools: [
+      {
+        pool_id: "Gemini Models",
+        model_ids: ["gemini-3.8-flash", "gemini-3.7-flash"],
+        windows: [
+          { kind: "weekly" as const, duration_minutes: 10080 as const, remaining_fraction: 0.9, reset_at: curReset, observed_at: curIso, status: "observed" as const },
+          { kind: "five_hour" as const, duration_minutes: 300 as const, remaining_fraction: 0.85, reset_at: curReset, observed_at: curIso, status: "observed" as const },
+        ],
+      },
+      {
+        pool_id: "Claude and GPT models",
+        model_ids: ["claude-opus-5-5", "claude-sonnet-5-5"],
+        windows: [
+          { kind: "weekly" as const, duration_minutes: 10080 as const, remaining_fraction: 0.75, reset_at: curReset, observed_at: curIso, status: "observed" as const },
+          { kind: "five_hour" as const, duration_minutes: 300 as const, remaining_fraction: 0.6, reset_at: curReset, observed_at: curIso, status: "observed" as const },
+        ],
+      },
+    ],
+    executable_fingerprint: "fixture",
+    capability_verified: true,
+  };
+};
+
+for (const id of ["a", "b", "c"]) {
+  fixture.repository.saveQuotaSnapshot({
+    id: `snap-gemini-${id}`,
+    realm_id: "default-agy-realm",
+    account_id: id,
+    auth_epoch: 1,
+    pool_id: "Gemini Models",
+    model_ids: ["gemini-3.8-flash", "gemini-3.7-flash"],
+    source: "official_cli_usage",
+    cli_version: "1.2.7",
+    parser_revision: 1,
+    capability_verified: true,
+    executable_fingerprint: "fixture",
+    observed_at: initialNowIso,
+    windows: [
+      { kind: "weekly", duration_minutes: 10080, remaining_fraction: 0.9, reset_at: initialFutureReset, observed_at: initialNowIso, status: "observed" },
+      { kind: "five_hour", duration_minutes: 300, remaining_fraction: 0.85, reset_at: initialFutureReset, observed_at: initialNowIso, status: "observed" },
+    ],
+  });
+  fixture.repository.saveQuotaSnapshot({
+    id: `snap-claude-${id}`,
+    realm_id: "default-agy-realm",
+    account_id: id,
+    auth_epoch: 1,
+    pool_id: "Claude and GPT models",
+    model_ids: ["claude-opus-5-5", "claude-sonnet-5-5"],
+    source: "official_cli_usage",
+    cli_version: "1.2.7",
+    parser_revision: 1,
+    capability_verified: true,
+    executable_fingerprint: "fixture",
+    observed_at: initialNowIso,
+    windows: [
+      { kind: "weekly", duration_minutes: 10080, remaining_fraction: 0.75, reset_at: initialFutureReset, observed_at: initialNowIso, status: "observed" },
+      { kind: "five_hour", duration_minutes: 300, remaining_fraction: 0.6, reset_at: initialFutureReset, observed_at: initialNowIso, status: "observed" },
+    ],
+  });
+}
+
 const settings = fixture.repository.getSettings("default-agy-realm")!;
 fixture.service.updateSettings(
   "default-agy-realm",
@@ -160,6 +238,59 @@ app.route({
         { kind: "five_hour", duration_minutes: 300, remaining_fraction: 0.9, reset_at: futureReset, observed_at: nowIso, status: "observed" },
       ],
     });
+
+    return { ok: true };
+  },
+});
+
+app.route({
+  method: ["GET", "POST"],
+  url: "/api/account-fixture/setup-dual-quota-scenarios",
+  handler: async () => {
+    const realmId = "default-agy-realm";
+    const now = Date.now();
+    const futureReset = new Date(now + 2 * 86400 * 1000).toISOString();
+    const nowIso = new Date(now).toISOString();
+
+    for (const id of ["a", "b", "c", "d"]) {
+      fixture.repository.saveQuotaSnapshot({
+        id: `snap-gemini-${id}`,
+        realm_id: realmId,
+        account_id: id,
+        auth_epoch: 1,
+        pool_id: "Gemini Models",
+        model_ids: ["gemini-3.8-flash", "gemini-3.7-flash"],
+        source: "official_cli_usage",
+        cli_version: "1.2.7",
+        parser_revision: 1,
+        capability_verified: true,
+        executable_fingerprint: "fixture",
+        observed_at: nowIso,
+        windows: [
+          { kind: "weekly", duration_minutes: 10080, remaining_fraction: 0.9, reset_at: futureReset, observed_at: nowIso, status: "observed" },
+          { kind: "five_hour", duration_minutes: 300, remaining_fraction: 0.85, reset_at: futureReset, observed_at: nowIso, status: "observed" },
+        ],
+      });
+
+      fixture.repository.saveQuotaSnapshot({
+        id: `snap-claude-${id}`,
+        realm_id: realmId,
+        account_id: id,
+        auth_epoch: 1,
+        pool_id: "Claude and GPT models",
+        model_ids: ["claude-opus-5-5", "claude-sonnet-5-5"],
+        source: "official_cli_usage",
+        cli_version: "1.2.7",
+        parser_revision: 1,
+        capability_verified: true,
+        executable_fingerprint: "fixture",
+        observed_at: nowIso,
+        windows: [
+          { kind: "weekly", duration_minutes: 10080, remaining_fraction: 0.75, reset_at: futureReset, observed_at: nowIso, status: "observed" },
+          { kind: "five_hour", duration_minutes: 300, remaining_fraction: 0.6, reset_at: futureReset, observed_at: nowIso, status: "observed" },
+        ],
+      });
+    }
 
     return { ok: true };
   },

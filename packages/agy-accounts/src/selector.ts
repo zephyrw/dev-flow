@@ -32,6 +32,7 @@ export interface SelectionPolicy {
   refresh_verified_max_age_hours?: number;
   night_end_at?: number;
   required_model_ids?: string[];
+  active_category?: "gemini" | "other" | "unknown" | null;
   cooldown_until?: number;
   retry_after_until?: number;
 }
@@ -42,6 +43,7 @@ export interface AccountEvaluationInput {
   policy: {
     required_pool_ids: string[];
     required_model_ids?: string[];
+    active_category?: "gemini" | "other" | "unknown" | null;
     allowed_account_ids?: string[] | null;
     night_pool?: "normal" | "strict";
     is_night?: boolean;
@@ -78,7 +80,8 @@ export function evaluateAccountForDemand(
   if (account.state === "incompatible") excluded_reasons.push("account_incompatible");
   if (account.state === "reauth_required") excluded_reasons.push("reauth_required");
   if (hasAccountIdentityMismatch(account)) excluded_reasons.push("account_identity_mismatch");
-  if (account.state === "pending_quota") excluded_reasons.push("pending_quota_initialization");
+  // Quota readiness is checked against the demanded pools below. A legacy
+  // pending_quota state may have been caused solely by the other category.
 
   // 2. 白名单
   if (
@@ -142,7 +145,13 @@ export function evaluateAccountForDemand(
   let hasZeroWindowProjected = false;
   let isProjectedExpiredOrZero = false;
 
-  const demandedPools = requiredQuotaPools([...poolSnaps.values()], policy.required_pool_ids, policy.required_model_ids ?? []);
+  const demandedPools = requiredQuotaPools(
+    [...poolSnaps.values()],
+    policy.required_pool_ids,
+    policy.required_model_ids ?? [],
+    policy.active_category,
+  );
+  if (policy.active_category === "unknown") excluded_reasons.push("model_category_unknown");
   if (!demandedPools) excluded_reasons.push("missing_required_quota_pools");
   for (const snap of demandedPools ?? []) {
     if (!snap || snap.capability_verified === false ||
@@ -496,6 +505,7 @@ export function selectCandidates(
       policy: {
         required_pool_ids: requiredPoolIds,
         required_model_ids: policy.required_model_ids,
+        active_category: policy.active_category,
         allowed_account_ids: policy.allowed_account_ids,
         night_pool: policy.night_pool,
         is_night: policy.is_night,

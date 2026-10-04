@@ -31,6 +31,7 @@ import { ModelAccessService } from "../../../packages/core/src/model-access-serv
 import { ModelSwitchService } from "../../../packages/core/src/model-switch-service.js";
 import { RepairModelService } from "../../../packages/core/src/repair-model-service.js";
 import { assertProfilesVerified } from "../../../packages/core/src/access-guard.js";
+import type { AgyAccountService } from "../../../packages/agy-accounts/src/service.js";
 import {
   buildExecutionSpecResponse,
   HttpExecutionSpecGetResponseSchema,
@@ -199,12 +200,26 @@ export function registerModelRoutes(
   engine: Engine,
   human: (request: unknown) => void,
   modelAccess?: ModelAccessService,
+  accountService?: AgyAccountService,
 ) {
-  const specs = new ExecutionSpecService(engine.store, engine.config);
+  const getActiveCategory = accountService
+    ? (excludeConsumerId?: string) => accountService.getActiveCategory("default-agy-realm", excludeConsumerId).category
+    : undefined;
+  const specs = new ExecutionSpecService(engine.store, engine.config, getActiveCategory);
   const defaults = new ModelDefaultsService(engine.store);
   const catalog = new ModelCatalogService(engine.store);
-  const access = modelAccess ?? new ModelAccessService(engine.store, { catalog });
-  const switches = new ModelSwitchService(engine.store, specs);
+  const access = modelAccess ?? new ModelAccessService(engine.store, {
+    catalog,
+    ...(accountService ? {
+      withAgyCategoryVerification: <T>(modelId: string, verify: (lifecycle: import("../../../packages/agy-accounts/src/ports.js").ModelProbeLifecycle) => Promise<T>) =>
+        accountService.withCategoryVerification("default-agy-realm", modelId, verify),
+      withManagedAccountVerification: <T>(identity: import("../../../packages/core/src/model-identity.js").ManagedAgyModelIdentity & { modelId?: string; categoryPermitId?: string }, verify: () => Promise<T>) =>
+        accountService.withModelVerification({ realm_id: identity.realmId, account_id: identity.accountId, auth_epoch: identity.authEpoch, model_id: identity.modelId, category_permit_id: identity.categoryPermitId }, verify),
+    } : {}),
+  });
+  const switches = new ModelSwitchService(engine.store, specs, getActiveCategory, async profiles => {
+    for (const profile of profiles) await access.verifyAndWait(profile);
+  });
   const repairs = new RepairModelService(engine.store, specs);
 
   app.get("/api/model-tools", async (req) => {

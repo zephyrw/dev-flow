@@ -160,8 +160,9 @@ export async function buildServer(
     });
   const accessService = new ModelAccessService(engine.store, {
     catalog: new ModelCatalogService(engine.store),
+    withAgyCategoryVerification: (modelId, verify) => accountService.withCategoryVerification("default-agy-realm", modelId, verify),
     withManagedAccountVerification: (identity, verify) => accountService.withModelVerification(
-      { realm_id: identity.realmId, account_id: identity.accountId, auth_epoch: identity.authEpoch }, verify,
+      { realm_id: identity.realmId, account_id: identity.accountId, auth_epoch: identity.authEpoch, model_id: identity.modelId, category_permit_id: identity.categoryPermitId }, verify,
     ),
   });
   app.addHook("onClose", async () => {
@@ -184,7 +185,7 @@ export async function buildServer(
   const feedbackService = new FeedbackService(engine.store);
   const planApprovalService = new PlanApprovalService(engine, documentService);
   const visibilityService = new WorkflowVisibilityService(engine.store, engine);
-  const modelServices = registerModelRoutes(app, engine, human, accessService);
+  const modelServices = registerModelRoutes(app, engine, human, accessService, accountService);
   const conversations = conversationServiceOf(engine.store);
   const conversationFiles = new ConversationFileService(
     engine.store,

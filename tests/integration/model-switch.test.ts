@@ -894,3 +894,43 @@ it("场景2：切换并继续派发失败返回可重试回执，重试不重复
   expect(dispatchAttempts).toBe(2);
 });
 
+it("AGY-05: pause the sole owning Run before verifying an unverified other-category model", async () => {
+  const s = openSwitch("wf-agy-pause-verify");
+  let ownPermitActive = true;
+  const oldStop = s.engine.runtime.stop.bind(s.engine.runtime);
+  s.engine.runtime.stop = async (run, options) => {
+    const result = await oldStop(run, options);
+    ownPermitActive = false;
+    return result;
+  };
+  const category = (exclude?: string) => exclude === "run-test" || !ownPermitActive ? null : "gemini" as const;
+  let verified = false;
+  const target: ToolProfile = { ...executor("claude-sonnet-5-5"), reasoning: undefined };
+  const switches = new ModelSwitchService(s.store, new ExecutionSpecService(s.store, s.config, category), category, async profiles => {
+    expect(s.engine.get(s.workflow.id).state).toBe("STOPPED");
+    expect(ownPermitActive).toBe(false);
+    verified = true;
+    for (const profile of profiles) seedVerifiedAccess(s.store, profile);
+  });
+  const receipt = await switches.applyAfterPause(s.engine, s.workflow.id, {
+    request_id: randomUUID(), expected_spec_revision: 1, planner_profile: planner(), executor_profile: target,
+    role_overrides: inheritRoleOverrides(), expected_workflow_version: s.workflow.version, expected_run_id: "run-test",
+  });
+  expect(verified).toBe(true);
+  expect(receipt.effective_from).toBe("stopped-awaiting-resume");
+  expect(s.engine.store.get<{ profile: ToolProfile }>("run", "run-test")?.profile.modelId).toBe(executor().modelId);
+});
+
+it("AGY-05: another consumer's category conflict rejects before pausing or probing", async () => {
+  const s = openSwitch("wf-agy-other-consumer");
+  let probed = false;
+  const category = () => "gemini" as const;
+  const switches = new ModelSwitchService(s.store, new ExecutionSpecService(s.store, s.config, category), category, async () => { probed = true; });
+  await expect(switches.applyAfterPause(s.engine, s.workflow.id, {
+    request_id: randomUUID(), expected_spec_revision: 1, planner_profile: planner(),
+    executor_profile: { ...executor("claude-sonnet-5-5"), reasoning: undefined },
+    role_overrides: inheritRoleOverrides(), expected_workflow_version: s.workflow.version, expected_run_id: "run-test",
+  })).rejects.toMatchObject({ code: "AGY_CATEGORY_CONFLICT" });
+  expect(probed).toBe(false);
+  expect(s.engine.get(s.workflow.id).state).toBe("EXECUTING");
+});

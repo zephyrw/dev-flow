@@ -13,6 +13,7 @@ import {
 import type {
   AgyAccountDto,
   AgyQuotaSnapshot,
+  AgyManagementSelectionContext,
 } from "../../../../packages/contracts/src/agy-account.js";
 import { AgyAccountEnrollment } from "./AgyAccountEnrollment.js";
 import {
@@ -41,6 +42,8 @@ interface Realm {
 interface AccountView {
   refresh_scope?: "all" | "active_only";
   model_id?: string | null;
+  active_category?: "gemini" | "other" | "unknown" | null;
+  selection_context?: AgyManagementSelectionContext;
   accounts: AgyAccountDto[];
   snapshots: AgyQuotaSnapshot[];
   realm: Realm | null;
@@ -72,8 +75,18 @@ function CompactQuotaBar({
   snapshot: AgyQuotaSnapshot | undefined;
   kind: AgyQuotaSnapshot["windows"][number]["kind"];
 }) {
-  const window = snapshot?.windows.find((w) => w.kind === kind);
-  if (!window) return null;
+  const window = snapshot?.windows.find(
+    (w) =>
+      w.kind === kind ||
+      (kind === "weekly" ? w.duration_minutes === 10080 : w.duration_minutes === 300),
+  );
+  if (!window) {
+    return (
+      <span className="agy-no-quota">
+        {kind === "weekly" ? "周额度待实测/不可用" : "5小时待实测/不可用"}
+      </span>
+    );
+  }
   const value = formatSnapshotQuotaWindow(snapshot, kind);
   const percent = value.fraction !== null ? Math.round(value.fraction * 100) : null;
   const tooltip = value.shortResetText
@@ -325,6 +338,23 @@ export const AgyAccountsPanel = forwardRef<
           <span className="agy-switch-desc">
             {isAutomationOn ? "额度耗尽时自动选择最佳账号" : "已停用自动切换，当前仅执行手动切换"}
           </span>
+          {isAutomationOn && (
+            <span
+              className="agy-selection-basis-desc"
+              style={{ fontSize: "12px", color: "#475569", marginTop: "4px" }}
+            >
+              当前自动选择依据：
+              {view?.selection_context?.source === "standalone_model"
+                ? `指定独立模型额度池（${view.selection_context.model_id}）`
+                : view?.selection_context?.category === "gemini"
+                ? "当前活跃 Gemini 任务所属额度池"
+                : view?.selection_context?.category === "other"
+                  ? "当前活跃其他模型任务所属额度池（Claude / GPT）"
+                   : view?.selection_context?.category === "unknown"
+                     ? "当前类别尚未确认，等待恢复核对"
+                     : "等待任务启动后按所属类别匹配（当前无活跃类别占用）"}
+            </span>
+          )}
         </div>
 
         <button
@@ -422,27 +452,18 @@ export const AgyAccountsPanel = forwardRef<
           <div className="agy-accounts-grid">
             {accounts.map((account) => {
               const isActive = account.id === activeAccountId;
-              // 优先匹配主力模型池（默认为 Gemini Models），避免因为遍历顺序命中常满的 Claude and GPT models 快照
               const accountSnapshots =
                 view?.snapshots.filter((s) => s.account_id === account.id) ?? [];
-              const targetPoolName =
-                view?.model_id?.toLowerCase().includes("claude") ||
-                view?.model_id?.toLowerCase().includes("gpt")
-                  ? "Claude and GPT models"
-                  : "Gemini Models";
-              const snapshot =
-                accountSnapshots.find((s) => s.pool_id === targetPoolName) ??
-                accountSnapshots.find((s) => s.pool_id === "Gemini Models") ??
-                accountSnapshots.find((s) =>
-                  s.pool_id.toLowerCase().includes("gemini"),
-                ) ??
-                accountSnapshots[0];
-
-              const weeklyWindow = snapshot?.windows.find(
-                (w) => w.duration_minutes === 10080 || w.kind === "weekly",
+              
+              // 严格独立提取两组快照，严禁互借补位
+              const geminiSnapshot = accountSnapshots.find(
+                (s) => s.pool_id === "Gemini Models" || s.pool_id.toLowerCase().includes("gemini"),
               );
-              const shortWindow = snapshot?.windows.find(
-                (w) => w.duration_minutes === 300 || w.kind === "five_hour",
+              const otherSnapshot = accountSnapshots.find(
+                (s) =>
+                  s.pool_id === "Claude and GPT models" ||
+                  s.pool_id.toLowerCase().includes("claude") ||
+                  s.pool_id.toLowerCase().includes("gpt"),
               );
 
               return (
@@ -462,18 +483,41 @@ export const AgyAccountsPanel = forwardRef<
                       )}
                     </div>
 
-                    {/* 紧凑额度条 */}
-                    <div className="agy-account-quotas">
-                      {weeklyWindow ? (
-                        <CompactQuotaBar snapshot={snapshot} kind="weekly" />
-                      ) : (
-                        <span className="agy-no-quota">
-                          {refreshing ? "周额度探测中..." : "周额度待实测"}
-                        </span>
-                      )}
-                      {shortWindow ? (
-                        <CompactQuotaBar snapshot={snapshot} kind="five_hour" />
-                      ) : null}
+                    {/* 双组额度：上方固定展示 Gemini 额度，下方固定展示其他模型额度（Claude / GPT） */}
+                    <div className="agy-account-quotas-dual">
+                      {/* 上方：Gemini 额度 */}
+                      <div className="agy-quota-group" data-category="gemini">
+                        <span className="agy-quota-group-label gemini">Gemini 额度</span>
+                        <div className="agy-quota-bars">
+                          {geminiSnapshot ? (
+                            <>
+                              <CompactQuotaBar snapshot={geminiSnapshot} kind="weekly" />
+                              <CompactQuotaBar snapshot={geminiSnapshot} kind="five_hour" />
+                            </>
+                          ) : (
+                            <span className="agy-no-quota">
+                              {refreshing ? "额度探测中..." : "待实测/不可用"}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* 下方：其他模型额度（Claude / GPT） */}
+                      <div className="agy-quota-group" data-category="other">
+                        <span className="agy-quota-group-label other">其他模型额度（Claude / GPT）</span>
+                        <div className="agy-quota-bars">
+                          {otherSnapshot ? (
+                            <>
+                              <CompactQuotaBar snapshot={otherSnapshot} kind="weekly" />
+                              <CompactQuotaBar snapshot={otherSnapshot} kind="five_hour" />
+                            </>
+                          ) : (
+                            <span className="agy-no-quota">
+                              {refreshing ? "额度探测中..." : "待实测/不可用"}
+                            </span>
+                          )}
+                        </div>
+                      </div>
                     </div>
                   </div>
 

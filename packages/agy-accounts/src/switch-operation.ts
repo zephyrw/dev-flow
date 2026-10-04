@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { hasDualQuotaWindows, requiredQuotaPools } from "./quota.js";
+import { getAgyModelCategory } from "../../adapters/agy/src/model-configuration.js";
+import { isQuotaPoolVerified, requiredQuotaPools } from "./quota.js";
 import type {
   AgyAccount,
   AgyAccountOperation,
@@ -171,6 +172,11 @@ export class SwitchOperationExecutor {
     const occupancy = (
       await Promise.all(this.consumers.map((c) => c.listOccupancy()))
     ).flat();
+    const occupiedModels = [...new Set(occupancy.flatMap(item => item.required_model_ids ?? []))];
+    const context = this.repository.getRecord<{ explicit_model_id: string | null }>("agy_switch_context", operation.operation_id);
+    if (context?.explicit_model_id && occupiedModels.some(model =>
+        getAgyModelCategory(model) === "unknown" || getAgyModelCategory(model) !== getAgyModelCategory(context.explicit_model_id)))
+      throw new Error("agy_category_conflict");
     if (
       occupancy.some((o) => !o.can_pause) ||
       (options.trigger.startsWith("manual") &&
@@ -178,10 +184,20 @@ export class SwitchOperationExecutor {
         occupancy.length)
     )
       throw new Error("managed_busy");
-    options.requiredPoolIds = [...new Set([
-      ...(options.requiredPoolIds.length ? options.requiredPoolIds : ["global"]),
-      ...occupancy.flatMap((item) => item.required_pool_ids ?? []),
-    ])];
+    if (options.trigger.startsWith("manual") && occupancy.length) {
+      if (!occupiedModels.length) throw new Error("agy_model_unknown");
+      // Actual consumers supersede the standalone management demand. A manual
+      // account switch resumes these frozen models, not the future default.
+      operation.required_model_ids = occupiedModels;
+      operation.model_id = occupiedModels[0];
+      options.modelId = operation.model_id;
+      options.requiredPoolIds = [...new Set(["global", ...occupancy.flatMap(item => item.required_pool_ids ?? [])])];
+    } else {
+      options.requiredPoolIds = [...new Set([
+        ...(options.requiredPoolIds.length ? options.requiredPoolIds : ["global"]),
+        ...occupancy.flatMap((item) => item.required_pool_ids ?? []),
+      ])];
+    }
     for (const item of occupancy)
       if (item.allowed_account_ids !== null)
         operation.allowed_account_ids =
@@ -376,14 +392,8 @@ export class SwitchOperationExecutor {
           message: `Account ${explicitId} is ${targetAcc.state}`,
         };
       }
-      if (targetAcc.state === "pending_quota") {
-        this.finishRealmPhase(realm);
-        return {
-          success: false,
-          status: "target_unavailable",
-          message: `Account ${explicitId} quota not initialized`,
-        };
-      }
+      // A historical pending state can belong to the unrelated category. The
+      // target's actual demanded pools are verified before the switch commits.
       if (explicitId === beforeAccountId) {
         this.finishRealmPhase(realm);
         return {
@@ -628,7 +638,7 @@ export class SwitchOperationExecutor {
       this.repository.saveOperation(operation);
       const targetPools = requiredQuotaPools(probeRes.pools, options.requiredPoolIds, operation.required_model_ids);
       const complete = probeRes.capability_verified && !!probeRes.executable_fingerprint &&
-        !!targetPools?.length && targetPools.every((pool) => hasDualQuotaWindows(pool.windows));
+        !!targetPools?.length && targetPools.every((pool) => isQuotaPoolVerified(probeRes, pool));
       this.repository.retainQuotaPools(options.realmId, targetAcc.id, probeRes.pools.map((pool) => pool.pool_id));
       for (const pool of probeRes.pools) {
         this.repository.saveQuotaSnapshot({
@@ -642,14 +652,14 @@ export class SwitchOperationExecutor {
           cli_version: probeRes.cli_version,
           parser_revision: 1,
           executable_fingerprint: probeRes.executable_fingerprint,
-          capability_verified: probeRes.capability_verified,
+          capability_verified: isQuotaPoolVerified(probeRes, pool),
           observed_at: this.clock.toISOString(),
           windows: pool.windows,
         });
 
       }
       if (!complete) {
-        targetAcc.state = "pending_quota";
+        targetAcc.state = probeRes.pools.some(pool => isQuotaPoolVerified(probeRes, pool)) ? "ready" : "pending_quota";
         targetAcc.revision++;
         this.repository.saveAccount(targetAcc);
         throw new Error("quota_capability_unavailable");

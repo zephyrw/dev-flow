@@ -198,7 +198,6 @@ export class LocalRuntime implements Runtime {
       processHost,
     );
     this.processes.setAdmissionGuard((spec) => {
-      if (!bridge.isManaged()) return;
       const isAgy =
         this.engine.store.get<Run>("run", spec.id)?.adapter === "agy" ||
         resolve(spec.executable).toLowerCase() ===
@@ -207,12 +206,16 @@ export class LocalRuntime implements Runtime {
           ).toLowerCase() ||
         /(?:^|[\\/])agy(?:\.exe|\.cmd)?$/i.test(spec.executable);
       if (!isAgy && !spec.agy_account) return;
-      if (!spec.agy_account)
-        throw new FlowError(
-          "AGY_ACCOUNT_PERMIT_REQUIRED",
-          "受管 AGY 启动缺少账号许可",
-          409,
-        );
+      if (!spec.agy_account) {
+        if (bridge.isManaged()) {
+          throw new FlowError(
+            "AGY_ACCOUNT_PERMIT_REQUIRED",
+            "受管 AGY 启动缺少账号许可",
+            409,
+          );
+        }
+        return;
+      }
       try {
         service.markUsageStarted(spec.agy_account.permit_id);
       } catch {

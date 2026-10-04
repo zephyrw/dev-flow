@@ -3,6 +3,7 @@ import type { QuotaBucket } from "../../../../packages/contracts/src/run-observa
 import { visibleRunObservation } from "../../../../packages/presentation/src/run-observation.js";
 import { projectRoleRuntime } from "../../../../packages/presentation/src/role-runtime.js";
 import { QuotaPopover, QuotaWindowData } from "./QuotaPopover.js";
+import { getAgyModelCategory } from "../../../../packages/adapters/agy/src/model-configuration.js";
 import "./current-runtime.css";
 
 function BrainIcon() {
@@ -72,14 +73,32 @@ export function CurrentRuntime({
     observation?.actual_model ??
     observation?.requested_model;
 
+  const isAgy = observation?.adapter === "agy" || quotaTarget?.adapter === "agy";
+  const agyCategory = isAgy ? getAgyModelCategory(activeModel) : undefined;
+  const categoryLabel = isAgy
+    ? agyCategory === "gemini"
+      ? "Gemini 额度"
+      : agyCategory === "other" ? "其他模型额度（Claude / GPT）" : "AGY 额度（类别待确认）"
+    : undefined;
+
   const modelBuckets =
-    quota?.buckets.filter((bucket) =>
-      activeModel
-        ? bucket.model
-          ? bucket.model === activeModel
-          : bucket.id === activeModel
-        : false,
-    ) ?? [];
+    quota?.buckets.filter((bucket) => {
+      if (!activeModel) return false;
+      if (isAgy) {
+        // A real global constraint does not replace the model category display.
+        if (bucket.id.toLowerCase() === "global") return false;
+        if (bucket.model && bucket.model !== activeModel) return false;
+        const poolCategory =
+          bucket.id.toLowerCase().includes("claude") || bucket.id.toLowerCase().includes("gpt")
+            ? "other"
+            : bucket.id.toLowerCase().includes("gemini")
+              ? "gemini"
+              : undefined;
+        if (poolCategory && poolCategory === agyCategory) return true;
+      }
+      if (bucket.model === activeModel || bucket.id === activeModel) return true;
+      return false;
+    }) ?? [];
 
   const sharedBuckets =
     observation?.adapter === "codex"
@@ -204,6 +223,8 @@ export function CurrentRuntime({
         aria-label={quotaTarget?.description}
       >
         <QuotaPopover
+          categoryLabel={categoryLabel}
+          showUnknownWindows={isAgy}
           weeklyData={weeklyData}
           fiveHourData={fiveHourData}
           isStale={Boolean(stale)}

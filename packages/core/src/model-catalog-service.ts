@@ -44,6 +44,8 @@ import {
 import {
   parseAgyModelCatalog,
   knownAgyEffortFor,
+  AGY_55_CANDIDATE_IDS,
+  buildAgyCandidateEntry,
 } from "../../adapters/agy/src/model-configuration.js";
 import { parseCursorModelCatalog } from "../../adapters/cursor/src/model-configuration.js";
 import {
@@ -894,7 +896,7 @@ export class ModelCatalogService {
         // account/provider scope. discover() shares work across service instances.
         void this.discover(scope).catch(() => {});
       }
-      return freshCached;
+      return this.enrichAgy55Candidates(freshCached);
     }
     try {
       const rawInput = adapterId === "claude-code" ? claudeCatalogStdout() : "";
@@ -912,7 +914,7 @@ export class ModelCatalogService {
         if (scope) {
           this.persistCatalog(scope, "seed", seedCatalog);
         }
-        return withFreshness(seedCatalog);
+        return this.enrichAgy55Candidates(withFreshness(seedCatalog));
       }
     } catch {
       // ignore
@@ -1045,8 +1047,22 @@ export class ModelCatalogService {
     });
   }
 
+  private enrichAgy55Candidates(catalog: ModelCatalog): ModelCatalog {
+    if (catalog.adapterId !== "agy") return catalog;
+    const existingIds = new Set(catalog.entries.map((e) => e.nativeId));
+    const missingCandidates = AGY_55_CANDIDATE_IDS.filter((id) => !existingIds.has(id));
+    if (missingCandidates.length === 0) return catalog;
+    const additional = missingCandidates.map((id) => buildAgyCandidateEntry(id, catalog.discoveredAt));
+    return ModelCatalogSchema.parse({
+      ...catalog,
+      entries: [...catalog.entries, ...additional],
+    });
+  }
+
   loadForSelector(scope: CatalogScopeInput): ModelCatalog {
-    return this.readCached(scope) ?? missingCatalog(scope.adapterId, "missing");
+    const cached = this.readCached(scope);
+    if (!cached) return missingCatalog(scope.adapterId, "missing");
+    return this.enrichAgy55Candidates(cached);
   }
 
   async scanTools(scopes: CatalogScopeInput[]): Promise<ToolSummary[]> {

@@ -13,6 +13,7 @@ import {
   buildModelChoices,
   type ModelChoice,
 } from "../../../../packages/presentation/src/model-display.js";
+import { getAgyModelCategory } from "../../../../packages/adapters/agy/src/model-configuration.js";
 import {
   cloneProfile,
   formatApiError,
@@ -33,6 +34,7 @@ export interface ModelProfileEditorProps {
   autoVerify?: boolean;
   onAccessChange?: (state: AccessState | null) => void;
   reloadToken?: number;
+  isFutureConfig?: boolean;
 }
 
 export function ModelProfileEditor({
@@ -43,6 +45,7 @@ export function ModelProfileEditor({
   autoVerify = true,
   onAccessChange,
   reloadToken = 0,
+  isFutureConfig = false,
 }: ModelProfileEditorProps) {
   const [query, setQuery] = useState("");
   const [openList, setOpenList] = useState(false);
@@ -66,7 +69,6 @@ export function ModelProfileEditor({
   const verifyTimer = useRef<number | null>(null);
 
 
-  // portal 浮层的锚点坐标（fixed 定位，脱离 overflow 裁剪祖先）
   const [listPos, setListPos] = useState<{
     left: number;
     top?: number;
@@ -75,7 +77,32 @@ export function ModelProfileEditor({
     maxHeight: number;
   } | null>(null);
 
+  const [activeAgyCategory, setActiveAgyCategory] = useState<"gemini" | "other" | "unknown" | null>(null);
+  const [categoryConflictNotice, setCategoryConflictNotice] = useState<string | null>(null);
+
   const adapter = profile.adapterId;
+
+  useEffect(() => {
+    if (adapter !== "agy") {
+      setActiveAgyCategory(null);
+      setCategoryConflictNotice(null);
+      return;
+    }
+    let mounted = true;
+    fetch("/api/agy-accounts")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (mounted && data?.active_category) {
+          setActiveAgyCategory(data.active_category);
+        } else if (mounted) {
+          setActiveAgyCategory(null);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      mounted = false;
+    };
+  }, [adapter, reloadToken, openList]);
   // 严格校验 entries 所属工具，彻底杜绝切换工具时残留上一工具模型（如 Claude Code 显示 Gemini）
   const entries = entriesData.adapter === adapter ? entriesData.items : [];
 
@@ -305,7 +332,29 @@ export function ModelProfileEditor({
     onChange(blankKeepId(profile.id, next));
   };
 
+  const checkCategoryConflict = (modelId?: string | null): boolean => {
+    if (isFutureConfig || adapter !== "agy" || !activeAgyCategory || !modelId) return false;
+    const cat = getAgyModelCategory(modelId);
+    return cat === "unknown" || cat !== activeAgyCategory;
+  };
+
+  const categoryConflictMessage = (modelId: string) => {
+    if (getAgyModelCategory(modelId) === "unknown") {
+      return `无法确认模型 ${modelId} 的类别，当前有 AGY 任务占用，暂不能选择或核验该模型。`;
+    }
+    const activeDesc = activeAgyCategory === "gemini" ? "Gemini 类" :
+      activeAgyCategory === "other" ? "其他模型类（Claude / GPT）" : "未确认类别";
+    return `AGY 当前正被 ${activeDesc} 任务占用，无法同时使用该模型。全部同时占用 AGY 的任务只能使用同一类别。`;
+  };
+
   const selectChoice = (choice: ModelChoice) => {
+    const targetId = choice.choiceId || choice.nativeId;
+    if (checkCategoryConflict(targetId)) {
+      setCategoryConflictNotice(categoryConflictMessage(targetId));
+      return;
+    }
+    setCategoryConflictNotice(null);
+
     // 判断思考强度
     let nextEffort =
       profile.reasoning && "value" in profile.reasoning
@@ -343,6 +392,11 @@ export function ModelProfileEditor({
   const selectCustomModel = (customId: string) => {
     const trimmed = customId.trim();
     if (!trimmed) return;
+    if (checkCategoryConflict(trimmed)) {
+      setCategoryConflictNotice(categoryConflictMessage(trimmed));
+      return;
+    }
+    setCategoryConflictNotice(null);
     setOpenList(false);
     setQuery("");
     update({
@@ -425,16 +479,27 @@ export function ModelProfileEditor({
   };
 
   // 关闭态展示友好名（已匹配 Choice 时直接展示选项名称；未匹配且不等价时才附带原始 ID）
+  const activeChoice =
+    currentChoice ??
+    choices.find((c) => c.choiceId === profile.modelId || c.nativeId === profile.modelId);
+
   const currentModelLabel = (() => {
     if (!profile.modelId) return "";
-    if (currentChoice) {
-      return currentChoice.label;
+    let base = "";
+    if (activeChoice) {
+      base = activeChoice.label;
+    } else {
+      const label = formatModelName(adapter, profile.modelId);
+      if (label && !isEquivalentModelName(label, profile.modelId)) {
+        base = `${label} · ${profile.modelId}`;
+      } else {
+        base = label || profile.modelId;
+      }
     }
-    const label = formatModelName(adapter, profile.modelId);
-    if (label && !isEquivalentModelName(label, profile.modelId)) {
-      return `${label} · ${profile.modelId}`;
+    if (activeChoice?.availability === "candidate") {
+      return `${base} [候补 / 待核验]`;
     }
-    return label || profile.modelId;
+    return base;
   })();
 
   const availableEfforts = currentChoice?.effortValues ?? [];
@@ -546,21 +611,64 @@ export function ModelProfileEditor({
                 const idText = choice.choiceId || choice.nativeId;
                 const showIdText =
                   Boolean(idText) && !isEquivalentModelName(choice.label, idText);
+                const choiceModelId = choice.choiceId || choice.nativeId;
+                const choiceCategory = adapter === "agy" ? getAgyModelCategory(choiceModelId) : null;
+                const isActualConflict = Boolean(
+                  adapter === "agy" &&
+                  activeAgyCategory &&
+                  choiceCategory &&
+                  choiceCategory !== activeAgyCategory,
+                );
+                const isCategoryConflict = checkCategoryConflict(choiceModelId);
+                const isCandidate = choice.availability === "candidate";
                 return (
                   <li
                     key={choice.entryIds.join("|")}
                     role="option"
                     aria-selected={isSelected}
+                    aria-disabled={isCategoryConflict}
                     className={`ms-model-option ${
                       isSelected ? "is-selected" : ""
-                    } ${isFocused ? "is-focused" : ""}`}
+                    } ${isFocused ? "is-focused" : ""} ${isCategoryConflict ? "is-conflict" : ""}`}
+                    style={isCategoryConflict ? { opacity: 0.65, cursor: "not-allowed" } : undefined}
                     onMouseDown={(e) => {
                       e.preventDefault();
+                      if (isCategoryConflict) {
+                        setCategoryConflictNotice(categoryConflictMessage(choiceModelId));
+                        return;
+                      }
+                      setCategoryConflictNotice(null);
                       selectChoice(choice);
                     }}
                   >
                     <span className="ms-option-label">{choice.label}</span>
+                    {isCandidate && (
+                      <span
+                        className="ms-candidate-tag"
+                        title="候补模型，待实际核验"
+                        style={{
+                          fontSize: "11px",
+                          padding: "1px 5px",
+                          borderRadius: "3px",
+                          background: "#fef3c7",
+                          color: "#92400e",
+                          border: "1px solid #fde68a",
+                          marginLeft: "6px",
+                        }}
+                      >
+                        候补 / 待核验
+                      </span>
+                    )}
                     {showIdText && <span className="ms-option-id">{idText}</span>}
+                    {isCategoryConflict ? (
+                      <span className="ms-option-conflict-tag" style={{ color: "#ef4444", fontSize: "11px", marginLeft: "auto" }}>
+                        （与当前类别冲突）
+                      </span>
+                    ) : isFutureConfig && isActualConflict ? (
+                      <span className="ms-option-conflict-tag" style={{ color: "#d97706", fontSize: "11px", marginLeft: "auto" }}>
+                        （未来配置，派发时校验）
+                      </span>
+                    ) : null}
                     {isSelected && <span className="ms-option-check">✓</span>}
                   </li>
                 );
@@ -599,6 +707,18 @@ export function ModelProfileEditor({
             document.body,
           )}
         </div>
+
+        {adapter === "agy" && activeAgyCategory && (
+          <div className="ms-category-active-hint" style={{ fontSize: "12px", color: "#64748b", marginTop: "4px" }}>
+            当前 AGY 任务使用 {activeAgyCategory === "gemini" ? "Gemini 类" : activeAgyCategory === "other" ? "其他模型类（Claude / GPT）" : "未确认类别"}
+            {isFutureConfig ? "；未来配置在实际生效前仍需检查类别占用" : "，仅允许选择同类模型"}
+          </div>
+        )}
+        {categoryConflictNotice && (
+          <div className="ms-category-conflict-alert" role="alert" style={{ fontSize: "12px", color: "#dc2626", background: "#fef2f2", border: "1px solid #fecaca", padding: "6px 10px", borderRadius: "4px", marginTop: "4px" }}>
+            {categoryConflictNotice}
+          </div>
+        )}
 
         {loadError && (
           <p className="ms-error" role="alert">
@@ -640,7 +760,11 @@ export function ModelProfileEditor({
       )}
 
       <div className="ms-access" role="status">
-        <span>访问状态：{accessStatusLabel(access)}</span>
+        <span>
+          访问状态：
+          {accessStatusLabel(access)}
+          {activeChoice?.availability === "candidate" && " · 候补目录项"}
+        </span>
         {profile.modelId && (
           <button
             type="button"
@@ -652,6 +776,9 @@ export function ModelProfileEditor({
           </button>
         )}
       </div>
+      {access?.message && access.status !== "verified" && (
+        <p className="ms-muted" role="status">{access.message}</p>
+      )}
     </div>
   );
 }

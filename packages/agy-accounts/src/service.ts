@@ -1,4 +1,4 @@
-import { hasAccountIdentityMismatch, hasDualQuotaWindows, modelCovered, resolveEffectiveQuotaWindows } from "./quota.js";
+import { hasAccountIdentityMismatch, isQuotaPoolVerified, modelCovered, resolveEffectiveQuotaWindows } from "./quota.js";
 import { randomUUID, createHash } from "node:crypto";
 import { z } from "zod";
 import {
@@ -9,7 +9,10 @@ import {
   AgyUsagePermitSchema,
   AgyAccountPolicySchema,
   AgyAccountDtoSchema,
+  AgyModelCategorySchema,
+  type AgyModelCategory,
 } from "../../contracts/src/agy-account.js";
+import { getAgyModelCategory } from "../../adapters/agy/src/model-configuration.js";
 import type {
   AgyRealm,
   AgyUsagePermit,
@@ -19,6 +22,7 @@ import type {
   AgyAccount,
   AgyQuotaSnapshot,
   AgyPendingDemand,
+  AgyManagementSelectionContext,
 } from "../../contracts/src/agy-account.js";
 import type { AgyAccountRepository } from "./repository.js";
 import type {
@@ -29,6 +33,7 @@ import type {
   AccountConsumerPort,
   ClockPort,
   AuditPort,
+  ModelProbeLifecycle,
 } from "./ports.js";
 import {
   SwitchOperationExecutor,
@@ -47,8 +52,9 @@ export class AccountServiceError extends Error {
   constructor(
     public code: string,
     public statusCode = 409,
+    message?: string,
   ) {
-    super(code);
+    super(message || code);
   }
 }
 
@@ -89,8 +95,21 @@ export interface AgyUsageRequest {
   usage_kind: "execution" | "probe" | "login";
   required_pool_ids: string[];
   required_model_ids?: string[];
+  model_id?: string;
   allowed_account_ids?: string[] | null;
   policy_revision?: number;
+}
+
+export function inferPermitCategory(permit: AgyUsagePermit): AgyModelCategory | "unknown" {
+  if (permit.model_category) return permit.model_category;
+  if (permit.model_id) return getAgyModelCategory(permit.model_id);
+  if (permit.required_pool_ids && permit.required_pool_ids.length > 0) {
+    const hasGemini = permit.required_pool_ids.some((p) => p.toLowerCase().includes("gemini"));
+    const hasClaude = permit.required_pool_ids.some((p) => p.toLowerCase().includes("claude") || p.toLowerCase().includes("gpt"));
+    if (hasGemini && !hasClaude) return "gemini";
+    if (hasClaude && !hasGemini) return "other";
+  }
+  return "unknown";
 }
 
 export interface UsagePermit {
@@ -278,10 +297,42 @@ export class AgyAccountService {
     );
   }
 
-  resolveModelPools(_modelId: string, _realmId = "default-agy-realm"): string[] {
-    // Compatibility entry point: quota admission always checks the two account windows.
-    // Selecting this key grants no usage permit; observed quota is checked separately.
-    return ["global"];
+  resolveModelPools(modelId?: string | null, _realmId = "default-agy-realm"): string[] {
+    if (!modelId) return [];
+    const category = getAgyModelCategory(modelId);
+    if (category === "gemini") return ["Gemini Models"];
+    if (category === "other") return ["Claude and GPT models"];
+    return [];
+  }
+
+  getActiveCategory(realmId = "default-agy-realm", excludeConsumerId?: string): {
+    category: AgyModelCategory | "unknown" | null;
+    activePermits: AgyUsagePermit[];
+  } {
+    let activePermits = this.repository
+      .listPermits(realmId)
+      .filter((p) => p.status === "issued" || p.status === "started");
+    if (excludeConsumerId) {
+      activePermits = activePermits.filter((p) => p.consumer_id !== excludeConsumerId);
+    }
+    if (activePermits.length === 0) {
+      return { category: null, activePermits: [] };
+    }
+    let category: AgyModelCategory | "unknown" | null = null;
+    for (const permit of activePermits) {
+      const cat = inferPermitCategory(permit);
+      if (cat === "unknown") {
+        category = "unknown";
+        break;
+      }
+      if (!category) {
+        category = cat;
+      } else if (category !== cat) {
+        category = "unknown";
+        break;
+      }
+    }
+    return { category, activePermits };
   }
 
   private deduplicate<T>(
@@ -478,6 +529,21 @@ export class AgyAccountService {
     );
   }
 
+  private managementSelectionContext(realmId: string, modelId?: string | null): AgyManagementSelectionContext {
+    const active = this.getActiveCategory(realmId);
+    const model = active.activePermits.length
+      ? active.activePermits.find(permit => permit.model_id)?.model_id ?? null
+      : modelId ?? this.repository.getSettings(realmId)?.standalone_model_id ?? null;
+    const category = active.activePermits.length ? active.category : model ? getAgyModelCategory(model) : null;
+    return {
+      model_id: model,
+      category,
+      source: active.activePermits.length ? "active_category" : model ? "standalone_model" : "none",
+      required_pool_ids: category === "gemini" ? ["Gemini Models", "global"] :
+        category === "other" ? ["Claude and GPT models", "global"] : ["global"],
+    };
+  }
+
   getPresentation(realmId = "default-agy-realm") {
     this.cleanStalePendingOperationLocked(realmId);
     const settings =
@@ -499,10 +565,15 @@ export class AgyAccountService {
         ? resolveEffectiveQuotaWindows(s.windows, nowMs)
         : s.windows,
     }));
-    const pools = ["global"];
+    const activeCat = this.getActiveCategory(realmId).category;
+    const context = this.managementSelectionContext(realmId);
+    const pools = context.required_pool_ids;
     const selection = selectCandidates(accounts, rawSnapshots, pools, nowMs, {
-      required_model_ids: settings.standalone_model_id ? [settings.standalone_model_id] : [],
+      required_model_ids: context.source === "active_category"
+        ? [...new Set(this.getActiveCategory(realmId).activePermits.flatMap(permit => permit.model_id ? [permit.model_id] : []))]
+        : context.model_id ? [context.model_id] : [],
       reset_clock_skew_seconds: settings.reset_clock_skew_seconds,
+      active_category: context.category,
     });
     const { active_secret_ref: _secret, ...publicRealm } = realm ?? {};
     return {
@@ -510,11 +581,13 @@ export class AgyAccountService {
       snapshots,
       realm: publicRealm,
       settings,
+      selection_context: context,
+      active_category: activeCat,
       candidates: selection.ranked_candidates,
       excluded_accounts: selection.excluded_accounts,
       next_eligible_at: selection.next_eligible_at,
       required_pool_ids: pools,
-      model_id: settings.standalone_model_id,
+      model_id: context.model_id,
       capability: {
         supported: this.capabilitySnapshot?.supported ?? false,
         reason: this.capabilitySnapshot?.reason,
@@ -767,17 +840,10 @@ export class AgyAccountService {
               const captured = await this.captureUsageCredential(realmId, acc);
               this.saveCapture(realmId, acc.id, captured);
               acc = this.repository.getAccount(realmId, acc.id) ?? acc;
-              let complete = true;
+              const validPools = probeResult.pools.filter(pool => isQuotaPoolVerified(probeResult, pool));
+              const complete = validPools.length > 0;
               this.repository.retainQuotaPools(realmId, acc.id, probeResult.pools.map((p) => p.pool_id));
               for (const pool of probeResult.pools) {
-                complete &&= ["weekly", "five_hour"].every((k) =>
-                  pool.windows.some(
-                    (w) =>
-                      w.kind === k &&
-                      w.status === "observed" &&
-                      w.remaining_fraction !== null,
-                  ),
-                );
                 this.repository.saveQuotaSnapshot({
                   id: randomUUID(),
                   realm_id: realmId,
@@ -790,14 +856,14 @@ export class AgyAccountService {
                   cli_version: probeResult.cli_version,
                   parser_revision: 1,
                   executable_fingerprint: probeResult.executable_fingerprint,
-                  capability_verified: probeResult.capability_verified,
+                  capability_verified: isQuotaPoolVerified(probeResult, pool),
                   observed_at: this.clock.toISOString(),
                   windows: pool.windows,
                 });
               }
               const observedState = !complete
                 ? "pending_quota"
-                : probeResult.pools.some((p) =>
+                : validPools.every((p) =>
                       p.windows.some((w) => w.remaining_fraction === 0),
                     )
                   ? "waiting_quota"
@@ -1259,10 +1325,68 @@ export class AgyAccountService {
   }
 
   // 获取执行许可
+  async withCategoryVerification<T>(
+    realmId: string,
+    modelId: string,
+    verify: (lifecycle: ModelProbeLifecycle) => Promise<T>,
+  ): Promise<T> {
+    const category = getAgyModelCategory(modelId);
+    if (this.closing) throw new AccountServiceError("account_service_closing");
+    if (category === "unknown") throw new AccountServiceError("agy_model_unknown", 409, `无法确认模型 ${modelId} 的类别，禁止核验`);
+    const permitId = `category_probe_${randomUUID()}`;
+    const managed = this.isManaged(realmId);
+    const initialEpoch = this.repository.getRealm(realmId)?.auth_epoch ?? 0;
+    this.repository.transaction(() => {
+      const active = this.getActiveCategory(realmId).category;
+      if (active && active !== category)
+        throw new AccountServiceError("agy_category_conflict", 409, "当前 AGY 类别占用与目标模型不一致，请等待占用任务结束后核验");
+      const realm = this.isManaged(realmId) ? this.repository.getRealm(realmId) : undefined;
+      this.repository.savePermit({
+        permit_id: permitId, realm_id: realmId, account_id: realm?.active_account_id ?? "unmanaged",
+        auth_epoch: Math.max(1, realm?.auth_epoch ?? 1), consumer_id: permitId, usage_kind: "probe",
+        status: "issued", issued_at: this.clock.toISOString(), required_pool_ids: [], allowed_account_ids: null,
+        model_id: modelId, model_category: category,
+      });
+    });
+    let started = false;
+    const stopped = () => {
+      const permit = this.repository.getPermit(permitId);
+      if (permit && permit.status !== "released") this.repository.savePermit({
+        ...permit, status: "released", released_at: this.clock.toISOString(),
+      });
+    };
+    try {
+      const lifecycle: ModelProbeLifecycle = {
+        binding: (() => {
+          const permit = this.repository.getPermit(permitId)!;
+          return { realm_id: realmId, account_id: permit.account_id, auth_epoch: permit.auth_epoch, permit_id: permitId };
+        })(),
+        started: pid => {
+          started = true;
+          const permit = this.repository.getPermit(permitId);
+          if (!permit || permit.status === "released") throw new AccountServiceError("permit_stale");
+          this.repository.savePermit({ ...permit, status: "started", process_id: pid });
+        },
+        stopped,
+      };
+      if (managed) return await verify(lifecycle); // Managed identity verification owns the same queue.
+      return await this.coordinator.enqueue(async () => {
+        const realm = this.repository.getRealm(realmId);
+        if (this.isManaged(realmId) || realm?.pending_operation_id || (realm?.auth_epoch ?? 0) !== initialEpoch)
+          throw new AccountServiceError("model_verification_account_changed");
+        return verify(lifecycle);
+      });
+    } finally {
+      // Cancellation before launch is safe. Once started, only the real exit
+      // callback releases occupancy, even when timeout settlement happens first.
+      if (!started) stopped();
+    }
+  }
+
   // Keep a model probe in the same account queue as credential switches. The
   // caller supplies the exact frozen invocation and owns its timeout/cancel.
   async withModelVerification<T>(
-    input: { realm_id: string; account_id: string; auth_epoch?: number },
+    input: { realm_id: string; account_id: string; auth_epoch?: number; model_id?: string; category_permit_id?: string },
     verify: () => Promise<T>,
   ): Promise<T> {
     return this.coordinator.enqueue(async () => {
@@ -1279,6 +1403,27 @@ export class AgyAccountService {
         return realm;
       };
       let before = assertCurrent();
+
+      if (input.model_id) {
+        const category = getAgyModelCategory(input.model_id);
+        if (category === "unknown") {
+          throw new AccountServiceError("agy_model_unknown", 409, `无法确认模型 ${input.model_id} 的类别，禁止核验`);
+        }
+        const active = this.getActiveCategory(input.realm_id);
+        if (active.category === "unknown") {
+          throw new AccountServiceError("agy_category_conflict", 409, "当前存在未确认模型类别的 AGY 任务占用，禁止核验");
+        }
+        if (active.category && active.category !== category) {
+          const activeDesc = active.category === "gemini" ? "Gemini 类" : "其他模型类（Claude / GPT）";
+          const targetDesc = category === "gemini" ? "Gemini 类" : "其他模型类（Claude / GPT）";
+          throw new AccountServiceError(
+            "agy_category_conflict",
+            409,
+            `AGY 当前正被 ${activeDesc} 任务占用，无法同时核验 ${targetDesc} 模型。全部同时占用 AGY 的任务只能使用同一类别。`,
+          );
+        }
+      }
+
       const assertCredential = async () => {
         await this.processHost.listManagedProcesses(input.realm_id);
         // Directory/usage queries are short lived. Allow them to finish without
@@ -1325,10 +1470,49 @@ export class AgyAccountService {
         if (current.auth_epoch !== before.auth_epoch || current.revision !== before.revision)
           throw new AccountServiceError("model_verification_account_changed");
       };
-      await assertCredential();
-      const result = await verify();
-      await assertCredential();
-      return result;
+
+      const category = input.model_id ? getAgyModelCategory(input.model_id) : undefined;
+      if (input.category_permit_id) {
+        const permit = this.repository.getPermit(input.category_permit_id);
+        if (!permit || permit.realm_id !== input.realm_id || permit.account_id !== input.account_id ||
+            permit.auth_epoch !== before.auth_epoch || permit.model_id !== input.model_id ||
+            permit.model_category !== category || !["issued", "started"].includes(permit.status))
+          throw new AccountServiceError("model_verification_account_changed");
+      }
+      const verifyPermitId = `verify_${randomUUID()}`;
+      if (!input.category_permit_id && category && category !== "unknown") {
+        this.repository.savePermit({
+          permit_id: verifyPermitId,
+          realm_id: input.realm_id,
+          account_id: input.account_id,
+          auth_epoch: input.auth_epoch ?? 1,
+          consumer_id: verifyPermitId,
+          usage_kind: "probe",
+          status: "started",
+          issued_at: this.clock.toISOString(),
+          required_pool_ids: [],
+          allowed_account_ids: null,
+          model_id: input.model_id,
+          model_category: category,
+        });
+      }
+      try {
+        await assertCredential();
+        const result = await verify();
+        await assertCredential();
+        return result;
+      } finally {
+        if (!input.category_permit_id && category && category !== "unknown") {
+          const existing = this.repository.getPermit(verifyPermitId);
+          if (existing) {
+            this.repository.savePermit({
+              ...existing,
+              status: "released",
+              released_at: this.clock.toISOString(),
+            });
+          }
+        }
+      }
     });
   }
 
@@ -1384,7 +1568,7 @@ export class AgyAccountService {
           id: randomUUID(), realm_id: input.realm_id, account_id: account.id, auth_epoch: input.auth_epoch,
           pool_id: pool.pool_id, model_ids: pool.model_ids, source: "official_cli_usage" as const,
           cli_version: observed.cli_version, parser_revision: 1, executable_fingerprint: observed.executable_fingerprint,
-          capability_verified: true, observed_at: this.clock.toISOString(), windows: pool.windows,
+          capability_verified: isQuotaPoolVerified(observed, pool), observed_at: this.clock.toISOString(), windows: pool.windows,
         }));
         for (const snapshot of snapshots) this.repository.saveQuotaSnapshot(snapshot);
         const exhausted = isOnlyQuotaExhaustion(evaluateAccountForDemand({ account, snapshots,
@@ -1409,6 +1593,53 @@ export class AgyAccountService {
     if ((await this.processHost.findExternalAgyProcesses()).length)
       throw new AccountServiceError("external_owner");
     this.rejectQueuedWorkflowSwitch(input.realm_id);
+
+    const targetModelId = input.required_model_ids?.[0] || input.model_id;
+    let requestedCategory = getAgyModelCategory(targetModelId);
+
+    if (input.usage_kind === "execution") {
+      if (requestedCategory === "unknown" && targetModelId) {
+        const snapshots = this.repository.listQuotaSnapshots(input.realm_id);
+        const mappedSnapshot = snapshots.find(
+          (s) =>
+            s.model_ids?.includes(targetModelId) ||
+            (input.required_pool_ids && input.required_pool_ids.includes(s.pool_id)),
+        );
+        if (mappedSnapshot) {
+          const poolLower = mappedSnapshot.pool_id.toLowerCase();
+          if (poolLower.includes("gemini")) {
+            requestedCategory = "gemini";
+          } else if (poolLower.includes("claude") || poolLower.includes("gpt")) {
+            requestedCategory = "other";
+          }
+        } else {
+          throw new AccountServiceError(
+            "agy_model_unknown",
+            409,
+            `目标模型 ${targetModelId} 无法确认模型类别，禁止启动`,
+          );
+        }
+      } else if (requestedCategory === "unknown" && !targetModelId) {
+        throw new AccountServiceError(
+          "agy_model_unknown",
+          409,
+          `未指定目标模型且无法确认模型类别，禁止启动`,
+        );
+      }
+
+      const active = this.getActiveCategory(input.realm_id);
+      if (
+        active.category &&
+        requestedCategory !== "unknown" &&
+        active.category !== requestedCategory
+      ) {
+        const message =
+          active.category === "unknown"
+            ? "当前存在未释放的 AGY 任务占用，无法确认模型类别，禁止跨类启动"
+            : `全部同时占用 AGY 的任务只能使用同一类别：Gemini 类或其他模型类；当前已有任务正在占用 ${active.category === "gemini" ? "Gemini 类" : "其他模型类（Claude / GPT）"}，不能混用`;
+        throw new AccountServiceError("agy_category_conflict", 409, message);
+      }
+    }
     let realm = this.repository.getRealm(input.realm_id);
     if (
       !realm ||
@@ -1445,7 +1676,10 @@ export class AgyAccountService {
       throw new AccountServiceError("active_account_unavailable");
     }
 
-    const poolsToEvaluate = input.required_pool_ids.length > 0 ? input.required_pool_ids : ["global"];
+    const poolsToEvaluate =
+      input.required_pool_ids && input.required_pool_ids.length > 0
+        ? input.required_pool_ids
+        : ["global"];
     let evalOutput = evaluateAccountForDemand({
       account: activeAccount,
       snapshots: this.repository.listQuotaSnapshots(input.realm_id),
@@ -1498,7 +1732,7 @@ export class AgyAccountService {
               cli_version: fresh.cli_version,
               parser_revision: 1,
               executable_fingerprint: fresh.executable_fingerprint,
-              capability_verified: fresh.capability_verified,
+              capability_verified: isQuotaPoolVerified(fresh, p),
               observed_at: this.clock.toISOString(),
               windows: p.windows,
             });
@@ -1589,6 +1823,8 @@ export class AgyAccountService {
       allowed_account_ids: input.allowed_account_ids ?? null,
       policy_revision: input.policy_revision,
       realm_revision: realm.revision,
+      model_id: targetModelId,
+      model_category: requestedCategory,
     });
 
     this.repository.savePermit(permit);
@@ -1608,6 +1844,12 @@ export class AgyAccountService {
       const permit = this.repository.getPermit(permitId);
       if (!permit || permit.status !== "issued")
         throw new AccountServiceError("permit_not_issued");
+      if (permit.permit_id.startsWith("unmanaged_")) {
+        permit.status = "started";
+        permit.process_id = processId;
+        this.repository.savePermit(permit);
+        return;
+      }
       const realm = this.repository.getRealm(permit.realm_id);
       if (
         !realm ||
@@ -1711,7 +1953,7 @@ export class AgyAccountService {
             cli_version: observed.cli_version,
             parser_revision: 1,
             executable_fingerprint: observed.executable_fingerprint,
-            capability_verified: observed.capability_verified,
+            capability_verified: isQuotaPoolVerified(observed, pool),
             observed_at: this.clock.toISOString(),
             windows: pool.windows,
           });
@@ -1837,6 +2079,12 @@ export class AgyAccountService {
       input.request_id,
       input,
       () => {
+        if (input.kind === "switch" && !trusted && input.model_id) {
+          const active = this.getActiveCategory(input.realm_id).category;
+          const target = getAgyModelCategory(input.model_id);
+          if (target === "unknown" || active && active !== target)
+            throw new AccountServiceError("agy_category_conflict", 409, "目标模型与当前 AGY 类别占用不一致，现有任务已保留");
+        }
         const isManualOneShot =
           input.kind === "enroll" ||
           input.kind === "delete" ||
@@ -1991,9 +2239,21 @@ export class AgyAccountService {
           if (input.kind === "delete" && account.id === realm.active_account_id)
             throw new AccountServiceError("account_in_use");
         }
-        const model = input.model_id ??
-          (trusted ? undefined : settings.standalone_model_id ?? undefined);
-        const pools = input.kind === "switch" ? trusted?.required_pool_ids ?? ["global"] : [];
+        const context = this.managementSelectionContext(input.realm_id, input.model_id);
+        const activeCat = trusted ? this.getActiveCategory(input.realm_id).category : context.category;
+        const model = trusted ? input.model_id : context.model_id ?? undefined;
+        let pools = input.kind === "switch" ? trusted?.required_pool_ids ?? context.required_pool_ids : [];
+        if (pools.length === 1 && pools[0] === "global") {
+          if (model) {
+            const cat = getAgyModelCategory(model);
+            if (cat === "gemini") pools = ["Gemini Models", "global"];
+            else if (cat === "other") pools = ["Claude and GPT models", "global"];
+          } else if (activeCat === "gemini") {
+            pools = ["Gemini Models", "global"];
+          } else if (activeCat === "other") {
+            pools = ["Claude and GPT models", "global"];
+          }
+        }
         const op = AgyAccountOperationSchema.parse({
           operation_id: randomUUID(),
           realm_id: input.realm_id,
@@ -2052,6 +2312,9 @@ export class AgyAccountService {
           original_operation_id: input.original_operation_id ?? (trusted as any)?.original_operation_id,
         });
         this.repository.saveOperation(op);
+        if (input.kind === "switch" && !trusted) this.repository.putRecord(
+          "agy_switch_context", op.operation_id, input.realm_id, { explicit_model_id: input.model_id ?? null },
+        );
         realm.pending_operation_id = op.operation_id;
         realm.phase = "queued";
         realm.revision++;
@@ -2067,6 +2330,7 @@ export class AgyAccountService {
 
   // 启动收敛
   async reconcileStartup(): Promise<void> {
+    await this.reconcileCategoryOccupancy();
     for (const realm of this.repository.listRealms()) {
       try {
         if (realm.desired_enabled) {
@@ -2119,11 +2383,37 @@ export class AgyAccountService {
     }
   }
 
+  private async reconcileCategoryOccupancy(): Promise<void> {
+    const realms = new Set(this.repository.listPermits()
+      .filter(permit => permit.status === "issued" || permit.status === "started")
+      .map(permit => permit.realm_id));
+    for (const realmId of realms) {
+      await this.coordinator.enqueue(async () => {
+        let release: (() => Promise<void>) | undefined;
+        try {
+          if (!this.authHost.isDomainLockHeld(realmId)) {
+            const lock = await this.authHost.acquireDomainLock(realmId);
+            if (!lock.acquired) return;
+            release = lock.release;
+          }
+          // This is occupancy reconciliation only; never enable account management
+          // or change credentials merely because a nonmanaged permit exists.
+          await this.reconciler.reconcilePermits(realmId);
+        } catch {
+          // Failed or unknown observations retain their durable occupancy.
+        } finally {
+          await release?.();
+        }
+      });
+    }
+  }
+
   // 定时驱动 tick（5 秒调用一次，无任务无网络请求）
   async tick(now: number): Promise<void> {
     if (this.closing || this.isTicking) return;
     this.isTicking = true;
     try {
+      await this.reconcileCategoryOccupancy();
       for (const realm of this.repository.listRealms()) {
         const settings = this.repository.getSettings(realm.realm_id);
         if (settings) {
@@ -3062,10 +3352,13 @@ export class AgyAccountService {
           op.installed_secret_ref = capture.secret_ref;
           if (op.before_account_id === id) op.before_secret_ref = capture.secret_ref;
           const pools = result.pools.filter((pool) => !op.model_id || modelCovered(pool.model_ids, op.model_id));
-          const complete = result.capability_verified && pools.length > 0 &&
-            pools.every((pool) => hasDualQuotaWindows(pool.windows));
+          const validPools = result.pools.filter(pool => isQuotaPoolVerified(result, pool));
+          const complete = op.model_id
+            ? pools.length > 0 && pools.every(pool => isQuotaPoolVerified(result, pool))
+            : validPools.length > 0;
           this.repository.retainQuotaPools(op.realm_id, id, result.pools.map((pool) => pool.pool_id));
           for (const pool of result.pools) {
+            const poolVerified = isQuotaPoolVerified(result, pool);
             this.repository.saveQuotaSnapshot({
               id: randomUUID(),
               realm_id: op.realm_id,
@@ -3078,15 +3371,15 @@ export class AgyAccountService {
               cli_version: result.cli_version,
               parser_revision: 1,
               executable_fingerprint: result.executable_fingerprint,
-              capability_verified: result.capability_verified,
+              capability_verified: poolVerified,
               observed_at: this.clock.toISOString(),
               windows: pool.windows,
             });
           }
           const latest = this.repository.getAccount(op.realm_id, id)!;
-          const observedState = !complete
+          const observedState = !validPools.length
             ? "pending_quota"
-            : result.pools.some((p) =>
+            : validPools.every((p) =>
                   p.windows.some((w) => w.remaining_fraction === 0),
                 )
               ? "waiting_quota"
@@ -3096,7 +3389,7 @@ export class AgyAccountService {
           else latest.state = observedState;
           latest.auth.last_authenticated_request_at = this.clock.toISOString();
           latest.revision++;
-          if (complete)
+          if (validPools.length)
             latest.enrollment_completed_at ??= this.clock.toISOString();
           this.repository.saveAccount(latest);
           results.push({

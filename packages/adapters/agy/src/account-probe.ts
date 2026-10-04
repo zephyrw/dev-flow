@@ -255,20 +255,24 @@ export class AgyAccountProbe implements AccountProbePort {
         if (result.code !== 0) throw new Error("official_usage_probe_failed");
         const parsed = adapter.parse(result.stdout);
         const pools = parsed.pools.length > 0
-          ? parsed.pools.map((pool) => ({
-              pool_id: pool.pool_id,
-              model_ids: pool.models,
-              windows: pool.windows,
-            }))
+          ? parsed.pools.map((pool) => {
+              const poolValid = pool.models.length > 0 && hasDualQuotaWindows(pool.windows);
+              return {
+                pool_id: pool.pool_id,
+                model_ids: pool.models,
+                windows: pool.windows,
+                capability_verified: poolValid,
+              };
+            })
           : [
               {
                 pool_id: "global",
                 model_ids: ["*"],
                 windows: parsed.windows,
+                capability_verified: hasDualQuotaWindows(parsed.windows),
               },
             ];
-        const valid = pools.length > 0 && pools.every((pool) =>
-          pool.model_ids.length > 0 && hasDualQuotaWindows(pool.windows));
+        const valid = pools.length > 0 && pools.some((pool) => pool.capability_verified);
         return {
           email: parsed.email,
           plan_tier: parsed.plan_tier,

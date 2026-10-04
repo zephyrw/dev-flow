@@ -265,6 +265,7 @@ export function ModelSettingsDrawer({
                 profile={planner}
                 toolLabel="规划工具"
                 reloadToken={catalogEpoch}
+                isFutureConfig={true}
                 onChange={(next) => {
                   dirtyRef.current = true;
                   requestId.current = newRequestId();
@@ -279,6 +280,7 @@ export function ModelSettingsDrawer({
                 profile={executor}
                 toolLabel="执行工具"
                 reloadToken={catalogEpoch}
+                isFutureConfig={true}
                 onChange={(next) => {
                   dirtyRef.current = true;
                   requestId.current = newRequestId();

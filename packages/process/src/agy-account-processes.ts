@@ -134,6 +134,21 @@ export class AgyAccountProcessHost implements ProcessHostPort {
     return out;
   }
 
+  async confirmPermitStopped(
+    permit: import("../../contracts/src/agy-account.js").AgyUsagePermit,
+  ): Promise<boolean> {
+    const records = this.records().filter(record => record.agy_account?.permit_id === permit.permit_id);
+    // Absence from an inventory is not evidence of exit. The permit identifies
+    // one attempt through its durable process binding, including startup failure.
+    if (records.length !== 1) return false;
+    const record = records[0]!;
+    if (record.id !== permit.consumer_id || record.agy_account?.realm_id !== permit.realm_id ||
+        record.agy_account.account_id !== permit.account_id || record.agy_account.auth_epoch !== permit.auth_epoch ||
+        (permit.process_id !== undefined && record.pid !== permit.process_id)) return false;
+    const current = await this.awaitOwnedStart(record);
+    return await this.confirmRecordStopped(current) === "confirmed_exited";
+  }
+
   private async inventory(): Promise<ProcessEntry[]> {
     if (process.platform !== "win32")
       throw new Error("AGY_PROCESS_INVENTORY_UNSUPPORTED");

@@ -14,6 +14,8 @@ import { now, objectHash } from "./util.js";
 import type { ExecutionSpecService } from "./execution-spec-service.js";
 import type { Engine } from "./engine.js";
 import { assertProfilesVerified, collectExplicitProfiles } from "./access-guard.js";
+import type { AgyModelCategory } from "../../contracts/src/agy-account.js";
+import { getAgyModelCategory } from "../../adapters/agy/src/model-configuration.js";
 
 const OPERATION_KIND = "model_config_operation";
 
@@ -66,7 +68,49 @@ export class ModelSwitchService {
   constructor(
     private store: Store,
     private specs: ExecutionSpecService,
+    private getActiveCategory?: (excludeConsumerId?: string) => AgyModelCategory | "unknown" | null,
+    private verifyProfiles?: (profiles: ToolProfile[]) => Promise<void>,
   ) {}
+
+  private assertAgyCategoryConsistency(req: SwitchRequest, excludeRunId?: string | null) {
+    if (!this.getActiveCategory) return;
+    const activeCategory = this.getActiveCategory(excludeRunId ?? undefined);
+
+    const profiles = collectExplicitProfiles(
+      req.planner_profile,
+      req.executor_profile,
+      req.role_overrides,
+    );
+    for (const profile of profiles) {
+      if (profile.adapterId === "agy" && profile.modelId) {
+        const targetCategory = getAgyModelCategory(profile.modelId);
+        if (targetCategory === "unknown") {
+          throw new FlowError(
+            "AGY_MODEL_UNKNOWN",
+            `无法确认模型 ${profile.modelId} 的类别，需先核验模型访问能力后方可切换。`,
+            409,
+          );
+        }
+        if (!activeCategory) continue;
+        if (activeCategory === "unknown") {
+          throw new FlowError(
+            "AGY_CATEGORY_CONFLICT",
+            "当前存在未确认模型类别的 AGY 任务占用，无法核验类别互斥，禁止切换模型。请等待其结束或完成恢复核对。",
+            409,
+          );
+        }
+        if (targetCategory !== activeCategory) {
+          const activeDesc = activeCategory === "gemini" ? "Gemini 类" : "其他模型类（Claude / GPT）";
+          const targetDesc = targetCategory === "gemini" ? "Gemini 类" : "其他模型类（Claude / GPT）";
+          throw new FlowError(
+            "AGY_CATEGORY_CONFLICT",
+            `AGY 当前正被 ${activeDesc} 任务占用，无法切换为 ${targetDesc} 模型。全部同时占用 AGY 的任务只能使用同一类别。`,
+            409,
+          );
+        }
+      }
+    }
+  }
 
   parseRequest(body: Record<string, unknown>, workflowId: string): SwitchRequest {
     if (hasOwn(body, "expected_version")) {
@@ -246,6 +290,7 @@ export class ModelSwitchService {
     const workflow = engine.get(workflowId);
     this.assertSwitchTarget(workflow, req);
     this.assertSpecRevision(workflowId, req.expected_spec_revision);
+    this.assertAgyCategoryConsistency(req, req.expected_run_id);
     const operation = this.begin(workflowId, req);
     return this.continueSwitch(engine, operation);
   }
@@ -258,11 +303,18 @@ export class ModelSwitchService {
     let current = operation;
     // A dispatch retry must never stop or resume a workflow a second time.
     if (current.resume_status !== "completed") {
-      assertProfilesVerified(this.store, collectExplicitProfiles(
-        req.planner_profile, req.executor_profile, req.role_overrides,
-      ));
+      const profiles = collectExplicitProfiles(req.planner_profile, req.executor_profile, req.role_overrides);
+      this.assertAgyCategoryConsistency(req, req.expected_run_id);
+      // Legacy callers without a verifier must retain their verified-only guard.
+      if (!this.verifyProfiles) assertProfilesVerified(this.store, profiles);
       current = await this.ensureStopped(engine, current);
+      this.assertAgyCategoryConsistency(req);
       if (!current.spec_receipt) {
+        await this.verifyProfiles?.(profiles);
+        this.assertTargetRunStopped(engine, current);
+        this.assertSpecRevision(current.entity_id, req.expected_spec_revision);
+        this.assertAgyCategoryConsistency(req);
+        assertProfilesVerified(this.store, profiles);
         current = this.markSpecSaved(current, this.saveSpec(current.entity_id, req));
       }
       this.assertTargetRunStopped(engine, current);

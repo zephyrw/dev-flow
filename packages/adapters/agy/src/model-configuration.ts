@@ -116,11 +116,55 @@ export function knownAgyEffortFor(nativeId: string): {
   };
 }
 
+export type AgyModelCategory = "gemini" | "other" | "unknown";
+
+export function getAgyModelCategory(modelId?: string | null): AgyModelCategory {
+  if (!modelId) return "unknown";
+  const lower = modelId.toLowerCase().trim();
+  if (lower.startsWith("gemini-")) {
+    return "gemini";
+  }
+  if (
+    lower.startsWith("claude-") ||
+    lower.startsWith("gpt-") ||
+    lower.startsWith("anthropic/") ||
+    lower.startsWith("openai/")
+  ) {
+    return "other";
+  }
+  return "unknown";
+}
+
+export const AGY_55_CANDIDATE_IDS = ["claude-opus-5-5", "claude-sonnet-5-5"] as const;
+
+export function buildAgyCandidateEntry(nativeId: string, clock = new Date().toISOString()): ModelEntry {
+  const providerId = providerFromSlug(nativeId) ?? "anthropic";
+  return ModelEntrySchema.parse({
+    entryId: makeEntryId(ADAPTER_ID, providerId, nativeId),
+    adapterId: ADAPTER_ID,
+    nativeId,
+    label: nativeId,
+    providerId,
+    selectionKind: "fixed",
+    effort: {
+      status: "unknown",
+      transport: "none",
+      values: [],
+    },
+    source: "manual",
+    discoveredAt: clock,
+    hidden: false,
+    availability: "candidate",
+    capabilityRevision: `${nativeId}:candidate:unknown`,
+  });
+}
+
 function toAgyEntry(
   nativeId: string,
   discoveredAt: string,
   source: CatalogParseInput["source"],
   familyVariants?: Record<string, string>,
+  availability: "listed" | "candidate" = "listed",
 ): ModelEntry {
   const providerId = providerFromSlug(nativeId);
   const fixed = fixedEffort(nativeId);
@@ -154,7 +198,7 @@ function toAgyEntry(
     source: source ?? "native-live",
     discoveredAt,
     hidden: false,
-    availability: "listed",
+    availability,
     capabilityRevision: `${nativeId}:${effort.status}:${values.join(",")}`,
   });
 }

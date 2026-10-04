@@ -22,6 +22,7 @@ export type ModelChoice = {
   source: string;
   effortStatus: ModelEntry["effort"]["status"];
   selectionKind: ModelEntry["selectionKind"];
+  availability?: "listed" | "candidate";
 };
 
 const KNOWN_MODEL_LABELS: Record<string, string> = {
@@ -42,6 +43,10 @@ const KNOWN_MODEL_LABELS: Record<string, string> = {
   "gemini-3.1-pro": "Gemini 3.1 Pro",
   "claude-fable-5-1": "Claude Fable 5.1",
   "claude-fable-5": "Claude Fable 5",
+  "claude-opus-5-5": "Claude Opus 5.5",
+  "claude-sonnet-5-5": "Claude Sonnet 5.5",
+  "claude-opus-5.5": "Claude Opus 5.5",
+  "claude-sonnet-5.5": "Claude Sonnet 5.5",
   "claude-opus-5": "Claude Opus 5",
   "claude-sonnet-5": "Claude Sonnet 5",
   "claude-opus-4-8": "Claude Opus 4.8",
@@ -264,6 +269,7 @@ export function buildModelChoices(entries: ModelEntry[]): ModelChoice[] {
         source: entry.source,
         effortStatus: entry.effort.status,
         selectionKind: entry.selectionKind,
+        availability: entry.availability ?? existing?.availability,
       });
     } else {
       const choiceId = entry.nativeId;
@@ -281,6 +287,7 @@ export function buildModelChoices(entries: ModelEntry[]): ModelChoice[] {
         source: entry.source,
         effortStatus: entry.effort.status,
         selectionKind: entry.selectionKind,
+        availability: entry.availability,
       });
     }
   }

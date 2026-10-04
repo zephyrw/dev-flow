@@ -1130,7 +1130,9 @@ export class ProfileRuntime {
             },
             telemetry,
           )
-        : undefined;
+        : profile.adapterId === "agy" && purpose !== "aside" && this.accountBridge
+          ? this.accountBridge.observeAccountQuota(run.id, profile.modelId, telemetry)
+          : undefined;
     const sessionObserver =
       profile.adapterId === "codex"
         ? new CodexSessionObserver({
