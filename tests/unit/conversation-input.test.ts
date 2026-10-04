@@ -6,7 +6,6 @@ import {
   FeedbackMessageSchema,
   fileWithinConversationLimits,
   CONVERSATION_FILE_LIMITS,
-  DEFAULT_ATTACHMENT_PROMPT,
 } from "../../packages/contracts/src/index.js";
 import {
   conversationCommandSuggestions,
@@ -169,13 +168,14 @@ describe("SA-U04 runtime display and sendability", () => {
     expect(display.effort_source).toBe("not_applicable");
   });
 
-  it("allows a file-only formal message and blocks aside file-only questions", () => {
+  it("blocks file-only messages instead of inventing user instructions", () => {
     const formal = evaluateConversationSend({
       text: "",
       attachments: [{ status: "ready", supported: true }],
     });
-    expect(formal.can_send).toBe(true);
-    expect(formal.default_text).toContain("请查看本次附件");
+    expect(formal.can_send).toBe(false);
+    expect(formal.reason).toContain("系统不会代写提示词");
+    expect(formal.default_text).toBeUndefined();
     const aside = evaluateConversationSend({
       text: "/btw",
       attachments: [{ status: "ready", supported: true }],
@@ -316,13 +316,13 @@ describe("SA-D18 composer helpers", () => {
     expect(removeConversationAsideCommand("/btw 为什么")).toBe("为什么");
   });
 
-  it("uses the default attachment prompt for a file-only formal send", () => {
+  it("keeps empty attachment-only draft text without adding a default prompt", () => {
     const payload = resolveComposerSendPayload({
       text: "",
       attachments: [{ id: "file-1", status: "ready", supported: true }],
     });
-    expect(payload.canSend).toBe(true);
-    expect(payload.sendText).toBe(DEFAULT_ATTACHMENT_PROMPT);
+    expect(payload.canSend).toBe(false);
+    expect(payload.sendText).toBe("");
     expect(
       resolveComposerSendPayload({
         text: "/btw",

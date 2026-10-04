@@ -1,6 +1,5 @@
 import {
   CONVERSATION_FILE_LIMITS,
-  DEFAULT_ATTACHMENT_PROMPT,
   type ConversationInputMode,
   type ConversationRuntimeDisplay,
   type ConversationSendState,
@@ -198,6 +197,6 @@ export function evaluateConversationSend(params: {
   }
   if (parsed.text.trim()) return { can_send: true };
   if (ready.length > 0)
-    return { can_send: true, default_text: DEFAULT_ATTACHMENT_PROMPT };
+    return { can_send: false, reason: "请输入附件的处理指导，系统不会代写提示词" };
   return { can_send: false, reason: "请输入内容或添加附件" };
 }

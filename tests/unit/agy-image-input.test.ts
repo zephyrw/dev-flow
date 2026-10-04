@@ -50,6 +50,22 @@ describe("AGY image file input", () => {
     expect(new AgyNativeCliAdapter().buildInvocation(input, "agy"))
       .toEqual(clientInvocation("agy", input, "agy"));
   });
+  it("blocks user guidance with images instead of appending attachment instructions", () => {
+    const {input} = fixture();
+    input.promptKind = "user";
+    const original = input.prompt;
+    expect(() => new AgyNativeCliAdapter().buildInvocation(input, "agy")).toThrow("独立输入");
+    expect(input.prompt).toBe(original);
+  });
+  it("passes Codex guidance images as separate native arguments without changing prompt bytes", () => {
+    const {input, file} = fixture();
+    input.promptKind = "user";
+    input.toolProfile = {...input.toolProfile, adapterId: "codex"};
+    const invocation = clientInvocation("codex", input, "codex");
+    expect(invocation.stdin).toBe(input.prompt);
+    expect(invocation.args.slice(invocation.args.indexOf("--image"), -1)).toEqual(["--image", file.absolute_path]);
+    expect(invocation.args[invocation.args.indexOf("resume") + 1]).toBe("old-session");
+  });
   it.each(["missing", "changed", "unsupported"])("rejects %s input instead of silently dropping it", (failure) => {
     const { file, input } = fixture();
     if (failure === "missing") file.absolute_path += ".missing";

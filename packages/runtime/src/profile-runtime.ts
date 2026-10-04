@@ -124,7 +124,7 @@ import {
 } from "../../core/src/execution-guidance.js";
 import { ConversationControlService } from "../../core/src/conversation-control.js";
 import { saveRunContinuation } from "../../core/src/waiting-context.js";
-import { followupText, inputStageKey, isSessionFollowup, pendingRunMessages, type SessionInputReceipt } from "../../core/src/session-input.js";
+import { followupText, inputStageKey, isSessionFollowup, pendingRunMessages, runUserInputText, selectRunInputMessages, type SessionInputReceipt } from "../../core/src/session-input.js";
 import {
   ConversationRecovery,
   storeRecoveryRunPort,
@@ -318,12 +318,13 @@ export class ProfileRuntime {
     );
     const parsed = ExecutorRoundResultSchema.safeParse(value);
     const currentRun = this.engine.store.must<Run>("run", run.id);
+    const userInput = this.engine.store.get<SessionInputReceipt>("session_input", run.id)?.user_input;
     const payload = parsed.success
-      ? parsed.data
+      ? { ...parsed.data, ...(userInput && parsed.data.status === undefined ? {status: "completed"} : {}) }
       : {
-          status: "unclear",
+          status: userInput ? "completed" : "unclear",
           summary:
-            typeof value === "object"
+            userInput && typeof value?.summary === "string" ? value.summary : typeof value === "object"
               ? JSON.stringify(value)
               : String(value ?? ""),
         };
@@ -691,6 +692,18 @@ export class ProfileRuntime {
     token?: string,
     planningWorkspaces?: Workspace[],
   ): Promise<any> {
+    const pendingInput = selectRunInputMessages(this.engine.store, w.id, run);
+    if (runUserInputText(this.engine.store, run, pendingInput) !== undefined &&
+        !this.engine.store.get("session_input", run.id)) {
+      // Account/model admission can fail before invokePrepared. Persist assignment
+      // as definitely unstarted input before that gate; a frozen conversation ID
+      // must never cause the original message to disappear on a retry.
+      this.engine.store.put("session_input", run.id, w.id, {
+        run_id: run.id, conversation_id: run.conversation_id, kind: "followup",
+        stage_key: inputStageKey(run), message_ids: pendingInput.map(message => message.message_id),
+        state: "prepared", user_input: true, target_adapter: run.profile?.adapterId ?? run.adapter,
+      } satisfies SessionInputReceipt);
+    }
     const profile = profileForRun(this.engine.store, run);
     // Acquire the account before computing the session key: synchronization may
     // update the frozen account, and the permit fences subsequent switches.
@@ -893,16 +906,12 @@ export class ProfileRuntime {
         previous = undefined;
       }
     }
-    const waitingMessages = pendingRunMessages(this.engine.store, w.id, run);
-    const messages = waitingMessages.slice(0, 1);
-    // CLI transports accept one user message per turn. Keep additional messages
-    // queued instead of merging their bodies into a synthetic instruction.
-    for (const deferred of waitingMessages.slice(1)) {
-      this.engine.store.put("feedback_message", deferred.message_id, w.id,
-        { ...deferred, status: "pending", ack_run: undefined });
-    }
-    const crossToolHandoff = sessionHandoffForRun(this.engine.store, run, previous?.id);
-    const followup = !crossToolHandoff && isSessionFollowup(this.engine.store, run, previous?.id, messages);
+    const messages = selectRunInputMessages(this.engine.store, w.id, run);
+    const userInput = runUserInputText(this.engine.store, run, messages);
+    // A user message is a complete turn, not an occasion to regenerate role,
+    // recovery, task or cross-tool instructions around their text.
+    const crossToolHandoff = userInput !== undefined ? undefined : sessionHandoffForRun(this.engine.store, run, previous?.id);
+    const followup = userInput !== undefined || (!crossToolHandoff && isSessionFollowup(this.engine.store, run, previous?.id, messages));
     const inputFiles = resolveRunConversationAttachments(
       this.engine, w, profile, adapter.subagents?.file_input,
       followup ? new Set(messages.flatMap(message => message.attachment_ids ?? [])) : undefined,
@@ -910,6 +919,7 @@ export class ProfileRuntime {
     const imageProblems: string[] = [];
     inputFiles.attachments = inputFiles.attachments.filter(file => {
       const problem = file.read_mode === "image" ? localImageProblem(file.absolute_path, file.mime) : undefined;
+      if (problem && userInput !== undefined) throw new FlowError("FILE_NOT_READY", problem, 422);
       if (problem) imageProblems.push(problem);
       return !problem;
     });
@@ -931,10 +941,11 @@ export class ProfileRuntime {
       ? followupText(this.engine.store, run, messages)
       : invokePrompt(purpose, handoff, schemaPath);
     const inputFeedback = this.engine.store.get<{ message: string }>("model_input_feedback", run.id)?.message;
-    const prompt = [basePrompt, inputFeedback, ...imageProblems].filter(Boolean).join("\n\n");
+    const prompt = userInput !== undefined ? userInput : [basePrompt, inputFeedback, ...imageProblems].filter(Boolean).join("\n\n");
     const inputReceipt: SessionInputReceipt = {
       run_id: run.id, conversation_id: previous?.id, kind: crossToolHandoff ? "cross_tool_handoff" : followup ? "followup" : "stage_start",
       stage_key: inputStageKey(run), message_ids: messages.map(message => message.message_id), state: "prepared",
+      user_input: userInput !== undefined,
       target_adapter: profile.adapterId,
       ...(crossToolHandoff ? { handoff_source_run_id: crossToolHandoff.source_run_id,
         handoff_context_hash: crossToolHandoff.context_hash } : {}),
@@ -970,12 +981,13 @@ export class ProfileRuntime {
       frozenInvocation: run.frozen_invocation,
       handoffDocPath: followup ? undefined : handoff,
       outputPath: output,
-      schemaPath,
+      schemaPath: userInput !== undefined ? undefined : schemaPath,
       timeoutMs: Math.max(
         1,
         (run.deadline_at ?? Date.now() + 300000) - Date.now(),
       ),
       prompt,
+      promptKind: userInput !== undefined ? "user" as const : "stage" as const,
       inputAttachments: inputFiles.attachments,
     };
     if (adapter.prepareInputAttachments && inputFiles.attachments.length) {
@@ -1570,7 +1582,7 @@ export function invokePrompt(
 ) {
   if (purpose === "aside")
     return joinPrompt(asidePrompt(handoff, schemaPath), recoveryGuidance);
-  if (userGuidance?.messages.length) return userGuidance.messages.map(message => message.text).join("\n\n");
+  if (userGuidance?.messages.length) return userGuidance.messages[0]!.text;
   if (continuation?.kind === "user_answer") return continuation.answer ?? "继续";
   if (continuation?.kind === "runtime_resume") return "继续";
   if (continuation?.kind === "intent_clarification") return "请按当前阶段约定的格式说明刚才的结果。";

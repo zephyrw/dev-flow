@@ -298,8 +298,12 @@ export class AgyWorkflowBridge implements AccountConsumerPort {
       this.engine.store.event(workflowId, this.engine.get(workflowId).project_id,
         "AgyAccountAdmissionFailed", diagnostic, run.id);
       throw new FlowError(
-        "AGY_ACCOUNT_UNAVAILABLE",
-        "账号服务、模型额度映射或执行许可尚不可用；请查看账号管理页",
+        safeCode === "agy_model_probe_timeout" ? "AGY_MODEL_PROBE_TIMEOUT" : "AGY_ACCOUNT_UNAVAILABLE",
+        safeCode === "agy_model_probe_timeout"
+          ? "AGY 模型访问核验超时，尚未确认模型不可用；已保留原任务与模型，可继续任务重试核验"
+          : safeCode === "target_model_unavailable"
+            ? "当前账号未通过所选 AGY 模型的访问核验；请核对模型访问状态后继续任务"
+            : "账号服务、模型额度映射或执行许可尚不可用；请查看账号管理页",
         409,
         diagnostic,
       );

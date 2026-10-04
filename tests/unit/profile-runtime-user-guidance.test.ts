@@ -1,9 +1,10 @@
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { Store } from "../../packages/store/src/store.js";
 import type { FeedbackMessage, Run } from "../../packages/contracts/src/index.js";
 import {
   currentRunUserGuidance,
   invokePrompt,
+  ProfileRuntime,
 } from "../../packages/runtime/src/profile-runtime.js";
 
 const stores: Store[] = [];
@@ -162,4 +163,19 @@ it("stops before an intermediate completed resume so older already-handled guida
   put(1, "此前已落实", { ack_run: source.id });
   put(2, "只保留新的指导");
   expect(currentRunUserGuidance(store, "workflow", current)?.messages.map(m => m.seq)).toEqual([2]);
+});
+
+it("records a plain successful guidance reply without asking the model to invent task completion fields", async () => {
+  const {store} = fixture();
+  const run = resumedRun("current-run", undefined, {purpose: "executor_test", status: "running"});
+  store.put("run", run.id, "workflow", run);
+  store.put("session_input", run.id, "workflow", {run_id: run.id, user_input: true, state: "delivered",
+    kind: "followup", message_ids: ["message"]});
+  const workflow = {id: "workflow", run_id: run.id, state: "EXECUTING", plan_revision: 1, plan_hash: "approved"};
+  const receiveRoundResult = vi.fn();
+  const runtime = new ProfileRuntime({store, get: () => workflow, receiveRoundResult} as any, {} as any);
+  (runtime as any).invoke = vi.fn(async () => ({summary: "刚才模型核验超时，已有工作已保留。"}));
+  await runtime.execute(workflow as any, run, "token");
+  expect(receiveRoundResult).toHaveBeenCalledWith("workflow", run.id, expect.objectContaining({
+    status: "completed", summary: "刚才模型核验超时，已有工作已保留。"}));
 });

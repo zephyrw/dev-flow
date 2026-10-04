@@ -110,7 +110,7 @@ export class AgyAccountJobRunner
   }
   async runAuxiliaryProbe(
     options: AuxJobOptions,
-  ): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  ): Promise<{ code: number | null; stdout: string; stderr: string; termination_reason?: string }> {
     if (!options.lease?.lease_id || !options.lease.operation_id)
       throw new Error("invalid_auxiliary_lease");
     const { process, completion } = await this.create(
@@ -142,6 +142,7 @@ export class AgyAccountJobRunner
         options.signal?.aborted || result.termination_reason ? -1 : result.code,
       stdout: Buffer.concat(stdout).toString("utf8"),
       stderr: Buffer.concat(stderr).toString("utf8"),
+      ...(result.termination_reason ? { termination_reason: result.termination_reason } : {}),
     };
   }
   async start(input: {

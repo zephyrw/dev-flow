@@ -32,6 +32,27 @@ function deferred<T>() {
 afterEach(() => { vi.restoreAllMocks(); executable.fingerprint = "cli-v1"; });
 
 describe("AGY model access probe cache and shared calls", () => {
+  it("allows CLI cold start before inference and preserves host timeout as inconclusive", async () => {
+    const f = fixture();
+    f.runAuxiliaryProbe.mockResolvedValueOnce({ code: -1, stdout: success.stdout.split("\n")[0]!,
+      stderr: "", termination_reason: "timeout" } as any);
+    await expect(f.probe.probeModelAccess(model, { ...identity, timeoutMs: 30000 }))
+      .rejects.toMatchObject({ code: "agy_model_probe_timeout" });
+    const call = f.runAuxiliaryProbe.mock.calls[0]![0];
+    expect(call.timeoutMs).toBeGreaterThanOrEqual(90000);
+    expect(call.args[call.args.indexOf("--print-timeout") + 1]).toBe("30s");
+    expect(await f.probe.probeModelAccess(model, identity)).toBe(true);
+    expect(f.runAuxiliaryProbe).toHaveBeenCalledTimes(2);
+  });
+  it("preserves an explicit CLI timeout even when the process exits naturally", async () => {
+    const f = fixture();
+    f.runAuxiliaryProbe.mockResolvedValueOnce({ code: 1, stderr: "", stdout: [
+      JSON.stringify({ event: "init", init: { model } }),
+      JSON.stringify({ event: "result", result: { status: "ERROR", error: "Print request timed out" } }),
+    ].join("\n") });
+    await expect(f.probe.probeModelAccess(model, identity)).rejects.toMatchObject({ code: "agy_model_probe_timeout" });
+    expect(await f.probe.probeModelAccess(model, identity)).toBe(true);
+  });
   it("preserves quota failure on fresh matching model probes despite exit 3 and never caches it", async () => {
     const f = fixture();
     f.runAuxiliaryProbe.mockResolvedValueOnce({ code: 3, stderr: "", stdout: [

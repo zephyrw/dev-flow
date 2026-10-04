@@ -7,6 +7,11 @@ export interface RuntimeFailureResolution {
 }
 
 const resolutions: Record<string, Omit<RuntimeFailureResolution, "code">> = {
+  AGY_MODEL_PROBE_TIMEOUT: {
+    title: "AGY 模型访问核验超时",
+    message: "核验尚未完成，不能据此判定模型不可用；原任务和模型已保留。",
+    steps: ["继续原任务重试访问核验；若重复超时，检查 AGY 启动耗时和网络连接。"],
+  },
   MODEL_REQUEST_INVALID: {
     title: "模型请求参数被拒绝",
     message: "模型服务拒绝了本轮请求参数，原始错误已保留。",

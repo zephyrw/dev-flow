@@ -35,7 +35,7 @@ export interface AuxiliaryProbeRunner {
     lease: any;
     timeoutMs?: number;
     signal?: AbortSignal;
-  }): Promise<{ code: number | null; stdout: string; stderr: string }>;
+  }): Promise<{ code: number | null; stdout: string; stderr: string; termination_reason?: string }>;
 }
 
 export function parseModelAccessOutput(
@@ -83,6 +83,11 @@ export function parseModelAccessOutput(
   // This probe creates a fresh invocation, never resumes a conversation. Keep
   // the provider's explicit quota cause after checking the requested model.
   const last = events.at(-1);
+  if ((last?.event === "result" || last?.type === "result") &&
+      (last?.result as any)?.status === "ERROR" &&
+      typeof (last.result as any)?.error === "string" &&
+      /\b(?:timeout|timed out|deadline exceeded)\b/i.test((last.result as any).error))
+    return { success: false, reason: "agy_model_probe_timeout" };
   if ((last?.event === "result" || last?.type === "result") &&
       (last?.result as any)?.status === "ERROR" &&
       isAgyIndividualQuotaError((last?.result as any)?.error) &&
@@ -333,18 +338,24 @@ export class AgyAccountProbe implements AccountProbePort {
           "--output-format",
           "stream-json",
           "--print-timeout",
-          "10s",
+          "30s",
           "-p",
           "Reply only OK.",
         ],
-        { ...options, timeoutMs: options.timeoutMs ?? 15000, signal: flight.controller.signal },
+        // The native print timeout starts after CLI initialization. Account/model
+        // discovery alone can take most of the former 30s host deadline.
+        { ...options, timeoutMs: Math.max(options.timeoutMs ?? 0, 90000), signal: flight.controller.signal },
       );
       flight.controller.signal.throwIfAborted();
+      if (result.termination_reason === "timeout")
+        throw Object.assign(new Error("agy_model_probe_timeout"), { code: "agy_model_probe_timeout" });
       const parsed = parseModelAccessOutput(result.stdout, {
         modelId,
         accountId: options.account_id,
         cwd: options.cwd,
       });
+      if (parsed.reason === "agy_model_probe_timeout")
+        throw Object.assign(new Error("agy_model_probe_timeout"), { code: "agy_model_probe_timeout" });
       if (result.code === 3 && parsed.reason === "agy_model_quota_exhausted" &&
           !hasConflictingAgyFailureDiagnostic(result.stderr))
         throw Object.assign(new Error("agy_model_quota_exhausted"), {
@@ -388,7 +399,7 @@ export class AgyAccountProbe implements AccountProbePort {
   private async execute(
     args: string[],
     options: ProbeOptions,
-  ): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  ): Promise<{ code: number | null; stdout: string; stderr: string; termination_reason?: string }> {
     const resPath = resolveAgyExecutable(this.cliPath);
     const executable = resPath.resolvedPath ?? this.cliPath ?? process.env.AGY_CLI_PATH;
     if (!executable) throw new Error("agy_cli_not_configured");
@@ -427,6 +438,7 @@ export class AgyAccountProbe implements AccountProbePort {
       timeoutMs: hostTimeoutMs,
       signal: options.signal,
     });
-    return { code: res.code, stdout: res.stdout, stderr: res.stderr };
+    return { code: res.code, stdout: res.stdout, stderr: res.stderr,
+      ...(res.termination_reason ? { termination_reason: res.termination_reason } : {}) };
   }
 }

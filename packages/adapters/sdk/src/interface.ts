@@ -49,6 +49,8 @@ export interface RunContext {
   toolProfile: ToolProfile;
   handoffDocPath?: string;
   prompt?: string;
+  /** User text must reach the native client without any adapter-added instructions. */
+  promptKind?: "stage" | "user";
   outputPath?: string;
   schemaPath?: string;
   conversationId?: string;
