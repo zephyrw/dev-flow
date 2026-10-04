@@ -7,7 +7,7 @@ import { Store } from "../../../packages/store/src/store.js";
 import { Engine } from "../../../packages/core/src/engine.js";
 import { WorkspaceObserver } from "../../../packages/runtime/src/workspace-observer.js";
 import { LocalRuntime } from "../../../packages/runtime/src/runtime.js";
-import { resumeModelWaits } from "../../../packages/runtime/src/recovery.js";
+import { resumeModelWaits, reconcileInactiveRuns } from "../../../packages/runtime/src/recovery.js";
 import { buildServer } from "./server.js";
 import { archiveLogs } from "../../../packages/runtime/src/maintenance.js";
 import { acquireControllerLock } from "../../../packages/process/src/controller-lock.js";
@@ -80,6 +80,7 @@ try {
 }
 await accountService.reconcileStartup();
 // Bind first: a duplicate controller must fail before mutating persisted runs.
+reconcileInactiveRuns(engine);
 engine.recover();
 const workspaceObserver = new WorkspaceObserver(engine);
 await recordController(config.storage_root, fileURLToPath(import.meta.url), "full");

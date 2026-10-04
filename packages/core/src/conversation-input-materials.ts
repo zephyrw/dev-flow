@@ -1,6 +1,5 @@
 import {
   ATTACHMENT_HANDOFF_NOTICE,
-  DEFAULT_ATTACHMENT_PROMPT,
   type ConversationFile,
   type ConversationInputMode,
   type ToolProfile,
@@ -20,10 +19,9 @@ export interface ConversationInputMaterials {
 
 export function deliveredConversationText(
   text: string,
-  attachmentCount: number,
+  _attachmentCount: number,
 ): string {
-  if (text.trim()) return text;
-  return attachmentCount > 0 ? DEFAULT_ATTACHMENT_PROMPT : text;
+  return text;
 }
 
 export function attachmentsGoToMainModel(

@@ -79,9 +79,27 @@ it.each([true, false])("labels functional guidance neutrally without declaring a
     type: "StateChanged", payload: { from: i === 0 ? "HUMAN_PENDING" : "QUEUED", to, stage: "functional_fix", resumed } }));
   const rows = readableLogs(events, "w");
   expect(rows.map(row => row.title)).toEqual(["验收指导已排队", "处理验收指导"]);
-  expect(rows[1]?.text).toContain("启动验收服务或具体修改");
+  expect(rows[1]?.text).toContain("指导原文");
   expect(rows[1]?.text).not.toContain("本轮开发与自测");
   expect(runtimePurposeNames.functional_fix).toBe("执行模型 · 验收指导处理");
+});
+
+it.each(["executor_test", "planner_takeover", "execute"])("labels %s user guidance without inventing a repair or testing request", stage => {
+  const rows = readableLogs(["QUEUED", "EXECUTING"].map((to, i) => ({workflow_id: "guided-w", event_seq: i + 1,
+    type: "StateChanged", payload: {from: i ? "QUEUED" : "STOPPED", to, stage, user_guidance: true, resumed: true}})), "guided-w");
+  expect(rows.map(row => row.title)).toEqual(["指导已排队", "执行你的指导"]);
+  expect(rows[1]?.text).toContain("指导原文");
+  expect(rows[1]?.text).not.toContain("修复");
+  expect(rows[1]?.text).not.toContain("测试");
+});
+
+it("describes planner code repairs and executor test repairs with their own responsibilities", () => {
+  const state = {from: "QUEUED", to: "EXECUTING", resumed: true};
+  const rows = readableLogs(["planner_takeover", "executor_test"].map((stage, i) => ({workflow_id: "role-w",
+    event_seq: i + 1, type: "StateChanged", payload: {...state, stage}})), "role-w");
+  expect(rows[0]?.text).toContain("完成后交执行模型测试");
+  expect(rows[0]?.text).not.toContain("自测");
+  expect(rows[1]?.text).toContain("修复测试发现的问题");
 });
 
 it.each([true, false])("labels a bound quality repair as remediation rather than implementation (resumed=%s)", (resumed) => {

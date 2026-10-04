@@ -538,14 +538,6 @@ export class EvidenceValidator {
 
     for (const ws of allWorkspaces) {
       const wsRoot = ws.root || workspaceRoot;
-      const allowedPaths = new Set(
-        (
-          plan.scope?.repository_paths?.[ws.repo_id] ??
-          plan.scope?.allowed_paths ??
-          []
-        ).map((p) => p.replaceAll("\\", "/")),
-      );
-
       let wsChanged: string[] = [];
       try {
         if (ws.initial_worktree_tree) {
@@ -643,12 +635,6 @@ export class EvidenceValidator {
         }
         if (f.startsWith(".reports/") || f.startsWith("reports/")) {
           continue;
-        }
-        if (![...allowedPaths].some(within)) {
-          addIssue(
-            "OUTSIDE_SCOPE_FILE",
-            `工作区 '${ws.repo_id ?? "main"}' 文件 '${f}' 超出了计划批准的修改范围`,
-          );
         }
       }
 

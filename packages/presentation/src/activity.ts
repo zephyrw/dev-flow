@@ -557,7 +557,9 @@ export function readableLogs(events: any[], workflow: string, formalGuidance: Ar
         text = "保留已完成的开发和测试结果，由规划模型继续完成本任务的提交与合并。";
       } else if (p.to === "QUEUED") {
         title =
-          p.stage === "planner_takeover"
+          p.user_guidance === true
+            ? "指导已排队"
+          : p.stage === "planner_takeover"
             ? "规划模型接手已排队"
             : p.stage === "auto_repair"
               ? "修复已排队"
@@ -565,8 +567,10 @@ export function readableLogs(events: any[], workflow: string, formalGuidance: Ar
               ? "验收指导已排队"
               : "等待执行";
         text =
-          p.stage === "planner_takeover"
-            ? "保留已有修改，等待规划模型接手实际修复与自测。"
+          p.user_guidance === true
+            ? "保留当前工作区，等待相应模型执行你的指导。"
+          : p.stage === "planner_takeover"
+            ? "保留已有修改，等待规划模型修复代码复核问题，完成后交执行模型测试。"
             : p.stage === "auto_repair"
               ? "保留已有修改和原会话，等待执行模型继续修复。"
             : ["functional_fix", "acceptance_guidance"].includes(p.stage)
@@ -574,7 +578,9 @@ export function readableLogs(events: any[], workflow: string, formalGuidance: Ar
               : "等待可用执行资源。";
       } else if (p.to === "EXECUTING" && p.from === "QUEUED") {
         title =
-          p.stage === "planner_takeover"
+          p.user_guidance === true
+            ? "执行你的指导"
+          : p.stage === "planner_takeover"
             ? "规划模型开始修复"
             : p.stage === "executor_test"
               ? (p.resumed === true ? "继续测试" : "开始测试")
@@ -587,12 +593,14 @@ export function readableLogs(events: any[], workflow: string, formalGuidance: Ar
               : "开始开发与自测";
         repairPending = false;
         text =
-          p.stage === "planner_takeover"
-            ? "正在启动规划模型；收到真实工具事件后展示修改、自测与完成说明。"
+          p.user_guidance === true
+            ? "本轮将你的指导原文发送给相应模型，实际回复和操作显示在执行过程。"
+          : p.stage === "planner_takeover"
+            ? "规划模型修复代码复核问题，完成后交执行模型测试。实际修改与完成说明显示在执行过程。"
             : p.stage === "executor_test"
-              ? "由执行模型沿已有进度完成指定测试和必要修复。"
+              ? "执行模型沿已有进度完成指定测试，并修复测试发现的问题。"
             : ["functional_fix", "acceptance_guidance"].includes(p.stage)
-              ? "按照你当前的验收指导处理启动验收服务或具体修改，保留已有计划、工作区和执行进度。"
+              ? "本轮将你的指导原文发送给相应模型，实际回复和操作显示在执行过程。"
             : p.repair_source === "quality_review"
               ? "沿用原批准计划和已有修改，按本轮代码复核问题逐项整改并进行必要测试。"
             : p.resumed === true
@@ -608,8 +616,10 @@ export function readableLogs(events: any[], workflow: string, formalGuidance: Ar
             ? "本轮执行已完成，由规划模型审查代码质量。"
             : "等待规划模型进行人工后代码质量审查。";
       } else if (p.to === "REVIEWING") {
-        title = "规划模型开始审查";
-        text =
+        title = p.user_guidance === true ? "执行你的指导" : "规划模型开始审查";
+        text = p.user_guidance === true
+          ? "本轮将你的指导原文发送给复核模型，实际回复和操作显示在执行过程。"
+          :
           p.stage === "quality_before_human"
             ? "正在审查代码质量，通过后进入人工功能确认。"
             : "正在进行人工后代码质量审查，通过后进入本地提交。";

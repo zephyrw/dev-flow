@@ -52,8 +52,9 @@ export type State = (typeof States)[number];
 
 export const ScopeSchema = z
   .object({
-    repository_paths: z.record(Id, z.array(RelativePath).min(1)).default({}),
-    allowed_paths: z.array(RelativePath).min(1),
+    // Compatibility location metadata, never a whitelist of modifiable files.
+    repository_paths: z.record(Id, z.array(RelativePath)).default({}),
+    allowed_paths: z.array(RelativePath).default([]),
     protected_paths: z.array(z.string()).default([".git", ".agents", ".codex"]),
     allow_dependency_changes: z.boolean().default(false),
     allow_public_api_changes: z.boolean().default(false),
@@ -73,7 +74,7 @@ export const TaskSchema = z
     title: z.string().min(1),
     requirements: z.array(Id).min(1),
     depends_on: z.array(Id).default([]),
-    paths: z.array(RelativePath).min(1),
+    paths: z.array(RelativePath).default([]),
     inputs: z.string().min(1),
     implementation: z.string().min(10),
     preserve: z.string().min(1),
@@ -124,7 +125,7 @@ export const PlanSchema = z.object({
     )
     .default([]),
   unresolved_decisions: z.array(z.string()).default([]),
-  scope: ScopeSchema,
+  scope: ScopeSchema.default(() => ScopeSchema.parse({})),
   tasks: z.array(TaskSchema).default([]),
   tests: z.array(TestSchema).default([]),
   exemptions: z

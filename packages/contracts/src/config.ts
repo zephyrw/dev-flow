@@ -108,10 +108,11 @@ const RuntimeConfigSchema = z
       .prefault({}),
     scheduler: z
       .object({
-        executors: positive.max(16).default(1),
-        reviewers: positive.max(4).default(1),
-        heavy_tests: positive.max(8).default(1),
-        live_environments: positive.max(16).default(1),
+        // 兼容旧配置；任务调度已取消执行/复核并行数量限制。
+        executors: positive.optional().describe("已弃用，仅兼容旧配置，不限制任务并行数量"),
+        reviewers: positive.optional().describe("已弃用，仅兼容旧配置，不限制任务并行数量"),
+        heavy_tests: positive.optional().describe("已弃用，仅兼容旧配置，不限制测试并行数量"),
+        live_environments: positive.optional().describe("已弃用，仅兼容旧配置，不限制验证环境数量"),
         aging_minutes: positive.default(10),
       })
       .strict()
@@ -120,10 +121,10 @@ const RuntimeConfigSchema = z
       .object({
         frontend: z
           .tuple([positive.max(65535), positive.max(65535)])
-          .default([15173, 15272]),
+          .optional(),
         backend: z
           .tuple([positive.max(65535), positive.max(65535)])
-          .default([18081, 18180]),
+          .optional(),
         bind_retries: positive.max(10).default(5),
       })
       .strict()
@@ -168,7 +169,7 @@ export const ConfigSchema = z.preprocess(
     }
   },
   RuntimeConfigSchema.superRefine((config, context) => {
-    for (const [a, b] of [config.ports.frontend, config.ports.backend])
+    for (const [a, b] of [config.ports.frontend, config.ports.backend].filter((p): p is [number, number] => !!p))
       if (a > b)
         context.addIssue({
           code: "custom",
@@ -176,6 +177,7 @@ export const ConfigSchema = z.preprocess(
           path: ["ports"],
         });
     if (
+      config.ports.frontend && config.ports.backend &&
       config.ports.frontend[0] <= config.ports.backend[1] &&
       config.ports.backend[0] <= config.ports.frontend[1]
     )

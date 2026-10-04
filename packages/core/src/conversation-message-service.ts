@@ -522,6 +522,9 @@ function assertSendable(
     );
     return;
   }
+  requireCondition(text.trim().length > 0 || attachmentIds.length === 0,
+    CONVERSATION_MESSAGE_ERROR.INPUT_UNSUPPORTED,
+    "请输入附件的处理指导，系统不会代写提示词", 422);
   requireCondition(
     text.trim().length > 0 || attachmentIds.length > 0,
     CONVERSATION_MESSAGE_ERROR.EMPTY_MESSAGE,

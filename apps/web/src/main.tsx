@@ -52,6 +52,7 @@ import type { LogEntry } from "./logs.js";
 import React, { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { PlanTocButton, usePlanReading } from "./plan-reading.js";
+import { PlanMaterialNotice } from "./components/PlanMaterialNotice.js";
 import { ConversationHistoryCache, type ConversationHistorySnapshot } from "./conversation-history.js";
 
 import { createRoot } from "react-dom/client";
@@ -1210,7 +1211,9 @@ const CentralWorkspace = React.memo(
       }
     };
 
-    const planBodyContent = detail.plan ? (
+    const planBodyContent = detail.plan?.material_error ? (
+      <PlanMaterialNotice error={detail.plan.material_error} onRetry={refresh} />
+    ) : detail.plan ? (
       <div key={`${w.id}:${w.plan_revision}:${w.plan_hash}:${planFullscreen}`} className={`plan-viewer-body ${hasToc && showToc ? "has-toc" : ""}`}>
         {hasToc && showToc && (
           <aside className="plan-toc-sidebar" aria-label="文档大纲">

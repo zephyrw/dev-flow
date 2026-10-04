@@ -33,6 +33,7 @@ import type {
   AccountRecoveryContinuation,
 } from "../../contracts/src/agy-recovery.js";
 import { runtimeFailureResolution } from "../../contracts/src/runtime-failure.js";
+import { pendingRunMessages, type SessionInputReceipt } from "./session-input.js";
 import {
   latestEvidence,
   currentEvidence,
@@ -578,7 +579,7 @@ export class Engine {
     state: State,
     stage: string,
     patch: Partial<Workflow> = {},
-    event: { resumed?: boolean; repair_source?: "quality_review"; source_review_id?: string; guidance_mode?: "human_acceptance" } = {},
+    event: { resumed?: boolean; repair_source?: "quality_review"; source_review_id?: string; guidance_mode?: "human_acceptance"; user_guidance?: boolean } = {},
   ) {
     return this.store.transaction(() => {
       const w = this.get(key);
@@ -657,23 +658,11 @@ export class Engine {
         const validated = validatePlan(input);
         const p = this.project(w.project_id);
         if (p.repositories.length > 1) {
-          for (const repo of p.repositories)
-            requireCondition(
-              validated.plan.scope.repository_paths[repo.id],
-              "REPOSITORY_SCOPE_REQUIRED",
-              "多仓计划必须按仓库分别声明修改范围",
-            );
           for (const task of validated.plan.tasks)
             requireCondition(
-              task.repo_id &&
-                validated.plan.scope.repository_paths[task.repo_id] &&
-                task.paths.every((path) =>
-                  validated.plan.scope.repository_paths[
-                    task.repo_id!
-                  ]!.includes(path),
-                ),
+              task.repo_id && p.repositories.some(repo => repo.id === task.repo_id),
               "TASK_REPOSITORY_REQUIRED",
-              "多仓任务必须绑定仓库及其批准路径",
+              "多仓任务必须关联已登记的仓库",
             );
         }
         requireCondition(
@@ -1513,16 +1502,6 @@ export class Engine {
         "RUN_REVOKED",
         "冻结期间任务已经变化，请重新读取当前状态",
       );
-      const plan = this.plan(key).plan;
-      for (const r of snapshot.repositories)
-        for (const p of r.changed_paths)
-          requireCondition(
-            (
-              plan.scope.repository_paths[r.repo_id] ?? plan.scope.allowed_paths
-            ).includes(p),
-            "SCOPE_VIOLATION",
-            `发现范围外修改 ${p}`,
-          );
       this.transition(key, ["EXECUTING"], "VERIFYING", "tests", {
         snapshot_id: snapshot.id,
       });
@@ -1819,7 +1798,8 @@ export class Engine {
       manifest,
       deliverySubmit ? { deliverySubmit: true } : undefined,
     );
-    recordExecutionTestReport(this.store, w, this.store.must<Run>("run", runId), normalized.payload);
+    const userInput = this.store.get<SessionInputReceipt>("session_input", runId)?.user_input === true;
+    if (!userInput) recordExecutionTestReport(this.store, w, this.store.must<Run>("run", runId), normalized.payload);
     const commitRecovery = this.store.get<{ requires_user?: boolean; instructions?: string }>("planner_integration_repair", key);
     if (this.store.must<Run>("run", runId).purpose === "planner_commit" && commitRecovery?.requires_user &&
         normalized.intent !== "need_user") {
@@ -1833,7 +1813,7 @@ export class Engine {
       return this.routeExecutionIntent(key, runId, normalized);
 
     const guidanceRun = this.store.must<Run>("run", runId);
-    if (guidanceRun.dispatch_context?.guidance_mode === "human_acceptance") {
+    if (userInput || guidanceRun.dispatch_context?.guidance_mode === "human_acceptance") {
       requireCondition(w.state === "EXECUTING" && ["running", "completed"].includes(guidanceRun.status),
         "INVALID_STATE", "当前指导轮次不能提交结果");
       const result = normalizeOptionalDeliveryManifest(normalized.payload);
@@ -1843,7 +1823,7 @@ export class Engine {
         summary, recorded_at: now() });
       this.store.event(key, w.project_id, "UserGuidanceCompleted", { summary }, runId);
       if (guidanceRun.status === "completed") await this.finalizeNativeDelivery(key, runId);
-      return { status: "accepted", state: this.get(key).state, message: "本轮指导回复已记录，任务仍等待人工验收。" };
+      return { status: "accepted", state: this.get(key).state, message: "本轮指导回复已记录，原阶段进度已保留。" };
     }
 
     let payload: DeliveryManifest = normalizeOptionalDeliveryManifest(normalized.payload);
@@ -2369,6 +2349,19 @@ export class Engine {
     return true;
   }
 
+  private continueAfterUserGuidance(run: Run, summary?: string): void {
+    const key = run.workflow_id;
+    const w = this.get(key);
+    if (w.run_id !== run.id || this.store.get("run_stop", run.id)) return;
+    if (summary !== undefined)
+      this.store.event(key, w.project_id, "UserGuidanceCompleted", { summary }, run.id);
+    this.restoreDispatchContext(key, run.id);
+    const target = run.purpose === "quality_review" ? "REVIEW_QUEUED" : "QUEUED";
+    this.transition(key, [w.state], target, run.stage, { blocker: undefined });
+    this.scheduler.enqueue(key, w.project_id);
+    this.store.enqueue(key, "dispatch_run", { ...run.dispatch_context, purpose: run.purpose });
+  }
+
   async finalizeNativeDelivery(key: string, runId: string) {
     const w = this.get(key);
     if (!["EXECUTING", "VERIFYING"].includes(w.state)) return;
@@ -2399,6 +2392,12 @@ export class Engine {
       } else {
         this.transition(key, [w.state], "HUMAN_PENDING", "accept", { blocker: undefined }, { guidance_mode: "human_acceptance" });
       }
+      return;
+    }
+    if (this.store.get<SessionInputReceipt>("session_input", runId)?.user_input === true) {
+      // A reply to user guidance is not completion of the scheduled test/repair
+      // stage. Continue that stage in a separate automatic turn.
+      this.continueAfterUserGuidance(active);
       return;
     }
     // 策略 2：规划提交完成后直接本地集成，不走质量复核。
@@ -2832,7 +2831,7 @@ export class Engine {
         if (
           this.store
             .list<Run>("run", job.workflow_id)
-            .some((r) => r.purpose === "aside" && r.status === "running")
+            .some((r) => r.purpose === "aside" && r.status === "running" && (r as Run & { aside_id?: string }).aside_id === aside.id)
         )
           continue;
         const w = this.get(job.workflow_id),
@@ -3331,26 +3330,7 @@ export class Engine {
         }
         if (this.running.has(w.id)) continue;
         const review = w.state === "REVIEW_QUEUED";
-        const slot = this.scheduler.capacity(
-          review ? "reviewer" : "executor",
-          review
-            ? this.config.scheduler.reviewers
-            : this.config.scheduler.executors,
-        );
-        if (!slot) {
-          this.store.put("queue_wait", w.id, w.id, {
-            kind: "capacity",
-            resource: review ? "reviewer" : "executor",
-            message: review ? "等待独立复核名额" : "等待执行模型名额",
-            owners: this.store
-              .list<any>("lease")
-              .filter((l) =>
-                l.id.startsWith(review ? "reviewer:" : "executor:"),
-              )
-              .map((l) => l.owner),
-          });
-          continue;
-        }
+        // 用户决定启动多少任务；只对实际共享的工作目录获取写锁。
         const runId = id("run");
         const known = this.store.list<Workspace>("workspace", w.id);
         const context = this.store.get<{ roots: Record<string, string> }>(
@@ -3371,21 +3351,21 @@ export class Engine {
             if (source && !roots.includes(source)) roots.push(source);
           }
         }
-        const leases = this.scheduler.acquire(w.id, runId, [
-          slot,
-          ...roots.map((root) => "write:" + root.toLowerCase()),
-        ]);
+        const keys = roots.map(root => review
+          ? `read:${root.toLowerCase()}::${runId}`
+          : "write:" + root.toLowerCase());
+        const leases = this.scheduler.acquire(w.id, runId, keys);
         if (!leases) {
           const owners = this.store
             .list<any>("lease")
             .filter((l) =>
-              roots.some((root) => l.id === "write:" + root.toLowerCase()),
+              keys.some(key => this.scheduler.conflicts(key, l.id)),
             )
             .map((l) => l.owner);
           this.store.put("queue_wait", w.id, w.id, {
             kind: "workspace",
             resource: roots.join("、"),
-            message: "等待工作目录写入权限",
+            message: review ? "等待正在修改的代码版本稳定" : "等待工作目录写入权限",
             owners,
           });
           continue;
@@ -3397,7 +3377,7 @@ export class Engine {
           : w.workspace_mode === "existing_workspace" ? "正在检查主工作区" : "正在准备独立工作区";
         this.store.put("queue_wait", w.id, w.id, {
           kind: "preparing",
-          message: reuseWorkspaces ? preparationMessage : "已取得执行名额，" + preparationMessage,
+          message: preparationMessage,
           owners: [],
         });
         if (!reuseWorkspaces) this.store.event(
@@ -3586,7 +3566,11 @@ export class Engine {
       this.store.transaction(() => {
         w = this.transition(key, [review ? "REVIEW_QUEUED" : "QUEUED"], review ? "REVIEWING" : "EXECUTING", stage, {
           run_id: runId, review_request_id: review ? id("review") : w.review_request_id, blocker: undefined,
-        }, { resumed, ...(assignment?.source === "quality_review" && assignment.assignment_id === run.assignment_id
+        }, { resumed,
+          ...(this.store.list<FeedbackMessage>("feedback_message", key).some(message => message.status === "pending") ||
+              pendingRunMessages(this.store, key, { ...run, continuation }).length > 0
+            ? { user_guidance: true } : {}),
+          ...(assignment?.source === "quality_review" && assignment.assignment_id === run.assignment_id
           ? { repair_source: "quality_review" as const, source_review_id: assignment.source_review_id } : {}) });
         this.store.remove("pending_dispatch_purpose", key);
         this.store.remove("queue_wait", key);
@@ -3654,7 +3638,12 @@ export class Engine {
             this.get(key).run_id === runId &&
             this.get(key).state === "REVIEWING"
           )
-            if (!this.queuePendingRunInput(run)) await this.receiveReview(key, result);
+            if (!this.queuePendingRunInput(run)) {
+              if (this.store.get<SessionInputReceipt>("session_input", runId)?.user_input === true)
+                this.continueAfterUserGuidance(run, typeof result === "string" ? result
+                  : result && typeof result === "object" ? JSON.stringify(result) : "");
+              else await this.receiveReview(key, result);
+            }
         } else {
           const stopGraceMs = Math.max(
             (this.config.timeouts.stop_seconds ?? 0) * 1000,
@@ -3782,7 +3771,8 @@ export class Engine {
           summary: "提交模型当前无法继续，需要你的协助",
           user_interaction: { kind: "action_required", title: "恢复提交处理",
             message: redact(String(e)).slice(0, 3900), action_label: "已处理，继续提交" } }));
-      } else if (ownsRun && e instanceof FlowError && e.code.startsWith("AGY_ACCOUNT_")) {
+      } else if (ownsRun && e instanceof FlowError &&
+          (e.code.startsWith("AGY_ACCOUNT_") || e.code === "AGY_MODEL_PROBE_TIMEOUT")) {
         this.block(key, e);
       } else if (ownsRun && !review) {
         const normalized = normalizeRuntimeFailure(e);
@@ -5156,6 +5146,7 @@ export class Engine {
       );
   }
   recover() {
+    new AsideSessionService(this.store).promoteNextQueued();
     for (const w of this.list()) {
       if (
         w.state !== "BLOCKED" ||

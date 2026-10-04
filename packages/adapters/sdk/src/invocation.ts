@@ -54,6 +54,11 @@ export function clientInvocation(
   input: RunContext,
   executable: string,
 ): PreparedInvocation {
+  if (input.promptKind === "user" && input.inputAttachments?.length &&
+      !(adapter === "codex" && input.inputAttachments.every(file => file.read_mode === "image"))) {
+    throw new FlowError("INPUT_UNSUPPORTED",
+      "当前工具尚未实现本轮附件的独立输入；指导原文和附件已保留，未追加附件提示词或发送本轮指导", 422);
+  }
   const cwd = Object.values(input.workspaceRoots)[0];
   if (!cwd) throw new Error("执行轮次没有工作区");
   const prompt =
@@ -88,6 +93,9 @@ export function clientInvocation(
       if (input.outputPath)
         args.push("--output-last-message", input.outputPath);
       if (input.schemaPath) args.push("--output-schema", input.schemaPath);
+      if (input.promptKind === "user") {
+        for (const file of input.inputAttachments ?? []) args.push("--image", file.absolute_path);
+      }
       args.push("-");
       return {
         executable,

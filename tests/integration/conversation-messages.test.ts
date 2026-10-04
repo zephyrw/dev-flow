@@ -8,7 +8,6 @@ import {
   AGY_IMAGE_FILE_INPUT,
   ConversationMessageRequestSchema,
   CONVERSATION_ERROR,
-  DEFAULT_ATTACHMENT_PROMPT,
   SubagentCapabilitiesSchema,
   type ConversationFile,
   type ConversationMessage,
@@ -430,7 +429,7 @@ describe("SA-I17 conversation message attachment paths", () => {
 });
 
 describe("SA-I18 conversation message routing and guards", () => {
-  it("splits slash aside and accepts file-only formal without pausing for aside", async () => {
+  it("splits slash aside and rejects file-only formal without rewriting it or pausing", async () => {
     const { app, messages, control, files, s, roots } = await startApp();
     const ready = await upload(
       files,
@@ -454,22 +453,22 @@ describe("SA-I18 conversation message routing and guards", () => {
     expect(aside.json().mode).toBe("aside");
     expect(aside.json().aside_id).toBeTruthy();
     expect(control.calls).toHaveLength(0);
-    const fileOnly = await messages.submit(
+    await expect(messages.submit(
       "wf1",
       payload(roots, "wf1", {
         request_id: "file-only",
         text: "   ",
         attachment_ids: [ready.id],
       }),
-    );
-    expect(fileOnly.mode).toBe("formal");
+    )).rejects.toMatchObject({ code: "INPUT_UNSUPPORTED" });
     const stored = s.store.list<ConversationMessage>(
       CONVERSATION_ENTITY.message,
       "wf1",
     );
     const fileMessage = stored.find((item) => item.request_id === "file-only");
-    expect(fileMessage?.text).toBe(DEFAULT_ATTACHMENT_PROMPT);
-    expect(control.calls).toHaveLength(1);
+    expect(fileMessage).toBeUndefined();
+    expect(control.calls).toHaveLength(0);
+    expect(s.store.must<ConversationFile>(CONVERSATION_ENTITY.file, ready.id).status).toBe("ready");
   });
 
   it("rejects unknown file_input before pausing and keeps a single idempotent message", async () => {

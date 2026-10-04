@@ -272,7 +272,7 @@ function InteractionForm({
             }
             onClick={() => void handleSubmit("answer")}
           >
-            {submitting ? "提交中..." : "提交回答"}
+            {submitting ? "提交中..." : req.action_label || "提交回答"}
           </button>
         )}
       </div>

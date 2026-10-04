@@ -9,8 +9,6 @@ import { FeedbackService } from "../../core/src/feedback-service.js";
 import { FlowError, requireCondition } from "../../contracts/src/index.js";
 import { ProjectAsideHistory } from "./project-history.js";
 
-const MAX_ACTIVE_ASIDES_GLOBAL = 1;
-const MAX_QUEUED_ASIDES = 3;
 export const ASIDE_TIMEOUT_MS = 10 * 60 * 1000;
 
 export class AsideSessionService {
@@ -29,24 +27,7 @@ export class AsideSessionService {
     attachment_ids: string[] = [],
   ): AsideSession {
     return this.store.transaction(() => {
-      const allGlobal = this.store.list<AsideSession>("aside_session");
-      const globalActiveCount = allGlobal.filter(
-        (s) => (s.status === "active" || s.status === "waiting_account"),
-      ).length;
-
-      const wfSessions = allGlobal.filter((s) => s.workflow_id === workflowId);
-      const wfQueuedCount = wfSessions.filter(
-        (s) => s.status === "queued",
-      ).length;
-
-      if (wfQueuedCount >= MAX_QUEUED_ASIDES) {
-        throw new Error(
-          `排队提问已达上限 (${MAX_QUEUED_ASIDES} 个)，请等待解答完成`,
-        );
-      }
-
       const sessionId = id("aside");
-      const shouldBeActive = globalActiveCount < MAX_ACTIVE_ASIDES_GLOBAL;
 
       const session: AsideSession = {
         id: sessionId,
@@ -59,13 +40,13 @@ export class AsideSessionService {
         question,
         refs,
         attachment_ids: attachment_ids.slice(),
-        status: shouldBeActive ? "active" : "queued",
+        status: "active",
         created_at: now(),
         expires_at: new Date(Date.now() + ASIDE_TIMEOUT_MS).toISOString(),
       };
 
       this.saveSession(session);
-      if (shouldBeActive) this.enqueueDispatch(session);
+      this.enqueueDispatch(session);
       return session;
     });
   }
@@ -107,7 +88,7 @@ export class AsideSessionService {
     }
     session.status = "waiting_account";
     this.saveSession(session);
-    // 不调用 promoteNextQueued，仍占全局 aside 槽
+    this.promoteNextQueued();
     return session;
   }
 
@@ -203,18 +184,15 @@ export class AsideSessionService {
     });
   }
 
-  private promoteNextQueued(): void {
+  promoteNextQueued(): void {
     const allGlobal = this.store.list<AsideSession>("aside_session");
-    const hasActive = allGlobal.some((s) => (s.status === "active" || s.status === "waiting_account"));
-    if (hasActive) return;
 
     // 优先按创建时间唤醒最早排队的 session
     const queuedList = allGlobal
       .filter((s) => s.status === "queued")
       .sort((a, b) => (a.created_at < b.created_at ? -1 : 1));
 
-    const next = queuedList[0];
-    if (next) {
+    for (const next of queuedList) {
       next.status = "active";
       this.saveSession(next);
       this.enqueueDispatch(next);

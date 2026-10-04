@@ -24,7 +24,7 @@ export const NativeWorkItemSchema = z
     repo_id: Id.optional(),
     title: z.string().min(1),
     description: z.string().optional(),
-    paths: z.array(RelativePath).min(1),
+    paths: z.array(RelativePath).default([]),
     depends_on: z.array(Id).default([]),
     acceptance_ids: z.array(Id).default([]),
   })
@@ -70,7 +70,7 @@ export const NativePlanSchema = z
     modules: z.array(NativeModuleSchema).min(1),
     work_items: z.array(NativeWorkItemSchema).min(1),
     acceptance_items: z.array(NativeAcceptanceItemSchema).min(1),
-    scope: ScopeSchema,
+    scope: ScopeSchema.default(() => ScopeSchema.parse({})),
     baselines: z.record(Id, z.string().regex(/^[a-f0-9]{40,64}$/)),
     project_config_hash: z.string().min(1),
     feedback_cursor: z.number().int().default(0),

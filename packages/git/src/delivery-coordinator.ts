@@ -122,17 +122,6 @@ export class GitDeliveryCoordinator {
   private workflow(id: string) {
     return this.store.must<Workflow>("workflow", id);
   }
-  private conflictAllowedPaths(
-    snapshot: Snapshot,
-    planRecord?: { plan?: { scope?: { allowed_paths?: string[] } } },
-  ) {
-    const allowed = new Set<string>();
-    for (const repo of snapshot.repositories)
-      for (const item of repo.changed_paths ?? []) allowed.add(item);
-    for (const item of planRecord?.plan?.scope?.allowed_paths ?? [])
-      allowed.add(item);
-    return allowed;
-  }
   private conflictRunBinding(workflowId: string, w: Workflow) {
     const takeover =
       this.store.get<{ planner: boolean }>("repair_assignment", workflowId)
@@ -567,9 +556,6 @@ export class GitDeliveryCoordinator {
             w.plan_hash ??
             hash(JSON.stringify(planRecord?.plan ?? {}));
 
-          const allowedPaths = this.conflictAllowedPaths(snapshot, planRecord);
-          const outOfBounds = conflictPaths.some((p) => !allowedPaths.has(p));
-
           const conflictRequestId = hash(
             [
               workflowId,
@@ -613,7 +599,7 @@ export class GitDeliveryCoordinator {
                 workflowId,
               )?.phase ?? "after_human",
             resolution_instructions: mergeConflictResolutionInstructions(),
-            status: outOfBounds ? "blocked" : "running",
+            status: "running",
             created_at: now(),
             updated_at: now(),
           };
@@ -625,10 +611,6 @@ export class GitDeliveryCoordinator {
               workflowId,
               requestRecord,
             );
-            if (outOfBounds) {
-              this.update(w, "BLOCKED", "merge_conflict_blocked");
-              return;
-            }
             const binding = this.conflictRunBinding(workflowId, w);
             const approvalId = workflowId + "-" + w.plan_revision;
             const approval = this.store.get<PlanApprovalRecordV2>("approval", approvalId);

@@ -204,10 +204,7 @@ export function resolveComposerSendPayload(params: {
     attachments: params.attachments,
     parsed,
   });
-  const sendText =
-    parsed.mode === "formal" && !parsed.text.trim() && send.default_text
-      ? send.default_text
-      : parsed.text;
+  const sendText = parsed.text;
   return {
     canSend: send.can_send,
     reason: send.reason,

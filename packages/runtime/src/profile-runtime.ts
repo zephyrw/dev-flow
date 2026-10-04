@@ -6,6 +6,9 @@ import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
 import { z } from "zod";
 import type { Engine } from "../../core/src/engine.js";
+import { pauseForNativePermission, bindNativePermission } from "../../core/src/native-permission.js";
+import { installAgyPermissionHook } from "../../adapters/agy/src/permission-hook.js";
+import { AgyDeniedCalls } from "../../adapters/agy/src/permission-calls.js";
 import { profileForRun, bindProfile, invocationFingerprintFromProfile, permissionCategoryForPurpose } from "../../core/src/run-profile.js";
 import { imagePathsInArguments, localImageProblem } from "./image-input.js";
 import { beginRunConversation, retainRunConversation, boundConversationContinuation, continuationSessionToResume } from "../../core/src/conversation-lineage.js";
@@ -121,7 +124,7 @@ import {
 } from "../../core/src/execution-guidance.js";
 import { ConversationControlService } from "../../core/src/conversation-control.js";
 import { saveRunContinuation } from "../../core/src/waiting-context.js";
-import { followupText, inputStageKey, isSessionFollowup, pendingRunMessages, type SessionInputReceipt } from "../../core/src/session-input.js";
+import { followupText, inputStageKey, isSessionFollowup, pendingRunMessages, runUserInputText, selectRunInputMessages, type SessionInputReceipt } from "../../core/src/session-input.js";
 import {
   ConversationRecovery,
   storeRecoveryRunPort,
@@ -315,12 +318,13 @@ export class ProfileRuntime {
     );
     const parsed = ExecutorRoundResultSchema.safeParse(value);
     const currentRun = this.engine.store.must<Run>("run", run.id);
+    const userInput = this.engine.store.get<SessionInputReceipt>("session_input", run.id)?.user_input;
     const payload = parsed.success
-      ? parsed.data
+      ? { ...parsed.data, ...(userInput && parsed.data.status === undefined ? {status: "completed"} : {}) }
       : {
-          status: "unclear",
+          status: userInput ? "completed" : "unclear",
           summary:
-            typeof value === "object"
+            userInput && typeof value?.summary === "string" ? value.summary : typeof value === "object"
               ? JSON.stringify(value)
               : String(value ?? ""),
         };
@@ -492,7 +496,8 @@ export class ProfileRuntime {
     const record = this.engine.plan(w.id);
     const document = readPlanMaterial(this.engine.store, w.id, w.plan_revision);
     const { markdown: _markdown, ...plan } = record.plan;
-    return { ...record, plan, path: document.path, markdown: document.markdown,
+    return { ...record, plan: { ...plan,
+      scope: { ...plan.scope, allowed_paths: [], repository_paths: {} } }, path: document.path, markdown: document.markdown,
       instruction: "读取 path 指向的项目计划原件；保留原始需求与开发目标，真实完成后更新任务勾选框，可追加进度、未解决问题及用户明确授权的补充，不另存多份计划或用恢复摘要覆盖原文。" };
   }
   private executeMaterials(w: Workflow, run: Run) {
@@ -687,6 +692,18 @@ export class ProfileRuntime {
     token?: string,
     planningWorkspaces?: Workspace[],
   ): Promise<any> {
+    const pendingInput = selectRunInputMessages(this.engine.store, w.id, run);
+    if (runUserInputText(this.engine.store, run, pendingInput) !== undefined &&
+        !this.engine.store.get("session_input", run.id)) {
+      // Account/model admission can fail before invokePrepared. Persist assignment
+      // as definitely unstarted input before that gate; a frozen conversation ID
+      // must never cause the original message to disappear on a retry.
+      this.engine.store.put("session_input", run.id, w.id, {
+        run_id: run.id, conversation_id: run.conversation_id, kind: "followup",
+        stage_key: inputStageKey(run), message_ids: pendingInput.map(message => message.message_id),
+        state: "prepared", user_input: true, target_adapter: run.profile?.adapterId ?? run.adapter,
+      } satisfies SessionInputReceipt);
+    }
     const profile = profileForRun(this.engine.store, run);
     // Acquire the account before computing the session key: synchronization may
     // update the frozen account, and the permit fences subsequent switches.
@@ -889,16 +906,12 @@ export class ProfileRuntime {
         previous = undefined;
       }
     }
-    const waitingMessages = pendingRunMessages(this.engine.store, w.id, run);
-    const messages = waitingMessages.slice(0, 1);
-    // CLI transports accept one user message per turn. Keep additional messages
-    // queued instead of merging their bodies into a synthetic instruction.
-    for (const deferred of waitingMessages.slice(1)) {
-      this.engine.store.put("feedback_message", deferred.message_id, w.id,
-        { ...deferred, status: "pending", ack_run: undefined });
-    }
-    const crossToolHandoff = sessionHandoffForRun(this.engine.store, run, previous?.id);
-    const followup = !crossToolHandoff && isSessionFollowup(this.engine.store, run, previous?.id, messages);
+    const messages = selectRunInputMessages(this.engine.store, w.id, run);
+    const userInput = runUserInputText(this.engine.store, run, messages);
+    // A user message is a complete turn, not an occasion to regenerate role,
+    // recovery, task or cross-tool instructions around their text.
+    const crossToolHandoff = userInput !== undefined ? undefined : sessionHandoffForRun(this.engine.store, run, previous?.id);
+    const followup = userInput !== undefined || (!crossToolHandoff && isSessionFollowup(this.engine.store, run, previous?.id, messages));
     const inputFiles = resolveRunConversationAttachments(
       this.engine, w, profile, adapter.subagents?.file_input,
       followup ? new Set(messages.flatMap(message => message.attachment_ids ?? [])) : undefined,
@@ -906,6 +919,7 @@ export class ProfileRuntime {
     const imageProblems: string[] = [];
     inputFiles.attachments = inputFiles.attachments.filter(file => {
       const problem = file.read_mode === "image" ? localImageProblem(file.absolute_path, file.mime) : undefined;
+      if (problem && userInput !== undefined) throw new FlowError("FILE_NOT_READY", problem, 422);
       if (problem) imageProblems.push(problem);
       return !problem;
     });
@@ -927,10 +941,11 @@ export class ProfileRuntime {
       ? followupText(this.engine.store, run, messages)
       : invokePrompt(purpose, handoff, schemaPath);
     const inputFeedback = this.engine.store.get<{ message: string }>("model_input_feedback", run.id)?.message;
-    const prompt = [basePrompt, inputFeedback, ...imageProblems].filter(Boolean).join("\n\n");
+    const prompt = userInput !== undefined ? userInput : [basePrompt, inputFeedback, ...imageProblems].filter(Boolean).join("\n\n");
     const inputReceipt: SessionInputReceipt = {
       run_id: run.id, conversation_id: previous?.id, kind: crossToolHandoff ? "cross_tool_handoff" : followup ? "followup" : "stage_start",
       stage_key: inputStageKey(run), message_ids: messages.map(message => message.message_id), state: "prepared",
+      user_input: userInput !== undefined,
       target_adapter: profile.adapterId,
       ...(crossToolHandoff ? { handoff_source_run_id: crossToolHandoff.source_run_id,
         handoff_context_hash: crossToolHandoff.context_hash } : {}),
@@ -960,21 +975,19 @@ export class ProfileRuntime {
         }),
       ),
       allowedPaths: [
-        ...(w.plan_revision
-          ? this.engine.plan(w.id).plan.scope.allowed_paths
-          : []),
         ...inputFiles.extraReadRoots,
       ],
       toolProfile: profile,
       frozenInvocation: run.frozen_invocation,
       handoffDocPath: followup ? undefined : handoff,
       outputPath: output,
-      schemaPath,
+      schemaPath: userInput !== undefined ? undefined : schemaPath,
       timeoutMs: Math.max(
         1,
         (run.deadline_at ?? Date.now() + 300000) - Date.now(),
       ),
       prompt,
+      promptKind: userInput !== undefined ? "user" as const : "stage" as const,
       inputAttachments: inputFiles.attachments,
     };
     if (adapter.prepareInputAttachments && inputFiles.attachments.length) {
@@ -1052,6 +1065,10 @@ export class ProfileRuntime {
       });
     }
 
+    const permissionGrant = profile.adapterId === "agy"
+      ? bindNativePermission(this.engine.store, { ...run, conversation_id: previous?.id ?? run.conversation_id }) : undefined;
+    const restorePermissionHook = permissionGrant
+      ? installAgyPermissionHook(invocation.cwd, root, permissionGrant) : undefined;
     let proc: ReturnType<ProcessManager["start"]>;
     try {
       if (dispatchRecord) dispatchManager.claimStarting(dispatchId);
@@ -1078,6 +1095,7 @@ export class ProfileRuntime {
         }
       });
     } catch (err: any) {
+      restorePermissionHook?.();
       if (accountBinding) await this.accountBridge?.releaseRun(run.id, false, "spawn_failed");
       if (dispatchRecord) {
         dispatchManager.finishDispatch(dispatchId, { exitCode: 1, error: err.message });
@@ -1148,6 +1166,7 @@ export class ProfileRuntime {
       failure: string | undefined,
       stderrTail = "";
     let permissionFailure: FlowError | undefined;
+    const permissionCalls = new AgyDeniedCalls((session, index) => agyRecords.read(session, index));
     let lastImagePaths: string[] = [];
     let agyResult: Record<string, any> | undefined;
     const retainConversation = (session?: string) => {
@@ -1240,9 +1259,17 @@ export class ProfileRuntime {
         }
         if (profile.adapterId === "agy") {
           accountTurn.accept(v);
+          permissionCalls.accept(v, conversation);
+          if (permissionCalls.immediate && !permissionFailure && purpose !== "aside") {
+            permissionFailure = new FlowError("NATIVE_PERMISSION_DENIED", "AGY 原生工具需要你授权本次操作", 422);
+            const interaction = pauseForNativePermission(this.engine, run, permissionCalls.immediate, permissionFailure.message);
+            if (interaction) void proc.stop();
+          }
           if (v.event === "step_update" && v.step_update?.step_type === "tool" && v.step_update?.state === "DONE")
             lastImagePaths = imagePathsInArguments(v.step_update?.tool_info?.parameters);
         }
+        const attributedResult = profile.adapterId === "agy" && v.event === "result"
+          ? permissionCalls.currentResult(v.result) : v.result;
         if (accountBinding) {
           this.accountBridge?.observeNativeEvent(run.id, v);
           const eventType = v.event ?? v.type;
@@ -1252,7 +1279,7 @@ export class ProfileRuntime {
             authEpoch: accountBinding.auth_epoch,
             runId: run.id,
             conversationId: conversation,
-            event: { ...v, type: eventType, error: v.error ?? v.result?.error },
+            event: { ...v, result: attributedResult, type: eventType, error: v.error ?? attributedResult?.error },
             eventOffset: accountEventOffset++,
             currentTurn:
               !previous || accountTurn.canAttributeFailureToCurrentTurn(),
@@ -1264,19 +1291,18 @@ export class ProfileRuntime {
         if (profile.adapterId === "agy" && v.event === "result") {
           // A resumed footer can retain a prior turn's error. Reconcile it only
           // after this process has exited, without replacing other failures.
-          agyResult = v.result;
+          agyResult = attributedResult;
         }
         if (
           profile.adapterId === "agy" &&
           v.event === "result" &&
           Array.isArray(v.result?.denied_actions) &&
-          v.result.denied_actions.length
+          v.result.denied_actions.length && permissionCalls.currentDenial
         ) {
           const denied = JSON.stringify(diagnosticContext.project({ denied_actions: v.result.denied_actions }));
-          const cause = classifyFailure(denied);
           permissionFailure = new FlowError(
-            cause.code,
-            cause.message + " " + denied.slice(0, 1500),
+            "NATIVE_PERMISSION_DENIED",
+            "AGY 原生工具需要处理权限。" + denied.slice(0, 1500),
             422,
           );
         }
@@ -1288,7 +1314,7 @@ export class ProfileRuntime {
           v.type === "turn.failed" ||
           (profile.adapterId !== "agy" && v.event === "result" && v.result?.error)
         )
-          failure ??= nativeFailureDiagnostic(v, diagnosticContext);
+          failure ??= nativeFailureDiagnostic({ ...v, result: attributedResult }, diagnosticContext);
         if (v.structured_output) final = v.structured_output;
         if (v.type === "result" && typeof v.result === "string")
           text = v.result;
@@ -1389,6 +1415,7 @@ export class ProfileRuntime {
         if (!historical) failure ??= nativeFailureDiagnostic({ event: "result", result: agyResult });
       }
     } finally {
+      restorePermissionHook?.();
       stopQuota?.();
       await sessionObserver?.close();
       telemetry.finish(
@@ -1413,7 +1440,8 @@ export class ProfileRuntime {
     retainConversation(conversation);
     this.engine.store.put("run", run.id, w.id, {
       ...this.engine.store.must<Run>("run", run.id),
-      status: exit.code === 0 && !failure ? "completed" : "failed",
+      status: permissionFailure && this.engine.get(w.id).state === "WAITING_INPUT" ? "waiting"
+        : exit.code === 0 && !failure && !permissionFailure ? "completed" : "failed",
       ended_at: new Date().toISOString(),
       exit_code: exit.code,
       conversation_id: conversation,
@@ -1453,6 +1481,8 @@ export class ProfileRuntime {
     }
     if (permissionFailure) {
       retainConversation(conversation);
+      if (!exit.termination_reason && purpose !== "aside")
+        pauseForNativePermission(this.engine, run, permissionCalls.denied, permissionFailure.message);
       throw permissionFailure;
     }
     if (
@@ -1554,7 +1584,7 @@ export function invokePrompt(
 ) {
   if (purpose === "aside")
     return joinPrompt(asidePrompt(handoff, schemaPath), recoveryGuidance);
-  if (userGuidance?.messages.length) return userGuidance.messages.map(message => message.text).join("\n\n");
+  if (userGuidance?.messages.length) return userGuidance.messages[0]!.text;
   if (continuation?.kind === "user_answer") return continuation.answer ?? "继续";
   if (continuation?.kind === "runtime_resume") return "继续";
   if (continuation?.kind === "intent_clarification") return "请按当前阶段约定的格式说明刚才的结果。";

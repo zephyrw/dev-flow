@@ -11,30 +11,26 @@ export interface Lease {
 }
 export class Scheduler {
   constructor(private store: Store) {}
-  async waitForCapacity(
-    prefix: string,
-    count: number,
+  async waitForResources(
     owner: string,
     run: string,
+    keys: string[],
     assertActive: () => void,
-    extraKeys: string[] = [],
+    waitId = owner,
   ) {
     let announced = false;
     try {
       for (;;) {
         assertActive();
-        const slot = this.capacity(prefix, count);
-        if (slot && this.acquire(owner, run, [slot, ...extraKeys])) return slot;
+        const leases = this.acquire(owner, run, keys);
+        if (leases) return leases;
         if (!announced) {
           const leases = this.store
             .list<Lease>("lease")
-            .filter((l) => l.id.startsWith(prefix + ":"));
-          const message =
-            slot && extraKeys.length
-              ? `等待共享资源：${extraKeys.join("、")}`
-              : `等待${prefix === "test" ? "测试" : "验证环境"}名额，当前 ${leases.length}/${count} 已占用`;
-          this.store.put("resource_wait", owner, owner, {
-            resource: prefix,
+            .filter(l => keys.some(key => this.conflicts(key, l.id)));
+          const message = `等待共享资源：${keys.join("、")}`;
+          this.store.put("resource_wait", waitId, owner, {
+            resource: keys.join("、"),
             message,
             owners: leases.map((l) => l.owner),
             run_id: run,
@@ -45,7 +41,7 @@ export class Scheduler {
               owner,
               w.project_id,
               "ResourceWaiting",
-              { message, resource: prefix },
+              { message, resource: keys.join("、") },
               run,
             );
           announced = true;
@@ -53,7 +49,7 @@ export class Scheduler {
         await new Promise((r) => setTimeout(r, 200));
       }
     } finally {
-      this.store.remove("resource_wait", owner);
+      this.store.remove("resource_wait", waitId);
     }
   }
   acquire(owner: string, run: string, keys: string[]): Lease[] | null {
@@ -61,9 +57,7 @@ export class Scheduler {
       const sorted = [...new Set(keys)].sort();
       if (
         sorted.some((k) => {
-          const l = this.store.get<Lease>("lease", k);
-          return (
-            l &&
+          return this.store.list<Lease>("lease").some(l => this.conflicts(k, l.id) &&
             !(l.owner === owner && l.run_id === run && l.status === "active")
           );
         })
@@ -108,10 +102,14 @@ export class Scheduler {
       if (Date.now() - l.heartbeat > milliseconds)
         this.store.put("lease", l.id, l.owner, { ...l, status: "suspect" });
   }
-  capacity(prefix: string, count: number) {
-    for (let i = 0; i < count; i++)
-      if (!this.store.get("lease", `${prefix}:${i}`)) return `${prefix}:${i}`;
-    return null;
+  conflicts(key: string, other: string) {
+    if (key === other) return true;
+    const root = (value: string) => value.startsWith("read:")
+      ? value.slice(5, value.lastIndexOf("::"))
+      : value.startsWith("write:") ? value.slice(6) : undefined;
+    const a = root(key), b = root(other);
+    return a !== undefined && b !== undefined && a === b &&
+      (key.startsWith("write:") || other.startsWith("write:"));
   }
   assert(key: string, owner: string, run: string, fence?: number) {
     const l = this.store.get<Lease>("lease", key);

@@ -92,6 +92,7 @@ import { conversationPlugin } from "./routes/conversations.js";
 import { conversationControlPlugin } from "./routes/conversation-controls.js";
 import { conversationMessagePlugin } from "./routes/conversation-messages.js";
 import { userInteractionPlugin } from "./routes/user-interactions.js";
+import { nativePermissionPlugin } from "./routes/native-permissions.js";
 import { UserInteractionService } from "../../../packages/core/src/user-interaction-service.js";
 import { ConversationFileService } from "../../../packages/core/src/conversation-files.js";
 import {
@@ -144,6 +145,7 @@ export async function buildServer(
     onMaintenanceShutdown: options.onMaintenanceShutdown,
   });
   await app.register(websocket, { options: { maxPayload: 65536 } });
+  await app.register(nativePermissionPlugin, { engine, human });
   app.get("/api/projects", async (req) => {
     human(req);
     return engine.store.list("project");
@@ -1955,16 +1957,16 @@ export async function buildServer(
       "INVALID_STATE",
       "当前不能人工浏览器验收",
     );
-    requireCondition(
-      engine.scheduler.acquire(key, "human", ["browser:shared"]),
-      "BROWSER_BUSY",
-      "浏览器被占用",
-    );
+    // Human acceptance uses user tabs; automated scenes operate only on their own tabs.
+    // Keep the endpoint compatible without claiming a global browser resource.
+    engine.store.put("human_browser_acceptance", key, key, { active: true, started_at: now() });
     return { ok: true };
   });
   app.post("/api/workflows/:id/browser/release", async (req) => {
     human(req);
     const key = Id.parse((req.params as any).id);
+    engine.store.remove("human_browser_acceptance", key);
+    // An explicit human release can also retire this workflow's old human-only lock.
     engine.scheduler.release(key, "human", ["browser:shared"], true);
     return { ok: true };
   });

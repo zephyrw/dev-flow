@@ -216,8 +216,8 @@ describe("SA-I19 project aside history across tasks", () => {
   });
 });
 
-describe("SA-I20 aside limits, races and feedback cursor", () => {
-  it("enforces active+queued limits and keeps promote idempotent on the source task", async () => {
+describe("SA-I20 parallel asides, races and feedback cursor", () => {
+  it("allows any number of active questions and keeps promote idempotent on the source task", async () => {
     const { asides, s } = await startApp();
     const first = asides.submitQuestion(WF_A1, "活跃");
     expect(first.status).toBe("active");
@@ -226,10 +226,10 @@ describe("SA-I20 aside limits, races and feedback cursor", () => {
       asides.submitQuestion(WF_A1, "排队 2"),
       asides.submitQuestion(WF_A1, "排队 3"),
     ];
-    expect(queued.every((item) => item.status === "queued")).toBe(true);
-    expect(() => asides.submitQuestion(WF_A1, "超出")).toThrow(/上限/);
+    expect(queued.every((item) => item.status === "active")).toBe(true);
+    expect(asides.submitQuestion(WF_A1, "更多问题").status).toBe("active");
     const other = asides.submitQuestion(WF_A2, "其他任务排队");
-    expect(other.status).toBe("queued");
+    expect(other.status).toBe("active");
     asides.completeSession(WF_A1, first.id, "答案");
     const promoted1 = asides.promoteToFormalFeedback(
       WF_A1,

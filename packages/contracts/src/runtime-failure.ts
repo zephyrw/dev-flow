@@ -7,6 +7,11 @@ export interface RuntimeFailureResolution {
 }
 
 const resolutions: Record<string, Omit<RuntimeFailureResolution, "code">> = {
+  AGY_MODEL_PROBE_TIMEOUT: {
+    title: "AGY 模型访问核验超时",
+    message: "核验尚未完成，不能据此判定模型不可用；原任务和模型已保留。",
+    steps: ["继续原任务重试访问核验；若重复超时，检查 AGY 启动耗时和网络连接。"],
+  },
   MODEL_REQUEST_INVALID: {
     title: "模型请求参数被拒绝",
     message: "模型服务拒绝了本轮请求参数，原始错误已保留。",
@@ -100,11 +105,11 @@ const resolutions: Record<string, Omit<RuntimeFailureResolution, "code">> = {
     ],
   },
   NATIVE_PERMISSION_DENIED: {
-    title: "工具操作被拒绝",
-    message: "原生工具拒绝了操作，已保留工作区和会话，等待处理权限。",
+    title: "工具操作需要授权",
+    message: "已保留工作区和原会话，请查看具体调用并决定是否授权。",
     steps: [
-      "查看执行记录中被拒绝的具体操作和目标。",
-      "仅为需要的操作调整对应 CLI 权限，或给出允许范围内的替代指导；确认后继续原任务。",
+      "点击“查看并处理授权”，核对弹窗中的工具、参数和目标。",
+      "call_mcp_tool 可永久授权整个工具，覆盖任意参数和后续所有任务；其他工具按弹窗中的授权范围处理。",
     ],
   },
   RUNTIME_ACCESS_DENIED: {

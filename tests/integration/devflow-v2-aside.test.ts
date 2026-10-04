@@ -6,7 +6,7 @@ import {
 import { AsideSessionService } from "../../packages/asides/src/service.js";
 import { now } from "../../packages/core/src/util.js";
 
-describe("IT-ASIDE: 全局单槽位控制、队列流转、取消与正式反馈幂等 (LF-17, LF-18, RQ-09, RQ-23)", () => {
+describe("IT-ASIDE: 提问并行、旧队列恢复、取消与正式反馈幂等", () => {
   let env: IsolatedTestEnv;
   let asideService: AsideSessionService;
   const wf1 = "wf_aside_1";
@@ -43,36 +43,33 @@ describe("IT-ASIDE: 全局单槽位控制、队列流转、取消与正式反馈
     await env.cleanup();
   });
 
-  it("TC-ASIDE-01: 全局严格只允许 1 个 active 提问，后发提问进入排队 (LF-17, RQ-09)", () => {
-    // 1. 第一个提问：获得唯一的全局执行槽位 (active)
+  it("TC-ASIDE-01: 同项目及跨项目提问不受全局数量限制", () => {
     const s1 = asideService.submitQuestion(
       wf1,
       "请问这段代码的架构设计依据是什么？",
     );
     expect(s1.status).toBe("active");
 
-    // 2. 第二个提问（即使来自另一个工作流）：必须排队等待 (queued)
     const s2 = asideService.submitQuestion(
       wf2,
       "另外这个函数的性能瓶颈在哪里？",
     );
-    expect(s2.status).toBe("queued");
+    expect(s2.status).toBe("active");
 
-    // 检查全局仅有 1 个 active
     const all = env.store.list<any>("aside_session");
     const activeList = all.filter((s) => s.status === "active");
-    expect(activeList.length).toBe(1);
+    expect(activeList.length).toBe(2);
     expect(activeList[0].id).toBe(s1.id);
   });
 
-  it("TC-ASIDE-02: 活跃会话完成或取消后，自动唤醒队列中的下一个提问 (LF-18)", () => {
+  it("TC-ASIDE-02: 活跃会话取消后，一次恢复所有旧队列提问", () => {
     const s1 = asideService.submitQuestion(wf1, "问题 1");
     const s2 = asideService.submitQuestion(wf1, "问题 2");
     const s3 = asideService.submitQuestion(wf2, "问题 3");
 
     expect(s1.status).toBe("active");
-    expect(s2.status).toBe("queued");
-    expect(s3.status).toBe("queued");
+    env.store.put("aside_session", s2.id, wf1, { ...s2, status: "queued" });
+    env.store.put("aside_session", s3.id, wf2, { ...s3, status: "queued" });
 
     // 取消 s1 -> 自动唤醒最早排队的 s2
     asideService.cancelSession(wf1, s1.id);
@@ -82,7 +79,7 @@ describe("IT-ASIDE: 全局单槽位控制、队列流转、取消与正式反馈
     const s2Updated = env.store.get<any>("aside_session", s2.id);
     expect(s2Updated.status).toBe("active");
 
-    // 完成 s2 -> 自动唤醒 s3
+    expect(env.store.get<any>("aside_session", s3.id).status).toBe("active");
     asideService.completeSession(wf1, s2.id, "这是问题 2 的详细回答");
     const s3Updated = env.store.get<any>("aside_session", s3.id);
     expect(s3Updated.status).toBe("active");

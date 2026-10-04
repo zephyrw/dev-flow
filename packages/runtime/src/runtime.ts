@@ -167,7 +167,7 @@ function diagnosisLauncher(engine: Engine, workflow: Workflow) {
   };
 }
 import { createDefaultAdapterRegistry } from "../../adapters/sdk/src/index.js";
-import { followupText, isSessionFollowup, pendingRunMessages } from "../../core/src/session-input.js";
+import { followupText, isSessionFollowup, runUserInputText, selectRunInputMessages } from "../../core/src/session-input.js";
 import type { NativeAgentAdapter } from "../../adapters/sdk/src/interface.js";
 import {
   CONVERSATION_ENTITY,
@@ -252,7 +252,22 @@ export class LocalRuntime implements Runtime {
   processes: ProcessManager;
   environments: Environments;
   browser: BrowserGateway;
-  private checking = new Set<string>();
+  private checking = new Map<string, string>();
+  private beginCheck(workflow: string, run: string, invocation: string) {
+    this.checking.set(invocation, workflow);
+    const lock = this.engine.store.get<{ check_ids?: string[] }>("check_lock", workflow);
+    this.engine.store.put("check_lock", workflow, workflow, {
+      run_id: run, check_ids: [...(lock?.check_ids ?? []), invocation],
+    });
+  }
+  private endCheck(workflow: string, invocation: string) {
+    this.checking.delete(invocation);
+    const lock = this.engine.store.get<{ run_id: string; check_ids?: string[] }>("check_lock", workflow);
+    if (!lock?.check_ids?.includes(invocation)) return;
+    const ids = lock?.check_ids?.filter(value => value !== invocation) ?? [];
+    if (ids.length) this.engine.store.put("check_lock", workflow, workflow, { ...lock, check_ids: ids });
+    else this.engine.store.remove("check_lock", workflow);
+  }
   private cancelledRuns = new Set<string>();
   private executingCalls = new Map<string, number>();
   private preparing = new Map<string, Promise<void>>();
@@ -501,9 +516,7 @@ export class LocalRuntime implements Runtime {
     this.engine.store.put("check_process", processId, principal.run_id!, {
       id: processId,
     });
-    this.engine.store.put("check_lock", workflow.id, workflow.id, {
-      run_id: principal.run_id,
-    });
+    this.beginCheck(workflow.id, principal.run_id!, processId);
     let output = "";
     try {
       const proc = this.processes.start({
@@ -563,7 +576,7 @@ export class LocalRuntime implements Runtime {
       throw error;
     } finally {
       this.engine.store.remove("check_process", processId);
-      this.engine.store.remove("check_lock", workflow.id);
+      this.endCheck(workflow.id, processId);
     }
   }
   constructor(private engine: Engine) {
@@ -678,9 +691,12 @@ export class LocalRuntime implements Runtime {
     );
     const launcher = runLauncherSelection(run);
     const conversation = compatibleConversation(this.engine, run);
-    const messages = pendingRunMessages(this.engine.store, workflow.id, run);
-    const crossToolHandoff = sessionHandoffForRun(this.engine.store, run, conversation?.id);
-    const followup = !crossToolHandoff && isSessionFollowup(this.engine.store, run, conversation?.id, messages);
+    const messages = selectRunInputMessages(this.engine.store, workflow.id, run);
+    const userInput = runUserInputText(this.engine.store, run, messages);
+    requireCondition(userInput === undefined || messages.every(message => !message.attachment_ids?.length),
+      "INPUT_UNSUPPORTED", "当前旧版执行入口尚未实现附件独立输入；指导原文和附件已保留", 422);
+    const crossToolHandoff = userInput !== undefined ? undefined : sessionHandoffForRun(this.engine.store, run, conversation?.id);
+    const followup = userInput !== undefined || (!crossToolHandoff && isSessionFollowup(this.engine.store, run, conversation?.id, messages));
     if (!followup) {
       if (isNativeV2) {
         const fullPkg = HandoffBuilder.buildFullHandoff({
@@ -699,7 +715,12 @@ export class LocalRuntime implements Runtime {
     let prompt = followup ? followupText(this.engine.store, run, messages)
       : isNativeV2 ? nativeLaunchInstruction(directory, "full")
       : "首先调用 devflow_execute_context，读取批准计划与 Skill，完成当前阶段任务后返回结果。";
-    let crossToolReceipt: SessionInputReceipt | undefined;
+    let crossToolReceipt: SessionInputReceipt | undefined = followup ? {
+      run_id: run.id, conversation_id: conversation?.id, kind: "followup", stage_key: inputStageKey(run),
+      message_ids: messages.map(m => m.message_id), state: "prepared", target_adapter: run.adapter,
+      user_input: userInput !== undefined,
+    } : undefined;
+    if (crossToolReceipt) this.engine.store.put("session_input", run.id, workflow.id, crossToolReceipt);
     if (crossToolHandoff) {
       const history = join(directory, "CROSS_TOOL_HISTORY-" + run.id + ".jsonl");
       const handoff = join(directory, "CROSS_TOOL_HANDOFF-" + run.id + ".json");
@@ -858,9 +879,9 @@ export class LocalRuntime implements Runtime {
       log: join(directory, run.id + ".jsonl"),
       idle_ms: this.engine.config.timeouts.idle_minutes * 60000,
       isWaiting: () =>
-        !!this.engine.store.get("resource_wait", workflow.id) ||
+        this.engine.store.list("resource_wait", workflow.id).length > 0 ||
         this.preparing.has(run.id) ||
-        this.checking.has(workflow.id),
+        [...this.checking.values()].includes(workflow.id),
       onEvent: (event) => {
         if (crossToolReceipt && event.event === "step_update" &&
             (event.step_update as any)?.step_type === "user_input" && (event.step_update as any)?.state === "DONE") {
@@ -1101,37 +1122,9 @@ export class LocalRuntime implements Runtime {
         .flatMap((t) => t.paths);
       assertMeaningfulTestFiles(ws.root, [...new Set(paths)]);
     }
-    // A workflow shares its frozen phase and may share command report paths.
-    // Different workflows remain independent users of the global test slots.
-    const unique = workflow.id;
-    requireCondition(
-      !this.checking.has(unique),
-      "CHECK_RUNNING",
-      "该工作流已有检查正在执行，请等待完成后运行下一项",
-    );
-    this.checking.add(unique);
-    let slot: string;
-    try {
-      slot = await this.engine.scheduler.waitForCapacity(
-        "test",
-        this.engine.config.scheduler.heavy_tests,
-        workflow.id,
-        principal.run_id!,
-        () => {
-          this.engine.worker(principal, workflow.id);
-          this.assertRun(workflow.id, principal.run_id!, [
-            development ? "EXECUTING" : "VERIFYING",
-          ]);
-        },
-      );
-    } catch (error) {
-      this.checking.delete(unique);
-      throw error;
-    }
-    this.checking.add(unique);
-    this.engine.store.put("check_lock", workflow.id, workflow.id, {
-      run_id: principal.run_id,
-    });
+    const unique = id("check");
+    this.beginCheck(workflow.id, principal.run_id!, unique);
+    let resourceKeys: string[] = [];
     const assertCurrent = () => {
       const current = this.assertRun(workflow.id, principal.run_id!, [
         "EXECUTING",
@@ -1157,7 +1150,7 @@ export class LocalRuntime implements Runtime {
       this.engine.config.storage_root,
       "evidence",
       workflow.id,
-      id("check"),
+      unique,
     );
     try {
       assertCurrent();
@@ -1204,6 +1197,7 @@ export class LocalRuntime implements Runtime {
           workflow.id,
           principal.run_id!,
           test.scene_id!,
+          unique,
         );
         files = [output];
         requireCondition(
@@ -1234,7 +1228,16 @@ export class LocalRuntime implements Runtime {
         const workspace = command.repo_id
           ? workspaces.find((w) => w.repo_id === command.repo_id)!
           : workspaces[0]!;
-        report = safePath(workspace.root, command.report_path!, true);
+        const dynamicReport = [...command.args, ...Object.values(command.env)]
+          .some(value => value.includes("${DEVFLOW_REPORT_PATH}"));
+        report = dynamicReport
+          ? join(dir, "command-report." + (command.parser === "junit" ? "xml" : "json"))
+          : safePath(workspace.root, command.report_path!, true);
+        resourceKeys = dynamicReport ? [] : ["report:" + report.toLowerCase()];
+        await this.engine.scheduler.waitForResources(
+          workflow.id, unique, resourceKeys, assertCurrent, unique,
+        );
+        assertCurrent();
         restoreReport = takeReportSlot(report);
         mkdirSync(dirname(report), { recursive: true });
         const env = this.engine.store.get<{
@@ -1262,7 +1265,7 @@ export class LocalRuntime implements Runtime {
           cwd: command.cwd
             ? safePath(workspace.root, command.cwd)
             : workspace.root,
-          env: { ...command.env, ...variables },
+          env: { ...Object.fromEntries(Object.entries(command.env).map(([key, value]) => [key, expand(value, variables)])), ...variables },
           timeout_ms: test.timeout_seconds * 1000,
         });
         log = join(dir, "output.log");
@@ -1450,12 +1453,11 @@ export class LocalRuntime implements Runtime {
     } finally {
       restoreReport?.();
       if (processId) this.engine.store.remove("check_process", processId);
-      this.checking.delete(unique);
-      this.engine.store.remove("check_lock", workflow.id);
+      this.endCheck(workflow.id, unique);
       this.engine.scheduler.release(
         workflow.id,
-        principal.run_id!,
-        [slot!],
+        unique,
+        resourceKeys,
         true,
       );
     }
@@ -1476,9 +1478,12 @@ export class LocalRuntime implements Runtime {
       output = join(root, "review.json");
     let manifest = join(root, "materials.json");
     const conversation = compatibleConversation(this.engine, run);
-    const messages = pendingRunMessages(this.engine.store, workflow.id, run);
-    const followup = isSessionFollowup(this.engine.store, run, conversation?.id, messages);
-    if (followup) {
+    const messages = selectRunInputMessages(this.engine.store, workflow.id, run);
+    const userInput = runUserInputText(this.engine.store, run, messages);
+    requireCondition(userInput === undefined || messages.every(message => !message.attachment_ids?.length),
+      "INPUT_UNSUPPORTED", "当前旧版审查入口尚未实现附件独立输入；指导原文和附件已保留", 422);
+    const followup = userInput !== undefined || isSessionFollowup(this.engine.store, run, conversation?.id, messages);
+    if (followup && userInput === undefined) {
       const prior = this.engine.store.list<Run>("run", workflow.id)
         .filter(item => item.id !== run.id && item.conversation_id === conversation?.id)
         .sort((a, b) => b.started_at.localeCompare(a.started_at))
@@ -1537,8 +1542,7 @@ export class LocalRuntime implements Runtime {
       "--sandbox",
       "read-only",
       "--skip-git-repo-check",
-      "--output-schema",
-      schema,
+      ...(userInput !== undefined ? [] : ["--output-schema", schema]),
       "--output-last-message",
       output,
       ...launcher.effortArgs,
@@ -1579,6 +1583,12 @@ export class LocalRuntime implements Runtime {
       throw err;
     }
 
+    const inputReceipt: SessionInputReceipt = {
+      run_id: run.id, conversation_id: conversation?.id, kind: followup ? "followup" : "stage_start",
+      stage_key: inputStageKey(run), message_ids: messages.map(message => message.message_id), state: "prepared",
+      user_input: userInput !== undefined, target_adapter: run.adapter,
+    };
+    this.engine.store.put("session_input", run.id, workflow.id, inputReceipt);
     const proc = this.processes.start({
       id: run.id,
       workflow_id: workflow.id,
@@ -1588,6 +1598,15 @@ export class LocalRuntime implements Runtime {
       env: { ...launcher.effortEnv },
       stdin: prompt,
       timeout_ms: this.engine.config.timeouts.agent_minutes * 60000,
+    });
+
+    inputReceipt.state = "started";
+    this.engine.store.put("session_input", run.id, workflow.id, inputReceipt);
+    void proc.ready.catch(() => {
+      if (!proc.pid && inputReceipt.state === "started") {
+        inputReceipt.state = "prepared";
+        this.engine.store.put("session_input", run.id, workflow.id, inputReceipt);
+      }
     });
 
     if (dispatchRecord && proc.pid) {
@@ -1631,6 +1650,11 @@ export class LocalRuntime implements Runtime {
       },
     });
     const lines = new JsonLines((event) => {
+      if (typeof event.type === "string" && ["turn.started", "item.started", "item.completed", "assistant", "message", "text"].includes(event.type)) {
+        inputReceipt.state = "delivered";
+        inputReceipt.conversation_id = this.engine.store.get<Run>("run", run.id)?.conversation_id ?? conversation?.id;
+        this.engine.store.put("session_input", run.id, workflow.id, inputReceipt);
+      }
       acceptCodexLiveTelemetry(telemetry, adapter, event, run.id);
     });
     let streamError: unknown;
@@ -1674,7 +1698,13 @@ export class LocalRuntime implements Runtime {
       "REVIEW_FAILED",
       "复核进程失败或未返回结构化报告",
     );
-    return normalizeModelOutput(JSON.parse(readFileSync(output, "utf8")));
+    const resultText = readFileSync(output, "utf8");
+    try {
+      return normalizeModelOutput(JSON.parse(resultText));
+    } catch (error) {
+      if (userInput !== undefined) return {summary: resultText};
+      throw error;
+    }
   }
   async stop(run: string, options?: { stopEnvironment?: boolean }) {
     this.cancelledRuns.add(run);

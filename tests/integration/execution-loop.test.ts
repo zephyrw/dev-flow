@@ -435,11 +435,10 @@ it("resource waiting names the owner, resumes on release and can be cancelled", 
   try {
     s.engine.scheduler.acquire("other-workflow", "other-run", ["test:0"]);
     let active = true;
-    const pending = s.engine.scheduler.waitForCapacity(
-      "test",
-      1,
+    const pending = s.engine.scheduler.waitForResources(
       s.workflow.id,
       s.principal.run_id,
+      ["test:0"],
       () => {
         if (!active) throw new Error("cancelled");
       },
@@ -448,10 +447,10 @@ it("resource waiting names the owner, resumes on release and can be cancelled", 
       "other-workflow",
     ]);
     s.engine.scheduler.release("other-workflow", "other-run", ["test:0"], true);
-    expect(await pending).toBe("test:0");
+    expect(await pending).toMatchObject([{ id: "test:0" }]);
     expect(s.store.get("resource_wait", s.workflow.id)).toBeUndefined();
     const waiting = expect(
-      s.engine.scheduler.waitForCapacity("test", 1, "another", "run", () => {
+      s.engine.scheduler.waitForResources("another", "run", ["test:0"], () => {
         if (!active) throw new Error("cancelled");
       }),
     ).rejects.toThrow("cancelled");
@@ -516,6 +515,10 @@ it("missing reviewer executable cannot synthesize a passing review", async () =>
     await expect(
       runtime.review(s.engine.get(s.workflow.id), {
         id: s.principal.run_id,
+        workflow_id: s.workflow.id,
+        protocol: "legacy",
+        adapter: "codex",
+        profile: { executableRef: s.config.models.codex_executable },
       } as any),
     ).rejects.toMatchObject({ code: "REVIEWER_UNAVAILABLE" });
     expect(s.store.list("review", s.workflow.id)).toHaveLength(0);

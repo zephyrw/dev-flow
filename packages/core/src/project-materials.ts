@@ -69,7 +69,19 @@ export function originalPlanPath(store: Store, workflowId: string, revision?: nu
     if (isAbsolute(ref)) return normalize(ref);
     const qualified = roots.find(r => ref.startsWith(r.repo_id + ":"));
     const root = qualified ?? roots.find(r => r.repo_id === project?.primary_repo_id) ?? roots.find(r => r.repo_id === "main") ?? roots[0];
-    if (root) return resolve(root.root, sanitizeRelativePath(root.root, qualified ? ref.slice(root.repo_id.length + 1) : ref));
+    if (root) {
+      const relativeRef = sanitizeRelativePath(root.root, qualified ? ref.slice(root.repo_id.length + 1) : ref);
+      // Registration pins the original. Creating an execution worktree must
+      // not reinterpret an already registered project-relative reference.
+      if (record?.material_path && isAbsolute(record.material_path)) {
+        const registeredPath = resolve(record.material_path);
+        const samePath = (path: string) => process.platform === "win32"
+          ? path.toLowerCase() === registeredPath.toLowerCase() : path === registeredPath;
+        if (roots.some(candidate => candidate.repo_id === root.repo_id &&
+            samePath(resolve(candidate.root, relativeRef)))) return normalize(registeredPath);
+      }
+      return resolve(root.root, relativeRef);
+    }
   }
   const link = store.get<any>("planning_document", workflowId);
   if (record?.material_path) {

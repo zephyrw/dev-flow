@@ -118,8 +118,6 @@ function workspaceInfos(
     repo_id: w.repo_id,
     root: w.root,
     baseline: "baseline" in w ? w.baseline : undefined,
-    allowed_paths:
-      plan.scope?.repository_paths?.[w.repo_id] ?? plan.scope?.allowed_paths,
   }));
 }
 

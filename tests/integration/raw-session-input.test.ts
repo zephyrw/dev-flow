@@ -46,9 +46,11 @@ it("passes exact follow-up bytes to a real CLI process in the same session witho
       kind: "execution", text: "第二条独立指导"});
     s.store.put("feedback_message", nextMessage.message_id, w.id, {...nextMessage, status: "acknowledged", ack_run: run.id});
     const materials = vi.fn(() => { throw new Error("A follow-up must never generate stage materials"); });
+    s.store.put("model_input_feedback", run.id, w.id, {message: "额外的系统修复指导"});
     const result = await invoke(run, materials);
     expect(materials).not.toHaveBeenCalled();
     expect(result.captured_text).toBe(raw);
+    expect(result.captured_args).not.toContain("--output-schema");
     expect(s.store.get("feedback_message", nextMessage.message_id)).toMatchObject({status: "pending"});
     expect(s.store.must<Run>("run", run.id).conversation_id).toBe(session);
     expect(existsSync(join(s.config.storage_root, "native-runs", run.id, "HANDOFF.json"))).toBe(false);
@@ -59,8 +61,53 @@ it("passes exact follow-up bytes to a real CLI process in the same session witho
     expect((await invoke(resumed, materials)).captured_text).toBe("继续");
     expect(materials).not.toHaveBeenCalled();
     expect(s.store.must<Run>("run", resumed.id).conversation_id).toBe(session);
+
+    const otherTool = {...first, id: "other-tool-source", adapter: "agy", profile: {...first.profile!, adapterId: "agy"},
+      conversation_id: "other-tool-session", status: "completed" as const};
+    s.store.put("run", otherTool.id, w.id, otherTool);
+    const testing = {...makeRun("new-testing-stage"), purpose: "executor_test" as const, stage: "executor_test",
+      dispatch_context: {purpose: "executor_test" as const, source_run_id: otherTool.id}};
+    const testingRaw = "  你是卡住了吗？\r\n先回答我，再查看日志。\n";
+    const testingMessage = new FeedbackService(s.store).submitFeedback({request_id: "stage-text", workflow_id: w.id,
+      kind: "execution", text: testingRaw});
+    s.store.put("feedback_message", testingMessage.message_id, w.id, {...testingMessage, status: "acknowledged", ack_run: testing.id});
+    s.store.put("model_input_feedback", testing.id, w.id, {message: "不要把这段注入用户指导"});
+    expect((await invoke(testing, materials)).captured_text).toBe(testingRaw);
+    expect(materials).not.toHaveBeenCalled();
+    const testingRoot = join(s.config.storage_root, "native-runs", testing.id);
+    expect(existsSync(join(testingRoot, "HANDOFF.json"))).toBe(false);
+    expect(existsSync(join(testingRoot, "CROSS_TOOL_HISTORY.jsonl"))).toBe(false);
+    expect(s.store.get("session_input", testing.id)).toMatchObject({state: "delivered", user_input: true,
+      message_ids: [testingMessage.message_id]});
   } finally {
     await processes.close();
     s.store.close();
   }
 }, 60000);
+
+it("records definitely unstarted user input before account admission can reject a run with an old session ID", async () => {
+  const s = setup();
+  const runtime = new ProfileRuntime(s.engine, new ProcessManager());
+  const w = {id: "preflight-workflow", project_id: "project"} as any;
+  const run: Run = {id: "admission-run", workflow_id: w.id, plan_revision: 1, adapter: "agy", purpose: "executor_test",
+    stage: "executor_test", status: "running", started_at: new Date().toISOString(), package_hash: "fixture",
+    conversation_id: "old-session", profile: {id: "agy-profile", revision: 1, adapterId: "agy",
+      modelSelection: "explicit", modelId: "fixture-model", options: {}}};
+  s.store.put("run", run.id, w.id, run);
+  const message = new FeedbackService(s.store).submitFeedback({request_id: "preflight-text", workflow_id: w.id,
+    kind: "execution", text: "  你是卡住了吗？\r\n"});
+  s.store.put("feedback_message", message.message_id, w.id, {...message, status: "acknowledged", ack_run: run.id});
+  const prepareProfileRun = vi.fn(async () => {throw new Error("account admission timed out before native start");});
+  (runtime as any).accountBridge = {prepareProfileRun};
+  const materials = vi.fn();
+  try {
+    await expect((runtime as any).invoke(w, run, materials, {})).rejects.toThrow("account admission timed out");
+    expect(prepareProfileRun).toHaveBeenCalledOnce();
+    expect(materials).not.toHaveBeenCalled();
+    expect(s.store.get("session_input", run.id)).toMatchObject({state: "prepared", user_input: true,
+      message_ids: [message.message_id], conversation_id: "old-session"});
+    expect(s.store.get("feedback_message", message.message_id)).toMatchObject({text: message.text, ack_run: run.id});
+  } finally {
+    s.store.close();
+  }
+});

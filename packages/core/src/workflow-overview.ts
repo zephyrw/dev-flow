@@ -155,11 +155,6 @@ function buildBackgroundSection(
 
   if (planObj?.scope) {
     const scope = planObj.scope;
-    if (Array.isArray(scope.allowed_paths) && scope.allowed_paths.length > 0) {
-      items.push(
-        `允许修改路径范围：${scope.allowed_paths.slice(0, 4).join(", ")}${scope.allowed_paths.length > 4 ? ` 等 ${scope.allowed_paths.length} 处` : ""}`,
-      );
-    }
     if (scope.allow_dependency_changes === false) {
       items.push("约束：不允许变更外部依赖包");
     }

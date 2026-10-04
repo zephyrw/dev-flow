@@ -53,8 +53,9 @@ export type State = (typeof States)[number];
 
 export const ScopeSchema = z
   .object({
-    repository_paths: z.record(Id, z.array(RelativePath).min(1)).default({}),
-    allowed_paths: z.array(RelativePath).min(1),
+    // Compatibility location metadata, never a whitelist of modifiable files.
+    repository_paths: z.record(Id, z.array(RelativePath)).default({}),
+    allowed_paths: z.array(RelativePath).default([]),
     protected_paths: z.array(z.string()).default([".git", ".agents", ".codex"]),
     allow_dependency_changes: z.boolean().default(false),
     allow_public_api_changes: z.boolean().default(false),

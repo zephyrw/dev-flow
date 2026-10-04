@@ -40,7 +40,7 @@ const tabTools = new Set([
 export class BrowserGateway {
   private active = new Map<
     string,
-    { client?: Client; cancelled: boolean; completion: Promise<void> }
+    { client?: Client; cancelled: boolean; completion: Promise<void>; run_id: string }
   >();
   constructor(private engine: Engine) {}
   async connect() {
@@ -96,11 +96,9 @@ export class BrowserGateway {
       "INVALID_STATE",
       "当前不能恢复浏览器",
     );
-    const lease = this.engine.store.get<{ owner: string; run_id: string }>(
-      "lease",
-      "browser:shared",
-    );
-    if (!lease || lease.owner !== workflow) return;
+    const leases = this.engine.store.list<{ id: string; owner: string; run_id: string }>("lease", workflow)
+      .filter(lease => lease.id.startsWith("browser:"));
+    for (const lease of leases) {
     const session = this.engine.store.get<{
       tabs: number[];
       origins: string[];
@@ -150,21 +148,22 @@ export class BrowserGateway {
       this.engine.scheduler.release(
         workflow,
         lease.run_id,
-        ["browser:shared"],
+        [lease.id],
         true,
       );
     } finally {
       await client.close();
     }
-  }
-  async stop(run: string) {
-    const active = this.active.get(run);
-    if (active) {
-      active.cancelled = true;
-      await active.completion;
     }
   }
-  async run(workflow: string, run: string, sceneId: string) {
+  async stop(run: string) {
+    const sessions = [...this.active.values()].filter(active => active.run_id === run);
+    for (const active of sessions) {
+      active.cancelled = true;
+    }
+    await Promise.all(sessions.map(active => active.completion));
+  }
+  async run(workflow: string, run: string, sceneId: string, invocation = run) {
     const w = this.engine.get(workflow),
       project = this.engine.project(w.project_id),
       scene = project.browser_scenes.find((s) => s.id === sceneId);
@@ -225,24 +224,32 @@ export class BrowserGateway {
         "标签页离开批准的测试源",
       );
     };
+    const leaseKey = "browser:session:" + invocation;
     requireCondition(
-      !this.active.has(run) &&
-        this.engine.scheduler.acquire(workflow, run, ["browser:shared"]),
+      !this.engine.store.get("lease", "browser:shared"),
+      "BROWSER_RECONCILIATION_REQUIRED", "旧共享浏览器调用需要先核实退出并清理其标签页",
+    );
+    requireCondition(
+      !this.active.has(invocation) &&
+        this.engine.scheduler.acquire(workflow, invocation, [leaseKey]),
       "BROWSER_BUSY",
-      "共享浏览器正被占用",
+      "当前浏览器调用已经运行",
     );
     let complete!: () => void;
     const active: {
       client?: Client;
       cancelled: boolean;
       completion: Promise<void>;
+      run_id: string;
     } = {
       cancelled: false,
+      run_id: run,
       completion: new Promise<void>((r) => (complete = r)),
     };
-    this.active.set(run, active);
+    this.active.set(invocation, active);
     const persistTabs = (tabs: Set<number>, status = "running") =>
-      this.engine.store.put("browser_session", run, workflow, {
+      this.engine.store.put("browser_session", invocation, workflow, {
+        run_id: run,
         tabs: [...tabs],
         origins,
         status,
@@ -395,9 +402,9 @@ export class BrowserGateway {
         ),
       );
       if (cleaned)
-        this.engine.scheduler.release(workflow, run, ["browser:shared"], true);
+        this.engine.scheduler.release(workflow, invocation, [leaseKey], true);
       else {
-        const lease = this.engine.store.must<any>("lease", "browser:shared");
+        const lease = this.engine.store.must<any>("lease", leaseKey);
         this.engine.store.put("lease", lease.id, workflow, {
           ...lease,
           status: "suspect",
@@ -405,7 +412,7 @@ export class BrowserGateway {
         failed ??= new Error("浏览器标签页清理失败，租约保留等待核实");
       }
       persistTabs(cleaned ? new Set() : tabs, cleaned ? "closed" : "suspect");
-      this.active.delete(run);
+      this.active.delete(invocation);
       complete();
     }
     if (failed) throw failed;

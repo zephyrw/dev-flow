@@ -329,7 +329,7 @@ it.each(["success", "failure"] as const)(
     vi.spyOn(s.engine, "dispatch").mockResolvedValue();
     vi.spyOn(s.engine.scheduler, "release").mockImplementation((...args) => {
       nativeRelease(...args);
-      if (args[2].includes("executor:0")) settled.resolve();
+      if (args[2].some((key) => key.startsWith("write:"))) settled.resolve();
     });
     vi.spyOn(s.engine.git, "prepare").mockImplementation(async () => {
       entered.resolve();
@@ -338,6 +338,8 @@ it.each(["success", "failure"] as const)(
     const execute = vi.spyOn(s.runtime, "execute");
     try {
       await s.engine.stop(s.key);
+      // Exercise preparation rather than the existing-workspace reuse path.
+      s.store.remove("workspace", "ws-fixture");
       s.engine.feedback(s.key, "在原计划范围内继续", "within_plan");
       await nativeDispatch();
       await entered.promise;
@@ -411,21 +413,24 @@ it("R3 project registration rechecks active workflows after repository inspectio
   }
 });
 
-it("R4 different tests of one workflow cannot concurrently consume a shared report path", async () => {
+it("R4 stopping a workflow revokes all parallel checks before starting processes", async () => {
   const s = await fixture();
   const gate = deferred<boolean>();
-  vi.mocked(s.engine.git.matches).mockReturnValueOnce(gate.promise);
+  vi.mocked(s.engine.git.matches).mockReturnValue(gate.promise);
   const start = vi.spyOn(s.runtime.processes, "start");
   try {
     const pending = expect(
       s.runtime.check(s.engine.get(s.key), "UT01", s.principal),
     ).rejects.toMatchObject({ code: "RUN_REVOKED" });
-    await expect(
+    const second = expect(
       s.runtime.check(s.engine.get(s.key), "UT02", s.principal),
-    ).rejects.toMatchObject({ code: "CHECK_RUNNING" });
+    ).rejects.toMatchObject({ code: "RUN_REVOKED" });
+    expect(s.store.get<any>("check_lock", s.key).check_ids).toHaveLength(2);
     await s.engine.stop(s.key);
     gate.resolve(true);
     await pending;
+    await second;
+    expect(s.store.get("check_lock", s.key)).toBeUndefined();
     expect(start).not.toHaveBeenCalled();
     expect(
       s.store.list("lease", s.key).filter((l: any) => l.id.startsWith("test:")),
@@ -435,6 +440,34 @@ it("R4 different tests of one workflow cannot concurrently consume a shared repo
     await s.runtime.close();
     s.store.close();
   }
+});
+
+it.each([true, false])("parallel checks isolate reports or wait for their actual shared path (dynamic=%s)", async dynamic => {
+  const report = JSON.stringify({ testResults: [{ assertionResults: [{ fullName: "updates content", status: "passed" }] }] });
+  const args = ["-e", `setTimeout(()=>require('node:fs').writeFileSync(process.env.DEVFLOW_REPORT_PATH,${JSON.stringify(report)}),250)`];
+  if (dynamic) args.push("${DEVFLOW_REPORT_PATH}");
+  const s = await fixture(args);
+  const gate = deferred<boolean>();
+  const entered = deferred<void>();
+  vi.mocked(s.engine.git.matches).mockResolvedValueOnce(true).mockImplementationOnce(() => { entered.resolve(); return gate.promise; });
+  const start = vi.spyOn(s.runtime.processes, "start");
+  try {
+    const first = s.runtime.check(s.engine.get(s.key), "UT01", s.principal);
+    await entered.promise;
+    const second = s.runtime.check(s.engine.get(s.key), "UT02", s.principal);
+    if (dynamic) await vi.waitFor(() => expect(start).toHaveBeenCalledTimes(2));
+    else {
+      await vi.waitFor(() => expect(s.store.list("resource_wait", s.key)).toHaveLength(1));
+      expect(start).toHaveBeenCalledTimes(1);
+    }
+    gate.resolve(true);
+    expect((await Promise.all([first, second])).map(e => e.status)).toEqual(["passed", "passed"]);
+    const paths = start.mock.calls.map(([input]) => input.env!.DEVFLOW_REPORT_PATH);
+    expect(new Set(paths).size).toBe(dynamic ? 2 : 1);
+    expect(s.store.get("check_lock", s.key)).toBeUndefined();
+    expect(s.store.list("resource_wait", s.key)).toHaveLength(0);
+    expect(s.store.list("lease", s.key)).toHaveLength(0);
+  } finally { gate.resolve(true); await s.runtime.close(); s.store.close(); }
 });
 
 it("R4 a late result cannot be attached after invalidation and refreezing identical source", async () => {
