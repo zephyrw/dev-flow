@@ -169,6 +169,16 @@ describe("model catalog operations", { timeout: 30000 }, () => {
     expect(env.catalog.getModels("agy").status).toBe("fresh");
   });
 
+  it("discovers AGY models when successful native help is written only to stderr", async () => {
+    const env = openCatalog({ helpStdout: "", helpStderr: "Usage of agy.exe:\n  --model Model for the current CLI session\n" });
+    const operation = env.catalog.discoverTools({ request_id: randomUUID(), adapter_ids: ["agy"] });
+    expect((await waitDone(env.catalog, operation.operation.id)).status).toBe("committed");
+    expect(env.catalog.listTools().find((tool) => tool.adapterId === "agy")?.probeStatus).toBe("detected");
+    const models = env.catalog.getModels("agy");
+    expect(models.status).toBe("fresh");
+    expect(models.entries.map((entry) => entry.nativeId)).toEqual(expect.arrayContaining(["claude-opus-5-5", "claude-sonnet-5-5"]));
+  });
+
   it("手工 ID 登记 manual candidate，非法 ID 拒绝", () => {
     const env = openCatalog({ adapterId: "agy" });
     const scope = {
@@ -273,9 +283,9 @@ describe("model catalog operations", { timeout: 30000 }, () => {
     expect(env.catalog.loadForSelector(other).status).toBe("missing");
     const candidate = env.catalog.ensureManualCandidate(other, "gemini-3.7-flash-high");
     expect(candidate.source).toBe("manual");
-    // 已知 AGY 家族的手工候补带思考强度合成（high/medium，不臆造 xhigh/max/ultra）
+    // 已知 AGY Flash 家族的手工候补按已登记变体合成（high/medium/low）。
     expect(candidate.effort.status).toBe("supported");
-    expect(candidate.effort.values).toEqual(["high", "medium"]);
+    expect(candidate.effort.values).toEqual(["high", "medium", "low"]);
     expect(candidate.effort.fixedValue).toBe("high");
     expect(env.catalog.readCached(scope)?.entries[0]?.source).toBe("native-live");
     expect(env.catalog.readCached(other)?.entries).toEqual([candidate]);

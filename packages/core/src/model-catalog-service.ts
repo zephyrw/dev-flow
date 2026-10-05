@@ -1733,7 +1733,8 @@ export class ModelCatalogService {
     }
     const help = await this.runCli(scope, ["--help"], this.versionHelpTimeoutMs);
     const matched = help.exitCode === 0 && !help.timedOut && !help.truncated &&
-      !help.spawnError && matchesFingerprint(scope.adapterId, help.stdout);
+      !help.spawnError && matchesFingerprint(scope.adapterId, `${help.stdout}\n${help.stderr}`);
+    // AGY's Go CLI writes successful usage/help to stderr.
     // Successful product help is usable even if the tool emits optional PATH
     // or cleanup warnings on stderr. Failed commands still retain their cause.
     const helpError = matched ? undefined : classifySpawnOrOutput(help);
