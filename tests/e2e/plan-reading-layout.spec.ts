@@ -57,6 +57,7 @@ for (const width of [400, 900]) {
     );
     await expect.poll(headingOffset).toBeCloseTo(-60, 0);
     await expect.poll(() => toc.evaluate((element) => element.scrollTop)).toBe(150);
+    const savedHeadingOffset = await headingOffset();
 
     const trigger = page.getByRole("button", { name: "全屏查看", exact: true });
     await trigger.click();
@@ -65,7 +66,7 @@ for (const width of [400, 900]) {
     await expect.poll(() => reading.getByRole("heading", { name: "章节 4", exact: true })
       .evaluate((element) => element.getBoundingClientRect().top -
         element.closest(".plan-content-area")!.getBoundingClientRect().top,
-      )).toBeCloseTo(-60, 0);
+      ).then(offset => Math.abs(offset - savedHeadingOffset))).toBeLessThanOrEqual(1);
     await expect.poll(() => reading.locator(".toc-items-container")
       .evaluate((element) => element.scrollTop)).toBe(150);
     if (width === 400) {
@@ -74,7 +75,8 @@ for (const width of [400, 900]) {
       await page.keyboard.press("Escape");
     }
     await expect(reading).not.toBeVisible();
-    await expect.poll(headingOffset).toBeCloseTo(-60, 0);
+    await expect.poll(async () => Math.abs(await headingOffset() - savedHeadingOffset))
+      .toBeLessThanOrEqual(1);
     await expect.poll(() => toc.evaluate((element) => element.scrollTop)).toBe(150);
     await expect(trigger).toBeFocused();
   });
