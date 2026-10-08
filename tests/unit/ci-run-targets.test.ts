@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { PassThrough } from "node:stream";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -11,11 +11,89 @@ import {
   pipeStreamWithRedaction,
   spawnTarget,
   discoverTargets,
+  readBrowserDiagnostics,
 } from "../../scripts/ci/run-targets.mjs";
 import {
   DiagnosticRedactionContext,
   DiagnosticStreamRedactor,
+  publicDiagnostic,
 } from "../../packages/presentation/src/secret-redactor.js";
+
+describe("CI browser failure diagnostics", () => {
+  const withReport = (content: unknown, check: (file: string) => void) => {
+    const directory = mkdtempSync(join(tmpdir(), "devflow-ci-browser-"));
+    const file = join(directory, "report.json");
+    try {
+      writeFileSync(file, typeof content === "string" ? content : JSON.stringify(content));
+      check(file);
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  };
+
+  it("retains nested failed specs, file positions and collection errors without copying raw attachments", () => {
+    withReport({
+      suites: [{ title: "workflow.spec.ts", file: "tests/e2e/workflow.spec.ts", specs: [], suites: [{
+        title: "nested describe", specs: [
+          { title: "successful operation", ok: true, tests: [] },
+          { title: "failed operation", ok: false, file: "tests/e2e/workflow.spec.ts", line: 42, column: 7,
+            tests: [{ status: "unexpected", results: [{ status: "failed", errors: [{ message: "button did not appear" }],
+              stdout: ["raw console"], attachments: [{ path: "private/trace.zip" }] }] }] },
+        ],
+      }] }],
+      errors: [{ message: "fixture setup failed" }, { value: "non-Error setup failure" }],
+    }, file => {
+      const result = readBrowserDiagnostics(file, publicDiagnostic);
+      expect(result.status).toBe("available");
+      expect(result.failures).toEqual([{
+        file: "tests/e2e/workflow.spec.ts", line: 42, column: 7,
+        titles: ["workflow.spec.ts", "nested describe", "failed operation"],
+        tests: [{ status: "unexpected", errors: ["button did not appear"] }],
+      }]);
+      expect(result.errors).toEqual(["fixture setup failed", "non-Error setup failure"]);
+      expect(JSON.stringify(result)).not.toMatch(/raw console|trace\.zip|successful operation/);
+    });
+  });
+
+  it("redacts titles and error messages before truncating while retaining ordinary locations", () => {
+    const longSecret = "private-value-" + "x".repeat(600);
+    withReport({ suites: [{ title: 'token="suite-secret"', specs: [{
+      title: 'password="title-secret"', ok: false, file: "tests/e2e/model-settings.spec.ts", line: 12,
+      tests: [{ status: "unexpected", results: [{ errors: [
+        { message: `password="${longSecret}" ordinary failure` },
+        { message: "Bearer bearer-secret" },
+        { message: '{"cookie":"cookie-secret","message":"safe message"}' },
+      ] }] }],
+    }] }], errors: [{ message: "oauth token=collection-secret" }] }, file => {
+      const result = readBrowserDiagnostics(file, publicDiagnostic);
+      const output = JSON.stringify(result);
+      expect(result.status).toBe("available");
+      expect(result.failures[0]?.file).toBe("tests/e2e/model-settings.spec.ts");
+      expect(result.failures[0]?.line).toBe(12);
+      expect(output).not.toMatch(/suite-secret|title-secret|private-value|bearer-secret|cookie-secret|collection-secret/);
+      expect(output).toContain("ordinary failure");
+      expect(output).toContain("[REDACTED]");
+      expect(result.failures[0]?.tests[0]?.errors.every(error => error.length <= 500)).toBe(true);
+    });
+  });
+
+  it("distinguishes missing, malformed and unreadable reports and fails closed without a projector", () => {
+    const directory = mkdtempSync(join(tmpdir(), "devflow-ci-browser-"));
+    try {
+      expect(readBrowserDiagnostics(join(directory, "missing.json"), publicDiagnostic).status).toBe("missing");
+      expect(readBrowserDiagnostics(directory, publicDiagnostic).status).toBe("read_failed");
+      expect(readBrowserDiagnostics(join(directory, "missing.json")).status).toBe("redaction_unavailable");
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+    for (const report of ["{broken", { suites: "invalid" }, { suites: [{ specs: {}, suites: [] }] }]) {
+      withReport(report, file => expect(readBrowserDiagnostics(file, publicDiagnostic)).toEqual({
+        status: "invalid", failures: [], errors: [],
+      }));
+    }
+    withReport({ suites: [], errors: [{ message: "raw secret" }] }, file => {
+      expect(readBrowserDiagnostics(file, () => { throw new Error("projector failed"); })).toEqual({
+        status: "redaction_unavailable", failures: [], errors: [],
+      });
+    });
+  });
+});
 
 describe("CI run targets pipeline & redaction (A10, A11)", () => {
   it("A10-1: merges repeated sensitive authentication status lines without unbounded output", () => {
@@ -199,4 +277,19 @@ describe("CI run targets pipeline & redaction (A10, A11)", () => {
       }
     }, 45000);
   }
+
+  it("A11-4: spawnTarget accepts custom stdout/stderr streams via options.stdout/options.stderr", async () => {
+    let captured = "";
+    const customStdout = {
+      write(chunk: string) {
+        captured += chunk;
+        return true;
+      },
+    };
+    const result = await spawnTarget(["-e", "console.log('custom-stream-test-output')"], {}, {
+      stdout: customStdout as any,
+    });
+    expect(result.exit_code).toBe(0);
+    expect(captured).toContain("custom-stream-test-output");
+  });
 });

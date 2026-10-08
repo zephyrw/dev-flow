@@ -70,4 +70,19 @@ describe("CI coverage and console interception integration (A12, A13)", () => {
     const overallFailed = mergeSuccess.exit_code !== 0 || allResults.some(r => r.exit_code !== 0);
     expect(overallFailed).toBe(true);
   });
+
+  it("A12-4: summary preserves coverage merge error, signal and timeout details", () => {
+    const summary = {
+      targets: [],
+      coverage_merge_exit_code: 1,
+      coverage_merge_signal: "SIGTERM",
+      coverage_merge_error: "Coverage merge timeout",
+      coverage_merge_timed_out: true,
+    };
+    expect(summary.coverage_merge_exit_code).toBe(1);
+    expect(summary.coverage_merge_signal).toBe("SIGTERM");
+    expect(summary.coverage_merge_error).toBe("Coverage merge timeout");
+    expect(summary.coverage_merge_timed_out).toBe(true);
+  });
 });
+

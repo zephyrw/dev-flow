@@ -897,9 +897,12 @@ it("场景2：切换并继续派发失败返回可重试回执，重试不重复
 it("AGY-05: pause the sole owning Run before verifying an unverified other-category model", async () => {
   const s = openSwitch("wf-agy-pause-verify");
   let ownPermitActive = true;
-  const oldStop = s.engine.runtime.stop.bind(s.engine.runtime);
-  s.engine.runtime.stop = async (run, options) => {
-    const result = await oldStop(run, options);
+  const runtime = s.engine.runtime;
+  expect(runtime).toBeDefined();
+  if (!runtime) throw new Error("runtime required");
+  const oldStop = runtime.stop.bind(runtime);
+  runtime.stop = async (run: string) => {
+    const result = await oldStop(run);
     ownPermitActive = false;
     return result;
   };

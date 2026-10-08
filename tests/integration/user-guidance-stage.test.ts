@@ -16,8 +16,8 @@ it.each(["executor_test", "planner_takeover", "planner_commit"] as const)(
       feedback: ["你是卡住了吗？"], created_at: time, updated_at: time };
     const r: Run = { id: "guided-run", workflow_id: wid, plan_revision: 1, adapter: "agy", purpose,
       profile: { id: "executor", adapterId: "agy", revision: 1, modelSelection: "explicit", modelId: "fixture-model",
-        reasoning: { mode: "none" }, options: {} }, protocol: "lightweight", stage: purpose,
-      status: "completed", exit_code: 0, started_at: time,
+        reasoning: { mode: "not-applicable" }, options: {} }, protocol: "lightweight", stage: purpose,
+      status: "completed", exit_code: 0, started_at: time, package_hash: "fixture-package-hash",
       dispatch_context: { purpose, review_phase: "after_human", source_run_id: "prior-repair" } };
     const p = plan("project", "a".repeat(40)); p.task_model = "native-v2";
     s.store.put("workflow", wid, "p1", w);

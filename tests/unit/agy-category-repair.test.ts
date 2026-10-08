@@ -16,7 +16,7 @@ import { AgyWorkflowBridge } from "../../packages/runtime/src/agy-workflow-bridg
 import type { ProcessManager } from "../../packages/process/src/manager.js";
 import type { RunTelemetry } from "../../packages/runtime/src/run-telemetry.js";
 import { ModelAccessService } from "../../packages/core/src/model-access-service.js";
-import type { LimitedCliHandle } from "../../packages/core/src/model-catalog-service.js";
+import type { LimitedCliHandle, LimitedCliResult } from "../../packages/core/src/model-catalog-service.js";
 import { FlowError, type Run } from "../../packages/contracts/src/index.js";
 
 const realmId = "default-agy-realm";
@@ -64,7 +64,22 @@ describe("AGY review regressions U03/U04/I03", () => {
         locked = true;
         return { acquired: true, release: async () => { locked = false; } };
       },
-    } as AuthHostPort;
+      compareActive: async () => false,
+      capabilities: async () => ({
+        supported: true,
+        platform: "win32",
+        dpapi_available: true,
+        cred_manager_available: true,
+        named_mutex_available: true,
+        version: "1.0",
+      }),
+      inspectActive: async () => ({ exists: false }),
+      captureActive: async () => ({ secret_ref: "dummy", credential_revision: 1 }),
+      activateSaved: async () => ({ credential_revision: 1 }),
+      restoreBackup: async () => {},
+      clearActiveForLogin: async () => ({}),
+      deleteSaved: async () => {},
+    };
     processHost = {
       listManagedProcesses: vi.fn(async () => []), findExternalAgyProcesses: async () => [],
       stopProcess: async () => false, confirmProcessesStopped: async () => false,
@@ -187,7 +202,10 @@ describe("AGY review regressions U03/U04/I03", () => {
     const stop = vi.fn<() => Promise<void>>()
       .mockRejectedValueOnce(new FlowError("PROCESS_STOP_UNCONFIRMED", "停止未确认", 409))
       .mockResolvedValue(undefined);
-    const handle = { cancel: stop } as LimitedCliHandle;
+    const handle: LimitedCliHandle = {
+      cancel: stop,
+      result: new Promise<LimitedCliResult>(() => {}),
+    };
     const probes = access as unknown as {
       live: Map<string, { jobId: string; accessKey: string; handle: LimitedCliHandle }>;
       inflight: Map<string, string>;

@@ -43,7 +43,7 @@ jobs:
           node-version: 22.23.2
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm typecheck
+      - run: node scripts/ci/typecheck.mjs
       - run: pnpm build
       - run: pnpm exec playwright install --with-deps chromium
       - name: Independent unit, integration, node:test and app E2E targets with coverage
@@ -52,6 +52,9 @@ jobs:
         if: always()
         with:
           name: quality-${{ matrix.os }}-${{ needs.resolve.outputs.sha }}
+          include-hidden-files: true
           path: |
+            .cache/quality/typecheck-summary.json
             .cache/quality/run-*/results.json
             .cache/quality/run-*/coverage
+            .cache/quality/run-*/browser-diagnostics/**

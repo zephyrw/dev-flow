@@ -10,6 +10,7 @@ import {
   existsSync,
   rmSync,
   symlinkSync,
+  realpathSync,
 } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
@@ -21,11 +22,12 @@ import {
 } from "./install-skills.mjs";
 
 function fixture(t) {
-  const root = mkdtempSync(join(tmpdir(), "devflow-skills-"));
+  const realTmp = realpathSync(tmpdir());
+  const root = mkdtempSync(join(realTmp, "devflow-skills-"));
   t.after(() => {
     assert.equal(
-      resolve(root).startsWith(resolve(tmpdir()) + "/") ||
-        resolve(root).startsWith(resolve(tmpdir()) + "\\"),
+      resolve(root).startsWith(resolve(realTmp) + "/") ||
+        resolve(root).startsWith(resolve(realTmp) + "\\"),
       true,
     );
     try {

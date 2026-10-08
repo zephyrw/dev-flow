@@ -1,4 +1,4 @@
-import { readdirSync, mkdirSync, mkdtempSync, writeFileSync, existsSync } from "node:fs";
+import { readdirSync, readFileSync, mkdirSync, mkdtempSync, writeFileSync, existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import { PassThrough } from "node:stream";
@@ -137,8 +137,8 @@ export function pipeStreamWithRedaction(readable, writeDest, redactor, statusFil
 export async function spawnTarget(args, env, options = {}) {
   const timeoutMs = options.timeoutMs ?? 20 * 60 * 1000;
   const cleanupTimeoutMs = options.cleanupTimeoutMs ?? 25000;
-  const stdoutDest = options.stdout ?? process.stdout;
-  const stderrDest = options.stderr ?? process.stderr;
+  const stdoutDest = options.stdout ?? options.stdoutDest ?? process.stdout;
+  const stderrDest = options.stderr ?? options.stderrDest ?? process.stderr;
 
   let redaction;
   try { redaction = await import("../../dist/packages/presentation/src/secret-redactor.js"); }
@@ -302,6 +302,71 @@ export async function spawnTarget(args, env, options = {}) {
   });
 }
 
+/** Select only failure locations and safe text; never copy report attachments or output. */
+export function readBrowserDiagnostics(reportFile, projectDiagnostic) {
+  const empty = status => ({ status, failures: [], errors: [] });
+  if (typeof projectDiagnostic !== "function") return empty("redaction_unavailable");
+  let content;
+  try { content = readFileSync(reportFile, "utf8"); }
+  catch (error) { return empty(error?.code === "ENOENT" ? "missing" : "read_failed"); }
+  let report;
+  try { report = JSON.parse(content); }
+  catch { return empty("invalid"); }
+
+  let projectionFailed = false;
+  const safeText = (text, max = 500) => {
+    try {
+      const projected = projectDiagnostic(text);
+      if (typeof projected !== "string") throw new Error("Invalid diagnostic projection");
+      return projected.slice(0, max);
+    } catch {
+      projectionFailed = true;
+      return "[诊断文本已省略]";
+    }
+  };
+  const array = value => {
+    if (!Array.isArray(value)) throw new Error("Invalid report array");
+    return value;
+  };
+  const errorText = error => typeof error?.message === "string"
+    ? safeText(error.message) : typeof error?.value === "string"
+      ? safeText(error.value) : "[错误详情未提供]";
+  const failures = [];
+  const visit = (suite, parents) => {
+    if (!suite || typeof suite !== "object") throw new Error("Invalid suite");
+    const titles = [...parents, safeText(typeof suite.title === "string" ? suite.title : "", 200)];
+    for (const spec of array(suite.specs ?? [])) {
+      if (!spec || typeof spec !== "object") throw new Error("Invalid spec");
+      if (spec.ok === true) continue;
+      const tests = array(spec.tests ?? []).map(test => {
+        if (!test || typeof test !== "object") throw new Error("Invalid test");
+        return {
+          status: safeText(typeof test.status === "string" ? test.status : "unknown", 50),
+          errors: array(test.results ?? []).flatMap(result => {
+            if (!result || typeof result !== "object") throw new Error("Invalid result");
+            return array(result.errors ?? (result.error ? [result.error] : []));
+          }).map(errorText),
+        };
+      });
+      const location = {};
+      const file = typeof spec.file === "string" ? spec.file : suite.file;
+      if (typeof file === "string") location.file = safeText(file, 1000);
+      for (const key of ["line", "column"]) {
+        const value = spec[key] ?? suite[key];
+        if (Number.isSafeInteger(value) && value >= 0) location[key] = value;
+      }
+      failures.push({ ...location, titles: [...titles, safeText(typeof spec.title === "string" ? spec.title : "", 200)], tests });
+    }
+    for (const child of array(suite.suites ?? [])) visit(child, titles);
+  };
+  try {
+    if (!report || typeof report !== "object" || !Array.isArray(report.suites)) return empty("invalid");
+    for (const suite of report.suites) visit(suite, []);
+    const errors = array(report.errors ?? []).map(errorText);
+    return projectionFailed ? empty("redaction_unavailable") : { status: "available", failures, errors };
+  } catch { return empty(projectionFailed ? "redaction_unavailable" : "invalid"); }
+}
+
 export async function runTargets(options = {}) {
   const reportRoot = resolve(".cache/quality");
   mkdirSync(reportRoot, { recursive: true });
@@ -340,6 +405,25 @@ export async function runTargets(options = {}) {
       sha: process.env.QUALITY_SHA ?? null,
       platform: `${process.platform}-${process.arch}`,
     });
+
+    if (target.kind === "playwright" && runResult.exit_code !== 0) {
+      const diagnosticsDir = join(root, "browser-diagnostics");
+      mkdirSync(diagnosticsDir, { recursive: true });
+      const reportFile = join(directory, "instance", "e2e-report.json");
+      let projectDiagnostic;
+      try { ({ publicDiagnostic: projectDiagnostic } = await import("../../dist/packages/presentation/src/secret-redactor.js")); }
+      catch { /* Fail closed when the diagnostic projector is unavailable. */ }
+      const details = readBrowserDiagnostics(reportFile, projectDiagnostic);
+      const failureRecord = {
+        file: target.file,
+        exit_code: runResult.exit_code,
+        signal: runResult.signal,
+        error: runResult.error,
+        timed_out: runResult.timed_out,
+        diagnostics: details,
+      };
+      writeFileSync(join(diagnosticsDir, `target-${index}-failure.json`), JSON.stringify(failureRecord, null, 2));
+    }
   }
 
   let missingBlobs = false;
@@ -354,18 +438,24 @@ export async function runTargets(options = {}) {
     }
   }
 
-  let mergeResult = { exit_code: 0 };
+  let mergeResult = { exit_code: 0, signal: null, error: null, timed_out: false };
   if (targets.some((t) => t.kind === "vitest")) {
     mergeResult = await spawnTarget([
       vitest, "--merge-reports", blobs, "--coverage",
       "--coverage.reporter=text", "--coverage.reporter=json", "--coverage.reporter=html",
       "--reporter=default", `--coverage.reportsDirectory=${join(root, "coverage")}`
     ], {}, options);
+    if (mergeResult.exit_code !== 0 && mergeResult.error) {
+      console.error(`Coverage merge failed: ${mergeResult.error}`);
+    }
   }
 
   const summary = {
     targets: results,
     coverage_merge_exit_code: mergeResult.exit_code,
+    coverage_merge_signal: mergeResult.signal ?? null,
+    coverage_merge_error: mergeResult.error ?? null,
+    coverage_merge_timed_out: mergeResult.timed_out ?? false,
   };
   writeFileSync(join(root, "results.json"), JSON.stringify(summary, null, 2));
   const failed = missingBlobs || mergeResult.exit_code !== 0 || results.some((item) => item.exit_code !== 0);

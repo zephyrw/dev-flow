@@ -45,6 +45,7 @@ fixture.probe.probeUsage = async () => {
     ],
     executable_fingerprint: "fixture",
     capability_verified: true,
+    raw_output: "",
   };
 };
 

@@ -5,9 +5,15 @@ import { ExecutionSpecService } from "../../packages/core/src/execution-spec-ser
 import { ModelCatalogService } from "../../packages/core/src/model-catalog-service.js";
 import { ModelAccessService } from "../../packages/core/src/model-access-service.js";
 import { AgyWorkflowBridge } from "../../packages/runtime/src/agy-workflow-bridge.js";
+import { ProcessManager } from "../../packages/process/src/manager.js";
+import type { CatalogScopeInput } from "../../packages/core/src/model-catalog-service.js";
 import type { ToolProfile, Workflow, ModelCatalog } from "../../packages/contracts/src/index.js";
 
 const realmId = "default-agy-realm";
+const agyScope: CatalogScopeInput = {
+  adapterId: "agy",
+  executablePath: "agy",
+};
 
 describe("AGY 分类并发与端到端场景覆盖测试 (E01, E02, E03, E04)", () => {
   let s: ReturnType<typeof setup>;
@@ -26,7 +32,7 @@ describe("AGY 分类并发与端到端场景覆盖测试 (E01, E02, E03, E04)", 
     const makeWindows = (fraction: number) => [
       {
         kind: "weekly" as const,
-        duration_minutes: 10080,
+        duration_minutes: 10080 as const,
         remaining_fraction: fraction,
         reset_at: null,
         observed_at: nowIso,
@@ -34,7 +40,7 @@ describe("AGY 分类并发与端到端场景覆盖测试 (E01, E02, E03, E04)", 
       },
       {
         kind: "five_hour" as const,
-        duration_minutes: 300,
+        duration_minutes: 300 as const,
         remaining_fraction: fraction,
         reset_at: null,
         observed_at: nowIso,
@@ -46,6 +52,7 @@ describe("AGY 分类并发与端到端场景覆盖测试 (E01, E02, E03, E04)", 
       email: `${accounts.active()}@example.com`,
       cli_version: "1.2.7",
       windows: makeWindows(0.8),
+      raw_output: "",
       pools: [
         {
           pool_id: "Gemini Models",
@@ -98,29 +105,7 @@ describe("AGY 分类并发与端到端场景覆盖测试 (E01, E02, E03, E04)", 
     });
 
     // 预设 AGY 基础目录缓存
-    const seedCatalog: ModelCatalog = {
-      adapterId: "agy",
-      status: "fresh",
-      discoveryStatus: "complete",
-      discoveredAt: nowIso,
-      staleAfter: nowIso,
-      entries: [
-        {
-          entryId: "agy/gemini-3.8-flash-high",
-          adapterId: "agy",
-          nativeId: "gemini-3.8-flash-high",
-          label: "Gemini 3.8 Flash High",
-          selectionKind: "fixed",
-          effort: { status: "supported", values: ["high"], defaultValue: "high", fixedValue: "high", transport: "none" },
-          source: "native-cache",
-          discoveredAt: nowIso,
-          hidden: false,
-          availability: "listed",
-          capabilityRevision: "1",
-        },
-      ],
-    };
-    catalog.persistCatalog({ adapterId: "agy" }, "seed", seedCatalog);
+    catalog.ensureManualCandidate(agyScope, "gemini-3.8-flash-high");
   });
 
   afterEach(async () => {
@@ -134,7 +119,7 @@ describe("AGY 分类并发与端到端场景覆盖测试 (E01, E02, E03, E04)", 
 
   it("E01: 真实页面模型保存和双组额度与运行模型弹层", async () => {
     // 1. 验证 5.5 模型候选项在目录中被 enrich 补齐且不臆造思考强度
-    const catalogData = await catalog.loadForSelector({ adapterId: "agy" });
+    const catalogData = catalog.loadForSelector(agyScope);
     const sonnet = catalogData.entries.find((m) => m.nativeId === "claude-sonnet-5-5");
     const opus = catalogData.entries.find((m) => m.nativeId === "claude-opus-5-5");
     expect(sonnet).toBeDefined();
@@ -149,10 +134,16 @@ describe("AGY 分类并发与端到端场景覆盖测试 (E01, E02, E03, E04)", 
     const wf: Workflow = {
       id: "wf-e01-test",
       project_id: "p1",
-      revision: 1,
       title: "E01 测试工作流",
-      goal: "E01 需求",
+      request: "E01 需求",
+      complexity: "simple",
+      workspace_mode: "new_worktree",
       state: "PLANNING",
+      stage: "plan",
+      version: 1,
+      plan_revision: 1,
+      environment_revision: 0,
+      feedback: [],
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     };
@@ -227,7 +218,7 @@ describe("AGY 分类并发与端到端场景覆盖测试 (E01, E02, E03, E04)", 
     expect(accounts.service.getActiveCategory(realmId).activePermits.length).toBe(2);
 
     // 3. 反向混类拒绝：Gemini 请求必须被 409 拒绝且不干扰现有运行任务
-    const bridge = new AgyWorkflowBridge(accounts.service);
+    const bridge = new AgyWorkflowBridge(accounts.service, new ProcessManager());
     await expect(
       bridge.prepareRun({
         workflow_id: "wf-gemini",
@@ -291,7 +282,7 @@ describe("AGY 分类并发与端到端场景覆盖测试 (E01, E02, E03, E04)", 
 
   it("E04: 浏览器重开和控制器恢复及已有 Gemini 流程回归", async () => {
     // 验证已有纯 Gemini 流程保持原样正常运行，不受新增分类逻辑干扰
-    const bridge = new AgyWorkflowBridge(accounts.service);
+    const bridge = new AgyWorkflowBridge(accounts.service, new ProcessManager());
     const p1 = await bridge.prepareRun({
       workflow_id: "wf-gemini-1",
       run_id: "run-gemini-1",

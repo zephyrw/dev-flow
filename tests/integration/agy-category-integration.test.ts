@@ -4,6 +4,7 @@ import { accountFixture } from "../fixtures/agy-accounts/service-fixture.js";
 import { ExecutionSpecService } from "../../packages/core/src/execution-spec-service.js";
 import { ModelAccessService } from "../../packages/core/src/model-access-service.js";
 import { AgyWorkflowBridge } from "../../packages/runtime/src/agy-workflow-bridge.js";
+import { ProcessManager } from "../../packages/process/src/manager.js";
 import { inferPermitCategory } from "../../packages/agy-accounts/src/service.js";
 import type { ToolProfile, Workflow } from "../../packages/contracts/src/index.js";
 import type { AgyUsagePermit } from "../../packages/contracts/src/agy-account.js";
@@ -25,7 +26,7 @@ describe("AGY 分类并发与额度池集成测试 (I01, I02, I03, I04)", () => 
     const makeWindows = (fraction: number) => [
       {
         kind: "weekly" as const,
-        duration_minutes: 10080,
+        duration_minutes: 10080 as const,
         remaining_fraction: fraction,
         reset_at: null,
         observed_at: nowIso,
@@ -33,7 +34,7 @@ describe("AGY 分类并发与额度池集成测试 (I01, I02, I03, I04)", () => 
       },
       {
         kind: "five_hour" as const,
-        duration_minutes: 300,
+        duration_minutes: 300 as const,
         remaining_fraction: fraction,
         reset_at: null,
         observed_at: nowIso,
@@ -47,6 +48,7 @@ describe("AGY 分类并发与额度池集成测试 (I01, I02, I03, I04)", () => 
         email: `${accounts.active()}@example.com`,
         cli_version: "1.2.7",
         windows: makeWindows(0.8),
+        raw_output: "",
         pools: [
           {
             pool_id: "Gemini Models",
@@ -54,7 +56,7 @@ describe("AGY 分类并发与额度池集成测试 (I01, I02, I03, I04)", () => 
             windows: [
               {
                 kind: "weekly" as const,
-                duration_minutes: 10080,
+                duration_minutes: 10080 as const,
                 remaining_fraction: 0.9,
                 reset_at: null,
                 observed_at: curIso,
@@ -62,7 +64,7 @@ describe("AGY 分类并发与额度池集成测试 (I01, I02, I03, I04)", () => 
               },
               {
                 kind: "five_hour" as const,
-                duration_minutes: 300,
+                duration_minutes: 300 as const,
                 remaining_fraction: 0.9,
                 reset_at: null,
                 observed_at: curIso,
@@ -76,7 +78,7 @@ describe("AGY 分类并发与额度池集成测试 (I01, I02, I03, I04)", () => 
             windows: [
               {
                 kind: "weekly" as const,
-                duration_minutes: 10080,
+                duration_minutes: 10080 as const,
                 remaining_fraction: 0.8,
                 reset_at: null,
                 observed_at: curIso,
@@ -84,7 +86,7 @@ describe("AGY 分类并发与额度池集成测试 (I01, I02, I03, I04)", () => 
               },
               {
                 kind: "five_hour" as const,
-                duration_minutes: 300,
+                duration_minutes: 300 as const,
                 remaining_fraction: 0.8,
                 reset_at: null,
                 observed_at: curIso,
@@ -153,12 +155,18 @@ describe("AGY 分类并发与额度池集成测试 (I01, I02, I03, I04)", () => 
       const wf: Workflow = {
         id: "wf-test-1",
         project_id: "p1",
-        revision: 1,
         title: "Test",
-        goal: "Test",
+        request: "Test",
+        complexity: "simple",
+        workspace_mode: "new_worktree",
+        state: "PLANNING",
+        stage: "plan",
+        version: 1,
+        plan_revision: 1,
+        environment_revision: 0,
+        feedback: [],
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
-        state: "PLANNING",
       };
       s.store.put("workflow", wf.id, wf.id, wf);
 
@@ -251,7 +259,7 @@ describe("AGY 分类并发与额度池集成测试 (I01, I02, I03, I04)", () => 
       });
       expect(permitOther.permit_id).toBeDefined();
 
-      const bridge = new AgyWorkflowBridge(accounts.service);
+      const bridge = new AgyWorkflowBridge(accounts.service, new ProcessManager());
 
       await expect(
         bridge.prepareRun({
