@@ -8,7 +8,7 @@ import { AgyAccountService } from "../../packages/agy-accounts/src/service.js";
 import type { AuthHostPort, AccountProbePort, ProcessHostPort, AccountConsumerPort } from "../../packages/agy-accounts/src/ports.js";
 import type { QuotaWindow } from "../../packages/contracts/src/agy-account.js";
 
-const realmId = "default-agy-realm", model = "fixture-model", pool = "fixture-pool";
+const realmId = "default-agy-realm", model = "gemini-fixture", pool = "fixture-pool";
 const timestamp = "2026-09-20T04:00:00Z", now = Date.parse(timestamp);
 const cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const dispose of cleanup.splice(0)) await dispose(); });
@@ -73,7 +73,7 @@ describe("AGY durable safety boundary", () => {
 
   it("still stops owned jobs after lease loss and refuses an unconfirmed shutdown", async () => {
     const f = await fixture(); await f.service.start({ realmId, requestId: "start" });
-    const permit = await f.service.acquireUsagePermit({ realm_id: realmId, consumer_id: "run", usage_kind: "execution", required_pool_ids: [pool] });
+    const permit = await f.service.acquireUsagePermit({ realm_id: realmId, consumer_id: "run", usage_kind: "execution", required_pool_ids: [pool], required_model_ids: [model] });
     f.service.markUsageStarted(permit.permit_id, 123); f.state.held = false;
     const stopped: number[] = [];
     f.processes.listManagedProcesses = async () => [{ pid: 123, permit_id: permit.permit_id }];
@@ -92,13 +92,14 @@ describe("AGY durable safety boundary", () => {
     expect(f.repo.getOperation(receipt.operation_id)?.phase).toBe("queued");
     expect(await f.service.requestOperation(input)).toEqual(receipt); expect(f.state.probes).toEqual([]);
     await expect(f.service.requestOperation({ ...input, selection: { mode: "explicit", account_id: "C" } })).rejects.toThrow("request_id_conflict");
-    await expect(f.service.acquireUsagePermit({ realm_id: realmId, consumer_id: "run", usage_kind: "execution", required_pool_ids: [pool] })).rejects.toThrow();
+    await expect(f.service.acquireUsagePermit({ realm_id: realmId, consumer_id: "run", usage_kind: "execution", required_pool_ids: [pool], required_model_ids: [model] })).rejects.toThrow();
     await f.service.tick(now);
     expect(f.repo.getOperation(receipt.operation_id)?.phase).toBe("completed"); expect(f.state.writes).toEqual(["B"]);
   });
 
-  it("rolls back an explicit exhausted target without probing another account", async () => {
+  it("rolls back an explicit exhausted target even with an external CLI, without probing another account", async () => {
     const f = await fixture(); await f.service.start({ realmId, requestId: "start" }); f.state.actual.B = 0;
+    f.state.external = true;
     const receipt = await f.service.requestOperation({ realm_id: realmId, request_id: "switch", kind: "switch", selection: { mode: "explicit", account_id: "B" } });
     await f.service.tick(now);
     expect(f.state.probes).toEqual(["B"]); expect(f.state.active).toBe("saved_A");
@@ -150,13 +151,48 @@ describe("AGY durable safety boundary", () => {
     expect(f.state.active).toBe("external_C");
   });
 
-  it("keeps an external-owner wait local and cancellation prevents later switching", async () => {
+  it("switches accounts alongside an external CLI without stopping it", async () => {
     const f = await fixture(); await f.service.start({ realmId, requestId: "start" }); f.state.external = true;
+    const stopped: number[] = [];
+    f.processes.stopProcess = async pid => { stopped.push(pid); return true; };
     const receipt = await f.service.requestOperation({ realm_id: realmId, request_id: "switch", kind: "switch", selection: { mode: "explicit", account_id: "B" } });
-    await f.service.tick(now); expect(f.state.probes).toEqual([]); expect(f.state.writes).toEqual([]);
-    await f.service.requestOperation({ realm_id: realmId, request_id: "cancel", kind: "cancel", operation_id: receipt.operation_id });
-    f.state.external = false; await f.service.tick(now);
-    expect(f.repo.getOperation(receipt.operation_id)?.phase).toBe("cancelled"); expect(f.state.writes).toEqual([]);
+    await f.service.tick(now);
+    expect(f.repo.getOperation(receipt.operation_id)?.phase).toBe("completed");
+    expect(f.state.active).toBe("saved_B");
+    expect(f.state.writes).toEqual(["B"]);
+    expect(stopped).toEqual([]);
+  });
+
+  it.each(["admission", "restart"])("clears a legacy external-owner block during %s", async mode => {
+    const f = await fixture(); await f.service.start({ realmId, requestId: "start" });
+    f.state.external = true;
+    const original = f.repo.getRealm(realmId)!;
+    f.repo.saveRealm({ ...original, phase: "blocked", last_error: "external_owner" });
+    if (mode === "restart") await f.service.reconcileStartup();
+    const permit = await f.service.acquireUsagePermit({ realm_id: realmId, consumer_id: "recovered", usage_kind: "execution", required_pool_ids: [pool], required_model_ids: [model] });
+    expect(permit.account_id).toBe(original.active_account_id);
+    expect(f.repo.getRealm(realmId)).toMatchObject({ phase: "idle", auth_epoch: original.auth_epoch });
+    expect(f.repo.getRealm(realmId)?.last_error).toBeUndefined();
+    expect(f.state.writes).toEqual([]);
+  });
+
+  it("does not clear a real credential recovery failure during admission", async () => {
+    const f = await fixture(); await f.service.start({ realmId, requestId: "start" });
+    f.repo.saveRealm({ ...f.repo.getRealm(realmId)!, phase: "blocked", last_error: "rollback_verification_failed" });
+    await expect(f.service.acquireUsagePermit({ realm_id: realmId, consumer_id: "blocked", usage_kind: "execution", required_pool_ids: [pool], required_model_ids: [model] })).rejects.toThrow();
+    expect(f.repo.getRealm(realmId)?.last_error).toBe("rollback_verification_failed");
+    expect(f.repo.listPermits(realmId)).toHaveLength(0);
+  });
+
+  it("continues a legacy external-exit wait even while the CLI remains open", async () => {
+    const f = await fixture(); await f.service.start({ realmId, requestId: "start" });
+    f.state.external = true;
+    const receipt = await f.service.requestOperation({ realm_id: realmId, request_id: "legacy-switch", kind: "switch", selection: { mode: "explicit", account_id: "B" } });
+    f.repo.saveOperation({ ...f.repo.getOperation(receipt.operation_id)!, phase: "waiting_external_exit", deadline_at: new Date(Date.now() + 300_000).toISOString() });
+    await f.service.reconcileStartup();
+    await f.service.tick(now);
+    expect(f.repo.getOperation(receipt.operation_id)?.phase).toBe("completed");
+    expect(f.state.active).toBe("saved_B");
   });
 
   it.each(["switch", "probe"] as const)("cancels %s during the last ownership read before installing another identity", async (kind) => {
@@ -208,7 +244,7 @@ describe("AGY durable safety boundary", () => {
 
   it("holds the domain until a previously issued execution permit is released", async () => {
     const f = await fixture(); await f.service.start({ realmId, requestId: "start" });
-    const permit = await f.service.acquireUsagePermit({ realm_id: realmId, consumer_id: "run", usage_kind: "execution", required_pool_ids: [pool] });
+    const permit = await f.service.acquireUsagePermit({ realm_id: realmId, consumer_id: "run", usage_kind: "execution", required_pool_ids: [pool], required_model_ids: [model] });
     f.service.markUsageStarted(permit.permit_id);
     await f.service.stop({ realmId, requestId: "stop" }); expect(f.state.held).toBe(true); expect(f.repo.getRealm(realmId)?.service_state).toBe("stopping");
     await f.service.releaseUsagePermit(permit.permit_id, { permit_id: permit.permit_id, success: false }); await f.service.tick(now);
@@ -249,7 +285,7 @@ describe("AGY durable safety boundary", () => {
 
   it("keeps the OS lease while the last released permit still captures its identity", async () => {
     const f = await fixture(); await f.service.start({ realmId, requestId: "start" });
-    const permit = await f.service.acquireUsagePermit({ realm_id: realmId, consumer_id: "run", usage_kind: "execution", required_pool_ids: [pool] });
+    const permit = await f.service.acquireUsagePermit({ realm_id: realmId, consumer_id: "run", usage_kind: "execution", required_pool_ids: [pool], required_model_ids: [model] });
     f.service.markUsageStarted(permit.permit_id);
     let enter!: () => void, finish!: () => void;
     const entered = new Promise<void>((resolve) => { enter = resolve; });
@@ -266,7 +302,7 @@ describe("AGY durable safety boundary", () => {
 
   it("closes spawn admission before shutdown starts enumerating owned processes", async () => {
     const f = await fixture(); await f.service.start({ realmId, requestId: "start" });
-    const permit = await f.service.acquireUsagePermit({ realm_id: realmId, consumer_id: "run", usage_kind: "execution", required_pool_ids: [pool] });
+    const permit = await f.service.acquireUsagePermit({ realm_id: realmId, consumer_id: "run", usage_kind: "execution", required_pool_ids: [pool], required_model_ids: [model] });
     let enter!: () => void, finish!: () => void;
     const entered = new Promise<void>((resolve) => { enter = resolve; });
     const finished = new Promise<void>((resolve) => { finish = resolve; });
@@ -323,7 +359,7 @@ describe("AGY durable safety boundary", () => {
 
   it("accepts real quota-only /usage on successful release without falsely blocking the account realm", async () => {
     const f = await quotaOnlyFixture();
-    const permit = await f.service.acquireUsagePermit({ realm_id: realmId, consumer_id: "run", usage_kind: "execution", required_pool_ids: [pool] });
+    const permit = await f.service.acquireUsagePermit({ realm_id: realmId, consumer_id: "run", usage_kind: "execution", required_pool_ids: [pool], required_model_ids: [model] });
     f.service.markUsageStarted(permit.permit_id);
     await f.service.releaseUsagePermit(permit.permit_id, { permit_id: permit.permit_id, success: true });
     expect(f.repo.getRealm(realmId)).toMatchObject({ phase: "idle", service_state: "running" });
@@ -333,7 +369,7 @@ describe("AGY durable safety boundary", () => {
 
   it("rejects actual identity changes even when /usage omits the email", async () => {
     const f = await quotaOnlyFixture();
-    const permit = await f.service.acquireUsagePermit({ realm_id: realmId, consumer_id: "run", usage_kind: "execution", required_pool_ids: [pool] });
+    const permit = await f.service.acquireUsagePermit({ realm_id: realmId, consumer_id: "run", usage_kind: "execution", required_pool_ids: [pool], required_model_ids: [model] });
     const original = f.repo.getQuotaSnapshot(realmId, "A", pool);
     const query = f.probe.probeUsage;
     f.probe.probeUsage = async (...args) => { const result = await query(...args); f.state.active = "saved_B"; return result; };
@@ -382,19 +418,19 @@ describe("AGY durable safety boundary", () => {
     expect(f.repo.getRealm(realmId)?.last_error).toBeUndefined();
   });
 
-  it.each(["external", "managed", "permit"])("refreshes only the active account with %s activity and never reinstalls credentials", async (activity) => {
+  it.each(["managed", "permit"])("refreshes only the active account with %s activity and never reinstalls credentials", async (activity) => {
     const f = await quotaOnlyFixture();
-    if (activity === "external") f.state.external = true;
     if (activity === "managed") f.processes.listManagedProcesses = async () => [{ pid: 123 }];
-    if (activity === "permit") await f.service.acquireUsagePermit({ realm_id: realmId, consumer_id: "run", usage_kind: "execution", required_pool_ids: [pool] });
+    if (activity === "permit") await f.service.acquireUsagePermit({ realm_id: realmId, consumer_id: "run", usage_kind: "execution", required_pool_ids: [pool], required_model_ids: [model] });
     const view = await f.service.syncAndRefreshQuotas(realmId);
     expect(view.refresh_scope).toBe("active_only");
     expect(f.state.probes).toEqual(["A"]);
     expect(f.state.writes).toEqual([]);
   });
 
-  it("refreshes all accounts while idle and restores the original account", async () => {
+  it.each([false, true])("refreshes all accounts and restores the original account with external CLI=%s", async external => {
     const f = await quotaOnlyFixture();
+    f.state.external = external;
     const view = await f.service.syncAndRefreshQuotas(realmId);
     expect(view.refresh_scope).toBe("all");
     expect(f.state.probes).toEqual(["A", "B", "C"]);

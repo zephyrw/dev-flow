@@ -111,6 +111,10 @@ function sleep(ms) {
 }
 
 async function applyBehavior(behavior) {
+  if (behavior === "agy-region-unavailable") {
+    console.log(JSON.stringify({ event: "result", result: { status: "ERROR", error: "Eligibility check failed: Your current account is not eligible for Antigravity, because it is not currently available in your location." } }));
+    process.exit(1);
+  }
   if (typeof control.probeStdout === "string") {
     process.stdout.write(control.probeStdout);
     process.stderr.write(control.probeStderr ?? "");

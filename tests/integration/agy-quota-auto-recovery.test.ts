@@ -174,7 +174,7 @@ it.each(["stop", "disable_auto", "stale_epoch"])("does not switch a confirmed qu
   expect(installs).not.toHaveBeenCalled();
 });
 
-it("does not install credentials or stop an external CLI for a confirmed quota exit", async () => {
+it("automatically switches and resumes after a confirmed quota exit without stopping an external CLI", async () => {
   const run = source("external-quota");
   const binding = await started(run);
   accounts.setExternal([{ pid: 999, exe_path: "external-agy" }]);
@@ -184,10 +184,10 @@ it("does not install credentials or stop an external CLI for a confirmed quota e
   }))).toBe("waiting");
   markWaiting(run);
   await accounts.service.tick(Date.now());
-  expect(installs).not.toHaveBeenCalled();
+  expect(installs).toHaveBeenCalledTimes(1);
   expect(stopExternal).not.toHaveBeenCalled();
-  expect(accounts.active()).toBe("a");
-  expect(restore).not.toHaveBeenCalled();
+  expect(accounts.active()).toBe("b");
+  expect(restore).toHaveBeenCalledTimes(1);
 });
 
 it("routes a fresh admission quota probe into the same switch and skips a quota-exhausted candidate", async () => {
@@ -342,14 +342,17 @@ it("leaves quota rejection manual when automatic switching is disabled", async (
   expect(await bridge.listOccupancy()).toEqual([]);
 });
 
-it("does not turn external ownership or missing quota coverage into an automatic switch", async () => {
+it("permits quota-driven switching with an external CLI but rejects missing quota coverage", async () => {
   const run = source("external"); await verifyZero();
   accounts.setExternal([{ pid: 999, name: "agy" } as any]);
-  await expect(bridge.prepareRun(request(run))).rejects.toMatchObject({ code: "external_owner" });
+  await expect(bridge.prepareRun(request(run))).rejects.toMatchObject({ code: "AGY_ACCOUNT_WAIT" });
+  expect(switches()).toHaveLength(1);
+  await accounts.service.tick(Date.now());
+  expect(accounts.active()).toBe("b");
   accounts.setExternal([]);
-  accounts.repository.retainQuotaPools(realmId, "a", []);
+  accounts.repository.retainQuotaPools(realmId, "b", []);
   await expect(bridge.prepareRun(request(run))).rejects.toMatchObject({ code: "active_account_unavailable" });
-  expect(switches()).toHaveLength(0);
+  expect(switches()).toHaveLength(1);
 });
 
 it("does not confirm an admission-only wait if a process record has appeared", async () => {

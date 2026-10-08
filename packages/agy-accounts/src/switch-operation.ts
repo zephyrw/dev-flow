@@ -42,7 +42,6 @@ export interface SwitchResult {
     | "already_active"
     | "no_eligible_account"
     | "target_unavailable"
-    | "external_blocked"
     | "error";
   active_account_id?: string;
   new_auth_epoch?: number;
@@ -144,26 +143,8 @@ export class SwitchOperationExecutor {
       };
     }
 
-    // 2. 检查外部 AGY 进程
-    const externalProcs = await this.processHost.findExternalAgyProcesses();
-    if (externalProcs.length > 0) {
-      operation.phase = "waiting_external_exit";
-      operation.external_processes = externalProcs.map(({ pid, exe_path }) => ({
-        pid,
-        exe_path,
-      }));
-      operation.revision++;
-      this.repository.saveOperation(operation);
-      // 外部有运行中的 CLI，进入等待退出或阻断
-      return {
-        success: false,
-        status: "external_blocked",
-        message: `External AGY processes detected (PIDs: ${externalProcs.map((p) => p.pid).join(", ")}). Please exit them before switching accounts.`,
-      };
-    }
     guard();
-    // Close queued admission before taking the consumer/demand snapshot. The
-    // external-process await above may have accepted more queued consumers.
+    // Close queued admission before taking the consumer/demand snapshot.
     operation = this.repository.getOperation(options.operationId)!;
     operation.phase = "quiescing";
     operation.revision++;
@@ -496,11 +477,6 @@ export class SwitchOperationExecutor {
       const targetAcc = accounts.find((a) => a.id === targetAccountId)!;
       realm.phase = "installing";
       this.repository.saveRealm(realm);
-      const extProcs = await this.processHost.findExternalAgyProcesses();
-      if (extProcs.length) {
-        console.error("[SWITCH_DEBUG] External AGY processes found in step 7:", extProcs);
-        throw new Error("external_change:step7_external_processes");
-      }
       const expectedRef =
         operation.installed_secret_ref ?? operation.before_secret_ref;
       const compareActiveMatches = expectedRef ? await this.authHost.compareActive(options.realmId, expectedRef) : false;

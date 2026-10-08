@@ -222,6 +222,14 @@ function classifyProbeFailure(result: LimitedCliResult): ProbeFailure {
       message: "模型访问探测超时",
     };
   }
+  if (/Eligibility check failed:[^\r\n]*not currently available in your location/i.test(combined)) {
+    return {
+      status: "environment_error",
+      errorCode: "AGY_REGION_UNAVAILABLE",
+      retryable: false,
+      message: "AGY CLI 的服务地区资格检查未通过；这不代表模型额度耗尽。请核对 CLI 与桌面端的登录账号及网络出口。",
+    };
+  }
   if (/401|unauthorized|not logged in|authentication required|login[_\s-]?required/i.test(combined)) {
     return {
       status: "login_required",
@@ -1497,17 +1505,23 @@ export class ModelAccessService {
     if (this.closed || this.cancelledJobs.has(job.id) || this.isTerminal(this.getVerification(job.id).status)) return;
     const flow = error instanceof FlowError ? error : null;
     const accountCode = error && typeof error === "object" && "code" in error ? String(error.code) : undefined;
+    const accountChanged = accountCode === "model_verification_account_changed" || flow?.code === "MODEL_IDENTITY_CHANGED";
+    const accountSwitching = accountCode === "model_verification_account_switching";
     const accountMessage = accountCode === "external_owner"
       ? "有其他 AGY 会话正在使用当前账号。请等待该会话结束后重试保存，现有配置已保留。"
       : accountCode === "external_change"
         ? "AGY 当前登录账号发生变化，请在账号管理中同步当前账号后重试保存。"
         : accountCode === "model_verification_account_changed"
-          ? "验证期间 AGY 账号状态已变化，请重新保存以验证当前账号。"
-          : undefined;
+          ? "AGY 已切换账号，正在重新核验当前账号。"
+          : accountSwitching ? "AGY 正在切换账号，稍后自动重新核验。"
+          : accountCode === "model_verification_environment_unavailable"
+            ? "AGY 账号服务当前不可用于核验，请查看账号管理中的实际阻塞原因。"
+            : undefined;
     this.finishFailure(job, {
       status: "environment_error",
-      errorCode: flow?.code ?? (accountMessage ? "ACCOUNT_BUSY" : "VERIFICATION_ENVIRONMENT_UNAVAILABLE"),
-      retryable: false,
+      errorCode: accountChanged ? "MODEL_IDENTITY_CHANGED" : accountSwitching ? "MODEL_ACCOUNT_SWITCHING"
+        : flow?.code ?? (accountMessage ? "ACCOUNT_BUSY" : "VERIFICATION_ENVIRONMENT_UNAVAILABLE"),
+      retryable: accountChanged || accountSwitching,
       message:
         accountMessage ?? flow?.message ??
         (error instanceof Error ? error.message : "本机环境无法完成验证"),

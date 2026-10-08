@@ -191,13 +191,13 @@ describe("AGY Account Service Lifecycle & Operations (AC-U17, AC-U18, AC-U20)", 
     realm.active_secret_ref = "vault-acc-1";
     realm.auth_epoch = 1;
     repo.saveRealm(realm);
-    repo.saveQuotaSnapshot({ id: "q-permit", realm_id: realmId, account_id: "acc-1", auth_epoch: 1, pool_id: "default", model_ids: ["fixture-model"], source: "official_cli_usage", cli_version: "fixture", parser_revision: 1, observed_at: new Date().toISOString(), windows: (await mockProbe.probeUsage()).windows, executable_fingerprint: "fixture", capability_verified: true });
+    repo.saveQuotaSnapshot({ id: "q-permit", realm_id: realmId, account_id: "acc-1", auth_epoch: 1, pool_id: "default", model_ids: ["gemini-fixture"], source: "official_cli_usage", cli_version: "fixture", parser_revision: 1, observed_at: new Date().toISOString(), windows: (await mockProbe.probeUsage()).windows, executable_fingerprint: "fixture", capability_verified: true });
 
     const permit = await service.acquireUsagePermit({
       realm_id: realmId,
       consumer_id: "workflow-wf-1",
       usage_kind: "execution",
-      required_pool_ids: ["default"],
+      required_pool_ids: ["default"], required_model_ids: ["gemini-fixture"],
     });
 
     expect(permit.account_id).toBe("acc-1");
@@ -222,7 +222,7 @@ describe("AGY Account Service Lifecycle & Operations (AC-U17, AC-U18, AC-U20)", 
         realm_id: realmId,
         consumer_id: "workflow-wf-1",
         usage_kind: "execution",
-        required_pool_ids: ["default"],
+        required_pool_ids: ["default"], required_model_ids: ["gemini-fixture"],
       }),
     ).rejects.toThrow("is not running");
   });
@@ -263,8 +263,8 @@ describe("AGY Account Service Lifecycle & Operations (AC-U17, AC-U18, AC-U20)", 
     realm.auth_epoch = 1;
     repo.saveRealm(realm);
     service.initializeSettings(realmId);
-    const settings = repo.getSettings(realmId)!; settings.standalone_model_id = "fixture-model"; repo.saveSettings(settings);
-    for (const account of [a1, a2]) repo.saveQuotaSnapshot({ id: `q-${account.id}`, realm_id: realmId, account_id: account.id, auth_epoch: 1, pool_id: "default", model_ids: ["fixture-model"], source: "official_cli_usage", cli_version: "fixture", parser_revision: 1, observed_at: new Date().toISOString(), windows: (await mockProbe.probeUsage()).windows, executable_fingerprint: "fixture", capability_verified: true });
+    const settings = repo.getSettings(realmId)!; settings.standalone_model_id = "gemini-fixture"; repo.saveSettings(settings);
+    for (const account of [a1, a2]) repo.saveQuotaSnapshot({ id: `q-${account.id}`, realm_id: realmId, account_id: account.id, auth_epoch: 1, pool_id: "default", model_ids: ["gemini-fixture"], source: "official_cli_usage", cli_version: "fixture", parser_revision: 1, observed_at: new Date().toISOString(), windows: (await mockProbe.probeUsage()).windows, executable_fingerprint: "fixture", capability_verified: true });
 
     // Make activation fail
     mockAuthHost.activateSaved = async () => {

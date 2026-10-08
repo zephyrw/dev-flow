@@ -35,14 +35,13 @@ it("accepts refreshed credentials only after confirming the same authenticated a
   expect(fixture.repository.getRealm(realmId)!.active_secret_ref).not.toBe(oldRef);
 });
 
-it("waits for a short lived external query, but never kills its process", async () => {
-  const external = vi.spyOn(fixture.processHost, "findExternalAgyProcesses")
-    .mockResolvedValueOnce([{ pid: 42, exe_path: "agy.exe" }])
-    .mockResolvedValue([]);
+it("allows a read-only model probe alongside an external CLI on the same account", async () => {
+  fixture.setExternal([{ pid: 42, exe_path: "agy.exe" }]);
   const stop = vi.spyOn(fixture.processHost, "stopProcess");
+  const activate = vi.spyOn(fixture.authHost, "activateSaved");
   await expect(fixture.service.withModelVerification(identity, async () => "verified")).resolves.toBe("verified");
-  expect(external.mock.calls.length).toBeGreaterThan(1);
   expect(stop).not.toHaveBeenCalled();
+  expect(activate).not.toHaveBeenCalled();
 });
 
 it("uses safe credential identity when official usage output has no email", async () => {
@@ -59,12 +58,33 @@ it("uses safe credential identity when official usage output has no email", asyn
   expect(probe).not.toHaveBeenCalled();
 });
 
-it("keeps blocking an external session without launching the model probe", async () => {
+it("rejects an external credential change before launching the read-only model probe", async () => {
   fixture.setExternal([{ pid: 42, exe_path: "agy.exe" }]);
+  await fixture.authHost.activateSaved(realmId, "b", "saved-b");
   const verify = vi.fn(async () => "verified");
   await expect(fixture.service.withModelVerification(identity, verify))
-    .rejects.toMatchObject({ code: "external_owner" });
+    .rejects.toMatchObject({ code: "external_change" });
   expect(verify).not.toHaveBeenCalled();
+});
+
+it("can verify after an external-owner block without relaxing other blocked states", async () => {
+  const realm = fixture.repository.getRealm(realmId)!;
+  fixture.repository.saveRealm({ ...realm, phase: "blocked", last_error: "external_owner" });
+  await expect(fixture.service.withModelVerification(identity, async () => "verified")).resolves.toBe("verified");
+  fixture.repository.saveRealm({ ...realm, phase: "blocked", last_error: "rollback_verification_failed" });
+  const verify = vi.fn(async () => true);
+  await expect(fixture.service.withModelVerification(identity, verify))
+    .rejects.toMatchObject({ code: "model_verification_environment_unavailable" });
+  expect(verify).not.toHaveBeenCalled();
+});
+
+it("allows unrelated realm updates during a probe without overwriting them", async () => {
+  await expect(fixture.service.withModelVerification(identity, async () => {
+    const realm = fixture.repository.getRealm(realmId)!;
+    fixture.repository.saveRealm({ ...realm, revision: realm.revision + 1, last_capture_at: "2026-10-08T00:00:00Z" });
+    return "verified";
+  })).resolves.toBe("verified");
+  expect(fixture.repository.getRealm(realmId)!.last_capture_at).toBe("2026-10-08T00:00:00Z");
 });
 
 it.each([false, true])("binds quota-only CLI output to credential identity, changed=%s", async (changed) => {

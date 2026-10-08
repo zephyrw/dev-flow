@@ -810,11 +810,10 @@ export class AgyAccountService {
         : null;
       let changedCredential = false;
       let refreshScope: "all" | "active_only" = "all";
-      const hasRunningUsers = async () => {
+      const hasRunningManagedUsers = async () => {
         const managed = await this.processHost.listManagedProcesses(realmId);
         return managed.length > 0 ||
-          this.repository.listPermits(realmId).some(p => p.status !== "released") ||
-          (await this.processHost.findExternalAgyProcesses()).length > 0;
+          this.repository.listPermits(realmId).some(p => p.status !== "released");
       };
 
       try {
@@ -919,7 +918,7 @@ export class AgyAccountService {
         for (const acc of accounts) {
           if (acc.id === origActiveId) continue;
           if (!acc.secret_ref) continue;
-          if (await hasRunningUsers()) {
+          if (await hasRunningManagedUsers()) {
             refreshScope = "active_only";
             break;
           }
@@ -934,13 +933,13 @@ export class AgyAccountService {
           }
         }
       } finally {
-        // Only restore if this refresh actually switched credentials. An active-only
-        // refresh must never reinstall a blob while a user's CLI is still running.
+        // Only restore if this refresh actually switched credentials. Managed
+        // consumers retain their credential binding; external CLIs are independent.
         const fallbackAcc =
           origActiveAcc ? this.repository.getAccount(realmId, origActiveAcc.id) : null;
         if (changedCredential && fallbackAcc?.secret_ref) {
           try {
-            if (await hasRunningUsers()) throw new AccountServiceError("external_owner");
+            if (await hasRunningManagedUsers()) throw new AccountServiceError("managed_busy");
             await this.authHost.activateSaved(
               realmId,
               fallbackAcc.id,
@@ -1137,7 +1136,6 @@ export class AgyAccountService {
       throw new AccountServiceError("auth_host_capability_unavailable");
     }
     await this.processHost.listManagedProcesses(input.realmId);
-    await this.processHost.findExternalAgyProcesses();
 
     // A retained one-shot lease is already ours and must not be reacquired.
     if (!this.authHost.isDomainLockHeld(input.realmId)) {
@@ -1392,14 +1390,17 @@ export class AgyAccountService {
     return this.coordinator.enqueue(async () => {
       const assertCurrent = () => {
         const realm = this.repository.getRealm(input.realm_id);
+        if (realm?.pending_operation_id)
+          throw new AccountServiceError("model_verification_account_switching");
+        if (realm && (realm.active_account_id !== input.account_id ||
+            (input.auth_epoch !== undefined && realm.auth_epoch !== input.auth_epoch)))
+          throw new AccountServiceError("model_verification_account_changed");
         if (
           this.closing || !realm || !realm.desired_enabled ||
-          realm.service_state !== "running" || realm.phase !== "idle" ||
-          realm.pending_operation_id ||
-          realm.active_account_id !== input.account_id ||
-          (input.auth_epoch !== undefined && realm.auth_epoch !== input.auth_epoch) ||
+          realm.service_state !== "running" ||
+          (realm.phase !== "idle" && !(realm.phase === "blocked" && realm.last_error === "external_owner")) ||
           !realm.active_secret_ref || !this.authHost.isDomainLockHeld(input.realm_id)
-        ) throw new AccountServiceError("model_verification_account_changed");
+        ) throw new AccountServiceError("model_verification_environment_unavailable");
         return realm;
       };
       let before = assertCurrent();
@@ -1426,14 +1427,9 @@ export class AgyAccountService {
 
       const assertCredential = async () => {
         await this.processHost.listManagedProcesses(input.realm_id);
-        // Directory/usage queries are short lived. Allow them to finish without
-        // killing or adopting an external session, then enforce the same fence.
-        for (let attempt = 0; ; attempt++) {
-          if (!(await this.processHost.findExternalAgyProcesses()).length) break;
-          if (attempt === 3) throw new AccountServiceError("external_owner");
-          await new Promise((resolve) => setTimeout(resolve, 400));
-          assertCurrent();
-        }
+        // This probe never installs credentials. An external CLI may use the
+        // same account; compare its credential identity before and after the
+        // probe instead of treating mere process presence as an account change.
         if (!(await this.authHost.compareActive(input.realm_id, before.active_secret_ref!))) {
           // A successful CLI request can refresh tokens for the SAME account.
           // Establish its real identity before capturing; never accept a changed
@@ -1460,14 +1456,14 @@ export class AgyAccountService {
               !(await this.authHost.compareActive(input.realm_id, captured.secret_ref)))
             throw new AccountServiceError("external_change");
           const current = assertCurrent();
-          if (current.auth_epoch !== before.auth_epoch || current.revision !== before.revision)
+          if (current.auth_epoch !== before.auth_epoch || current.active_secret_ref !== before.active_secret_ref)
             throw new AccountServiceError("model_verification_account_changed");
           this.saveCapture(input.realm_id, account.id, captured);
           before = { ...current, active_secret_ref: captured.secret_ref, revision: current.revision + 1 };
           this.repository.saveRealm(before);
         }
         const current = assertCurrent();
-        if (current.auth_epoch !== before.auth_epoch || current.revision !== before.revision)
+        if (current.auth_epoch !== before.auth_epoch || current.active_secret_ref !== before.active_secret_ref)
           throw new AccountServiceError("model_verification_account_changed");
       };
 
@@ -1590,8 +1586,7 @@ export class AgyAccountService {
     if (this.closing) throw new AccountServiceError("account_service_closing");
     this.rejectQueuedWorkflowSwitch(input.realm_id);
     await this.processHost.listManagedProcesses(input.realm_id);
-    if ((await this.processHost.findExternalAgyProcesses()).length)
-      throw new AccountServiceError("external_owner");
+    this.reconciler.reconcileExternalOwnerBlock(input.realm_id);
     this.rejectQueuedWorkflowSwitch(input.realm_id);
 
     const targetModelId = input.required_model_ids?.[0] || input.model_id;
@@ -1906,8 +1901,7 @@ export class AgyAccountService {
         realm.pending_operation_id ||
         realm.phase !== "idle" ||
         realm.auth_epoch !== permit.auth_epoch ||
-        !this.authHost.isDomainLockHeld(permit.realm_id) ||
-        (await this.processHost.findExternalAgyProcesses()).length
+        !this.authHost.isDomainLockHeld(permit.realm_id)
       )
         return;
       if (
@@ -2734,21 +2728,6 @@ export class AgyAccountService {
           }
         }
         this.assertOperation(op, signal);
-        const requiresExternalQuiesce =
-          op.kind === "switch" ||
-          (op.kind === "enroll" && op.mode !== "capture_current") ||
-          op.kind === "reauth";
-        if (requiresExternalQuiesce) {
-          const external = await this.processHost.findExternalAgyProcesses();
-          if (external.length) {
-            op.external_processes = external.map(({ pid, exe_path }) => ({
-              pid,
-              exe_path,
-            }));
-            this.saveStep(op, "waiting_external_exit");
-            return;
-          }
-        }
         if (op.kind === "switch") {
           const result = await this.switchExecutor.execute({
             operationId: op.operation_id,
@@ -2762,7 +2741,6 @@ export class AgyAccountService {
             signal,
           });
           op = this.repository.getOperation(op.operation_id)!;
-          if (result.status === "external_blocked") return;
           op.result = { ...result };
           if (!result.success) {
             if (
@@ -3161,11 +3139,6 @@ export class AgyAccountService {
       )
         throw new AccountServiceError("managed_processes_not_stopped");
       this.assertOperation(op, signal);
-      if ((await this.processHost.findExternalAgyProcesses()).length) {
-        if (op.kind !== "enroll" || op.mode !== "capture_current") {
-          throw new AccountServiceError("external_change");
-        }
-      }
       const checkRealm = this.repository.getRealm(op.realm_id)!;
       if (checkRealm.active_secret_ref &&
           !(await this.authHost.compareActive(op.realm_id, checkRealm.active_secret_ref))) {
@@ -3301,8 +3274,6 @@ export class AgyAccountService {
           !expected ||
           !(await this.authHost.compareActive(op.realm_id, expected))
         )
-          throw new AccountServiceError("external_change");
-        if ((await this.processHost.findExternalAgyProcesses()).length)
           throw new AccountServiceError("external_change");
         this.assertOperation(op, signal);
         op.install_target_ref = account.secret_ref;
@@ -3508,8 +3479,6 @@ export class AgyAccountService {
     if (!op.before_secret_ref) return;
     if (!this.authHost.isDomainLockHeld(op.realm_id))
       throw new AccountServiceError("domain_lock_lost");
-    if ((await this.processHost.findExternalAgyProcesses()).length)
-      throw new AccountServiceError("external_change");
     let known = false;
     for (const ref of [
       op.installed_secret_ref,

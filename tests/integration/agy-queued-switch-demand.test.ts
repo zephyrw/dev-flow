@@ -66,7 +66,7 @@ it("manual auto selection uses the running Other demand instead of the standalon
       ["Gemini Models", ["gemini-3.8-flash"], id === "a" ? 0 : 0.9],
       ["Claude and GPT models", [model], id === "a" ? 0.8 : 0.2],
     ] as const) f.repository.saveQuotaSnapshot({
-      ...source, id: `${id}-${pool_id}`, account_id: id, auth_epoch: realm.auth_epoch,
+      ...source, id: `${id}-${pool_id.replaceAll(" ", "-")}`, account_id: id, auth_epoch: realm.auth_epoch,
       pool_id, model_ids: [...model_ids], windows: source.windows.map(window => ({ ...window, remaining_fraction: remaining })),
     });
   }
@@ -110,23 +110,16 @@ it("merges a second queued demand before selection, including model, pool and al
     return result;
   });
   const models = vi.spyOn(f.probe, "probeModelAccess");
-  const entered = gate(), release = gate();
-  vi.spyOn(f.processHost, "findExternalAgyProcesses").mockImplementationOnce(async () => {
-    entered.open(); await release.promise; return [];
-  });
   const first = await f.service.requestWorkflowOperation(demand("one", { allowed_account_ids: ["b", "c"] }));
-  const ticking = f.service.tick(Date.now());
-  await entered.promise;
-  try {
-    expect(f.repository.getOperation(first.operation_id)?.phase).toBe("queued");
-    const second = await f.service.requestWorkflowOperation(demand("two", {
-      model_id: extraModel, required_model_ids: [extraModel], required_pool_ids: [extraPool], allowed_account_ids: ["a", "c"],
-    }));
-    expect(second.operation_id).toBe(first.operation_id);
-    expect(f.repository.getOperation(first.operation_id)).toMatchObject({
-      required_model_ids: ["fixture-model", extraModel], required_pool_ids: ["fixture-pool", extraPool], allowed_account_ids: ["c"],
-    });
-  } finally { release.open(); await ticking; }
+  expect(f.repository.getOperation(first.operation_id)?.phase).toBe("queued");
+  const second = await f.service.requestWorkflowOperation(demand("two", {
+    model_id: extraModel, required_model_ids: [extraModel], required_pool_ids: [extraPool], allowed_account_ids: ["a", "c"],
+  }));
+  expect(second.operation_id).toBe(first.operation_id);
+  expect(f.repository.getOperation(first.operation_id)).toMatchObject({
+    required_model_ids: ["fixture-model", extraModel], required_pool_ids: ["fixture-pool", extraPool], allowed_account_ids: ["c"],
+  });
+  await f.service.tick(Date.now());
   expect(f.repository.getOperation(first.operation_id)?.phase).toBe("completed");
   expect(f.active()).toBe("c");
   expect(models.mock.calls.map(([model]) => model).sort()).toEqual(["fixture-model", extraModel].sort());
@@ -160,9 +153,9 @@ it("closes queued joining before awaiting occupancy and admits a late run only a
   expect(f.repository.getOperation(operation.operation_id)?.required_model_ids).toEqual(["fixture-model"]);
 });
 
-it("returns a joinable queued-switch rejection when a switch is accepted during admission's external check", async () => {
+it("returns a joinable queued-switch rejection when a switch is accepted during admission's managed-process check", async () => {
   const entered = gate(), release = gate();
-  vi.spyOn(f.processHost, "findExternalAgyProcesses").mockImplementationOnce(async () => {
+  vi.spyOn(f.processHost, "listManagedProcesses").mockImplementationOnce(async () => {
     entered.open(); await release.promise; return [];
   });
   const admission = f.service.acquireUsagePermit(usage("racing-run")).then(

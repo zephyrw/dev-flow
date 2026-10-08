@@ -13,6 +13,18 @@ export class AgyReconciler {
     private processHost: ProcessHostPort,
   ) {}
 
+  /** Retire the old process-presence blocker without clearing real failures. */
+  reconcileExternalOwnerBlock(realmId: string): void {
+    const realm = this.repository.getRealm(realmId);
+    if (!realm || !realm.desired_enabled || realm.service_state !== "running" ||
+        realm.phase !== "blocked" || realm.last_error !== "external_owner" ||
+        realm.pending_operation_id || !this.authHost.isDomainLockHeld(realmId)) return;
+    realm.phase = "idle";
+    realm.last_error = undefined;
+    realm.revision++;
+    this.repository.saveRealm(realm);
+  }
+
   async reconcilePermits(realmId: string): Promise<void> {
     if (!this.authHost.isDomainLockHeld(realmId)) throw new Error("domain_lock_lost");
     const activePermits = this.repository
@@ -43,6 +55,7 @@ export class AgyReconciler {
       throw new Error("domain_lock_lost");
 
     await this.reconcilePermits(realmId);
+    this.reconcileExternalOwnerBlock(realmId);
 
     // desired_enabled=false 现场处理 (AGF-D06, CR11)
     if (!realm.desired_enabled) {
@@ -55,10 +68,9 @@ export class AgyReconciler {
       // cleanup_only 模式：只收尾回滚或结算取消，不准入、不选号
       const op = this.repository.getOperation(realm.pending_operation_id);
       if (op && !["completed", "cancelled", "failed"].includes(op.phase)) {
-        // 先确认受管进程与外部进程已停止，未停止时不得动凭据 (Q08)
+        // Confirm only managed consumers before restoring their credentials.
         const managed = await this.processHost.listManagedProcesses(realmId);
         if (
-          (await this.processHost.findExternalAgyProcesses()).length ||
           (managed.length &&
             !(await this.processHost.confirmProcessesStopped(
               managed.map((p) => p.pid),
@@ -191,7 +203,6 @@ export class AgyReconciler {
     }
     const managed = await this.processHost.listManagedProcesses(realmId);
     if (
-      (await this.processHost.findExternalAgyProcesses()).length ||
       (managed.length &&
         !(await this.processHost.confirmProcessesStopped(
           managed.map((p) => p.pid),

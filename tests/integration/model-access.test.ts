@@ -611,6 +611,16 @@ it("IT-A16：失败验证不发布新 spec", async () => {
   expect(env.store.list("execution_spec")).toHaveLength(0);
 });
 
+it("reports CLI region qualification separately from quota, login and model removal", async () => {
+  const env = openAccess({ behavior: "agy-region-unavailable" });
+  const idn = identity();
+  const catalog = await discoverAdapter(env, "codex", idn);
+  const { job } = await verifyNow(env.access, profile("codex", "gpt-6-astra", "high"), idn, catalog);
+  expect(job).toMatchObject({ status: "failed", error_code: "AGY_REGION_UNAVAILABLE", retryable: false });
+  expect(job?.error_message).toContain("地区资格");
+  expect(env.store.list<{status: string}>("model_access")[0]?.status).toBe("environment_error");
+});
+
 it("IT-A17：stderr 含 token 必须脱敏且无原文落库", async () => {
   const env = openAccess({ behavior: "401" });
   const idn = identity();
