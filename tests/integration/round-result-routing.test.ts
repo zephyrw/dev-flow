@@ -101,7 +101,7 @@ it("need_user 不生成完成记录，审查不明结论回答后回到原审查
       source_run_id: "run-ask",
     });
     await s.engine.receiveReview(s.w.id, { summary: "稍后补充结论" });
-    expect(s.engine.get(s.w.id).state).toBe("REVIEW_QUEUED");
+    expect(s.engine.get(s.w.id).state).toBe("WAITING_INPUT");
     expect(s.engine.quality.getGate(s.w.id, "before_human")).toBeUndefined();
     expect(readWaitingContext(s.store, s.w.id)?.purpose).toBe("review");
     expect(readWaitingContext(s.store, s.w.id)?.continuation).toBe(true);
@@ -442,13 +442,10 @@ it("不明结论会写入完整续接，完成交付只入队归档不改意图"
       summary: "请补充本轮结论",
     });
     expect(result.status).toBe("unclear");
-    const continuation = s.store.get<any>("run_continuation", s.w.id);
-    expect(continuation).toMatchObject({
-      kind: "intent_clarification",
-      source_run_id: "run-clarify",
-      purpose: "execute",
-      role: "executor",
-      original_text: "请补充本轮结论",
+    expect(s.store.get("run_continuation", s.w.id)).toBeUndefined();
+    expect(s.engine.get(s.w.id).state).toBe("WAITING_INPUT");
+    expect(readWaitingContext(s.store, s.w.id)).toMatchObject({
+      purpose: "execute", role: "executor", original_text: "请补充本轮结论", intent: "unclear",
     });
     expect(readWaitingContext(s.store, s.w.id)?.continuation).toBe(true);
   } finally {

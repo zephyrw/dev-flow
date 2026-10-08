@@ -239,7 +239,27 @@ export function readableLogs(events: any[], workflow: string, formalGuidance: Ar
   id: string; workflow_id: string; text: string; created_at: string; feedback_id?: string;
 }> = []): LogEntry[] {
   // Redact display copies without rewriting stored events or execution guidance.
-  events = events.map(publicLogEvent);
+  // Legacy deltas must be joined before redaction: sanitizing individual chunks
+  // loses ordinary text and can expose credentials split across event boundaries.
+  const narratives = new Map<string, { text: string; last: any }>();
+  const ordered = [...events].filter(e => e.workflow_id === workflow)
+    .sort((a, b) => a.event_seq - b.event_seq)
+    .filter((e, i, all) => i === 0 || e.event_seq !== all[i - 1].event_seq);
+  const narrativeKey = (e: any) => `${e.run_id ?? e.payload?.step_update?.conversation_id}:${e.payload?.step_update?.step_index}`;
+  for (const e of ordered) {
+    const step = e.payload?.step_update;
+    if (e.type !== "AgentEvent" || step?.step_type !== "agent_response") continue;
+    const previous = narratives.get(narrativeKey(e));
+    const text = typeof step.text === "string" && step.text.trim() ? step.text
+      : (previous?.text ?? "") + (typeof step.text_delta === "string" ? step.text_delta : "");
+    narratives.set(narrativeKey(e), { text, last: e });
+  }
+  events = ordered.map(e => {
+    const narrative = narratives.get(narrativeKey(e));
+    if (!narrative || narrative.last !== e) return publicLogEvent(e);
+    return publicDiagnostic({ ...e, payload: { ...e.payload,
+      step_update: { ...e.payload.step_update, text: narrative.text } } });
+  });
   const rows: LogEntry[] = [],
     steps = new Map<string, LogEntry>();
   let repairPending = false;
@@ -499,6 +519,14 @@ export function readableLogs(events: any[], workflow: string, formalGuidance: Ar
           previous.at(-1)?.name;
         const args = object(parameters.Arguments ?? parameters);
         const summary = toolSummary(name, args);
+        if (summary.hidden || (!summary.text && !summary.command && !summary.cwd &&
+            !pretty(tool?.output).trim() && step.state !== "ERROR" &&
+            object(tool?.output).isError !== true)) {
+          row.kind = "diagnostic";
+          row.title = "";
+          row.text = "";
+          continue;
+        }
         row.kind = "tool";
         row.title =
           toolLabels[name] ??
@@ -552,7 +580,13 @@ export function readableLogs(events: any[], workflow: string, formalGuidance: Ar
       text = `执行模型：${p.init?.model ?? p.model ?? "实际模型未确认"}`;
     }
     if (e.type === "StateChanged") {
-      if (p.stage === "planner_commit" && ["QUEUED", "EXECUTING", "VERIFYING"].includes(p.to)) {
+      if (p.to === "WAITING_INPUT" && ["EXECUTION_INTENT_UNCLEAR", "REVIEW_INTENT_UNCLEAR"].includes(p.blocker?.code)) {
+        title = "等待确认本轮结果";
+        text = "已有进度和模型原文已保留。由你决定是否让模型仅补充结果说明，关闭弹窗或稍后处理会保持等待。";
+      } else if (p.intent_clarification === true && ["EXECUTING", "REVIEWING"].includes(p.to)) {
+        title = "补充结果说明";
+        text = "你已确认让模型仅说明上一轮结果，保留已有开发和测试进度。";
+      } else if (p.stage === "planner_commit" && ["QUEUED", "EXECUTING", "VERIFYING"].includes(p.to)) {
         title = p.to === "QUEUED" ? "本地提交已排队" : "正在本地提交";
         text = "保留已完成的开发和测试结果，由规划模型继续完成本任务的提交与合并。";
       } else if (p.to === "QUEUED") {

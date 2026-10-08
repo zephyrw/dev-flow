@@ -173,6 +173,10 @@ export function normalizeExecutionIntent(value: unknown): NormalizedExecution {
   const nested = asRecord(rec.delivery);
   const outerStatus = intentField(rec);
   const nestedStatus = intentField(nested);
+  const declared = [text(rec.status), text(rec.verdict), text(nested?.status), text(nested?.verdict)]
+    .filter((item): item is string => !!item).map(recognizedExecutionIntent);
+  if (new Set(declared).size > 1)
+    return withCopy(rec, nested, "unclear", outerStatus ?? nestedStatus, "outer", true);
   if (outerStatus)
     return withCopy(
       rec,
@@ -333,6 +337,10 @@ export function normalizeReviewIntent(value: unknown): {
   ];
   const key = lower(verdict);
   let intent: ReviewIntent = "unclear";
+  const declared = [text(rec.verdict), text(rec.status), text(quality?.verdict)].filter((item): item is string => !!item)
+    .map(value => REVIEW_PASSED.has(lower(value)) ? "passed" : REVIEW_CHANGES.has(lower(value))
+      ? "changes_required" : NEED_USER.has(lower(value)) ? "need_user" : "unclear");
+  if (new Set(declared).size > 1) return { intent: "unclear", verdict, questions, payload: rec };
   if (questions.length) intent = "need_user";
   else if (REVIEW_PASSED.has(key) && hasConfirmedCodeFindings(rec))
     intent = "changes_required";

@@ -21,6 +21,7 @@ fixture.probe.probeUsage = async () => {
   return {
     email: `${fixture.active()}@example.com`,
     cli_version: "1.2.7",
+    raw_output: "fixture usage: Gemini Models 90%, Claude and GPT models 80%",
     windows: [
       { kind: "weekly" as const, duration_minutes: 10080 as const, remaining_fraction: 0.9, reset_at: curReset, observed_at: curIso, status: "observed" as const },
       { kind: "five_hour" as const, duration_minutes: 300 as const, remaining_fraction: 0.85, reset_at: curReset, observed_at: curIso, status: "observed" as const },
@@ -45,7 +46,6 @@ fixture.probe.probeUsage = async () => {
     ],
     executable_fingerprint: "fixture",
     capability_verified: true,
-    raw_output: "",
   };
 };
 

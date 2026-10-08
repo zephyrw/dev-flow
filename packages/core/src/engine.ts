@@ -579,7 +579,7 @@ export class Engine {
     state: State,
     stage: string,
     patch: Partial<Workflow> = {},
-    event: { resumed?: boolean; repair_source?: "quality_review"; source_review_id?: string; guidance_mode?: "human_acceptance"; user_guidance?: boolean } = {},
+    event: { resumed?: boolean; intent_clarification?: boolean; repair_source?: "quality_review"; source_review_id?: string; guidance_mode?: "human_acceptance"; user_guidance?: boolean } = {},
   ) {
     return this.store.transaction(() => {
       const w = this.get(key);
@@ -1667,7 +1667,7 @@ export class Engine {
       const accepted = currentContinuation(this.store, key, candidate, { purpose, role });
       if (accepted && matches(accepted)) return accepted;
     }
-    if (staged) clearRunContinuation(this.store, key);
+    if (staged && matches(staged)) clearRunContinuation(this.store, key);
   }
   private openRunContinuation(key: string, purpose: RunContinuation["purpose"]): RunContinuation | undefined {
     return currentContinuation(this.store, key,
@@ -1730,7 +1730,7 @@ export class Engine {
     });
     return { status: "ignored", message: "过期回执" };
   }
-  private queueUnclearFollowup(
+  private waitForResultClarification(
     key: string,
     context: {
       purpose: WaitingContext["purpose"];
@@ -1744,6 +1744,25 @@ export class Engine {
       stage: string;
     },
   ) {
+    return this.store.transaction(() => {
+    const w = this.get(key);
+    if (["STOPPED", "STOPPING"].includes(w.state) ||
+        context.run_id && this.store.get("run_stop", context.run_id)) return;
+    const conv = interactionConversationContext(this.store, key, context.run_id, context.conversation_id);
+    const interaction = new UserInteractionService(this.store).createInteraction({
+      workflowId: key, sourceRunId: context.run_id ?? context.source_execution_run_id ?? "",
+      sourcePlanRevision: w.plan_revision ?? 1,
+      rootConversationId: conv.rootConversationId, sourceGeneration: conv.sourceGeneration,
+      nativeSessionId: conv.nativeSessionId, purpose: context.purpose, role: context.role,
+      rawInput: {
+        kind: "question", title: "本轮结果需要确认",
+        message: ("未能明确识别模型的本轮结果。已有进度已保留，等待你的决定。" +
+          (context.original_text ? "\n\n模型原文：\n" + context.original_text : "")).slice(0, 4000),
+        question: "是否让模型仅补充刚才的结果说明？关闭弹窗或稍后处理将保持等待。",
+        choices: [{ id: "clarify", label: "仅补充结果说明" }], allow_free_text: false,
+        resume_note: "只说明上一轮结果，不重新执行开发或测试。",
+      },
+    });
     saveWaitingContext(this.store, key, {
       purpose: context.purpose,
       role: context.role,
@@ -1755,34 +1774,15 @@ export class Engine {
       questions: context.questions,
       continuation: true,
       intent: "unclear",
+      interaction_id: interaction.id,
     });
-    saveRunContinuation(this.store, key, key, {
-      kind: "intent_clarification",
-      source_run_id:
-        context.run_id ?? context.source_execution_run_id ?? "",
-      purpose: context.purpose,
-      role: context.role,
-      phase: context.phase,
-      conversation_id: context.conversation_id,
-      original_text: context.original_text,
-      questions: context.questions,
+    clearRunContinuation(this.store, key);
+    this.store.remove("queue", key);
+    this.transition(key, [w.state], "WAITING_INPUT", context.stage, {
+      blocker: { code: context.purpose === "review" ? "REVIEW_INTENT_UNCLEAR" : "EXECUTION_INTENT_UNCLEAR",
+        message: "未能明确识别本轮结果，已保留原文和进度，等待你的确认。" },
     });
-    if (context.purpose === "review") {
-      this.transition(
-        key,
-        [this.get(key).state],
-        "REVIEW_QUEUED",
-        context.stage,
-        { blocker: undefined },
-      );
-    } else {
-      this.restoreDispatchContext(key, context.run_id);
-      this.transition(key, [this.get(key).state], "QUEUED", context.stage, {
-        blocker: undefined,
-      });
-    }
-    this.scheduler.enqueue(key, this.get(key).project_id);
-    this.store.enqueue(key, "dispatch", {});
+    });
   }
   private async applyRoundResult(
     key: string,
@@ -3566,7 +3566,7 @@ export class Engine {
       this.store.transaction(() => {
         w = this.transition(key, [review ? "REVIEW_QUEUED" : "QUEUED"], review ? "REVIEWING" : "EXECUTING", stage, {
           run_id: runId, review_request_id: review ? id("review") : w.review_request_id, blocker: undefined,
-        }, { resumed,
+        }, { resumed, ...(continuation?.kind === "intent_clarification" ? { intent_clarification: true } : {}),
           ...(this.store.list<FeedbackMessage>("feedback_message", key).some(message => message.status === "pending") ||
               pendingRunMessages(this.store, key, { ...run, continuation }).length > 0
             ? { user_guidance: true } : {}),
@@ -4096,7 +4096,7 @@ export class Engine {
         summary: quality.summary, repair_document: body },
     });
     if (action.kind === "wait") {
-      this.queueUnclearFollowup(w.id, {
+      this.waitForResultClarification(w.id, {
         purpose: "review", role: "planner", phase, run_id: w.run_id,
         original_text: action.reason, stage: phase === "before_human" ? BEFORE_HUMAN_REVIEW_STAGE : "review",
       });
@@ -4134,7 +4134,7 @@ export class Engine {
     const applied = this.quality.applyQualityTransfer(transfer);
     const decision = applied.decision;
     if (decision.action === "retry_incomplete") {
-      this.queueUnclearFollowup(w.id, {
+      this.waitForResultClarification(w.id, {
         purpose: "review",
         role: "planner",
         phase: this.reviewPointer(w.id).phase ?? "before_human",
@@ -4279,7 +4279,7 @@ export class Engine {
     return this.store.transaction(() => {
       const transfer = this.quality.prepareQualityTransfer(key, result);
       if (transfer.decision.action === "retry_incomplete") {
-        this.queueUnclearFollowup(key, {
+        this.waitForResultClarification(key, {
           purpose: "review",
           role: "planner",
           phase,
@@ -4323,7 +4323,17 @@ export class Engine {
     if (sanitized && typeof sanitized === "object" && "id" in sanitized) {
       delete (sanitized as any).id;
     }
-    const parsed = ReviewSchema.safeParse(sanitized);
+    let parsed = ReviewSchema.safeParse(sanitized);
+    // Optional review material must not erase an explicit request to wait.
+    if (!parsed.success && normalizeReviewIntent(sanitized).intent === "need_user") {
+      const raw = sanitized as Record<string, unknown>;
+      parsed = ReviewSchema.safeParse({
+        verdict: "need_user", summary: typeof raw.summary === "string" ? raw.summary : "复核模型需要用户处理",
+        notes: typeof raw.notes === "string" ? raw.notes : undefined,
+        unresolved_questions: normalizeReviewIntent(raw).questions,
+        user_interaction: raw.user_interaction, original_result: sanitized,
+      });
+    }
     const w = this.get(key);
     if (w.run_id && this.store.get("run_stop", w.run_id)) return w;
     requireCondition(
@@ -4332,7 +4342,7 @@ export class Engine {
       "当前不在审查阶段",
     );
     if (!parsed.success) {
-      this.queueUnclearFollowup(key, {
+      this.waitForResultClarification(key, {
         purpose: "review",
         role: "planner",
         phase: this.reviewPointer(key).phase ?? "before_human",
@@ -4373,7 +4383,7 @@ export class Engine {
       original_result: parsed.data,
     });
     if (reviewIntent.intent === "unclear") {
-      this.queueUnclearFollowup(key, {
+      this.waitForResultClarification(key, {
         purpose: "review",
         role: "planner",
         phase: this.reviewPointer(key).phase ?? "before_human",
@@ -4791,7 +4801,7 @@ export class Engine {
       return { status: "need_planner", summary: normalized.summary };
     }
     if (normalized.intent === "unclear") {
-      this.queueUnclearFollowup(key, {
+      this.waitForResultClarification(key, {
         purpose: "execute",
         role: plannerRole ? "planner" : "executor",
         phase: run?.dispatch_context?.review_phase,

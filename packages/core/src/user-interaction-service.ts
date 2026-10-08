@@ -125,7 +125,7 @@ export class UserInteractionService {
     const workflow = this.store.get<Workflow>("workflow", workflowId);
     if (
       !waiting ||
-      waiting.intent !== "need_user" ||
+      !["need_user", "unclear"].includes(waiting.intent) ||
       workflow?.state !== "WAITING_INPUT"
     ) {
       return undefined;
@@ -144,6 +144,8 @@ export class UserInteractionService {
       // An explicit binding is authoritative, including a terminal decision.
       return undefined;
     }
+    // Only a deliberately created clarification request may represent unclear.
+    if (waiting.intent === "unclear") return undefined;
 
     // 2. 如果 waiting 是 need_user 但没有 interaction_id，或者关联记录丢失，
     //    按来源 run_id 检查是否有现存 pending 记录
@@ -354,7 +356,8 @@ export class UserInteractionService {
       }
 
       const waiting = readWaitingContext(this.store, workflowId);
-      if (!waiting || waiting.intent !== "need_user") {
+      if (!waiting || !["need_user", "unclear"].includes(waiting.intent) ||
+          waiting.intent === "unclear" && waiting.interaction_id !== interactionId) {
         throw new FlowError(
           "WAITING_CONTEXT_MISSING",
           "当前工作流未处于等待人工交互的上下文中",
@@ -605,7 +608,7 @@ export class UserInteractionService {
       // Reuse the normal per-Run guidance cursor. The next Run acknowledges
       // this message and places it in the native prompt without replaying old
       // interactions. Only resumeFromWaiting below schedules the continuation.
-      new FeedbackService(this.store).submitFeedback({
+      if (waiting.intent !== "unclear") new FeedbackService(this.store).submitFeedback({
         request_id: `interaction-response:${record.id}:${payload.request_id}`,
         workflow_id: workflowId,
         kind: record.role === "planner" ? "planning" : "execution",

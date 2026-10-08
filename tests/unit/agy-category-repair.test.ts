@@ -58,27 +58,16 @@ describe("AGY review regressions U03/U04/I03", () => {
     store = new Store(join(directory, "store.db"));
     repository = new AgyAccountRepository(store);
     locked = false;
+    const unused = async (): Promise<never> => { throw new Error("unexpected authentication fixture call"); };
     auth = {
+      capabilities: unused, compareActive: unused, inspectActive: unused,
+      captureActive: unused, activateSaved: unused, restoreBackup: unused,
+      clearActiveForLogin: unused, deleteSaved: unused,
       isDomainLockHeld: () => locked,
       acquireDomainLock: async () => {
         locked = true;
         return { acquired: true, release: async () => { locked = false; } };
       },
-      compareActive: async () => false,
-      capabilities: async () => ({
-        supported: true,
-        platform: "win32",
-        dpapi_available: true,
-        cred_manager_available: true,
-        named_mutex_available: true,
-        version: "1.0",
-      }),
-      inspectActive: async () => ({ exists: false }),
-      captureActive: async () => ({ secret_ref: "dummy", credential_revision: 1 }),
-      activateSaved: async () => ({ credential_revision: 1 }),
-      restoreBackup: async () => {},
-      clearActiveForLogin: async () => ({}),
-      deleteSaved: async () => {},
     };
     processHost = {
       listManagedProcesses: vi.fn(async () => []), findExternalAgyProcesses: async () => [],

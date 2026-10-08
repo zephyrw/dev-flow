@@ -188,13 +188,13 @@ describe("执行与审查意图归一化", () => {
       ),
     ).toMatchObject({ intent: "unclear", intent_source: "missing" });
   });
-  it("外层 completed 与求助各自保持语义，附件不改意图", () => {
+  it("外层与内层状态冲突时等待确认，附件不改意图", () => {
     expect(
       normalizeDeliveredRound({
         status: "completed",
         delivery: { status: "need_user" },
       }),
-    ).toMatchObject({ intent: "completed", intent_source: "outer" });
+    ).toMatchObject({ intent: "unclear", intent_source: "outer" });
     expect(normalizeExecutionIntent({ status: "need_user" }).intent_source).toBe(
       "outer",
     );

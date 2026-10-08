@@ -75,7 +75,7 @@ export function toolSummary(name: string | undefined, args: any) {
       : query
         ? `${query}${target ? ` · ${target}` : ""}`
         : (target ?? "");
-  return { title: name ? names[name] : undefined, text, command, cwd };
+  return { title: name ? names[name] : undefined, text, command, cwd, hidden: internalSearch };
 }
 
 export function toolOutputSummary(output: unknown, name?: string) {

@@ -102,6 +102,17 @@ it("describes planner code repairs and executor test repairs with their own resp
   expect(rows[1]?.text).toContain("修复测试发现的问题");
 });
 
+it("distinguishes waiting for clarification and an explicitly approved explanation from development", () => {
+  const rows = readableLogs([
+    { workflow_id: "w", event_seq: 1, type: "StateChanged", payload: { to: "WAITING_INPUT", stage: "execute",
+      blocker: { code: "EXECUTION_INTENT_UNCLEAR" } } },
+    { workflow_id: "w", event_seq: 2, type: "StateChanged", payload: { from: "QUEUED", to: "EXECUTING", stage: "execute",
+      resumed: true, intent_clarification: true } },
+  ], "w");
+  expect(rows.map(row => row.title)).toEqual(["等待确认本轮结果", "补充结果说明"]);
+  expect(rows[1]?.text).not.toContain("自测");
+});
+
 it.each([true, false])("labels a bound quality repair as remediation rather than implementation (resumed=%s)", (resumed) => {
   const rows = readableLogs([{ workflow_id: "w", event_seq: 1, created_at: "2026-09-28T09:54:06Z",
     type: "StateChanged", payload: { from: "QUEUED", to: "EXECUTING", stage: "execute", resumed,
@@ -285,6 +296,35 @@ it("hides abandoned partial model fragments while retaining the current narrativ
     title: "读取文件",
     text: "C:/work/.devflow/containers/task/handoff.json",
   });
+});
+
+it("joins legacy response deltas before masking secrets and excludes thought fragments", () => {
+  const events = ['password="two ', 'words" ordinary output'].map((text_delta, event_seq) => ({
+    workflow_id: "w", run_id: "current", event_seq, type: "AgentEvent",
+    payload: { event: "step_update", step_update: {
+      step_index: 1, step_type: "agent_response", state: "ACTIVE", text_delta,
+      reasoning: "private reasoning", thought: "private thought",
+    } },
+  }));
+  const original = JSON.stringify(events);
+  const rows = userFacingLogs(readableLogs(events, "w"), "current");
+  expect(rows).toHaveLength(1);
+  expect(rows[0]!.text).toContain("ordinary output");
+  expect(rows[0]!.text).toContain("[REDACTED]");
+  expect(JSON.stringify(rows)).not.toMatch(/two |words|private reasoning|private thought/);
+  expect(JSON.stringify(events)).toBe(original);
+});
+
+it("retains output from an unknown tool when it contains a real execution fact", () => {
+  const rows = readableLogs([{
+    workflow_id: "w", run_id: "r", event_seq: 1, type: "AgentEvent",
+    payload: { event: "step_update", step_update: {
+      step_index: 1, step_type: "tool", tool_name: "custom_tool", state: "DONE",
+      tool_info: { output: "operation returned 3 records" },
+    } },
+  }], "w");
+  expect(rows).toHaveLength(1);
+  expect(rows[0]!.output).toBe("operation returned 3 records");
 });
 
 it("distinguishes repair queuing and resume from entering the development stage again", () => {

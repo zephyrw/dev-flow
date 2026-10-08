@@ -5,6 +5,7 @@ import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
 import { z } from "zod";
+import { extractRoundOutput } from "./round-output.js";
 import type { Engine } from "../../core/src/engine.js";
 import { pauseForNativePermission, bindNativePermission } from "../../core/src/native-permission.js";
 import { installAgyPermissionHook } from "../../adapters/agy/src/permission-hook.js";
@@ -1162,6 +1163,7 @@ export class ProfileRuntime {
         : undefined;
     let final: unknown,
       text = "",
+      terminalText: string | undefined,
       conversation = previous?.id,
       failure: string | undefined,
       stderrTail = "";
@@ -1317,11 +1319,13 @@ export class ProfileRuntime {
           failure ??= nativeFailureDiagnostic({ ...v, result: attributedResult }, diagnosticContext);
         if (v.structured_output) final = v.structured_output;
         if (v.type === "result" && typeof v.result === "string")
-          text = v.result;
+          text = terminalText = v.result;
+        if (v.event === "result" && v.result?.structured_output)
+          final = v.result.structured_output;
         if (v.event === "result" && typeof v.result?.response === "string")
-          text = v.result.response;
+          text = terminalText = v.result.response;
         if (v.type === "item.completed" && v.item?.type === "agent_message")
-          text = v.item.text;
+          text = terminalText = v.item.text;
         if (v.type === "text" && typeof v.part?.text === "string")
           text += v.part.text;
         if (v.type === "assistant" && Array.isArray(v.message?.content)) {
@@ -1539,6 +1543,27 @@ export class ProfileRuntime {
           profile,
           run_id: run.id,
         });
+    }
+    if (["implement", "execute", "executor_test", "functional_fix", "planner_takeover", "planner_commit", "quality_review"].includes(purpose)) {
+      const outputText = existsSync(output) ? readFileSync(output, "utf8") : undefined;
+      const extracted = extractRoundOutput({
+        kind: purpose === "quality_review" ? "review" : "execution",
+        structured: final, outputText, replyText: terminalText ?? text,
+        workflow_id: w.id, run_id: run.id, plan_revision: w.plan_revision, plan_hash: w.plan_hash,
+      });
+      const diagnostic = extracted.kind === "resolved"
+        ? { kind: extracted.kind, source: extracted.source, candidate_count: extracted.candidate_count }
+        : { kind: extracted.kind, reason: extracted.reason, candidate_count: extracted.candidate_count };
+      this.engine.store.put("run_result_parse", run.id, w.id, diagnostic);
+      // Raw answers remain available even when the parsed result is ambiguous.
+      atomicWrite(join(root, "raw-result.txt"), terminalText ?? (text || outputText || ""));
+      final = extracted.kind === "resolved" ? extracted.value : {
+        ...(extracted.kind === "ambiguous" ? { status: "unclear", verdict: "unclear" } : {}),
+        summary: extracted.rawText || extracted.reason,
+        result_parse: diagnostic,
+      };
+      atomicWrite(output, JSON.stringify(final, null, 2));
+      return normalizeModelOutput(final);
     }
     if (existsSync(output)) {
       try {

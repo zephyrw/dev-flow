@@ -124,3 +124,45 @@ test("E01 — 真实浏览器中的通用人机交互（操作请求、稍后处
   await expect(dialog).not.toBeVisible();
   await expect(pendingBanner).not.toBeVisible();
 });
+
+test("E02 — 结果解析待确认时关闭和刷新保持等待，明确确认才发送一次补问", async ({ page }) => {
+  const workflowId = "wf-result-clarification";
+  let responses = 0;
+  let answered = false;
+  const interaction = { id: "int-clarify", workflow_id: workflowId, source_run_id: "run-clarify",
+    source_plan_revision: 1, purpose: "execute", role: "executor", status: "pending", created_at: new Date().toISOString(),
+    request: { kind: "question", title: "本轮结果需要确认", message: "已有进度已保留，等待你的决定。",
+      question: "是否让模型仅补充刚才的结果说明？", choices: [{ id: "clarify", label: "仅补充结果说明" }], allow_free_text: false } };
+  const workflow = { id: workflowId, project_id: "p1", title: "解析等待", state: "WAITING_INPUT", plan_revision: 1 };
+  const project = { id: "p1", name: "隔离回归项目", data: { mode: "directory" }, repositories: [], commands: [] };
+  await page.route("**/api/**", async route => {
+    const path = new URL(route.request().url()).pathname;
+    if (path.endsWith("/user-interactions/current")) return route.fulfill({ json: { interaction: answered ? null : interaction } });
+    if (path.endsWith("/respond")) {
+      responses++;
+      expect(route.request().postDataJSON()).toMatchObject({ action: "answer", choice_id: "clarify" });
+      answered = true;
+      return route.fulfill({ json: { success: true, interaction: { ...interaction, status: "answered" } } });
+    }
+    if (path.endsWith("/projects")) return route.fulfill({ json: [project] });
+    if (path.endsWith("/workflows")) return route.fulfill({ json: [workflow] });
+    if (path.endsWith(`/workflows/${workflowId}`)) return route.fulfill({ json: { workflow, project,
+      plan: { plan: { task_model: "leaf-v1", modules: [], tasks: [], tests: [] } }, tasks: [], events: [], runs: [], evidence: [], attention: null } });
+    return route.fulfill({ json: [] });
+  });
+  await page.routeWebSocket("**/api/notifications", () => {});
+  await page.routeWebSocket("**/api/events?*", () => {});
+  await page.goto(`/?workflow=${workflowId}`);
+  const dialog = page.locator(".app-dialog-container");
+  await expect(dialog).toBeVisible();
+  await page.getByRole("button", { name: "稍后处理" }).click();
+  await expect(dialog).not.toBeVisible();
+  expect(responses).toBe(0);
+  await page.reload();
+  await expect(dialog).toBeVisible();
+  expect(responses).toBe(0);
+  await page.getByText("仅补充结果说明", { exact: true }).click();
+  await page.getByRole("button", { name: "提交回答" }).click();
+  await expect(dialog).not.toBeVisible();
+  expect(responses).toBe(1);
+});

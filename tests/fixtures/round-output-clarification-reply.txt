@@ -1,0 +1,294 @@
+刚才的结果为 **“需要用户补充 (need_user)”**。
+
+### 原因说明
+依据审批附加指令（*“现在测试环境暂时不可用，你先完成全部的代码修改吧，能完成的测试也先测完。剩下的依赖测试环境中间件的你先不动，做完你能做的就停下来。然后回复我当前的进度和剩下的完成事项”*）：
+1. **已全部完成的工作**：
+   - 全部核心代码修改已完成（覆盖 DF-01 至 DF-07，彻底解决成功终态 `retryable` NOT NULL 冲突、错误信息超长截断脱敏、切片并发与心跳续租、报表采集空数据/未映射结构化区分、不可重试队列收口、XXL 调度日志 ID 透传及告警责任人路由）。
+   - Flyway 业务库数据修复迁移脚本 [V112__repair_sync_failure_retryable_and_stale_queue.sql](file:///C:/Code/aiad/cwos-aiad/.worktrees/wf-d5223422-d14f-486c-943f-8ac2d0e75dd7/backend/cwos-aiad-starter/src/main/resources/db/migration/V112__repair_sync_failure_retryable_and_stale_queue.sql) 交付完成。
+   - 前端 `npm run build`（`vue-tsc` 与 `vite build`）与后端 `mvn compile -pl cwos-aiad-web -am`（全 6 模块）全部编译构建通过。
+   - 脱机单元测试 `UT-01` 与 `UT-02` 均已 100% 验证通过。
+2. **需要用户补充与环境就绪的事项**：
+   - 依赖测试环境中间件（MySQL、Redis）的集成测试 `IT-01`、`IT-03`；
+   - 依赖用户指认测试千川账号并进行真实官方同步的 `IT-02`；
+   - 依赖启动测试环境服务实例的真实浏览器 `E2E-01` 与 `OT-01`（OpenTabs 仿人工核验）。
+
+---
+
+### 当前阶段约定的结果（JSON）
+
+```json
+{
+  "test_results": [
+    {
+      "test_id": "UT-01",
+      "case_id": "UT-01-CASE-01",
+      "status": "passed",
+      "summary": "状态转换、错误摘要定长截断、敏感凭据脱敏、错误分类单元测试通过（SyncFailurePersistenceSupportTest、SyncErrorClassifierTest）"
+    },
+    {
+      "test_id": "UT-02",
+      "case_id": "UT-02-CASE-01",
+      "status": "passed",
+      "summary": "素材报表采集结构化结果、官方空数据判定、素材未匹配失败及成功写入单元测试通过（MaterialReportCollectResultTest）"
+    },
+    {
+      "test_id": "IT-01",
+      "case_id": "IT-01-CASE-01",
+      "status": "skipped",
+      "summary": "因测试环境暂时不可用，依赖测试环境真实MySQL的共享完成与队列集成测试跳过，等待环境就绪"
+    },
+    {
+      "test_id": "IT-02",
+      "case_id": "IT-02-CASE-01",
+      "status": "skipped",
+      "summary": "因测试环境暂时不可用且真实千川测试账号待指认，真实账号官方同步全链路集成测试跳过，等待环境就绪"
+    },
+    {
+      "test_id": "IT-03",
+      "case_id": "IT-03-CASE-01",
+      "status": "skipped",
+      "summary": "因测试环境暂时不可用，依赖真实测试库执行Flyway V112数据修复迁移测试跳过，等待环境就绪"
+    },
+    {
+      "test_id": "E2E-01",
+      "case_id": "E2E-01-CASE-01",
+      "status": "skipped",
+      "summary": "因测试环境暂时不可用，依赖启动测试环境服务与真实数据库的E2E浏览器业务验收跳过，等待环境就绪"
+    },
+    {
+      "test_id": "OT-01",
+      "case_id": "OT-01-CASE-01",
+      "status": "skipped",
+      "summary": "因测试环境暂时不可用，依赖测试环境真实实例的OpenTabs仿人工浏览器核验跳过，等待环境就绪"
+    }
+  ],
+  "status": "need_user",
+  "summary": "已完成全部代码修改、Flyway V112数据修复迁移脚本、前后端完整编译构建及脱机单元测试验证。因测试环境暂时不可用，依赖测试环境中间件与真实账号的集成测试、E2E及OpenTabs真实浏览器核验已挂起，等待测试环境就绪与账号指认。",
+  "notes": "当前进度：\n1. 全部代码修复完成：\n   - DF-01 (SYNC-00/A0)：修复成功终态 retryable NOT NULL 冲突，显式赋值 0 并清空错误字段。\n   - DF-02 (SYNC-01、02/A)：新增 SyncFailurePersistenceSupport，实现敏感凭证脱敏、先拼前缀后定长截断（控制在 1000 字符内），杜绝 Data too long for column 'error_msg'；保留真实错误根因，不再覆盖为 RETRY_EXHAUSTED。\n   - DF-03 (SYNC-02/B)：Worker 领片按 executionPool 空闲槽位领片，心跳线程扩容至 Math.max(4, poolSize)，保障并发与租约续期。\n   - DF-06 (SYNC-07、08/E)：千川报表客户端异常保留官方完整错误码与 requestId；新增 MaterialReportCollectResult 结构化结果；报表采集准确区分 EMPTY_SUCCESS、UNMAPPED_MATERIAL 与真实写入；重试队列不可重试(retryable=0)明确收口为 CANCELLED 终态并清空 nextRetryTime，解决 84 条历史不可重试任务长期滞留 PENDING 缺陷。\n   - DF-07 (SYNC-09、10/A、F)：统一解析透传 XXL 调度日志 ID；告警路由扩充广告账户责任人；前端监控展示调度ID、成功/失败/延迟数与覆盖度状态。\n   - DF-08：新增 Flyway 迁移脚本 V112__repair_sync_failure_retryable_and_stale_queue.sql 批量收口历史脏数据。\n2. 编译与构建验证：\n   - 前端 npm run build（vue-tsc --noEmit && vite build）编译打包通过，无错误。\n   - 后端 mvn compile -pl cwos-aiad-web -am 全 6 模块构建 SUCCESS。\n3. 脱机单元测试：\n   - UT-01（SyncFailurePersistenceSupportTest、SyncErrorClassifierTest）全部通过。\n   - UT-02（MaterialReportCollectResultTest）全部通过。\n\n剩下的完成事项：\n1. 测试环境 MySQL、Redis 等中间件就绪后，执行 IT-01 真实 MySQL 共享完成、发布与队列集成测试。\n2. 用户指认测试千川账号并就绪后，执行 IT-02 真实千川账号官方同步全链路测试。\n3. 在测试库执行 Flyway V112 迁移并运行 IT-03 数据修复与防整库覆盖验证。\n4. 启动测试环境隔离服务实例，执行 E2E-01 业务流程验收及 OT-01 OpenTabs 真实浏览器仿人工核验。",
+  "artifacts": [
+    {
+      "path": "cwos-aiad-starter/src/main/resources/db/migration/V112__repair_sync_failure_retryable_and_stale_queue.sql",
+      "repo_id": "backend",
+      "description": "Flyway V112修复历史retryable=0且PENDING队列收口为CANCELLED及修复item成功态"
+    }
+  ],
+  "repositories": [
+    {
+      "repo_id": "backend",
+      "commit": "81aed98ed7d0aa258476cd763ded70f118c66eb0"
+    },
+    {
+      "repo_id": "frontend",
+      "commit": "66f8294a87bb98e8773bae600fe8c1686d4491f8"
+    }
+  ],
+  "delivery": {
+    "test_results": [
+      {
+        "test_id": "UT-01",
+        "case_id": "UT-01-CASE-01",
+        "status": "passed",
+        "summary": "状态转换、错误摘要定长截断、敏感凭据脱敏、错误分类单元测试通过（SyncFailurePersistenceSupportTest、SyncErrorClassifierTest）"
+      },
+      {
+        "test_id": "UT-02",
+        "case_id": "UT-02-CASE-01",
+        "status": "passed",
+        "summary": "素材报表采集结构化结果、官方空数据判定、素材未匹配失败及成功写入单元测试通过（MaterialReportCollectResultTest）"
+      },
+      {
+        "test_id": "IT-01",
+        "case_id": "IT-01-CASE-01",
+        "status": "skipped",
+        "summary": "因测试环境暂时不可用，依赖测试环境真实MySQL的共享完成与队列集成测试跳过，等待环境就绪"
+      },
+      {
+        "test_id": "IT-02",
+        "case_id": "IT-02-CASE-01",
+        "status": "skipped",
+        "summary": "因测试环境暂时不可用且真实千川测试账号待指认，真实账号官方同步全链路集成测试跳过，等待环境就绪"
+      },
+      {
+        "test_id": "IT-03",
+        "case_id": "IT-03-CASE-01",
+        "status": "skipped",
+        "summary": "因测试环境暂时不可用，依赖真实测试库执行Flyway V112数据修复迁移测试跳过，等待环境就绪"
+      },
+      {
+        "test_id": "E2E-01",
+        "case_id": "E2E-01-CASE-01",
+        "status": "skipped",
+        "summary": "因测试环境暂时不可用，依赖启动测试环境服务与真实数据库的E2E浏览器业务验收跳过，等待环境就绪"
+      },
+      {
+        "test_id": "OT-01",
+        "case_id": "OT-01-CASE-01",
+        "status": "skipped",
+        "summary": "因测试环境暂时不可用，依赖测试环境真实实例的OpenTabs仿人工浏览器核验跳过，等待环境就绪"
+      }
+    ],
+    "plan_self_check": null,
+    "schema_version": "1.0",
+    "submission_id": "sub-8357deb2-67dd-41a3-ba1c-31c6a848817e",
+    "workflow_id": "wf-d5223422-d14f-486c-943f-8ac2d0e75dd7",
+    "run_id": "run-8357deb2-67dd-41a3-ba1c-31c6a848817e",
+    "conversation_id": "a80717e6-08c0-4b27-957c-9345a3b16a4a",
+    "plan_revision": 2,
+    "plan_hash": "1b9cf53256aa6a6f38fd812d87703e72703595f3e31232627c42f03f0e146948",
+    "implementations": [
+      {
+        "repo_id": "backend",
+        "module_id": "cwos-aiad-data",
+        "task_id": "DF-01",
+        "path": "cwos-aiad-data/src/main/java/com/cloudwalk/aiad/mapper/sync/AiAdSyncJobRunItemMapper.java",
+        "description": "成功终态retryable从NULL纠正为0并安全清空错误字段"
+      },
+      {
+        "repo_id": "backend",
+        "module_id": "cwos-aiad-service",
+        "task_id": "DF-01",
+        "path": "cwos-aiad-service/src/main/java/com/cloudwalk/aiad/service/ad/sync/UniPromotionPageTaskServiceImpl.java",
+        "description": "页面任务完成时retryable显式赋值0"
+      },
+      {
+        "repo_id": "backend",
+        "module_id": "cwos-aiad-service",
+        "task_id": "DF-02",
+        "path": "cwos-aiad-service/src/main/java/com/cloudwalk/aiad/service/sync/SyncFailurePersistenceSupport.java",
+        "description": "统一错误消息脱敏、前缀拼接与严格定长截断（<=1000字符）"
+      },
+      {
+        "repo_id": "backend",
+        "module_id": "cwos-aiad-service",
+        "task_id": "DF-03",
+        "path": "cwos-aiad-service/src/main/java/com/cloudwalk/aiad/service/job/UniPromotionScheduledScopeWorkerJob.java",
+        "description": "派发前按executionPool空闲槽位领片，扩容心跳线程池并增加持久化兜底保护"
+      },
+      {
+        "repo_id": "backend",
+        "module_id": "cwos-aiad-data",
+        "task_id": "DF-06",
+        "path": "cwos-aiad-data/src/main/java/com/cloudwalk/aiad/result/report/MaterialReportCollectResult.java",
+        "description": "新增素材报表采集结构化结果模型"
+      },
+      {
+        "repo_id": "backend",
+        "module_id": "cwos-aiad-service",
+        "task_id": "DF-06",
+        "path": "cwos-aiad-service/src/main/java/com/cloudwalk/aiad/service/task/MaterialReportCollectTask.java",
+        "description": "报表采集区分EMPTY_SUCCESS、UNMAPPED_MATERIAL与真实写入"
+      },
+      {
+        "repo_id": "backend",
+        "module_id": "cwos-aiad-service",
+        "task_id": "DF-06",
+        "path": "cwos-aiad-service/src/main/java/com/cloudwalk/aiad/service/sync/SyncJobRunServiceImpl.java",
+        "description": "重试队列不可重试(retryable=0)明确收口为CANCELLED终态并清空nextRetryTime"
+      },
+      {
+        "repo_id": "backend",
+        "module_id": "cwos-aiad-service",
+        "task_id": "DF-07",
+        "path": "cwos-aiad-service/src/main/java/com/cloudwalk/aiad/service/sync/SyncJobRunSupport.java",
+        "description": "XXL日志ID自动关联并透传至父run"
+      },
+      {
+        "repo_id": "backend",
+        "module_id": "cwos-aiad-service",
+        "task_id": "DF-07",
+        "path": "cwos-aiad-service/src/main/java/com/cloudwalk/aiad/service/sync/SyncAlertServiceImpl.java",
+        "description": "同步告警责任人路由扩充广告账户责任人"
+      },
+      {
+        "repo_id": "frontend",
+        "module_id": "frontend",
+        "task_id": "DF-07",
+        "path": "src/views/data/sync-health/index.vue",
+        "description": "同步健康列表展示调度ID、成功/失败/延迟数与覆盖度状态"
+      },
+      {
+        "repo_id": "backend",
+        "module_id": "cwos-aiad-starter",
+        "task_id": "DF-08",
+        "path": "cwos-aiad-starter/src/main/resources/db/migration/V112__repair_sync_failure_retryable_and_stale_queue.sql",
+        "description": "Flyway V112修复历史retryable=0且PENDING队列收口为CANCELLED及修复item成功态"
+      }
+    ],
+    "test_executions": [
+      {
+        "tool_call_id": "exec-ut-01",
+        "command": "java -cp ... com.cloudwalk.aiad.service.sync.SyncFailurePersistenceSupportTest",
+        "cwd": "C:/Code/aiad/cwos-aiad/.worktrees/wf-d5223422-d14f-486c-943f-8ac2d0e75dd7/backend",
+        "repo_id": "backend",
+        "started_at": "2026-10-08T07:05:41Z",
+        "ended_at": "2026-10-08T07:05:43Z",
+        "exit_code": 0,
+        "output_path": null,
+        "report_paths": [],
+        "format": null
+      },
+      {
+        "tool_call_id": "exec-ut-02",
+        "command": "java -cp ... com.cloudwalk.aiad.service.report.MaterialReportCollectResultTest",
+        "cwd": "C:/Code/aiad/cwos-aiad/.worktrees/wf-d5223422-d14f-486c-943f-8ac2d0e75dd7/backend",
+        "repo_id": "backend",
+        "started_at": "2026-10-08T07:07:19Z",
+        "ended_at": "2026-10-08T07:07:21Z",
+        "exit_code": 0,
+        "output_path": null,
+        "report_paths": [],
+        "format": null
+      }
+    ],
+    "acceptance_mappings": [
+      {
+        "requirement_id": "SYNC-01",
+        "scene_id": "SCENE-ERROR-TRUNCATE",
+        "test_execution_id": "exec-ut-01",
+        "report_path": "backend/cwos-aiad-service/src/test/java/com/cloudwalk/aiad/service/sync/SyncFailurePersistenceSupportTest.java",
+        "case_id": "UT-01-CASE-01"
+      },
+      {
+        "requirement_id": "SYNC-07",
+        "scene_id": "SCENE-REPORT-EMPTY",
+        "test_execution_id": "exec-ut-02",
+        "report_path": "backend/cwos-aiad-service/src/test/java/com/cloudwalk/aiad/service/report/MaterialReportCollectResultTest.java",
+        "case_id": "UT-02-CASE-01"
+      }
+    ],
+    "unfinished_items": [
+      {
+        "id": "IT-01",
+        "reason": "测试环境暂时不可用，依赖测试环境真实MySQL的共享完成与队列集成测试跳过，等待环境就绪"
+      },
+      {
+        "id": "IT-02",
+        "reason": "测试环境暂时不可用且真实千川测试账号待指认，依赖官方API同步全链路测试跳过，等待环境就绪"
+      },
+      {
+        "id": "IT-03",
+        "reason": "测试环境暂时不可用，依赖测试库执行Flyway V112数据修复迁移测试跳过，等待环境就绪"
+      },
+      {
+        "id": "E2E-01",
+        "reason": "测试环境暂时不可用，依赖启动测试环境服务与真实数据库的E2E浏览器业务验收跳过，等待环境就绪"
+      },
+      {
+        "id": "OT-01",
+        "reason": "测试环境暂时不可用，依赖测试环境真实实例的OpenTabs仿人工浏览器核验跳过，等待环境就绪"
+      }
+    ],
+    "plan_conflicts": [],
+    "status": "need_user",
+    "summary": "已完成全部代码修改、Flyway V112数据修复迁移脚本、前后端完整编译构建及脱机单元测试验证。因测试环境暂时不可用，依赖测试环境中间件与真实账号的集成测试、E2E及OpenTabs真实浏览器核验已挂起，等待测试环境就绪与账号指认。",
+    "notes": "当前进度：\n1. 全部代码修复完成：\n   - DF-01 (SYNC-00/A0)：修复成功终态 retryable NOT NULL 冲突，显式赋值 0 并清空错误字段。\n   - DF-02 (SYNC-01、02/A)：新增 SyncFailurePersistenceSupport，实现敏感凭证脱敏、先拼前缀后定长截断（控制在 1000 字符内），杜绝 Data too long for column 'error_msg'；保留真实错误根因，不再覆盖为 RETRY_EXHAUSTED。\n   - DF-03 (SYNC-02/B)：Worker 领片按 executionPool 空闲槽位领片，心跳线程扩容至 Math.max(4, poolSize)，保障并发与租约续期。\n   - DF-06 (SYNC-07、08/E)：千川报表客户端异常保留官方完整错误码与 requestId；新增 MaterialReportCollectResult 结构化结果；报表采集准确区分 EMPTY_SUCCESS、UNMAPPED_MATERIAL 与真实写入；重试队列不可重试(retryable=0)明确收口为 CANCELLED 终态并清空 nextRetryTime，解决 84 条历史不可重试任务长期滞留 PENDING 缺陷。\n   - DF-07 (SYNC-09、10/A、F)：统一解析透传 XXL 调度日志 ID；告警路由扩充广告账户责任人；前端监控展示调度ID、成功/失败/延迟数与覆盖度状态。\n   - DF-08：新增 Flyway 迁移脚本 V112__repair_sync_failure_retryable_and_stale_queue.sql 批量收口历史脏数据。\n2. 编译与构建验证：\n   - 前端 npm run build（vue-tsc --noEmit && vite build）编译打包通过，无错误。\n   - 后端 mvn compile -pl cwos-aiad-web -am 全 6 模块构建 SUCCESS。\n3. 脱机单元测试：\n   - UT-01（SyncFailurePersistenceSupportTest、SyncErrorClassifierTest）全部通过。\n   - UT-02（MaterialReportCollectResultTest）全部通过。\n\n剩下的完成事项：\n1. 测试环境 MySQL、Redis 等中间件就绪后，执行 IT-01 真实 MySQL 共享完成、发布与队列集成测试。\n2. 用户指认测试千川账号并就绪后，执行 IT-02 真实千川账号官方同步全链路测试。\n3. 在测试库执行 Flyway V112 迁移并运行 IT-03 数据修复与防整库覆盖验证。\n4. 启动测试环境隔离服务实例，执行 E2E-01 业务流程验收及 OT-01 OpenTabs 真实浏览器仿人工核验。",
+    "artifacts": [
+      {
+        "path": "cwos-aiad-starter/src/main/resources/db/migration/V112__repair_sync_failure_retryable_and_stale_queue.sql",
+        "repo_id": "backend",
+        "description": "Flyway V112修复历史retryable=0且PENDING队列收口为CANCELLED及修复item成功态"
+      }
+    ]
+  }
+}
+```

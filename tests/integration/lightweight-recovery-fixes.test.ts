@@ -28,7 +28,9 @@ it.each(["completed", "paused", "finishing"])("人工检查反馈进入开发，
     if (mode !== "completed") await s.engine.stop(w.id);
     const next = s.engine.feedback(w.id, "提交按钮缺少禁用状态", "within_plan");
     expect(next.state).toBe("QUEUED");
-    expect(next.stage).toBe("execute");
+    // Ordinary acceptance guidance has its own executor stage; stopped tasks
+    // resume development without reviving the already completed review.
+    expect(next.stage).toBe(mode === "completed" ? "acceptance_guidance" : "execute");
     expect(next.feedback).toContain("提交按钮缺少禁用状态");
   } finally { await cleanup(s); }
 });
@@ -73,6 +75,7 @@ it("网络自动重试保留已绑定的执行补问上下文", async () => {
   try {
     const continuation = { kind: "intent_clarification" as const, purpose: "execute" as const,
       role: "executor" as const, source_run_id: "source", original_text: "仅补充结果" };
+    putRun(s, { id: "source", purpose: "implement", stage: "execute", status: "waiting", exit_code: null });
     saveRunContinuation(s.store, s.w.id, s.w.id, continuation);
     const seen: Run[] = [];
     s.engine.runtime = runtime(s, async (run) => {
@@ -108,6 +111,7 @@ it.each(["during", "after"])("冲突停止%s收到迟到错误不会覆盖暂停
     s.engine.runtime = runtime(s);
     s.engine.runtime.stop = async () => {
       if (when === "during") s.engine.handleMergeConflictError(s.w.id, run.id, request.id, new Error("late exit"));
+      return { status: "confirmed_exited" };
     };
     await s.engine.stop(s.w.id);
     if (when === "after") s.engine.handleMergeConflictError(s.w.id, run.id, request.id, new FlowError("RUN_REVOKED", "stopped"));
@@ -145,7 +149,8 @@ it("暂停必须等待冲突提交回调收尾后才允许新运行恢复", asyn
   });
   try {
     const { run, request, receipt } = conflict(s);
-    s.engine.runtime = { ...runtime(s), resolveMergeConflict: async () => receipt } as any;
+    s.engine.runtime = { ...runtime(s), stop: async () => ({ status: "confirmed_exited" }),
+      resolveMergeConflict: async () => receipt } as any;
     s.store.enqueue(s.w.id, "dispatch_run", { purpose: "merge_conflict", request_id: request.id, run_id: run.id });
     await (s.engine as any).consumeOutbox();
     await started;

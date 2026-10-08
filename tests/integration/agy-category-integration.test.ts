@@ -47,8 +47,8 @@ describe("AGY 分类并发与额度池集成测试 (I01, I02, I03, I04)", () => 
       return {
         email: `${accounts.active()}@example.com`,
         cli_version: "1.2.7",
+        raw_output: "fixture usage: Gemini Models 90%, Claude and GPT models 80%",
         windows: makeWindows(0.8),
-        raw_output: "",
         pools: [
           {
             pool_id: "Gemini Models",
@@ -158,11 +158,11 @@ describe("AGY 分类并发与额度池集成测试 (I01, I02, I03, I04)", () => 
         title: "Test",
         request: "Test",
         complexity: "simple",
-        workspace_mode: "new_worktree",
+        workspace_mode: "existing_workspace",
         state: "PLANNING",
         stage: "plan",
         version: 1,
-        plan_revision: 1,
+        plan_revision: 0,
         environment_revision: 0,
         feedback: [],
         created_at: new Date().toISOString(),

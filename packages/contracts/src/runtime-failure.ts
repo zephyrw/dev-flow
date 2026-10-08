@@ -179,7 +179,7 @@ const resolutions: Record<string, Omit<RuntimeFailureResolution, "code">> = {
   TIMEOUT: {
     title: "运行达到时限",
     message:
-      "运行已超时，现有修改与日志已保留。",
+      "运行已超时，现有修改与日志已保留，尚不能据此判定代码修复失败。",
     steps: [
       "查看最后一条执行记录，确认工具是在等待网络、授权、长时间命令还是模型响应。",
       "处理对应阻塞，必要时调整该步骤的时限，再继续原任务。",
