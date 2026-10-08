@@ -41,6 +41,8 @@ export type AccessState = {
   status: string;
   message: string;
   verificationId?: string;
+  errorCode?: string;
+  retryable?: boolean;
 };
 
 export type DefaultsSnapshot = {
@@ -538,6 +540,8 @@ function jobAccessState(id: string, data: any): AccessState | null {
       status: status === "temporary_error" ? "temporary_error" : "failed",
       message: String(data?.error_message || data?.message || "验证未通过"),
       verificationId: id,
+      errorCode: data?.error_code,
+      retryable: data?.retryable,
     };
   }
   return null;
@@ -634,6 +638,18 @@ async function startVerification(
   };
 }
 
+async function verifyWithAccountRetry(profile: ToolProfile, force: boolean, key: string, signal: AbortSignal): Promise<AccessState> {
+  for (let attempt = 0; ; attempt++) {
+    const result = await startVerification(profile, force, key, signal);
+    if (profile.adapterId !== "agy" || !result.retryable ||
+        !["MODEL_IDENTITY_CHANGED", "MODEL_ACCOUNT_SWITCHING"].includes(result.errorCode ?? "")) return result;
+    if (attempt >= 2) return { ...result, message: "AGY 账号仍在变化，暂未完成核验。输入已保留，请稍后重试。" };
+    // Start a fresh request so the server resolves the new account and keeps
+    // the old probe's result isolated under its original identity.
+    await sleep(1500, signal);
+  }
+}
+
 export async function verifyModelAccess(
   profile: ToolProfile,
   signal?: AbortSignal,
@@ -649,7 +665,7 @@ export async function verifyModelAccess(
       subscribers: 0,
       promise: Promise.resolve({ status: "checking", message: "正在验证" }),
     };
-    entry.promise = startVerification(
+    entry.promise = verifyWithAccountRetry(
       profile,
       force,
       key,

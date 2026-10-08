@@ -499,7 +499,7 @@ export function ModelProfileEditor({
       }
     }
     if (activeChoice?.availability === "candidate") {
-      return `${base} [候补 / 待核验]`;
+      return `${base} [候补 / ${access?.status === "verified" ? "已核验" : "待核验"}]`;
     }
     return base;
   })();

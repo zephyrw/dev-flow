@@ -306,7 +306,8 @@
 }
 
 .agy-account-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: flex-start;
   justify-content: space-between;
   padding: 14px 16px;
@@ -328,14 +329,13 @@
 }
 
 .agy-account-main-info {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  min-width: 0;
-  flex: 1;
+  display: contents;
 }
 
 .agy-account-title-line {
+  grid-column: 1;
+  grid-row: 1;
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -374,6 +374,10 @@
 }
 
 .agy-account-quotas-dual {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  min-width: 0;
+  overflow-x: auto;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -384,10 +388,10 @@
 }
 
 .agy-quota-group {
-  display: flex;
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr);
   align-items: center;
   gap: 12px;
-  flex-wrap: wrap;
 }
 
 .agy-quota-group-label {
@@ -395,7 +399,7 @@
   align-items: center;
   font-size: 11.5px;
   font-weight: 600;
-  min-width: 170px;
+  white-space: nowrap;
 }
 
 .agy-quota-group-label.gemini {
@@ -409,8 +413,8 @@
 .agy-quota-bars {
   display: inline-flex;
   align-items: center;
-  gap: 16px;
-  flex-wrap: wrap;
+  gap: 12px;
+  flex-wrap: nowrap;
 }
 
 .agy-account-quotas {
@@ -426,6 +430,7 @@
   gap: 6px;
   font-size: 11.5px;
   color: #64748b;
+  white-space: nowrap;
 }
 
 .agy-quota-lbl {
@@ -472,6 +477,8 @@
 }
 
 .agy-account-actions {
+  grid-column: 2;
+  grid-row: 1;
   display: flex;
   align-items: center;
   gap: 6px;

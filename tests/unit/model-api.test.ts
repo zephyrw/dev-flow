@@ -28,6 +28,44 @@ afterEach(() => {
 });
 
 describe("Web model operation lifecycle", () => {
+  it("automatically rechecks AGY under the new account after rotation", async () => {
+    let posts = 0;
+    const fetcher = vi.fn(async (_url: string, init?: RequestInit) => {
+      if (init?.method === "POST") return json({ id: `rotate-${++posts}`, status: "checking" });
+      return json(posts === 1
+        ? { status: "failed", error_code: "MODEL_IDENTITY_CHANGED", retryable: true }
+        : { status: "verified" });
+    });
+    vi.stubGlobal("fetch", fetcher);
+    const { verifyModelAccess } = await api();
+    const result = verifyModelAccess({ ...profile, adapterId: "agy" });
+    await vi.advanceTimersByTimeAsync(1500);
+    await expect(result).resolves.toMatchObject({ status: "verified", verificationId: "rotate-2" });
+    expect(posts).toBe(2);
+    const requests = fetcher.mock.calls.filter(([, init]) => init?.method === "POST").map(([, init]) => JSON.parse(String(init?.body)).request_id);
+    expect(new Set(requests).size).toBe(2);
+  });
+
+  it("bounds account-switch retries and does not retry region or model failures", async () => {
+    let posts = 0;
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => {
+      if (init?.method === "POST") return json({ id: `busy-${++posts}`, status: "checking" });
+      return json({ status: "failed", error_code: "MODEL_ACCOUNT_SWITCHING", retryable: true });
+    }));
+    const { verifyModelAccess } = await api();
+    const result = verifyModelAccess({ ...profile, adapterId: "agy" });
+    await vi.advanceTimersByTimeAsync(3000);
+    await expect(result).resolves.toMatchObject({ status: "failed", errorCode: "MODEL_ACCOUNT_SWITCHING" });
+    expect(posts).toBe(3);
+    posts = 0;
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => {
+      if (init?.method === "POST") return json({ id: `region-${++posts}`, status: "checking" });
+      return json({ status: "failed", error_code: "AGY_REGION_UNAVAILABLE", retryable: false });
+    }));
+    await expect(verifyModelAccess({ ...profile, adapterId: "agy" })).resolves.toMatchObject({ errorCode: "AGY_REGION_UNAVAILABLE" });
+    expect(posts).toBe(1);
+  });
+
   it("waits for a refresh to commit instead of reading the old directory at HTTP 202", async () => {
     let polls = 0;
     const fetcher = vi.fn(async (_url: string, init?: RequestInit) => {

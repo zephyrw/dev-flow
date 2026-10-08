@@ -79,7 +79,7 @@ export function CurrentRuntime({
   const categoryLabel = isAgy
     ? agyCategory === "gemini"
       ? "Gemini 额度"
-      : agyCategory === "other" ? "其他模型额度（Claude / GPT）" : "AGY 额度（类别待确认）"
+      : agyCategory === "other" ? "Claude / GPT 额度" : "AGY 额度（类别待确认）"
     : undefined;
 
   const modelBuckets =

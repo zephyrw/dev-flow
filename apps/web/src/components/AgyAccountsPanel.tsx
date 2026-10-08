@@ -483,7 +483,7 @@ export const AgyAccountsPanel = forwardRef<
                       )}
                     </div>
 
-                    {/* 双组额度：上方固定展示 Gemini 额度，下方固定展示其他模型额度（Claude / GPT） */}
+                    {/* 双组额度分别展示，不按当前模型隐藏另一组 */}
                     <div className="agy-account-quotas-dual">
                       {/* 上方：Gemini 额度 */}
                       <div className="agy-quota-group" data-category="gemini">
@@ -502,9 +502,9 @@ export const AgyAccountsPanel = forwardRef<
                         </div>
                       </div>
 
-                      {/* 下方：其他模型额度（Claude / GPT） */}
+                      {/* 下方：Claude / GPT 额度 */}
                       <div className="agy-quota-group" data-category="other">
-                        <span className="agy-quota-group-label other">其他模型额度（Claude / GPT）</span>
+                        <span className="agy-quota-group-label other">Claude / GPT 额度</span>
                         <div className="agy-quota-bars">
                           {otherSnapshot ? (
                             <>
