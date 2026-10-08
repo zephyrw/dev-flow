@@ -98,7 +98,7 @@ const RuntimeConfigSchema = z
     models: z
       .object({
         executor: z.string().min(1).default("gemini-3.8-flash-high"),
-        reviewer: z.string().min(1).default("gpt-6-astra"),
+        reviewer: z.string().min(1).default("gpt-6.1-sol"),
         effort: z.literal("high").default("high"),
         agy_executable: z.string().default("agy"),
         codex_executable: z.string().default("codex"),

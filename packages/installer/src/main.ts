@@ -1190,7 +1190,7 @@ export async function runInstaller(
         );
         await openBrowser("full");
         console.log(
-          "DevFlow 已安装，并已打开设置页面。选择你要使用的编程助手和模型，即可开始。",
+          "DevFlow 已安装，并已打开工作台。默认由 Codex 规划与复核、AGY Gemini 执行。",
         );
       } catch {
         console.log(

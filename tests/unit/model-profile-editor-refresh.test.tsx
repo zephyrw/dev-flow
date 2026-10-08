@@ -82,4 +82,25 @@ describe("model selector directory refresh", () => {
     expect(api.refresh).not.toHaveBeenCalled();
     expect(document.querySelectorAll("[role=option]")).toHaveLength(1);
   });
+  it("only offers Codex and AGY without changing the current profile", async () => {
+    api.get.mockResolvedValue({ entries: oldEntries, status: "fresh", discoveryStatus: "complete" });
+    await render();
+    const select = container.querySelector<HTMLSelectElement>('select[aria-label="工具"]')!;
+    expect(Array.from(select.options, (option) => option.value)).toEqual(["codex", "agy"]);
+    expect(onChange).not.toHaveBeenCalled();
+  });
+  it("preserves a historical tool without probing it or displaying it as Codex", async () => {
+    await act(async () => root.render(
+      <ModelProfileEditor profile={{ ...profile, adapterId: "mimo-code" }} onChange={onChange} />,
+    ));
+    await act(async () => vi.advanceTimersByTimeAsync(300));
+    const select = container.querySelector<HTMLSelectElement>('select[aria-label="工具"]')!;
+    expect(select.value).toBe("mimo-code");
+    expect(select.selectedOptions[0]!.textContent).toBe("历史工具（暂未开放）");
+    expect(select.selectedOptions[0]!.disabled).toBe(true);
+    expect(container.querySelector<HTMLInputElement>("[role=combobox]")!.disabled).toBe(true);
+    expect(api.get).not.toHaveBeenCalled();
+    expect(api.refresh).not.toHaveBeenCalled();
+    expect(onChange).not.toHaveBeenCalled();
+  });
 });

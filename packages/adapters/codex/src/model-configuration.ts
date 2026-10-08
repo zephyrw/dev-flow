@@ -26,6 +26,10 @@ const KNOWN_CODEX_EFFORTS: Record<
   string,
   { values: string[]; defaultValue?: string }
 > = {
+  "gpt-6.1-sol": {
+    values: ["low", "medium", "high", "xhigh", "max", "ultra"],
+    defaultValue: "low",
+  },
   "gpt-6-astra": {
     values: ["low", "medium", "high", "xhigh", "max", "ultra"],
     defaultValue: "medium",

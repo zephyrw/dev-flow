@@ -81,6 +81,7 @@ export function ModelProfileEditor({
   const [categoryConflictNotice, setCategoryConflictNotice] = useState<string | null>(null);
 
   const adapter = profile.adapterId;
+  const toolVisible = TOOL_DISPLAY_ORDER.some((item) => item.adapterId === adapter);
 
   useEffect(() => {
     if (adapter !== "agy") {
@@ -207,12 +208,13 @@ export function ModelProfileEditor({
   };
 
   useEffect(() => {
+    if (!toolVisible) return;
     loadCatalog(adapter);
     return () => abortRef.current?.abort();
   }, [adapter, reloadToken]);
 
   const runVerify = (candidate: ToolProfile, force = false) => {
-    if (disabled || !autoVerify || !candidate.modelId) {
+    if (disabled || !autoVerify || !candidate.modelId || !toolVisible) {
       setAccess(null);
       setVerifying(false);
       onAccessChange?.(null);
@@ -522,6 +524,7 @@ export function ModelProfileEditor({
           value={adapter}
           onChange={(e) => changeTool(e.target.value as SupportedAdapterId)}
         >
+          {!toolVisible && <option value={adapter} disabled>历史工具（暂未开放）</option>}
           {TOOL_DISPLAY_ORDER.map((item) => (
             <option key={item.adapterId} value={item.adapterId}>
               {formatToolName(item.adapterId)}
@@ -538,7 +541,7 @@ export function ModelProfileEditor({
             type="button"
             className={`ms-icon-button ${refreshing ? "is-refreshing" : ""}`}
             title="刷新模型目录"
-            disabled={disabled || loading || refreshing}
+            disabled={disabled || !toolVisible || loading || refreshing}
             onClick={() => loadCatalog(adapter, true)}
           >
             ↻
@@ -559,7 +562,7 @@ export function ModelProfileEditor({
             autoCorrect="off"
             autoCapitalize="off"
             spellCheck={false}
-            disabled={disabled}
+            disabled={disabled || !toolVisible}
             value={openList ? query : currentModelLabel}
             placeholder={
               (loading || refreshing) && choices.length === 0

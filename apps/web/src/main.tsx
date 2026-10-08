@@ -16,7 +16,6 @@ import {
   SettingsDialog,
   type SettingsTabId,
 } from "./components/SettingsDialog.js";
-import { FirstRunSetup } from "./components/FirstRunSetup.js";
 import { CurrentRuntime } from "./components/CurrentRuntime.js";
 import { WorkflowAttentionBanner } from "./components/WorkflowAttentionBanner.js";
 import { WorkflowOverview } from "./components/WorkflowOverview.js";
@@ -1569,21 +1568,14 @@ function App() {
     else url.searchParams.delete("view");
     history.replaceState(null, "", url);
   }, [selected, showGuide]);
-  const [isFirstRunOpen, setIsFirstRunOpen] = useState(() => {
-    const params = new URLSearchParams(location.search);
-    if (params.get("setup") === "1" || params.get("onboarding") === "1") return true;
-    return !localStorage.getItem("devflow.first_run_completed");
-  });
   useEffect(() => {
-    if (!isFirstRunOpen) {
-      const url = new URL(location.href);
-      if (url.searchParams.has("setup") || url.searchParams.has("onboarding")) {
-        url.searchParams.delete("setup");
-        url.searchParams.delete("onboarding");
-        history.replaceState(null, "", url);
-      }
+    const url = new URL(location.href);
+    if (url.searchParams.has("setup") || url.searchParams.has("onboarding")) {
+      url.searchParams.delete("setup");
+      url.searchParams.delete("onboarding");
+      history.replaceState(null, "", url);
     }
-  }, [isFirstRunOpen]);
+  }, []);
   const eventCursor = useRef(0);
   const eventBuffer = useRef<any[]>([]);
   const selection = useRef(selected);
@@ -2343,16 +2335,6 @@ function App() {
               ⚙️
             </span>{" "}
             设置
-          </button>
-          <button
-            className={"nav " + (isFirstRunOpen ? "active" : "")}
-            aria-label="新手配置向导"
-            onClick={() => setIsFirstRunOpen(true)}
-          >
-            <span className="nav-icon" aria-hidden="true">
-              ✨
-            </span>{" "}
-            向导
           </button>
         </div>
       </aside>
@@ -3179,14 +3161,6 @@ function App() {
       <AgyAccountsDialog
         isOpen={isAgyAccountsDrawerOpen}
         onClose={() => setIsAgyAccountsDrawerOpen(false)}
-      />
-      <FirstRunSetup
-        isOpen={isFirstRunOpen}
-        onClose={() => setIsFirstRunOpen(false)}
-        onCompleted={() => {
-          setIsFirstRunOpen(false);
-          void refresh();
-        }}
       />
     </div>
   );

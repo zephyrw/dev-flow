@@ -167,13 +167,6 @@ export const TOOL_DISPLAY_ORDER: Array<{
 }> = [
   { adapterId: "codex", label: "Codex" },
   { adapterId: "agy", label: "Antigravity CLI" },
-  { adapterId: "claude-code", label: "Claude Code" },
-  { adapterId: "cursor-agent", label: "Cursor Agent" },
-  { adapterId: "grok-build", label: "Grok Build" },
-  { adapterId: "kimi-code", label: "Kimi Code" },
-  { adapterId: "qoder", label: "Qoder CLI" },
-  { adapterId: "opencode", label: "OpenCode" },
-  { adapterId: "mimo-code", label: "MiMo Code" },
 ];
 
 export const CATALOG_FRESH_MS = 24 * 60 * 60 * 1000;

@@ -338,8 +338,10 @@ async function waitVerified(
 
 async function preVerifyCatalogs(store: ReturnType<typeof setup>["store"]) {
   const catalogs = new ModelCatalogService(store);
+  const accounts = accountFixture(store);
   const access = new ModelAccessService(store, {
     catalog: catalogs,
+    withAgyCategoryVerification: (modelId, verify) => accounts.service.withCategoryVerification("default-agy-realm", modelId, verify),
     extraEnv: { MODEL_PROBE_LOG_DIR: process.env.MODEL_PROBE_LOG_DIR ?? "" },
     probeRoot: join(dirnameOfStore(store), "model-probe"),
     verifyTimeoutMs: 30000,
@@ -366,6 +368,7 @@ async function preVerifyCatalogs(store: ReturnType<typeof setup>["store"]) {
     }
   }
   await access.close();
+  await accounts.service.close();
 }
 
 function dirnameOfStore(store: ReturnType<typeof setup>["store"]) {

@@ -21,7 +21,7 @@ test.beforeEach(async ({ page }) => {
 
 test("E2E-U01 无任务也可打开全局设置并编辑两套默认", async ({ page }) => {
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: "工作流总览" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "任务总览" })).toBeVisible();
   await page.getByRole("button", { name: "设置", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "设置" });
   await expect(dialog).toBeVisible();
@@ -90,8 +90,9 @@ test("E2E-U12 快速切换工具会清掉旧模型并选中新工具默认模型
   const planner = exactLabel(dialog, "工具");
   await planner.selectOption("codex");
   await planner.selectOption("agy");
-  await planner.selectOption("cursor-agent");
-  await expect(dialog.getByLabel("工具模型搜索")).toHaveValue("Grok 4.7");
+  await planner.selectOption("codex");
+  await expect(dialog.getByLabel("工具模型搜索")).toHaveValue(/gpt-6-astra|GPT-6 Astra/i);
+  await expect(planner.locator("option")).toHaveCount(2);
 });
 
 test("E2E-U13 历史模型不在目录时保留并标注", async ({ page }) => {
@@ -168,8 +169,8 @@ test("E2E-U03 新建当场改工具/模型/强度且后台 Run 参数一致", as
   await exactLabel(modal, "工具思考强度").selectOption("xhigh");
   await waitAccessStatus(modal.locator(".ms-editor"), "已验证可访问");
   await modal.getByRole("tab", { name: "执行" }).click();
-  await exactLabel(modal, "工具").selectOption("cursor-agent");
-  await pickListedModel(modal, "工具", "cursor-grok-4.6-high");
+  await exactLabel(modal, "工具").selectOption("agy");
+  await pickListedModel(modal, "工具", "gemini-3.8-flash-high");
   await waitAccessStatus(modal.locator(".ms-editor"), "已验证可访问");
   await modal.locator("textarea").fill("U03 当场改工具模型强度并核验 Run 参数");
   const created = page.waitForResponse(
@@ -187,8 +188,8 @@ test("E2E-U03 新建当场改工具/模型/强度且后台 Run 参数一致", as
     reasoning: { mode: "explicit", value: "xhigh" },
   });
   expect(spec.spec.executorProfile).toMatchObject({
-    adapterId: "cursor-agent",
-    modelId: "cursor-grok-4.6-high",
+    adapterId: "agy",
+    modelId: "gemini-3.8-flash-high",
     reasoning: { mode: "explicit", value: "high" },
   });
   await expect

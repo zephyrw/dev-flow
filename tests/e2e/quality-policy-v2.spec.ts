@@ -3,18 +3,17 @@ import { exactLabel, fixtureState, workflowDetail } from "./native-helper.js";
 
 test.describe.configure({ mode: "serial" });
 
-test("E2E-QP2-01 设置页可选 MiMo Code 并出现模型搜索", async ({ page }) => {
+test("E2E-QP2-01 设置页仅可选 Codex 与 AGY 并出现模型搜索", async ({ page }) => {
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: "工作流总览" })).toBeVisible();
-  await page.getByRole("button", { name: "全局模型设置" }).click();
-  const drawer = page.getByRole("dialog", { name: "默认工具与模型" });
+  await expect(page.getByRole("heading", { name: "任务总览" })).toBeVisible();
+  await page.getByRole("button", { name: "设置", exact: true }).click();
+  const drawer = page.getByRole("dialog", { name: "设置" });
   await expect(drawer).toBeVisible();
-  // MiMo Code 出现在工具列表（TOOL_DISPLAY_ORDER 含 mimo-code）
   const toolSelect = exactLabel(drawer, "工具").first();
-  await expect(toolSelect.locator('option[value="mimo-code"]')).toHaveCount(1);
-  await toolSelect.selectOption("mimo-code");
+  expect(await toolSelect.locator("option").evaluateAll((options) => options.map((option) => (option as HTMLOptionElement).value))).toEqual(["codex", "agy"]);
+  await toolSelect.selectOption("agy");
   // 模型搜索框可聚焦；目录为空时提示搜索，不冒充已接入
-  const modelSearch = exactLabel(drawer, "模型").first();
+  const modelSearch = exactLabel(drawer, "工具模型搜索").first();
   await expect(modelSearch).toBeEnabled();
   await modelSearch.click();
   await expect(modelSearch).toBeFocused();

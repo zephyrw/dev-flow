@@ -88,6 +88,11 @@ function openCatalog(control: Record<string, unknown> = {}, executable = FIXTURE
 }
 
 describe("model catalog operations", { timeout: 30000 }, () => {
+  it("only lists Codex and AGY in workbench discovery", () => {
+    const env = openCatalog();
+    expect(env.catalog.listTools().map((tool) => tool.adapterId)).toEqual(["codex", "agy"]);
+    expect(existsSync(join(env.logDir, "calls.jsonl"))).toBe(false);
+  });
   it("does not make an expired Codex native cache fresh after a failed live query", async () => {
     const env = openCatalog({
       adapterId: "codex",

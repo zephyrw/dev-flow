@@ -23,6 +23,7 @@ import {
 } from "../../packages/core/src/model-catalog-service.js";
 import {
   executorProfileFromConfig,
+  plannerProfileFromConfig,
   migrateLegacyExecutorModel,
 } from "../../packages/core/src/model-defaults-service.js";
 import { parseMimoModelCatalog } from "../../packages/adapters/mimo/src/model-configuration.js";
@@ -35,11 +36,20 @@ describe("UI/API 工具一致性护栏", () => {
     }
   });
 
-  it("MiMo Code 与 GPT/AGY 皆在 UI 工具列表中", () => {
+  it("工作台只开放 Codex 与 AGY，其他适配器保留兼容能力", () => {
     const ids = TOOL_DISPLAY_ORDER.map((item) => item.adapterId);
-    expect(ids).toContain("mimo-code");
-    expect(ids).toContain("agy");
-    expect(ids).toContain("codex");
+    expect(ids).toEqual(["codex", "agy"]);
+    expect(SupportedAdapters).toContain("mimo-code");
+  });
+
+  it("无需配置即使用最新 Codex 规划与复核、AGY Gemini 执行", () => {
+    const config = ConfigSchema.parse({});
+    expect(config.models.reviewer).toBe("gpt-6.1-sol");
+    expect(plannerProfileFromConfig().modelId).toBe(config.models.reviewer);
+    expect(plannerProfileFromConfig(config).adapterId).toBe("codex");
+    expect(executorProfileFromConfig().modelId).toBe(config.models.executor);
+    expect(executorProfileFromConfig(config).adapterId).toBe("agy");
+    expect(config.models.executor).toBe("gemini-3.8-flash-high");
   });
 });
 
@@ -80,6 +90,8 @@ describe("思考强度严格按模型对齐（不臆造档位）", () => {
   });
 
   it("Codex 其余已知模型按各自档位对齐，未知 ID 不臆造", () => {
+    expect(knownCodexEffortFor("gpt-6.1-sol")?.values).toEqual(["low", "medium", "high", "xhigh", "max", "ultra"]);
+    expect(knownCodexEffortFor("gpt-6.1-sol")?.defaultValue).toBe("low");
     expect(knownCodexEffortFor("gpt-5.6-luna")?.values).toEqual([
       "low",
       "medium",

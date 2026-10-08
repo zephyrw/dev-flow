@@ -19,7 +19,7 @@ import { now, objectHash } from "./util.js";
 const DEFAULTS_KIND = "model_defaults";
 const DEFAULTS_ID = "global";
 const OPERATION_KIND = "model_config_operation";
-const PREFILL_PLANNER_MODEL = "gpt-6-astra";
+const PREFILL_PLANNER_MODEL = "gpt-6.1-sol";
 // Gemini 3.8 Flash 思考强度最高只有 high；预填默认执行模型对齐产品要求（不再用 3.7）。
 const PREFILL_EXECUTOR_MODEL = "gemini-3.8-flash-high";
 
