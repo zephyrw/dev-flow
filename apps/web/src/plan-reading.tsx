@@ -1,5 +1,4 @@
 import React, { useLayoutEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 
 export function focusableElements(root: HTMLElement): HTMLElement[] {
   return Array.from(root.querySelectorAll<HTMLElement>(
@@ -127,92 +126,10 @@ export function usePlanReading(scope: string) {
 }
 
 export function PlanTocButton({ text, onClick }: { text: string; onClick: () => void }) {
-  const [open, setOpen] = useState(false);
-  const [position, setPosition] = useState({ left: 0, top: 0 });
-  const trigger = useRef<HTMLButtonElement>(null);
-  const tooltip = useRef<HTMLDivElement>(null);
-  const hovered = useRef(false);
-  const focused = useRef(false);
-  const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const id = React.useId();
-
-  const cancelClose = () => {
-    if (closeTimer.current !== null) clearTimeout(closeTimer.current);
-    closeTimer.current = null;
-  };
-  const leave = () => {
-    hovered.current = false;
-    cancelClose();
-    closeTimer.current = setTimeout(() => {
-      if (!hovered.current && !focused.current) setOpen(false);
-      closeTimer.current = null;
-    }, 150);
-  };
-  useLayoutEffect(() => () => {
-    if (closeTimer.current !== null) clearTimeout(closeTimer.current);
-  }, []);
-
-  useLayoutEffect(() => {
-    if (!open || !trigger.current || !tooltip.current) return;
-    const anchor = trigger.current.getBoundingClientRect();
-    const box = tooltip.current.getBoundingClientRect();
-    const margin = 8;
-    const width = document.documentElement.clientWidth;
-    const height = document.documentElement.clientHeight;
-    const below = anchor.bottom + margin;
-    setPosition({
-      left: Math.max(margin, Math.min(anchor.left, width - box.width - margin)),
-      top: Math.max(margin, Math.min(below + box.height <= height - margin
-        ? below : anchor.top - box.height - margin, height - box.height - margin)),
-    });
-    const close = (event: Event) => {
-      if (event.type === "scroll" && event.target instanceof Node && tooltip.current?.contains(event.target)) return;
-      setOpen(false);
-    };
-    const escape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false);
-    };
-    window.addEventListener("scroll", close, true);
-    window.addEventListener("resize", close);
-    window.addEventListener("keydown", escape);
-    return () => {
-      window.removeEventListener("scroll", close, true);
-      window.removeEventListener("resize", close);
-      window.removeEventListener("keydown", escape);
-    };
-  }, [open, text]);
-
-  return <>
-    <button ref={trigger} type="button" className="toc-link-btn" aria-label={text}
-      aria-describedby={open ? id : undefined}
-      onClick={() => { setOpen(false); onClick(); }}
-      onMouseEnter={() => { cancelClose(); hovered.current = true; setOpen(true); }}
-      onMouseLeave={leave}
-      onFocus={() => { focused.current = true; setOpen(true); }}
-      onBlur={() => { focused.current = false; if (!hovered.current) setOpen(false); }}
-      onKeyDown={(event) => {
-        if (!open) return;
-        if (event.key === "Escape") {
-          event.preventDefault();
-          event.stopPropagation();
-          setOpen(false);
-          return;
-        }
-        const box = tooltip.current;
-        if (!box || box.scrollHeight <= box.clientHeight) return;
-        const distance = event.key === "ArrowDown" ? 40 : event.key === "ArrowUp" ? -40
-          : event.key === "PageDown" ? box.clientHeight : event.key === "PageUp" ? -box.clientHeight : 0;
-        if (distance) {
-          event.preventDefault();
-          box.scrollTop += distance;
-        }
-      }}>
+  return (
+    <button type="button" className="toc-link-btn" aria-label={text} onClick={onClick}>
       <span className="toc-bullet" />
       <span className="toc-text">{text}</span>
     </button>
-    {open && createPortal(<div ref={tooltip} id={id} className="toc-tooltip" role="tooltip"
-      onMouseEnter={() => { cancelClose(); hovered.current = true; }}
-      onMouseLeave={leave}
-      style={{ left: position.left, top: position.top }}>{text}</div>, document.body)}
-  </>;
+  );
 }

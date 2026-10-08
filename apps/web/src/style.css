@@ -3507,7 +3507,15 @@ select:focus {
   white-space: nowrap;
 }
 
-.toc-link-btn:hover,
+.toc-link-btn:hover {
+  background: transparent;
+  color: var(--text-muted);
+}
+
+.toc-link-btn:hover .toc-text {
+  font-weight: 700;
+}
+
 .toc-link-btn:focus-visible {
   background: rgba(37, 99, 235, 0.08);
   color: var(--primary);
@@ -3530,26 +3538,6 @@ select:focus {
   white-space: nowrap;
   flex: 1;
   min-width: 0;
-}
-
-.toc-tooltip {
-  position: fixed;
-  z-index: 1500;
-  background: var(--bg-surface, #ffffff);
-  color: var(--text-main, #0f172a);
-  border: 1px solid var(--border-medium, #cbd5e1);
-  border-radius: var(--radius-sm, 4px);
-  padding: 6px 10px;
-  font-size: 11px;
-  line-height: 1.4;
-  white-space: normal;
-  word-break: break-word;
-  width: max-content;
-  max-width: min(360px, calc(100vw - 16px));
-  max-height: calc(100dvh - 16px);
-  box-sizing: border-box;
-  overflow: auto;
-  box-shadow: var(--shadow-md, 0 4px 12px rgba(0, 0, 0, 0.15));
 }
 
 .toc-empty {

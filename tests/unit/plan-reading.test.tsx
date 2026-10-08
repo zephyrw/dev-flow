@@ -145,15 +145,18 @@ describe("plan reader state and focus (E4/E5 regression components)", () => {
     expect(document.body.style.overflow).toBe("");
   });
 
-  it("places the full outline label outside the clipping parent and removes it on unmount", () => {
+  it("keeps the full outline accessible and clickable without a hover or focus tooltip", () => {
     const title = "Long heading ".repeat(40);
-    act(() => root.render(<div style={{ overflow: "hidden" }}><PlanTocButton text={title} onClick={() => {}} /></div>));
-    act(() => element(".toc-link-btn").focus());
-    const tooltip = element('[role="tooltip"]');
-    expect(tooltip.parentElement).toBe(document.body);
-    expect(tooltip.textContent).toBe(title);
-    expect(element(".toc-link-btn").getAttribute("aria-describedby")).toBe(tooltip.id);
-    act(() => root.render(null));
+    const onClick = vi.fn();
+    act(() => root.render(<div style={{ overflow: "hidden" }}><PlanTocButton text={title} onClick={onClick} /></div>));
+    act(() => element(".toc-link-btn").dispatchEvent(new MouseEvent("mouseover", { bubbles: true })));
     expect(document.querySelector('[role="tooltip"]')).toBeNull();
+    act(() => element(".toc-link-btn").focus());
+    expect(document.querySelector('[role="tooltip"]')).toBeNull();
+    expect(element(".toc-link-btn").getAttribute("aria-label")).toBe(title);
+    expect(element(".toc-link-btn").hasAttribute("title")).toBe(false);
+    expect(element(".toc-link-btn").hasAttribute("aria-describedby")).toBe(false);
+    click(".toc-link-btn");
+    expect(onClick).toHaveBeenCalledOnce();
   });
 });
