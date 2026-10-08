@@ -17,6 +17,8 @@ import {
   type SettingsTabId,
 } from "./components/SettingsDialog.js";
 import { CurrentRuntime } from "./components/CurrentRuntime.js";
+import { TaskTitle } from "./components/TaskTitle.js";
+import { NavigationResizeHandle, readNavigationWidth, NAVIGATION_WIDTH_KEY } from "./components/NavigationResizeHandle.js";
 import { WorkflowAttentionBanner } from "./components/WorkflowAttentionBanner.js";
 import { WorkflowOverview } from "./components/WorkflowOverview.js";
 import { WorkflowArchiveAction } from "./components/WorkflowArchiveAction.js";
@@ -1632,6 +1634,13 @@ function App() {
     if (selected) sessionStorage.setItem("devflow.tab." + selected, tab);
   }, [tab, selected]);
   const [connected, setConnected] = useState(false);
+  const [navigationWidth, setNavigationWidth] = useState(readNavigationWidth);
+  const [expandedProjects, setExpandedProjects] = useState<Record<string, boolean>>({});
+  const resizeNavigation = (value: number) => {
+    const width = Math.max(220, Math.min(560, value));
+    setNavigationWidth(width);
+    try { localStorage.setItem(NAVIGATION_WIDTH_KEY, String(width)); } catch {}
+  };
   const [leftSidebarOpen, setLeftSidebarOpen] = useState(() => {
     try {
       const saved = localStorage.getItem("devflow.left_sidebar_open");
@@ -2176,7 +2185,7 @@ function App() {
         (!leftSidebarOpen ? " left-collapsed" : "")
       }
       style={
-        { "--execution-width": `${sidebarWidth}px` } as React.CSSProperties
+        { "--execution-width": `${sidebarWidth}px`, "--sidebar-width": `${navigationWidth}px` } as React.CSSProperties
       }
     >
       <aside>
@@ -2251,11 +2260,15 @@ function App() {
         <div className="project-list-nav">
           {projects
             .filter((p) => flows.some((f) => f.project_id === p.id))
-            .map((p) => (
+            .map((p) => {
+              const projectFlows = flows.filter((f) => f.project_id === p.id);
+              const expanded = expandedProjects[p.id] ?? false;
+              return (
               <div key={p.id} className="project-nav">
                 <span className="project-name">▱ {p.name}</span>
-                {flows
-                  .filter((f) => f.project_id === p.id)
+                <div id={`project-tasks-${p.id}`}>
+                {projectFlows
+                  .slice(0, expanded ? undefined : 5)
                   .map((f) => (
                     <div
                       key={f.id}
@@ -2280,7 +2293,7 @@ function App() {
                         }}
                       >
                         <i className={`dot workflow-tone-${getWorkflowTone(f)}`} />
-                        <span className="flow-title-text">{f.title}</span>
+                        <TaskTitle className="flow-title-text" title={f.title} />
                       </button>
                       <WorkflowArchiveAction
                         workflowId={f.id}
@@ -2299,8 +2312,16 @@ function App() {
                       />
                     </div>
                   ))}
+                </div>
+                {projectFlows.length > 5 && (
+                  <button type="button" className="project-tasks-toggle"
+                    aria-expanded={expanded}
+                    aria-controls={`project-tasks-${p.id}`}
+                    onClick={() => setExpandedProjects((previous) => ({ ...previous, [p.id]: !expanded }))}
+                  >{expanded ? "收起任务" : `展开剩余 ${projectFlows.length - 5} 个任务`}</button>
+                )}
             </div>
-          ))}
+          ); })}
         </div>
         <div className="sidebar-bottom">
           <button
@@ -2338,6 +2359,7 @@ function App() {
           </button>
         </div>
       </aside>
+      <NavigationResizeHandle width={navigationWidth} resize={resizeNavigation} />
       <main>
         <header>
           <div className="header-main-info">
@@ -2526,7 +2548,7 @@ function App() {
                           {formatWorkflowState(f.state, f.stage)}
                         </span>
                       </div>
-                      <h3>{f.title}</h3>
+                      <TaskTitle as="h3" title={f.title} />
                       <p>{f.request}</p>
                       <footer>
                         <span>

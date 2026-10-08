@@ -93,14 +93,14 @@ test("compact workspace keeps content space and preserves independent live sideb
   expect(body!.height).toBeGreaterThanOrEqual(580);
   await expect(page.getByLabel("开发完成进度")).toHaveAttribute("value", "0");
   await expect(page.locator(".tabs")).not.toContainText("执行过程");
-  const handle = page.getByRole("separator");
+  const handle = page.getByRole("separator", { name: "调整执行侧栏宽度" });
   await handle.focus();
   await page.keyboard.press("ArrowLeft");
   expect((await page.locator(".execution-sidebar").boundingBox())!.width).toBe(
     400,
   );
   await page.getByRole("button", { name: "开发计划", exact: true }).click();
-  await page.locator(".module-body").evaluate((el) => {
+  await page.locator(".plan-content-area").evaluate((el) => {
     el.scrollTop = 350;
   });
   await page.locator(".logs").evaluate((el) => {
@@ -111,7 +111,7 @@ test("compact workspace keeps content space and preserves independent live sideb
   socket.send(JSON.stringify(event("wf-a", 81)));
   await expect(page.locator(".logs")).toContainText("第 81 项");
   expect(
-    await page.locator(".module-body").evaluate((el) => el.scrollTop),
+    await page.locator(".plan-content-area").evaluate((el) => el.scrollTop),
   ).toBe(350);
   await page.getByRole("button", { name: "收起执行过程" }).click();
   socket.send(JSON.stringify(event("wf-a", 82)));

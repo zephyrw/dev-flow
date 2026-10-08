@@ -88,7 +88,7 @@
   --transition: 0.18s var(--ease);
 
   /* Layout */
-  --sidebar-width: 250px;
+  --sidebar-width: 312.5px;
   --execution-width: 380px;
 
   font-family: var(--font-sans);
@@ -496,6 +496,7 @@ aside .mark {
 }
 
 .flow-nav-item {
+  --archive-background: var(--sidebar-bg);
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -507,10 +508,12 @@ aside .mark {
 }
 
 .flow-nav-item:hover {
+  --archive-background: #171b25;
   background: var(--sidebar-hover);
 }
 
 .flow-nav-item.active {
+  --archive-background: #0f1c3b;
   background: var(--sidebar-active);
   font-weight: 600;
 }
@@ -572,13 +575,18 @@ aside .mark {
 }
 
 .btn-archive-icon {
-  background: transparent;
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  z-index: 1;
+  background: linear-gradient(to right, transparent, var(--archive-background) 55%);
   border: none;
   color: var(--sidebar-text);
   opacity: 0;
   pointer-events: none;
-  padding: 6px;
-  margin-right: 6px;
+  padding: 6px 10px 6px 24px;
+  margin: 0;
   border-radius: var(--radius-sm);
   cursor: pointer;
   display: inline-flex;
@@ -591,20 +599,20 @@ aside .mark {
 
 .flow-nav-item:hover .btn-archive-icon,
 .flow-nav-item:focus-within .btn-archive-icon {
-  opacity: 0.75;
+  opacity: 1;
   pointer-events: auto;
 }
 
 @media (hover: none), (pointer: coarse) {
   .btn-archive-icon {
-    opacity: 0.75 !important;
+    opacity: 1 !important;
     pointer-events: auto !important;
   }
 }
 
 .btn-archive-icon:hover {
   opacity: 1 !important;
-  background: rgba(255, 255, 255, 0.12);
+  background: linear-gradient(to right, transparent, var(--archive-background) 55%);
   color: #ffffff;
 }
 
@@ -633,9 +641,64 @@ aside .mark {
 }
 
 .flow-title-text {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.project-tasks-toggle {
+  display: flex;
+  justify-content: flex-start;
+  width: 100%;
+  margin-top: 4px;
+  padding: 7px 12px;
+  border: 1px solid #374151;
+  background: #1f2937;
+  color: #cbd5e1;
+  font-size: 12px;
+  box-shadow: none;
+}
+
+.project-tasks-toggle:hover {
+  background: #374151;
+  border-color: #4b5563;
+  color: #f8fafc;
+}
+
+.task-title-tooltip {
+  position: fixed;
+  z-index: 1000;
+  max-width: min(420px, calc(100vw - 16px));
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: #1f2937;
+  color: #f8fafc;
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  box-shadow: var(--shadow-md);
+  pointer-events: none;
+}
+
+.navigation-resize-handle {
+  position: fixed;
+  left: calc(var(--sidebar-width) - 4px);
+  top: 0;
+  bottom: 0;
+  width: 8px;
+  z-index: 21;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.navigation-resize-handle:hover,
+.navigation-resize-handle:focus-visible {
+  background: rgba(59, 130, 246, 0.5);
+}
+
+.left-collapsed > .navigation-resize-handle {
+  display: none;
 }
 
 .dot {
@@ -950,12 +1013,12 @@ header h1 {
 }
 
 .workbench > aside {
-  width: 220px;
+  width: var(--sidebar-width);
   padding: 18px 12px;
 }
 
 .workbench > main {
-  margin-left: 220px;
+  margin-left: var(--sidebar-width);
   padding: 16px 24px;
   height: 100vh;
   display: flex;
@@ -3728,6 +3791,14 @@ select:focus {
 }
 
 @media (max-width: 900px) {
+  .workbench > .navigation-resize-handle {
+    display: none;
+  }
+  .workbench > aside .project-tasks-toggle {
+    padding: 6px 2px;
+    font-size: 10px;
+    white-space: normal;
+  }
   .workbench > aside {
     width: 68px;
     padding: 16px 6px;
