@@ -138,6 +138,18 @@ describe("AGY Account Service Lifecycle & Operations (AC-U17, AC-U18, AC-U20)", 
     const realmAfterStop = repo.getRealm(realmId);
     expect(realmAfterStop?.service_state).toBe("stopped");
     expect(realmAfterStop?.desired_enabled).toBe(false);
+    await service.start({ realmId, requestId: "req-restart" });
+    expect(repo.getRealm(realmId)?.phase).toBe("idle");
+    expect(repo.getRealm(realmId)?.service_state).toBe("running");
+  });
+
+  it("does not clear a blocked recovery phase when restarting", async () => {
+    await service.start({ realmId: "realm", requestId: "start" });
+    const realm = repo.getRealm("realm")!;
+    repo.saveRealm({ ...realm, service_state: "stopped", desired_enabled: false, phase: "blocked", pending_operation_id: "unresolved" });
+    await service.start({ realmId: "realm", requestId: "restart" });
+    expect(repo.getRealm("realm")?.phase).toBe("blocked");
+    expect(repo.getRealm("realm")?.pending_operation_id).toBe("unresolved");
   });
 
   it("preserves whitelist and strict night policy when only auto_switch changes", () => {
@@ -227,7 +239,7 @@ describe("AGY Account Service Lifecycle & Operations (AC-U17, AC-U18, AC-U20)", 
     ).rejects.toThrow("is not running");
   });
 
-  it("rolls back safely and fails switch when target account activation fails (AC-U20)", async () => {
+  it.each(["write_failure", "lock_lost", "restore_failure"])("handles target activation %s without claiming an unconfirmed rollback (AC-U20)", async (failure) => {
     const realmId = "default-agy-realm";
 
     const a1: AgyAccount = {
@@ -268,6 +280,11 @@ describe("AGY Account Service Lifecycle & Operations (AC-U17, AC-U18, AC-U20)", 
 
     // Make activation fail
     mockAuthHost.activateSaved = async () => {
+      if (failure === "lock_lost") mockAuthHost.isDomainLockHeld = () => false;
+      if (failure === "restore_failure") {
+        mockAuthHost.compareActive = async (_realm, ref) => ref === "vault-target";
+        mockAuthHost.restoreBackup = async () => { throw new Error("rollback_verification_failed"); };
+      }
       throw new Error("DPAPI decryption failed for target credentials");
     };
 
@@ -280,11 +297,18 @@ describe("AGY Account Service Lifecycle & Operations (AC-U17, AC-U18, AC-U20)", 
 
     expect(switchRes.phase).toBe("queued");
     await service.tick(Date.now());
-    expect(repo.getOperation(switchRes.operation_id)?.phase).toBe("failed");
+    expect(repo.getOperation(switchRes.operation_id)?.phase).toBe(failure === "write_failure" ? "failed" : "blocked");
     expect(repo.getOperation(switchRes.operation_id)?.error).toBe("credential_install_failed");
 
     // The active account should remain old or not be corrupted
     const realmAfterFailed = repo.getRealm(realmId)!;
     expect(realmAfterFailed.active_account_id).toBe("acc-active");
+    if (failure !== "write_failure") {
+      expect(realmAfterFailed.service_state).toBe("blocked");
+      expect(realmAfterFailed.pending_operation_id).toBe(switchRes.operation_id);
+      expect(repo.getOperation(switchRes.operation_id)?.completed_at).toBeUndefined();
+      expect(repo.getOperation(switchRes.operation_id)?.install_target_ref).toBe("vault-target");
+      await expect(service.acquireUsagePermit({ realm_id: realmId, consumer_id: "after-failed-restore", usage_kind: "execution", required_pool_ids: ["default"] })).rejects.toThrow();
+    }
   });
 });

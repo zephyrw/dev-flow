@@ -36,6 +36,10 @@ function resolvePowerShellCommand(): string {
   return "powershell.exe";
 }
 const powershell = resolvePowerShellCommand();
+const powershellUnavailable = (
+  spawnSync(powershell, ["-NoProfile", "-Command", "$PSVersionTable.PSVersion.Major"]).error as
+    NodeJS.ErrnoException | undefined
+)?.code === "ENOENT";
 
 interface TarEntry {
   name: string;
@@ -138,7 +142,7 @@ afterAll(() => {
   rmSync(work, { recursive: true, force: true });
 });
 
-describe("DFP-04 install.ps1 参数契约", () => {
+describe.skipIf(powershellUnavailable)("DFP-04 install.ps1 参数契约", () => {
   it("未知参数（-File）报错且可识别退出码，不关闭为交互窗口设计的错误路径", () => {
     // -File with an undeclared parameter → PowerShell binding error, non-zero.
     const r = invokePs1File(["-DefinitelyUnknown", "x"]);
@@ -212,7 +216,7 @@ describe("DFP-04 install.ps1 参数契约", () => {
   });
 });
 
-describe("DFP-04 install.ps1 退出码与宿主窗口（I-16）", () => {
+describe.skipIf(powershellUnavailable)("DFP-04 install.ps1 退出码与宿主窗口（I-16）", () => {
   it("默认安装：安装器 10 不作为失败（-File 退出 0）", () => {
     const dir = mockInstallerBundle(join(work, "ps-mock10"), 10);
     const r = invokePs1File([
@@ -269,7 +273,7 @@ describe("DFP-04 install.ps1 退出码与宿主窗口（I-16）", () => {
   });
 });
 
-describe("DFP-04 install.ps1 manifest 与归档防护", () => {
+describe.skipIf(powershellUnavailable)("DFP-04 install.ps1 manifest 与归档防护", () => {
   function psValidateManifest(raw: string, target = "win32-x64", tag = "v1.2.3") {
     const p = join(work, `mf-${Math.random().toString(36).slice(2)}.json`);
     writeFileSync(p, raw);
@@ -360,7 +364,7 @@ describe("DFP-04 install.ps1 manifest 与归档防护", () => {
   });
 });
 
-describe("DFP-04 正式包禁止回退系统 Node（I-05）", () => {
+describe.skipIf(powershellUnavailable)("DFP-04 正式包禁止回退系统 Node（I-05）", () => {
   it("sh 下载路径缺 runtime/node → 安装包不完整；--source 允许系统 Node", () => {
     const r = invokePs1DotSource(
       `try { Resolve-DevflowNode -SourceDir '${join(work, "no-node").replace(/\\/g, "\\\\")}' -SourceMode $false; Write-Host 'OK' } catch { Write-Host ('ERR:' + $_.Exception.Message) }`,

@@ -30,14 +30,19 @@ export function extractSafeAuthMetadata(
     refresh_expiry_source: "not_provided",
   };
   let parsed: Record<string, unknown>;
+  let decoded: Buffer | undefined;
   try {
-    const value: unknown = JSON.parse(secret.toString("utf8"));
+    const text = secret.toString("utf8").trim();
+    decoded = text.startsWith("go-keyring-base64:") ? Buffer.from(text.slice(18), "base64") : undefined;
+    const value: unknown = JSON.parse(decoded ? decoded.toString("utf8") : text);
     if (!value || typeof value !== "object" || Array.isArray(value))
       return result;
     parsed = value as Record<string, unknown>;
+    if (parsed.token && typeof parsed.token === "object" && !Array.isArray(parsed.token))
+      parsed = { ...parsed, ...parsed.token as Record<string, unknown> };
   } catch {
     return result;
-  }
+  } finally { decoded?.fill(0); }
   const date = (value: unknown): string | undefined => {
     if (typeof value === "string" && /^\d+(?:\.\d+)?$/.test(value))
       value = Number(value);
@@ -107,4 +112,3 @@ export function extractSafeAuthMetadata(
     result.metadata_status = "unverified";
   return result;
 }
-

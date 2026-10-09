@@ -11,7 +11,7 @@ import {
   AgyAccountSchema,
   AgyQuotaSnapshotSchema,
 } from "../../../packages/contracts/src/agy-account.js";
-export function accountFixture(store: Store) {
+export function accountFixture(store: Store, modelId = "fixture-model") {
   const repository = new AgyAccountRepository(store);
   let held = false;
   let active = "a";
@@ -26,10 +26,13 @@ export function accountFixture(store: Store) {
   const authHost: AuthHostPort = {
     capabilities: async () => ({
       supported: true,
-      platform: "win32",
-      dpapi_available: true,
-      cred_manager_available: true,
-      named_mutex_available: true,
+      platform: process.platform === "darwin" ? "darwin" : "win32",
+      dpapi_available: process.platform !== "darwin",
+      cred_manager_available: process.platform !== "darwin",
+      named_mutex_available: process.platform !== "darwin",
+      encrypted_storage_available: true,
+      credential_store_available: true,
+      domain_lock_available: true,
       version: "3.0.0-node",
     }),
     isDomainLockHeld: () => held,
@@ -118,7 +121,7 @@ export function accountFixture(store: Store) {
         pools: [
           {
             pool_id: "fixture-pool",
-            model_ids: ["fixture-model"],
+            model_ids: [modelId],
             windows: observed,
           },
         ],
@@ -141,7 +144,7 @@ export function accountFixture(store: Store) {
     processHost,
   );
   service.initializeSettings("default-agy-realm", {
-    standalone_model_id: "fixture-model",
+    standalone_model_id: modelId,
     switch_gap_seconds: 1,
   });
   function seedAccounts() {
@@ -172,7 +175,7 @@ export function accountFixture(store: Store) {
           account_id: id,
           auth_epoch: 1,
           pool_id: "fixture-pool",
-          model_ids: ["fixture-model"],
+          model_ids: [modelId],
           source: "official_cli_usage",
           cli_version: "2.0.0",
           parser_revision: 1,
@@ -196,6 +199,7 @@ export function accountFixture(store: Store) {
       external = value;
     },
     active: () => active,
+    addSavedAccount: (id: string) => { vault.set(`saved-${id}`, id); },
     setCustomWindows: (fn: ((activeId: string) => any[]) | null) => {
       customWindows = fn;
     },

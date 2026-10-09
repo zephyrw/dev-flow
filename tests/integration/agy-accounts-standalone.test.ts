@@ -24,7 +24,7 @@ describe("independent account server", () => {
   beforeEach(async () => {
     root = mkdtempSync(join(tmpdir(), "devflow-account-api-"));
     store = new Store(join(root, "devflow.sqlite"));
-    fixture = accountFixture(store);
+    fixture = accountFixture(store, "gemini-fixture");
     const web = join(root, "web");
     mkdirSync(web);
     writeFileSync(join(web, "index.html"), "<main>account-fixture</main>");
@@ -92,7 +92,7 @@ describe("independent account server", () => {
           method: "PUT",
           url: "/api/agy-accounts/settings",
           headers,
-          payload: { request_id: "edit", standalone_model_id: "fixture-model" },
+          payload: { request_id: "edit", standalone_model_id: "gemini-fixture" },
         })
       ).statusCode,
     ).toBe(422);
@@ -184,7 +184,7 @@ describe("independent account server", () => {
     const payload = {
       request_id: "switch-once",
       selection: { mode: "explicit", account_id: "b" },
-      model_id: "fixture-model",
+      model_id: "gemini-fixture",
       expected_epoch: realm.auth_epoch,
       expected_settings_revision: settings.revision,
     };
@@ -376,7 +376,7 @@ describe("independent account server", () => {
       account_id: "b",
       auth_epoch: 1,
       pool_id: "fixture-pool",
-      model_ids: ["fixture-model"],
+      model_ids: ["gemini-fixture"],
       source: "official_cli_usage",
       cli_version: "2.0.0",
       parser_revision: 1,
@@ -411,7 +411,7 @@ describe("independent account server", () => {
       account_id: "b",
       auth_epoch: 1,
       pool_id: "default",
-      model_ids: ["fixture-model"],
+      model_ids: ["gemini-fixture"],
       source: "official_cli_usage",
       cli_version: "1.2.7",
       parser_revision: 1,
@@ -481,7 +481,7 @@ describe("independent account server", () => {
       account_id: "c",
       auth_epoch: 1,
       pool_id: "default",
-      model_ids: ["fixture-model"],
+      model_ids: ["gemini-fixture"],
       source: "official_cli_usage",
       cli_version: "1.2.7",
       parser_revision: 1,
@@ -538,7 +538,7 @@ describe("independent account server", () => {
       account_id: "b",
       auth_epoch: 2,
       pool_id: "default",
-      model_ids: ["fixture-model"],
+      model_ids: ["gemini-fixture"],
       source: "official_cli_usage",
       cli_version: "1.2.7",
       parser_revision: 1,

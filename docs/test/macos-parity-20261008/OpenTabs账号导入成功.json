@@ -1,0 +1,5 @@
+{
+  "title": "DevFlow · 开发工作台",
+  "url": "http://127.0.0.1:14840/",
+  "content": "AGY 账号与额度管理\n自动切换账号\n额度耗尽时自动选择最佳账号\n当前自动选择依据：指定独立模型额度池（gemini-3.8-flash）\n+ 导入当前账号\n已管理账号 (3)\na@example.com\n正常\nGemini 额度\n周额度\n90%\n1d23h\n五小时额度\n85%\n1d23h\nClaude / GPT 额度\n周额度\n75%\n1d23h\n五小时额度\n60%\n1d23h\n设为活动\n移除\nb@example.com\n当前使用中\nGemini 额度\n周额度\n90%\n1d23h\n五小时额度\n85%\n1d23h\nClaude / GPT 额度\n周额度\n75%\n1d23h\n五小时额度\n60%\n1d23h\n移除\nc@example.com\n正常\nGemini 额度\n周额度\n90%\n1d23h\n五小时额度\n85%\n1d23h\nClaude / GPT 额度\n周额度\n75%\n1d23h\n五小时额度\n60%\n1d23h\n设为活动\n移除\n导入本机当前活动账号\n✕\n✓\n账号导入成功\n\n已成功读取本地 CLI 登录凭据并同步官方双额度，当前工作流已切换至该账号。\n\n完成"
+}

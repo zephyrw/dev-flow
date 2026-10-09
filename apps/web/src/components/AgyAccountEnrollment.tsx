@@ -18,6 +18,11 @@ const FRIENDLY_ERRORS: Record<string, string> = {
   interactive_login_capability_unverified:
     "当前环境未开启官方 AGY 交互登录窗口支持，请选择“导入本机当前活动账号”直接导入",
   credential_worker_not_built: "账号安全凭据组件未正确构建或安装",
+  credential_install_failed: "账号凭据写入未完成，请检查系统凭据访问权限后重试",
+  probe_failed: "目标账号身份或额度核验未通过，请检查官方登录及网络后重试",
+  keychain_action_failed: "macOS 钥匙串访问未完成，请在系统弹窗中允许 DevFlow 访问后重试",
+  auth_host_timeout_state_unknown: "账号凭据访问超时，本次操作已停止。请完成系统授权后重试",
+  domain_lock_lost: "账号安全锁已失效，本次操作已停止。请确认系统凭据访问权限后重试",
   external_change: "检测到外部 AGY 会话正在修改凭据，请稍后重试",
   managed_processes_not_stopped: "相关进程尚未完全退出，为保护账号已暂停本次操作",
   network_failed: "无法连接官方服务查询额度，但账号授权凭据已安全保存",
@@ -28,7 +33,7 @@ const FRIENDLY_ERRORS: Record<string, string> = {
   operation_in_progress: "当前已有另一项账号操作正在进行中，请稍候",
 };
 
-function formatFriendlyError(raw: string): string {
+export function formatFriendlyError(raw: string): string {
   if (!raw) return "";
   if (FRIENDLY_ERRORS[raw]) return FRIENDLY_ERRORS[raw];
   if (raw.includes("CLIXML") || raw.includes("GetOwnerSid")) {

@@ -120,6 +120,11 @@ const ProcessCapabilitySchema = z.enum([
   "controller_flock",
   "clean_process_environment",
   "credential_native_probe",
+  "interactive_pty",
+  "credential_domain_flock",
+  "keychain_credential_storage",
+  "vault_authenticated_encryption",
+  "native_process_inventory",
 ]);
 
 const CompatibilitySchema = z
@@ -175,7 +180,7 @@ const CompatibilitySchema = z
       .strict(),
     agy_accounts: z
       .object({
-        platform_scope: z.literal("win32"),
+        platform_scope: z.tuple([z.literal("win32"), z.literal("darwin")]),
         feature_boundary: z
           .object({
             serial_operations_required: z.literal(true),
@@ -193,6 +198,7 @@ const CompatibilitySchema = z
               .object({
                 win32: z.array(ProcessCapabilitySchema).nonempty(),
                 posix: z.array(ProcessCapabilitySchema).nonempty(),
+                darwin: z.array(ProcessCapabilitySchema).nonempty(),
               })
               .strict(),
             capability_notes: z.record(

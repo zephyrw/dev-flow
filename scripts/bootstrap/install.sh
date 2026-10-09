@@ -147,7 +147,7 @@ detect_arch() {
     x86_64|amd64) arch=x64 ;;
     arm64|aarch64) arch=arm64 ;;
     i386|i486|i586|i686|x86)
-      printf '%s\n' "不支持 32 位架构：$_m（不会映射为 x64）" >&2
+      printf '%s\n' "不支持 32 位架构：${_m}（不会映射为 x64）" >&2
       exit 40
       ;;
     *)
@@ -231,7 +231,7 @@ resolve_version_once() {
   validate_version_tag "$version"
   # stable channel never silently installs a prerelease
   if is_prerelease_tag "$version"; then
-    printf '%s\n' "latest 解析到预发布标签：$version；预发布必须显式 --version" >&2
+    printf '%s\n' "latest 解析到预发布标签：${version}；预发布必须显式 --version" >&2
     exit 30
   fi
 }
@@ -259,7 +259,7 @@ validate_manifest_file() {
   }
   _size=$(wc -c < "$_mf" | tr -d '[:space:]')
   if [ -z "$_size" ] || [ "$_size" -le 0 ] || [ "$_size" -gt "$MANIFEST_MAX_BYTES" ]; then
-    printf '%s\n' "manifest 大小不合法：${_size:-0}（上限 $MANIFEST_MAX_BYTES）" >&2
+    printf '%s\n' "manifest 大小不合法：${_size:-0}（上限 ${MANIFEST_MAX_BYTES}）" >&2
     return 1
   fi
   # single JSON object (portable head/tail char — no `rev`)
@@ -275,7 +275,7 @@ validate_manifest_file() {
     return 1
   fi
   if ! grep -Eq '"tag"[[:space:]]*:[[:space:]]*"'"$_expect_tag"'"' "$_mf"; then
-    printf '%s\n' "manifest 标签与请求版本不一致（期望 $_expect_tag）" >&2
+    printf '%s\n' "manifest 标签与请求版本不一致（期望 ${_expect_tag}）" >&2
     return 1
   fi
   if ! grep -Eq '"'"$_expect_target"'"' "$_mf"; then
@@ -296,7 +296,7 @@ validate_manifest_file() {
   _digests=$(grep -Eo '"sha256"[[:space:]]*:[[:space:]]*"[a-fA-F0-9]{64}"' "$_mf" | grep -Eo '[a-fA-F0-9]{64}' | tr 'A-F' 'a-f' | sort -u)
   _count=$(printf '%s\n' "$_digests" | sed '/^$/d' | wc -l | tr -d '[:space:]')
   if [ "$_count" != "1" ]; then
-    printf '%s\n' "manifest 摘要字段畸形（唯一 sha256 要求，实际 $_count）" >&2
+    printf '%s\n' "manifest 摘要字段畸形（唯一 sha256 要求，实际 ${_count}）" >&2
     return 1
   fi
   printf '%s\n' "$_digests"
@@ -478,7 +478,7 @@ run_installer_and_map_exit() {
   _entry="$source_dir/dist/packages/installer/src/main.js"
   if [ ! -f "$_entry" ]; then
     if [ "$source_mode" -eq 1 ]; then
-      printf '%s\n' "开发 --source 需要完整构建产物（缺少 $_entry）；请先执行 pnpm install --frozen-lockfile 和 pnpm build。这不是 clone 自动构建入口。" >&2
+      printf '%s\n' "开发 --source 需要完整构建产物（缺少 ${_entry}）；请先执行 pnpm install --frozen-lockfile 和 pnpm build。这不是 clone 自动构建入口。" >&2
     else
       printf '%s\n' "安装包不完整：缺少安装器入口" >&2
     fi
@@ -548,10 +548,10 @@ main() {
       printf '%s\n' "源目录不存在：$source_dir" >&2
       exit 20
     fi
-    source_dir=$(cd "$source_dir" && pwd)
+    source_dir=$(cd "$source_dir" && pwd -P)
   else
     prepare_from_release
-    source_dir=$(cd "$source_dir" && pwd)
+    source_dir=$(cd "$source_dir" && pwd -P)
   fi
   resolve_node "$source_dir"
   run_installer_and_map_exit

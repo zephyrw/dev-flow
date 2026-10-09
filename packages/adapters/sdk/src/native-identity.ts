@@ -2,6 +2,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { execFileSync } from "node:child_process";
+import { extractSafeAuthMetadata } from "../../../agy-accounts/src/auth-metadata.js";
 import type { ToolProfile } from "../../../contracts/src/execution-spec.js";
 import type { NonSecretIdentity } from "../../../contracts/src/model-access.js";
 import type { IdentityContext } from "./interface.js";
@@ -91,6 +93,29 @@ function readAccountId(
   adapterId: string,
   nativeConfigScope: string,
 ): string | undefined {
+  if (adapterId === "agy" && process.platform === "darwin") {
+    let raw: Buffer | undefined;
+    let decoded: Buffer | undefined;
+    try {
+      raw = execFileSync("/usr/bin/security", [
+        "find-generic-password", "-s", "gemini", "-a", "antigravity", "-w",
+      ], { stdio: ["ignore", "pipe", "ignore"], timeout: 3000, maxBuffer: 1024 * 1024 });
+      const value = raw.toString("utf8").trim();
+      const prefix = "go-keyring-base64:";
+      decoded = value.startsWith(prefix)
+        ? Buffer.from(value.slice(prefix.length), "base64")
+        : Buffer.from(value);
+      const metadata = extractSafeAuthMetadata(decoded);
+      const account = metadata.subject ?? metadata.email;
+      return account ? "agy-keychain:" + hashIdentity(account) : undefined;
+    } catch {
+      // A missing/locked Keychain or unknown credential format is unresolved.
+      return undefined;
+    } finally {
+      decoded?.fill(0);
+      raw?.fill(0);
+    }
+  }
   for (const file of identityFiles(adapterId, nativeConfigScope)) {
     const value = accountIdFromFile(file);
     if (value) return value;

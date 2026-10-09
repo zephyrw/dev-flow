@@ -494,6 +494,7 @@ export function planUninstallRetention(options: {
     { path: join(root, "transactions"), reason: "app_transactions" },
     { path: join(root, "open-accounts.ps1"), reason: "app_entry" },
     { path: join(root, "打开 AGY 账号管理.vbs"), reason: "app_entry" },
+    { path: join(root, "打开 AGY 账号管理.app"), reason: "app_entry" },
   ];
   const keep: RetentionEntry[] = [];
   const consent: RetentionEntry[] = [];

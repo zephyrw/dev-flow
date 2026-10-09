@@ -7,7 +7,7 @@ import {
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 test(
-  "原生真实 UI 到规划、质量审查、问题复测、终审及工作树交付",
+  "原生真实 UI 到规划、质量审查、指导续修、终审及工作树交付",
   { tag: "@native" },
   async ({ page }) => {
     test.setTimeout(900000);
@@ -18,6 +18,8 @@ test(
     const root = before.workspaces[0].root,
       branch = before.workspaces[0].branch;
     await page.getByRole("button", { name: "批准当前计划" }).click();
+    await page.getByRole("dialog", { name: "批准执行计划", exact: true })
+      .getByRole("button", { name: "批准并开始执行", exact: true }).click();
     await expect(page.locator(".header-title-wrapper .badge")).toContainText(
       "等待你的验收",
       { timeout: 450000 },
@@ -28,27 +30,11 @@ test(
       "quality_before_human",
     ]);
     await showInteraction(page);
-    await page.locator(".guidance-form textarea").fill("核对原计划末尾换行 @");
-    await expect(page.locator(".reference-popup")).toBeVisible();
-    await page.getByText("app.txt", { exact: true }).last().click();
-    await page.getByRole("button", { name: "发送指导并继续" }).click();
-    await expect(
-      page.getByRole("button", { name: "复测通过", exact: true }),
-    ).toBeVisible({ timeout: 240000 });
-    const unconfirmed = await page.request.post(
-      "/api/workflows/" + id + "/confirm-function",
-      {
-        headers: { Origin: "http://localhost:14811" },
-        data: {
-          request_id: "premature",
-          expected_version: (await get()).workflow.version,
-          snapshot_id: (await get()).workflow.snapshot_id,
-        },
-      },
-    );
-    expect(unconfirmed.status()).toBe(422);
-    await page.getByRole("button", { name: "复测通过", exact: true }).click();
-    await expect(page.getByLabel("任务反馈记录")).toContainText("已确认");
+    await page.locator(".task-interaction textarea").fill("核对原计划 app.txt 的末尾换行并重新自测。");
+    await page.getByRole("button", { name: "发送", exact: true }).click();
+    await expect.poll(async () => (await get()).runs.length, { timeout: 45000 }).toBeGreaterThan(3);
+    await expect.poll(async () => (await get()).workflow.state, { timeout: 240000 }).toBe("HUMAN_PENDING");
+    expect((await get()).runs.at(-1).purpose).toBe("functional_fix");
     await page.getByRole("button", { name: "验收通过，启动复核" }).click();
     await expect
       .poll(async () => (await get()).workflow.state, { timeout: 240000 })
@@ -60,16 +46,12 @@ test(
         encoding: "utf8",
       }),
     ).toBe("after\n");
-    expect(existsSync(root)).toBe(false);
+    expect(existsSync(root)).toBe(true);
     expect(
       execFileSync("git", ["branch", "--list", branch], {
         cwd: source,
         encoding: "utf8",
       }).trim(),
-    ).toBe("");
-    const issues = await (
-      await page.request.get("/api/workflows/" + id + "/functional-issues")
-    ).json();
-    expect(issues[0].status).toBe("confirmed");
+    ).not.toBe("");
   },
 );

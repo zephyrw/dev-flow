@@ -1,6 +1,7 @@
 import koffi from "koffi";
 import { closeSync, constants, openSync, readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
+import { darwinProcessInfo } from "./darwin-processes.js";
 
 export const LOCK_SH = 1,
   LOCK_EX = 2,
@@ -18,7 +19,7 @@ function lockCall(fd: number, operation: number) {
   return flock(fd, operation);
 }
 export function tryAcquireFlock(path: string): FlockHandle | null {
-  const fd = openSync(path, constants.O_CREAT | constants.O_RDWR, 0o600);
+  const fd = openSync(path, constants.O_CREAT | constants.O_RDWR | constants.O_NOFOLLOW, 0o600);
   try {
     if (lockCall(fd, LOCK_EX_NB) !== 0) {
       const errno = koffi.errno();
@@ -58,6 +59,9 @@ export function isProcessAlive(pid: number): boolean {
     return true;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
+    // Signal 0 can report EPERM while a macOS group is exiting. It still
+    // exists; keep polling until ESRCH rather than declaring cleanup unknown.
+    if ((error as NodeJS.ErrnoException).code === "EPERM") return true;
     throw error;
   }
 }
@@ -68,6 +72,7 @@ export function isProcessGroupAlive(pgid: number): boolean {
 }
 export function getProcessCreationTime(pid: number): string | null {
   if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error("INVALID_PID");
+  if (process.platform === "darwin") return darwinProcessInfo(pid)?.creation_time ?? null;
   if (process.platform === "linux") {
     try {
       const stat = readFileSync(`/proc/${pid}/stat`, "utf8");

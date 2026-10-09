@@ -101,4 +101,12 @@ describe("account installation migration", () => {
     writeAccountsLauncher(unsupported, "linux");
     expect(existsSync(unsupported)).toBe(false);
   });
+  it("provides a native macOS account application using the stable CLI", () => {
+    const paths = writeAccountsLauncher(root, "darwin")!;
+    expect(paths).toHaveLength(2);
+    const executable = paths.find(path => path.endsWith("DevFlowAccounts"))!;
+    expect(readFileSync(executable, "utf8")).toContain(" accounts\n");
+    expect(readFileSync(executable, "utf8")).not.toContain("versions/0.2.0");
+    expect(readFileSync(paths.find(path => path.endsWith("Info.plist"))!, "utf8")).toContain("APPL");
+  });
 });

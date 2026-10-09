@@ -13,6 +13,7 @@ import type {
   ActiveCredentialInspection,
 } from "./ports.js";
 import type { AgyAccountAuth } from "../../contracts/src/agy-account.js";
+import { credentialCapabilitiesReady } from "./credential-capabilities.js";
 
 const AuthSchema = z
   .object({
@@ -38,6 +39,9 @@ const capabilitiesSchema = z
     dpapi_available: z.boolean(),
     cred_manager_available: z.boolean(),
     named_mutex_available: z.boolean(),
+    encrypted_storage_available: z.boolean().optional(),
+    credential_store_available: z.boolean().optional(),
+    domain_lock_available: z.boolean().optional(),
     version: z.literal("3.0.0-node"),
   })
   .strict();
@@ -145,7 +149,8 @@ export class DevFlowAuthHost implements AuthHostPort {
             new Error("auth_host_timeout_state_unknown"),
             child,
           ),
-        15000,
+        // Keychain may require an interactive macOS unlock/access confirmation.
+        process.platform === "darwin" && id !== "ready" ? 120000 : 15000,
       );
       this.pending.set(id, { resolve, reject, timer, schema });
     });
@@ -155,7 +160,7 @@ export class DevFlowAuthHost implements AuthHostPort {
     if (this.child) return;
     this.starting = (async () => {
       await this.stopping;
-      if (process.platform !== "win32")
+      if (process.platform !== "win32" && process.platform !== "darwin")
         throw new Error("auth_host_capability_unavailable");
       const path = resolveCredentialWorker(),
         generation = randomUUID();
@@ -255,11 +260,7 @@ export class DevFlowAuthHost implements AuthHostPort {
       const result = await this.call<AuthHostCapabilities>("capabilities", {});
       return {
         ...result,
-        supported:
-          result.supported &&
-          result.dpapi_available &&
-          result.cred_manager_available &&
-          result.named_mutex_available,
+        supported: result.supported && credentialCapabilitiesReady(result),
       };
     } catch {
       return unavailable;

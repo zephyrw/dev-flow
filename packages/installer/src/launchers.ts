@@ -429,6 +429,21 @@ export function writeStableEntry(
       );
       if (desktopWritten) menuPaths.push(desktop);
     }
+    if (process.platform === "darwin") {
+      const bundle = join(home, "Applications", "DevFlow.app");
+      const executable = join(bundle, "Contents", "MacOS", "DevFlow");
+      const plist = join(bundle, "Contents", "Info.plist");
+      if (existsSync(bundle) && !prior.some(entry => entry.path === executable)) {
+        conflicts.push(bundle);
+      } else {
+        mkdirSync(dirname(executable), { recursive: true });
+        if (writeEntry(executable, devflowShScript(installRoot))) {
+          chmodSync(executable, 0o755);
+          menuPaths.push(executable);
+        }
+        if (writeEntry(plist, macAppPlist("DevFlow", "devflow"))) menuPaths.push(plist);
+      }
+    }
   }
 
   return {
@@ -437,6 +452,15 @@ export function writeStableEntry(
     conflicts,
     absoluteOpenHint: layout.entryMjs,
   };
+}
+
+export function macAppPlist(executable: string, identifier: string): string {
+  return '<?xml version="1.0" encoding="UTF-8"?>\n' +
+    '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n' +
+    '<plist version="1.0"><dict><key>CFBundleExecutable</key><string>' + executable +
+    '</string><key>CFBundleIdentifier</key><string>com.devflow.' + identifier +
+    '</string><key>CFBundleName</key><string>DevFlow</string><key>CFBundlePackageType</key><string>APPL</string>' +
+    '<key>LSUIElement</key><true/></dict></plist>\n';
 }
 
 export interface PathWriteResult {

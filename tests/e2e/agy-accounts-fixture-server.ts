@@ -7,14 +7,27 @@ import { accountFixture } from "../fixtures/agy-accounts/service-fixture.js";
 const port = Number(process.env.DEVFLOW_ACCOUNTS_E2E_PORT ?? 14839);
 const root = mkdtempSync(join(tmpdir(), "devflow-accounts-browser-"));
 const store = new Store(join(root, "devflow.sqlite"));
-const fixture = accountFixture(store);
+const fixture = accountFixture(store, "gemini-3.8-flash");
 fixture.seedAccounts();
 
 const initialNow = Date.now();
 const initialFutureReset = new Date(initialNow + 2 * 86400 * 1000).toISOString();
 const initialNowIso = new Date(initialNow).toISOString();
 
-fixture.probe.probeUsage = async () => {
+let scenario = false;
+const originalProbe = fixture.probe.probeUsage;
+fixture.probe.probeUsage = async (...args) => {
+  if (scenario) {
+    const observed = await originalProbe(...args);
+    const snapshot = fixture.repository.getQuotaSnapshot("default-agy-realm", fixture.active(), "Gemini Models");
+    const other = fixture.repository.getQuotaSnapshot("default-agy-realm", fixture.active(), "Claude and GPT models");
+    const now = new Date().toISOString();
+    const windows = (snapshot?.windows ?? observed.windows).map(window => ({ ...window, observed_at: now }));
+    return { ...observed, windows, pools: [
+      { pool_id: "Gemini Models", model_ids: ["gemini-3.8-flash"], windows },
+      ...(other ? [{ pool_id: other.pool_id, model_ids: other.model_ids, windows: other.windows.map(window => ({ ...window, observed_at: now })) }] : []),
+    ] };
+  }
   const curNow = Date.now();
   const curIso = new Date(curNow).toISOString();
   const curReset = new Date(curNow + 2 * 86400 * 1000).toISOString();
@@ -88,13 +101,8 @@ for (const id of ["a", "b", "c"]) {
   });
 }
 
-const settings = fixture.repository.getSettings("default-agy-realm")!;
-fixture.service.updateSettings(
-  "default-agy-realm",
-  { standalone_model_id: null },
-  settings.revision,
-  "fixture-empty-model",
-);
+
+fixture.addSavedAccount("d");
 const origin = `http://127.0.0.1:${port}`;
 const app = buildAccountsServer(fixture.service, {
   port,
@@ -119,6 +127,7 @@ app.route({
   method: ["GET", "POST"],
   url: "/api/account-fixture/setup-quota-scenarios",
   handler: async () => {
+    scenario = true;
     const realmId = "default-agy-realm";
     const now = Date.now();
     const pastReset = new Date(now - 3600_000).toISOString();
@@ -166,8 +175,8 @@ app.route({
       realm_id: realmId,
       account_id: "a",
       auth_epoch: 1,
-      pool_id: "fixture-pool",
-      model_ids: ["fixture-model"],
+      pool_id: "Gemini Models",
+      model_ids: ["gemini-3.8-flash", "gemini-3.7-flash"],
       source: "official_cli_usage",
       cli_version: "2.0.0",
       parser_revision: 1,
@@ -186,8 +195,8 @@ app.route({
       realm_id: realmId,
       account_id: "b",
       auth_epoch: 1,
-      pool_id: "fixture-pool",
-      model_ids: ["fixture-model"],
+      pool_id: "Gemini Models",
+      model_ids: ["gemini-3.8-flash", "gemini-3.7-flash"],
       source: "official_cli_usage",
       cli_version: "2.0.0",
       parser_revision: 1,
@@ -206,8 +215,8 @@ app.route({
       realm_id: realmId,
       account_id: "c",
       auth_epoch: 1,
-      pool_id: "fixture-pool",
-      model_ids: ["fixture-model"],
+      pool_id: "Gemini Models",
+      model_ids: ["gemini-3.8-flash", "gemini-3.7-flash"],
       source: "official_cli_usage",
       cli_version: "2.0.0",
       parser_revision: 1,
@@ -226,8 +235,8 @@ app.route({
       realm_id: realmId,
       account_id: "d",
       auth_epoch: 1,
-      pool_id: "fixture-pool",
-      model_ids: ["fixture-model"],
+      pool_id: "Gemini Models",
+      model_ids: ["gemini-3.8-flash", "gemini-3.7-flash"],
       source: "official_cli_usage",
       cli_version: "2.0.0",
       parser_revision: 1,
@@ -312,8 +321,8 @@ app.route({
       realm_id: realmId,
       account_id: "d",
       auth_epoch: 1,
-      pool_id: "fixture-pool",
-      model_ids: ["fixture-model"],
+      pool_id: "Gemini Models",
+      model_ids: ["gemini-3.8-flash", "gemini-3.7-flash"],
       source: "official_cli_usage",
       cli_version: "2.0.0",
       parser_revision: 1,
@@ -363,9 +372,9 @@ app.route({
       id: "snapshot-a-new-cycle",
       realm_id: realmId,
       account_id: "a",
-      auth_epoch: 2,
-      pool_id: "fixture-pool",
-      model_ids: ["fixture-model"],
+      auth_epoch: fixture.repository.getRealm(realmId)?.auth_epoch ?? 1,
+      pool_id: "Gemini Models",
+      model_ids: ["gemini-3.8-flash", "gemini-3.7-flash"],
       source: "official_cli_usage",
       cli_version: "2.0.0",
       parser_revision: 1,

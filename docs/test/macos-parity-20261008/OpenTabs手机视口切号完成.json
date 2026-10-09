@@ -1,0 +1,5 @@
+{
+  "title": "DevFlow · 开发工作台",
+  "url": "http://127.0.0.1:14841/",
+  "content": "D\nDevFlow\n◫\n任务总览\n项目\n+ 新建\n▱ devflow-macos-rotation-project\nmacOS 真实双账号任务验收：只将 app.txt 从 before 加换行改为 after 加换行。编写并运行 No\n👥\nAGY 账号\n📖\n使用指南\n⚙️\n设置\n\n开发工作台\n\n任务总览\n正在运行\n0\n实施、测试与复核\n等待你处理\n0\n计划批准与实际验收\n已完成提交\n1\n完整通过交付检查\n全部工作流\n1 个工作流\ndevflow-macos-rotation-project\n已提交\nmacOS 真实双账号任务验收：只将 app.txt 从 before 加换行改为 after 加换行。编写并运行 No\n\nmacOS 真实双账号任务验收：只将 app.txt 从 before 加换行改为 after 加换行。编写并运行 Node 内置 node:test 测试（文件可命名 app.test.mjs）严格核对 UTF-8 内容为 after\\n。请规划一个实施任务，完成修改和真实测试，然后按工作流复核、用户验收、最终本地提交；不推送。不要修改其他业务内容。\n\n2026/10/9 09:08:33\nAGY 账号管理\n\n管理 Antigravity 账号及自动切换设置\n\n×\n自动切换账号\n已停用自动切换，当前仅执行手动切换\n+ 导入当前账号\n已管理账号 (2)\n[已脱敏账号]\n正常\nGemini 额度\n周额度\n88%\n6d1h\n五小时额度\n92%\n4h34m\nClaude / GPT 额度\n周额度\n100%\n五小时额度\n100%\n设为活动\n移除\n[已脱敏账号]\n当前使用中\nGemini 额度\n周额度\n98%\n6d14h\n五小时额度\n98%\n4h29m\nClaude / GPT 额度\n周额度\n100%\n五小时额度\n100%\n移除"
+}

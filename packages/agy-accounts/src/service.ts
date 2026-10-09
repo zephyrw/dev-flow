@@ -47,6 +47,7 @@ import { selectCandidates, evaluateAccountForDemand } from "./selector.js";
 import { computeDomainWait } from "./wait-policy.js";
 import { AgyDomainCoordinator } from "./coordinator.js";
 import { AgyLoginLauncher } from "./login.js";
+import { credentialCapabilitiesReady } from "./credential-capabilities.js";
 
 export class AccountServiceError extends Error {
   constructor(
@@ -1125,9 +1126,7 @@ export class AgyAccountService {
     const capability = await this.authHost.capabilities();
     if (
       !capability.supported ||
-      !capability.dpapi_available ||
-      !capability.cred_manager_available ||
-      !capability.named_mutex_available ||
+      !credentialCapabilitiesReady(capability) ||
       capability.version !== "3.0.0-node"
     ) {
       realm.service_state = "blocked";
@@ -1171,6 +1170,7 @@ export class AgyAccountService {
     const resumeIntent = realm.desired_enabled;
     realm.service_state = "running";
     realm.desired_enabled = true;
+    if (realm.phase === "stopped" && !realm.pending_operation_id) realm.phase = "idle";
     if (!resumeIntent) realm.control_generation += 1;
     realm.revision += 1;
     this.repository.saveRealm(realm);
@@ -2853,10 +2853,18 @@ export class AgyAccountService {
           );
       } catch (err: any) {
         op.error = op.error ?? String(err?.message || err);
-        this.finishOperation(op, "failed");
+        // An unverified rollback must retain its durable intent for startup
+        // reconciliation. It is not a completed failure with a known identity.
+        const rollbackUnconfirmed = !!op.before_secret_ref;
+        if (rollbackUnconfirmed) this.saveStep(op, "blocked");
+        else this.finishOperation(op, "failed");
         const realm = this.repository.getRealm(op.realm_id);
         if (realm) {
-          realm.last_error = op.error;
+          if (rollbackUnconfirmed) {
+            realm.phase = "blocked";
+            realm.service_state = "blocked";
+          }
+          realm.last_error = rollbackUnconfirmed ? String(err?.message || err) : op.error;
           realm.revision++;
           this.repository.saveRealm(realm);
         }
@@ -3393,6 +3401,9 @@ export class AgyAccountService {
         dpapi_available: hostCaps.dpapi_available,
         cred_manager_available: hostCaps.cred_manager_available,
         named_mutex_available: hostCaps.named_mutex_available,
+        encrypted_storage_available: hostCaps.encrypted_storage_available,
+        credential_store_available: hostCaps.credential_store_available,
+        domain_lock_available: hostCaps.domain_lock_available,
       };
       this.capabilitySnapshot = snapshot;
       op.result = {

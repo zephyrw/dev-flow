@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { join } from "node:path";
 
 const files = vi.hoisted(() => new Map<string, string>());
+const keychain = vi.hoisted(() => vi.fn());
+vi.mock("node:child_process", () => ({ execFileSync: keychain }));
 vi.mock("node:os", () => ({ homedir: () => "C:/fixture-user" }));
 vi.mock("node:fs", () => ({
   existsSync: (path: string) => files.has(path),
@@ -19,11 +21,40 @@ import {
 
 beforeEach(() => {
   files.clear();
+  keychain.mockReset();
   vi.stubEnv("CODEX_HOME", "");
 });
 afterEach(() => vi.unstubAllEnvs());
 
 describe("native model identity", () => {
+  it.skipIf(process.platform !== "darwin")("resolves the AGY Keychain identity across token refresh and account changes", () => {
+    const credential = (subject: string, token: string) => Buffer.from(
+      "go-keyring-base64:" + Buffer.from(JSON.stringify({
+        token: { access_token: token },
+        id_token: "header." + Buffer.from(JSON.stringify({ sub: subject, email: "fixture@example.invalid" })).toString("base64url") + ".signature",
+      })).toString("base64") + "\n",
+    );
+    keychain.mockImplementation(() => credential("account-a", "first-token"));
+    const first = identityInputFromProfile({ adapterId: "agy" });
+    expect(first.identityConfidence).toBe("account");
+    expect(first.accountId).toMatch(/^agy-keychain:[a-f0-9]{64}$/);
+    expect(JSON.stringify(first)).not.toContain("first-token");
+    expect(JSON.stringify(first)).not.toContain("fixture@example.invalid");
+    keychain.mockImplementation(() => credential("account-a", "refreshed-token"));
+    expect(identityInputFromProfile({ adapterId: "agy" })).toEqual(first);
+    keychain.mockImplementation(() => credential("account-b", "other-token"));
+    expect(identityInputFromProfile({ adapterId: "agy" }).accountId).not.toBe(first.accountId);
+  });
+
+  it.skipIf(process.platform !== "darwin")("leaves missing, locked and unrecognized AGY credentials unresolved", () => {
+    keychain.mockImplementation(() => { throw new Error("Keychain unavailable"); });
+    expect(identityInputFromProfile({ adapterId: "agy" }).identityConfidence).toBe("profile-scope");
+    const raw = Buffer.from("unknown credential format");
+    keychain.mockReturnValue(raw);
+    expect(identityInputFromProfile({ adapterId: "agy" }).accountId).toBeUndefined();
+    expect(raw.every(byte => byte === 0)).toBe(true);
+  });
+
   it("uses the stable nested account id across token refreshes", () => {
     const path = join("C:/fixture-user", ".codex", "auth.json");
     files.set(

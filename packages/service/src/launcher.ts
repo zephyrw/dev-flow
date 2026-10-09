@@ -246,7 +246,7 @@ export async function ensureService(mode: "full" | "accounts" = "full") {
     );
     if (!existsSync(entry))
       throw new Error('安装尚未完成，请双击"安装或更新 DevFlow.cmd"。');
-    if (process.platform === "win32" && !existsSync(credentialWorker))
+    if ((process.platform === "win32" || process.platform === "darwin") && !existsSync(credentialWorker))
       throw new Error("凭据 Worker 不存在，请重新安装。");
     const output = openSync(
       join(configuration.storage_root, "controller.stdout.log"),

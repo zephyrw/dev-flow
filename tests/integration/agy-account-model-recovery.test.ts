@@ -27,7 +27,7 @@ describe("managed account recovery retains frozen model routing", () => {
   let bridge: AgyWorkflowBridge;
   beforeEach(async () => {
     s = setup();
-    accounts = accountFixture(s.store);
+    accounts = accountFixture(s.store, "gemini-fixture");
     accounts.seedAccounts();
     accounts.repository.savePolicy({ workflow_id: workflowId, revision: 1,
       auto_switch: true, allowed_account_ids: null, recreation_policy: "exact_only",
@@ -35,7 +35,7 @@ describe("managed account recovery retains frozen model routing", () => {
     await accounts.service.start({ realmId, requestId: "start-model-fixture" });
     access = new ModelAccessService(s.store);
     bridge = new AgyWorkflowBridge(accounts.service,
-      { get: () => undefined, stop: vi.fn(async () => {}) } as unknown as ProcessManager,
+      { get: () => undefined, hasStartAttempt: () => false, stop: vi.fn(async () => {}) } as unknown as ProcessManager,
       undefined, s.engine,
       { confirmJobsStopped: async () => true } as unknown as AgyAccountProcessHost);
     s.store.put("project", "p1", "p1", project(s.root));
@@ -51,12 +51,12 @@ describe("managed account recovery retains frozen model routing", () => {
     rmSync(s.root, { recursive: true, force: true });
   });
   function seedAccess() {
-    return access.seedVerified({ ...selected, modelId: "fixture-model" });
+    return access.seedVerified({ ...selected, modelId: "gemini-fixture" });
   }
   function source(purpose: Run["purpose"] = "quality_review", role: Run["routing_role"] = "reviewer") {
     const native = access.resolveNativeConfig(selected);
     const frozen = { ...frozenInvocationFromProfile(selected, "profile-native"),
-      modelToken: "fixture-model", accessModelKey: "fixture-model", catalogEntryId: "original-entry",
+      modelToken: "gemini-fixture", accessModelKey: "gemini-fixture", catalogEntryId: "original-entry",
       capabilityRevision: "original-capability", accountScope: native.accountFingerprint,
       providerScope: native.providerEndpointFingerprint ?? "default", identityConfidence: native.identityConfidence };
     const run: Run = { id: "source-run", workflow_id: workflowId, plan_revision: 1,
@@ -85,7 +85,7 @@ describe("managed account recovery retains frozen model routing", () => {
     accounts.repository.saveRealm({ ...realm, active_account_id: accountId, auth_epoch: realm.auth_epoch + 1, revision: realm.revision + 1 });
   }
   async function stageSwitch(run: Run) {
-    await bridge.prepareRun({ workflow_id: workflowId, run_id: run.id, effective_model_id: "fixture-model",
+    await bridge.prepareRun({ workflow_id: workflowId, run_id: run.id, effective_model_id: "gemini-fixture",
       account_policy_revision: 1, required_pool_ids: ["fixture-pool"] });
     await bridge.prepareSwitch("operation-model");
     const workflow = s.engine.get(workflowId);
@@ -122,7 +122,7 @@ describe("managed account recovery retains frozen model routing", () => {
     expect(binding.model_binding.frozen_invocation).toEqual(binding.frozen_invocation);
     expect(binding.model_binding.invocation_fingerprint).toBe(binding.invocation_fingerprint);
     expect(s.store.must<Run>("run", run.id)).toEqual(run);
-    expect(s.store.get<any>("agy_recovery_checkpoint", "operation-model:source-run")?.effective_model_id).toBe("fixture-model");
+    expect(s.store.get<any>("agy_recovery_checkpoint", "operation-model:source-run")?.effective_model_id).toBe("gemini-fixture");
     expect(s.engine.dispatch).toHaveBeenCalledOnce();
   });
 
@@ -142,7 +142,7 @@ describe("managed account recovery retains frozen model routing", () => {
     expect(resumeApproved(s.engine, workflowId).state).toBe("PLANNING");
     const binding = bindProfile(s.store, s.config, workflowId, "planning", buildDispatchContext(s.store, workflowId, "planning"));
     expect(binding.profile.modelId).toBe("display-alias");
-    expect(binding.frozen_invocation.modelToken).toBe("fixture-model");
+    expect(binding.frozen_invocation.modelToken).toBe("gemini-fixture");
     expect(binding.frozen_invocation.effortArgs).toEqual(["--effort", "high"]);
     expect(binding.logical_round_id).toBe(run.logical_round_id);
     expect(s.store.must<Run>("run", run.id)).toEqual(run);
@@ -160,7 +160,7 @@ describe("managed account recovery retains frozen model routing", () => {
     const run = source(); seedAccess(); switchIdentity(); seedAccess();
     const frozen = structuredClone(run.frozen_invocation);
     const acquire = vi.spyOn(accounts.service, "acquireUsagePermit");
-    const binding = await bridge.prepareProfileRun(workflowId, run, "fixture-model");
+    const binding = await bridge.prepareProfileRun(workflowId, run, "gemini-fixture");
     expect(binding?.account_id).toBe(accounts.active());
     expect(accounts.repository.getRealm(realmId)?.active_account_id).toBe("a");
     expect(acquire).toHaveBeenCalledOnce();
@@ -178,7 +178,7 @@ describe("managed account recovery retains frozen model routing", () => {
       probeStarted();
       return new Promise<boolean>((resolve) => { finishProbe = resolve; });
     });
-    const preparing = bridge.prepareProfileRun(workflowId, run, "fixture-model");
+    const preparing = bridge.prepareProfileRun(workflowId, run, "gemini-fixture");
     // An early failure wins this race instead of hanging on an unstarted probe.
     await Promise.race([entered, preparing.then(() => { throw new Error("permit returned before probe"); })]);
     expect(s.store.list("model_access")).toEqual([]);
@@ -192,7 +192,7 @@ describe("managed account recovery retains frozen model routing", () => {
     expect(persisted.frozen_invocation).toEqual({ ...originalFrozen, accountScope: native.accountFingerprint });
     expect(access.assertFrozenAccess(selected, persisted.frozen_invocation!)).toMatchObject({
       status: "verified", identityConfidence: native.identityConfidence, accountScope: native.accountFingerprint,
-      accessModelKey: "fixture-model", verification_method: "native-probe",
+      accessModelKey: "gemini-fixture", verification_method: "native-probe",
     });
   });
 
@@ -204,7 +204,7 @@ describe("managed account recovery retains frozen model routing", () => {
       if (result === "failed") throw new Error("fixture_model_probe_failure");
       return false;
     });
-    await expect(bridge.prepareProfileRun(workflowId, run, "fixture-model")).rejects.toMatchObject({ code: "AGY_ACCOUNT_UNAVAILABLE" });
+    await expect(bridge.prepareProfileRun(workflowId, run, "gemini-fixture")).rejects.toMatchObject({ code: "AGY_ACCOUNT_UNAVAILABLE" });
     expect(probe).toHaveBeenCalledOnce();
     expect(s.store.list("model_access")).toEqual([]);
     expect(accounts.repository.listPermits(realmId)).toEqual([]);
@@ -220,7 +220,7 @@ describe("managed account recovery retains frozen model routing", () => {
       else access.invalidate(run.frozen_invocation!, "MODEL_LOGIN_REQUIRED");
       return permit;
     });
-    await expect(bridge.prepareProfileRun(workflowId, run, "fixture-model")).rejects.toMatchObject({
+    await expect(bridge.prepareProfileRun(workflowId, run, "gemini-fixture")).rejects.toMatchObject({
       code: change === "account" ? "AGY_ACCOUNT_BINDING_STALE" : "MODEL_LOGIN_REQUIRED" });
     expect(accounts.repository.listPermits(realmId).every((permit) => permit.status === "released")).toBe(true);
     expect(await bridge.listOccupancy()).toEqual([]);
@@ -237,7 +237,7 @@ describe("managed account recovery retains frozen model routing", () => {
     access.putAccess(original);
     const acquire = vi.spyOn(accounts.service, "acquireUsagePermit");
     const probe = vi.spyOn(accounts.probe, "probeModelAccess");
-    await expect(bridge.prepareProfileRun(workflowId, run, "fixture-model")).rejects.toMatchObject({ code });
+    await expect(bridge.prepareProfileRun(workflowId, run, "gemini-fixture")).rejects.toMatchObject({ code });
     expect(acquire).not.toHaveBeenCalled();
     expect(probe).not.toHaveBeenCalled();
     expect(access.getAccess(original.key)).toEqual(original);
@@ -246,7 +246,7 @@ describe("managed account recovery retains frozen model routing", () => {
 
   it("attaches a same-identity permit without changing the frozen command", async () => {
     const run = source(); seedAccess();
-    const binding = await bridge.prepareProfileRun(workflowId, run, "fixture-model");
+    const binding = await bridge.prepareProfileRun(workflowId, run, "gemini-fixture");
     expect(binding?.account_id).toBe("a");
     expect(s.store.must<Run>("run", run.id).frozen_invocation).toEqual(run.frozen_invocation);
     expect(s.store.must<Run>("run", run.id).agy_account).toEqual(binding);
@@ -255,7 +255,7 @@ describe("managed account recovery retains frozen model routing", () => {
   it("invalidates the source account auth cache before an auth failure becomes account-wait", async () => {
     const run = source(); const record = seedAccess();
     const binding = await bridge.prepareRun({ workflow_id: workflowId, run_id: run.id,
-      effective_model_id: "fixture-model", account_policy_revision: 1, required_pool_ids: ["fixture-pool"] });
+      effective_model_id: "gemini-fixture", account_policy_revision: 1, required_pool_ids: ["fixture-pool"] });
     const fact = classifyAgyFailure({ realmId, accountId: "a", authEpoch: binding.auth_epoch,
       runId: run.id, currentTurn: true, eventOffset: 2, event: { type: "error", code: "auth_invalid" } });
     expect(await bridge.observeFailure(binding, fact)).toBe("waiting");

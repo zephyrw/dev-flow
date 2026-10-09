@@ -31,6 +31,10 @@ export const RUNTIME_FILES_SCHEMA_VERSION = 1;
 export const MANIFEST_SCHEMA_VERSION = 1;
 export const BUILD_INFO_SCHEMA_VERSION = 1;
 
+export function containsPrivateKeyMaterial(content) {
+  return /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----[ \t]*(?:\r?\n|\\r\\n|\\n)[ \t]*[A-Za-z0-9+/=]{32,}/.test(content);
+}
+
 /**
  * Install-script tag binding placeholders (shared interface #11 / stream D).
  * Scripts keep `DEVFLOW_RELEASE_TAG="@TAG@"` form; build-release substitutes

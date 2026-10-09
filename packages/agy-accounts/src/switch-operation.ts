@@ -70,10 +70,15 @@ export class SwitchOperationExecutor {
       };
     }
     const initialOperation = this.repository.getOperation(options.operationId);
+    const canExecute = (current: AgyRealm) =>
+      current.service_state === "running" ||
+      (options.selection.mode === "explicit" &&
+        options.trigger === "manual_explicit" &&
+        current.service_state === "stopped" && !current.desired_enabled);
     if (
       !initialOperation ||
       !this.authHost.isDomainLockHeld(options.realmId) ||
-      realm.service_state !== "running" ||
+      !canExecute(realm) ||
       realm.pending_operation_id !== options.operationId
     ) {
       return {
@@ -89,7 +94,7 @@ export class SwitchOperationExecutor {
       if (
         !this.authHost.isDomainLockHeld(options.realmId) ||
         !current ||
-        current.service_state !== "running" ||
+        !canExecute(current) ||
         current.control_generation !== operation.control_generation ||
         op?.cancel_requested ||
         options.signal?.aborted
@@ -194,6 +199,11 @@ export class SwitchOperationExecutor {
         ...occupancy.flatMap((o) => o.required_model_ids ?? []),
       ]),
     ];
+    // Choosing an identity without consumers does not authorize inference.
+    // Quota/model gates still apply to automatic selection and managed runs.
+    const identityOnly = options.trigger === "manual_explicit" &&
+      options.selection.mode === "explicit" && occupancy.length === 0 &&
+      operation.required_model_ids.length === 0;
     this.repository.saveOperation(operation);
     const selectionPolicy = {
       required_model_ids: operation.required_model_ids,
@@ -309,17 +319,14 @@ export class SwitchOperationExecutor {
         ? this.repository.getAccount(options.realmId, beforeAccountId)
         : undefined;
       if (!expectedAccount) {
-        console.error("[SWITCH_DEBUG] expectedAccount not found for beforeAccountId:", beforeAccountId);
         throw new Error("external_change:expected_account_missing");
       }
 
       const activeInspection = await this.authHost.inspectActive(options.realmId);
       const activeEmail = activeInspection.auth?.email?.toLowerCase();
       const expectedEmail = expectedAccount.identity.email.toLowerCase();
-      console.log("[SWITCH_DEBUG] Step 5 compareActive failed, checking email:", { activeEmail, expectedEmail });
 
       if (!activeEmail || activeEmail !== expectedEmail) {
-        console.error("[SWITCH_DEBUG] Email mismatch in step 5:", { activeEmail, expectedEmail });
         throw new Error("external_change:step5_email_mismatch");
       }
     }
@@ -481,7 +488,6 @@ export class SwitchOperationExecutor {
         operation.installed_secret_ref ?? operation.before_secret_ref;
       const compareActiveMatches = expectedRef ? await this.authHost.compareActive(options.realmId, expectedRef) : false;
       if (!expectedRef || !compareActiveMatches) {
-        console.error("[SWITCH_DEBUG] compareActive failed in step 7:", { expectedRef, compareActiveMatches });
         throw new Error("external_change:step7_compare_active_failed");
       }
       guard();
@@ -588,6 +594,11 @@ export class SwitchOperationExecutor {
           const probed = await this.probe.probeIdentity({ signal: options.signal });
           verifiedEmail = probed?.email?.toLowerCase();
         } catch {
+          // Some official CLI versions omit identity in /usage. A verified
+          // response plus the installed credential's readback can establish it;
+          // local metadata alone must never authorize an identity-only switch.
+          if (identityOnly && !probeRes.pools.some(pool => isQuotaPoolVerified(probeRes!, pool)))
+            throw new Error("identity_unverified");
           const activeAuth = (await this.authHost.inspectActive(options.realmId)).auth;
           verifiedEmail = activeAuth?.email?.toLowerCase();
         }
@@ -634,22 +645,22 @@ export class SwitchOperationExecutor {
         });
 
       }
-      if (!complete) {
+      if (!complete && !identityOnly) {
         targetAcc.state = probeRes.pools.some(pool => isQuotaPoolVerified(probeRes, pool)) ? "ready" : "pending_quota";
         targetAcc.revision++;
         this.repository.saveAccount(targetAcc);
         throw new Error("quota_capability_unavailable");
       }
-      const poolsToCheck = targetPools!;
+      const poolsToCheck = identityOnly ? probeRes.pools.filter(pool => isQuotaPoolVerified(probeRes!, pool)) : targetPools!;
       const zero = poolsToCheck.some((p) =>
         p.windows.some(
           (w) => w.remaining_fraction === null || w.remaining_fraction <= 0,
         ),
       );
-      targetAcc.state = zero ? "waiting_quota" : "ready";
+      targetAcc.state = !poolsToCheck.length ? "pending_quota" : zero ? "waiting_quota" : "ready";
       targetAcc.revision++;
       this.repository.saveAccount(targetAcc);
-      let accessible = !zero;
+      let accessible = identityOnly || !zero;
       const verifiedModelIds: string[] = [];
       if (accessible)
         for (const modelId of operation.required_model_ids) {
@@ -701,7 +712,7 @@ export class SwitchOperationExecutor {
         operation.revision++;
         this.repository.saveOperation(operation);
       }
-      if (zero || !accessible) {
+      if ((!identityOnly && zero) || !accessible) {
         if (options.selection.mode === "explicit")
           throw new Error("target_unavailable");
         if (candidateIndex + 1 < candidateIds.length) {

@@ -129,23 +129,30 @@ export async function bootstrapAccountService(
     loginLauncher,
   );
   const close = service.close.bind(service);
+  let closing = false;
   service.close = async () => {
+    closing = true;
     await close();
     await runner.close();
     await authHost.close();
   };
   service.initializeSettings("default-agy-realm", options.settings ?? {});
-  const hostCaps = await authHost.capabilities();
-  const capabilitySnapshot = evaluateCapabilitySnapshot(
-    adapter
+  const cliInfo = adapter
       ? {
           version: adapter.cli_version,
           sha256: adapter.executable_fingerprint,
           path: cliPath,
         }
-      : null,
-    hostCaps,
-  );
-  service.setCapabilitySnapshot(capabilitySnapshot);
+      : null;
+  const inspectHost = async () => {
+    const hostCaps = await authHost.capabilities();
+    if (!closing) service.setCapabilitySnapshot(evaluateCapabilitySnapshot(cliInfo, hostCaps));
+  };
+  if (process.platform === "darwin") {
+    // Keychain can wait for the user's OS authorization. The workbench must
+    // bind its port first; account actions stay gated until the probe resolves.
+    service.setCapabilitySnapshot(evaluateCapabilitySnapshot(cliInfo, { platform: "darwin" }));
+    void inspectHost().catch(() => {});
+  } else await inspectHost();
   return service;
 }

@@ -132,7 +132,7 @@ export function resolveClientScope(
       clientScope = env.CODEX_HOME || join(h, ".codex");
       break;
     case "agy":
-      clientScope = env.AGY_HOME || join(h, ".gemini", "antigravity");
+      clientScope = env.AGY_HOME || join(h, ".gemini", process.platform === "darwin" ? "antigravity-cli" : "antigravity");
       break;
     case "claude-code":
       clientScope = env.CLAUDE_HOME || join(h, ".claude");

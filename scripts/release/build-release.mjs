@@ -35,12 +35,17 @@ export function requiredAccountReleaseInputs(platform = process.platform) {
     "dist/packages/agy-accounts/src/service.js",
     "dist/packages/agy-accounts/src/credential-worker.js",
     "dist/packages/agy-accounts/src/credential-store.js",
+    "dist/packages/agy-accounts/src/credential-native.js",
+    "dist/packages/agy-accounts/src/credential-capabilities.js",
     "dist/packages/process/src/runner-entry.js",
     "dist/packages/process/src/native/index.js",
     "dist/packages/process/src/native/windows.js",
     "dist/packages/process/src/native/posix.js",
     ...(platform === "win32"
       ? ["dist/packages/agy-accounts/src/credential-windows.js"]
+      : []),
+    ...(platform === "darwin"
+      ? ["dist/packages/agy-accounts/src/credential-darwin.js", "dist/packages/process/src/native/darwin-processes.js", "dist/packages/process/src/native/darwin-interactive.js"]
       : []),
   ];
 }
@@ -222,7 +227,13 @@ export function generateReleaseBundle() {
   const path = join(output, asset);
   const portableRoot = join(root, "portable");
   mkdirSync(portableRoot);
-  cpSync(payload, join(portableRoot, "devflow"), { recursive: true, dereference: true });
+  // Node 22's native recursive copy on macOS can preserve nested symlinks despite
+  // dereference. A filter selects the JS copy path, which materializes every link.
+  cpSync(payload, join(portableRoot, "devflow"), {
+    recursive: true,
+    dereference: true,
+    filter: () => true,
+  });
   const tar = resolveTarCommand();
   const tarArgs = tar.forceLocal
     ? ["--force-local", "-czf", path, "-C", portableRoot, "devflow"]

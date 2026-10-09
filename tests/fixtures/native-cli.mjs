@@ -1,7 +1,7 @@
 // Test-only CLI process. Production code has no fixture flag or bypass.
 import fs from "node:fs";
 import path from "node:path";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 const selfPath = fileURLToPath(import.meta.url);
@@ -170,6 +170,17 @@ if (stage === "planning") {
     repair_plan: null,
     commit_message: "test: native fixture",
   };
+} else if (stage === "planner_commit") {
+  const repositories = m.workspaces.map((workspace) => {
+    const options = { cwd: workspace.root, encoding: "utf8" };
+    execFileSync("git", ["add", "--", "app.txt"], options);
+    execFileSync("git", ["commit", "-m", "test: native fixture"], options);
+    return {
+      repo_id: workspace.repo_id,
+      commit: execFileSync("git", ["rev-parse", "HEAD"], options).trim(),
+    };
+  });
+  result = { status: "completed", summary: "已完成本地提交", repositories };
 } else if (stage === "merge_conflict_resolution") {
   const root = process.cwd();
   if (process.env.FIXTURE_CONFLICT_EXIT_FAIL) {

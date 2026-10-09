@@ -78,7 +78,7 @@ it("stopped AGY task switches A → B → A through ProfileRuntime and real adap
   expect(s.sessions.getBinding({ ...s.key, provider_account_scope: "account-b" })).toBeUndefined();
   expect(s.store.get<any>("cli_dispatch_record", `disp_${s.key.workflow_id}_resumed-b`))
     .toMatchObject({ binding_id: s.sessions.getBinding(s.key)!.id, expected_conversation_id: "original-local-session" });
-  expect(readFileSync(join(s.config.storage_root, "native-runs", "resumed-b", "HANDOFF.json"), "utf8"))
+  expect(readFileSync(join(s.config.storage_root, "native-runs", "resumed-b", "input.json"), "utf8"))
     .toContain("继续原工作，并回答浏览器测试是否完成");
   s.sessions.bindConversationId(s.sessions.getBinding(s.key)!.id, "original-local-session", "resumed-b");
   await expect(s.invoke("account-a", "resumed-a")).rejects.toThrow("fixture-before-process-start");
@@ -87,7 +87,7 @@ it("stopped AGY task switches A → B → A through ProfileRuntime and real adap
     .toEqual(new Set(["original-local-session"]));
 });
 
-it("A → B → A stays on latest root instead of reviving historical account forks", async () => {
+it("A → B → A stays on its source root instead of reviving another account fork", async () => {
   const s = invocationFixture();
   const b = s.sessions.getOrCreateBinding({ ...s.key, provider_account_scope: "account-b" }, s.context);
   s.sessions.bindConversationId(b.id, "existing-b-root", s.source.id);
@@ -95,7 +95,7 @@ it("A → B → A stays on latest root instead of reviving historical account fo
   expect(s.resume).toHaveBeenLastCalledWith(expect.objectContaining({ previousConversationId: "existing-b-root" }));
   s.sessions.bindConversationId(b.id, "existing-b-root", "existing-b");
   await expect(s.invoke("account-a", "back-to-a")).rejects.toThrow("fixture-before-process-start");
-  expect(s.resume).toHaveBeenLastCalledWith(expect.objectContaining({ previousConversationId: "existing-b-root" }));
+  expect(s.resume).toHaveBeenLastCalledWith(expect.objectContaining({ previousConversationId: "original-local-session" }));
   expect(s.sessions.getBinding(s.key)?.conversation_id).toBe("original-local-session");
 });
 
@@ -120,12 +120,17 @@ it("aside remains isolated and frozen identity mismatch still blocks before resu
   expect(s.resume).not.toHaveBeenCalled();
 });
 
-it.each(["workflow_id", "adapter_id", "host_id", "client_scope_id", "canonical_model_id", "workspace_identity"] as const)(
+it.each(["workflow_id", "adapter_id", "host_id", "client_scope_id", "workspace_identity"] as const)(
   "cross-account fallback keeps %s isolation", (dimension) => {
     const s = fixture();
     expect(agySessionAcrossAccounts(s.store, { ...s.key, provider_account_scope: "account-b", [dimension]: "different" })).toBeUndefined();
   },
 );
+it("keeps the local AGY conversation available across model changes in the same workspace", () => {
+  const s = fixture();
+  expect(agySessionAcrossAccounts(s.store, { ...s.key, provider_account_scope: "account-b", canonical_model_id: "gemini-another" })?.conversation_id)
+    .toBe("original-local-session");
+});
 it.each(["reserved", "needs_reconcile", "unavailable", "retired"] as const)("does not revive %s bindings", (state) => {
   const s = fixture();
   const a = s.sessions.getBinding(s.key)!;

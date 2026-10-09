@@ -10,6 +10,21 @@ import { parseAgyUsageOutput } from "../../packages/adapters/agy/src/quota-parse
 import { evaluateAgyCapabilities } from "../../packages/adapters/agy/src/account-capabilities.js";
 
 describe("W02 AGY 发现、能力与真实输出适配测试", () => {
+  it("macOS exposes the same account capabilities through native storage, encryption and domain locks", () => {
+    const native = { platform: "darwin", encrypted_storage_available: true, credential_store_available: true, domain_lock_available: true,
+      dpapi_available: false, cred_manager_available: false, named_mutex_available: false };
+    const evidence = { identityVerified: true, dualQuotaVerified: true, loginVerified: true, modelAccessVerified: true };
+    const cli = { path: "/tmp/agy", version: "1.3.1", sha256: "hash" };
+    const snapshot = evaluateCapabilitySnapshot(cli, native, evidence);
+    expect(snapshot.supported).toBe(true);
+    expect(Object.values(snapshot.capabilities).every(item => item.status === "verified")).toBe(true);
+    expect(snapshot.dpapi_available).toBe(false);
+    expect(evaluateCapabilitySnapshot(cli, { ...native, domain_lock_available: false }, evidence).supported).toBe(false);
+    const capability = evaluateAgyCapabilities({ platform: "darwin", hasEncryptedStorage: true, hasCredentialStore: true, hasDomainLock: true,
+      identityVerified: true, dualQuotaVerified: true, exactResumeVerified: true, sessionUnavailableVerified: true });
+    expect(Object.values(capability).every(item => item.status === "verified")).toBe(true);
+  });
+
   it("does not infer account capability from a known or missing tool version", () => {
     const host = {
       isWindows: true, hasDpapi: true, hasCredentialManager: true, hasNamedMutex: true,

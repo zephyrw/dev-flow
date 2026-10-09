@@ -1,0 +1,130 @@
+{
+  "workflow_id": "wf-bb7586d86817450c976216cf467fc014",
+  "state": "COMMITTED",
+  "mobile_emulation": {
+    "width": 390,
+    "height": 844,
+    "mobile": true,
+    "physical_device": false,
+    "operation_id": "c270cd02-15f9-4609-90b2-fe97e8ba2808"
+  },
+  "trigger": {
+    "trigger": "controlled_structured_provider_error",
+    "natural_quota_exhaustion": false,
+    "run_id": "run-776f7169-9629-4971-be69-97aa944b8aed",
+    "account_id": "acc_37ee3966-7e58-4a1d-97e2-4b6e9e1a4ad7",
+    "auth_epoch": 12,
+    "result": "waiting"
+  },
+  "same_native_session": true,
+  "switches": [
+    {
+      "operation_id": "9224dc2e-0170-4991-a38e-edfa64b45a09",
+      "phase": "completed",
+      "trigger": "manual_explicit",
+      "before_account_id": "acc_37ee3966-7e58-4a1d-97e2-4b6e9e1a4ad7",
+      "attempted_account_ids": [
+        "acc_6e688b10-b60b-4678-8b21-9a7cf98a02af"
+      ],
+      "created_at": "2026-10-09T00:44:21.843Z",
+      "completed_at": "2026-10-09T00:44:44.554Z"
+    },
+    {
+      "operation_id": "8eedb19f-0f11-425f-8339-892c9a8ca01e",
+      "phase": "completed",
+      "trigger": "manual_explicit",
+      "before_account_id": "acc_6e688b10-b60b-4678-8b21-9a7cf98a02af",
+      "attempted_account_ids": [
+        "acc_37ee3966-7e58-4a1d-97e2-4b6e9e1a4ad7"
+      ],
+      "created_at": "2026-10-09T00:45:12.968Z",
+      "completed_at": "2026-10-09T00:45:34.488Z"
+    },
+    {
+      "operation_id": "1ee37646-1bc1-458c-a0b6-4b53ff2f879c",
+      "phase": "completed",
+      "trigger": "workflow_quota",
+      "before_account_id": "acc_37ee3966-7e58-4a1d-97e2-4b6e9e1a4ad7",
+      "attempted_account_ids": [
+        "acc_6e688b10-b60b-4678-8b21-9a7cf98a02af"
+      ],
+      "created_at": "2026-10-09T00:50:58.496Z",
+      "completed_at": "2026-10-09T00:51:46.933Z"
+    },
+    {
+      "operation_id": "c270cd02-15f9-4609-90b2-fe97e8ba2808",
+      "phase": "completed",
+      "trigger": "manual_explicit",
+      "before_account_id": "acc_6e688b10-b60b-4678-8b21-9a7cf98a02af",
+      "attempted_account_ids": [
+        "acc_37ee3966-7e58-4a1d-97e2-4b6e9e1a4ad7"
+      ],
+      "created_at": "2026-10-09T01:14:20.758Z",
+      "completed_at": "2026-10-09T01:14:52.293Z"
+    }
+  ],
+  "runs": [
+    {
+      "id": "run-776f7169-9629-4971-be69-97aa944b8aed",
+      "status": "failed",
+      "purpose": "planning",
+      "conversation_id": "97885135-bc47-465b-9ade-1bc508fda9d6",
+      "exit_code": -1,
+      "account_id": "acc_37ee3966-7e58-4a1d-97e2-4b6e9e1a4ad7",
+      "auth_epoch": 12
+    },
+    {
+      "id": "run-b0f4e09bde1e1547",
+      "status": "queued",
+      "purpose": "planning",
+      "conversation_id": "cnv-4fd56b79-5ba6-4296-aab7-3a4896642b00",
+      "account_id": "acc_37ee3966-7e58-4a1d-97e2-4b6e9e1a4ad7",
+      "auth_epoch": 12
+    },
+    {
+      "id": "run-388ba03a-a115-4ea2-a8f2-4dbbc10b8939",
+      "status": "completed",
+      "purpose": "planning",
+      "conversation_id": "97885135-bc47-465b-9ade-1bc508fda9d6",
+      "exit_code": 0,
+      "account_id": "acc_6e688b10-b60b-4678-8b21-9a7cf98a02af",
+      "auth_epoch": 13
+    },
+    {
+      "id": "run-32908698-2cde-4cf6-b4b2-c3a72e96f793",
+      "status": "completed",
+      "purpose": "implement",
+      "conversation_id": "97885135-bc47-465b-9ade-1bc508fda9d6",
+      "exit_code": 0,
+      "account_id": "acc_6e688b10-b60b-4678-8b21-9a7cf98a02af",
+      "auth_epoch": 13
+    },
+    {
+      "id": "run-04c878a2-7d6e-44f2-89e1-75fb79228361",
+      "status": "completed",
+      "purpose": "quality_review",
+      "conversation_id": "97885135-bc47-465b-9ade-1bc508fda9d6",
+      "exit_code": 0,
+      "account_id": "acc_6e688b10-b60b-4678-8b21-9a7cf98a02af",
+      "auth_epoch": 13
+    },
+    {
+      "id": "run-b0b8c35d-751c-4c07-803b-b77f1889eec2",
+      "status": "waiting",
+      "purpose": "quality_review",
+      "conversation_id": "97885135-bc47-465b-9ade-1bc508fda9d6",
+      "exit_code": 0,
+      "account_id": "acc_6e688b10-b60b-4678-8b21-9a7cf98a02af",
+      "auth_epoch": 13
+    },
+    {
+      "id": "run-5cdbe9cd-40f5-420d-bbe3-2a94c5ccba3e",
+      "status": "completed",
+      "purpose": "planner_commit",
+      "conversation_id": "97885135-bc47-465b-9ade-1bc508fda9d6",
+      "exit_code": 0,
+      "account_id": "acc_6e688b10-b60b-4678-8b21-9a7cf98a02af",
+      "auth_epoch": 13
+    }
+  ]
+}

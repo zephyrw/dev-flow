@@ -27,6 +27,9 @@ export interface AuthHostCapabilities {
   dpapi_available: boolean;
   cred_manager_available: boolean;
   named_mutex_available: boolean;
+  encrypted_storage_available?: boolean;
+  credential_store_available?: boolean;
+  domain_lock_available?: boolean;
   version: string;
 }
 

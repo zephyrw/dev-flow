@@ -6,6 +6,7 @@ import {
   rmSync,
   existsSync,
   readFileSync,
+  symlinkSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -130,6 +131,20 @@ afterAll(() => {
 });
 
 describe("DFP-04 bootstrap 参数契约（install.sh）", () => {
+  it.skipIf(process.platform === "win32")("通过符号链接路径启动时实际执行 ESM 安装器入口", () => {
+    const dir = join(work, "esm-installer");
+    mkdirSync(join(dir, "dist/packages/installer/src"), { recursive: true });
+    writeFileSync(join(dir, "package.json"), '{"type":"module"}');
+    writeFileSync(join(dir, "dist/packages/installer/src/main.js"),
+      'import {resolve} from "node:path";import {fileURLToPath} from "node:url";if(resolve(process.argv[1])===fileURLToPath(import.meta.url)) console.log("ESM_INSTALLER_EXECUTED");');
+    const alias = join(work, "esm-installer-alias");
+    symlinkSync(dir, alias, "dir");
+    const result = runBash(withUname("x86_64",
+      `"${toPosix(shPath)}" --source "${toPosix(alias)}" --install-dir "${toPosix(join(work, "esm-install"))}" --no-open`));
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("ESM_INSTALLER_EXECUTED");
+  });
+
   it("未知参数报错并返回 30，不进入下载", () => {
     const r = runBash(`"${toPosix(shPath)}" --definitely-unknown`);
     expect(r.status).toBe(30);

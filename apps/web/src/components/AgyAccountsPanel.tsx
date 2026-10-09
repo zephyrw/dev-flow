@@ -15,7 +15,7 @@ import type {
   AgyQuotaSnapshot,
   AgyManagementSelectionContext,
 } from "../../../../packages/contracts/src/agy-account.js";
-import { AgyAccountEnrollment } from "./AgyAccountEnrollment.js";
+import { AgyAccountEnrollment, formatFriendlyError } from "./AgyAccountEnrollment.js";
 import {
   agyApi,
   requestBody,
@@ -124,6 +124,7 @@ export const AgyAccountsPanel = forwardRef<
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
+  const [dismissedOperationId, setDismissedOperationId] = useState("");
   const [notice, setNotice] = useState("");
   const [enrollOpen, setEnrollOpen] = useState(false);
   const [togglingAutomation, setTogglingAutomation] = useState(false);
@@ -242,11 +243,14 @@ export const AgyAccountsPanel = forwardRef<
   const handleSwitchTo = async (accountId: string) => {
     setError("");
     try {
+      await agyApi("/sync-active", { method: "POST", body: requestBody({}) });
+      const current = await agyApi<ServiceView>("/service");
+      setService(current);
       const op = await agyApi<AccountOperationView>("/switch", {
         method: "POST",
         body: requestBody({
           selection: { mode: "explicit", account_id: accountId },
-          expected_epoch: service?.auth_epoch ?? 0,
+          expected_epoch: current.auth_epoch,
         }),
       });
       setActiveOperation(op);
@@ -317,6 +321,11 @@ export const AgyAccountsPanel = forwardRef<
   );
 
   const accounts = view?.accounts ?? [];
+  const latestOperation = service?.operations[0];
+  const operationError = latestOperation && latestOperation.operation_id !== dismissedOperationId &&
+    ["failed", "blocked", "cancelled"].includes(latestOperation.phase) && latestOperation.error &&
+    latestOperation.error !== "operation_cancelled"
+    ? formatFriendlyError(latestOperation.error) : "";
   const activeAccountId = service?.active_account_id;
 
   return (
@@ -406,10 +415,13 @@ export const AgyAccountsPanel = forwardRef<
       )}
 
       {/* 错误提示 */}
-      {error && (
+      {(error || operationError) && (
         <div className="agy-alert-error" role="alert">
-          <span>{error}</span>
-          <button type="button" onClick={() => setError("")}>✕</button>
+          <span>{error || operationError}</span>
+          <button type="button" onClick={() => {
+            setError("");
+            setDismissedOperationId(latestOperation?.operation_id ?? "");
+          }}>✕</button>
         </div>
       )}
 

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { credentialCapabilitiesReady } from "../../../agy-accounts/src/credential-capabilities.js";
 
 const execute = promisify(execFile);
 
@@ -15,6 +16,9 @@ export interface CapabilitySnapshot {
   dpapi_available: boolean;
   cred_manager_available: boolean;
   named_mutex_available: boolean;
+  encrypted_storage_available?: boolean;
+  credential_store_available?: boolean;
+  domain_lock_available?: boolean;
   capabilities: {
     identity: { status: "verified" | "unverified" | "unsupported"; reason?: string };
     dual_quota: { status: "verified" | "unverified" | "unsupported"; reason?: string };
@@ -53,6 +57,9 @@ export function evaluateCapabilitySnapshot(
     dpapi_available?: boolean;
     cred_manager_available?: boolean;
     named_mutex_available?: boolean;
+    encrypted_storage_available?: boolean;
+    credential_store_available?: boolean;
+    domain_lock_available?: boolean;
   },
   evidence?: {
     identityVerified?: boolean;
@@ -62,12 +69,9 @@ export function evaluateCapabilitySnapshot(
     evidenceKind?: string;
   },
 ): CapabilitySnapshot {
-  const isWindows = (hostCaps?.platform ?? process.platform) === "win32";
-  const hostReady =
-    isWindows &&
-    hostCaps?.dpapi_available === true &&
-    hostCaps?.cred_manager_available === true &&
-    hostCaps?.named_mutex_available === true;
+  const platform = hostCaps?.platform ?? process.platform;
+  const supportedPlatform = platform === "win32" || platform === "darwin";
+  const hostReady = credentialCapabilitiesReady({ ...hostCaps, platform });
 
   const version = cliInfo?.version ?? "unknown";
   const sha256 = cliInfo?.sha256;
@@ -87,7 +91,7 @@ export function evaluateCapabilitySnapshot(
       ? "verified"
       : "unverified";
 
-  const loginStatus = !isWindows || !hostReady || !hasCli
+  const loginStatus = !hostReady || !hasCli
     ? "unsupported"
     : evidence?.loginVerified
       ? "verified"
@@ -101,10 +105,10 @@ export function evaluateCapabilitySnapshot(
 
   // 基础环境支持状态：宿主就绪且检测到可用 CLI，允许进入受管登录与录入向导，不形成循环依赖
   const supported = hostReady && hasCli;
-  const reason = !isWindows
-    ? "AGY 账号轮换需要 Windows 凭据 API"
+  const reason = !supportedPlatform
+    ? "当前平台未实现 AGY 账号凭据宿主"
     : !hostReady
-      ? "Windows 宿主安全能力（DPAPI / 凭据管理器 / 互斥锁）未就绪"
+      ? "凭据宿主的加密存储、系统凭据库或域锁未就绪"
       : !hasCli
         ? "未检测到已安装的官方 AGY CLI"
         : undefined;
@@ -118,6 +122,9 @@ export function evaluateCapabilitySnapshot(
     dpapi_available: hostCaps?.dpapi_available ?? false,
     cred_manager_available: hostCaps?.cred_manager_available ?? false,
     named_mutex_available: hostCaps?.named_mutex_available ?? false,
+    encrypted_storage_available: hostCaps?.encrypted_storage_available,
+    credential_store_available: hostCaps?.credential_store_available,
+    domain_lock_available: hostCaps?.domain_lock_available,
     capabilities: {
       identity: {
         status: identityStatus,
@@ -129,7 +136,7 @@ export function evaluateCapabilitySnapshot(
       },
       interactive_login: {
         status: loginStatus,
-        reason: loginStatus === "verified" ? undefined : (!isWindows ? "仅支持 Windows 环境" : !hostReady ? "凭据宿主未就绪" : "待执行登录核验"),
+        reason: loginStatus === "verified" ? undefined : (!supportedPlatform ? "当前平台未实现凭据宿主" : !hostReady ? "凭据宿主未就绪" : "待执行登录核验"),
       },
       model_access: {
         status: modelStatus,

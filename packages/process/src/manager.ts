@@ -258,7 +258,8 @@ export class ProcessManager {
               identity.pgid,
               stopRequested ? "SIGTERM" : "SIGKILL",
             );
-            if (!result.success) throw new Error(result.error);
+            if (!result.success && !(process.platform === "darwin" && result.error === "EPERM"))
+              throw new Error(result.error);
             const deadline = Date.now() + 10000,
               escalate = Date.now() + (stopRequested ? 5000 : 0);
             let killed = !stopRequested;
@@ -272,7 +273,10 @@ export class ProcessManager {
                   identity.pgid,
                   "SIGKILL",
                 );
-                if (!result.success) throw new Error(result.error);
+                // macOS may reject a signal during group teardown. Only a
+                // subsequent liveness check can confirm exit; retain the deadline.
+                if (!result.success && !(process.platform === "darwin" && result.error === "EPERM"))
+                  throw new Error(result.error);
                 killed = true;
               }
               await new Promise((resolve) => setTimeout(resolve, 25));
@@ -430,7 +434,7 @@ export class ProcessManager {
             }, 50);
             return;
           }
-        } else if (spec.interactive)
+        } else if (spec.interactive && process.platform !== "darwin")
           throw new Error("INTERACTIVE_LOGIN_UNSUPPORTED");
         const runner = fileURLToPath(
           new URL("./runner-entry.js", import.meta.url),
@@ -514,6 +518,7 @@ export class ProcessManager {
                 args: spec.args,
                 cwd: spec.cwd,
                 env,
+                ...(spec.interactive ? { interactive: true } : {}),
               });
             } else if (message.type === "started") {
               if (

@@ -412,6 +412,9 @@ export function registerAgyAccountRoutes(
       dpapi_available: snapshot.dpapi_available,
       cred_manager_available: snapshot.cred_manager_available,
       named_mutex_available: snapshot.named_mutex_available,
+      encrypted_storage_available: snapshot.encrypted_storage_available ?? false,
+      credential_store_available: snapshot.credential_store_available ?? false,
+      domain_lock_available: snapshot.domain_lock_available ?? false,
       capabilities: snapshot.capabilities,
       // 兼容事实
       native_login_supported: loginAvailable,

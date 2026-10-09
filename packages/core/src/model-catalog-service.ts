@@ -29,6 +29,7 @@ import {
   type SupportedAdapterId,
 } from "../../contracts/src/index.js";
 import { nativeLaunch } from "../../adapters/sdk/src/launch.js";
+import { getProcessCreationTime } from "../../process/src/native/posix.js";
 import { resolveAdapterExecutable } from "../../adapters/sdk/src/registry.js";
 import {
   failedModelCatalog,
@@ -198,6 +199,17 @@ export function collectSafeEnv(): Record<string, string> {
   return env;
 }
 
+const limitedGroups = new Map<number, string>();
+function ownLimitedGroup(child: ChildProcess): void {
+  if (process.platform === "win32") return;
+  child.once("spawn", () => {
+    if (!child.pid) return;
+    const identity = getProcessCreationTime(child.pid);
+    if (identity) limitedGroups.set(child.pid, identity);
+  });
+  child.once("close", () => { if (child.pid) limitedGroups.delete(child.pid); });
+}
+
 export async function killProcessTree(pid: number): Promise<void> {
   try {
     if (process.platform === "win32") {
@@ -208,7 +220,11 @@ export async function killProcessTree(pid: number): Promise<void> {
       });
       return;
     }
-    process.kill(pid, "SIGTERM");
+    const identity = limitedGroups.get(pid);
+    if (identity) {
+      if (getProcessCreationTime(pid) !== identity) return;
+      process.kill(-pid, "SIGKILL");
+    } else process.kill(pid, "SIGKILL");
   } catch {
     return;
   }
@@ -223,7 +239,9 @@ export function startLimitedCli(req: LimitedCliRequest): LimitedCliHandle {
       windowsHide: true,
       shell: false,
       stdio: "pipe",
+      detached: process.platform !== "win32",
     });
+    ownLimitedGroup(child);
     return attachLimitedCli(child, req);
   } catch (error) {
     return failedLaunchHandle(error);
@@ -311,7 +329,9 @@ async function queryCodexAppServer(
     windowsHide: true,
     shell: false,
     stdio: "pipe",
+    detached: process.platform !== "win32",
   });
+  ownLimitedGroup(child);
   const chunks = { stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) };
   let timedOut = false;
   let truncated = false;

@@ -10,12 +10,13 @@ import {
   statSync,
   lstatSync,
   realpathSync,
+  chmodSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { acquireInstallTransactionLock } from "./launchers.js";
+import { acquireInstallTransactionLock, macAppPlist } from "./launchers.js";
 import { isWithinRoot } from "./download.js";
 import {
   readRuntimeFilesManifest,
@@ -769,6 +770,31 @@ export function writeAccountsLauncher(
   installRoot: string,
   platform = process.platform,
 ) {
+  if (platform === "darwin") {
+    const bundle = join(installRoot, "打开 AGY 账号管理.app");
+    const executable = join(bundle, "Contents", "MacOS", "DevFlowAccounts");
+    const plist = join(bundle, "Contents", "Info.plist");
+    const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
+    const entries = [
+      [executable, "#!/bin/sh\nexec " + quote(join(installRoot, "bin", "devflow")) + " accounts\n"],
+      [plist, macAppPlist("DevFlowAccounts", "accounts")],
+    ];
+    let prior: Array<{ path: string; hash?: string }> = [];
+    try { prior = JSON.parse(readFileSync(join(installRoot, "entry-receipt.json"), "utf8")).installed_entries ?? []; } catch {}
+    if (existsSync(bundle) && (!existsSync(executable) || !existsSync(plist)))
+      throw new Error("ACCOUNT_LAUNCHER_CONFLICT");
+    for (const [file, content] of entries) {
+      if (!existsSync(file!)) continue;
+      const stat = lstatSync(file!);
+      if (!stat.isFile() || stat.isSymbolicLink() ||
+          (readFileSync(file!, "utf8") !== content && prior.find(entry => resolve(entry.path) === resolve(file!))?.hash !== hash(readFileSync(file!))))
+        throw new Error("ACCOUNT_LAUNCHER_CONFLICT");
+    }
+    mkdirSync(dirname(executable), { recursive: true });
+    for (const [file, content] of entries) atomicWrite(file!, content!);
+    chmodSync(executable, 0o755);
+    return [executable, plist];
+  }
   if (platform !== "win32") return;
   const script = `param()
 $ErrorActionPreference = 'Stop'
@@ -797,6 +823,7 @@ script = fs.BuildPath(fs.GetParentFolderName(WScript.ScriptFullName), "open-acco
 shell.Run "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File """ & script & """", 0, False
 `,
   );
+  return [join(installRoot, "open-accounts.ps1"), join(installRoot, "打开 AGY 账号管理.vbs")];
 }
 
 // ---------------------------------------------------------------------------

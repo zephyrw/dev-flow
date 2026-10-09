@@ -11,9 +11,11 @@ const send = (message: Record<string, unknown>) => {
   if (process.connected) process.send?.({ ...message, attempt_id: attempt });
 };
 const startup = setTimeout(() => process.exit(1), 30000);
+const interactiveAbort = new AbortController();
 function stop() {
   if (stopping) return;
   stopping = true;
+  interactiveAbort.abort();
   clearTimeout(startup);
   if (process.platform === "win32") {
     // The controller owns the Job. IPC loss also closes its kill-on-close handle.
@@ -41,7 +43,7 @@ function stop() {
     }
   }, 5000);
 }
-process.on("message", (raw) => {
+process.on("message", async (raw) => {
   const message = raw as Record<string, unknown>;
   if (!message || message.attempt_id !== attempt) return;
   if (message.type === "stop") {
@@ -74,7 +76,12 @@ process.on("message", (raw) => {
     env[key] = value;
   }
   try {
-    tool = spawn(message.executable, message.args as string[], {
+    tool = message.interactive === true
+      ? await (await import("./native/darwin-interactive.js")).spawnDarwinInteractive({
+          executable: message.executable, args: message.args as string[], cwd: message.cwd,
+          env, signal: interactiveAbort.signal, onDisconnect: stop,
+        })
+      : spawn(message.executable, message.args as string[], {
       cwd: message.cwd,
       env,
       stdio: ["inherit", "inherit", "inherit"],
@@ -104,4 +111,5 @@ process.on("message", (raw) => {
 process.on("disconnect", stop);
 process.on("SIGTERM", stop);
 process.on("SIGINT", stop);
+process.on("SIGHUP", stop);
 send({ type: "ready", version: "1.0.0", pid: process.pid });

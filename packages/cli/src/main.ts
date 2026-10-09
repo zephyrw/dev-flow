@@ -102,6 +102,7 @@ function printHelp(): void {
 用法：
   devflow                  打开工作台（等同 devflow open）
   devflow open             打开工作台，仅必要启动，不触发模型任务
+  devflow accounts         打开 AGY 账号管理，仅必要启动
   devflow status           查看已安装版本、运行版本与设置状态（只读）
   devflow doctor           诊断安装、Node/native、服务与所选客户端（不登录）
   devflow stop             安全停止本应用拥有的进程
@@ -143,9 +144,9 @@ async function loadConfigSafe() {
   return loadConfig(ctx.configPath);
 }
 
-async function commandOpen(): Promise<number> {
+async function commandOpen(mode: "full" | "accounts" = "full"): Promise<number> {
   const { openBrowser } = await import("../../service/src/launcher.js");
-  const result = await openBrowser("full");
+  const result = await openBrowser(mode);
   console.log(result.message);
   if (!result.opened) console.log(result.url);
   return INSTALL_EXIT_CODES.SUCCESS;
@@ -573,6 +574,7 @@ async function commandUpdate(): Promise<number> {
 async function commandUninstall(): Promise<number> {
   const ctx = getInstallationContext();
   const { readFileSync, lstatSync, readlinkSync } = await import("node:fs");
+  const { rmdirSync } = await import("node:fs");
   const { hash } = await import("../../core/src/util.js");
   const {
     removeShellPathBlock,
@@ -614,6 +616,12 @@ async function commandUninstall(): Promise<number> {
             join(homedir(), ".local/bin/devflow"),
             join(homedir(), ".local/share/applications/devflow.desktop"),
           ]),
+      ...(process.platform === "darwin" ? [
+        join(homedir(), "Applications/DevFlow.app/Contents/Info.plist"),
+        join(homedir(), "Applications/DevFlow.app/Contents/MacOS/DevFlow"),
+        join(ctx.installRoot, "打开 AGY 账号管理.app/Contents/Info.plist"),
+        join(ctx.installRoot, "打开 AGY 账号管理.app/Contents/MacOS/DevFlowAccounts"),
+      ] : []),
     ].map(canonical),
   );
   const preserved: string[] = [];
@@ -636,6 +644,16 @@ async function commandUninstall(): Promise<number> {
     }
   }
   for (const file of remove) rmSync(file, { force: true });
+  if (process.platform === "darwin") {
+    for (const bundle of [join(homedir(), "Applications/DevFlow.app"), join(ctx.installRoot, "打开 AGY 账号管理.app")]) {
+      if (!remove.some(file => file.startsWith(bundle + "/"))) continue;
+      for (const dir of [join(bundle, "Contents/MacOS"), join(bundle, "Contents"), bundle]) {
+        try { if (!lstatSync(dir).isSymbolicLink()) rmdirSync(dir); } catch (error) {
+          if (!["ENOENT", "ENOTEMPTY"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
+        }
+      }
+    }
+  }
   if (receipt.path_added === binDir && !preserved.length) {
     if (process.platform === "win32") {
       const current = readWindowsUserPathFromRegistry();
@@ -854,6 +872,7 @@ async function main(): Promise<number> {
   if (!args.length || command === "open") {
     return commandOpen();
   }
+  if (command === "accounts") return commandOpen("accounts");
   if (command === "--help" || command === "-h" || command === "help") {
     if (args.includes("--advanced")) {
       printAdvancedHelp();

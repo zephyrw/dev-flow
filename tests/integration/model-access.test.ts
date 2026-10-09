@@ -1017,6 +1017,10 @@ function managedAccessFixture(
   const access = new ModelAccessService(env.store, {
     catalog: env.catalog, extraEnv: env.extraEnv, probeRoot: env.probeRoot,
     verifyTimeoutMs: 4000, withManagedAccountVerification: delegate,
+    withAgyCategoryVerification: async (_modelId, verify) => verify({
+      binding: { permit_id: randomUUID(), realm_id: "default-agy-realm", account_id: "account-a", auth_epoch: 1 },
+      started: () => {}, stopped: () => {},
+    }),
   });
   const catalog = parseAgyModelCatalog({
     stdout: readCatalogStdout("agy", "models-success.txt"), cliPath: FIXTURE,
@@ -1084,7 +1088,8 @@ it("managed verification delegates the existing exact model probe and retains ac
   });
   const result = await verifyNow(access, chosen, access.identityFromProfile(chosen), catalog);
   expect(result.job?.status).toBe("verified");
-  expect(delegated).toEqual([readManagedAgyModelIdentity(env.store)]);
+  expect(delegated).toEqual([expect.objectContaining({ ...readManagedAgyModelIdentity(env.store),
+    modelId: chosen.modelId, categoryPermitId: expect.any(String) })]);
   const probes = readInvocations(env.logDir).filter(item => item.kind === "probe");
   expect(probes).toHaveLength(1);
   expect(probes[0]?.argv).toContain("gemini-3.7-flash-high");

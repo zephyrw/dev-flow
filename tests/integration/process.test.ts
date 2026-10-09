@@ -154,7 +154,8 @@ it("IT-08 Windows Host captures Unicode output and terminates job descendants on
     const pid = Number(readFileSync(marker, "utf8"));
     const started = performance.now();
     await proc.stop();
-    expect(performance.now() - started).toBeLessThan(5000);
+    // POSIX gives the group 5 seconds for graceful shutdown before SIGKILL.
+    expect(performance.now() - started).toBeLessThan(process.platform === "win32" ? 5000 : 15000);
     expect(output).toContain("你好 DevFlow");
     expect(() => process.kill(pid, 0)).toThrow();
   } finally {

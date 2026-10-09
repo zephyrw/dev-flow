@@ -3,6 +3,7 @@ import { getNativeAsync } from "./native/index.js";
 import { basename, resolve } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { darwinProcessInfo, darwinProcessPath, listDarwinProcesses } from "./native/darwin-processes.js";
 import type { Store } from "../../store/src/store.js";
 
 const execFileAsync = promisify(execFile);
@@ -31,6 +32,8 @@ type ProcessEntry = {
   name: string;
   sid?: string;
   create_time?: number;
+  pgid?: number;
+  creation_time?: string;
 };
 
 /**
@@ -150,6 +153,24 @@ export class AgyAccountProcessHost implements ProcessHostPort {
   }
 
   private async inventory(): Promise<ProcessEntry[]> {
+    if (process.platform === "darwin") {
+      const configured = basename(this.options.agyExecutable);
+      return listDarwinProcesses().map((info) => {
+        const candidate = info.uid === process.getuid!() && (info.name === configured.slice(0, 31) || info.name === "agy");
+        if (!candidate) return { ...info, exe_path: "" };
+        try {
+          const exe_path = darwinProcessPath(info.pid);
+          const current = darwinProcessInfo(info.pid);
+          if (!current) return { ...info, exe_path: "" };
+          if (current.creation_time !== info.creation_time || current.uid !== info.uid)
+            throw new Error("AGY_PROCESS_IDENTITY_UNKNOWN");
+          return { ...info, name: basename(exe_path), exe_path, sid: "uid:" + info.uid };
+        } catch (error) {
+          if (!darwinProcessInfo(info.pid)) return { ...info, exe_path: "" };
+          throw error;
+        }
+      });
+    }
     if (process.platform !== "win32")
       throw new Error("AGY_PROCESS_INVENTORY_UNSUPPORTED");
     // A process can exit after enumeration but before GetOwnerSid. Ignore only
@@ -207,24 +228,45 @@ export class AgyAccountProcessHost implements ProcessHostPort {
     );
     const owned = new Set<number>();
     const native = await getNativeAsync();
-    if (!("openJob" in native))
-      throw new Error("AGY_PROCESS_INVENTORY_UNSUPPORTED");
-    for (const record of records) {
-      if ((record.status === "exited" || record.status === "failed") && record.confirmed) continue;
-      const managed = this.options.processManager!.get(record.id)!;
-      if (
-        !managed || !record.identity?.job_name ||
-        record.identity.attempt_id !== managed.identity?.attempt_id
-      )
-        throw new Error("AGY_MANAGED_PROCESS_IDENTITY_UNKNOWN");
-      const job = native.openJob(record.identity.job_name);
-      if (!job) continue;
-      try {
-        for (const candidate of candidates)
-          if (native.isProcessInJob(candidate.pid, job))
+    if (!("openJob" in native) && process.platform === "darwin") {
+      for (const record of records) {
+        if ((record.status === "exited" || record.status === "failed") && record.confirmed) continue;
+        const managed = this.options.processManager!.get(record.id);
+        const identity = record.identity;
+        if (!managed || !identity?.pgid || identity.pgid !== identity.launcher_pid ||
+            !identity.launcher_creation_time || identity.attempt_id !== managed.identity?.attempt_id)
+          throw new Error("AGY_MANAGED_PROCESS_IDENTITY_UNKNOWN");
+        const leader = darwinProcessInfo(identity.launcher_pid);
+        if (!leader || leader.creation_time !== identity.launcher_creation_time || leader.uid !== process.getuid!())
+          throw new Error("AGY_MANAGED_PROCESS_IDENTITY_UNKNOWN");
+        for (const candidate of candidates) {
+          if (candidate.pgid !== identity.pgid) continue;
+          const current = darwinProcessInfo(candidate.pid);
+          if (current && current.creation_time === candidate.creation_time && current.pgid === identity.pgid && current.uid === leader.uid)
             owned.add(candidate.pid);
-      } finally {
-        native.closeHandle(job);
+          else if (current) throw new Error("AGY_MANAGED_PROCESS_IDENTITY_UNKNOWN");
+        }
+      }
+    } else {
+      if (!("openJob" in native))
+        throw new Error("AGY_PROCESS_INVENTORY_UNSUPPORTED");
+      for (const record of records) {
+        if ((record.status === "exited" || record.status === "failed") && record.confirmed) continue;
+        const managed = this.options.processManager!.get(record.id)!;
+        if (
+          !managed || !record.identity?.job_name ||
+          record.identity.attempt_id !== managed.identity?.attempt_id
+        )
+          throw new Error("AGY_MANAGED_PROCESS_IDENTITY_UNKNOWN");
+        const job = native.openJob(record.identity.job_name);
+        if (!job) continue;
+        try {
+          for (const candidate of candidates)
+            if (native.isProcessInJob(candidate.pid, job))
+              owned.add(candidate.pid);
+        } finally {
+          native.closeHandle(job);
+        }
       }
     }
     return rows

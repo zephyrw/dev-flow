@@ -315,7 +315,8 @@ describe("AGF-D05: 账号可用性与 FIFO 批次规划 (AGF-U06 & AGF-U07)", ()
   });
 
   it("当无共同候选时，采用就绪需求 FIFO，最早可运行的成为 anchor，不被不相容需求阻塞", () => {
-    // Demand 1 要求 pool_1 (只有 account A 满足)，first_wait_at 较早
+    // 同模型池名允许迁移，以账号白名单建立真正不相容的两个需求。
+    // Demand 1 只允许 account A，first_wait_at 较早
     const demand1: AgyPendingDemand = {
       demand_id: "dem_1",
       consumer_id: "run_1",
@@ -325,7 +326,7 @@ describe("AGF-D05: 账号可用性与 FIFO 批次规划 (AGF-U06 & AGF-U07)", ()
       required_model_keys: ["gemini-2.5-pro"],
       required_pool_ids: ["pool_1"],
       night_pool: "normal",
-      allowed_account_ids: null,
+      allowed_account_ids: ["acc_A"],
       revision: 1,
       demand_generation: 1,
       source_revision: 1,
@@ -335,7 +336,7 @@ describe("AGF-D05: 账号可用性与 FIFO 批次规划 (AGF-U06 & AGF-U07)", ()
       wake_at: null,
     };
 
-    // Demand 2 要求 pool_2 (只有 account B 满足)，first_wait_at 较晚
+    // Demand 2 只允许 account B，first_wait_at 较晚
     const demand2: AgyPendingDemand = {
       demand_id: "dem_2",
       consumer_id: "run_2",
@@ -345,7 +346,7 @@ describe("AGF-D05: 账号可用性与 FIFO 批次规划 (AGF-U06 & AGF-U07)", ()
       required_model_keys: ["gemini-2.5-pro"],
       required_pool_ids: ["pool_2"],
       night_pool: "normal",
-      allowed_account_ids: null,
+      allowed_account_ids: ["acc_B"],
       revision: 1,
       demand_generation: 1,
       source_revision: 1,

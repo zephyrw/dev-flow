@@ -29,11 +29,40 @@ import Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
 import { writeFileSync, mkdirSync, existsSync, readFileSync, symlinkSync, lstatSync } from "node:fs";
 import { join } from "node:path";
+import type { SupportedAdapterId } from "../../packages/contracts/src/execution-spec.js";
 
 describe("IT-INSTALLER: 六核心 Skill/MCP 完整分发、选定闭包与配置保护 (W07, RQ-21, RQ-22)", () => {
   let env: IsolatedTestEnv;
   let fakeSkillsSrc: string;
   let installer: ClientInstaller;
+
+  it("upgrades the exact previous MCP entry and preserves user-edited entries", () => {
+    const bridge = join(env.root, "bridge.js"), config = join(env.root, "devflow.yaml");
+    const nextBridge = join(env.root, "next-bridge.js");
+    writeFileSync(nextBridge, "// next bridge");
+    const previousMcpSpec = { command: process.execPath, args: [bridge], env: { DEVFLOW_CONFIG: config } };
+    for (const client of ["codex", "agy", "opencode"] as SupportedAdapterId[]) {
+      expect(installer.installSkillsForClient(client).mcpConfigured).toBe(true);
+      const base = installer.locateClientBaseDir(client);
+      const file = join(base, client === "codex" ? "config.toml" : client === "agy" ? "mcp_config.json" : "opencode.json");
+      const original = readFileSync(file, "utf8");
+      const withUserSetting = client === "codex"
+        ? 'model = "user-model"\n' + original + '\n[mcp_servers.other]\ncommand = "other"\n'
+        : JSON.stringify({ ...JSON.parse(original), userSetting: "preserved" }, null, 2) + "\n";
+      writeFileSync(file, withUserSetting);
+      const upgrade = new ClientInstaller(fakeSkillsSrc, {
+        home: env.root, bridge: nextBridge, config, previousMcpSpec,
+      });
+      expect(upgrade.installSkillsForClient(client).mcpConfigured).toBe(true);
+      const after = readFileSync(file, "utf8");
+      expect(after).toContain(nextBridge);
+      expect(after).toContain(client === "codex" ? 'command = "other"' : '"userSetting": "preserved"');
+      const edited = after.replace(nextBridge, join(env.root, "user-bridge.js"));
+      writeFileSync(file, edited);
+      expect(upgrade.installSkillsForClient(client).mcpConfigured).toBe(false);
+      expect(readFileSync(file, "utf8")).toBe(edited);
+    }
+  });
 
   beforeEach(() => {
     env = createIsolatedTestEnv();
@@ -637,7 +666,7 @@ describe("IT-S01～S03: 安装默认合同与升级保留", () => {
   });
 
   it("IT-S03：不合法默认参数不写一半", () => {
-    putCatalog(env.store, "codex", "gpt-6-astra", {
+    putCatalog(env.store, "codex", env.config.models.reviewer, {
       status: "supported",
       transport: "config",
       values: ["low", "medium"],

@@ -24,6 +24,8 @@ interface CapabilityReport {
   supports_output_format: boolean;
   supports_print_timeout: boolean;
   credential_source: {
+    platform: string;
+    native_store: string;
     windows_credential_target: string;
     has_windows_credential?: boolean;
     gemini_dir_exists?: boolean;
@@ -213,6 +215,8 @@ async function main() {
     supports_output_format: supportsOutputFormat,
     supports_print_timeout: supportsPrintTimeout,
     credential_source: {
+      platform: process.platform,
+      native_store: IS_WINDOWS ? "Windows Credential Manager" : process.platform === "darwin" ? "macOS Keychain" : "unsupported",
       windows_credential_target: "gemini:antigravity",
       gemini_dir_exists: geminiDirExists,
     },
@@ -275,8 +279,9 @@ async function main() {
 
 ## 2. 凭据来源核查
 
-- **目标平台**：Windows
-- **凭据管理器目标**：\`${report.credential_source.windows_credential_target}\` (CRED_TYPE_GENERIC)
+- **目标平台**：${report.credential_source.platform}
+- **原生凭据库**：${report.credential_source.native_store}
+- **凭据目标**：\`${report.credential_source.windows_credential_target}\`（macOS 对应 service=gemini、account=antigravity）
 - **用户目录 \`.gemini\` 存在**：${report.credential_source.gemini_dir_exists ? "是" : "否"}
 
 ## 3. 官方 \`/usage\` 实测探测

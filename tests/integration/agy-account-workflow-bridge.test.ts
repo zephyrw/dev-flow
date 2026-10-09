@@ -23,7 +23,7 @@ describe("AGY workflow account boundary", () => {
   beforeEach(async () => {
     directory = mkdtempSync(join(tmpdir(), "agy-bridge-"));
     store = new Store(join(directory, "devflow.sqlite"));
-    fixture = accountFixture(store);
+    fixture = accountFixture(store, "gemini-fixture");
     fixture.seedAccounts();
     fixture.repository.savePolicy({
       workflow_id: "wf-1",
@@ -43,7 +43,7 @@ describe("AGY workflow account boundary", () => {
     confirm.mockResolvedValue(true);
     bridge = new AgyWorkflowBridge(
       fixture.service,
-      { stop, get: () => undefined } as unknown as ProcessManager,
+      { stop, get: () => undefined, hasStartAttempt: () => false } as unknown as ProcessManager,
       undefined,
       undefined,
       { confirmJobsStopped: confirm } as unknown as AgyAccountProcessHost,
@@ -63,7 +63,7 @@ describe("AGY workflow account boundary", () => {
   const request = () => ({
     workflow_id: "wf-1",
     run_id: "run-1",
-    effective_model_id: "fixture-model",
+    effective_model_id: "gemini-fixture",
     account_policy_revision: 1,
     required_pool_ids: ["fixture-pool"],
   });
@@ -155,7 +155,7 @@ describe("AGY workflow account boundary", () => {
       };
       const profile: ToolProfile = {
         id: "profile", revision: 1, adapterId: "agy", executableRef: process.execPath,
-        modelSelection: "explicit", modelId: "fixture-model", selectionKind: "fixed",
+        modelSelection: "explicit", modelId: "gemini-fixture", selectionKind: "fixed",
         reasoning: { mode: "native-default" }, options: {},
       };
       const access = new ModelAccessService(store);

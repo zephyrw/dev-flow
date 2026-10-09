@@ -33,7 +33,17 @@ async function stopOwnedController() {
     assert.equal(String(native.getProcessCreationTime(owned.pid)), owned.creation_time);
     process.kill(owned.pid, "SIGTERM");
   }
-  for (let i = 0; i < 100 && String(native.getProcessCreationTime(owned.pid)) === owned.creation_time; i++) await new Promise((yes) => setTimeout(yes, 100));
-  assert.notEqual(String(native.getProcessCreationTime(owned.pid)), owned.creation_time, "Owned controller did not exit");
+  for (let i = 0; i < 100; i++) {
+    try {
+      if (String(native.getProcessCreationTime(owned.pid)) !== owned.creation_time) return;
+    } catch (error) {
+      // A terminating macOS process can briefly hide its BSD identity while
+      // still answering kill(0). Wait for kernel proof of exit; never kill an
+      // unknown process or treat an unknown identity as successful cleanup.
+      if (process.platform !== "darwin" || error?.message !== "PROCESS_IDENTITY_UNKNOWN") throw error;
+    }
+    await new Promise((yes) => setTimeout(yes, 100));
+  }
+  assert.fail("Owned controller did not exit with a confirmed identity");
 }
 await stopOwnedController();

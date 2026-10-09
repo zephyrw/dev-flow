@@ -12,6 +12,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
+import { homedir } from "node:os";
 
 const integer = z.number().int().min(0).max(0xffffffff);
 const base64 = z
@@ -84,7 +85,9 @@ export function equalCredential(
 export class CredentialVault {
   constructor(
     private native: VaultNative,
-    private localAppData = process.env.LOCALAPPDATA,
+    private localAppData = process.platform === "darwin"
+      ? join(homedir(), "Library", "Application Support")
+      : process.env.LOCALAPPDATA,
   ) {}
   private exists(path: string): boolean {
     try {

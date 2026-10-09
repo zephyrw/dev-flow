@@ -3,12 +3,17 @@ import type {
   CapabilityItem,
   CapabilityStatus,
 } from "../../../contracts/src/agy-account.js";
+import { credentialCapabilitiesReady } from "../../../agy-accounts/src/credential-capabilities.js";
 
 export interface CapabilityEvaluationInput {
   cliVersion?: string;
   cliSha256?: string;
   hostVersion?: string;
   isWindows?: boolean;
+  platform?: string;
+  hasEncryptedStorage?: boolean;
+  hasCredentialStore?: boolean;
+  hasDomainLock?: boolean;
   hasDpapi?: boolean;
   hasCredentialManager?: boolean;
   hasNamedMutex?: boolean;
@@ -20,7 +25,7 @@ export interface CapabilityEvaluationInput {
 }
 
 export function evaluateAgyCapabilities(input: CapabilityEvaluationInput): AgyAccountCapabilities {
-  const isWindows = input.isWindows ?? (process.platform === "win32");
+  const platform = input.platform ?? (input.isWindows === undefined ? process.platform : input.isWindows ? "win32" : "unsupported");
   const cliVer = input.cliVersion ?? "unknown";
   const isSynthetic = !!input.isSyntheticTest;
 
@@ -37,8 +42,8 @@ export function evaluateAgyCapabilities(input: CapabilityEvaluationInput): AgyAc
     verified_at: status === "verified" ? new Date().toISOString() : undefined,
   });
 
-  if (!isWindows) {
-    const unsuppReason = "AGY account rotation currently requires Windows credential APIs";
+  if (platform !== "win32" && platform !== "darwin") {
+    const unsuppReason = "AGY account credential host is unavailable on this platform";
     return {
       identity: makeItem("unsupported", unsuppReason),
       dual_quota: makeItem("unsupported", unsuppReason),
@@ -53,9 +58,10 @@ export function evaluateAgyCapabilities(input: CapabilityEvaluationInput): AgyAc
     };
   }
 
-  // Windows 平台能力评估：Host能力必须明确为true，不得默认true
-  const hostReady = (input.hasDpapi === true) && (input.hasCredentialManager === true) && (input.hasNamedMutex === true);
-  const hostReason = hostReady ? undefined : "Windows auxiliary job runner or credential manager unavailable";
+  const hostReady = credentialCapabilitiesReady({ platform,
+    dpapi_available: input.hasDpapi, cred_manager_available: input.hasCredentialManager, named_mutex_available: input.hasNamedMutex,
+    encrypted_storage_available: input.hasEncryptedStorage, credential_store_available: input.hasCredentialStore, domain_lock_available: input.hasDomainLock });
+  const hostReason = hostReady ? undefined : "Credential storage, encryption or domain lock unavailable";
 
   return {
     identity: makeItem(
@@ -82,7 +88,7 @@ export function evaluateAgyCapabilities(input: CapabilityEvaluationInput): AgyAc
     ),
     owned_aux_job: makeItem(
       hostReady ? "verified" : "unverified",
-      hostReady ? undefined : "Windows job object isolation not confirmed",
+      hostReady ? undefined : "Owned process isolation not confirmed",
     ),
     exact_resume: makeItem(
       input.exactResumeVerified || isSynthetic ? "verified" : "unverified",

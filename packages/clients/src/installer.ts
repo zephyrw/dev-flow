@@ -38,6 +38,7 @@ export interface ClientInstallOptions {
   node?: string;
   bridge?: string;
   config?: string;
+  previousMcpSpec?: { command: string; args: string[]; env: { DEVFLOW_CONFIG: string } };
 }
 
 function canonicalize(p: string): string {
@@ -194,7 +195,7 @@ export class ClientInstaller {
       case "codex":
         return (!isolated && process.env.CODEX_HOME) || join(h, ".codex");
       case "agy":
-        return join(h, ".gemini", "antigravity");
+        return join(h, ".gemini", process.platform === "darwin" ? "antigravity-cli" : "antigravity");
       case "claude-code":
         return join(h, ".claude");
       case "kimi-code":
@@ -266,44 +267,51 @@ export class ClientInstaller {
     const before = existsSync(path) ? readFileSync(path, "utf8") : "";
     let after: string;
     if (toml) {
-      const block =
+      const renderBlock = (value: typeof spec) =>
         "[mcp_servers.devflow]\ncommand = " +
-        JSON.stringify(spec.command) +
+        JSON.stringify(value.command) +
         "\nargs = " +
-        JSON.stringify(spec.args) +
+        JSON.stringify(value.args) +
         "\nenv = { DEVFLOW_CONFIG = " +
-        JSON.stringify(spec.env.DEVFLOW_CONFIG) +
+        JSON.stringify(value.env.DEVFLOW_CONFIG) +
         " }\n";
+      const block = renderBlock(spec);
       const start = before.indexOf("[mcp_servers.devflow]");
       if (start >= 0) {
         const tail = before.slice(start),
           end = tail.slice(1).search(/^\[/m);
         const existing = end < 0 ? tail : tail.slice(0, end + 1);
-        if (existing.trim() !== block.trim())
+        if (existing.trim() === block.trim()) return;
+        if (!this.options.previousMcpSpec ||
+            existing.trim() !== renderBlock(this.options.previousMcpSpec).trim())
           throw new Error(
             "已有 devflow MCP 设置不同，请先迁移该条目；其他设置保持原样",
           );
-        return;
+        after = before.slice(0, start) + block + before.slice(start + existing.length);
+      } else {
+        if (/\[mcp_servers[."'\s]+devflow/.test(before))
+          throw new Error("已有不同格式的 devflow 配置，不能安全追加");
+        after = before + "\n" + block;
       }
-      if (/\[mcp_servers[."'\s]+devflow/.test(before))
-        throw new Error("已有不同格式的 devflow 配置，不能安全追加");
-      after = before + "\n" + block;
     } else {
       const json = before ? JSON.parse(before) : {};
       if (!json || Array.isArray(json) || typeof json !== "object")
         throw new Error("客户端配置不是对象");
       const field = client === "opencode" ? "mcp" : "mcpServers";
-      const entry =
+      const renderEntry = (value: typeof spec) =>
         client === "opencode"
           ? {
               type: "local",
-              command: [spec.command, ...spec.args],
-              environment: spec.env,
+              command: [value.command, ...value.args],
+              environment: value.env,
               enabled: true,
             }
-          : spec;
+          : value;
+      const entry = renderEntry(spec);
       const prior = json[field]?.devflow;
-      if (prior && JSON.stringify(prior) !== JSON.stringify(entry))
+      if (prior && JSON.stringify(prior) !== JSON.stringify(entry) &&
+          (!this.options.previousMcpSpec ||
+           JSON.stringify(prior) !== JSON.stringify(renderEntry(this.options.previousMcpSpec))))
         throw new Error("已有 devflow MCP 设置不同，请先迁移该条目");
       json[field] = { ...json[field], devflow: entry };
       after = JSON.stringify(json, null, 2) + "\n";

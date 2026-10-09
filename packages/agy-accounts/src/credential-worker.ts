@@ -8,6 +8,7 @@ import {
   type VaultCredential,
 } from "./credential-store.js";
 import { extractSafeAuthMetadata } from "./auth-metadata.js";
+import { createCredentialNative, type CredentialNative } from "./credential-native.js";
 
 const TARGET = "gemini:antigravity";
 const generation = process.argv
@@ -38,16 +39,13 @@ const RequestSchema = z
     args: z.record(z.string(), z.unknown()),
   })
   .strict();
-let native:
-  | ReturnType<typeof import("./credential-windows.js").createCredentialWindows>
-  | undefined;
+let native: CredentialNative | undefined;
 let vault: CredentialVault;
 let lock: { realm: string; id: string; release: () => void } | undefined;
 let active: { realm: string; ref: string; account: string } | undefined;
 async function initialize() {
   if (native) return native;
-  if (process.platform !== "win32") throw new Error("unsupported_platform");
-  native = (await import("./credential-windows.js")).createCredentialWindows();
+  native = await createCredentialNative();
   vault = new CredentialVault(native);
   return native;
 }
@@ -71,7 +69,7 @@ async function handle(
   const win = await initialize();
   const { action, args } = request;
   if (action === "capabilities") {
-    const probe = Buffer.from("DevFlow DPAPI capability");
+    const probe = Buffer.from("DevFlow credential encryption capability");
     let decrypted: Buffer | undefined;
     let release: (() => void) | null = null;
     try {
@@ -83,9 +81,12 @@ async function handle(
       return {
         supported: true,
         platform: process.platform,
-        dpapi_available: true,
-        cred_manager_available: true,
-        named_mutex_available: true,
+        dpapi_available: process.platform === "win32",
+        cred_manager_available: process.platform === "win32",
+        named_mutex_available: process.platform === "win32",
+        encrypted_storage_available: true,
+        credential_store_available: true,
+        domain_lock_available: true,
         version: "3.0.0-node",
       };
     } finally {

@@ -827,7 +827,8 @@ export class ProfileRuntime {
     if (purpose !== "aside") {
       if (taskStrategy === "unified") {
         const exactBinding = this.executionSessionStore.getBinding(bindingKey);
-        const reusableBinding = accountRecovery?.decision === "recreate_root" ? undefined :
+        const reusableBinding = accountRecovery?.decision === "recreate_root" ||
+          (profile.adapterId === "agy" && accountRecovery?.decision === "exact_resume") ? undefined :
           this.executionSessionStore.findReusableBinding(bindingKey, sourceNativeId);
         // AGY's local history survives credential changes. Reuse the latest
         // compatible confirmed root without overwriting any historical binding.

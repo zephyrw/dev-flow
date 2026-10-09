@@ -61,6 +61,7 @@ import {
   writeStableEntry,
   registerUserPathWindows,
   upsertShellPathBlock,
+  parseCurrentPointer,
   type CurrentPointer,
 } from "./launchers.js";
 import {
@@ -667,13 +668,9 @@ export async function runInstaller(
   let maintenanceStorage: string | undefined;
   let ownedConfigDigest: string | null | undefined;
   let ownedPointerDigest: string | null | undefined;
-  const layout = ensureInstallLayout(root);
   try {
     if (tools.some((t) => !SupportedAdapters.includes(t as SupportedAdapterId)))
       return INSTALL_EXIT_CODES.CONFIGURATION_CONFLICT;
-    // 操作正式目录前取得安装事务所有权（防两个安装器交错）。
-    releaseInstall = await acquireInstallTransactionLock(root);
-
     const sourcePackage = JSON.parse(
       readFileSync(join(source, "package.json"), "utf8"),
     );
@@ -686,6 +683,9 @@ export async function runInstaller(
       throw new Error("安装包身份或版本不符");
     if (options.expectedRelease) verifyReleaseIdentity(source, options.expectedRelease);
     else if (existsSync(join(source, "release-identity.json"))) throw new Error("Release bundle requires verified manifest identity");
+    // 身份校验失败时不创建安装目录或状态；之后才取得写入事务所有权。
+    ensureInstallLayout(root);
+    releaseInstall = await acquireInstallTransactionLock(root);
     identityVerified = true;
 
     const buildInfo = readBuildInfo(source);
@@ -969,7 +969,7 @@ export async function runInstaller(
     ownedConfigDigest = digestFile(config);
     const configured = loadConfig(config);
     let accountPrerequisite = "unsupported_platform";
-    if (process.platform === "win32") {
+    if (process.platform === "win32" || process.platform === "darwin") {
       accountPrerequisite = "credential_capability_unverified";
     }
     state.updateComponent(
@@ -992,11 +992,17 @@ export async function runInstaller(
 
     // tools 空/未选：不进入客户端配置写入循环，不写 Codex 等客户端配置。
     if (tools.length) {
+      const previous = originalPointer ? parseCurrentPointer(root, originalPointer) : undefined;
       const clients = new ClientInstaller(join(target, "packages", "skills"), {
         home: options.clientHome,
         node,
         bridge: join(target, "dist/packages/bridge/src/planner.js"),
         config,
+        previousMcpSpec: previous ? {
+          command: previous.node,
+          args: [join(previous.root, "dist/packages/bridge/src/planner.js")],
+          env: { DEVFLOW_CONFIG: previous.config },
+        } : undefined,
       });
       for (const client of tools as SupportedAdapterId[]) {
         const report = clients.installSkillsForClient(client);
@@ -1057,7 +1063,7 @@ export async function runInstaller(
         timeout: 150000,
       },
     );
-    writeAccountsLauncher(root);
+    const accountsEntries = writeAccountsLauncher(root) ?? [];
     if (maintenanceStorage && maintenanceTransaction) {
       commitUpgradeTransaction(root, maintenanceTransaction);
       clearMaintenanceMarker(maintenanceStorage);
@@ -1100,8 +1106,7 @@ export async function runInstaller(
         const receiptFile = join(target, "install-source.json");
         if (existsSync(receiptFile)) {
           const currentReceipt = JSON.parse(readFileSync(receiptFile, "utf8"));
-          const ownedPaths = [...stable.binPaths, ...stable.menuPaths,
-            join(root, "open-accounts.ps1"), join(root, "打开 AGY 账号管理.vbs")];
+          const ownedPaths = [...stable.binPaths, ...stable.menuPaths, ...accountsEntries];
           currentReceipt.installed_entries = ownedPaths.map((p) =>
             lstatSync(p).isSymbolicLink()
               ? { path: p, kind: "symlink", target: readlinkSync(p) }

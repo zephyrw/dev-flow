@@ -140,7 +140,7 @@ describe("AGY Account Selector (AC-U04 & AC-U05)", () => {
     expect(result.ranked_candidates[1]?.account_id).toBe("acc-2");
   });
 
-  it("excludes disabled, reauth_required and pending accounts", () => {
+  it("excludes disabled, reauth_required and accounts missing demanded quotas", () => {
     const aReady = buildAccount("acc-ready", "Ready");
     const aDisabled = buildAccount("acc-disabled", "Disabled", "disabled");
     const aReauth = buildAccount("acc-reauth", "Reauth", "reauth_required");
@@ -154,7 +154,10 @@ describe("AGY Account Selector (AC-U04 & AC-U05)", () => {
     expect(result.ranked_candidates[0]?.account_id).toBe("acc-ready");
     expect(result.excluded_accounts.map(e => e.reason)).toContain("account_disabled");
     expect(result.excluded_accounts.map(e => e.reason)).toContain("reauth_required");
-    expect(result.excluded_accounts.map(e => e.reason)).toContain("pending_quota_initialization");
+    expect(result.excluded_accounts.find(e => e.account_id === aPending.id)?.reason).toBe("missing_required_quota_pools");
+    // A legacy pending state for another category must not block this pool.
+    const usablePending = selectCandidates([aPending], [buildSnapshot(aPending.id, 0.5)], ["default"], now);
+    expect(usablePending.ranked_candidates.map(c => c.account_id)).toEqual([aPending.id]);
   });
 
   it("filters accounts by allowed_account_ids policy", () => {

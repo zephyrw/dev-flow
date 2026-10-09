@@ -2,11 +2,12 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { spawnSync, execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, cpSync, rmSync, readdirSync, lstatSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, cpSync, rmSync, readdirSync, lstatSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { createServer } from "node:net";
+import { containsPrivateKeyMaterial } from "./release-lib.mjs";
 
 const directory = resolve(process.argv[2] ?? "candidate");
 const key = `${process.platform}-${process.arch}`;
@@ -30,7 +31,7 @@ const entries = execFileSync("tar", ["-tzf", archive], { encoding: "utf8", windo
 assert(entries.every((entry) => /^devflow\//.test(entry) && !/(^\/|(^|\/)\.\.?(\/|$)|[:\\])/.test(entry)), "Unsafe archive entry");
 const entryTypes = execFileSync("tar", ["-tvzf", archive], { encoding: "utf8", windowsHide: true, maxBuffer: 64 * 1024 * 1024 }).trim().split(/\r?\n/);
 assert(entryTypes.every((line) => /^[d-]/.test(line)), "Candidate contains links or special files");
-const root = mkdtempSync(join(tmpdir(), "devflow-candidate-"));
+const root = mkdtempSync(join(realpathSync(tmpdir()), "devflow-candidate-"));
 const source = join(root, "bundle", "devflow");
 mkdirSync(join(root, "bundle"));
 execFileSync("tar", ["-xzf", archive, "-C", join(root, "bundle")], { windowsHide: true });
@@ -43,7 +44,7 @@ function scan(dir) {
     if (stat.isDirectory()) scan(file);
     else if (/\.(?:js|mjs|cjs|json|yaml|yml|md|txt|pem|key|sh|ps1)$/.test(entry)) {
       const content = readFileSync(file, "utf8");
-      assert(!/-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/.test(content), "Candidate contains private key material");
+      assert(!containsPrivateKeyMaterial(content), "Candidate contains private key material");
       assert(!/\b(?:ghp_|github_pat_|sk-proj-)[A-Za-z0-9_]{30,}\b/.test(content), "Candidate contains credential material");
     }
   }
@@ -76,6 +77,10 @@ const runInstaller = (options) => {
   { env, encoding: "utf8", windowsHide: true, timeout: 240000, maxBuffer: 16 * 1024 * 1024 });
   process.stdout.write(safeLog(result.stdout ?? ""));
   process.stderr.write(safeLog(result.stderr ?? ""));
+  if (![0, 10].includes(result.status)) {
+    const controllerLog = join(install, "state", "controller.stderr.log");
+    if (existsSync(controllerLog)) process.stderr.write(safeLog(readFileSync(controllerLog, "utf8").slice(-65536)));
+  }
   assert(!result.error, "Installer subprocess failed");
   return result.status;
 };
@@ -128,6 +133,6 @@ try {
   await stopOwnedController();
 } finally {
   await stopOwnedController();
-  assert(resolve(root).startsWith(resolve(tmpdir()) + sep));
+  assert(resolve(root).startsWith(realpathSync(tmpdir()) + sep));
   rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 }

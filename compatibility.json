@@ -1,5 +1,5 @@
 {
-  "matrix_version": "3.0.0",
+  "matrix_version": "3.1.0",
   "verification_policy": "Discovery is not live workflow certification; use dated test evidence. Record package_build_native_load, install_workbench_smoke, tool_access, and real_workflow separately. Untested combinations stay unverified. live_workflow_verified requires evidence with application_commit, platform, tool_version, model_id, test_date, test_type, result, and report_location. runtime_backend is not a shared version number for application build, runner protocol, or credential worker protocol.",
   "layers": {
     "application_build": {
@@ -225,7 +225,7 @@
     }
   },
   "agy_accounts": {
-    "platform_scope": "win32",
+    "platform_scope": ["win32", "darwin"],
     "feature_boundary": {
       "serial_operations_required": true,
       "dual_quota_enrollment_required": true,
@@ -237,6 +237,9 @@
       "source_files": [
         "packages/process/src/native/windows.ts",
         "packages/process/src/native/posix.ts",
+        "packages/process/src/native/darwin-processes.ts",
+        "packages/process/src/native/darwin-interactive.ts",
+        "packages/agy-accounts/src/credential-darwin.ts",
         "packages/process/src/manager.ts",
         "packages/agy-accounts/src/credential-worker.ts"
       ],
@@ -251,7 +254,12 @@
         "named_mutex",
         "controller_flock",
         "clean_process_environment",
-        "credential_native_probe"
+        "credential_native_probe",
+        "interactive_pty",
+        "credential_domain_flock",
+        "keychain_credential_storage",
+        "vault_authenticated_encryption",
+        "native_process_inventory"
       ],
       "by_platform": {
         "win32": [
@@ -270,6 +278,18 @@
           "process_group_terminate",
           "controller_flock",
           "clean_process_environment"
+        ],
+        "darwin": [
+          "managed_runner_spawn",
+          "process_group_terminate",
+          "controller_flock",
+          "clean_process_environment",
+          "credential_native_probe",
+          "interactive_pty",
+          "credential_domain_flock",
+          "keychain_credential_storage",
+          "vault_authenticated_encryption",
+          "native_process_inventory"
         ]
       },
       "capability_notes": {
@@ -283,7 +303,12 @@
         "named_mutex": "CreateMutexW/acquireMutex for credential domain locks and capability probes.",
         "controller_flock": "POSIX flock controller lock (tryAcquireFlock/acquireFlock).",
         "clean_process_environment": "cleanProcessEnvironment allow-list and NODE_* injection filtering.",
-        "credential_native_probe": "credential-worker capabilities action probes DPAPI, credential manager, and named mutex at runtime."
+        "credential_native_probe": "credential-worker probes the platform encryption, credential storage and domain lock; Windows legacy flags remain Windows-specific.",
+        "interactive_pty": "macOS owned runner relays a native PTY through a private same-user socket to Terminal; the CLI inherits the owned group.",
+        "credential_domain_flock": "macOS same-user flock keyed by the credential domain; released on worker exit.",
+        "keychain_credential_storage": "macOS Security.framework SecItem APIs read, update and clear the official AGY generic password.",
+        "vault_authenticated_encryption": "AES-256-GCM snapshots with a per-user Keychain master key and private filesystem permissions.",
+        "native_process_inventory": "macOS libproc reports executable path, UID, group and microsecond creation identity before switching credentials."
       },
       "legacy_host_commands_removed": "Previous Host interface names (a host diagnostic command, a suspended-spawn flag, a kill-on-close flag, and a job-status query string) are not live commands on the Node CLI and must not be faked. They are replaced by the node-native capability list above: suspended spawn maps to suspended_spawn_resume; kill-on-close maps to job_object_kill_on_close; job status maps to job_object_active_query; the host diagnostic command is not a process capability (user-facing CLI doctor is a separate DFP-05 command)."
     },

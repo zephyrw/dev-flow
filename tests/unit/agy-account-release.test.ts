@@ -4,6 +4,18 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 describe("account release preflight", () => {
+  it("rejects PEM payloads while allowing key parser marker strings", async () => {
+    const { containsPrivateKeyMaterial } = await import(
+      pathToFileURL(resolve("scripts/release/release-lib.mjs")).href
+    );
+    expect(containsPrivateKeyMaterial('pkcs8.indexOf("-----BEGIN PRIVATE KEY-----")')).toBe(false);
+    for (const kind of ["", "RSA ", "EC ", "OPENSSH "]) {
+      for (const newline of ["\n", "\r\n", "\\n", "\\r\\n"]) {
+        expect(containsPrivateKeyMaterial(`-----BEGIN ${kind}PRIVATE KEY-----${newline}${"A".repeat(64)}`)).toBe(true);
+      }
+    }
+  });
+
   it("rejects an incomplete account payload before git, package installation or archive work", async () => {
     const modulePath = pathToFileURL(
       resolve("scripts/release/build-release.mjs"),
