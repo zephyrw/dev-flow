@@ -3,7 +3,7 @@ import type {
   AgyQuotaSnapshot,
   QuotaWindow,
 } from "../../contracts/src/agy-account.js";
-import { hasDualQuotaWindows, computeEffectiveWeeklyQuota } from "../../agy-accounts/src/quota.js";
+import { hasDualQuotaWindows, computeEffectiveWeeklyQuota, computeEffectiveFiveHourQuota, resolveEffectiveQuotaWindows } from "../../agy-accounts/src/quota.js";
 import type { QuotaBucket } from "../../contracts/src/run-observation.js";
 
 /** Convert only a complete AGY model bucket; other adapters retain their own window semantics. */
@@ -23,12 +23,10 @@ export function effectiveRuntimeQuotaWindows(
     status: Number.isFinite(window.used_percent) ? "observed" : "missing",
   }));
   if (!hasDualQuotaWindows(windows) || !bucket.windows.every(w => [300, 10080].includes(w.window_minutes))) return bucket.windows;
-  return bucket.windows.map((window, index) => {
-    if (window.window_minutes !== 10080) return window;
-    const effective = computeEffectiveWeeklyQuota(windows[index], nowMs);
-    return effective.isValid && effective.fraction === 1
-      ? { ...window, used_percent: 0, resets_at: undefined } : window;
-  });
+  const effective = resolveEffectiveQuotaWindows(windows, nowMs);
+  return bucket.windows.map((window, index) => effective[index]?.remaining_fraction === 1
+    ? { ...window, used_percent: 0, resets_at: effective[index]?.reset_at === null ? undefined : window.resets_at }
+    : window);
 }
 
 export interface QuotaWindowDisplay {
@@ -88,8 +86,8 @@ export function formatQuotaWindow(
       label: window.kind === "weekly" ? "周额度" : "五小时额度",
       percentageText: `${pct}%`,
       fraction,
-      resetText: "—",
-      shortResetText: "",
+      resetText: isZero ? "重置时间无效，待核验" : "—",
+      shortResetText: isZero ? "待核验" : "",
       isUnknown: false,
       isZero,
       isResetDue: false,
@@ -175,7 +173,18 @@ export function formatQuotaWindow(
     };
   }
 
-  // 五小时额度窗口：保持已有逻辑
+  // Five-hour display uses the same verified reset projection as the API.
+  const effectiveFiveHour = computeEffectiveFiveHourQuota(window, nowMs);
+  if (allowWeeklyResetProjection && effectiveFiveHour.isValid &&
+      effectiveFiveHour.fraction === 1 && Number.isFinite(resetTime) && nowMs >= resetTime) {
+    return {
+      label: "五小时额度", percentageText: "100%", fraction: 1,
+      resetText: "—", shortResetText: "", isUnknown: false,
+      isZero: false, isResetDue: false, statusClass: "normal",
+    };
+  }
+
+  // Incomplete or unverified snapshots retain their observations and a visible verification hint.
   const fraction = window.remaining_fraction;
   const pct = Math.round(fraction * 100);
   const isZero = fraction <= 0;
@@ -185,6 +194,10 @@ export function formatQuotaWindow(
   let shortResetText = "";
   let isResetDue = false;
 
+  if (isZero && !window.reset_at) {
+    resetText = "重置时间未知，待核验";
+    shortResetText = "待核验";
+  }
   let hasValidReset = Boolean(window.reset_at);
   if (hasValidReset && isFull && window.reset_at) {
     if (nowMs >= resetTime) {
@@ -205,7 +218,7 @@ export function formatQuotaWindow(
     if (nowMs >= resetTime) {
       isResetDue = !isFull;
       resetText = !isFull ? "预计已重置，待核验" : "—";
-      shortResetText = "";
+      shortResetText = !isFull ? "待核验" : "";
     } else {
       const diffSec = Math.max(0, Math.round((resetTime - nowMs) / 1000));
       if (diffSec >= 86400) {

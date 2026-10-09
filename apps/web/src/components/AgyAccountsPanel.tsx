@@ -41,6 +41,7 @@ interface Realm {
 
 interface AccountView {
   refresh_scope?: "all" | "active_only";
+  refresh_errors?: Array<{ account_id: string }>;
   model_id?: string | null;
   active_category?: "gemini" | "other" | "unknown" | null;
   selection_context?: AgyManagementSelectionContext;
@@ -68,6 +69,17 @@ interface ServiceView extends Realm {
   };
 }
 
+function quotaRefreshNotice(view: AccountView): string {
+  const failedIds = new Set(view.refresh_errors?.map(error => error.account_id));
+  const failed = view.accounts.filter(account => failedIds.has(account.id));
+  const messages = [];
+  if (view.refresh_scope === "active_only") messages.push("AGY 正在运行，已仅刷新当前账号；其他账号保留上次额度结果");
+  if (failed.length) messages.push(
+    "额度查询失败，已保留上次结果（可能已过期）：" + failed.map(account => account.identity.email).join("、"),
+  );
+  return messages.join("；") || "已刷新账号额度";
+}
+
 function CompactQuotaBar({
   snapshot,
   kind,
@@ -89,7 +101,7 @@ function CompactQuotaBar({
   }
   const value = formatSnapshotQuotaWindow(snapshot, kind);
   const percent = value.fraction !== null ? Math.round(value.fraction * 100) : null;
-  const tooltip = value.shortResetText
+  const tooltip = value.resetText !== "—"
     ? `${value.label}：${value.percentageText}，${value.resetText}`
     : `${value.label}：${value.percentageText}`;
 
@@ -168,9 +180,7 @@ export const AgyAccountsPanel = forwardRef<
         (op) => !terminalOperation(op.phase),
       );
       setActiveOperation(runningOp ?? null);
-      setNotice(updatedView.refresh_scope === "active_only"
-        ? "AGY 正在运行，已仅刷新当前账号；其他账号保留上次额度结果"
-        : "已刷新账号额度");
+      setNotice(quotaRefreshNotice(updatedView));
     } catch (e) {
       const msg = e instanceof Error ? e.message : "刷新账号与额度失败";
       setError(msg);
@@ -202,10 +212,10 @@ export const AgyAccountsPanel = forwardRef<
         })
           .then((updatedView) => {
             setView(updatedView);
-            if (updatedView.refresh_scope === "active_only")
-              setNotice("AGY 正在运行，已仅刷新当前账号；其他账号保留上次额度结果");
+            if (updatedView.refresh_scope === "active_only" || updatedView.refresh_errors?.length)
+              setNotice(quotaRefreshNotice(updatedView));
           })
-          .catch(() => {});
+          .catch(() => setNotice("额度查询失败，当前显示上次结果（可能已过期）"));
       });
     const timer = setInterval(() => void refresh(), 3000);
     return () => clearInterval(timer);

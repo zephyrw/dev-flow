@@ -1,4 +1,4 @@
-import { hasAccountIdentityMismatch, hasDualQuotaWindows, requiredQuotaPools, computeEffectiveWeeklyQuota } from "./quota.js";
+import { hasAccountIdentityMismatch, hasDualQuotaWindows, requiredQuotaPools, computeEffectiveWeeklyQuota, computeEffectiveFiveHourQuota } from "./quota.js";
 import type {
   AgyAccount,
   AgyQuotaSnapshot,
@@ -193,8 +193,14 @@ export function evaluateAccountForDemand(
         hasZeroWindowProjected = true;
       }
     }
+    const effectiveFiveHour = computeEffectiveFiveHourQuota(fiveHourWindow, evaluationTime, clockSkewMs);
+    if (effectiveFiveHour.isProjectedReset) {
+      isProjectedResetAny = true;
+      isProjectedExpiredOrZero = true;
+    }
     if (fhRemain !== null) {
-      minFiveHourFraction = Math.min(minFiveHourFraction ?? 1, fhRemain);
+      minFiveHourFraction = Math.min(minFiveHourFraction ?? 1,
+        effectiveFiveHour.isValid ? effectiveFiveHour.fraction ?? fhRemain : fhRemain);
     }
 
     // 周窗口

@@ -1,4 +1,4 @@
-import { hasAccountIdentityMismatch, isQuotaPoolVerified, modelCovered, resolveEffectiveQuotaWindows } from "./quota.js";
+import { hasAccountIdentityMismatch, isQuotaPoolVerified, modelCovered, resolveEffectiveQuotaWindows, resolveEffectiveAccountState } from "./quota.js";
 import { randomUUID, createHash } from "node:crypto";
 import { z } from "zod";
 import {
@@ -566,6 +566,10 @@ export class AgyAccountService {
         ? resolveEffectiveQuotaWindows(s.windows, nowMs)
         : s.windows,
     }));
+    const displayAccounts = accounts.map(account => ({
+      ...account,
+      state: resolveEffectiveAccountState(account, rawSnapshots, nowMs),
+    }));
     const activeCat = this.getActiveCategory(realmId).category;
     const context = this.managementSelectionContext(realmId);
     const pools = context.required_pool_ids;
@@ -578,7 +582,7 @@ export class AgyAccountService {
     });
     const { active_secret_ref: _secret, ...publicRealm } = realm ?? {};
     return {
-      accounts: accounts.map((a) => AgyAccountDtoSchema.parse(a)),
+      accounts: displayAccounts.map((a) => AgyAccountDtoSchema.parse(a)),
       snapshots,
       realm: publicRealm,
       settings,
@@ -811,6 +815,7 @@ export class AgyAccountService {
         : null;
       let changedCredential = false;
       let refreshScope: "all" | "active_only" = "all";
+      const refreshErrors: Array<{ account_id: string }> = [];
       const hasRunningManagedUsers = async () => {
         const managed = await this.processHost.listManagedProcesses(realmId);
         return managed.length > 0 ||
@@ -906,6 +911,7 @@ export class AgyAccountService {
               this.repository.saveAccount(acc);
             }
           }
+          refreshErrors.push({ account_id: acc.id });
           return false;
         };
 
@@ -973,7 +979,7 @@ export class AgyAccountService {
         }
       }
 
-      return { ...this.getPresentation(realmId), refresh_scope: refreshScope };
+      return { ...this.getPresentation(realmId), refresh_scope: refreshScope, refresh_errors: refreshErrors };
     });
   }
 

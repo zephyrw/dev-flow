@@ -15,8 +15,10 @@ const initialFutureReset = new Date(initialNow + 2 * 86400 * 1000).toISOString()
 const initialNowIso = new Date(initialNow).toISOString();
 
 let scenario = false;
+let failedQuotaAccount: string | null = null;
 const originalProbe = fixture.probe.probeUsage;
 fixture.probe.probeUsage = async (...args) => {
+  if (fixture.active() === failedQuotaAccount) throw new Error("official_usage_probe_failed");
   if (scenario) {
     const observed = await originalProbe(...args);
     const snapshot = fixture.repository.getQuotaSnapshot("default-agy-realm", fixture.active(), "Gemini Models");
@@ -114,6 +116,21 @@ const timer = setInterval(
   () => void fixture.service.tick(Date.now()).catch(console.error),
   100,
 );
+app.get("/api/account-fixture/set-five-hour-reset", async req => {
+  scenario = true;
+  failedQuotaAccount = "b";
+  const delay = Number((req.query as { delayMs?: string }).delayMs ?? -3600_000);
+  const account = fixture.repository.getAccount("default-agy-realm", "b")!;
+  fixture.repository.saveAccount({ ...account, state: "waiting_quota" });
+  const snap = fixture.repository.getQuotaSnapshot("default-agy-realm", "b", "Gemini Models")!;
+  fixture.repository.saveQuotaSnapshot({ ...snap, id: "five-hour-b-" + Date.now(), observed_at: new Date().toISOString(),
+    windows: snap.windows.map(window => ({ ...window,
+      remaining_fraction: window.kind === "five_hour" ? 0 : 1,
+      reset_at: window.kind === "five_hour" ? new Date(Date.now() + delay).toISOString() : null,
+    })),
+  });
+  return { ok: true };
+});
 app.get("/api/account-fixture/facts", async () => ({
   counts: {
     project: store.list("project").length,
@@ -128,6 +145,7 @@ app.route({
   url: "/api/account-fixture/setup-quota-scenarios",
   handler: async () => {
     scenario = true;
+    failedQuotaAccount = null;
     const realmId = "default-agy-realm";
     const now = Date.now();
     const pastReset = new Date(now - 3600_000).toISOString();

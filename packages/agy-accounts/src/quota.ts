@@ -1,4 +1,4 @@
-import type { AgyAccount, QuotaWindow } from "../../contracts/src/agy-account.js";
+import type { AgyAccount, AgyQuotaSnapshot, QuotaWindow } from "../../contracts/src/agy-account.js";
 
 export function hasAccountIdentityMismatch(account: AgyAccount): boolean {
   return Boolean(
@@ -170,6 +170,55 @@ export function computeEffectiveWeeklyQuota(
   };
 }
 
+/** Project a five-hour reset only when the provider supplied a valid elapsed timestamp. */
+export function computeEffectiveFiveHourQuota(
+  window: QuotaWindow | undefined,
+  nowMs: number = Date.now(),
+  clockSkewMs: number = 0,
+): EffectiveWeeklyQuotaResult {
+  if (!window || window.kind !== "five_hour" || window.status !== "observed" ||
+      typeof window.remaining_fraction !== "number" || !Number.isFinite(window.remaining_fraction) ||
+      window.remaining_fraction < 0 || window.remaining_fraction > 1) {
+    return { fraction: null, isProjectedReset: false, isValid: false, hasInvalidResetAt: false };
+  }
+  const resetMs = window.reset_at ? Date.parse(window.reset_at) : null;
+  const hasInvalidResetAt = resetMs !== null && !Number.isFinite(resetMs);
+  const elapsed = resetMs !== null && !hasInvalidResetAt && nowMs >= resetMs + clockSkewMs;
+  return {
+    fraction: elapsed ? 1 : window.remaining_fraction,
+    isProjectedReset: elapsed && window.remaining_fraction < 1,
+    isValid: !hasInvalidResetAt,
+    hasInvalidResetAt,
+  };
+}
+
+/** Derive quota badges without rewriting provider observations or granting execution permits. */
+export function resolveEffectiveAccountState(
+  account: Pick<AgyAccount, "id" | "state">,
+  snapshots: Pick<AgyQuotaSnapshot, "account_id" | "windows" | "capability_verified">[],
+  nowMs: number = Date.now(),
+): AgyAccount["state"] {
+  if (!["ready", "waiting_quota", "pending_quota"].includes(account.state)) return account.state;
+  const pools = snapshots.filter(snapshot => snapshot.account_id === account.id);
+  if (!pools.length) return account.state === "waiting_quota" ? "pending_quota" : account.state;
+  let needsVerification = false;
+  let waiting = false;
+  for (const pool of pools) {
+    if (pool.capability_verified === false || !hasDualQuotaWindows(pool.windows)) {
+      needsVerification = true;
+      continue;
+    }
+    for (const window of resolveEffectiveQuotaWindows(pool.windows, nowMs)) {
+      if (window.remaining_fraction !== null && window.remaining_fraction <= 0) {
+        const resetMs = window.reset_at ? Date.parse(window.reset_at) : NaN;
+        if (Number.isFinite(resetMs) && resetMs > nowMs) waiting = true;
+        else needsVerification = true;
+      }
+    }
+  }
+  return waiting ? "waiting_quota" : needsVerification ? "pending_quota" : "ready";
+}
+
 export function resolveEffectiveQuotaWindows(
   windows: QuotaWindow[],
   nowMs: number = Date.now(),
@@ -179,8 +228,9 @@ export function resolveEffectiveQuotaWindows(
     return windows;
   }
   return windows.map((w) => {
-    if (w.kind !== "weekly") return w;
-    const eff = computeEffectiveWeeklyQuota(w, nowMs);
+    const eff = w.kind === "weekly"
+      ? computeEffectiveWeeklyQuota(w, nowMs)
+      : computeEffectiveFiveHourQuota(w, nowMs);
     if (!eff.isValid || eff.hasInvalidResetAt || eff.fraction === null) {
       return w;
     }

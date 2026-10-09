@@ -7,6 +7,26 @@ test.describe("AGY 账号与周额度展示 E2E 测试", () => {
     expect(res.ok()).toBeTruthy();
   });
 
+  test("五小时额度到期恢复100%和正常状态，查询失败有提示且reload不回退", async ({ page }) => {
+    expect((await page.request.get("/api/account-fixture/set-five-hour-reset?delayMs=8000")).ok()).toBeTruthy();
+    await page.goto("/");
+    const row = page.locator(".agy-account-row").filter({ hasText: "b@example.com" });
+    const short = row.locator('.agy-quota-group[data-category="gemini"] .agy-compact-quota').filter({ hasText: "五小时额度" });
+    await expect(short.locator(".agy-quota-num")).toHaveText("0%");
+    await expect(row.locator(".agy-badge.ready")).toHaveText("额度等待中");
+    await expect(short.locator(".agy-quota-reset")).toBeVisible();
+    await expect(page.getByText(/额度查询失败，已保留上次结果/)).toBeVisible();
+    await expect(short.locator(".agy-quota-num")).toHaveText("100%", { timeout: 16000 });
+    await expect(row.locator(".agy-badge.ready")).toHaveText("正常");
+    await expect(short.locator(".agy-quota-reset")).toHaveCount(0);
+    await page.reload();
+    await expect(short.locator(".agy-quota-num")).toHaveText("100%");
+    await expect(row.locator(".agy-badge.ready")).toHaveText("正常");
+    expect(await short.locator(".agy-quota-fill").getAttribute("style")).toContain("width: 100%");
+    await expect(row.locator('.agy-quota-group[data-category="other"] .agy-quota-num')).toHaveText(["75%", "60%"]);
+    await expect(page.locator(".agy-account-row").filter({ hasText: "a@example.com" }).locator(".agy-badge.active")).toBeVisible();
+  });
+
   for (const phase of ["failed", "blocked", "cancelled"]) {
     test(`切号 ${phase} 时显示 Keychain 错误，关闭提示后轮询不重复弹出`, async ({ page }) => {
       await page.route("**/api/agy-accounts/service", async route => {
