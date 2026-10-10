@@ -30,14 +30,15 @@ test("SA-E23 pause and resume keep planning and review purposes", async ({
     .click();
   await waitForWorkflowState(page, id, "STOPPED", 30000);
   await setNativeFixture(page, {});
-  await page.getByRole("button", { name: "继续这个任务" }).click();
+  await page.getByRole("button", { name: "继续规划", exact: true }).click();
   await waitForWorkflowState(page, id, "PLAN_PENDING", 60000);
   const resumed = await (await page.request.get(`/api/workflows/${id}`)).json();
   expect(
     resumed.runs.every(
       (run: { purpose?: string }) => run.purpose !== "implement",
-    ) || resumed.workflow.state === "PLAN_PENDING",
+    ),
   ).toBe(true);
+  expect(resumed.runs.at(-1)).toMatchObject({ purpose: "planning" });
   await approvePlan(page);
   await waitForWorkflowState(page, id, "HUMAN_PENDING", 90000);
   await page.getByRole("button", { name: "验收通过，启动复核" }).click();

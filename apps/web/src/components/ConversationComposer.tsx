@@ -217,6 +217,9 @@ function ActiveComposer({
         attachments: draft.attachments,
       });
       clearSubmittedConversationAttachments(workflowId, submittedIds);
+    } catch {
+      // The submission owner renders the error. Keep drafts and attachments,
+      // and consume the rejected event-handler promise so it is not unhandled.
     } finally {
       submittingRef.current = false;
     }

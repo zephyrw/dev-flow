@@ -1,3 +1,4 @@
+import { mockProject } from "./mock-workflow.js";
 import { test, expect } from "@playwright/test";
 
 test("follows the current root after a role handoff and keeps test progress separate from command activity", async ({ page }) => {
@@ -10,8 +11,15 @@ test("follows the current root after a role handoff and keeps test progress sepa
     observed_at: "2026-09-28T08:00:00Z", requested_model: conversation === "agy-root" ? "gemini-fixture" : "codex-fixture" });
   const tree = { active_root_id: "review-root", nodes: [node("review-root", "codex"), node("agy-root", "agy")],
     attempts: [attempt("review-run", "review-root", "waiting"), attempt("agy-run", "agy-root", "running")], cursor: 1 };
-  const detail = { workflow, project: { id: "p1", name: "隔离展示" },
-    plan: { plan: { task_model: "native-v2", modules: [], tasks: [], tests: [] } }, tasks: [], runs: [],
+  const planner = { id: "planner", revision: 1, adapterId: "codex", modelSelection: "explicit", modelId: "codex-fixture", options: {} };
+  const executor = { ...planner, id: "executor", adapterId: "agy", modelId: "gemini-fixture" };
+  const detail = { workflow, project: { ...mockProject(), data: { mode: "directory" }, id: "p1", name: "隔离展示" },
+    conversation_tree: tree,
+    execution_spec: { plannerProfile: planner, executorProfile: executor },
+    plan: { plan: { task_model: "native-v2", modules: [], tasks: [], tests: [] } }, tasks: [], runs: [
+      { id: "review-run", purpose: "quality_review", status: "running", profile: planner },
+      { id: "agy-run", purpose: "implement", status: "running", profile: executor },
+    ],
     workspaces: [], evidence: [], attention: null, events: [] as unknown[],
     test_progress: { total: 3, passed: 1, failed: 0, cases: [
       { id: "U1", test_id: "U", layer: "unit", status: "passed", task_ids: [] },
@@ -37,20 +45,22 @@ test("follows the current root after a role handoff and keeps test progress sepa
   await page.routeWebSocket("**/api/events?*", (ws) => { socket = ws; });
   await page.goto(`/?workflow=${workflow.id}`);
   await expect(page.locator(".execution-sidebar")).toBeVisible();
-  await expect(page.locator(".conversation-view-runtime")).toContainText("Codex");
+  await expect(page.getByRole("button", { name: /^规划模型：/ })).toHaveClass(/is-active/);
+  await expect(page.getByRole("button", { name: /^规划模型：/ })).toContainText("Codex");
   await expect.poll(() => !!socket).toBe(true);
   workflow.run_id = "agy-run"; workflow.version++; tree.active_root_id = "agy-root"; tree.cursor++;
   const command = { workflow_id: workflow.id, run_id: "agy-run", event_seq: 3,
-    created_at: "2026-09-28T08:00:03Z", type: "AgentEvent", payload: { event: "step_update", step_update: {
-      step_type: "tool", tool_name: "run_command", step_index: 1, state: "ACTIVE",
-      tool_info: { parameters: { CommandLine: "pnpm vitest run current-target.test.ts" } },
-    } } };
+    created_at: "2026-09-28T08:00:03Z", type: "ConversationActivity", payload: {
+      conversation_id: "agy-root", root_id: "agy-root", attempt_id: "agy-run", activity_id: "current-command",
+      kind: "tool", title: "执行命令", status: "active", command: "pnpm vitest run current-target.test.ts",
+    } };
   detail.events = [command];
   socket!.send(JSON.stringify({ workflow_id: workflow.id, event_seq: 2, run_id: "agy-run",
     created_at: "2026-09-28T08:00:02Z", type: "StateChanged", payload: { from: "QUEUED", to: "EXECUTING", resumed: true } }));
   socket!.send(JSON.stringify(command));
-  await expect(page.locator(".conversation-view-runtime")).toContainText("Antigravity");
-  await expect(page.locator(".conversation-view-runtime")).toContainText("正在工作");
+  await expect(page.getByRole("button", { name: /^执行模型：/ })).toContainText("AGY · gemini-fixture");
+  await expect(page.getByRole("button", { name: /^执行模型：/ })).toHaveClass(/is-active/);
+  await expect(page.getByRole("button", { name: /^规划模型：/ })).toHaveClass(/is-inactive/);
   await expect(page.locator(".logs")).toContainText("current-target.test.ts");
   const strip = page.getByLabel("交付进度");
   await expect(strip).not.toContainText(/已执行自测|自测运行中|最近自测/);
@@ -66,7 +76,11 @@ test("follows the current root after a role handoff and keeps test progress sepa
 
   // Explicitly requested history remains history, even though AGY is active.
   await page.goto(`/?workflow=${workflow.id}&conversation=review-root`);
-  await expect(page.locator(".conversation-view-runtime")).toContainText("Codex");
+  // The task header continues to describe the live executor; explicit history
+  // selection scopes the transcript and must not borrow its command activity.
+  await expect(page.locator(".execution-session-badge")).toHaveText("主会话");
+  await expect(page.locator(".logs")).not.toContainText("current-target.test.ts");
+  await expect(page.getByRole("button", { name: /^执行模型：/ })).toHaveClass(/is-active/);
   await expect(page).toHaveURL(/conversation=review-root/);
   expect(writes).toEqual([]);
   expect(errors).toEqual([]);

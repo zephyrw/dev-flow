@@ -229,8 +229,10 @@ test("continuous WebSocket output becomes visible before the stream ends and sur
   });
   let timer: ReturnType<typeof setInterval> | undefined;
   let sent = 0;
+  let startStream: (() => void) | undefined;
   await page.routeWebSocket("**/api/notifications", () => {});
   await page.routeWebSocket("**/api/events?*", (socket) => {
+    startStream = () => {
     timer = setInterval(() => {
       sent++;
       socket.send(
@@ -252,6 +254,7 @@ test("continuous WebSocket output becomes visible before the stream ends and sur
         }),
       );
     }, 30);
+    };
     socket.onClose(() => clearInterval(timer));
   });
   try {
@@ -262,6 +265,9 @@ test("continuous WebSocket output becomes visible before the stream ends and sur
       .click();
     if (!(await page.locator(".execution-sidebar").isVisible()))
       await page.getByRole("button", { name: "执行过程", exact: true }).click();
+    await expect.poll(() => page.evaluate(() => (window as any).__eventWs?.readyState)).toBe(1);
+    expect(startStream).toBeDefined();
+    startStream!();
     await expect(page.locator(".logs")).toContainText("流式日志-1", {
       timeout: 2000,
     });

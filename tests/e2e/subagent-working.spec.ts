@@ -32,9 +32,8 @@ test("SA-E01 planning, execute and both reviews show nested work cards and roles
     hold_ms: 8000,
   });
   await expect(workCard(page)).toBeVisible({ timeout: 30000 });
-  await expect(page.locator(".conversation-composer-work")).toContainText(
-    "规划模型",
-  );
+  await expect(page.getByRole("button", { name: /^规划模型：/ })).toHaveClass(/is-active/);
+  await expect(page.getByRole("button", { name: /^执行模型：/ })).toHaveClass(/is-inactive/);
   const planning = await (
     await page.request.get(`/api/workflows/${id}`)
   ).json();

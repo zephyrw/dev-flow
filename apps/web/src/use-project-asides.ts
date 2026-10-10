@@ -309,7 +309,13 @@ export async function readProjectAsidePage(
     "/api/projects/" + projectId + "/asides" + (suffix ? "?" + suffix : ""),
     { credentials: "same-origin", signal },
   );
-  return readApiJson(response, "无法读取项目提问");
+  const value = await readApiJson(response, "无法读取项目提问");
+  if (!value || !Array.isArray(value.items) || !Number.isSafeInteger(value.total) || value.total < 0 ||
+    !Number.isSafeInteger(value.snapshot_cursor) || value.snapshot_cursor < 0 ||
+    !(value.next_cursor === null || typeof value.next_cursor === "string")) {
+    throw new Error("项目提问响应格式无效，请刷新重试");
+  }
+  return value;
 }
 
 export async function readProjectAsidePosition(
@@ -417,6 +423,7 @@ export function useProjectAsides(input: {
   const [pendingIds, setPendingIds] = useState<string[]>([]);
   const [hasNew, setHasNew] = useState(false);
   const [error, setError] = useState("");
+  const [listError, setListError] = useState("");
   const [reloadToken, setReloadToken] = useState(0);
 
   const summariesRef = useRef(new Map<string, ProjectAsideSummary>());
@@ -500,6 +507,7 @@ export function useProjectAsides(input: {
       setPendingIds([]);
       setHasNew(false);
       setError("");
+      setListError("");
     }
   }, [projectId]);
 
@@ -529,7 +537,7 @@ export function useProjectAsides(input: {
           const fromPage = pendingIdsFromSummaries(page.items);
           return [...new Set([...ids, ...fromPage])];
         });
-        setError("");
+        setListError("");
         const currentId = selectedIdRef.current;
         if (currentId && summariesRef.current.has(currentId)) return;
         if (currentId) {
@@ -549,7 +557,7 @@ export function useProjectAsides(input: {
         if (latest) setSelectedId(latest);
       } catch (cause) {
         if (!signal.aborted && !isAbortError(cause)) {
-          setError(String(cause instanceof Error ? cause.message : cause));
+          setListError(String(cause instanceof Error ? cause.message : cause));
         }
       }
     }
@@ -683,7 +691,7 @@ export function useProjectAsides(input: {
     total,
     hasNew,
     hasPending,
-    error,
+    error: error || listError,
     selectCreated,
     goPrev,
     goNext,

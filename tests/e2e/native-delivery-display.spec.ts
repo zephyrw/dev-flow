@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { fixtureState } from "./native-helper.js";
+import { fixtureState, testInstance } from "./native-helper.js";
 
 test("native report results and before/after-human reviews display independently", async ({
   page,
@@ -83,7 +83,7 @@ test("native report results and before/after-human reviews display independently
   await expect(page.getByLabel("交付进度")).toContainText(
     "计划用例报告通过2/2",
   );
-  await expect(page.getByLabel("交付进度")).toContainText("工作包已交付1/1");
+  await expect(page.getByLabel("交付进度")).toContainText("工作包已开展1/1");
   await page.getByRole("button", { name: "测试进度", exact: true }).click();
   await expect(page.locator(".test-case .badge")).toHaveText([
     "报告通过",
@@ -190,7 +190,7 @@ test("真实附件归档仍持久化，但测试进度不渲染归档清单", as
   test.setTimeout(180_000);
   const token = fixtureState().shutdownToken;
   const seeded = await page.request.post("/__fixture/attachments", {
-    headers: { Origin: "http://localhost:14811" }, data: { token },
+    headers: { Origin: testInstance().humanOrigin }, data: { token },
   });
   expect(seeded.ok()).toBe(true);
   const fixture = await seeded.json();
@@ -201,7 +201,7 @@ test("真实附件归档仍持久化，但测试进度不渲染归档清单", as
   const attachments = page.getByLabel("附件归档状态");
   await expect(attachments).toHaveCount(0);
   const triggered = await page.request.post("/__fixture/attachments/drain", {
-    headers: { Origin: "http://localhost:14811" }, data: { token, ...fixture },
+    headers: { Origin: testInstance().humanOrigin }, data: { token, ...fixture },
   });
   expect(triggered.ok()).toBe(true);
   await expect.poll(async () => {

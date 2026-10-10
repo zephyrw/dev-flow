@@ -33,17 +33,16 @@ test("SA-E20 websocket reconnect catchup keeps conversation activity unique", as
   const beforeIds = new Set(
     (before.nodes ?? []).map((node: { id: string }) => node.id),
   );
+  await expect.poll(() => page.evaluate(() => (window as any).__eventWs?.readyState), { timeout: 15000 }).toBe(1);
   await page.context().setOffline(true);
   await page.evaluate(() => {
     (window as any).__eventWs?.close();
   });
-  await expect(page.locator(".conn-pill")).toContainText(/重连/, {
-    timeout: 8000,
-  });
+  await expect.poll(() => page.evaluate(() => (window as any).__eventWs?.readyState), { timeout: 8000 })
+    .toBe(3);
   await page.context().setOffline(false);
-  await expect(page.locator(".conn-pill")).toContainText("已连接", {
-    timeout: 15000,
-  });
+  await expect.poll(() => page.evaluate(() => (window as any).__eventWs?.readyState), { timeout: 15000 })
+    .toBe(1);
   const after = await (
     await page.request.get(`/api/workflows/${id}/conversations`)
   ).json();

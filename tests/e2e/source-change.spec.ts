@@ -31,8 +31,8 @@ for (const choice of ["continue", "replan"] as const) {
       name: "项目代码已更新",
       exact: true,
     });
-    await expect(dialog).toContainText("补充项目说明", { timeout: 45000 });
-    await expect(dialog).toContainText(f.old.slice(0, 8));
+    await expect(dialog.getByLabel("补充规划要求（可选）")).toBeVisible({ timeout: 45000 });
+    await expect(dialog).toContainText(f.old.slice(0, 8), { timeout: 45000 });
     await expect(dialog).toContainText(f.current.slice(0, 8));
     await expect(dialog).toContainText("本地未提交的修改");
     const before = (await get()).workflow;

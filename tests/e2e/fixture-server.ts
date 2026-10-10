@@ -35,6 +35,7 @@ import type {
 import { inheritRoleOverrides } from "../../packages/contracts/src/index.js";
 import { CATALOG_FRESH_MS, PARSER_REVISION } from "../../packages/contracts/src/model-catalog.js";
 import { ModelAccessService } from "../../packages/core/src/model-access-service.js";
+import { assertProfilesVerified } from "../../packages/core/src/access-guard.js";
 import {
   ModelCatalogService,
   type CatalogScopeInput,
@@ -97,6 +98,12 @@ const CATALOG_MODELS: Array<{
   {
     adapterId: "codex",
     models: [
+      {
+        id: "gpt-6.1-sol",
+        label: "GPT-6.1 Sol",
+        values: ["low", "medium", "high", "xhigh", "max", "ultra"],
+        defaultValue: "high",
+      },
       {
         id: "gpt-6-astra",
         label: "GPT-6 Astra",
@@ -498,6 +505,15 @@ engine.runtime = {
     }
     if (engine.plan(flow.id).plan.task_model === "native-v2")
       return runtime.execute(flow, run, token);
+    if (run.purpose === "planner_commit") {
+      const files = engine.files(engine.auth.verify(token), flow.id, "main", true);
+      await git(files.root, ["add", "--", "app.txt"]);
+      const dirty = await git(files.root, ["diff", "--cached", "--name-only", "--", "app.txt"]);
+      if (dirty.trim()) await git(files.root, ["commit", "-m", "test: 验证确定性交付闭环"]);
+      await engine.receiveRoundResult(flow.id, run.id, { status: "completed", summary: "已完成本地提交",
+        repositories: [{ repo_id: "main", commit: await git(files.root, ["rev-parse", "HEAD"]) }] });
+      return;
+    }
     const principal = engine.auth.verify(token);
     for (let i = 0; i < 10; i++) {
       if (stopped.has(run.id)) return;
@@ -512,7 +528,9 @@ engine.runtime = {
     }
     startTask(engine, principal, flow.id, "T01");
     const files = engine.files(principal, flow.id, "main", true);
-    files.broker.apply(files.root, engine.plan(flow.id).plan.scope, [
+    // A guidance-only recheck must read the current bytes without declaring a
+    // source change. The broker intentionally invalidates proof on each write.
+    if (readFileSync(join(files.root, "app.txt"), "utf8") !== "after\n") files.broker.apply(files.root, engine.plan(flow.id).plan.scope, [
       {
         path: "app.txt",
         expected_hash: files.broker.read(files.root, "app.txt").hash,
@@ -525,8 +543,18 @@ engine.runtime = {
       "T01",
       "测试夹具完成文本修改，真实 Node 测试验证结果",
     );
-    await engine.freeze(flow.id, principal);
-    await runtime.check(engine.get(flow.id), "UT01", principal);
+    // The current Run uses the lightweight delivery protocol. Physical task
+    // proof alone is legacy evidence; submit the executor's actual round result
+    // through the same completion contract used by native-v2 execution.
+    const evidence = await runtime.check(engine.get(flow.id), "UT01", principal);
+    // Bind the real check snapshot, rather than inventing a completion or a
+    // report. The deterministic adapter has no native host-record importer.
+    const checked = engine.get(flow.id);
+    engine.store.put("workflow", flow.id, flow.project_id, { ...checked, snapshot_id: evidence.snapshot_id });
+    await engine.receiveRoundResult(flow.id, run.id, {
+      status: "completed",
+      summary: "测试夹具已完成 app.txt 修改，进入真实 Node 测试验证",
+    });
   },
   async resolveMergeConflict(
     flow: Workflow,
@@ -852,12 +880,34 @@ function fixtureProfile(
     id,
     revision: 1,
     adapterId,
+    executableRef: PROBE_CLI,
     modelSelection: "explicit",
     modelId,
     reasoning: { mode: "explicit", value: effort },
     selectionKind: "fixed",
     options: {},
   };
+}
+
+async function verifyFixtureRepairProfiles() {
+  const catalogs = new ModelCatalogService(engine.store);
+  const access = new ModelAccessService(engine.store, {
+    catalog: catalogs,
+    extraEnv: { MODEL_PROBE_LOG_DIR: probeLogDir },
+    probeRoot: join(s.root, "model-probe"),
+    verifyTimeoutMs: 30000,
+  });
+  try {
+    const catalog = catalogs.loadForSelector(fixtureCatalogScope(engine.store, "codex"));
+    for (const profile of [fixtureProfile("functional_fixer", "codex", "gpt-6-astra", "xhigh"),
+      fixtureProfile("review_fixer", "codex", "gpt-6-astra", "high"),
+      fixtureProfile("functional_fixer", "codex", "gpt-5.6-sol", "high")]) {
+      await waitVerified(access, profile, catalog);
+      assertProfilesVerified(engine.store, [profile]);
+    }
+  } finally {
+    await access.close();
+  }
 }
 
 function fixtureRepairServices() {
@@ -887,6 +937,11 @@ app.post("/__fixture/seed-retest", async (request, reply) => {
   holdFixtureReviews = true;
   try {
     await stopLiveFixtureRun();
+    const policyVersion = (request.body as { policy_version?: number }).policy_version === 2 ? 2 : 1;
+    const legacy = engine.get(w.id);
+    engine.store.put("workflow", w.id, legacy.project_id, { ...legacy, quality_policy_version: policyVersion });
+    if (policyVersion === 1) engine.store.put("preserve_quality_policy", w.id, w.id, { fixture: true });
+    else engine.store.remove("preserve_quality_policy", w.id);
     ensureFixtureSpec();
     putFixtureHumanPending();
     const deliveryId = "del-retest";
@@ -897,6 +952,7 @@ app.post("/__fixture/seed-retest", async (request, reply) => {
     });
     const { specs, repairs } = fixtureRepairServices();
     const issues = new FunctionalIssueService(engine.store);
+    await verifyFixtureRepairProfiles();
     const stamp = Date.now();
     const firstDesc = "筛选无效-" + stamp;
     const secondDesc = "另一问题-" + stamp;
@@ -977,6 +1033,7 @@ app.post("/__fixture/seed-repair-batches", async (request, reply) => {
       "rev-quality-covered",
     );
     const { specs, repairs } = fixtureRepairServices();
+    await verifyFixtureRepairProfiles();
     const coveredRevision = currentAssignmentRevision(
       engine.store,
       w.id,

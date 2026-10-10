@@ -256,6 +256,8 @@ export function WorkflowActivity({
                       executorProfile={spec?.spec?.executorProfile}
                       currentAssignment={view?.explicit_profile}
                       inheritedProfile={view?.inherited_profile ?? undefined}
+                      policyVersion={workflow.quality_policy_version ?? 1}
+                      lockedRole="executor"
                       onChange={(next) =>
                         setRepairByIssue((current) => ({
                           ...current,

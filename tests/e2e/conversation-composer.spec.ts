@@ -68,7 +68,7 @@ test("SA-E06 composer submits once, keeps draft on failure, and ignores Enter du
     .toContain("第一行");
 });
 
-test("SA-E07 requested versus actual model stays scoped to the viewed session", async ({
+test("SA-E07 child identity and activity stay scoped while the task model header remains unchanged", async ({
   page,
 }) => {
   test.setTimeout(180000);
@@ -80,7 +80,7 @@ test("SA-E07 requested versus actual model stays scoped to the viewed session", 
     false,
   );
   await openExecutionSidebar(page);
-  await expect(page.locator(".conversation-composer-runtime")).toContainText(
+  await expect(page.locator(".current-runtime")).toContainText(
     /fixture-only|未报告|Codex/,
     { timeout: 30000 },
   );
@@ -89,15 +89,16 @@ test("SA-E07 requested versus actual model stays scoped to the viewed session", 
     (node: { kind?: string }) => node.kind === "subagent",
   );
   expect(child).toBeTruthy();
-  const parentModel = await page.locator(".conversation-composer-runtime").innerText();
+  const parentModels = await page.locator(".current-runtime .runtime-row-text").allTextContents();
   await workCardName(page, child.title).click();
-  await expect(page.locator(".conversation-view-runtime")).toContainText("未报告");
-  await expect(page.locator(".conversation-view-runtime")).not.toContainText(
-    parentModel.includes("fixture-only") ? "fixture-only（请求）" : "do-not-copy-parent",
-  );
-  await expect(page.locator(".conversation-composer-work")).toHaveCount(0);
+  await expect(page.locator(".execution-session-badge")).toHaveText(child.title);
+  await expect(page.locator(".execution-sidebar")).toHaveAttribute("data-child-view", "true");
+  await expect(page.locator(".current-runtime .runtime-row-text")).toHaveText(parentModels);
+  await expect(page).toHaveURL(new RegExp(`conversation=${child.id}`));
+  await expect(page.locator(".conversation-composer-status-bar")).toHaveCount(0);
   await page.locator(".conversation-breadcrumb-link").first().click();
-  await expect(page.locator(".conversation-composer-work")).toContainText(
-    /规划|制定计划|nested fixture|核对/,
-  );
+  await expect(page.locator(".execution-session-badge")).toHaveText("worktree 会话");
+  await expect(page.locator(".execution-sidebar")).not.toHaveAttribute("data-child-view", "true");
+  await expect(composerInput(page)).toBeVisible();
+  await expect(page.locator(".current-runtime .runtime-row-text")).toHaveText(parentModels);
 });

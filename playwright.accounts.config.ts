@@ -1,8 +1,12 @@
 import { defineConfig } from "@playwright/test";
-const port = Number(process.env.DEVFLOW_ACCOUNTS_E2E_PORT ?? 14839);
-const output =
-  process.env.DEVFLOW_ACCOUNTS_E2E_OUTPUT ?? `.cache/agy-accounts-e2e-${port}`;
-const baseURL = `http://127.0.0.1:${port}`;
+import { ensureTestInstanceDirs, loadTestInstanceConfig, playwrightWebServerEnv } from "./tests/helpers/test-isolation.js";
+const instance = loadTestInstanceConfig({
+  ...process.env,
+  DEVFLOW_TEST_PORT: process.env.DEVFLOW_TEST_PORT ?? process.env.DEVFLOW_ACCOUNTS_E2E_PORT ?? "14839",
+  DEVFLOW_TEST_RUN_DIR: process.env.DEVFLOW_TEST_RUN_DIR ?? process.env.DEVFLOW_ACCOUNTS_E2E_OUTPUT ?? ".cache/agy-accounts-e2e",
+});
+ensureTestInstanceDirs(instance);
+const baseURL = instance.humanOrigin;
 export default defineConfig({
   testDir: "tests/e2e",
   testMatch: "agy-accounts-browser.spec.ts",
@@ -10,8 +14,8 @@ export default defineConfig({
   fullyParallel: false,
   retries: 0,
   timeout: 45000,
-  outputDir: `${output}/results`,
-  reporter: [["list"], ["json", { outputFile: `${output}/report.json` }]],
+  outputDir: instance.outputDir,
+  reporter: [["list"], ["json", { outputFile: instance.reportJson }]],
   use: {
     baseURL,
     headless: true,
@@ -28,5 +32,6 @@ export default defineConfig({
     url: `${baseURL}/api/health`,
     reuseExistingServer: false,
     timeout: 60000,
+    env: playwrightWebServerEnv(instance),
   },
 });

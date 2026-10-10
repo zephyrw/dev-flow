@@ -1,3 +1,4 @@
+import { mockProject } from "./mock-workflow.js";
 import { test, expect } from "@playwright/test";
 
 test("implementation, development checks and final validation remain distinct in the workbench", async ({
@@ -12,7 +13,7 @@ test("implementation, development checks and final validation remain distinct in
   };
   const detail = {
     workflow,
-    project: { id: "p1", name: "进度测试" },
+    project: { ...mockProject(), data: { mode: "directory" }, id: "p1", name: "进度测试" },
     plan: {
       plan: { task_model: "leaf-v1", modules: [], tasks: [], tests: [] },
     },
@@ -77,7 +78,7 @@ test("a user who switched accounts can retry now without waiting for the old quo
     plan: null,
     runs: [],
     evidence: [],
-    project: { id: "p1", name: "恢复测试" },
+    project: { ...mockProject(), data: { mode: "directory" }, id: "p1", name: "恢复测试" },
     attention: {
       category: "queue",
       message: "旧账号额度恢复时间：16:22 自动继续。",
@@ -132,7 +133,7 @@ test("quota wait explains automatic continuation and allows cancelling it", asyn
     plan: null,
     runs: [],
     evidence: [],
-    project: { id: "p1", name: "测试项目" },
+    project: { ...mockProject(), data: { mode: "directory" }, id: "p1", name: "测试项目" },
     attention: {
       category: "queue",
       message: "模型额度暂时不足，预计 15:02 自动继续。",
@@ -197,7 +198,7 @@ test("a technical diagnosis failure offers automatic retry without requiring use
     plan: null,
     runs: [],
     evidence: [],
-    project: { id: "p1", name: "测试项目" },
+    project: { ...mockProject(), data: { mode: "directory" }, id: "p1", name: "测试项目" },
     attention: {
       category: "guidance",
       message:
@@ -233,7 +234,7 @@ test("a technical diagnosis failure offers automatic retry without requiring use
   await page.goto("/?workflow=" + workflow.id);
   await expect(page.locator(".attention-strip")).not.toContainText("FlowError");
   await expect(page.locator(".attention-strip")).not.toContainText("devflow_");
-  await expect(page.locator(".task-interaction textarea")).toHaveCount(0);
+  await expect(page.locator(".conversation-composer-input")).toHaveValue("");
   await page.getByRole("button", { name: "继续自动排查", exact: true }).click();
   await expect.poll(() => received?.scope).toBe("within_plan");
   expect(received.text).toContain("继续在原批准范围内自动排查");
@@ -279,7 +280,7 @@ for (const approved of [true, false])
       events: [],
       runs: [],
       evidence: [],
-      project: {
+      project: { ...mockProject(),
         id: "p1",
         name: "授权测试",
         repositories: [],
@@ -358,7 +359,7 @@ test("guidance remains available in a recovered task and is sent without startin
     events: [],
     runs: [],
     evidence: [],
-    project: {
+    project: { ...mockProject(),
       id: "p1",
       name: "指导测试",
       repositories: [],
@@ -420,8 +421,15 @@ test("SA-E22 shared composer still creates, sends plan feedback and workspace re
   await expect(page.getByRole("button", { name: "创建并开始规划" })).toHaveCount(0);
   await composerInput(page).fill("请补充换行验证，并 @");
   await composerInput(page).type("app.txt");
-  await page.keyboard.press("Enter");
+  const reference = page.locator(".reference-popup").getByText("app.txt", { exact: true });
+  await expect(reference).toBeVisible();
+  await reference.click();
+  await expect(page.locator(".conversation-composer-ref")).toContainText("app.txt");
+  const posted = page.waitForResponse(response => response.url().endsWith("/conversation-messages") && response.request().method() === "POST");
   await page.getByRole("button", { name: "发送", exact: true }).click();
+  const response = await posted;
+  expect(response.ok(), await response.text()).toBeTruthy();
+  expect(response.request().postDataJSON().refs).toEqual(expect.arrayContaining([expect.objectContaining({ relative_path: "app.txt" })]));
   await expect
     .poll(async () => {
       const detail = await (await page.request.get(`/api/workflows/${id}`)).json();

@@ -1,8 +1,10 @@
+import { mockProject } from "./mock-workflow.js";
 import { test, expect } from "@playwright/test";
 
-test("removed local-copy tab falls back to overview and acceptance keeps real links and controls", async ({ page }) => {
+for (const data of [undefined, { mode: "directory" }] as const) {
+test(`removed local-copy tab falls back to overview and acceptance keeps real links and controls (${data ? "current project" : "legacy project projection"})`, async ({ page }) => {
   const workflow = { id: "wf-acceptance-access", project_id: "p1", title: "人工验收入口", state: "HUMAN_PENDING", plan_revision: 1, version: 4 };
-  const detail = { workflow, project: { id: "p1", name: "隔离验收展示", services: [{ id: "web", port_pool: "frontend" }] },
+  const detail = { workflow, project: { ...mockProject(), id: "p1", name: "隔离验收展示", data, services: [{ id: "web", port_pool: "frontend" }] },
     plan: { plan: { task_model: "leaf-v1", modules: [], tasks: [], tests: [] } }, tasks: [], evidence: [], runs: [], events: [],
     test_progress: { total: 0, cases: [] }, attention: { category: "acceptance", message: "等待你实际操作验收", action: "查看本机验证副本" },
     environment: { status: "ready", services: [{ id: "web", status: "ready", origin: "http://127.0.0.1:15321" }] } };
@@ -33,3 +35,4 @@ test("removed local-copy tab falls back to overview and acceptance keeps real li
   await expect.poll(() => writes).toEqual([`/api/workflows/${workflow.id}/browser/lock`, `/api/workflows/${workflow.id}/browser/release`, `/api/workflows/${workflow.id}/environment/stop`]);
   expect(errors).toEqual([]);
 });
+}

@@ -99,7 +99,7 @@ test("SA-E11 pause all stops fixture processes and resume restores unfinished wo
   expect(live.length).toBeGreaterThanOrEqual(0);
   await expect(workCard(page)).toContainText(/暂停|已暂停|失败/);
   await setNativeFixture(page, {});
-  await page.getByRole("button", { name: /继续这个任务|立即重试/ }).click();
+  await page.getByRole("button", { name: "继续规划", exact: true }).click();
   await expect
     .poll(async () => {
       const detail = await (await page.request.get(`/api/workflows/${id}`)).json();
@@ -164,7 +164,7 @@ test("SA-E12 child-view pause is scoped; another task keeps working", async ({
   await expect(workCard(page)).toBeVisible();
 });
 
-test("SA-E13 quota interrupt injects recovery prompt and manual pause cancels retry", async ({
+test("SA-E13 quota retry continues the original session without rewriting input and manual pause cancels retry", async ({
   page,
 }) => {
   test.setTimeout(300000);
@@ -198,7 +198,7 @@ test("SA-E13 quota interrupt injects recovery prompt and manual pause cancels re
   expect((await recovered).ok()).toBe(true);
   await expect
     .poll(lastPromptText, { timeout: 45000 })
-    .toMatch(/原任务的继续|恢复清单|不要重跑/);
+    .toBe("继续");
   await expect(page.locator("body")).toContainText(/恢复|等待|已安排/);
   const pauseAuto = page.getByRole("button", {
     name: "暂停自动继续",
@@ -209,6 +209,8 @@ test("SA-E13 quota interrupt injects recovery prompt and manual pause cancels re
   });
   await expect(pauseAuto.or(pauseAll).first()).toBeVisible({ timeout: 30000 });
   await pauseAuto.or(pauseAll).first().click();
+  await expect.poll(async () => (await (await page.request.get(`/api/workflows/${id}`)).json()).workflow.state,
+    { timeout: 20000 }).toMatch(/^STOPPED$|^STOPPING$/);
   const afterPause = await (
     await page.request.get(`/api/workflows/${id}`)
   ).json();

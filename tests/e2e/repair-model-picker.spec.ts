@@ -5,6 +5,9 @@ import {
   openFixtureWorkflow,
   pickListedModel,
   showExecutionSidebar,
+  openTaskModels,
+  composerInput,
+  sendComposerText,
   waitAccessStatus,
   workflowDetail,
 } from "./native-helper.js";
@@ -32,24 +35,14 @@ test("E2E 旁路提问不出现修复指派，正式反馈默认按任务配置"
     "等待你的验收",
   );
   await showExecutionSidebar(page);
-  const trigger = page.getByRole("button", {
-    name: "指导或提问",
-    exact: true,
-  });
-  await expect(trigger).toBeVisible();
-  await trigger.click();
-  const form = page.locator(".guidance-form");
-  await expect(form).toBeVisible();
-  await form.getByLabel("临时提问", { exact: true }).check();
-  await expect(form.getByText("本次修复由谁处理")).toHaveCount(0);
-  await form.getByLabel("反馈并调整").check();
-  const picker = form.getByText("本次修复由谁处理");
-  await expect(picker).toBeVisible();
-  await picker.click();
-  await expect(form.getByLabel("按任务配置")).toBeChecked();
-  await expect(
-    form.getByLabel("同时设为该任务后续人工问题修复默认值"),
-  ).not.toBeChecked();
+  await composerInput(page).fill("/btw 只提问，不调整需求");
+  await expect(page.locator(".conversation-composer").getByText("本次修复由谁处理")).toHaveCount(0);
+  const posted = page.waitForResponse(response => response.url().endsWith("/conversation-messages") && response.request().method() === "POST");
+  await sendComposerText(page, "正式反馈：修复筛选问题");
+  const response = await posted;
+  expect(response.ok(), await response.text()).toBeTruthy();
+  expect(response.request().postDataJSON()).toMatchObject({ client_mode: "formal", text: "正式反馈：修复筛选问题" });
+  expect(response.request().postDataJSON()).not.toHaveProperty("repair_model");
 });
 
 test("E2E-U08 人工问题自定义处理者显示在复测卡且复测仍人工", async ({
@@ -59,7 +52,7 @@ test("E2E-U08 人工问题自定义处理者显示在复测卡且复测仍人工
   const first = String(seeded.first_description);
   const second = String(seeded.second_description);
   await openFixtureWorkflow(page);
-  await showExecutionSidebar(page);
+  await openTaskModels(page);
   const activity = page.getByLabel("任务反馈记录");
   await expect(activity.getByText(first)).toContainText("等待你复测");
   await expect(activity.getByText(second)).toContainText("等待你复测");
@@ -90,7 +83,7 @@ async function retestCard(
 test("E2E-R20 待复测问题指定另一模型确实提交", async ({ page }) => {
   const seeded = await seedRetest(page);
   await openFixtureWorkflow(page);
-  await showExecutionSidebar(page);
+  await openTaskModels(page);
   const card = await retestCard(page, String(seeded.first_description));
   await card.getByText("本次修复由谁处理").click();
   await card.getByLabel("自定义工具/模型").check();
@@ -115,7 +108,7 @@ test("E2E-R20 待复测问题指定另一模型确实提交", async ({ page }) =
 test("E2E-R20 恢复任务默认会清除覆盖", async ({ page }) => {
   const seeded = await seedRetest(page);
   await openFixtureWorkflow(page);
-  await showExecutionSidebar(page);
+  await openTaskModels(page);
   const card = await retestCard(page, String(seeded.first_description));
   await card.getByText("本次修复由谁处理").click();
   await card.getByLabel("按任务配置").check();
@@ -133,7 +126,7 @@ test("E2E-R20 恢复任务默认会清除覆盖", async ({ page }) => {
 test("E2E-R20 记为任务默认会写入执行配置", async ({ page }) => {
   const seeded = await seedRetest(page);
   await openFixtureWorkflow(page);
-  await showExecutionSidebar(page);
+  await openTaskModels(page);
   const card = await retestCard(page, String(seeded.first_description));
   await card.getByText("本次修复由谁处理").click();
   await card.getByLabel("使用规划配置").check();
@@ -153,7 +146,7 @@ test("E2E-R20 记为任务默认会写入执行配置", async ({ page }) => {
 test("E2E-R20 另一页面先更新指派会造成版本冲突", async ({ page }) => {
   const seeded = await seedRetest(page);
   await openFixtureWorkflow(page);
-  await showExecutionSidebar(page);
+  await openTaskModels(page);
   const card = await retestCard(page, String(seeded.first_description));
   await card.getByText("本次修复由谁处理").click();
   await card.getByLabel("使用执行配置").check();
@@ -169,49 +162,24 @@ test("E2E-R20 另一页面先更新指派会造成版本冲突", async ({ page }
   await expect(card).toContainText("等待你复测");
 });
 
-test("E2E-U14 历史记录看当时绑定不被当前默认污染", async ({ page }) => {
-  await fixturePost(page, "/__fixture/seed-history-run");
-  await openFixtureWorkflow(page);
-  if (!(await page.locator(".execution-sidebar").isVisible())) {
-    await page.getByRole("button", { name: "执行过程", exact: true }).click();
-  }
-  const activity = page.getByLabel("任务反馈记录");
-  const history = activity
-    .locator("article")
-    .filter({ hasText: "historical-bound-model" })
-    .first();
-  await expect(history).toContainText("historical-bound-model");
-  await expect(history).toContainText("本轮审查");
-  await page.getByRole("button", { name: "全局模型设置" }).click();
-  const drawer = page.getByRole("dialog", { name: "工具与模型" });
-  await pickListedModel(drawer, "规划工具", "gpt-5.6-sol");
-  await waitAccessStatus(drawer.locator(".ms-editor").first(), "已验证可访问");
-  await drawer.getByRole("button", { name: /保存默认配置/ }).click();
-  await expect(drawer.locator(".ms-success")).toBeVisible({ timeout: 15000 });
-  await drawer.getByRole("button", { name: "关闭设置" }).click();
-  if (!(await page.locator(".execution-sidebar").isVisible())) {
-    await page.getByRole("button", { name: "执行过程", exact: true }).click();
-  }
-  await expect(
-    page
-      .getByLabel("任务反馈记录")
-      .locator("article")
-      .filter({ hasText: "historical-bound-model" })
-      .first(),
-  ).toContainText("historical-bound-model");
-  await expect(
-    page
-      .getByLabel("任务反馈记录")
-      .locator("article")
-      .filter({ hasText: "historical-bound-model" })
-      .first(),
-  ).not.toContainText("gpt-5.6-sol");
+test("E2E-U14 当前任务配置保存不污染历史Run绑定", async ({ page }) => {
+  const seeded = await fixturePost(page, "/__fixture/seed-history-run");
+  const id = await openFixtureWorkflow(page);
+  const before = (await workflowDetail(page, id)).runs.find((run: { id: string }) => run.id === seeded.run_id);
+  expect(before.profile.modelId).toBe("historical-bound-model");
+  const dialog = await openTaskModels(page);
+  await pickListedModel(dialog, "工具", "gpt-5.6-sol");
+  await dialog.getByRole("button", { name: /^(保存|保存供后续使用)$/ }).click();
+  await expect(dialog).not.toBeVisible({ timeout: 20000 });
+  expect((await executionSpec(page, id)).spec.plannerProfile.modelId).toBe("gpt-5.6-sol");
+  const after = (await workflowDetail(page, id)).runs.find((run: { id: string }) => run.id === seeded.run_id);
+  expect(after).toEqual(before);
 });
 
 test("未修改处理者的失败复测保留已有人工指派", async ({ page }) => {
   const seeded = await seedRetest(page);
   await openFixtureWorkflow(page);
-  await showExecutionSidebar(page);
+  await openTaskModels(page);
   const card = await retestCard(page, String(seeded.first_description));
   await card.getByText("本次修复由谁处理").click();
   await expect(card.getByLabel("自定义工具/模型")).toBeChecked();

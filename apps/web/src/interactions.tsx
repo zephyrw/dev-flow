@@ -22,6 +22,7 @@ import {
 } from "./use-project-asides.js";
 import { UserInteractionDialog } from "./components/UserInteractionDialog.js";
 import { useCurrentUserInteraction } from "./use-user-interaction.js";
+import { resolveConversationMessageTarget } from "./conversation-message-target.js";
 import "./components/aside-popover.css";
 
 export function TaskInteraction({
@@ -377,32 +378,6 @@ function readyAttachmentIds(
   return attachments
     .filter((item) => item.status === "ready" && item.supported && item.id)
     .map((item) => item.id);
-}
-
-async function resolveConversationMessageTarget(
-  workflowId: string,
-  rootConversationId?: string,
-  expectedGeneration?: number,
-): Promise<{ rootId: string; generation: number }> {
-  const response = await fetch(
-    "/api/workflows/" + encodeURIComponent(workflowId) + "/conversations",
-    { credentials: "same-origin" },
-  );
-  if (!response.ok) {
-    return {
-      rootId: rootConversationId ?? workflowId,
-      generation: expectedGeneration ?? 0,
-    };
-  }
-  const tree = await response.json();
-  const rootId =
-    rootConversationId ?? tree.active_root_id ?? tree.roots?.[0]?.id ?? workflowId;
-  const generation =
-    tree.roots?.find((item: { id: string }) => item.id === rootId)
-      ?.generation ??
-    expectedGeneration ??
-    0;
-  return { rootId, generation };
 }
 
 async function fetchWorkflowReferences(

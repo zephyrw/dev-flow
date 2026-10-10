@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { exactLabel, fixtureState, workflowDetail } from "./native-helper.js";
+import { exactLabel, fixturePost, openFixtureWorkflow, openTaskModels, workflowDetail } from "./native-helper.js";
 
 test.describe.configure({ mode: "serial" });
 
@@ -23,35 +23,37 @@ test("E2E-QP2-01 设置页仅可选 Codex 与 AGY 并出现模型搜索", async 
 
 test("E2E-QP2-02 新策略用途文案包含执行测试与规划提交", async ({ page }) => {
   await page.goto("/");
-  const overview = page.getByRole("heading", { name: "工作流总览" });
+  const overview = page.getByRole("heading", { name: "任务总览", exact: true });
   await expect(overview).toBeVisible();
   // 工作台不出现旧的“第 N/3 次质量失败”
   await expect(page.getByText(/第\s*\d+\s*\/\s*3\s*次质量失败/)).toHaveCount(0);
   await expect(page.getByText("DevFlow 已验证测试通过")).toHaveCount(0);
 });
 
-test("E2E-QP2-03 RepairModelPicker 策略2锁定职责组", async ({ page }) => {
-  await page.goto("/");
-  await expect(page.getByRole("heading", { name: "工作流总览" })).toBeVisible();
-  // 打开任意任务详情的修复选择器（若存在）
-  const picker = page.locator(".ms-picker").first();
-  if ((await picker.count()) === 0) {
-    test.skip(true, "当前夹具无修复批次，跳过锁定断言");
-    return;
-  }
-  await picker.locator("summary").click();
-  // 策略 2 文案
-  await expect(picker).toContainText("本流程使用规划与执行两组配置");
+test("E2E-QP2-03 功能复测策略2锁定执行职责组", async ({ page }) => {
+  const seeded = await fixturePost(page, "/__fixture/seed-retest", { policy_version: 2 });
+  const id = await openFixtureWorkflow(page);
+  expect((await workflowDetail(page, id)).workflow.quality_policy_version).toBe(2);
+  await openTaskModels(page);
+  const card = page.getByLabel("任务反馈记录").locator("article").filter({ hasText: seeded.first_description });
+  await card.getByText("本次修复由谁处理").click();
+  await expect(card).toContainText("本流程使用规划与执行两组配置");
+  await expect(card).toContainText("执行测试固定使用执行配置");
+  await expect(card.getByLabel("使用规划配置", { exact: true })).toBeDisabled();
+  await expect(card.getByLabel("自定义工具/模型", { exact: true })).toBeDisabled();
+  await expect(card.getByLabel("使用执行配置", { exact: true })).toBeEnabled();
+  await card.getByLabel("使用执行配置", { exact: true }).check();
+  await expect(card.getByLabel("使用执行配置", { exact: true })).toBeChecked();
 });
 
-test("E2E-QP2-04 MiMo 能力与新用途角色可见", async ({ page }) => {
-  await page.goto("/");
-  await expect(page.getByRole("heading", { name: "工作流总览" })).toBeVisible();
-  // 会话/状态栏若绑定 mimo-code，显示 MiMo Code 名称
-  const status = page.locator(".conversation-status-bar, .current-runtime");
-  if ((await status.count()) > 0) {
-    // 不断言必须存在 MiMo（取决于夹具），只验证不崩溃且无过期文案
-    await expect(page.getByText(/三次接管|两阶段独立计数/)).toHaveCount(0);
+test("E2E-QP2-04 当前任务只提供已支持工具和规划执行职责", async ({ page }) => {
+  await openFixtureWorkflow(page);
+  const dialog = await openTaskModels(page);
+  for (const role of ["规划", "执行"]) {
+    await dialog.getByRole("tab", { name: role, exact: true }).click();
+    const tools = await exactLabel(dialog, "工具").locator("option").evaluateAll(options => options.map(option => (option as HTMLOptionElement).value));
+    expect(tools).toEqual(["codex", "agy"]);
+    await expect(exactLabel(dialog, "工具模型搜索")).toBeEnabled();
   }
-  await expect(page.getByText(/测试真实性核验/)).toHaveCount(0);
+  await expect(dialog.getByText(/三次接管|两阶段独立计数|测试真实性核验/)).toHaveCount(0);
 });

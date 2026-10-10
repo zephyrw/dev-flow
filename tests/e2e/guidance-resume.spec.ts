@@ -1,3 +1,4 @@
+import { mockProject } from "./mock-workflow.js";
 import { test, expect } from "@playwright/test";
 
 test("persisted guidance remains visible after reload and continuation is not shown as initial development", async ({ page }) => {
@@ -6,7 +7,7 @@ test("persisted guidance remains visible after reload and continuation is not sh
   const event = (seq: number, type: string, payload: unknown) => ({ workflow_id: workflow.id,
     event_seq: seq, created_at: `2026-09-28T08:00:0${seq}Z`, type, payload });
   const detail = {
-    workflow, project: { id: "p1", name: "隔离展示测试" },
+    workflow, project: { ...mockProject(), data: { mode: "directory" }, id: "p1", name: "隔离展示测试" },
     plan: { plan: { task_model: "leaf-v1", modules: [], tasks: [], tests: [] } },
     tasks: [], test_progress: { total: 1, passed: 0, failed: 0, cases: [] },
     evidence: [], runs: [], attention: null,

@@ -92,7 +92,7 @@ test("runtime recovery instructions are beside task status and resume the same t
   await expect(card).toContainText("C:/tools/codex.exe");
   await expect(card).toContainText("gpt-6-astra");
   await expect(card).toContainText("--version");
-  await expect(card).toContainText("不计入模型整改失败次数");
+  await expect(card).toContainText("保留原模型、账号和任务工作区");
   await expect(
     page.getByRole("button", { name: "继续这个任务", exact: true }),
   ).toHaveCount(0);
@@ -139,16 +139,10 @@ test("submitting guidance clears the form without leaving an unexplained footer"
   const fixture = await screen(page, false);
   if (!(await page.locator(".execution-sidebar").isVisible()))
     await page.getByRole("button", { name: "执行过程", exact: true }).click();
-  await page.getByRole("button", { name: "指导或提问" }).click();
-  await page
-    .getByPlaceholder(
-      "输入指导或调整内容，Enter 发送，Shift+Enter 换行。输入 @ 引用文件或目录",
-    )
-    .fill("继续核对原计划中的未完成项");
-  await page.getByRole("button", { name: "发送指导并继续" }).click();
-  await expect(
-    page.getByRole("button", { name: "指导或提问" }),
-  ).toBeVisible();
+  const input = page.locator(".conversation-composer-input");
+  await input.fill("继续核对原计划中的未完成项");
+  await page.getByRole("button", { name: "发送", exact: true }).click();
+  await expect(input).toHaveValue("");
   expect(fixture.submissions).toHaveLength(1);
   await expect(page.locator(".task-interaction [role=status]")).toHaveCount(0);
   await expect(page.getByText("已保存，正在继续这个任务。")).toHaveCount(0);

@@ -1,3 +1,4 @@
+import { installMockWorkflowConfiguration, mockProject } from "./mock-workflow.js";
 import { test, expect } from "@playwright/test";
 
 test.describe("H02 Activity & Guidance Resilience", () => {
@@ -16,7 +17,7 @@ test.describe("H02 Activity & Guidance Resilience", () => {
     };
     const detail = {
       workflow,
-      project: { id: "p1", name: "C01 项目" },
+      project: { ...mockProject(), data: { mode: "directory" }, id: "p1", name: "C01 项目" },
       plan: {
         plan: { task_model: "leaf-v1", modules: [], tasks: [], tests: [] },
       },
@@ -55,12 +56,15 @@ test.describe("H02 Activity & Guidance Resilience", () => {
     await page.routeWebSocket("**/api/notifications", () => {});
     await page.routeWebSocket("**/api/events?*", () => {});
 
+    await installMockWorkflowConfiguration(page);
     await page.goto("/?workflow=wf-c01");
+    await page.getByRole("button", { name: /^规划模型：/ }).click();
 
     // 验证局部错误展示
     const alert = page.getByRole("alert");
     await expect(alert).toBeVisible();
     await expect(alert).toContainText("任务反馈响应格式无效");
+    await page.keyboard.press("Escape");
 
     // 验证页面控制按钮和任务进度仍然可操作，页面主体正常存在
     const strip = page.getByLabel("交付进度");
@@ -72,7 +76,7 @@ test.describe("H02 Activity & Guidance Resilience", () => {
     expect(pageErrors.length).toBe(0);
   });
 
-  test("H02-C02: asides 返回非数组时显示局部错误，恢复后刷新错误消失且无 pageerror", async ({
+  test("H02-C02: 项目提问返回无效分页时显示局部错误，恢复后刷新错误消失且无 pageerror", async ({
     page,
   }) => {
     const pageErrors: Error[] = [];
@@ -88,7 +92,7 @@ test.describe("H02 Activity & Guidance Resilience", () => {
     };
     const detail = {
       workflow,
-      project: { id: "p1", name: "C02 项目" },
+      project: { ...mockProject(), data: { mode: "directory" }, id: "p1", name: "C02 项目" },
       plan: {
         plan: { task_model: "leaf-v1", modules: [], tasks: [], tests: [] },
       },
@@ -105,16 +109,12 @@ test.describe("H02 Activity & Guidance Resilience", () => {
       if (path.endsWith("/functional-issues")) {
         return route.fulfill({ json: [] });
       }
-      if (path.endsWith("/asides")) {
-        if (!returnValid) {
-          return route.fulfill({
-            status: 200,
-            contentType: "application/json",
-            body: JSON.stringify({ bad: "structure" }),
-          });
-        } else {
-          return route.fulfill({ json: [] });
-        }
+      if (path.endsWith("/conversation-messages")) return route.fulfill({ json: { client_mode: "btw", aside_id: "aside-c02", message_id: "msg-c02" } });
+      if (path.endsWith("/position")) return route.fulfill({ json: { index: 1, total: 1 } });
+      if (path.endsWith("/aside-updates")) return route.fulfill({ json: { items: [], snapshot_cursor: 1 } });
+      if (path.endsWith("/asides/aside-c02")) return route.fulfill({ json: { id: "aside-c02", workflow_id: workflow.id, question: "查询项目提问历史", answer: "历史已恢复", status: "completed", created_at: new Date().toISOString() } });
+      if (path === "/api/projects/p1/asides") {
+        return route.fulfill({ json: returnValid ? { items: [{ id: "aside-c02", project_id: "p1", workflow_id: workflow.id, workflow_title: workflow.title, question_preview: "查询项目提问历史", status: "completed", created_at: new Date().toISOString() }], total: 1, next_cursor: null, snapshot_cursor: 1 } : { bad: "structure" } });
       }
       if (path.endsWith("/projects")) return route.fulfill({ json: [detail.project] });
       if (path.endsWith("/workflows")) return route.fulfill({ json: [workflow] });
@@ -124,23 +124,25 @@ test.describe("H02 Activity & Guidance Resilience", () => {
     await page.routeWebSocket("**/api/notifications", () => {});
     await page.routeWebSocket("**/api/events?*", () => {});
 
+    await installMockWorkflowConfiguration(page);
     await page.goto("/?workflow=wf-c02");
     if (!(await page.locator(".execution-sidebar").isVisible()))
       await page.getByRole("button", { name: "执行过程", exact: true }).click();
-    await page.getByRole("button", { name: "指导或提问" }).click();
-    await page.getByRole("radio", { name: /临时提问/ }).check();
+    await page.locator(".conversation-composer-input").fill("/btw 查询项目提问历史");
+    await page.getByRole("button", { name: "发送", exact: true }).click();
 
     const alert = page.getByRole("alert");
     await expect(alert).toBeVisible();
-    await expect(alert).toContainText("临时提问响应格式无效");
+    await expect(alert).toContainText("项目提问响应格式无效");
     await expect(page.getByRole("button", { name: "历史提问" })).toHaveCount(0);
 
     returnValid = true;
-    await page.getByRole("radio", { name: /反馈并调整/ }).check();
-    await page.getByRole("radio", { name: /临时提问/ }).check();
+    await page.reload();
 
+    await page.locator(".conversation-composer-input").fill("/btw 查询项目提问历史");
+    await page.getByRole("button", { name: "发送", exact: true }).click();
+    await expect(page.locator(".aside-popover")).toContainText("历史已恢复");
     await expect(page.getByRole("alert")).not.toBeVisible();
-    await expect(page.getByRole("button", { name: "历史提问" })).toHaveCount(0);
     expect(pageErrors.length).toBe(0);
   });
 
@@ -169,7 +171,7 @@ test.describe("H02 Activity & Guidance Resilience", () => {
 
     const detailA = {
       workflow: wfA,
-      project: { id: "p1", name: "项目" },
+      project: { ...mockProject(), data: { mode: "directory" }, id: "p1", name: "项目" },
       plan: { plan: { task_model: "leaf-v1", modules: [], tasks: [], tests: [] } },
       tasks: [],
       test_progress: { total: 0, passed: 0, failed: 0, cases: [] },
@@ -180,7 +182,7 @@ test.describe("H02 Activity & Guidance Resilience", () => {
     };
     const detailB = {
       workflow: wfB,
-      project: { id: "p1", name: "项目" },
+      project: { ...mockProject(), data: { mode: "directory" }, id: "p1", name: "项目" },
       plan: { plan: { task_model: "leaf-v1", modules: [], tasks: [], tests: [] } },
       tasks: [],
       test_progress: { total: 0, passed: 0, failed: 0, cases: [] },
@@ -242,9 +244,9 @@ test.describe("H02 Activity & Guidance Resilience", () => {
     await page.routeWebSocket("**/api/events?*", () => {});
 
     // 先进入 A 并打开执行过程侧栏
+    await installMockWorkflowConfiguration(page);
     await page.goto("/?workflow=wf-a");
-    await page.getByRole("button", { name: "执行过程", exact: true }).click();
-    await expect(page.locator(".execution-sidebar")).toBeVisible();
+    await page.getByRole("button", { name: /^规划模型：/ }).click();
     await expect(page.getByText("A任务遗留问题")).toBeVisible();
     await expect(page.getByRole("button", { name: "复测通过" })).toBeVisible();
 
@@ -252,8 +254,9 @@ test.describe("H02 Activity & Guidance Resilience", () => {
     delayBResponses = true;
 
     // 切换到 B
-    await page.goto("/?workflow=wf-b");
-    await page.getByRole("button", { name: "执行过程", exact: true }).click();
+    await page.keyboard.press("Escape");
+    await page.locator(".flow-nav-btn").filter({ hasText: wfB.title }).click();
+    await page.getByRole("button", { name: /^规划模型：/ }).click();
 
     // 在 B 响应延迟期间，任务 A 的问题和按钮必须已被清理，不得展示
     await expect(page.getByRole("button", { name: "复测通过" })).not.toBeVisible();
@@ -265,7 +268,8 @@ test.describe("H02 Activity & Guidance Resilience", () => {
     expect(pageErrors.length).toBe(0);
   });
 
-  test("H02-C04: 发送需求/反馈 API 返回 409 时保留全文和 @ 引用，不关闭输入框", async ({
+  for (const submission of ["button", "keyboard"] as const) {
+  test(`H02-C04: ${submission}提交409保留全文和引用且无未处理错误`, async ({
     page,
   }) => {
     const pageErrors: Error[] = [];
@@ -280,7 +284,7 @@ test.describe("H02 Activity & Guidance Resilience", () => {
     };
     const detail = {
       workflow,
-      project: { id: "p1", name: "C04 项目" },
+      project: { ...mockProject(), data: { mode: "directory" }, id: "p1", name: "C04 项目" },
       plan: {
         plan: { task_model: "leaf-v1", modules: [], tasks: [], tests: [] },
       },
@@ -311,7 +315,7 @@ test.describe("H02 Activity & Guidance Resilience", () => {
         });
       }
 
-      if (path.includes("/feedback")) {
+      if (path.endsWith("/conversation-messages")) {
         return route.fulfill({
           status: 409,
           contentType: "application/json",
@@ -332,13 +336,11 @@ test.describe("H02 Activity & Guidance Resilience", () => {
     await page.routeWebSocket("**/api/notifications", () => {});
     await page.routeWebSocket("**/api/events?*", () => {});
 
+    await installMockWorkflowConfiguration(page);
     await page.goto("/?workflow=wf-c04");
 
-    // 点击“指导或提问”展开指导表单
-    await page.getByRole("button", { name: "指导或提问" }).click();
-    await expect(page.locator(".guidance-form")).toBeVisible();
-
-    const textarea = page.locator(".guidance-form textarea");
+    const textarea = page.locator(".conversation-composer-input");
+    await expect(textarea).toBeVisible();
     await textarea.fill("请参考文件 @");
 
     // 弹出候选并选择
@@ -348,24 +350,27 @@ test.describe("H02 Activity & Guidance Resilience", () => {
     await textarea.pressSequentially("继续优化");
 
     // 点击提交
-    await page.getByRole("button", { name: "发送指导并继续" }).click();
+    if (submission === "button") await page.getByRole("button", { name: "发送", exact: true }).click();
+    else await textarea.press("Control+Enter");
 
     // 409 返回后，错误提示可见
     await expect(page.getByRole("alert")).toContainText("版本冲突");
 
     // 输入框仍然可见（未关闭）
-    await expect(page.locator(".guidance-form")).toBeVisible();
+    await expect(textarea).toBeVisible();
 
     // 检查输入框内容保留
     await expect(textarea).toHaveValue(/请参考文件 @src\/main\.ts 继续优化/);
 
     // 检查 @ 引用 tag 标签依然保留
-    await expect(page.locator(".ref-tag")).toContainText("src/main.ts");
+    await expect(page.locator(".conversation-composer-ref")).toContainText("src/main.ts");
 
     // 确认未提示成功
     await expect(page.getByText("已保存，正在继续这个任务。")).not.toBeVisible();
-    expect(pageErrors.length).toBe(0);
+    expect(pageErrors).toEqual([]);
   });
+
+  }
 
   test("H02-C05: 历史补拉第一页立即显示，不等待更早页返回", async ({
     page,
@@ -379,7 +384,7 @@ test.describe("H02 Activity & Guidance Resilience", () => {
     };
     const detail = {
       workflow,
-      project: { id: "p1", name: "补拉项目" },
+      project: { ...mockProject(), data: { mode: "directory" }, id: "p1", name: "补拉项目" },
       plan: {
         plan: { task_model: "native-v2", modules: [], tasks: [], tests: [] },
       },
@@ -444,6 +449,7 @@ test.describe("H02 Activity & Guidance Resilience", () => {
     });
     await page.routeWebSocket("**/api/notifications", () => {});
     await page.routeWebSocket("**/api/events?*", () => {});
+    await installMockWorkflowConfiguration(page);
     await page.goto("/?workflow=wf-catchup-first");
     if (!(await page.locator(".execution-sidebar").isVisible()))
       await page.getByRole("button", { name: "执行过程", exact: true }).click();

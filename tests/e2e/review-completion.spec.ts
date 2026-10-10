@@ -131,15 +131,15 @@ test("审查需要用户时等待指导，回答后回到原审查队列", async
     page.getByRole("button", { name: "继续审查", exact: true }),
   ).toHaveCount(0);
   await page.getByRole("button", { name: "输入指导并继续", exact: true }).click();
-  await expect(page.locator(".guidance-form textarea")).toBeVisible();
-  await page.locator(".guidance-form textarea").fill("配置项名为 API_BASE");
-  await page.getByRole("button", { name: "发送指导并继续", exact: true }).click();
+  await expect(page.locator(".conversation-composer-input")).toBeVisible();
+  await page.locator(".conversation-composer-input").fill("配置项名为 API_BASE");
+  await page.getByRole("button", { name: "发送", exact: true }).click();
   await expect.poll(() => posts.map((item) => item.path)).toEqual([
-    "/api/workflows/wf-review-need-user/feedback",
+    "/api/workflows/wf-review-need-user/conversation-messages",
   ]);
   expect(posts[0]?.body).toMatchObject({
     text: "配置项名为 API_BASE",
-    scope: "within_plan",
+    client_mode: "formal",
   });
   await expect(page.locator(".header-title-wrapper .badge")).toContainText(
     "等待代码审查",
@@ -183,9 +183,9 @@ test("审查结论不明时留在审查队列续问，不进入等待用户", as
   await expect(
     page.getByRole("button", { name: "继续审查", exact: true }),
   ).toHaveCount(0);
-  await expect(page.locator(".guidance-form textarea")).toHaveCount(0);
+  await expect(page.locator(".conversation-composer-input")).toHaveCount(0);
   await expect(
-    page.getByRole("button", { name: "发送指导并继续", exact: true }),
+    page.getByRole("button", { name: "发送", exact: true }),
   ).toHaveCount(0);
 });
 

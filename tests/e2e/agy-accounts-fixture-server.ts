@@ -1,11 +1,22 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Store } from "../../packages/store/src/store.js";
 import { buildAccountsServer } from "../../apps/api/src/accounts-server.js";
 import { accountFixture } from "../fixtures/agy-accounts/service-fixture.js";
-const port = Number(process.env.DEVFLOW_ACCOUNTS_E2E_PORT ?? 14839);
-const root = mkdtempSync(join(tmpdir(), "devflow-accounts-browser-"));
+import { assertSafeTestDatabaseCleanup, assertTestPortAvailable, ensureTestInstanceDirs, loadTestInstanceConfig } from "../helpers/test-isolation.js";
+const instance = loadTestInstanceConfig();
+ensureTestInstanceDirs(instance);
+const port = instance.port;
+const root = instance.usesCustomRunDir
+  ? instance.storageRoot
+  : mkdtempSync(join(tmpdir(), "devflow-accounts-browser-"));
+if (instance.usesCustomRunDir) {
+  assertSafeTestDatabaseCleanup(instance.sqliteFile, instance.runDirResolved);
+  for (const file of [instance.sqliteFile, `${instance.sqliteFile}-wal`, `${instance.sqliteFile}-shm`]) {
+    if (existsSync(file)) unlinkSync(file);
+  }
+}
 const store = new Store(join(root, "devflow.sqlite"));
 const fixture = accountFixture(store, "gemini-3.8-flash");
 fixture.seedAccounts();
@@ -105,7 +116,7 @@ for (const id of ["a", "b", "c"]) {
 
 
 fixture.addSavedAccount("d");
-const origin = `http://127.0.0.1:${port}`;
+const origin = instance.humanOrigin;
 const app = buildAccountsServer(fixture.service, {
   port,
   humanOrigin: origin,
@@ -407,6 +418,7 @@ app.route({
     return { ok: true };
   },
 });
+await assertTestPortAvailable(port);
 await app.listen({ host: "127.0.0.1", port });
 let closing = false;
 async function close() {
@@ -416,7 +428,7 @@ async function close() {
   await fixture.service.close();
   await app.close();
   store.close();
-  rmSync(root, { recursive: true, force: true });
+  if (!instance.usesCustomRunDir) rmSync(root, { recursive: true, force: true });
 }
 process.once("SIGTERM", () => void close());
 process.once("SIGINT", () => void close());

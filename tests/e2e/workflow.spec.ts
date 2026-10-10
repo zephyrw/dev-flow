@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { createNative, fixtureState } from "./native-helper.js";
+import { approvePlan, createNative, fixtureState, openFixtureWorkflow, testInstance, sendComposerText } from "./native-helper.js";
 import { git } from "../../packages/git/src/git.js";
 test.describe.configure({ mode: "serial" });
 test("empty console explains the natural-language entry without manual registration", async ({
@@ -22,11 +22,9 @@ test("empty console explains the natural-language entry without manual registrat
   ).toHaveCount(0);
 });
 test.afterAll(async ({ request }) => {
-  const state = JSON.parse(
-    readFileSync(resolve(".cache/e2e-state.json"), "utf8"),
-  );
+  const state = fixtureState();
   await request.post("/__fixture/shutdown", {
-    headers: { Origin: "http://localhost:14811" },
+    headers: { Origin: testInstance().humanOrigin },
     data: { token: state.shutdownToken },
   });
 });
@@ -39,23 +37,17 @@ test("E2E-01/05/06/08 local button approval, diagrams, evidence and accepted com
   test.setTimeout(180000);
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(e.message));
-  const state = JSON.parse(
-    readFileSync(resolve(".cache/e2e-state.json"), "utf8"),
-  );
+  const state = fixtureState();
   await page.goto("/");
   await expect(page.getByLabel("配对码")).toHaveCount(0);
   await expect(page.getByRole("button", { name: /登录|通行密钥/ })).toHaveCount(
     0,
   );
-  await expect(page.getByRole("heading", { name: "工作流总览" })).toBeVisible();
-  await page
-    .getByRole("button")
-    .filter({ has: page.getByRole("heading", { name: "验证审批与交付闭环" }) })
-    .click();
+  await openFixtureWorkflow(page);
   await page.getByRole("button", { name: "开发计划", exact: true }).click();
   await expect(page.locator(".diagram svg")).toBeVisible();
   await page.screenshot({ path: ".cache/e2e-plan.png", fullPage: true });
-  await page.getByRole("button", { name: "批准当前计划" }).click();
+  await approvePlan(page);
   await expect(page.locator(".header-title-wrapper .badge")).toContainText(
     "等待你的验收",
     {
@@ -73,13 +65,7 @@ test("E2E-01/05/06/08 local button approval, diagrams, evidence and accepted com
   ).json();
   if (!(await page.locator(".execution-sidebar").isVisible()))
     await page.getByRole("button", { name: "执行过程", exact: true }).click();
-  await page
-    .getByRole("button", { name: "指导或提问", exact: true })
-    .click();
-  await page
-    .locator(".guidance-form textarea")
-    .fill("请在原批准范围内再次核对内容与末尾换行，并重新运行测试。");
-  await page.getByRole("button", { name: "发送指导并继续" }).click();
+  await sendComposerText(page, "请在原批准范围内再次核对内容与末尾换行，并重新运行测试。");
   await expect
     .poll(async () => {
       const d = await (
@@ -97,8 +83,15 @@ test("E2E-01/05/06/08 local button approval, diagrams, evidence and accepted com
   const after = await (
     await page.request.get("/api/workflows/" + state.workflow_id)
   ).json();
-  expect(after.evidence.some((e: any) => e.status === "stale")).toBe(true);
-  expect(after.evidence.some((e: any) => e.status === "passed")).toBe(true);
+  // Guidance asks for a read-only content recheck and an actual test rerun.
+  // Retain prior proof and require new passing evidence from the next Run.
+  expect(before.development_evidence.length).toBeGreaterThan(0);
+  for (const previous of before.development_evidence)
+    expect(after.development_evidence.find((e: any) => e.id === previous.id)).toEqual(previous);
+  const previousIds = new Set(before.development_evidence.map((e: any) => e.id));
+  const freshEvidence = after.development_evidence.filter((e: any) => !previousIds.has(e.id));
+  expect(freshEvidence.length).toBeGreaterThan(0);
+  expect(freshEvidence.every((e: any) => e.status === "passed" && e.passed === 1 && e.exit_code === 0)).toBe(true);
   await page.reload();
   if (!(await page.locator(".execution-sidebar").isVisible()))
     await page.getByRole("button", { name: "执行过程", exact: true }).click();
@@ -134,9 +127,7 @@ test("E2E-01/05/06/08 local button approval, diagrams, evidence and accepted com
 test("E2E-05 a fresh browser opens the console and restores a deep link without login", async ({
   page,
 }) => {
-  const state = JSON.parse(
-    readFileSync(resolve(".cache/e2e-state.json"), "utf8"),
-  );
+  const state = fixtureState();
   await page.goto("/?workflow=" + state.workflow_id);
   await expect(page.locator(".header-title-wrapper .badge")).toContainText(
     "已提交",
@@ -150,13 +141,13 @@ test("E2E-05 a fresh browser opens the console and restores a deep link without 
     0,
   );
 });
-test("冲突复测无功能影响沿承接且保留人工确认", async ({ page }) => {
+test("quality policy 2 planner integration repair merges both histories after human acceptance", async ({ page }) => {
   test.setTimeout(900000);
   const id = await createNative(page, "冲突复测：将文本改为 after");
   const get = async () =>
     (await page.request.get("/api/workflows/" + id)).json();
   const nativeRepo = fixtureState().nativeRepo;
-  await page.getByRole("button", { name: "批准当前计划" }).click();
+  await approvePlan(page);
   await expect(page.locator(".header-title-wrapper .badge")).toContainText(
     "等待你的验收",
     { timeout: 450000 },
@@ -164,6 +155,7 @@ test("冲突复测无功能影响沿承接且保留人工确认", async ({ page 
   writeFileSync(join(nativeRepo, "app.txt"), "upstream line\n");
   await git(nativeRepo, ["add", "app.txt"]);
   await git(nativeRepo, ["commit", "-m", "conflict upstream commit"]);
+  const upstreamCommit = await git(nativeRepo, ["rev-parse", "HEAD"]);
   await page.getByRole("button", { name: "验收通过，启动复核" }).click();
   await expect
     .poll(
@@ -171,7 +163,8 @@ test("冲突复测无功能影响沿承接且保留人工确认", async ({ page 
         const detail = await get();
         if (
           detail.workflow.state === "BLOCKED" ||
-          detail.workflow.state === "COMMIT_PARTIAL"
+          detail.workflow.state === "COMMIT_PARTIAL" ||
+          detail.workflow.state === "WAITING_INPUT"
         )
           throw new Error(
             JSON.stringify({
@@ -199,11 +192,19 @@ test("冲突复测无功能影响沿承接且保留人工确认", async ({ page 
     )
     .toMatch(/COMPLETED|COMMITTED/);
   const finalDetail = await get();
-  expect(
-    finalDetail.runs.some(
-      (run: { stage?: string }) => run.stage === "merge_conflict_resolution",
-    ),
-  ).toBe(true);
+  expect(finalDetail.workflow.quality_policy_version).toBe(2);
+  const commitRuns = finalDetail.runs.filter((run: { purpose: string }) => run.purpose === "planner_commit");
+  expect(commitRuns).toHaveLength(2);
+  expect(commitRuns.every((run: { stage: string; status: string }) => run.stage === "planner_commit" && run.status === "completed")).toBe(true);
+  expect(commitRuns[1].dispatch_context.source_run_id).toBe(commitRuns[0].id);
+  const workspace = finalDetail.workspaces.find((workspace: { repo_id: string; root: string }) => workspace.repo_id === "main");
+  const taskCommit = await git(workspace.root, ["log", "--format=%H", "--grep=^test: native fixture$", "--max-count=2"]);
+  const [mergedCommit, originalTaskCommit] = taskCommit.trim().split(/\r?\n/);
+  expect(mergedCommit).toBeTruthy();
+  expect(originalTaskCommit).toBeTruthy();
+  await git(nativeRepo, ["merge-base", "--is-ancestor", upstreamCommit.trim(), "HEAD"]);
+  await git(nativeRepo, ["merge-base", "--is-ancestor", originalTaskCommit!, "HEAD"]);
+  expect(readFileSync(join(nativeRepo, "app.txt"), "utf8")).toBe("after\nupstream line\n");
   await expect(page.locator(".header-title-wrapper .badge")).toContainText(
     /已提交|已完成/,
   );

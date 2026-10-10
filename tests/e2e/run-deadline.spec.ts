@@ -1,3 +1,4 @@
+import { mockProject } from "./mock-workflow.js";
 import { test, expect } from "@playwright/test";
 
 test.describe("Run Deadline and Pause Display", () => {
@@ -120,7 +121,7 @@ test.describe("Run Deadline and Pause Display", () => {
       ],
       events,
       evidence: [],
-      project: { id: "p1", name: "测试项目", repositories: [] },
+      project: { ...mockProject(), data: { mode: "directory" }, id: "p1", name: "测试项目", repositories: [] },
     };
 
     let resumeCalled = false;
@@ -148,10 +149,7 @@ test.describe("Run Deadline and Pause Display", () => {
       return route.fulfill({ json: { ok: true } });
     });
 
-    await page.goto("/");
-    await page
-      .getByRole("button", { name: "超时暂停与恢复测试", exact: true })
-      .click();
+    await page.goto(`/?workflow=${workflowId}`);
     if (!(await page.locator(".logs").isVisible()))
       await page.getByRole("button", { name: "执行过程", exact: true }).click();
     await expect(page.getByLabel("开发完成进度")).toHaveAttribute("value", "0");
@@ -223,7 +221,7 @@ test.describe("Run Deadline and Pause Display", () => {
       runs: [],
       events,
       evidence: [],
-      project: { id: "p1", name: "测试项目", repositories: [] },
+      project: { ...mockProject(), data: { mode: "directory" }, id: "p1", name: "测试项目", repositories: [] },
     };
 
     await page.route("**/api/projects", (route) =>
@@ -240,10 +238,7 @@ test.describe("Run Deadline and Pause Display", () => {
       route.fulfill({ json: events }),
     );
 
-    await page.goto("/");
-    await page
-      .getByRole("button", { name: "人工停止与历史暂停测试", exact: true })
-      .click();
+    await page.goto(`/?workflow=${workflowId}`);
     if (!(await page.locator(".logs").isVisible()))
       await page.getByRole("button", { name: "执行过程", exact: true }).click();
 

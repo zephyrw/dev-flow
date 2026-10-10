@@ -76,9 +76,6 @@ export async function pickListedModel(
   if ((await option.count()) === 0) {
     option = listbox.getByRole("option").filter({ hasText: basePattern }).first();
   }
-  if ((await option.count()) === 0) {
-    option = listbox.getByRole("option").first();
-  }
   await expect(option).toBeVisible({ timeout: 15000 });
   await option.click();
 }
@@ -118,6 +115,15 @@ export async function showExecutionSidebar(page: Page) {
   await expect(page.locator(".execution-sidebar")).toBeVisible();
 }
 
+export async function openTaskModels(page: Page, role: "规划" | "执行" = "规划") {
+  await page.getByRole("button", { name: role === "规划" ? /^规划模型：/ : /^执行模型：/ }).click();
+  const dialog = page.getByRole("dialog", { name: "工具与模型", exact: true });
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole("tab", { name: role, exact: true }).click();
+  await expect(exactLabel(dialog, "工具模型搜索")).toBeEnabled();
+  return dialog;
+}
+
 export async function dismissFirstRun(page: Page) {
   try {
     await page.addInitScript(() => {
@@ -140,7 +146,7 @@ export async function openFixtureWorkflow(page: Page) {
   await dismissFirstRun(page);
   await page.goto("/");
   await dismissFirstRun(page);
-  await expect(page.getByRole("heading", { name: "工作流总览" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "任务总览", exact: true })).toBeVisible();
   await page
     .getByRole("button")
     .filter({ has: page.getByRole("heading", { name: title }) })
@@ -162,27 +168,12 @@ export async function createNative(
   const modal = page.locator(".modal-backdrop").last();
   await modal.getByLabel("工作区真实路径").fill(state.nativeRepo);
   // ModelConfigTabs 每个职责 tab 只渲染一个「工具」选择器
-  const pickModel = async (query: string) => {
-    const search = modal
-      .getByLabel("工具模型搜索")
-      .or(modal.getByLabel("模型", { exact: true }))
-      .first();
-    await expect(search).toBeEnabled({ timeout: 20000 });
-    await search.click();
-    await search.fill(query);
-    const option = page
-      .getByRole("listbox", { name: "模型选项列表", exact: true })
-      .getByRole("option")
-      .first();
-    await expect(option).toBeVisible({ timeout: 15000 });
-    await option.click();
-  };
   await modal.getByRole("tab", { name: "规划", exact: true }).click();
   await modal.getByLabel("工具", { exact: true }).selectOption("codex");
-  await pickModel("Astra");
+  await pickListedModel(modal, "工具", "gpt-6-astra");
   await modal.getByRole("tab", { name: "执行", exact: true }).click();
   await modal.getByLabel("工具", { exact: true }).selectOption("codex");
-  await pickModel("Astra");
+  await pickListedModel(modal, "工具", "gpt-6-astra");
   if (mode === "existing_workspace")
     await modal.locator('input[name="workspaceMode"][value="existing_workspace"]').check();
   await modal.locator("textarea").fill(title);
@@ -256,7 +247,12 @@ export function composerInput(page: Page) {
 export async function sendComposerText(page: Page, text: string) {
   await openExecutionSidebar(page);
   await composerInput(page).fill(text);
+  const submitted = page.waitForResponse(response => response.url().includes("/conversation-messages") &&
+    response.request().method() === "POST");
   await page.getByRole("button", { name: "发送", exact: true }).click();
+  const response = await submitted;
+  expect(response.ok(), await response.text()).toBe(true);
+  await expect(composerInput(page)).toHaveValue("");
 }
 
 export async function conversationTree(page: Page, workflowId: string) {
@@ -324,6 +320,14 @@ export async function waitForWorkflowState(
 
 export async function approvePlan(page: Page) {
   await page.getByRole("button", { name: "批准当前计划", exact: true }).click();
+  const approval = page.getByRole("dialog", { name: "批准执行计划", exact: true });
+  await expect(approval).toBeVisible();
+  const approved = page.waitForResponse(response => /\/approve$/.test(new URL(response.url()).pathname) &&
+    response.request().method() === "POST", { timeout: 45000 });
+  await approval.getByRole("button", { name: "批准并开始执行", exact: true }).click();
+  const response = await approved;
+  expect(response.ok(), await response.text()).toBe(true);
+  await expect(approval).not.toBeVisible();
 }
 
 export function latestAttemptMap(tree: {

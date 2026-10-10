@@ -85,11 +85,12 @@ test("SA-E16 seven project asides default to latest and can step through cancell
   });
   await setNativeFixture(page, {});
   await sendComposerText(page, "/btw 乙完成");
+  await expect(page.locator("[data-aside-popover]")).toContainText("乙完成");
   await expect(page.locator(".aside-popover-count")).toContainText("1/");
   const count = page.locator(".aside-popover-count");
   await expect.poll(async () => (await count.innerText()).trim()).toMatch(/^1\/\d+$/);
   const total = Number((await count.innerText()).trim().split("/")[1]);
-  await page.waitForTimeout(500);
+  await expect(page.getByLabel("较旧一条")).toBeEnabled();
   await page.getByLabel("较旧一条").click();
   await expect(count).toContainText("2/");
   await page.goto(`/?workflow=${first}`);

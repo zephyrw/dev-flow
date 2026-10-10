@@ -1248,7 +1248,7 @@ const CentralWorkspace = React.memo(
                 ? "独立 worktree"
                 : "当前目录"}
               ；测试数据：
-              {detail.project?.data.mode === "directory"
+              {detail.project?.data?.mode === "directory"
                 ? "按任务独立目录"
                 : "共享数据按资源排队"}
             </p>
@@ -1706,6 +1706,9 @@ function App() {
         const merged = {
           ...current,
           ...next,
+          // A completed preparation has no queue in the JSON projection.
+          // Clear the prior transient queue instead of retaining its badge.
+          queue: next.queue ?? null,
           // Loading older history is an explicit user action; a status refresh
           // must not move its pagination cursor back to the recent tail.
           history_cursor: current?.history_cursor === null ? null
