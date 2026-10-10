@@ -10,6 +10,7 @@ import { setup, testConsoleHeaders } from "../helpers.js";
 import {
   type SessionBindingAdoptInput,
   SessionBindingAdoptInputSchema,
+  computeSessionOwnerKey,
 } from "../../packages/contracts/src/session-binding.js";
 
 describe("CW2-T13: CLI 会话接管 (Adopt) 契约与安全保护集成测试", () => {
@@ -340,7 +341,11 @@ describe("CW2-T13: CLI 会话接管 (Adopt) 契约与安全保护集成测试", 
 
     expect(() => {
       sessionStore.adoptExistingSession("wf-task-2", input2, optionsCross);
-    }).toThrow(/已由任务 wf-task-1 认领/);
+    }).toThrowError(expect.objectContaining({ code: "SESSION_ALREADY_OWNED", status: 409 }));
+    expect(store.get("session_owner_index", computeSessionOwnerKey({ ...optionsCross, conversation_id: input1.conversation_id })))
+      .toMatchObject({ workflow_id: "wf-task-1" });
+    expect(sessionStore.listBindings("wf-task-1")).toHaveLength(1);
+    expect(sessionStore.listBindings("wf-task-2")).toHaveLength(0);
   });
 
   it("CW2-T13 同请求回放返回同结果，异正文复用 request_id 抛 409", () => {

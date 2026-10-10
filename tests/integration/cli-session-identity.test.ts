@@ -17,7 +17,8 @@ describe("CW2-T10: CLI 会话真实身份解析与隔离集成测试", () => {
   } as any;
 
   beforeEach(() => {
-    tempDir = mkdtempSync(join(tmpdir(), "devflow-identity-test-"));
+    // POSIX configuration reads must preserve case; do not rely on mkdtemp's random suffix.
+    tempDir = mkdtempSync(join(tmpdir(), "devflow-Identity-MixedCase-test-"));
     codexHome = join(tempDir, "fake-codex-home");
     agyHome = join(tempDir, "fake-agy-home");
     fakeWorkspaceRoot = join(tempDir, "test-workspace");

@@ -16,13 +16,17 @@ describe("CW2-T14 & CW2-T15: CLI 会话历史修复与迁移服务集成测试",
   let repairService: SessionBindingRepairService;
   let origAccountScope: string | undefined;
   let origProvAccount: string | undefined;
+  let origCodexHome: string | undefined;
 
   beforeEach(() => {
     origAccountScope = process.env.DEVFLOW_ACCOUNT_SCOPE;
     origProvAccount = process.env.DEVFLOW_PROVIDER_ACCOUNT;
+    origCodexHome = process.env.CODEX_HOME;
     process.env.DEVFLOW_ACCOUNT_SCOPE = "test-env-account";
 
     tempDir = mkdtempSync(join(tmpdir(), "devflow-session-mig-test-"));
+    process.env.CODEX_HOME = join(tempDir, "Codex-MixedCase-Home");
+    mkdirSync(process.env.CODEX_HOME, { recursive: true });
     const dbPath = join(tempDir, "test.db");
     store = new Store(dbPath);
     sessionStore = new ExecutionSessionStore(store);
@@ -30,6 +34,8 @@ describe("CW2-T14 & CW2-T15: CLI 会话历史修复与迁移服务集成测试",
   });
 
   afterEach(() => {
+    if (origCodexHome !== undefined) process.env.CODEX_HOME = origCodexHome;
+    else delete process.env.CODEX_HOME;
     if (origAccountScope !== undefined) {
       process.env.DEVFLOW_ACCOUNT_SCOPE = origAccountScope;
     } else {
@@ -465,7 +471,7 @@ describe("CW2-T14 & CW2-T15: CLI 会话历史修复与迁移服务集成测试",
     const candShort = preview.candidates.find((c) => c.conversation_id === "thread-scope-short-111")!;
     const candAbs = preview.candidates.find((c) => c.conversation_id === "thread-scope-abs-222")!;
 
-    // 目录简称与绝对配置目录均被解析为一致的小写绝对配置域
+    // 目录简称与绝对配置目录按同一平台规则处理，POSIX 保留真实大小写。
     expect(candShort.client_scope_id).toBe(expectedDefaultCodexScope);
     expect(candAbs.client_scope_id).toBe(expectedDefaultCodexScope);
     expect(candShort.client_scope_id).toBe(candAbs.client_scope_id);

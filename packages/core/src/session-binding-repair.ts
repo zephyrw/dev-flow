@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { hostname } from "node:os";
 import { isAbsolute, normalize } from "node:path";
+import { statSync, realpathSync } from "node:fs";
 import type { Store } from "../../store/src/store.js";
 import { ExecutionSessionStore } from "./execution-session-store.js";
 import {
@@ -15,9 +16,11 @@ import { resolveClientScope, resolveWorkspaceIdentity, readLocalAccountScope } f
 import { id, now } from "./util.js";
 
 function legacyClientScope(adapterId: string, recordedScope: unknown): string | undefined {
-  return typeof recordedScope === "string" && isAbsolute(recordedScope)
-    ? normalize(recordedScope).toLowerCase()
-    : resolveClientScope(adapterId);
+  if (typeof recordedScope !== "string" || !isAbsolute(recordedScope)) {
+    return resolveClientScope(adapterId);
+  }
+  const normalized = normalize(recordedScope);
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
 }
 
 export interface SessionRepairCandidate {
@@ -162,25 +165,65 @@ export class SessionBindingRepairService {
     const hostId = process.env.DEVFLOW_HOST_ID || hostname().trim().toLowerCase();
 
     const candidates: SessionRepairCandidate[] = [];
+    const scopeProofs = new Map<string, string>();
 
     // 1. 已有 session_binding
     const existingBindings = this.sessionStore.listBindings(workflowId);
     for (const b of existingBindings) {
       if (b.conversation_id) {
+        const currentScope = resolveClientScope(b.adapter_id);
+        const scopeChanged = process.platform !== "win32" && currentScope &&
+          b.client_scope_id !== currentScope && b.client_scope_id === currentScope.toLowerCase();
+        let scopeStatus: SessionRepairCandidate["status"] = "already_bound";
+        let scopeReason: string | undefined;
+        if (scopeChanged) {
+          scopeStatus = "unverifiable";
+          const scopeChange = `配置目录：${b.client_scope_id} → ${currentScope}。`;
+          scopeReason = scopeChange + "旧配置路径的大小写身份无法确证，保留原会话；请核对原配置目录后重新预览修复";
+          try {
+            const previousHome = statSync(b.client_scope_id, { bigint: true });
+            const currentHome = statSync(currentScope, { bigint: true });
+            const workspace = workspaces.find(ws => ws.root === b.workspace_root &&
+              resolveWorkspaceIdentity(ws.root, workspaces) === b.workspace_identity);
+            const account = readLocalAccountScope(b.adapter_id, currentScope);
+            if (b.state === "bound" && b.host_id === hostId && workspace &&
+                b.source_root === (workspace.source_root ?? workspace.root) &&
+                account && account === b.provider_account_scope &&
+                previousHome.isDirectory() && currentHome.isDirectory() &&
+                currentHome.ino > 0n &&
+                previousHome.dev === currentHome.dev && previousHome.ino === currentHome.ino) {
+              const key = computeSessionBindingKey({ ...b, client_scope_id: currentScope });
+              const otherBinding = this.store.get<SessionBinding>("session_binding", key);
+              const oldOwner = this.store.get<{ workflow_id: string }>("session_owner_index",
+                computeSessionOwnerKey({ ...b, conversation_id: b.conversation_id }));
+              const newOwner = this.store.get<{ workflow_id: string }>("session_owner_index",
+                computeSessionOwnerKey({ ...b, client_scope_id: currentScope, conversation_id: b.conversation_id }));
+              scopeStatus = otherBinding && otherBinding.id !== b.id ||
+                oldOwner && oldOwner.workflow_id !== workflowId || newOwner && newOwner.workflow_id !== workflowId
+                ? "conflict" : "verified";
+              scopeReason = scopeChange + (scopeStatus === "verified"
+                ? "已确证同一物理配置目录、账号和工作区；确认后更新路径大小写并保留原会话"
+                : "配置路径或原生会话已有其他绑定，禁止覆盖");
+              scopeProofs.set(b.id, JSON.stringify([realpathSync(currentScope),
+                String(currentHome.dev), String(currentHome.ino), b.host_id, account, b.workspace_identity]));
+            }
+          } catch { /* A missing or unreadable directory cannot establish native ownership. */ }
+        }
         candidates.push({
           candidate_id: `cand:binding:${b.id}`,
           source_ref: "run_init",
           conversation_id: b.conversation_id,
           adapter_id: b.adapter_id,
           host_id: b.host_id,
-          client_scope_id: b.client_scope_id,
+          client_scope_id: scopeChanged ? currentScope : b.client_scope_id,
           provider_account_scope: b.provider_account_scope,
           canonical_model_id: b.canonical_model_id,
           workspace_identity: b.workspace_identity,
           workspace_root: b.workspace_root || primaryWs?.root || "",
           source_root: b.source_root || sourceRoot,
           repo_id: b.repo_id || repoId,
-          status: "already_bound",
+          status: scopeStatus,
+          reason: scopeReason,
           expected_binding_revision: b.revision,
         });
       }
@@ -428,10 +471,15 @@ export class SessionBindingRepairService {
             c.conversation_id,
             c.status,
             c.workspace_root,
+            c.source_root,
+            c.repo_id,
             c.adapter_id,
             c.canonical_model_id,
             c.provider_account_scope,
             c.client_scope_id,
+            c.host_id,
+            c.workspace_identity,
+            scopeProofs.get(c.candidate_id.replace("cand:binding:", "")),
             c.expected_binding_revision,
           ]),
         ]),
@@ -565,7 +613,16 @@ export class SessionBindingRepairService {
           workspace_identity: cand.workspace_identity,
         };
         const keyStr = computeSessionBindingKey(key);
-        const existing = this.store.get<SessionBinding>("session_binding", keyStr);
+        const sourceBinding = cand.candidate_id.startsWith("cand:binding:")
+          ? this.sessionStore.getBindingById(cand.candidate_id.slice("cand:binding:".length)) : undefined;
+        const sourceKey = sourceBinding ? computeSessionBindingKey(sourceBinding) : keyStr;
+        const targetBinding = this.store.get<SessionBinding>("session_binding", keyStr);
+        requireCondition(!sourceBinding || !targetBinding || targetBinding.id === sourceBinding.id,
+          "BINDING_ALREADY_EXISTS", "目标配置域已有其他绑定，禁止覆盖", 409);
+        const existing = sourceBinding ?? targetBinding;
+        // A rekey already has same-directory proof in the refreshed preview;
+        // other candidates still pass the shared native owner boundary.
+        if (sourceKey === keyStr) this.sessionStore.assertNativeOwner(key, cand.conversation_id);
 
         // CAS 版本比较 (CW2-F13 / CW2-F15)
         if (existing) {
@@ -591,7 +648,8 @@ export class SessionBindingRepairService {
           );
         }
 
-        previousBindings.push({ keyStr, binding: existing ? { ...existing } : null });
+        previousBindings.push({ keyStr: sourceKey, binding: existing ? { ...existing } : null });
+        if (sourceKey !== keyStr) previousBindings.push({ keyStr, binding: null });
 
         const ownerKey = computeSessionOwnerKey({
           adapter_id: cand.adapter_id,
@@ -615,6 +673,7 @@ export class SessionBindingRepairService {
 
         const bindingId = existing?.id ?? id("sb");
         const binding: SessionBinding = {
+          ...existing,
           id: bindingId,
           workflow_id: workflowId,
           adapter_id: cand.adapter_id,
@@ -636,6 +695,22 @@ export class SessionBindingRepairService {
           metadata: existing?.metadata ?? {},
         };
 
+        if (sourceKey !== keyStr) {
+          this.store.remove("session_binding", sourceKey);
+          const oldOwnerKey = existing?.conversation_id ? computeSessionOwnerKey({
+            ...existing, conversation_id: existing.conversation_id,
+          }) : undefined;
+          if (oldOwnerKey && oldOwnerKey !== ownerKey) {
+            const oldOwner = this.store.get<{ workflow_id: string; binding_id: string }>("session_owner_index", oldOwnerKey);
+            requireCondition(!oldOwner || oldOwner.workflow_id === workflowId,
+              "SESSION_ALREADY_OWNED", "原生会话已由其他任务认领", 409);
+            // This explicitly verified physical alias still names the same native
+            // root. Keep its historical owner guard alongside the corrected key.
+            if (!oldOwner) this.store.put("session_owner_index", oldOwnerKey, workflowId, {
+              owner_key: oldOwnerKey, workflow_id: workflowId, binding_id: bindingId,
+            });
+          }
+        }
         this.store.put("session_binding", keyStr, workflowId, binding);
         this.store.put("session_binding_by_id", bindingId, workflowId, { keyStr });
         this.store.put("session_owner_index", ownerKey, workflowId, {
@@ -785,18 +860,30 @@ export class SessionBindingRepairService {
         const curr = this.store.get<SessionBinding>("session_binding", prev.keyStr);
         if (prev.binding) {
           // CW3-F19: 回退版本必须严格大于当前值与历史值，杜绝复用旧CAS版本
-          const currentRev = curr ? curr.revision : prev.binding.revision;
+          const currentBinding = curr ?? this.sessionStore.getBindingById(prev.binding.id);
+          const currentRev = currentBinding?.revision ?? prev.binding.revision;
           const nextRevision = Math.max(currentRev, prev.binding.revision) + 1;
           const restored: SessionBinding = {
             ...prev.binding,
+            owner_key: prev.binding.owner_key ?? (prev.binding.conversation_id ? computeSessionOwnerKey({
+              ...prev.binding, conversation_id: prev.binding.conversation_id,
+            }) : undefined),
             revision: nextRevision,
-            generation: (curr?.generation ?? prev.binding.generation) + 1,
+            generation: (currentBinding?.generation ?? prev.binding.generation) + 1,
             updated_at: now(),
           };
+          if (restored.owner_key) {
+            const owner = this.store.get<{ workflow_id: string }>("session_owner_index", restored.owner_key);
+            requireCondition(!owner || owner.workflow_id === workflowId,
+              "SESSION_ALREADY_OWNED", "原生会话已由其他任务认领，禁止回滚覆盖", 409);
+          }
           this.store.put("session_binding", prev.keyStr, workflowId, restored);
           this.store.put("session_binding_by_id", restored.id, workflowId, { keyStr: prev.keyStr });
           if (curr?.owner_key && curr.owner_key !== restored.owner_key) {
-            this.store.remove("session_owner_index", curr.owner_key);
+            const owner = this.store.get<{ workflow_id: string; binding_id: string }>("session_owner_index", curr.owner_key);
+            requireCondition(!owner || owner.workflow_id === workflowId,
+              "SESSION_ALREADY_OWNED", "原生会话已由其他任务认领，禁止回滚覆盖", 409);
+            if (owner?.binding_id === curr.id) this.store.remove("session_owner_index", curr.owner_key);
           }
           if (restored.owner_key) {
             this.store.put("session_owner_index", restored.owner_key, workflowId, {
@@ -809,9 +896,13 @@ export class SessionBindingRepairService {
           // 原本不存在，清理创建的绑定和索引
           if (curr) {
             this.store.remove("session_binding", prev.keyStr);
-            this.store.remove("session_binding_by_id", curr.id);
+            const index = this.store.get<{ keyStr: string }>("session_binding_by_id", curr.id);
+            if (index?.keyStr === prev.keyStr) this.store.remove("session_binding_by_id", curr.id);
             if (curr.owner_key) {
-              this.store.remove("session_owner_index", curr.owner_key);
+              const owner = this.store.get<{ workflow_id: string; binding_id: string }>("session_owner_index", curr.owner_key);
+              requireCondition(!owner || owner.workflow_id === workflowId,
+                "SESSION_ALREADY_OWNED", "原生会话已由其他任务认领，禁止回滚覆盖", 409);
+              if (owner?.binding_id === curr.id) this.store.remove("session_owner_index", curr.owner_key);
             }
           }
         }

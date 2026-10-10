@@ -118,7 +118,7 @@ function readLocalConfiguredModel(adapterId: string, clientHome: string): string
 }
 
 /**
- * 统一解析并规范化 client_scope_id (绝对路径且全小写)
+ * 统一解析并规范化 client_scope_id（绝对路径，仅 Windows 折叠大小写）
  * 路径映射与 packages/clients/src/installer.ts locateClientBaseDir 保持一致
  */
 export function resolveClientScope(
@@ -159,7 +159,9 @@ export function resolveClientScope(
       clientScope = env.DEVFLOW_CLIENT_SCOPE;
       break;
   }
-  return clientScope ? normalize(resolve(clientScope)).toLowerCase() : undefined;
+  if (!clientScope) return undefined;
+  const normalized = normalize(resolve(clientScope));
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
 }
 
 /**

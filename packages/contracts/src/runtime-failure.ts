@@ -27,6 +27,11 @@ const resolutions: Record<string, Omit<RuntimeFailureResolution, "code">> = {
     message: "执行账号已变化，请确认当前账号后继续。",
     steps: ["核对当前账号，使用模型切换或账号恢复入口继续原任务。"],
   },
+  SESSION_BINDING_REPAIR_REQUIRED: {
+    title: "原会话配置路径需要确认",
+    message: "旧配置路径的大小写身份尚未确认，原会话和历史已保留，模型尚未启动。",
+    steps: ["停用任务自动调度，在会话修复中核对原配置目录、账号和工作区，再预览并确认修复。", "无法确认原配置目录时保留现场，恢复原配置后重试，不新建替代会话。"],
+  },
   CLI_VERSION_UNSUPPORTED: {
     title: "工具版本不兼容",
     message: "当前命令行工具版本不支持所选模型或启动参数，模型未能开始执行。",

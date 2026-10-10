@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { isAbsolute } from "node:path";
+import { statSync } from "node:fs";
 import type { Store } from "../../store/src/store.js";
 import {
   type SessionBinding,
@@ -29,6 +31,7 @@ export class ExecutionSessionStore {
   ): SessionBinding {
     const keyStr = computeSessionBindingKey(key);
     const existing = this.store.get<SessionBinding>("session_binding", keyStr);
+    if (existing?.state !== "bound") this.assertNoPendingClientScopeRepair(key);
     if (existing) {
       return existing;
     }
@@ -102,14 +105,51 @@ export class ExecutionSessionStore {
       (!binding.latest_run_id || this.store.get<{ purpose?: string }>("run", binding.latest_run_id)?.purpose !== "aside"));
     const preferred = preferredNativeId && candidates.find(binding => binding.conversation_id === preferredNativeId);
     const selected = preferred || candidates.sort((a, b) => b.updated_at.localeCompare(a.updated_at) || a.id.localeCompare(b.id))[0];
+    if (!selected) this.assertNoPendingClientScopeRepair(key);
     if (selected?.conversation_id) {
-      const owner = this.store.get<{ workflow_id: string }>("session_owner_index", computeSessionOwnerKey({
-        ...selected, conversation_id: selected.conversation_id,
-      }));
-      requireCondition(!owner || owner.workflow_id === key.workflow_id,
-        "SESSION_ALREADY_OWNED", "原生会话已由其他任务认领", 409);
+      this.assertNativeOwner(selected, selected.conversation_id);
     }
     return selected;
+  }
+
+  private assertNoPendingClientScopeRepair(key: SessionBindingKey): void {
+    if (process.platform === "win32" || !isAbsolute(key.client_scope_id)) return;
+    const pending = this.listBindings(key.workflow_id).some(binding =>
+      binding.state === "bound" && !!binding.conversation_id &&
+      binding.adapter_id === key.adapter_id && binding.host_id === key.host_id &&
+      binding.workspace_identity === key.workspace_identity &&
+      isAbsolute(binding.client_scope_id) &&
+      binding.client_scope_id !== key.client_scope_id &&
+      binding.client_scope_id === key.client_scope_id.toLowerCase());
+    requireCondition(!pending, "SESSION_BINDING_REPAIR_REQUIRED",
+      "原会话的配置路径大小写尚未确认，请通过会话修复预览并确认；保留原会话，禁止自动新建替代根", 409);
+  }
+
+  /** A legacy lower-case owner cannot silently become an unowned native root. */
+  assertNativeOwner(key: SessionBindingKey, conversationId: string): void {
+    const owner = this.store.get<{ workflow_id: string }>("session_owner_index",
+      computeSessionOwnerKey({ ...key, conversation_id: conversationId }));
+    requireCondition(!owner || owner.workflow_id === key.workflow_id,
+      "SESSION_ALREADY_OWNED", "原生会话已由其他任务认领", 409);
+    const legacyScope = key.client_scope_id.toLowerCase();
+    if (process.platform === "win32" || !isAbsolute(key.client_scope_id) || legacyScope === key.client_scope_id) return;
+    const legacyOwner = this.store.get<{ workflow_id: string }>("session_owner_index",
+      computeSessionOwnerKey({ ...key, client_scope_id: legacyScope, conversation_id: conversationId }));
+    if (!legacyOwner) return;
+    let sameDirectory: boolean | undefined;
+    try {
+      const current = statSync(key.client_scope_id, { bigint: true });
+      const legacy = statSync(legacyScope, { bigint: true });
+      if (current.isDirectory() && legacy.isDirectory() && current.ino > 0n && legacy.ino > 0n)
+        sameDirectory = current.dev === legacy.dev && current.ino === legacy.ino;
+    } catch { /* Unreadable identity remains unknown; never expose filesystem errors. */ }
+    if (sameDirectory === false) return; // Real distinct POSIX homes stay distinct.
+    requireCondition(sameDirectory !== undefined, "SESSION_BINDING_REPAIR_REQUIRED",
+      "原会话配置目录归属尚未确认，请核对原目录并通过会话修复；禁止自动认领替代根", 409);
+    requireCondition(legacyOwner.workflow_id === key.workflow_id,
+      "SESSION_ALREADY_OWNED", "原生会话已由其他任务认领", 409);
+    requireCondition(!!owner, "SESSION_BINDING_REPAIR_REQUIRED",
+      "原会话的配置路径大小写尚未确认，请通过会话修复预览并确认；保留原会话，禁止自动新建替代根", 409);
   }
 
   /** A confirmed missing native root is archived; its history is never overwritten. */
@@ -177,6 +217,8 @@ export class ExecutionSessionStore {
         );
       }
 
+      this.assertNativeOwner(current, conversationId);
+
       // 相同会话 ID 确认幂等，不重复递增 revision (CW2-D05 / CW3-F03)
       if (current.conversation_id === conversationId) {
         if (current.latest_run_id === runId) return current;
@@ -197,20 +239,6 @@ export class ExecutionSessionStore {
         provider_account_scope: current.provider_account_scope,
         conversation_id: conversationId,
       });
-      const existingOwner = this.store.get<{
-        owner_key: string;
-        workflow_id: string;
-        binding_id: string;
-      }>("session_owner_index", ownerKey);
-
-      if (existingOwner && existingOwner.workflow_id !== current.workflow_id) {
-        throw new FlowError(
-          "SESSION_ALREADY_OWNED",
-          `原生会话已由任务 ${existingOwner.workflow_id} 认领`,
-          409,
-        );
-      }
-
       const updated: SessionBinding = {
         ...current,
         conversation_id: conversationId,
@@ -393,19 +421,7 @@ export class ExecutionSessionStore {
       }
 
       // 4. 事务内重读 session_owner_index 进行跨任务根所有权互斥检查
-      const existingOwner = this.store.get<{
-        owner_key: string;
-        workflow_id: string;
-        binding_id: string;
-      }>("session_owner_index", ownerKey);
-
-      if (existingOwner && existingOwner.workflow_id !== key.workflow_id) {
-        throw new FlowError(
-          "SESSION_ALREADY_OWNED",
-          `原生会话已由任务 ${existingOwner.workflow_id} 认领`,
-          409,
-        );
-      }
+      this.assertNativeOwner(key, input.conversation_id);
 
       const bindingId = existing?.id ?? id("sb");
       binding = {
