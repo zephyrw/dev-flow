@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback } from "react";
+import React, { useState, useRef, useEffect, useLayoutEffect, useCallback } from "react";
 import { createPortal } from "react-dom";
 
 export interface ReferenceItem {
@@ -173,8 +173,17 @@ export function RequirementComposer({
   const [selectedIndex, setSelectedIndex] = useState(0);
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const pendingCaret = useRef<{ text: string; cursor: number } | null>(null);
   const debounceTimerRef = useRef<NodeJS.Timeout | null>(null);
   const [popupPosition, setPopupPosition] = useState<React.CSSProperties>({});
+  useLayoutEffect(() => {
+    const target = pendingCaret.current;
+    pendingCaret.current = null;
+    const textarea = textareaRef.current;
+    if (!target || !textarea || text !== target.text || textarea.value !== target.text) return;
+    textarea.setSelectionRange(target.cursor, target.cursor);
+    textarea.focus();
+  });
   useEffect(() => {
     if (!showPopup) return;
     const position = () => {
@@ -205,6 +214,7 @@ export function RequirementComposer({
   }, [showPopup]);
 
   const handleTextChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    pendingCaret.current = null;
     const val = e.target.value;
     setText(val);
     const next = nextReferencePopupState(val, e.target.selectionStart, showPopup);
@@ -239,16 +249,11 @@ export function RequirementComposer({
       if (!textareaRef.current) return;
       const cursorPos = textareaRef.current.selectionStart;
       const inserted = insertWorkspaceReference(text, cursorPos, item);
+      pendingCaret.current = inserted;
       setText(inserted.text);
       setShowPopup(false);
       setRefs((prev) => addWorkspaceReference(prev, item));
 
-      setTimeout(() => {
-        if (textareaRef.current) {
-          textareaRef.current.setSelectionRange(inserted.cursor, inserted.cursor);
-          textareaRef.current.focus();
-        }
-      }, 10);
     },
     [text],
   );

@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import type { ModelEntry, ToolProfile } from "../../packages/contracts/src/index.js";
 import {
   exactLabel,
   executionSpec,
@@ -35,6 +36,7 @@ test("E2E-U01 无任务也可打开全局设置并编辑两套默认", async ({ 
 });
 
 test("E2E-U02 修改全局默认后新建任务预填新值", async ({ page }) => {
+  test.setTimeout(90000);
   const initial = await page.request.get("/api/settings/model-defaults");
   expect(initial.ok(), await initial.text()).toBeTruthy();
   const before = (await initial.json()).defaults;
@@ -57,19 +59,70 @@ test("E2E-U02 修改全局默认后新建任务预填新值", async ({ page }) =
   expect(saved.revision).toBe(before.revision + 1);
   expect(saved.plannerProfile.modelId).toBe("gpt-5.6-sol");
   expect(saved.executorProfile.modelId).toBe("gemini-3.8-flash-high");
-  await page.getByRole("button", { name: "+ 新建", exact: true }).click();
+  // Exercise both completion orders. In particular, a catalog may select its
+  // seed before saved defaults arrive, or arrive after the saved profile.
+  for (const delayed of ["defaults", "catalog"] as const) {
+    const defaultsPath = "/api/settings/model-defaults";
+    const catalogPath = "/api/model-tools/codex/models";
+    const delayedPath = delayed === "defaults" ? defaultsPath : catalogPath;
+    const fastPath = delayed === "defaults" ? catalogPath : defaultsPath;
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    await page.route("**" + delayedPath, async route => {
+      const response = await route.fetch();
+      await gate;
+      await route.fulfill({ response });
+    });
+    const fastResponse = page.waitForResponse(response => new URL(response.url()).pathname === fastPath && response.request().method() === "GET");
+    const delayedResponse = page.waitForResponse(response => new URL(response.url()).pathname === delayedPath && response.request().method() === "GET");
+    try {
+      await page.getByRole("button", { name: "+ 新建", exact: true }).click();
+      const modal = page.locator(".modal-backdrop").last();
+      await expect(modal).toContainText("来自系统默认");
+      await modal.getByRole("tab", { name: "规划", exact: true }).click();
+      const fast = await fastResponse;
+      expect(fast.ok(), await fast.text()).toBe(true);
+      if (delayed === "defaults") {
+        const catalog = await fast.json();
+        const entries: ModelEntry[] = catalog.entries ?? catalog.catalog?.entries;
+        const usable = entries.filter(entry => !entry.hidden && entry.availability !== "unavailable");
+        const catalogDefault = usable.find(entry => entry.source === "native-config") ?? usable[0];
+        expect(catalogDefault?.nativeId).not.toBe(saved.plannerProfile.modelId);
+        await expect(exactLabel(modal, "工具模型搜索")).toHaveValue(catalogDefault!.label);
+      } else {
+        expect((await fast.json()).defaults).toEqual(saved);
+        await expect(exactLabel(modal, "工具模型搜索")).toHaveValue(/gpt-5\.6-sol|GPT-5\.6 Sol/i);
+      }
+      release();
+      const late = await delayedResponse;
+      expect(late.ok(), await late.text()).toBe(true);
+      if (delayed === "defaults") expect((await late.json()).defaults).toEqual(saved);
+      await expect(exactLabel(modal, "工具")).toHaveValue("codex");
+      await expect(exactLabel(modal, "工具模型搜索")).toHaveValue(/gpt-5\.6-sol|GPT-5\.6 Sol/i);
+      await modal.getByRole("tab", { name: "执行" }).click();
+      await expect(exactLabel(modal, "工具")).toHaveValue("agy");
+      await expect(exactLabel(modal, "工具模型搜索")).toHaveValue(/gemini-3\.8-flash|Gemini 3\.8 Flash/i);
+      if (delayed === "defaults") await modal.locator(".ms-head button").click();
+    } finally {
+      release();
+      await page.unroute("**" + delayedPath);
+    }
+  }
   const modal = page.locator(".modal-backdrop").last();
-  await expect(modal).toContainText("来自系统默认");
-  await modal.getByRole("tab", { name: "规划" }).click();
-  await expect(exactLabel(modal, "工具")).toHaveValue("codex");
-  await expect(exactLabel(modal, "工具模型搜索")).toHaveValue(
-    /gpt-5\.6-sol|GPT-5\.6 Sol/i,
-  );
-  await modal.getByRole("tab", { name: "执行" }).click();
-  await expect(exactLabel(modal, "工具")).toHaveValue("agy");
-  await expect(exactLabel(modal, "工具模型搜索")).toHaveValue(
-    /gemini-3\.8-flash|Gemini 3\.8 Flash/i,
-  );
+  await modal.getByLabel("工作区真实路径").fill(fixtureState().nativeRepo);
+  await modal.locator("textarea").fill("U02 保存默认配置后的真实派发");
+  const created = page.waitForResponse(response => response.url().endsWith("/api/workflows") && response.request().method() === "POST");
+  await modal.getByRole("button", { name: "创建并开始规划" }).click();
+  const createResponse = await created;
+  expect(createResponse.status(), await createResponse.text()).toBe(200);
+  const id = (await createResponse.json()).workflow.id;
+  const spec = await executionSpec(page, id);
+  expect(spec.spec.plannerProfile).toMatchObject({ adapterId: saved.plannerProfile.adapterId,
+    modelId: saved.plannerProfile.modelId, reasoning: saved.plannerProfile.reasoning });
+  expect(spec.spec.executorProfile).toMatchObject({ adapterId: saved.executorProfile.adapterId,
+    modelId: saved.executorProfile.modelId, reasoning: saved.executorProfile.reasoning });
+  await expect.poll(async () => (await workflowDetail(page, id)).runs?.[0]?.profile, { timeout: 25000 })
+    .toMatchObject({ adapterId: saved.plannerProfile.adapterId, modelId: saved.plannerProfile.modelId, reasoning: saved.plannerProfile.reasoning });
 });
 
 test("E2E-U04 高级项只改 reviewer 时其余保持继承", async ({ page }) => {
@@ -83,6 +136,29 @@ test("E2E-U04 高级项只改 reviewer 时其余保持继承", async ({ page }) 
 });
 
 test("E2E-U12 快速切换工具会清掉旧模型并选中新工具默认模型", async ({ page }) => {
+  const defaultsResponse = await page.request.get("/api/settings/model-defaults");
+  expect(defaultsResponse.ok(), await defaultsResponse.text()).toBe(true);
+  const savedDefaults = (await defaultsResponse.json()).defaults;
+  const catalogResponse = await page.request.get("/api/model-tools/codex/models");
+  expect(catalogResponse.ok(), await catalogResponse.text()).toBe(true);
+  const catalog = await catalogResponse.json();
+  // Tool switching resets the profile and selects the catalog's first usable
+  // choice, prioritizing native-config entries. It does not restore the edited
+  // global planner default saved in U02.
+  const entries: ModelEntry[] = catalog.entries ?? catalog.catalog?.entries;
+  const usableEntries = entries.filter(entry => !entry.hidden && entry.availability !== "unavailable");
+  const defaultEntry = usableEntries.find(entry => entry.source === "native-config") ?? usableEntries[0];
+  if (!defaultEntry) throw new Error("Codex fixture catalog has no usable default model");
+  const expectedEffort = defaultEntry.effort.defaultValue;
+  const expectedModelId = expectedEffort
+    ? defaultEntry.effort.variants?.[expectedEffort] ?? defaultEntry.nativeId
+    : defaultEntry.nativeId;
+  expect(savedDefaults.plannerProfile.modelId).not.toBe(expectedModelId);
+  const verifiedProfiles: ToolProfile[] = [];
+  page.on("request", request => {
+    if (request.url().endsWith("/api/model-access/verify") && request.method() === "POST")
+      verifiedProfiles.push(request.postDataJSON().profile);
+  });
   await page.goto("/");
   await page.getByRole("button", { name: "设置", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "设置" });
@@ -91,8 +167,14 @@ test("E2E-U12 快速切换工具会清掉旧模型并选中新工具默认模型
   await planner.selectOption("codex");
   await planner.selectOption("agy");
   await planner.selectOption("codex");
-  await expect(dialog.getByLabel("工具模型搜索")).toHaveValue(/gpt-6-astra|GPT-6 Astra/i);
+  await expect(exactLabel(dialog, "工具模型搜索")).toHaveValue(defaultEntry.label);
+  await waitAccessStatus(dialog.locator(".ms-editor"), "已验证可访问");
+  expect(verifiedProfiles.at(-1)).toMatchObject({ adapterId: "codex", modelId: expectedModelId,
+    reasoning: { mode: "explicit", value: expectedEffort } });
   await expect(planner.locator("option")).toHaveCount(2);
+  const unchangedDefaults = await page.request.get("/api/settings/model-defaults");
+  expect(unchangedDefaults.ok(), await unchangedDefaults.text()).toBe(true);
+  expect((await unchangedDefaults.json()).defaults).toEqual(savedDefaults);
 });
 
 test("E2E-U13 历史模型不在目录时保留并标注", async ({ page }) => {
@@ -311,8 +393,13 @@ test("E2E-R23 其他页面改了默认时提示冲突不覆盖草稿", async ({ 
     },
   });
   expect(put.ok(), await put.text()).toBeTruthy();
+  const saveResponse = page.waitForResponse(response =>
+    response.url().endsWith("/api/settings/model-defaults") && response.request().method() === "PUT");
   await dialog.getByRole("button", { name: "保存配置" }).click();
-  await expect(dialog.getByRole("alert")).toContainText("全局默认配置已在其他位置更新", {
+  const conflict = await saveResponse;
+  expect(conflict.status()).toBe(409);
+  expect(await conflict.json()).toMatchObject({ error: { code: "DEFAULTS_VERSION_CONFLICT" } });
+  await expect(dialog.locator('.ms-error-bar[role="alert"]')).toContainText("全局默认配置已在其他位置更新", {
     timeout: 15000,
   });
   await expect(exactLabel(dialog, "工具模型搜索")).toHaveValue(

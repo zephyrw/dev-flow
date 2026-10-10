@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { openExecutionSidebar } from "./native-helper.js";
 
 test("native tool actions show concrete targets and output while repair transitions remain explicit", async ({
   page,
@@ -128,8 +129,7 @@ test("native tool actions show concrete targets and output while repair transiti
     .getByRole("button")
     .filter({ has: page.getByRole("heading", { name: workflow.title }) })
     .click();
-  if (!(await page.locator(".execution-sidebar").isVisible()))
-    await page.getByRole("button", { name: "执行过程", exact: true }).click();
+  await openExecutionSidebar(page);
   const logs = page.locator(".logs");
   const compile = logs.locator(".activity").filter({
     hasText: "mvn -q compile -DskipTests",
@@ -263,8 +263,7 @@ test("continuous WebSocket output becomes visible before the stream ends and sur
       .getByRole("button")
       .filter({ has: page.getByRole("heading", { name: workflow.title }) })
       .click();
-    if (!(await page.locator(".execution-sidebar").isVisible()))
-      await page.getByRole("button", { name: "执行过程", exact: true }).click();
+    await openExecutionSidebar(page);
     await expect.poll(() => page.evaluate(() => (window as any).__eventWs?.readyState)).toBe(1);
     expect(startStream).toBeDefined();
     startStream!();

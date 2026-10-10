@@ -343,6 +343,7 @@ function insertTextAtCursor(
   const next = current.slice(0, start) + inserted + current.slice(end);
   setText(next);
   requestAnimationFrame(() => {
+    if (textarea.value !== next) return;
     const pos = start + inserted.length;
     textarea.setSelectionRange(pos, pos);
   });
@@ -683,8 +684,19 @@ function useComposerReferences(
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [popupPosition, setPopupPosition] = useState<React.CSSProperties>({});
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingCaret = useRef<{ text: string; cursor: number } | null>(null);
+
+  useLayoutEffect(() => {
+    const target = pendingCaret.current;
+    pendingCaret.current = null;
+    const textarea = textareaRef.current;
+    if (!target || !textarea || text !== target.text || textarea.value !== target.text) return;
+    textarea.setSelectionRange(target.cursor, target.cursor);
+    textarea.focus();
+  });
 
   const handleTextChange = (event: React.ChangeEvent<HTMLTextAreaElement>) => {
+    pendingCaret.current = null;
     const nextText = event.target.value;
     setText(nextText);
     const next = nextReferencePopupState(
@@ -761,14 +773,10 @@ function useComposerReferences(
         textareaRef.current.selectionStart,
         item,
       );
+      pendingCaret.current = inserted;
       setText(inserted.text);
       setRefs(addWorkspaceReference(refs, item));
       setShowPopup(false);
-      requestAnimationFrame(() => {
-        if (!textareaRef.current) return;
-        textareaRef.current.setSelectionRange(inserted.cursor, inserted.cursor);
-        textareaRef.current.focus();
-      });
     },
     [refs, setRefs, setText, text, textareaRef],
   );

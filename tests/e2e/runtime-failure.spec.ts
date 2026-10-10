@@ -1,4 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
+import { openExecutionSidebar } from "./native-helper.js";
 
 async function screen(page: Page, blocked = true) {
   const workflow = {
@@ -137,8 +138,7 @@ test("submitting guidance clears the form without leaving an unexplained footer"
   page,
 }) => {
   const fixture = await screen(page, false);
-  if (!(await page.locator(".execution-sidebar").isVisible()))
-    await page.getByRole("button", { name: "执行过程", exact: true }).click();
+  await openExecutionSidebar(page);
   const input = page.locator(".conversation-composer-input");
   await input.fill("继续核对原计划中的未完成项");
   await page.getByRole("button", { name: "发送", exact: true }).click();

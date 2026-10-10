@@ -109,10 +109,7 @@ export async function repairBatches(page: Page, id: string) {
 }
 
 export async function showExecutionSidebar(page: Page) {
-  if (!(await page.locator(".execution-sidebar").isVisible())) {
-    await page.getByRole("button", { name: "执行过程", exact: true }).click();
-  }
-  await expect(page.locator(".execution-sidebar")).toBeVisible();
+  await openExecutionSidebar(page);
 }
 
 export async function openTaskModels(page: Page, role: "规划" | "执行" = "规划") {

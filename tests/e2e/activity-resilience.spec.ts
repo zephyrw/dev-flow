@@ -1,5 +1,6 @@
 import { installMockWorkflowConfiguration, mockProject } from "./mock-workflow.js";
 import { test, expect } from "@playwright/test";
+import { openExecutionSidebar } from "./native-helper.js";
 
 test.describe("H02 Activity & Guidance Resilience", () => {
   test("H02-C01: functional-issues 返回对象时显示局部错误，不崩溃且无 pageerror，控制区与进度可操作", async ({
@@ -126,8 +127,7 @@ test.describe("H02 Activity & Guidance Resilience", () => {
 
     await installMockWorkflowConfiguration(page);
     await page.goto("/?workflow=wf-c02");
-    if (!(await page.locator(".execution-sidebar").isVisible()))
-      await page.getByRole("button", { name: "执行过程", exact: true }).click();
+    await openExecutionSidebar(page);
     await page.locator(".conversation-composer-input").fill("/btw 查询项目提问历史");
     await page.getByRole("button", { name: "发送", exact: true }).click();
 
@@ -345,9 +345,22 @@ test.describe("H02 Activity & Guidance Resilience", () => {
 
     // 弹出候选并选择
     await expect(page.locator(".reference-popup")).toBeVisible();
+    await page.evaluate(() => {
+      const control = { original: window.requestAnimationFrame, callbacks: [] as FrameRequestCallback[] };
+      (window as any).__referenceFrames = control;
+      window.requestAnimationFrame = callback => { control.callbacks.push(callback); return control.callbacks.length; };
+    });
     await page.getByText("src/main.ts").click();
-
-    await textarea.pressSequentially("继续优化");
+    // A real user can type before a deferred caret callback runs. Do not wait
+    // for the reference callback: deliver the first character, then that frame.
+    await textarea.pressSequentially("继");
+    await page.evaluate(() => {
+      const control = (window as any).__referenceFrames as { original: typeof requestAnimationFrame; callbacks: FrameRequestCallback[] };
+      window.requestAnimationFrame = control.original;
+      delete (window as any).__referenceFrames;
+      for (const callback of control.callbacks) callback(performance.now());
+    });
+    await textarea.pressSequentially("续优化");
 
     // 点击提交
     if (submission === "button") await page.getByRole("button", { name: "发送", exact: true }).click();
@@ -360,7 +373,7 @@ test.describe("H02 Activity & Guidance Resilience", () => {
     await expect(textarea).toBeVisible();
 
     // 检查输入框内容保留
-    await expect(textarea).toHaveValue(/请参考文件 @src\/main\.ts 继续优化/);
+    await expect(textarea).toHaveValue("请参考文件 @src/main.ts 继续优化");
 
     // 检查 @ 引用 tag 标签依然保留
     await expect(page.locator(".conversation-composer-ref")).toContainText("src/main.ts");
@@ -451,8 +464,7 @@ test.describe("H02 Activity & Guidance Resilience", () => {
     await page.routeWebSocket("**/api/events?*", () => {});
     await installMockWorkflowConfiguration(page);
     await page.goto("/?workflow=wf-catchup-first");
-    if (!(await page.locator(".execution-sidebar").isVisible()))
-      await page.getByRole("button", { name: "执行过程", exact: true }).click();
+    await openExecutionSidebar(page);
     const sidebar = page.getByRole("region", { name: "执行过程侧栏" });
     await expect(sidebar.getByText("等待规划模型审查")).toBeVisible();
     await expect(sidebar.getByText("等待可用执行资源。")).toHaveCount(0);
