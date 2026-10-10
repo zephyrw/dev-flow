@@ -25,8 +25,8 @@ export function setup() {
   const instance = loadTestInstanceConfig();
   if (isolated) ensureTestInstanceDirs(instance);
   const root = isolated
-    ? mkdtempSync(join(realpathSync(instance.runDirResolved), "fix-"))
-    : mkdtempSync(join(realpathSync(tmpdir()), "devflow-test-"));
+    ? mkdtempSync(join(realpathSync.native(instance.runDirResolved), "fix-"))
+    : mkdtempSync(join(realpathSync.native(tmpdir()), "devflow-test-"));
   const storageRoot = join(root, "state");
   const workspaceRoot = join(root, "worktrees");
   const sqliteFile = join(storageRoot, "devflow.sqlite");

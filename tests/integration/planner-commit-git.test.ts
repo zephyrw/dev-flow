@@ -28,6 +28,12 @@ afterAll(() => {
 function shell(cwd: string, args: string[]) {
   return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
 }
+function windowsShortPath(path: string): string {
+  const literal = "'" + path.replaceAll("'", "''") + "'";
+  return execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
+    `Add-Type -TypeDefinition 'using System.Text; using System.Runtime.InteropServices; public class ShortGitPath { [DllImport("kernel32.dll", CharSet=CharSet.Unicode, EntryPoint="GetShortPathNameW")] public static extern uint Read(string path, StringBuilder buffer, uint capacity); }'; $buffer=[Text.StringBuilder]::new(4096); if([ShortGitPath]::Read(${literal},$buffer,4096) -eq 0){throw 'Short path unavailable'}; $buffer.ToString()`],
+    { encoding: "utf8", windowsHide: true, timeout: 15000 }).trim();
+}
 function initRepo(dir: string) {
   shell(dir, ["init", "-b", "main"]);
   shell(dir, ["config", "user.email", "t@example.com"]);
@@ -124,6 +130,22 @@ function coordinator(store: ReturnType<typeof memoryStore>, workspaceRoot: strin
   return new GitDeliveryCoordinator(store as never, workspaceRoot);
 }
 
+/** Diagnose positive fixtures without replacing production rejection tests. */
+async function assertManagedGitBinding(store: ReturnType<typeof memoryStore>) {
+  for (const registered of store.list<{ root: string; source_root: string; common_dir: string }>("workspace", "wf")) {
+    const sourceInfo = await repositoryInfo(registered.source_root);
+    const taskInfo = await repositoryInfo(registered.root);
+    const registeredCommon = realpathSync(registered.common_dir);
+    expect({
+      distinctRoots: resolve(registered.source_root).toLowerCase() !== resolve(registered.root).toLowerCase(),
+      sourceCommonMatches: sourceInfo.common_dir.toLowerCase() === registeredCommon.toLowerCase(),
+      taskCommonMatches: taskInfo.common_dir.toLowerCase() === registeredCommon.toLowerCase(),
+    }, JSON.stringify({ sourceInfo, taskInfo, registered }, null, 2)).toEqual({
+      distinctRoots: true, sourceCommonMatches: true, taskCommonMatches: true,
+    });
+  }
+}
+
 async function fastForwardFixture(taskPath = "task.txt", ignored = false) {
   const sourceRepo = scratch("devflow-ff-source-");
   initRepo(sourceRepo);
@@ -159,6 +181,37 @@ async function fastForwardFixture(taskPath = "task.txt", ignored = false) {
 }
 
 describe("planner-commit 真实 Git 集成", () => {
+  it.skipIf(process.platform !== "win32")("Windows 长短路径别名仍识别同一源仓库并保留幂等集成", async (context) => {
+    const { sourceRepo, taskRoot, taskCommit, store, integrate } = await fastForwardFixture();
+    const alias = windowsShortPath(sourceRepo);
+    if (alias.toLowerCase() === sourceRepo.toLowerCase()) context.skip("This volume does not provide 8.3 aliases");
+    const ws = store.must<Record<string, unknown>>("workspace", "ws");
+    store.put("workspace", "ws", "wf", { ...ws, source_root: alias });
+    const first = await integrate();
+    expect(first.integrations[0]!.status, JSON.stringify(first)).toBe("success");
+    expect(shell(sourceRepo, ["rev-parse", "HEAD"])).toBe(taskCommit);
+    // Replay a recorded receipt after a disconnect before state advancement.
+    store.put("workflow", "wf", "p", { ...store.must<Record<string, unknown>>("workflow", "wf"), state: "COMMIT_PARTIAL" });
+    const replay = await integrate();
+    expect(replay.integrations[0]!.status, JSON.stringify(replay)).toBe("success");
+    expect(shell(sourceRepo, ["rev-parse", "HEAD"])).toBe(taskCommit);
+    expect(readFileSync(join(taskRoot, "task.txt"), "utf8")).toBe("task content\n");
+  });
+
+  it.skipIf(process.platform !== "win32")("Windows 源根短名不能冒充独立任务工作树", async (context) => {
+    const { sourceRepo, baseline, taskRoot, store, integrate } = await fastForwardFixture();
+    const alias = windowsShortPath(sourceRepo);
+    if (alias.toLowerCase() === sourceRepo.toLowerCase()) context.skip("This volume does not provide 8.3 aliases");
+    const ws = store.must<Record<string, unknown>>("workspace", "ws");
+    store.put("workspace", "ws", "wf", { ...ws, root: alias });
+    const result = await integrate();
+    expect(result.integrations[0]!.status).toBe("failed");
+    expect(result.recoveryFailures).toContainEqual(expect.objectContaining({ code: "SOURCE_BINDING_INVALID" }));
+    expect(shell(sourceRepo, ["rev-parse", "HEAD"])).toBe(baseline);
+    expect(readFileSync(join(sourceRepo, "base.txt"), "utf8")).toBe("base\n");
+    expect(readFileSync(join(taskRoot, "task.txt"), "utf8")).toBe("task content\n");
+  });
+
   it("同文件未提交修改阻挡快进时保留原件与 index，并交模型处理而非停在错误", async () => {
     const { sourceRepo, baseline, taskCommit, store, integrate } = await fastForwardFixture("base.txt");
     shell(sourceRepo, ["config", "merge.autoStash", "true"]);
@@ -189,6 +242,7 @@ describe("planner-commit 真实 Git 集成", () => {
       blocker: { code: "SOURCE_BUSY", message: "上轮被未跟踪计划文档阻塞" },
     });
 
+    await assertManagedGitBinding(store);
     const first = await integrate();
     expect(first.integrations[0]!.status).toBe("success");
     expect(shell(sourceRepo, ["rev-parse", "HEAD"])).toBe(taskCommit);
@@ -360,6 +414,7 @@ describe("planner-commit 真实 Git 集成", () => {
       },
     });
 
+    await assertManagedGitBinding(store);
     const result = await coordinator(store, scratch("devflow-c02-root-")).integrateCommittedDelivery("wf", [
       { repo_id: "main", commit: commitB },
     ]);
@@ -502,6 +557,7 @@ describe("planner-commit 真实 Git 集成", () => {
       },
     });
 
+    await assertManagedGitBinding(store);
     const first = await coordinator(store, scratch("devflow-c05-root-")).integrateCommittedDelivery("wf", [
       { repo_id: "main", commit: taskCommit },
     ]);
@@ -560,6 +616,7 @@ describe("planner-commit 真实 Git 集成", () => {
       },
     });
 
+    await assertManagedGitBinding(store);
     const result = await coordinator(store, scratch("devflow-c07-root-")).integrateCommittedDelivery("wf", [
       { repo_id: "main", commit: taskCommit },
     ]);
@@ -596,6 +653,7 @@ describe("planner-commit 真实 Git 集成", () => {
     const sourceMergeHead = resolve(sourceRepo, shell(sourceRepo, ["rev-parse", "--git-path", "MERGE_HEAD"]));
     const taskMergeHead = resolve(taskRoot, shell(taskRoot, ["rev-parse", "--git-path", "MERGE_HEAD"]));
 
+    await assertManagedGitBinding(store);
     for (let attempt = 0; attempt < 2; attempt++) {
       const result = await integrate();
 

@@ -1,7 +1,25 @@
-import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { dirname, isAbsolute, normalize, relative, resolve } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { basename, dirname, isAbsolute, normalize, relative, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
 import { FlowError } from "../../contracts/src/index.js";
+import { canonicalGitPath } from "./git.js";
+
+/** Resolve existing ancestors too: a new target may be below an 8.3 alias. */
+export function canonicalWorkspacePath(path: string): string {
+  let ancestor = resolve(path);
+  const missing: string[] = [];
+  while (!existsSync(ancestor)) {
+    const parent = dirname(ancestor);
+    if (parent === ancestor) return normalize(resolve(path));
+    missing.unshift(basename(ancestor));
+    ancestor = parent;
+  }
+  return normalize(resolve(canonicalGitPath(ancestor), ...missing));
+}
+export function sameWorkspacePath(left: string, right: string): boolean {
+  const a = canonicalWorkspacePath(left), b = canonicalWorkspacePath(right);
+  return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
+}
 
 export interface ResolveWorktreePathOptions {
   sourceRoot: string;
@@ -26,10 +44,8 @@ export interface WorktreePreviewResult {
  */
 export function isSubWorktreePath(candidatePath: string, sourceRoot: string): boolean {
   try {
-    const normSource = normalize(resolve(sourceRoot)).toLowerCase();
-    const normCandidate = normalize(resolve(candidatePath)).toLowerCase();
-    const dotWorktrees = resolve(normSource, ".worktrees").toLowerCase();
-    return normCandidate.startsWith(dotWorktrees);
+    const rel = relative(canonicalWorkspacePath(resolve(sourceRoot, ".worktrees")), canonicalWorkspacePath(candidatePath));
+    return rel === "" || (rel !== ".." && !rel.startsWith("..\\") && !rel.startsWith("../") && !isAbsolute(rel));
   } catch {
     return false;
   }
@@ -44,13 +60,13 @@ export function findRealSourceRoot(
   candidateRoot: string,
   knownWorkspaces?: Array<{ root: string; source_root: string }>,
 ): string {
-  const norm = normalize(resolve(candidateRoot));
+  const norm = canonicalWorkspacePath(candidateRoot);
   if (knownWorkspaces && knownWorkspaces.length > 0) {
     const match = knownWorkspaces.find(
-      (ws) => normalize(resolve(ws.root)).toLowerCase() === norm.toLowerCase(),
+      (ws) => sameWorkspacePath(ws.root, norm),
     );
     if (match?.source_root) {
-      return normalize(resolve(match.source_root));
+      return canonicalWorkspacePath(match.source_root);
     }
   }
   try {
@@ -64,7 +80,7 @@ export function findRealSourceRoot(
     if (firstLine) {
       const mainWorktree = firstLine.replace(/^worktree\s+/, "").trim();
       if (existsSync(mainWorktree)) {
-        return normalize(resolve(mainWorktree));
+        return canonicalWorkspacePath(mainWorktree);
       }
     }
   } catch {
@@ -94,17 +110,17 @@ export function resolveWorktreePath(options: ResolveWorktreePathOptions): string
   }
 
   validateWorktreeSafety(target, realSource);
-  return target;
+  return canonicalWorkspacePath(target);
 }
 
 /**
  * 验证工作树目标路径安全性，防止越界、覆盖或位于禁用目录
  */
 export function validateWorktreeSafety(targetPath: string, sourceRoot: string): void {
-  const normTarget = normalize(resolve(targetPath)).toLowerCase();
-  const normSource = normalize(resolve(sourceRoot)).toLowerCase();
+  const normTarget = canonicalWorkspacePath(targetPath);
+  const normSource = canonicalWorkspacePath(sourceRoot);
 
-  if (normTarget === normSource) {
+  if (sameWorkspacePath(normTarget, normSource)) {
     throw new FlowError(
       "WORKTREE_PATH_CONFLICT",
       "工作树目标路径不能与源仓库根目录相同",
@@ -112,8 +128,9 @@ export function validateWorktreeSafety(targetPath: string, sourceRoot: string): 
     );
   }
 
-  const dotGit = resolve(sourceRoot, ".git").toLowerCase();
-  if (normTarget.startsWith(dotGit)) {
+  const dotGit = canonicalWorkspacePath(resolve(sourceRoot, ".git"));
+  const gitRelative = relative(dotGit, normTarget);
+  if (gitRelative === "" || (gitRelative !== ".." && !gitRelative.startsWith("..\\") && !gitRelative.startsWith("../") && !isAbsolute(gitRelative))) {
     throw new FlowError(
       "WORKTREE_PATH_FORBIDDEN",
       "工作树目标路径不能位于 .git 目录内部",
@@ -122,8 +139,7 @@ export function validateWorktreeSafety(targetPath: string, sourceRoot: string): 
   }
 
   // 严禁将系统根目录作为工作树
-  const rootDir = normalize(resolve("/")).toLowerCase();
-  if (normTarget === rootDir || normTarget === "c:\\" || normTarget === "c:/") {
+  if (dirname(normTarget) === normTarget) {
     throw new FlowError(
       "WORKTREE_PATH_FORBIDDEN",
       "不能将驱动器或文件系统根目录作为工作树目标",
@@ -192,7 +208,7 @@ export function previewWorktreePath(options: {
     branch,
   } = options;
 
-  const normalizedInput = normalize(resolve(sourceRoot));
+  const normalizedInput = canonicalWorkspacePath(sourceRoot);
   const realSource = findRealSourceRoot(sourceRoot);
   const isWorktree = mode === "new_worktree";
 

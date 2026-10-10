@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync, mkdirSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
@@ -14,7 +14,7 @@ describe("NV-U10 & NV-R14: 历史项目资产与工作树迁移单元测试", ()
   let store: Store;
 
   beforeEach(() => {
-    tempDir = mkdtempSync(join(tmpdir(), "devflow-asset-mig-test-"));
+    tempDir = mkdtempSync(join(realpathSync.native(tmpdir()), "devflow-asset-mig-test-"));
     const dbPath = join(tempDir, "test.db");
     store = new Store(dbPath);
   });

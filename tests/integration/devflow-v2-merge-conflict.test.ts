@@ -2,13 +2,13 @@ import {
   GitDeliveryCoordinator,
   mergeConflictResolutionInstructions,
 } from "../../packages/git/src/delivery-coordinator.js";
-import { describe, it, expect, vi } from "vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
 import { setup, repository, project, proof, seedCreateAccess } from "../helpers.js";
 import { CreateWorkflowService } from "../../packages/core/src/create-workflow.js";
 import { LocalRuntime } from "../../packages/runtime/src/runtime.js";
 import { git } from "../../packages/git/src/git.js";
 import { resolve, join } from "node:path";
-import { writeFileSync, existsSync, readFileSync } from "node:fs";
+import { writeFileSync, existsSync, readFileSync, mkdirSync } from "node:fs";
 import type {
   MergeConflictRequest,
   MergeConflictReceipt,
@@ -20,7 +20,27 @@ import { fixture, cleanup } from "../fixtures/native-flow.js";
 import { seedVerifiedAccess } from "../../packages/core/src/access-guard.js";
 import type { Lease } from "../../packages/scheduler/src/scheduler.js";
 
+function mergeConflictProfile(root: string) {
+  const codexHome = join(root, "MergeConflictCodexHome");
+  mkdirSync(codexHome, { recursive: true });
+  writeFileSync(join(codexHome, "config.toml"), 'model = "gpt-5.6-sol"\n');
+  writeFileSync(join(codexHome, "auth.json"), JSON.stringify({ account_id: "merge-conflict-fixture-account" }));
+  vi.stubEnv("CODEX_HOME", codexHome);
+  vi.stubEnv("DEVFLOW_ACCOUNT_SCOPE", "merge-conflict-fixture-account");
+  return {
+    id: "profile-codex",
+    revision: 1,
+    adapterId: "codex" as const,
+    executableRef: process.execPath,
+    modelSelection: "native-config" as const,
+    options: {
+      prefixArgs: [resolve("tests/fixtures/native-cli.mjs")],
+    },
+  };
+}
+
 describe("DevFlow v2 Git 冲突模型修复与终态保护", () => {
+  afterEach(() => vi.unstubAllEnvs());
   it(
     "同行冲突由责任模型修复并保留双方需求，补测终审后发布并清理",
     { timeout: 900000 },
@@ -29,14 +49,7 @@ describe("DevFlow v2 Git 冲突模型修复与终态保护", () => {
         r = await repository(s.root),
         p = project(r.repo);
       s.store.put("project", p.id, "global", p);
-      const profileCodex = {
-        id: "profile-codex",
-        revision: 1,
-        adapterId: "codex" as const,
-        executableRef: process.execPath,
-        modelSelection: "native-config" as const,
-        options: { prefixArgs: [resolve("tests/fixtures/native-cli.mjs")] },
-      };
+      const profileCodex = mergeConflictProfile(s.root);
       s.store.put("tool_profile", "profile-codex", "global", profileCodex);
       seedVerifiedAccess(s.store, profileCodex);
       seedCreateAccess(s.store, { planner_profile_id: "profile-codex" });
@@ -121,7 +134,7 @@ describe("DevFlow v2 Git 冲突模型修复与终态保护", () => {
           await s.engine.consumeOutbox();
           const current = s.engine.get(w.id);
           if (
-            ["BLOCKED", "COMMIT_PARTIAL"].includes(current.state) &&
+            ["BLOCKED", "COMMIT_PARTIAL", "WAITING_INPUT"].includes(current.state) &&
             current.state !== state
           ) {
             throw Error(JSON.stringify(current.blocker));
@@ -146,6 +159,9 @@ describe("DevFlow v2 Git 冲突模型修复与终态保护", () => {
 
       try {
         await wait("PLAN_PENDING");
+        const planningBindings = s.store.list<{ canonical_model_id: string }>("session_binding", w.id);
+        expect(planningBindings.length).toBeGreaterThan(0);
+        expect(planningBindings.every(binding => binding.canonical_model_id === "gpt-5.6-sol")).toBe(true);
         const a = proof(s.engine, w.id, "approve");
         s.engine.approve(w.id, a.proof, a.binding);
 
@@ -345,14 +361,7 @@ describe("DevFlow v2 Git 冲突模型修复与终态保护", () => {
       r = await repository(s.root),
       p = project(r.repo);
     s.store.put("project", p.id, "global", p);
-    const profileCodex = {
-      id: "profile-codex",
-      revision: 1,
-      adapterId: "codex" as const,
-      executableRef: process.execPath,
-      modelSelection: "native-config" as const,
-      options: { prefixArgs: [resolve("tests/fixtures/native-cli.mjs")] },
-    };
+    const profileCodex = mergeConflictProfile(s.root);
     s.store.put("tool_profile", "profile-codex", "global", profileCodex);
     seedVerifiedAccess(s.store, profileCodex);
 
@@ -383,6 +392,8 @@ describe("DevFlow v2 Git 冲突模型修复与终态保护", () => {
       while (Date.now() < end) {
         await s.engine.dispatch();
         const current = s.engine.get(w.id);
+        if (["BLOCKED", "COMMIT_PARTIAL", "WAITING_INPUT"].includes(current.state) && current.state !== state)
+          throw Error(JSON.stringify(current.blocker));
         if (current.state === state) {
           await s.engine.waitForIdle(w.id);
           return;
@@ -394,12 +405,16 @@ describe("DevFlow v2 Git 冲突模型修复与终态保护", () => {
 
     try {
       await wait("PLAN_PENDING");
+      const planningBindings = s.store.list<{ canonical_model_id: string }>("session_binding", w.id);
+      expect(planningBindings.length).toBeGreaterThan(0);
+      expect(planningBindings.every(binding => binding.canonical_model_id === "gpt-5.6-sol")).toBe(true);
       const a = proof(s.engine, w.id, "approve");
       s.engine.approve(w.id, a.proof, a.binding);
 
       await wait("HUMAN_PENDING");
 
       // 在主工作区制造未提交的脏改动
+      const beforeHead = await git(r.repo, ["rev-parse", "HEAD"]);
       writeFileSync(join(r.repo, "dirty.txt"), "dirty file\n");
 
       const accept = proof(s.engine, w.id, "accept");
@@ -428,6 +443,8 @@ describe("DevFlow v2 Git 冲突模型修复与终态保护", () => {
       expect(blockedOrFailed).toBe(true);
       // 主工作区依然保留未提交改动，没有被强制覆盖或清理
       expect(existsSync(join(r.repo, "dirty.txt"))).toBe(true);
+      expect(readFileSync(join(r.repo, "dirty.txt"), "utf8")).toBe("dirty file\n");
+      expect(await git(r.repo, ["rev-parse", "HEAD"])).toBe(beforeHead);
     } finally {
       if (
         ![

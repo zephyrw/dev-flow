@@ -15,7 +15,7 @@ describe("NV-I02 & NV-I13: 项目工作区归属与工作树路径集成测试",
   let service: CreateWorkflowService;
 
   beforeEach(() => {
-    tempDir = mkdtempSync(join(realpathSync(tmpdir()), "devflow-ws-ownership-"));
+    tempDir = mkdtempSync(join(realpathSync.native(tmpdir()), "devflow-ws-ownership-"));
     repoDir = join(tempDir, "sample-repo");
     const dbPath = join(tempDir, "test.db");
     store = new Store(dbPath);

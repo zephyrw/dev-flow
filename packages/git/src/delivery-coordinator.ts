@@ -15,7 +15,7 @@ import {
   conflictImpactNeedsConfirmation,
   retainConflictFunctionImpact,
 } from "../../contracts/src/index.js";
-import { git, repositoryInfo, GitManager } from "./git.js";
+import { git, repositoryInfo, GitManager, sameGitDirectory } from "./git.js";
 import { CurrentDeliveryReader } from "../../evidence/src/current-delivery.js";
 import { QualityCoordinator } from "../../core/src/quality-coordinator.js";
 import { now, hash, id, redact } from "../../core/src/util.js";
@@ -265,8 +265,8 @@ export class GitDeliveryCoordinator {
         requireCondition(info.branch === targetBranch, "SOURCE_BINDING_INVALID", "目标工作区分支与登记不符");
         if (managed) {
           requireCondition(
-            resolve(sourceRoot).toLowerCase() !== resolve(ws.root).toLowerCase() &&
-            info.common_dir.toLowerCase() === realpathSync(ws.common_dir).toLowerCase(),
+            !sameGitDirectory(sourceRoot, ws.root) &&
+            sameGitDirectory(info.common_dir, ws.common_dir),
             "SOURCE_BINDING_INVALID", "源仓库与受管工作树绑定不一致",
           );
         }
@@ -475,10 +475,9 @@ export class GitDeliveryCoordinator {
       const source = this.source(w, ws),
         info = await repositoryInfo(source);
       requireCondition(
-        info.common_dir.toLowerCase() ===
-          realpathSync(ws.common_dir).toLowerCase() &&
+        sameGitDirectory(info.common_dir, ws.common_dir) &&
           info.branch === (ws.source_branch ?? info.branch) &&
-          resolve(source).toLowerCase() !== resolve(ws.root).toLowerCase(),
+          !sameGitDirectory(source, ws.root),
         "SOURCE_BINDING_INVALID",
         "主工作区、仓库或目标分支与登记不符",
       );

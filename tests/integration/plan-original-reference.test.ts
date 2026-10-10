@@ -1,5 +1,5 @@
 import { afterEach, expect, it } from "vitest";
-import { appendFileSync, existsSync, readFileSync, rmSync, mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, rmSync, mkdtempSync, writeFileSync, mkdirSync, realpathSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { setup, project, plan, proof, testConsoleHeaders } from "../helpers.js";
@@ -130,7 +130,7 @@ it.each(["pending", "conflict"] as const)("an explicit %s material cannot be hid
 
 it.each(["approved", "missing-approval", "other-plan"] as const)("registered external original preserves exact plan authorization: %s", (mode) => {
   const s = fixture();
-  const externalRoot = mkdtempSync(join(tmpdir(), "devflow-approved-original-"));
+  const externalRoot = mkdtempSync(join(realpathSync(tmpdir()), "devflow-approved-original-"));
   const path = join(externalRoot, "original.md");
   const body = "# 已批准的原始计划\n";
   writeFileSync(path, body);

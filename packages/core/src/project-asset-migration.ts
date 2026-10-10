@@ -6,11 +6,20 @@ import { execFileSync } from "node:child_process";
 import type { Store } from "../../store/src/store.js";
 import { FlowError, requireCondition, type Workspace, type Run, type WorkflowDispatchControl, type SessionBinding } from "../../contracts/src/index.js";
 import { computeSessionBindingKey } from "../../contracts/src/session-binding.js";
-import { resolveWorktreePath, ensureWorktreeGitExcluded } from "../../git/src/workspace-paths.js";
+import { resolveWorktreePath, ensureWorktreeGitExcluded, sameWorkspacePath, canonicalWorkspacePath } from "../../git/src/workspace-paths.js";
+import { sameGitDirectory } from "../../git/src/git.js";
 import { resolveWorkspaceIdentity } from "../../adapters/sdk/src/identity.js";
 import { now } from "./util.js";
 import { migrateMaterialBinding, validateMaterialMigration } from "./project-materials.js";
 import { materialRelativePath, readMaterialFile, publishMaterialFile, withMaterialRoot } from "./material-filesystem.js";
+
+/** Validate the supplied spelling before resolving aliases; never hide reparse ancestors. */
+function migrationPath(path: string): string {
+  let ancestor = resolve(path);
+  while (!existsSync(ancestor) && dirname(ancestor) !== ancestor) ancestor = dirname(ancestor);
+  withMaterialRoot(ancestor, (port) => port.validate());
+  return canonicalWorkspacePath(path);
+}
 
 /**
  * CW4-F04: 统一使用完整工作区映射重算 workspace_identity 与 binding key，保留真实 source_root
@@ -21,6 +30,7 @@ function syncWorkspaceBindings(
   workspaceId: string,
   newRoot: string,
   filterRoot: string,
+  previousRoot: string,
 ) {
   const currentWs = store.get<Workspace>("workspace", workspaceId);
   const allWorkspaces = store.list<Workspace>("workspace", workflowId);
@@ -28,7 +38,7 @@ function syncWorkspaceBindings(
     w.id === workspaceId ? { ...w, root: newRoot } : w,
   );
   const previousWorkspaces = allWorkspaces.map((w) =>
-    w.id === workspaceId ? { ...w, root: filterRoot } : w,
+    w.id === workspaceId ? { ...w, root: previousRoot } : w,
   );
   const oldWorkspaceIdentity = resolveWorkspaceIdentity(
     previousWorkspaces[0]?.root || filterRoot,
@@ -39,9 +49,16 @@ function syncWorkspaceBindings(
     effectiveWorkspaces,
   );
 
+  // Git may already have removed the old 8.3 leaf. Use the original DB spelling
+  // and its physically verified migration root, rather than resolving that leaf again.
+  const pathSpelling = (path: string) => {
+    const value = normalize(resolve(path));
+    return process.platform === "win32" ? value.toLowerCase() : value;
+  };
+  const oldRootSpellings = [previousRoot, filterRoot].map(pathSpelling);
   const bindings = store.list<SessionBinding>("session_binding", workflowId);
   for (const b of bindings) {
-    const movesCwd = resolveWorkspaceIdentity(b.workspace_root) === resolveWorkspaceIdentity(filterRoot) ||
+    const movesCwd = oldRootSpellings.includes(pathSpelling(b.workspace_root)) ||
       (b as any).workspace_id === workspaceId;
     // 任一仓库移动都会改变完整映射，即使会话的主 cwd 位于另一仓库。
     if (movesCwd || b.workspace_identity === oldWorkspaceIdentity) {
@@ -221,8 +238,8 @@ export class ProjectAssetMigrationService {
       .find((w) => w.id === workspaceId);
     requireCondition(ws, "WORKSPACE_NOT_FOUND", `未找到工作区: ${workspaceId}`, 404);
 
-    const normCurrentRoot = normalize(resolve(ws.root));
-    const sourceRoot = ws.source_root ? normalize(resolve(ws.source_root)) : normCurrentRoot;
+    const normCurrentRoot = migrationPath(ws.root);
+    const sourceRoot = ws.source_root ? migrationPath(ws.source_root) : normCurrentRoot;
 
     // 检查控制开关与写者状态
     const control = this.store.get<WorkflowDispatchControl>("workflow_dispatch_control", workflowId);
@@ -262,7 +279,8 @@ export class ProjectAssetMigrationService {
         const pathLine = lines.find((l) => l.startsWith("worktree "));
         if (!pathLine) return false;
         const entryPath = normalize(resolve(pathLine.replace(/^worktree\s+/, "").trim()));
-        return entryPath.toLowerCase() === normCurrentRoot.toLowerCase();
+        // Compare physical identity while retaining the original paths for NOFOLLOW I/O.
+        return sameGitDirectory(entryPath, normCurrentRoot);
       });
       if (matched) {
         isLinkedWorktree = true;
@@ -286,10 +304,11 @@ export class ProjectAssetMigrationService {
     }
 
     // 目标路径解析
+    if (mode === "move_worktree" && !explicitTargetRoot) migrationPath(join(sourceRoot, ".worktrees"));
     const targetRoot = mode === "materials_only"
       ? normCurrentRoot
       : (explicitTargetRoot
-          ? normalize(resolve(explicitTargetRoot))
+          ? migrationPath(explicitTargetRoot)
           : resolveWorktreePath({
               sourceRoot,
               workflowId,
@@ -299,7 +318,7 @@ export class ProjectAssetMigrationService {
     // CW2-F01 关键保护：若为 move 模式且目标目录已存在不同于当前根的目录，必须阻断
     if (
       mode === "move_worktree" &&
-      normCurrentRoot.toLowerCase() !== targetRoot.toLowerCase() &&
+      !sameWorkspacePath(normCurrentRoot, targetRoot) &&
       existsSync(targetRoot)
     ) {
       conflicts.push(`目标路径已存在，Git 移动前目标目录必须为空: ${targetRoot}`);
@@ -350,7 +369,7 @@ export class ProjectAssetMigrationService {
       }
 
       // CW3-F08 预检两端：2. 预检最终目标 finalDest (新 target 对应位置)
-      if (finalDest.toLowerCase() !== copyDest.toLowerCase() && existsSync(finalDest)) {
+      if (!sameWorkspacePath(finalDest, copyDest) && existsSync(finalDest)) {
         try {
           const destHash = computeFileSha256(finalDest);
           if (destHash === f.hash) {
@@ -436,7 +455,7 @@ export class ProjectAssetMigrationService {
       if (
         existingMigration.workspace_id !== workspaceId ||
         existingMigration.mode !== mode ||
-        (input.target_root && normalize(resolve(existingMigration.target_root)) !== normalize(resolve(input.target_root))) ||
+        (input.target_root && !sameWorkspacePath(existingMigration.target_root, input.target_root)) ||
         (input.expected_preview_digest && existingMigration.preview_digest !== input.expected_preview_digest)
       ) {
         throw new FlowError(
@@ -635,7 +654,7 @@ export class ProjectAssetMigrationService {
     this.store.put("project_asset_migration", migrationId, workflowId, record);
 
     // 4. worktree_moved 阶段：执行真正的 Git worktree move
-    if (mode === "move_worktree" && preview.current_root.toLowerCase() !== preview.target_root.toLowerCase()) {
+    if (mode === "move_worktree" && !sameWorkspacePath(preview.current_root, preview.target_root)) {
       validateMaterialMigration(this.store, workspaceId, preview.current_root);
       ensureWorktreeGitExcluded(preview.source_root);
       requireCondition(
@@ -714,6 +733,7 @@ export class ProjectAssetMigrationService {
           workspaceId,
           preview.target_root,
           preview.current_root,
+          currentWs.root,
         );
 
         migrateMaterialBinding(this.store, workspaceId, preview.target_root);
@@ -826,7 +846,7 @@ export class ProjectAssetMigrationService {
           const pathLine = lines.find((l) => l.startsWith("worktree "));
           if (!pathLine) return false;
           const entryPath = normalize(resolve(pathLine.replace(/^worktree\s+/, "").trim()));
-          return entryPath.toLowerCase() === record.target_root.toLowerCase();
+          return sameGitDirectory(entryPath, record.target_root);
         });
       } catch {}
 
@@ -900,6 +920,7 @@ export class ProjectAssetMigrationService {
             record.workspace_id,
             record.target_root,
             record.initial_root,
+            currentWs.root,
           );
 
           migrateMaterialBinding(this.store, record.workspace_id, record.target_root);
@@ -988,6 +1009,7 @@ export class ProjectAssetMigrationService {
         record.workspace_id,
         record.initial_root,
         record.target_root,
+        currentWs.root,
       );
 
       migrateMaterialBinding(this.store, record.workspace_id, record.initial_root);

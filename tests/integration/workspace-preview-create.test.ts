@@ -16,7 +16,7 @@ describe("CW2-T05: 工作区预览与创建一致性集成测试", () => {
   let service: CreateWorkflowService;
 
   beforeEach(() => {
-    tempDir = mkdtempSync(join(realpathSync(tmpdir()), "devflow-preview-create-"));
+    tempDir = mkdtempSync(join(realpathSync.native(tmpdir()), "devflow-preview-create-"));
     repoDir = join(tempDir, "sample-repo");
     const dbPath = join(tempDir, "test.db");
     store = new Store(dbPath);

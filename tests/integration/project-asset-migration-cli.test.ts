@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import http from "node:http";
@@ -19,7 +19,7 @@ describe("CW2-T03: 资产迁移 CLI 脚本入口与防旁路集成测试", () =>
   let serverReceivedBody: any | undefined;
 
   beforeEach(async () => {
-    tempDir = mkdtempSync(join(tmpdir(), "devflow-asset-cli-test-"));
+    tempDir = mkdtempSync(join(realpathSync.native(tmpdir()), "devflow-asset-cli-test-"));
     dbPath = join(tempDir, "test.db");
     store = new Store(dbPath);
 

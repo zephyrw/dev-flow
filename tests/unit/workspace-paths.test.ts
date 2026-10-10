@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, realpathSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -10,6 +10,7 @@ import {
   isSubWorktreePath,
   previewWorktreePath,
   findRealSourceRoot,
+  sameWorkspacePath,
 } from "../../packages/git/src/workspace-paths.js";
 import { FlowError } from "../../packages/contracts/src/index.js";
 
@@ -17,7 +18,7 @@ describe("工作区共享路径解析器 (NV-U01, NV-U08)", () => {
   let tempDir: string;
 
   beforeEach(() => {
-    tempDir = mkdtempSync(join(tmpdir(), "devflow-ws-path-test-"));
+    tempDir = mkdtempSync(join(realpathSync.native(tmpdir()), "devflow-ws-path-test-"));
     // 初始化临时 git 仓库
     execFileSync("git", ["init"], { cwd: tempDir, stdio: "ignore" });
     execFileSync("git", ["config", "user.name", "TestUser"], { cwd: tempDir, stdio: "ignore" });
@@ -101,6 +102,11 @@ describe("工作区共享路径解析器 (NV-U01, NV-U08)", () => {
     const normal = join(tempDir, "src", "index.ts");
     expect(isSubWorktreePath(sub, tempDir)).toBe(true);
     expect(isSubWorktreePath(normal, tempDir)).toBe(false);
+    expect(isSubWorktreePath(join(tempDir, ".worktrees-sibling", "task"), tempDir)).toBe(false);
+  });
+
+  it("physical path comparison retains case distinctions on POSIX and folds them only on Windows", () => {
+    expect(sameWorkspacePath(join(tempDir, "CaseSensitiveTarget"), join(tempDir, "casesensitivetarget"))).toBe(process.platform === "win32");
   });
 
   it("NV-U01: previewWorktreePath 只读计算且返回预览数据", () => {

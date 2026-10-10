@@ -1,5 +1,6 @@
 import { captureInitialState } from "../../git/src/initial-state.js";
-import { resolveWorktreePath, ensureWorktreeGitExcluded } from "../../git/src/workspace-paths.js";
+import { resolveWorktreePath, ensureWorktreeGitExcluded, sameWorkspacePath } from "../../git/src/workspace-paths.js";
+import { canonicalGitPath, sameGitDirectory } from "../../git/src/git.js";
 import { getDefaultTemplate } from "./templates/default-template.js";
 import type { Store } from "../../store/src/store.js";
 import type { Config } from "../../contracts/src/config.js";
@@ -29,7 +30,7 @@ import {
 } from "./model-defaults-service.js";
 import { assertProfilesVerified, collectExplicitProfiles } from "./access-guard.js";
 import { id, now, objectHash } from "./util.js";
-import { realpathSync, mkdirSync, existsSync } from "node:fs";
+import { mkdirSync, existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { resolve, basename, join } from "node:path";
 import { createHash } from "node:crypto";
@@ -215,7 +216,7 @@ export class CreateWorkflowService {
       "工作区不存在",
       422,
     );
-    const source = realpathSync(input.workspace_root);
+    const source = canonicalGitPath(input.workspace_root);
     const git = (args: string[]) =>
       execFileSync("git", args, {
         cwd: source,
@@ -225,7 +226,7 @@ export class CreateWorkflowService {
       }).trim();
     let root: string;
     try {
-      root = realpathSync(git(["rev-parse", "--show-toplevel"]));
+      root = canonicalGitPath(git(["rev-parse", "--show-toplevel"]));
     } catch {
       throw new FlowError(
         "GIT_REPOSITORY_REQUIRED",
@@ -234,21 +235,21 @@ export class CreateWorkflowService {
       );
     }
     requireCondition(
-      root === source,
+      sameGitDirectory(root, source),
       "WORKSPACE_ROOT_REQUIRED",
       "请选择 Git 仓库根目录",
       422,
     );
     const baseline = pending?.workspace.baseline ?? git(["rev-parse", "HEAD"]);
     const branch = git(["symbolic-ref", "--short", "HEAD"]);
-    const common = realpathSync(
+    const common = canonicalGitPath(
       resolve(source, git(["rev-parse", "--git-common-dir"])),
     );
     const active = this.store
       .list<Workspace>("workspace")
       .find(
         (ws) =>
-          ws.root.toLowerCase() === source.toLowerCase() &&
+          sameWorkspacePath(ws.root, source) &&
           !["COMMITTED", "COMPLETED"].includes(
             this.store.get<Workflow>("workflow", ws.workflow_id)?.state ?? "",
           ),
@@ -263,7 +264,7 @@ export class CreateWorkflowService {
       .list<Project>("project")
       .find((p) =>
         p.repositories.some(
-          (r) => resolve(r.path).toLowerCase() === source.toLowerCase(),
+          (r) => sameWorkspacePath(r.path, source),
         ),
       );
     const project =
@@ -276,7 +277,7 @@ export class CreateWorkflowService {
       });
     const effectiveRepo =
       project.repositories.find(
-        (r) => resolve(r.path).toLowerCase() === source.toLowerCase(),
+        (r) => sameWorkspacePath(r.path, source),
       ) ??
       (project.primary_repo_id
         ? project.repositories.find((r) => r.id === project.primary_repo_id)
@@ -351,11 +352,11 @@ export class CreateWorkflowService {
     });
     // Persist a recoverable creation intent before Git; never fall back to the source directory.
     if (workspace.owned) {
-      requireCondition(workspace.source_root===source && workspace.source_branch===branch && workspace.common_dir===common,"WORKTREE_INTENT_MISMATCH","创建意图与当前仓库不符",409);
+      requireCondition(workspace.source_root && sameWorkspacePath(workspace.source_root,source) && workspace.source_branch===branch && sameWorkspacePath(workspace.common_dir,common),"WORKTREE_INTENT_MISMATCH","创建意图与当前仓库不符",409);
       this.store.put("workspace_creation", key, workflowId, {payload_hash:payloadHash,project,workflow,workspace,spec});
       mkdirSync(resolve(target, ".."), { recursive: true });
       if(existsSync(target)) {
-        requireCondition(realpathSync(resolve(target,git(["-C",target,"rev-parse","--git-common-dir"])))===common && git(["-C",target,"symbolic-ref","--short","HEAD"])===taskBranch && git(["-C",target,"rev-parse","HEAD"])===baseline && !git(["-C",target,"status","--porcelain"]),"WORKTREE_INTENT_MISMATCH","创建中断后的工作树已变化，保留现场",409);
+        requireCondition(sameGitDirectory(resolve(target,git(["-C",target,"rev-parse","--git-common-dir"])),common) && git(["-C",target,"symbolic-ref","--short","HEAD"])===taskBranch && git(["-C",target,"rev-parse","HEAD"])===baseline && !git(["-C",target,"status","--porcelain"]),"WORKTREE_INTENT_MISMATCH","创建中断后的工作树已变化，保留现场",409);
       } else {
         let tip:string|undefined;try{tip=git(["rev-parse","--verify","refs/heads/"+taskBranch]);}catch{}
         requireCondition(!tip || tip===baseline,"WORKTREE_INTENT_MISMATCH","临时分支已变化，不能覆盖",409);

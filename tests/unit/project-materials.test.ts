@@ -17,7 +17,7 @@ describe("项目材料与证据原件管理 (NV-U09)", () => {
   let tempDir: string;
 
   beforeEach(() => {
-    tempDir = mkdtempSync(join(realpathSync(tmpdir()), "devflow-material-test-"));
+    tempDir = mkdtempSync(join(realpathSync.native(tmpdir()), "devflow-material-test-"));
   });
 
   afterEach(() => {
@@ -116,7 +116,7 @@ describe("F05_FILESYSTEM_BOUNDARY: 相对路径安全校验与边界保护", () 
   let tempDir: string;
 
   beforeEach(() => {
-    tempDir = mkdtempSync(join(realpathSync(tmpdir()), "devflow-f05-test-"));
+    tempDir = mkdtempSync(join(realpathSync.native(tmpdir()), "devflow-f05-test-"));
   });
 
   afterEach(() => {
@@ -153,7 +153,7 @@ describe("F02_WORKSPACE_FALLBACK: 工作区唯一定位与歧义拦截", () => {
   const wfId = "wf-ws-fallback-test";
 
   beforeEach(() => {
-    tempDir = mkdtempSync(join(realpathSync(tmpdir()), "devflow-f02-test-"));
+    tempDir = mkdtempSync(join(realpathSync.native(tmpdir()), "devflow-f02-test-"));
     store = new Store(join(tempDir, "test.db"));
   });
 
@@ -269,7 +269,7 @@ describe("F03_PUBLICATION_OVERWRITE & F03_RECOVERY_BINDING: 不可变发布与�
   const wsId = "ws-f03-1";
 
   beforeEach(() => {
-    tempDir = mkdtempSync(join(realpathSync(tmpdir()), "devflow-f03-test-"));
+    tempDir = mkdtempSync(join(realpathSync.native(tmpdir()), "devflow-f03-test-"));
     store = new Store(join(tempDir, "test.db"));
     store.put("workspace", wsId, wfId, {
       id: wsId,

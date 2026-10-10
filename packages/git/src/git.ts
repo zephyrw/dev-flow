@@ -22,6 +22,14 @@ import {
 } from "../../contracts/src/index.js";
 import { hash, id, now, objectHash, atomicWrite } from "../../core/src/util.js";
 const run = promisify(execFile);
+/** Windows' native resolver expands 8.3 aliases; the JS resolver preserves them. */
+export function canonicalGitPath(path: string): string {
+  return process.platform === "win32" ? realpathSync.native(path) : realpathSync(path);
+}
+export function sameGitDirectory(left: string, right: string): boolean {
+  const a = canonicalGitPath(left), b = canonicalGitPath(right);
+  return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
+}
 export async function git(
   cwd: string,
   args: string[],
@@ -52,10 +60,10 @@ export async function git(
   return (await run("git", args, options)).stdout.trimEnd();
 }
 export async function repositoryInfo(root: string) {
-  const path = realpathSync(root);
+  const path = canonicalGitPath(root);
   return {
     path,
-    common_dir: realpathSync(
+    common_dir: canonicalGitPath(
       resolve(path, await git(path, ["rev-parse", "--git-common-dir"])),
     ),
     head: await git(path, ["rev-parse", "HEAD"]),
