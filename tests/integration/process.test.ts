@@ -35,7 +35,8 @@ it("optional cleanup hooks finish before completion and retain the tool exit cod
 }, 45000);
 
 it("an optional cleanup hook failure refuses successful completion", async () => {
-  const s = setup(), manager = new ProcessManager();
+  const lifecycle: Record<string, unknown>[] = [];
+  const s = setup(), manager = new ProcessManager((_spec, event) => lifecycle.push(event));
   let failCleanup = true;
   const proc = manager.start({
     id: `cleanup-hook-failure-${crypto.randomUUID()}`,
@@ -43,13 +44,23 @@ it("an optional cleanup hook failure refuses successful completion", async () =>
     cwd: s.root, env: {}, timeout_ms: 15000,
   }, {
     beforePipesClose: async () => {
-      if (failCleanup) throw new Error("owned cleanup refused");
+      if (failCleanup) throw new Error("owned cleanup refused password=must-not-leak");
     },
   });
   try {
-    await expect(proc.completion).rejects.toMatchObject({ code: "PROCESS_STOP_UNCONFIRMED" });
+    const error = await proc.completion.catch(error => error);
+    expect(error).toMatchObject({
+      code: "PROCESS_STOP_UNCONFIRMED",
+      details: { cleanup_stage: "cleanup_hook", cleanup_reason: "cleanup_hook_failed" },
+    });
+    expect(String(error)).toContain("cleanup_hook_failed");
+    expect(String(error)).not.toContain("must-not-leak");
+    expect(lifecycle.at(-1)).toMatchObject({ status: "failed", confirmed: false, cleanup_reason: "cleanup_hook_failed" });
+    expect(JSON.stringify(lifecycle)).not.toContain("must-not-leak");
+    expect(manager.list()).toContain(proc.id);
     // Join the current failed cleanup before retrying this fixture's final cleanup.
     await proc.stop().catch(() => {});
+    expect((await manager.stop(proc.id)).status).toBe("unknown");
   } finally {
     failCleanup = false;
     await manager.close();

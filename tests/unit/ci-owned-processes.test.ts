@@ -143,6 +143,24 @@ describe("CI owned descendant cleanup (R04 / A11)", () => {
     });
   });
 
+  it("reports only fixed kernel failure reasons and numeric identity facts", async () => {
+    const secret = "credential-and-private-cli-arguments";
+    const tracker = new OwnedProcessTracker(async () => {
+      throw Object.assign(new Error(secret), { code: "DARWIN_PROCESS_QUERY_FAILED",
+        reason: "bsd_read_unconfirmed", facts: { pid: 70, flavor: 3, arg: 1, errno: 1,
+          short_errno: 3, status: 2, path: secret, command: secret, bytes: secret } });
+    }, () => { throw new Error("must not signal an unknown process"); });
+    tracker.setRoot(100, "birth-100");
+    const result = await tracker.cleanup(Date.now() + 1000);
+    expect(result).toEqual({ confirmed: false,
+      error: "PROCESS_SNAPSHOT_FAILED (bsd_read_unconfirmed,pid=70,flavor=3,arg=1,errno=1,short_errno=3,status=2)" });
+    expect(JSON.stringify(result)).not.toContain(secret);
+    const untrusted = new OwnedProcessTracker(async () => { throw Object.assign(new Error(secret), {
+      code: "DARWIN_PROCESS_QUERY_FAILED", reason: secret, facts: { pid: 70 } }); });
+    untrusted.setRoot(100, "birth-100");
+    expect(await untrusted.cleanup(Date.now() + 1000)).toEqual({ confirmed: false, error: "PROCESS_SNAPSHOT_FAILED" });
+  });
+
   it("does not claim confirmed cleanup after an earlier ownership snapshot failed", async () => {
     let snapshots = 0;
     const tracker = new OwnedProcessTracker(async () => {

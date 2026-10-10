@@ -29,7 +29,7 @@ it("real independent Vitest targets create coverage that the runner cumulatively
     { kind: "vitest", file: "tests/unit/round-intent.test.ts" },
     { kind: "vitest", file: "tests/unit/runtime-failure.test.ts" },
   ]);
-  expect(result.code).toBe(0);
+  expect(result.code, JSON.stringify(result.summary, null, 2)).toBe(0);
   expect(result.summary.targets.map(target => target.exit_code)).toEqual([0, 0]);
   expect(result.summary.coverage_merge_exit_code).toBe(0);
   expect(result.summary.coverage_report_path).toBeTruthy();

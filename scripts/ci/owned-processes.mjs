@@ -1,6 +1,19 @@
 import { execFile } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
 
+function snapshotFailure(error) {
+  // Never publish arbitrary exception text, process names, paths, arguments or env.
+  const reasons = new Set(["library_load_failed", "bsd_read_unconfirmed", "bsd_pid_mismatch",
+    "inventory_size_failed", "inventory_read_failed"]);
+  const keys = new Set(["pid", "flavor", "arg", "bytes", "errno", "short_flavor", "short_bytes",
+    "short_errno", "observed_pid", "status", "type", "typeinfo", "size", "used"]);
+  if (error?.code !== "DARWIN_PROCESS_QUERY_FAILED" || !reasons.has(error.reason) ||
+      !error.facts || typeof error.facts !== "object") return "PROCESS_SNAPSHOT_FAILED";
+  const facts = Object.entries(error.facts).filter(([key, value]) => keys.has(key) &&
+    Number.isSafeInteger(value) && value >= -1 && value <= 0xffffffff);
+  return `PROCESS_SNAPSHOT_FAILED (${error.reason}${facts.map(([key, value]) => `,${key}=${value}`).join("")})`;
+}
+
 export function darwinProcessRecords(records) {
   return records.map(record => {
     if (!Number.isSafeInteger(record.pid) || record.pid <= 0 ||
@@ -106,8 +119,8 @@ export class OwnedProcessTracker {
       this.pending = Promise.resolve().then(() => this.read()).then(records => {
         this.remember(records);
         return records;
-      }).catch(() => {
-        this.error = "PROCESS_SNAPSHOT_FAILED";
+      }).catch(error => {
+        this.error = snapshotFailure(error);
         return null;
       }).finally(() => { this.pending = null; });
     }

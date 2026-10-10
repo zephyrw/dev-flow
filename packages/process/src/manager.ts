@@ -11,6 +11,7 @@ import {
 } from "./native/index.js";
 import { observeProcessRecord } from "./process-protocol.js";
 import type { ProcessIdentity, StopObservation } from "./process-protocol.js";
+import { darwinProcessQueryDiagnostic, observeDarwinProcessGroup } from "./native/darwin-processes.js";
 
 export interface ProcessSpec {
   id: string;
@@ -207,9 +208,13 @@ export class ProcessManager {
       finishing = (async () => {
         clearTimers();
         let confirmed = false;
+        let cleanupStage = "cleanup_hook";
+        let cleanupKernel: ReturnType<typeof darwinProcessQueryDiagnostic>;
+        let cleanupReason = "cleanup_unknown";
         try {
           cleanupHooks.onCleanupStart?.();
           if (child?.pid && !bound) {
+            cleanupStage = "launcher_stop";
             child.kill();
             const deadline = Date.now() + 5000;
             while (
@@ -222,10 +227,12 @@ export class ProcessManager {
               throw new Error("RUNNER_STOP_UNCONFIRMED");
           }
           if (native && "createJob" in native && job) {
+            cleanupStage = "job_query";
             const initialCount = native.queryJobActiveCount(job);
             if (initialCount === 0) {
               confirmed = true;
             } else {
+              cleanupStage = "job_termination";
               if (!native.terminateJob(job, code ?? 1)) {
                 if (native.queryJobActiveCount(job) === 0) {
                   confirmed = true;
@@ -234,6 +241,7 @@ export class ProcessManager {
                 }
               }
               if (!confirmed) {
+                cleanupStage = "job_observation";
                 const deadline = Date.now() + 10000;
                 while (Date.now() < deadline) {
                   const count = native.queryJobActiveCount(job);
@@ -244,9 +252,11 @@ export class ProcessManager {
                   }
                   await new Promise((resolve) => setTimeout(resolve, 25));
                 }
+                if (!confirmed) cleanupReason = "job_wait_deadline";
               }
             }
           } else if (native && "killProcessGroup" in native && identity.pgid) {
+            cleanupStage = "group_identity";
             const current = native.getProcessCreationTime(identity.pgid);
             if (
               current &&
@@ -254,6 +264,7 @@ export class ProcessManager {
               current !== identity.launcher_creation_time
             )
               throw new Error("PROCESS_NOT_OWNED");
+            cleanupStage = "group_signal";
             const result = native.killProcessGroup(
               identity.pgid,
               stopRequested ? "SIGTERM" : "SIGKILL",
@@ -264,11 +275,13 @@ export class ProcessManager {
               escalate = Date.now() + (stopRequested ? 5000 : 0);
             let killed = !stopRequested;
             while (Date.now() < deadline) {
+              cleanupStage = "group_observation";
               if (!native.isProcessGroupAlive(identity.pgid)) {
                 confirmed = true;
                 break;
               }
               if (!killed && Date.now() >= escalate) {
+                cleanupStage = "group_signal";
                 const result = native.killProcessGroup(
                   identity.pgid,
                   "SIGKILL",
@@ -281,7 +294,9 @@ export class ProcessManager {
               }
               await new Promise((resolve) => setTimeout(resolve, 25));
             }
+            if (!confirmed) cleanupReason = "group_wait_deadline";
           } else if (child?.pid) {
+            cleanupStage = "launcher_stop";
             // No start has been sent: this launcher cannot have created a tool.
             child.kill();
             const deadline = Date.now() + 5000;
@@ -292,27 +307,44 @@ export class ProcessManager {
             )
               await new Promise((resolve) => setTimeout(resolve, 25));
             confirmed = child.exitCode !== null || child.signalCode !== null;
+            if (!confirmed) cleanupReason = "launcher_wait_deadline";
           } else confirmed = true;
-          if (confirmed && cleanupHooks.beforePipesClose)
+          if (confirmed && cleanupHooks.beforePipesClose) {
+            cleanupStage = "cleanup_hook";
             await cleanupHooks.beforePipesClose();
+          }
           if (confirmed && child?.pid) {
+            cleanupStage = "pipe_observation";
             const deadline = Date.now() + 5000;
             while (!pipesClosed && Date.now() < deadline)
               await new Promise((resolve) => setTimeout(resolve, 10));
             if (!pipesClosed) throw new Error("PROCESS_PIPES_STILL_OPEN");
           }
-        } catch {
+        } catch (error) {
           confirmed = false;
+          cleanupKernel = darwinProcessQueryDiagnostic(error);
+          const code = error instanceof Error ? error.message : "";
+          cleanupReason = code === "PROCESS_NOT_OWNED" ? "ownership_mismatch"
+            : code === "PROCESS_PIPES_STILL_OPEN" ? "pipe_wait_deadline"
+              : code === "RUNNER_STOP_UNCONFIRMED" ? "launcher_wait_deadline"
+                : `${cleanupStage}_failed`;
         }
         if (!confirmed) {
+          const groupObservation = process.platform === "darwin" && cleanupReason === "group_wait_deadline" && identity.pgid
+            ? observeDarwinProcessGroup(identity.pgid) : undefined;
           this.stopHistory.set(spec.id, { status: "unknown", pid: events.pid });
           try {
-            notify({ status: "failed", confirmed: false });
+            notify({ status: "failed", confirmed: false, cleanup_reason: cleanupReason,
+              ...(cleanupKernel ? { cleanup_kernel: cleanupKernel } : {}),
+              ...(groupObservation ? { cleanup_group: groupObservation } : {}) });
           } catch {}
           const error = new FlowError(
             "PROCESS_STOP_UNCONFIRMED",
-            "无法确认受管进程树已完全退出",
+            `无法确认受管进程树已完全退出（${cleanupReason}）`,
             409,
+            { cleanup_stage: cleanupStage, cleanup_reason: cleanupReason,
+              ...(cleanupKernel ? { cleanup_kernel: cleanupKernel } : {}),
+              ...(groupObservation ? { cleanup_group: groupObservation } : {}) },
           );
           rejectReady(error);
           rejectDone(error);
