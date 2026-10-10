@@ -17,6 +17,13 @@ function stop() {
   stopping = true;
   interactiveAbort.abort();
   clearTimeout(startup);
+  // Cancellation before start owns only this launcher. Marking stopping first
+  // prevents an already queued start message from creating a tool. Waiting for
+  // the tool group's grace period here races the controller's launcher deadline.
+  if (!started) {
+    process.exit(1);
+    return;
+  }
   if (process.platform === "win32") {
     // The controller owns the Job. IPC loss also closes its kill-on-close handle.
     try {

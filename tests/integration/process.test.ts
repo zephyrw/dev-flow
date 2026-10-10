@@ -1,11 +1,90 @@
 import { it, expect } from "vitest";
 import { resolve, join } from "node:path";
 import { existsSync, writeFileSync, readFileSync } from "node:fs";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { ProcessManager } from "../../packages/process/src/manager.js";
 import { setup } from "../helpers.js";
 import { acquireControllerLock } from "../../packages/process/src/controller-lock.js";
 import { vi } from "vitest";
+
+it("cancelling a ready launcher before start closes its real process and prevents a queued tool launch", async () => {
+  const s = setup(), attempt = randomUUID();
+  const marker = join(s.root, "cancelled-tool.txt");
+  const entry = resolve("dist/packages/process/src/runner-entry.js");
+  expect(existsSync(entry)).toBe(true);
+  const child = spawn(process.execPath, [entry, attempt], {
+    cwd: s.root, stdio: ["pipe", "pipe", "pipe", "ipc"],
+    detached: process.platform !== "win32", windowsHide: true,
+  });
+  const messages: Record<string, unknown>[] = [];
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    const closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolveClose, reject) => {
+      child.once("error", reject);
+      child.once("close", (code, signal) => resolveClose({ code, signal }));
+      child.on("message", raw => {
+        const message = raw as Record<string, unknown>;
+        messages.push(message);
+        if (message.type !== "ready") return;
+        // These messages share the ordered IPC channel. The first cancellation
+        // must prevent the second message from creating any native tool.
+        child.send({ type: "stop", attempt_id: attempt }, () => {});
+        child.send({ type: "start", attempt_id: attempt,
+          executable: process.execPath,
+          args: ["-e", `require('node:fs').writeFileSync(${JSON.stringify(marker)},'started')`],
+          cwd: s.root, env: {},
+        }, () => {});
+        // The controller allows 5 seconds for an unbound launcher to exit.
+        // A launcher with no tool needs no group grace period.
+        timer = setTimeout(() => reject(new Error("Unstarted launcher exceeded its controller cancellation deadline")), 4000);
+      });
+    });
+    expect(await closed).toEqual({ code: 1, signal: null });
+    expect(messages.some(message => message.type === "started")).toBe(false);
+    expect(existsSync(marker)).toBe(false);
+    expect(child.exitCode).toBe(1);
+  } finally {
+    clearTimeout(timer);
+    if (child.exitCode === null && child.signalCode === null) {
+      const closed = new Promise<void>(resolveClose => child.once("close", () => resolveClose()));
+      child.kill("SIGKILL");
+      await closed;
+    }
+    s.store.close();
+  }
+}, 15000);
+
+it.skipIf(process.platform === "win32")("SIGTERM cancels an unstarted POSIX launcher without its tool-group grace period", async () => {
+  const s = setup(), attempt = randomUUID();
+  const child = spawn(process.execPath, [resolve("dist/packages/process/src/runner-entry.js"), attempt], {
+    cwd: s.root, stdio: ["pipe", "pipe", "pipe", "ipc"], detached: true,
+  });
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    const closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolveClose, reject) => {
+      child.once("error", reject);
+      child.once("close", (code, signal) => resolveClose({ code, signal }));
+      child.on("message", raw => {
+        if ((raw as Record<string, unknown>).type !== "ready") return;
+        // The parent's unbound-launcher cleanup sends this exact signal after
+        // the runner installs its handler but before any start is issued.
+        child.kill("SIGTERM");
+        timer = setTimeout(() => reject(new Error("Unstarted SIGTERM launcher exceeded its controller cancellation deadline")), 4000);
+      });
+    });
+    expect(await closed).toEqual({ code: 1, signal: null });
+    expect(child.exitCode).toBe(1);
+  } finally {
+    clearTimeout(timer);
+    if (child.exitCode === null && child.signalCode === null) {
+      const closed = new Promise<void>(resolveClose => child.once("close", () => resolveClose()));
+      child.kill("SIGKILL");
+      await closed;
+    }
+    s.store.close();
+  }
+}, 15000);
 
 it("optional cleanup hooks finish before completion and retain the tool exit code", async () => {
   const s = setup(), manager = new ProcessManager();
