@@ -3,7 +3,7 @@
  */
 import { afterEach, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
-import { setup, repository } from "../helpers.js";
+import { setup, repository, testConsoleHeaders } from "../helpers.js";
 import { ExecutionSpecService } from "../../packages/core/src/execution-spec-service.js";
 import { ModelDefaultsService } from "../../packages/core/src/model-defaults-service.js";
 import { seedVerifiedAccess } from "../../packages/core/src/access-guard.js";
@@ -25,8 +25,8 @@ let closeStore: (() => void) | undefined;
 let closeApp: (() => Promise<void>) | undefined;
 
 const httpHeaders = {
-  host: "localhost:14810",
-  origin: "http://localhost:14810",
+  host: testConsoleHeaders().host,
+  origin: testConsoleHeaders().origin,
   "content-type": "application/json",
 };
 

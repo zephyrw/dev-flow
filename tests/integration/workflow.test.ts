@@ -1,14 +1,12 @@
 import { it, expect } from "vitest";
 import { writeFileSync, readFileSync, mkdirSync, linkSync } from "node:fs";
 import { join } from "node:path";
-import {
-  prepared,
+import { prepared,
   proof,
   setup,
   repository,
   project,
-  plan,
-} from "../helpers.js";
+  plan, testConsoleHeaders } from "../helpers.js";
 import { hash, id, now, objectHash } from "../../packages/core/src/util.js";
 import { git } from "../../packages/git/src/git.js";
 import { FileBroker, safePath } from "../../packages/workspace/src/files.js";
@@ -156,7 +154,7 @@ it("IT-03 API rejects untrusted Host, foreign Origin, allow local access and rej
     (
       await app.inject({
         url: "/api/projects",
-        headers: { host: "localhost:14810" },
+        headers: { host: testConsoleHeaders().host },
       })
     ).statusCode,
   ).toBe(200);
@@ -174,7 +172,7 @@ it("IT-03 API rejects untrusted Host, foreign Origin, allow local access and rej
         method: "POST",
         url: "/api/workflows/fixture/approve",
         headers: {
-          host: "localhost:14810",
+          host: testConsoleHeaders().host,
           origin: "http://evil.example",
           "content-type": "application/json",
         },
@@ -188,7 +186,7 @@ it("IT-03 API rejects untrusted Host, foreign Origin, allow local access and rej
       await app.inject({
         url: "/api/projects",
         headers: {
-          host: "localhost:14810",
+          host: testConsoleHeaders().host,
           authorization: `Bearer ${token}`,
         },
       })
@@ -200,11 +198,11 @@ it("IT-03 API rejects untrusted Host, foreign Origin, allow local access and rej
 it("IT-03 MCP exposes planning tools without any human-approval capability", async () => {
   const s = setup();
   const app = await buildServer(s.engine);
-  await app.listen({ host: "127.0.0.1", port: 14810 });
+  await app.listen({ host: "127.0.0.1", port: s.config.server.port });
   const token = s.engine.auth.issue({ role: "planner" });
   const client = new Client({ name: "test-client", version: "1" });
   await client.connect(
-    new StreamableHTTPClientTransport(new URL("http://127.0.0.1:14810/mcp"), {
+    new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${s.config.server.port}/mcp`), {
       requestInit: { headers: { Authorization: `Bearer ${token}` } },
     }),
   );
@@ -218,7 +216,7 @@ it("IT-03 MCP exposes planning tools without any human-approval capability", asy
 it("IT-09 large Chinese plan and tool contracts traverse bounded MCP pages without temp-file fallback", async () => {
   const s = await prepared(),
     app = await buildServer(s.engine);
-  await app.listen({ host: "127.0.0.1", port: 14810 });
+  await app.listen({ host: "127.0.0.1", port: s.config.server.port });
   const record = s.engine.plan(s.workflow.id);
   record.plan.markdown +=
     "\n" + "需要完整传递的中文计划。".repeat(2000) + "\nMARKER-END-92814";
@@ -231,7 +229,7 @@ it("IT-09 large Chinese plan and tool contracts traverse bounded MCP pages witho
   const client = new Client({ name: "paged-context-test", version: "1" });
   try {
     await client.connect(
-      new StreamableHTTPClientTransport(new URL("http://127.0.0.1:14810/mcp"), {
+      new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${s.config.server.port}/mcp`), {
         requestInit: { headers: { Authorization: "Bearer " + token } },
       }),
     );

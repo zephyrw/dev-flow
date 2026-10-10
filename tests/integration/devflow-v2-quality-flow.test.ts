@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
-  fixture,
+  fixture as nativeFixture,
   runtime,
   until,
   cleanup,
@@ -11,9 +11,56 @@ import { proof, setup } from "../helpers.js";
 import { now } from "../../packages/core/src/util.js";
 import type { Workflow } from "../../packages/contracts/src/index.js";
 import { reviewContractContext } from "../../packages/runtime/src/review-materials.js";
+import { readQualityFlow } from "../../packages/core/src/quality-policy-migration.js";
+import { readPlanMaterial } from "../../packages/core/src/plan-review.js";
+import { execFileSync } from "node:child_process";
+import { join } from "node:path";
+import { writeFileSync } from "node:fs";
+import { git } from "../../packages/git/src/git.js";
+
+async function fixture() {
+  const s = await nativeFixture();
+  const w = s.engine.get(s.w.id);
+  s.store.put("workflow", w.id, w.project_id, { ...w, quality_policy_version: 2 });
+  return s;
+}
+function qualityRuntime(s: Fixture) {
+  const base = runtime(s);
+  const complete = (w: Workflow, run: Parameters<typeof base.execute>[1], payload: { summary: string; repositories?: Array<{ repo_id: string; commit: string }> }) =>
+    s.engine.receiveRoundResult(w.id, run.id, {
+      schema_version: "v2", workflow_id: w.id, run_id: run.id,
+      plan_revision: w.plan_revision, plan_hash: w.plan_hash,
+      status: "completed", ...payload,
+    });
+  return {
+    ...base,
+    async execute(w: Workflow, run: Parameters<typeof base.execute>[1], token: string) {
+      if (run.purpose === "planner_takeover") {
+        s.stages.push(run.stage);
+        writeFileSync(join(s.repo, "app.txt"), "after\n");
+        await complete(w, run, { summary: "原问题已修复并阅读代码自查" });
+        return;
+      }
+      if (run.purpose === "executor_test") {
+        s.stages.push(run.stage);
+        execFileSync(process.execPath, [".reports/check.cjs"], { cwd: s.repo });
+        await complete(w, run, { summary: "执行阶段完成原测试" });
+        return;
+      }
+      if (run.purpose === "planner_commit") {
+        s.stages.push(run.stage);
+        const snapshot = await s.engine.git.snapshot(w.id, w.environment_revision);
+        const commits = await s.engine.git.commit(snapshot, s.p, "fix: update fixture");
+        await complete(w, run, { summary: "规划已实际提交", repositories: commits.map(item => ({ repo_id: item.repo_id, commit: item.commit })) });
+        return;
+      }
+      return base.execute(w, run, token);
+    },
+  };
+}
 function failReview(s: Fixture, w: Workflow) {
   const body =
-    (s.engine.plan(s.w.id).plan.markdown ?? "") +
+    readPlanMaterial(s.store, s.w.id, w.plan_revision).markdown +
     "\n## R1\n核对 app.txt 为 after 并运行原始单元测试，保留换行及其他文件。不得另建计划。\n";
   return {
     ...passReview(w),
@@ -40,7 +87,7 @@ function failReview(s: Fixture, w: Workflow) {
 describe("质量审查生产调度闭环", { timeout: 1500000 }, () => {
   it("首次代码质量不通过只派发整改且计数为 0，通过后进入人工", async () => {
     const s = await fixture();
-    const base = runtime(s);
+    const base = qualityRuntime(s);
     let reviews = 0;
     s.engine.runtime = {
       ...base,
@@ -60,10 +107,8 @@ describe("质量审查生产调度闭环", { timeout: 1500000 }, () => {
       expect(s.engine.get(s.w.id).blocker).toBeUndefined();
       expect(s.engine.get(s.w.id).state).toBe("HUMAN_PENDING");
       expect(reviews).toBe(2);
-      expect(s.engine.quality.getGate(s.w.id, "before_human")).toMatchObject({
-        executor_rejections: 0,
-        takeover: false,
-        status: "passed",
+      expect(readQualityFlow(s.store, s.w.id)).toMatchObject({
+        phase: "before_human", executor_repair_completed: true, planner_repairs_only: false,
       });
       expect(s.store.list("acceptance", s.w.id)).toHaveLength(0);
     } finally {
@@ -121,10 +166,10 @@ describe("质量审查生产调度闭环", { timeout: 1500000 }, () => {
     }
   });
 
-  it("两关首次发现问题均不计数，三次完整整改仍被拒绝才接管，通过后清零并真实提交", async () => {
+  it("人工前一次执行整改后交规划修复，人工后直接规划修复，两次均由执行测试后真实提交", async () => {
     const s = await fixture();
     const counts = { before_human: 0, after_human: 0 };
-    const base = runtime(s);
+    const base = qualityRuntime(s);
     const ownership: Array<[string, string, string]> = [];
     s.engine.runtime = {
       ...base,
@@ -134,8 +179,8 @@ describe("质量审查生产调度闭环", { timeout: 1500000 }, () => {
           const phase = s.store.must<any>("repair_assignment", w.id).phase as
             | "before_human"
             | "after_human";
-          expect(counts[phase]).toBe(4); // Initial finding plus three completed repairs.
-          expect(s.engine.quality.canTakeOver(w.id, phase)).toBe(true);
+          expect(counts[phase]).toBe(phase === "before_human" ? 2 : 1);
+          expect(readQualityFlow(s.store, w.id).planner_repairs_only).toBe(true);
         }
         await base.execute(w, r, t);
       },
@@ -144,10 +189,8 @@ describe("质量审查生产调度闭环", { timeout: 1500000 }, () => {
         const phase =
           w.stage === "quality_before_human" ? "before_human" : "after_human";
         counts[phase]++;
-        expect(
-          s.engine.quality.getOrCreateGate(w.id, phase).executor_rejections,
-        ).toBe(Math.max(0, Math.min(3, counts[phase] - 2)));
-        return counts[phase] <= 4 ? failReview(s, w) : passReview(w);
+        expect(s.engine.quality.getGate(w.id, phase)?.executor_rejections ?? 0).toBe(0);
+        return failReview(s, w);
       },
     };
     try {
@@ -158,16 +201,13 @@ describe("质量审查生产调度闭环", { timeout: 1500000 }, () => {
       );
       expect(s.engine.get(s.w.id).blocker).toBeUndefined();
       expect(s.engine.get(s.w.id).state).toBe("HUMAN_PENDING");
-      expect(counts.before_human).toBe(5);
-      expect(s.engine.quality.getGate(s.w.id, "before_human")).toMatchObject({
-        executor_rejections: 0,
-        takeover: false,
-        status: "passed",
+      expect(counts.before_human).toBe(2);
+      expect(readQualityFlow(s.store, s.w.id)).toMatchObject({
+        phase: "before_human", executor_repair_completed: true, planner_repairs_only: true,
       });
-      expect(
-        s.engine.quality.getOrCreateGate(s.w.id, "after_human")
-          .executor_rejections,
-      ).toBe(0);
+      expect(ownership.map(([, , purpose]) => purpose)).toEqual([
+        "implement", "implement", "planner_takeover", "executor_test",
+      ]);
       const p = proof(s.engine, s.w.id, "accept");
       await s.engine.accept(s.w.id, p.proof, p.binding);
       await until(
@@ -183,12 +223,8 @@ describe("质量审查生产调度闭环", { timeout: 1500000 }, () => {
       );
       expect(s.engine.get(s.w.id).blocker).toBeUndefined();
       expect(s.engine.get(s.w.id).state).toBe("COMMITTED");
-      expect(counts.after_human).toBe(5);
-      expect(s.engine.quality.getGate(s.w.id, "after_human")).toMatchObject({
-        executor_rejections: 0,
-        takeover: false,
-        status: "passed",
-      });
+      expect(counts.after_human).toBe(1);
+      expect(readQualityFlow(s.store, s.w.id)).toMatchObject({ phase: "after_human", planner_repairs_only: true });
       expect(
         ownership.filter(([stage]) => stage === "planner_takeover"),
       ).toHaveLength(2);
@@ -197,16 +233,14 @@ describe("质量审查生产调度闭环", { timeout: 1500000 }, () => {
           .filter(([stage]) => stage === "planner_takeover")
           .every(([, adapter]) => adapter === "codex"),
       ).toBe(true);
-      for (const phase of ["before_human", "after_human"])
-        expect(
-          s.store
-            .list<any>("quality_review", s.w.id)
-            .filter(
-              (review) =>
-                review.phase === phase && review.executor_repair_run_id,
-            ),
-        ).toHaveLength(3);
-      expect(s.store.list("commit_result", s.w.id)).toHaveLength(1);
+      expect(ownership.filter(([, , purpose]) => purpose === "executor_test")).toHaveLength(2);
+      expect(ownership.map(([, , purpose]) => purpose)).toEqual([
+        "implement", "implement", "planner_takeover", "executor_test",
+        "planner_takeover", "executor_test", "planner_commit",
+      ]);
+      expect(await git(s.repo, ["show", "HEAD:app.txt"])).toBe("after");
+      expect(await git(s.repo, ["rev-parse", "HEAD"])).not.toBe(s.baseline);
+      expect(s.store.events(s.w.id).filter(e => e.type === "PlannerCommitIntegrated")).toHaveLength(1);
     } finally {
       await cleanup(s);
     }

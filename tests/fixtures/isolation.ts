@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, mkdirSync } from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Store } from "../../packages/store/src/store.js";
@@ -41,7 +41,7 @@ export function removeDirWithBoundedRetry(
  * 创建完全隔离的测试运行环境，防止修改当前环境配置或污染用户真实目录
  */
 export function createIsolatedTestEnv(): IsolatedTestEnv {
-  const root = mkdtempSync(join(tmpdir(), "devflow-isolated-"));
+  const root = mkdtempSync(join(realpathSync(tmpdir()), "devflow-isolated-"));
   const repoRoot = join(root, "repo");
   mkdirSync(repoRoot, { recursive: true });
   const fakeHome = join(root, "fake-home");

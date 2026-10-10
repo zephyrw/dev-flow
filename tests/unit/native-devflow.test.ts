@@ -156,12 +156,12 @@ describe("DevFlow 原生执行与终局核验单元测试", () => {
       expect(pkg.mode).toBe("resume");
       expect(pkg.conversation_id).toBe("conv-123");
       expect(pkg.design_file).toBe(join(testDir, "HANDOFF.md"));
-      expect(pkg.instructions).toContain(join(testDir, "handoff.json"));
+      expect(pkg.instructions).toBe("继续");
       expect(pkg.delivery_issues).toHaveLength(1);
       expect(pkg.delivery_issues![0]!.code).toBe("ACCEPTANCE_CASE_FAILED");
     });
 
-    it("UT04: 启动提示与交接包保持职责边界一致，full与resume均包含执行补齐约束且不要求证明工具", () => {
+    it("UT04: 首次启动包含执行约束，同会话恢复只传递继续指令", () => {
       const files = {
         json: join(testDir, "handoff.json"),
         markdown: join(testDir, "HANDOFF.md"),
@@ -176,9 +176,7 @@ describe("DevFlow 原生执行与终局核验单元测试", () => {
       expect(fullPrompt).toContain("主动补齐");
       expect(fullPrompt).toContain("直接交代码审查");
 
-      expect(resumePrompt).toContain(files.json);
-      expect(resumePrompt).toContain("主动补齐");
-      expect(resumePrompt).toContain("说明实际修复与测试结果");
+      expect(resumePrompt).toBe("继续");
 
       // 验证计划、路径、反馈与索引语义完整保留
       const fullPkg = HandoffBuilder.buildFullHandoff({

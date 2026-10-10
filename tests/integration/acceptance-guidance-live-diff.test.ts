@@ -1,7 +1,7 @@
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, it } from "vitest";
-import { setup, repository, project, plan } from "../helpers.js";
+import { setup, repository, project, plan, publishPlanFixture } from "../helpers.js";
 import { objectHash } from "../../packages/core/src/util.js";
 import { ProfileRuntime } from "../../packages/runtime/src/profile-runtime.js";
 import type { Run, Workflow } from "../../packages/contracts/src/index.js";
@@ -11,8 +11,9 @@ it("reviews current tracked and untracked guidance changes after an older snapsh
   try {
     const repo = await repository(s.root);
     const p = project(repo.repo), wid = "guidance-live-diff", time = new Date().toISOString();
-    const originalPlan = { revision: 1, hash: "approved", plan: {
+    const originalPlan = { id: `${wid}-1`, revision: 1, hash: "approved", plan: {
       ...plan(objectHash(p), repo.baseline), task_model: "native-v2" as const,
+      markdown: "# Approved guidance plan\nPreserve completed work and test progress.\n",
     } };
     s.store.put("project", p.id, p.id, p);
     s.store.put("plan", `${wid}-1`, wid, originalPlan);
@@ -22,6 +23,8 @@ it("reviews current tracked and untracked guidance changes after an older snapsh
       version: 1, feedback: [], created_at: time, updated_at: time };
     s.store.put("workflow", wid, p.id, workflow);
     await s.engine.git.prepare(p, wid, "existing_workspace", { main: repo.baseline });
+    publishPlanFixture(s.engine, wid);
+    const approvedPlan = s.engine.plan(wid);
     writeFileSync(join(repo.repo, "app.txt"), "before guidance\n");
     const snapshot = await s.engine.git.snapshot(wid, 0);
     s.store.put("workflow", wid, p.id, { ...workflow, snapshot_id: snapshot.id });
@@ -53,7 +56,7 @@ it("reviews current tracked and untracked guidance changes after an older snapsh
     expect(material.diff[0].untracked_paths).toContain("guidance-help.txt");
     expect(material.instructions).toContain("untracked_paths");
     expect(s.store.must("snapshot", snapshot.id)).toEqual(snapshot);
-    expect(s.store.must("plan", `${wid}-1`)).toEqual(originalPlan);
+    expect(s.store.must("plan", `${wid}-1`)).toEqual(approvedPlan);
     expect(s.store.must("execution_test_report", "prior-tests")).toEqual(report);
     const beforeHuman = await runtime.reviewMaterials({ ...current, stage: "quality_before_human" }, review, snapshot);
     expect(beforeHuman.diff[0].diff).toContain("+before guidance");

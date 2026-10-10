@@ -31,6 +31,12 @@ it.each(["stalled", "internal", "unconfirmed", "disabled", "quota", "denied"] as
     const events = [
       { event: "init", conversation_id: session, init: { model: "fixture-model", cwd: repo.repo } },
       { event: "step_update", step_update: { conversation_id: session, step_index: 10, step_type: "user_input", state: "DONE" } },
+      ...(mode === "denied" ? [{ event: "step_update", step_update: {
+        conversation_id: session, step_index: 11, step_type: "tool", state: "ERROR", tool_info: {
+          name: "run_command", parameters: { CommandLine: "echo permission-fixture" },
+          error: { type: "TOOL_ERROR", message: "permission check failed for run_command: user denied permission for run_command" },
+        },
+      } }] : []),
       ...(mode === "internal" ? [
         { event: "step_update", step_update: { conversation_id: session, step_index: 11, step_type: "error_message", state: "DONE" } },
         { event: "step_update", step_update: { conversation_id: session, step_index: 12, step_type: "agent_response", state: "DONE" } },
@@ -57,7 +63,7 @@ it.each(["stalled", "internal", "unconfirmed", "disabled", "quota", "denied"] as
       permit_id: "fixture-permit", source_run_id: run.id, account_policy_revision: 1, account_settings_revision_at_start: 1 };
     const bridge = {
       prepareProfileRun: vi.fn(async () => binding), attachProcess: vi.fn(), observeNativeEvent: vi.fn(),
-      releaseRun: vi.fn(async () => {}),
+      releaseRun: vi.fn(async () => {}), observeAccountQuota: vi.fn(() => vi.fn()),
       observeFailure: vi.fn(async (_binding: unknown, _fact: unknown) => mode === "quota" ? "waiting" : mode === "disabled" ? "not_applicable" : "quota_unconfirmed"),
     };
     const runtime = new ProfileRuntime(s.engine, processes, bridge as unknown as AgyWorkflowBridge);

@@ -19,7 +19,7 @@ describe("配置与计划合同", () => {
     expect(
       ConfigSchema.parse({ models: { executor: "other" } }).models.executor,
     ).toBe("other");
-    expect(ConfigSchema.parse({}).scheduler.executors).toBe(1);
+    expect(ConfigSchema.parse({}).scheduler.executors).toBeUndefined();
   });
   it("UT-02 canonical hash is independent of object key order", () =>
     expect(objectHash({ a: 1, b: 2 })).toBe(objectHash({ b: 2, a: 1 })));
@@ -32,16 +32,16 @@ describe("配置与计划合同", () => {
     p.tests[0]!.task_ids = ["missing"];
     expect(() => validatePlan(p)).toThrow(/缺失任务/);
   });
-  it("UT-06 rejects absent diagrams and unresolved decisions", () => {
+  it("UT-06 extracts available diagrams and preserves unresolved decisions", () => {
     const p = plan("config", "a".repeat(40));
     p.markdown = (p.markdown || "").replace("```mermaid", "```text");
-    expect(() => validatePlan(p)).toThrow(/图解/);
-    expect(() =>
+    expect(validatePlan(p).diagrams).toEqual([]);
+    expect(
       validatePlan({
         ...plan("config", "a".repeat(40)),
         unresolved_decisions: ["业务未知"],
-      }),
-    ).toThrow();
+      }).plan.unresolved_decisions,
+    ).toEqual(["业务未知"]);
   });
   it("UT-07 blocks traversal and Windows alternate stream paths", () => {
     for (const p of ["../x", "a/../x", "C:/x", "a\\b", "a:b", "/x"])
@@ -150,8 +150,9 @@ describe("配置与计划合同", () => {
       expect(() => executablePath("nonexistent_test_bin_xyz")).toThrow(
         /找不到 nonexistent_test_bin_xyz 的原生 exe/,
       );
-      const codex = executablePath("codex");
-      expect(codex.toLowerCase().endsWith(".exe")).toBe(true);
+      const nativeExecutable = executablePath(process.execPath);
+      expect(nativeExecutable).toBe(process.execPath);
+      expect(nativeExecutable.toLowerCase().endsWith(".exe")).toBe(true);
     }
   });
 });

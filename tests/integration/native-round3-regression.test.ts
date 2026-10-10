@@ -42,6 +42,7 @@ async function fixture(
   if (options.multi) {
     other = await repository(s.root, "second");
     p.repositories.push({ id: "second", path: other.repo });
+    p.primary_repo_id = "main";
   }
   if (options.hook && p.commands[0])
     p.commands[0].required_before_commit = true;

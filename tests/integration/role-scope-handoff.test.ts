@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { setup } from "../helpers.js";
+import { setup, project, publishPlanFixture } from "../helpers.js";
 import { ProfileRuntime, invokePrompt } from "../../packages/runtime/src/profile-runtime.js";
 import { HandoffBuilder, nativeLaunchInstruction } from "../../packages/adapters/agy/src/handoff.js";
 import { reviewContractContext } from "../../packages/runtime/src/review-materials.js";
@@ -12,7 +12,7 @@ import type { Workflow, Plan, Run } from "../../packages/contracts/src/index.js"
 import type { MergeConflictRequest } from "../../packages/contracts/src/merge-conflict.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync, rmSync, realpathSync } from "node:fs";
 
 describe("IT02 & IT03: 角色职责边界与交接完整性 (role-scope-handoff)", () => {
   let env: ReturnType<typeof setup>;
@@ -21,7 +21,7 @@ describe("IT02 & IT03: 角色职责边界与交接完整性 (role-scope-handoff)
   beforeEach(() => {
     env = setup();
     testDir = join(
-      tmpdir(),
+      realpathSync(tmpdir()),
       "role-scope-handoff-test-" + Math.random().toString(36).slice(2),
     );
     mkdirSync(testDir, { recursive: true });
@@ -129,7 +129,7 @@ describe("IT02 & IT03: 角色职责边界与交接完整性 (role-scope-handoff)
       expect(schema.properties.document_revision).toBeUndefined();
     });
 
-    it("AGY full 与 resume 交接均包含自主补齐约束，且旧反馈不冲掉当前职责边界", () => {
+    it("AGY 首次交接包含自主补齐约束，同会话恢复沿用当前职责上下文", () => {
       const workflowWithOldFeedback = createWorkflow({
         feedback: [
           "旧整改意见：编写测试执行审计工具并在 review 中核验",
@@ -153,18 +153,17 @@ describe("IT02 & IT03: 角色职责边界与交接完整性 (role-scope-handoff)
         directory: testDir,
       });
 
-      // 无论 full 还是 resume，instructions 必须明确包含主动识别并补齐约束
+      // 首次交接明确职责，同一原生会话不再重发交接约束。
       expect(fullPkg.instructions).toContain("主动识别并补齐");
       expect(fullPkg.instructions).toContain("不为调用 ID、清单或 hash 重跑测试");
       expect(fullPkg.instructions).toContain("不得借必要补齐新增业务、改选架构、扩大接口或顺手重构");
 
-      expect(resumePkg.instructions).toContain("按既定设计修复并主动补齐必要遗漏");
-      expect(resumePkg.instructions).toContain("不为调用 ID、清单或 hash 重跑测试");
+      expect(resumePkg.instructions).toBe("继续");
 
       const fullPrompt = nativeLaunchInstruction(testDir, "full");
       const resumePrompt = nativeLaunchInstruction(testDir, "resume");
       expect(fullPrompt).toContain("主动补齐");
-      expect(resumePrompt).toContain("主动补齐");
+      expect(resumePrompt).toBe("继续");
     });
 
     it("reviewContractContext 投影过滤旧 completion 中的待办，且注入不核验真实性指令", () => {
@@ -248,10 +247,16 @@ describe("IT02 & IT03: 角色职责边界与交接完整性 (role-scope-handoff)
 
     it("RT09: resolveMergeConflict 的 instructions 包含 executionScopeInstructions 且无只读/非实现限制", async () => {
       const runtime = new ProfileRuntime(env.engine, {} as any);
-      const workflow = createWorkflow();
+      const workflow = createWorkflow({ plan_hash: "hash-001" });
       const run = createRun({ purpose: "implement" });
       env.store.put("workflow", workflow.id, workflow.project_id, workflow);
-      env.store.put("plan", `${workflow.id}-${workflow.plan_revision}`, workflow.id, mockPlan);
+      env.store.put("project", workflow.project_id, workflow.project_id, { ...project(testDir), id: workflow.project_id });
+      env.store.put("workspace", "merge-workspace", workflow.id, { id: "merge-workspace", workflow_id: workflow.id, repo_id: "main", root: testDir });
+      env.store.put("plan", `${workflow.id}-${workflow.plan_revision}`, workflow.id, {
+        id: `${workflow.id}-${workflow.plan_revision}`, revision: workflow.plan_revision, hash: workflow.plan_hash, plan: mockPlan,
+      });
+      publishPlanFixture(env.engine, workflow.id);
+      env.store.put("approval", `${workflow.id}-${workflow.plan_revision}`, workflow.id, { plan_hash: workflow.plan_hash });
       const conflictReq: MergeConflictRequest = {
         id: "mcr-1",
         workflow_id: workflow.id,
@@ -328,7 +333,7 @@ describe("IT02 & IT03: 角色职责边界与交接完整性 (role-scope-handoff)
           role: "executor",
         },
       );
-      expect(clarificationPrompt).toContain("请补充刚才这轮的结果意图");
+      expect(clarificationPrompt).toBe("请按当前阶段约定的格式说明刚才的结果。");
 
       // 2. 执行分支的 prompt 明确说明不从意图澄清/历史材料继承任何“证明未完成”待办
       const execPrompt = invokePrompt(

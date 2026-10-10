@@ -33,9 +33,9 @@ it.each([
     vi.spyOn(ModelAccessService.prototype, "assertFrozenAccess").mockReturnValue({} as any);
     bridge = new AgyWorkflowBridge(service, {} as ProcessManager, undefined, s.engine);
     const run = { id: "diagnostic-run", workflow_id: w.id, profile: { adapterId: "agy" },
-      frozen_invocation: { adapterId: "agy", modelToken: "fixture-model", accountScope: "fixture" } } as Run;
+      frozen_invocation: { adapterId: "agy", modelToken: "gemini-3.8-flash-high", accountScope: "fixture" } } as Run;
     let caught: unknown;
-    try { await bridge.prepareProfileRun(w.id, run, "fixture-model"); } catch (err) { caught = err; }
+    try { await bridge.prepareProfileRun(w.id, run, "gemini-3.8-flash-high"); } catch (err) { caught = err; }
     expect(caught).toBeInstanceOf(FlowError);
     expect(caught).toMatchObject({ code: code === "agy_model_probe_timeout" ? "AGY_MODEL_PROBE_TIMEOUT" : "AGY_ACCOUNT_UNAVAILABLE",
       details: { code, error_class: errorClass } });

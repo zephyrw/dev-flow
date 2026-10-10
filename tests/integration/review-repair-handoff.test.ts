@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { setup, project, plan } from "../helpers.js";
+import { setup, project, plan, publishPlanFixture } from "../helpers.js";
 import { ProfileRuntime } from "../../packages/runtime/src/profile-runtime.js";
 import type { Run, Workflow } from "../../packages/contracts/src/index.js";
 import type { ProcessManager } from "../../packages/process/src/manager.js";
+import { readFileSync } from "node:fs";
 
 let s: ReturnType<typeof setup>;
 const wid = "review-handoff";
@@ -20,7 +21,9 @@ beforeEach(() => {
     run_id: "original-review", review_request_id: "review-request", quality_policy_version: 2,
     version: 3, plan_revision: 1, plan_hash: "approved-hash", environment_revision: 0, feedback: [], created_at: time, updated_at: time };
   s.store.put("workflow", wid, "p1", w);
-  s.store.put("plan", `${wid}-1`, wid, { revision: 1, hash: "approved-hash", plan: { ...plan("project-hash", "a".repeat(40)), task_model: "native-v2" } });
+  s.store.put("workspace", `${wid}-workspace`, wid, { id: `${wid}-workspace`, workflow_id: wid, repo_id: "main", root: s.root, source_root: s.root });
+  s.store.put("plan", `${wid}-1`, wid, { id: `${wid}-1`, revision: 1, hash: "approved-hash", plan: { ...plan("project-hash", "a".repeat(40)), task_model: "native-v2", markdown: "# Approved repair plan\nRepair the original review findings within scope.\n" } });
+  publishPlanFixture(s.engine, wid);
   s.store.put("run", "original-review", wid, { id: "original-review", workflow_id: wid, plan_revision: 1,
     adapter: "codex", purpose: "quality_review", protocol: "lightweight", stage: "quality_before_human",
     status: "running", started_at: time, package_hash: "review-package" });
@@ -53,7 +56,12 @@ it("carries all ten original findings from receiveReview through the assignment 
   expect(result.source_review.run_id).toBe("original-review");
   expect(result.repair_instructions).toBe(assignment.instructions);
   expect(result.instructions).toContain("按问题编号逐项修复");
-  expect(result.plan).toEqual(s.engine.plan(wid));
+  const approved = s.engine.plan(wid);
+  expect(result.plan).toMatchObject({ id: approved.id, revision: approved.revision, hash: approved.hash,
+    material_id: approved.material_id, markdown: approved.plan.markdown });
+  expect(readFileSync(result.plan.path, "utf8")).toBe(approved.plan.markdown);
+  expect(result.plan.plan.scope).toMatchObject({ ...approved.plan.scope, allowed_paths: [], repository_paths: {} });
+  expect(s.engine.plan(wid)).toEqual(approved);
 });
 
 it("backfills a legacy assignment and review lacking run_id from the exact saved review pointer", async () => {

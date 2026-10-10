@@ -58,6 +58,7 @@ class RecordingStopPort implements StopPort {
 }
 
 class RecordingRunPort implements RecoveryRunPort {
+  constructor(private readonly store: Store) {}
   requests: RecoveryRunRequest[] = [];
   runs: Run[] = [];
   createRun(request: RecoveryRunRequest): Run {
@@ -77,6 +78,7 @@ class RecordingRunPort implements RecoveryRunPort {
       continuation: request.continuation,
     };
     this.runs.push(run);
+    this.store.put("run", run.id, request.workflow_id, run);
     return run;
   }
 }
@@ -96,7 +98,7 @@ function openSession(purpose: Run["purpose"] = "implement", stage = "exec") {
     stop,
     new FakeClock(),
   );
-  const runPort = new RecordingRunPort();
+  const runPort = new RecordingRunPort(store);
   const recovery = new ConversationRecovery({
     store,
     conversations,
@@ -253,6 +255,9 @@ async function reusedRootSession(withOldPause = false) {
   const observe = (runId: string, nativeId: string, hour: string) => {
     const timestamp = `2026-09-20T${hour}:00:00.000Z`;
     s.store.put("run", runId, "wf1", { ...first, id: runId, started_at: timestamp });
+    s.store.put("workflow", "wf1", "proj1", {
+      ...s.store.must<Workflow>("workflow", "wf1"), run_id: runId,
+    });
     return s.conversations.applyEvent(ctx({ run_id: runId, root_native_id: nativeId }), event({
       source_id: `reuse-${runId}`, source_seq: "1", root_native_id: nativeId, session_native_id: nativeId,
       occurred_at: timestamp, payload: { status: "running" },
@@ -341,12 +346,24 @@ describe("reused native roots follow the latest execution instead of node creati
 });
 
 async function observeChildPaused(conversations: ConversationService, controls: ConversationControlService, controlId: string) {
-  // Root-only native stop does not itself confirm child exit. Simulate the
-  // adapter's subsequent child state observation before asking to resume.
+  // An unknown tree-exit receipt requires subsequent observations for all live targets.
+  conversations.applyEvent(ctx(), event({ source_id: "src-run1", source_seq: "49", kind: "state",
+    session_native_id: "root-native", payload: { status: "paused", reason: "user_pause" } }));
   conversations.applyEvent(ctx(), event({ source_id: "src-run1", source_seq: "50", kind: "state",
     session_native_id: "child-native", parent_native_id: "root-native", payload: { status: "paused", reason: "user_pause" } }));
   const settled = await controls.reconcile("wf1", controlId);
   expect(settled.unconfirmed_count).toBe(0);
+}
+
+function observeResumedNode(store: Store, conversations: ConversationService, runId: string,
+  nativeId: string, parentNativeId: string, status: string) {
+  store.put("workflow", "wf1", "proj1", { ...store.must<Workflow>("workflow", "wf1"), run_id: runId });
+  store.put("run", runId, "wf1", { ...store.must<Run>("run", runId), status: "running" });
+  const context = ctx({ run_id: runId });
+  conversations.applyEvent(context, event({ source_id: `resume-${runId}`, source_seq: "1",
+    session_native_id: "root-native", payload: { status: "running" } }));
+  return conversations.applyEvent(context, event({ source_id: `resume-${runId}`, source_seq: "2",
+    session_native_id: nativeId, parent_native_id: parentNativeId, payload: { status } })).node!;
 }
 
 describe("SA-I10 quota restore reuses purpose and treats delivered as not observed", () => {
@@ -390,6 +407,7 @@ describe("SA-I10 quota restore reuses purpose and treats delivered as not observ
     expect(runPort.requests[0]?.purpose).toBe("implement");
     expect(store.get<Run>("run", "run1")?.plan_revision).toBe(0);
     expect(store.get<Run>("run", "run1")?.package_hash).toBe("pkg");
+    observeResumedNode(store, conversations, arranged.manifest.target_run_id, "child-native", "root-native", "running");
     const observed = recovery.observeAttempt("wf1", {
       conversation_id: child.id,
       run_id: arranged.manifest.target_run_id,
@@ -484,8 +502,9 @@ describe("SA-I11 nested restore native resume and confirmed recreate", () => {
     expect(pending.some((item) => item.native_session_id === "done-native")).toBe(
       false,
     );
+    const recreatedNode = observeResumedNode(store, conversations, arranged.manifest.target_run_id, "new-lost-native", "parent-native", "starting");
     const recreated = recovery.observeAttempt("wf1", {
-      conversation_id: "cnv-new-lost",
+      conversation_id: recreatedNode.id,
       run_id: arranged.manifest.target_run_id,
       status: "starting",
       parent_id: parent.id,
@@ -497,16 +516,17 @@ describe("SA-I11 nested restore native resume and confirmed recreate", () => {
 
 describe("SA-I12 quota timer, pause, config change and duplicate recover", () => {
   it("lets only one resume request create a run when outbox and recover race", async () => {
-    const { conversations, controls, recovery, runPort, store } = openSession();
+    const { conversations, controls, recovery, runPort, store, stop } = openSession();
     const root = discoverRoot(conversations);
     spawnChild(conversations, "child-native", "root-native", "2");
+    stop.stillAlive.add(root.id);
     const paused = await controls.pauseTree("wf1", {
       request_id: "pause-race",
       action: "pause",
       root_id: root.id,
       expected_generation: 0,
     });
-    expect(paused.unconfirmed_count).toBe(1);
+    expect(paused.unconfirmed_count).toBe(2);
     await observeChildPaused(conversations, controls, paused.control.id);
     const first = await recovery.arrangeRecovery(
       "wf1",
@@ -524,9 +544,10 @@ describe("SA-I12 quota timer, pause, config change and duplicate recover", () =>
   });
 
   it("does not resume a quota timer after user pause, and recreates when the next tool changed", async () => {
-    const { store, conversations, controls, recovery } = openSession();
+    const { store, conversations, controls, recovery, stop } = openSession();
     const root = discoverRoot(conversations);
     spawnChild(conversations, "child-native", "root-native", "2");
+    stop.stillAlive.add(root.id);
     store.put("model_retry", "wf1", "wf1", {
       id: "wf1",
       run_id: "run1",
@@ -541,7 +562,7 @@ describe("SA-I12 quota timer, pause, config change and duplicate recover", () =>
       root_id: root.id,
       expected_generation: 0,
     });
-    expect(paused.unconfirmed_count).toBe(1);
+    expect(paused.unconfirmed_count).toBe(2);
     await observeChildPaused(conversations, controls, paused.control.id);
     expect(store.get("model_retry", "wf1")).toBeUndefined();
     store.put("model_retry", "wf1", "wf1", {
@@ -597,7 +618,7 @@ describe("SA-I12 quota timer, pause, config change and duplicate recover", () =>
 
 describe("SA-I13 native failure, quota again, missing reset, live leftover", () => {
   it("marks partial when native resume fails and rejects live leftovers", async () => {
-    const { conversations, recovery } = openSession();
+    const { store, conversations, recovery } = openSession();
     const root = discoverRoot(conversations);
     const child = spawnChild(conversations, "child-native", "root-native", "2");
     conversations.applyEvent(
@@ -626,6 +647,7 @@ describe("SA-I13 native failure, quota again, missing reset, live leftover", () 
       resumeBody(root.id, "fail-native"),
       { reason: "user_resume" },
     );
+    observeResumedNode(store, conversations, arranged.manifest.target_run_id, "child-native", "root-native", "failed");
     const failed = recovery.observeAttempt("wf1", {
       conversation_id: child.id,
       run_id: arranged.manifest.target_run_id,

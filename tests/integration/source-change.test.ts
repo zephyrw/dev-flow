@@ -1,7 +1,7 @@
 import { expect, it } from "vitest";
 import { join } from "node:path";
 import { readFileSync, writeFileSync } from "node:fs";
-import { setup } from "../helpers.js";
+import { setup, testConsoleHeaders } from "../helpers.js";
 import { seedSourceChange } from "../fixtures/source-change.js";
 import { SourceChangeService } from "../../packages/core/src/source-change.js";
 import { buildServer } from "../../apps/api/src/server.js";
@@ -10,8 +10,8 @@ import { git } from "../../packages/git/src/git.js";
 import { changesFromInitialInput } from "../../packages/git/src/initial-state.js";
 
 const headers = {
-  host: "localhost:14810",
-  origin: "http://localhost:14810",
+  host: testConsoleHeaders().host,
+  origin: testConsoleHeaders().origin,
   "content-type": "application/json",
 };
 

@@ -1,9 +1,9 @@
 import { it, expect } from "vitest";
 import { once } from "node:events";
-import { setup, project, plan } from "../helpers.js";
+import { setup, project, plan, testConsoleHeaders } from "../helpers.js";
 import { buildServer } from "../../apps/api/src/server.js";
 import { objectHash } from "../../packages/core/src/util.js";
-const headers = { host: "localhost:14810", origin: "http://localhost:14810" };
+const headers = { host: testConsoleHeaders().host, origin: testConsoleHeaders().origin };
 
 it("local console opens without pairing, cookies or login, including old credentials", async () => {
   const s = setup();
@@ -52,7 +52,7 @@ it("local console opens without pairing, cookies or login, including old credent
 
 it("button approval binds the viewed version, rejects foreign pages and repeated submissions", async () => {
   const s = setup(),
-    p = project(".");
+    p = project(s.root);
   s.store.put("project", p.id, p.id, p);
   const w = s.engine.create(
     {

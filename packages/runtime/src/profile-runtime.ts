@@ -910,10 +910,11 @@ export class ProfileRuntime {
     }
     const messages = selectRunInputMessages(this.engine.store, w.id, run);
     const userInput = runUserInputText(this.engine.store, run, messages);
+    const userFollowup = userInput !== undefined && !!previous?.id;
     // A user message is a complete turn, not an occasion to regenerate role,
     // recovery, task or cross-tool instructions around their text.
-    const crossToolHandoff = userInput !== undefined ? undefined : sessionHandoffForRun(this.engine.store, run, previous?.id);
-    const followup = userInput !== undefined || (!crossToolHandoff && isSessionFollowup(this.engine.store, run, previous?.id, messages));
+    const crossToolHandoff = userFollowup ? undefined : sessionHandoffForRun(this.engine.store, run, previous?.id);
+    const followup = userFollowup || (!crossToolHandoff && isSessionFollowup(this.engine.store, run, previous?.id, messages));
     const inputFiles = resolveRunConversationAttachments(
       this.engine, w, profile, adapter.subagents?.file_input,
       followup ? new Set(messages.flatMap(message => message.attachment_ids ?? [])) : undefined,
@@ -943,11 +944,11 @@ export class ProfileRuntime {
       ? followupText(this.engine.store, run, messages)
       : invokePrompt(purpose, handoff, schemaPath);
     const inputFeedback = this.engine.store.get<{ message: string }>("model_input_feedback", run.id)?.message;
-    const prompt = userInput !== undefined ? userInput : [basePrompt, inputFeedback, ...imageProblems].filter(Boolean).join("\n\n");
+    const prompt = userFollowup && userInput !== undefined ? userInput : [basePrompt, userInput, inputFeedback, ...imageProblems].filter(Boolean).join("\n\n");
     const inputReceipt: SessionInputReceipt = {
       run_id: run.id, conversation_id: previous?.id, kind: crossToolHandoff ? "cross_tool_handoff" : followup ? "followup" : "stage_start",
       stage_key: inputStageKey(run), message_ids: messages.map(message => message.message_id), state: "prepared",
-      user_input: userInput !== undefined,
+      user_input: userFollowup,
       target_adapter: profile.adapterId,
       ...(crossToolHandoff ? { handoff_source_run_id: crossToolHandoff.source_run_id,
         handoff_context_hash: crossToolHandoff.context_hash } : {}),
@@ -983,13 +984,13 @@ export class ProfileRuntime {
       frozenInvocation: run.frozen_invocation,
       handoffDocPath: followup ? undefined : handoff,
       outputPath: output,
-      schemaPath: userInput !== undefined ? undefined : schemaPath,
+      schemaPath: userFollowup ? undefined : schemaPath,
       timeoutMs: Math.max(
         1,
         (run.deadline_at ?? Date.now() + 300000) - Date.now(),
       ),
       prompt,
-      promptKind: userInput !== undefined ? "user" as const : "stage" as const,
+      promptKind: userFollowup ? "user" as const : "stage" as const,
       inputAttachments: inputFiles.attachments,
     };
     if (adapter.prepareInputAttachments && inputFiles.attachments.length) {
@@ -1168,6 +1169,18 @@ export class ProfileRuntime {
       conversation = previous?.id,
       failure: string | undefined,
       stderrTail = "";
+    let stderrClassification: ReturnType<typeof classifyFailure> | undefined;
+    let failureFromStderr = false;
+    let pendingStderrDiagnostic = "";
+    const classifyStderrRecord = (record: string) => {
+      const classified = classifyFailure(record);
+      // Keep only a fixed failure fact; authentication text is never retained
+      // in the public diagnostic tail or persisted as the failure reason.
+      if (classified.code !== "EXECUTION_FAILED" &&
+          (!stderrClassification || classified.code === "MODEL_CONNECTION_FAILED")) {
+        stderrClassification = classified;
+      }
+    };
     let permissionFailure: FlowError | undefined;
     const permissionCalls = new AgyDeniedCalls((session, index) => agyRecords.read(session, index));
     let lastImagePaths: string[] = [];
@@ -1353,8 +1366,21 @@ export class ProfileRuntime {
       finalChunk = false,
     ) => {
       const diagnosticInput = typeof data === "string" ? data : diagnosticDecoders[stream].write(data);
+      const decodedDiagnostic = diagnosticInput + (finalChunk ? diagnosticDecoders[stream].end() : "");
+      if (stream === "stderr") {
+        pendingStderrDiagnostic += decodedDiagnostic;
+        let newline: number;
+        while ((newline = pendingStderrDiagnostic.indexOf("\n")) >= 0) {
+          classifyStderrRecord(pendingStderrDiagnostic.slice(0, newline));
+          pendingStderrDiagnostic = pendingStderrDiagnostic.slice(newline + 1);
+        }
+        if (finalChunk || pendingStderrDiagnostic.length > 64 * 1024) {
+          classifyStderrRecord(pendingStderrDiagnostic);
+          pendingStderrDiagnostic = finalChunk ? "" : pendingStderrDiagnostic.slice(-16000);
+        }
+      }
       const safeDiagnostic = diagnosticStreams[stream].push(
-        diagnosticInput + (finalChunk ? diagnosticDecoders[stream].end() : ""), finalChunk,
+        decodedDiagnostic, finalChunk,
       );
       if (safeDiagnostic) {
         appendFileSync(join(root, stream + ".jsonl"), safeDiagnostic);
@@ -1409,9 +1435,14 @@ export class ProfileRuntime {
       consume("stdout", "", true);
       consume("stderr", "", true);
       if (agyResult?.error) {
-        const stderrCode = classifyFailure(stderrTail).code;
+        const safeStderr = classifyFailure(stderrTail);
+        const stderrCode = safeStderr.code === "EXECUTION_FAILED"
+          ? stderrClassification?.code ?? safeStderr.code : safeStderr.code;
         const stderrFailed = stderrCode !== "EXECUTION_FAILED";
-        if (stderrFailed) failure ??= redact(stderrTail).trim();
+        if (stderrFailed && !failure) {
+          failure = `${stderrCode}: ${redact(stderrTail).trim()}`;
+          failureFromStderr = true;
+        }
         const reported = accountTurn.reportedFailure(agyResult.response);
         if (reported) failure ??= `${reported.code}: ${reported.message}`;
         const historical = exit.code === 0 && !exit.termination_reason &&
@@ -1503,7 +1534,9 @@ export class ProfileRuntime {
       if (recovered) return { answer: recovered };
       const diagnostic =
         failure ?? (redact(stderrTail).trim() || "CLI 未正常完成");
-      const classified = classifyFailure(diagnostic);
+      const publicClassification = classifyFailure(diagnostic);
+      const classified = publicClassification.code === "EXECUTION_FAILED" && stderrClassification
+        ? stderrClassification : publicClassification;
       const code =
         this.engine.store.get("run_stop", run.id) ||
         exit.termination_reason === "manual"
@@ -1519,7 +1552,7 @@ export class ProfileRuntime {
       throw normalizeRuntimeFailure(
         new FlowError(code, diagnostic, 422, {
           diagnostic,
-          diagnostic_source: failure === redact(stderrTail).trim() ? "stderr" : "provider_result",
+          diagnostic_source: failureFromStderr || !failure || failure === redact(stderrTail).trim() ? "stderr" : "provider_result",
           exit_code: exit.code,
           termination_reason: exit.termination_reason,
           adapter: profile.adapterId,

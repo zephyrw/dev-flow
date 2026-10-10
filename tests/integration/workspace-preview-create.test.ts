@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, existsSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, normalize, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -7,6 +7,7 @@ import { Store } from "../../packages/store/src/store.js";
 import { CreateWorkflowService, generateWorkflowId } from "../../packages/core/src/create-workflow.js";
 import { previewWorktreePath } from "../../packages/git/src/workspace-paths.js";
 import type { Workspace } from "../../packages/contracts/src/index.js";
+import { seedCreateAccess } from "../helpers.js";
 
 describe("CW2-T05: 工作区预览与创建一致性集成测试", () => {
   let tempDir: string;
@@ -15,10 +16,11 @@ describe("CW2-T05: 工作区预览与创建一致性集成测试", () => {
   let service: CreateWorkflowService;
 
   beforeEach(() => {
-    tempDir = mkdtempSync(join(tmpdir(), "devflow-preview-create-"));
+    tempDir = mkdtempSync(join(realpathSync(tmpdir()), "devflow-preview-create-"));
     repoDir = join(tempDir, "sample-repo");
     const dbPath = join(tempDir, "test.db");
     store = new Store(dbPath);
+    seedCreateAccess(store);
     service = new CreateWorkflowService(store);
 
     execFileSync("git", ["init", repoDir]);

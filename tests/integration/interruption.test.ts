@@ -35,6 +35,7 @@ for (const cancel of [true, false])
         }),
       stop: async () => {
         rejectRun(Error("process exited after termination"));
+        return { status: "confirmed_exited" };
       },
       review: async () => ({}),
       check: async () => {

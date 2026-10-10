@@ -12,6 +12,8 @@ import {
 } from "../packages/contracts/src/index.js";
 import { hash, objectHash, now } from "../packages/core/src/util.js";
 import { git } from "../packages/git/src/git.js";
+import { resolveCreateProfiles, type CreateWorkflowRequest } from "../packages/core/src/create-workflow.js";
+import { collectExplicitProfiles, seedVerifiedAccess } from "../packages/core/src/access-guard.js";
 import {
   ensureTestInstanceDirs,
   loadTestInstanceConfig,
@@ -39,6 +41,18 @@ export function setup() {
   const store = new Store(sqliteFile);
   const engine = new Engine(store, config);
   return { root, store, engine, config };
+}
+/** Match injected requests to the same console origin used by the fixture. */
+export function testConsoleHeaders(config?: Pick<ReturnType<typeof setup>["config"], "server">) {
+  const origin = config?.server.human_origin ?? (usesIsolatedTestRoot()
+    ? loadTestInstanceConfig().humanOrigin : "http://localhost:14810");
+  return { host: new URL(origin).host, origin };
+}
+/** Positive creation fixtures satisfy model admission in their isolated Store. */
+export function seedCreateAccess(store: Store, input: Partial<CreateWorkflowRequest> = {}) {
+  const { plannerProfile, executorProfile, roleOverrides } = resolveCreateProfiles(store, input);
+  for (const profile of collectExplicitProfiles(plannerProfile, executorProfile, roleOverrides))
+    seedVerifiedAccess(store, profile);
 }
 export async function repository(root: string, name = "repo") {
   const repo = join(root, name);
@@ -162,6 +176,11 @@ export async function prepared() {
     "execute",
     { run_id: "run-test" },
   );
+  s.store.put("run", "run-test", w.id, {
+    id: "run-test", workflow_id: w.id, plan_revision: current.plan_revision,
+    adapter: "codex", stage: "execute", purpose: "implement", protocol: "legacy",
+    status: "running", started_at: now(), package_hash: objectHash(s.engine.plan(w.id)),
+  });
   const principal = {
     role: "worker" as const,
     workflow_id: w.id,

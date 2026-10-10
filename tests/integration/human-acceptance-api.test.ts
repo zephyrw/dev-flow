@@ -1,13 +1,13 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { buildServer } from "../../apps/api/src/server.js";
-import { setup, plan, project } from "../helpers.js";
+import { setup, plan, project, testConsoleHeaders } from "../helpers.js";
 import { objectHash } from "../../packages/core/src/util.js";
 
 const open: Array<{ app: Awaited<ReturnType<typeof buildServer>>; store: ReturnType<typeof setup>["store"] }> = [];
 afterEach(async () => {
   for (const { app, store } of open.splice(0)) { await app.close(); store.close(); }
 });
-const headers = { host: "localhost:14810", origin: "http://localhost:14810", "content-type": "application/json" };
+const headers = { host: testConsoleHeaders().host, origin: testConsoleHeaders().origin, "content-type": "application/json" };
 
 async function fixture() {
   const s = setup();

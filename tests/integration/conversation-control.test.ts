@@ -174,6 +174,11 @@ function latest(
 function openWorld(port?: RecordingStopPort, clock?: FakeClock) {
   const store = new Store(":memory:");
   const conversations = new ConversationService(store);
+  conversations.setCapabilities("wf1", {
+    discovery: "native", activity: "native", stop: "owned-process-tree",
+    resume: "parent-instruction", readonly_delegation: "verified",
+    file_input: { text: true, image: true, binary: false },
+  });
   const stop = port ?? new RecordingStopPort();
   const time = clock ?? new FakeClock();
   const controls = new ConversationControlService(
@@ -232,14 +237,16 @@ describe("SA-I06 conversation control tree pause", () => {
     expect(latest(conversations, grand.id)?.status).toBe("paused");
     const second = await controls.pauseTree("wf1", request);
     expect(second.control_id).toBe(first.control_id);
-    expect(stop.calls.map((item) => item.conversation_id).sort()).toEqual(
+    expect(stop.calls.map((item) => item.conversation_id)).toEqual([root.id]);
+    expect(first.targets.map((item) => item.conversation_id).sort()).toEqual(
       [root.id, child.id, grand.id].sort(),
     );
+    expect(first.targets.every((item) => item.confirmation === "owned_process_tree")).toBe(true);
   });
 });
 
 describe("SA-I07 late spawn and unconfirmed stop", () => {
-  it("stops a late spawn during pause and does not fake a full stop from root exit", async () => {
+  it("retains a late spawn during pause until the owned tree exit is confirmed", async () => {
     const port = new RecordingStopPort();
     let releaseRoot: () => void = () => {};
     const { conversations, controls } = openWorld(port);
@@ -251,7 +258,7 @@ describe("SA-I07 late spawn and unconfirmed stop", () => {
       }),
     );
     const child = spawnChild(conversations, "child-native", "root-native", "2");
-    port.results.set(root.id, { accepted: true, confirmation: "exited" });
+    port.results.set(root.id, { accepted: true, confirmation: "unknown" });
     port.results.set(child.id, { accepted: true, confirmation: "unknown" });
     const pending = controls.pauseTree("wf1", {
       request_id: "pause-late",
@@ -266,12 +273,11 @@ describe("SA-I07 late spawn and unconfirmed stop", () => {
     const result = await pending;
     expect(result.status).toBe("pending");
     expect(result.status).not.toBe("complete");
-    expect(latest(conversations, root.id)?.status).toBe("paused");
+    expect(latest(conversations, root.id)?.status).toBe("pausing");
     expect(latest(conversations, child.id)?.status).toBe("pausing");
     expect(latest(conversations, late.id)?.status).toBe("pausing");
-    expect(port.calls.some((item) => item.conversation_id === late.id)).toBe(
-      true,
-    );
+    expect(result.targets.some((item) => item.conversation_id === late.id)).toBe(true);
+    expect(port.calls.map((item) => item.conversation_id)).toEqual([root.id]);
   });
 
   it("marks partial when a slow stop stays unconfirmed past 30 seconds", async () => {
@@ -299,14 +305,14 @@ describe("SA-I07 late spawn and unconfirmed stop", () => {
 describe("SA-I08 generation race and completed tasks", () => {
   it("does not stop a new run or rewrite a child that completed during pause", async () => {
     const port = new RecordingStopPort();
-    let releaseChild: () => void = () => {};
+    let releaseTree: () => void = () => {};
     const { conversations, controls, store } = openWorld(port);
     const root = discoverRoot(conversations);
     const child = spawnChild(conversations, "child-native", "root-native", "2");
     port.gates.set(
-      child.id,
+      root.id,
       new Promise<void>((resolve) => {
-        releaseChild = resolve;
+        releaseTree = resolve;
       }),
     );
     const pending = controls.pauseTree("wf1", {
@@ -316,7 +322,7 @@ describe("SA-I08 generation race and completed tasks", () => {
       expected_generation: 0,
     });
     await waitFor(() =>
-      port.calls.some((item) => item.conversation_id === child.id),
+      port.calls.some((item) => item.conversation_id === root.id),
     );
     conversations.applyEvent(
       ctx(),
@@ -329,12 +335,13 @@ describe("SA-I08 generation race and completed tasks", () => {
         payload: { status: "completed" },
       }),
     );
-    releaseChild();
+    releaseTree();
     const raced = await pending;
     expect(latest(conversations, child.id)?.status).toBe("completed");
     expect(raced.targets.find((item) => item.conversation_id === child.id)?.status).toBe(
       "completed",
     );
+    putWorkflow(store, "wf1", "run2");
     conversations.applyEvent(
       ctx({ run_id: "run2" }),
       event({
@@ -474,6 +481,7 @@ describe("SA-I09 restart and isolation", () => {
     );
     expect(complete.json().status).toBe("complete");
     port.defaultResult = { accepted: true, confirmation: "unknown" };
+    putWorkflow(store, "wf1", "run-pending");
     const root2 = discoverRoot(
       conversations,
       ctx({
@@ -501,6 +509,7 @@ describe("SA-I09 restart and isolation", () => {
       url: `/api/workflows/wf1/conversation-controls/${pending.json().control_id}`,
     });
     expect(read.json().status).toBe("partial");
+    putWorkflow(store, "wf1", "run2");
     conversations.applyEvent(
       ctx({ run_id: "run2" }),
       event({

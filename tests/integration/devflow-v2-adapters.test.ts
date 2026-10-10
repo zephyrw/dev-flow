@@ -235,7 +235,7 @@ describe("IT-ADAPTERS: 原生适配器协议、增量流式解码、Profile 快�
 
     for (const toolId of tools) {
       const adapter = registry.mustGet(toolId);
-      const planInvocation = adapter.buildInvocation(
+      const buildPlanInvocation = () => adapter.buildInvocation(
         {
           workflowId: "wf_1",
           runId: "run_1",
@@ -255,9 +255,14 @@ describe("IT-ADAPTERS: 原生适配器协议、增量流式解码、Profile 快�
         "C:/fake/bin/tool.exe",
       );
 
-      // 只读规划下必须具备限制参数或提示约束
-      expect(planInvocation.executable).toBe("C:/fake/bin/tool.exe");
-      expect(Array.isArray(planInvocation.args)).toBe(true);
+      // A tool without a safe headless readonly mode refuses before spawn.
+      if (toolId === "kimi-code") {
+        expect(buildPlanInvocation).toThrowError(expect.objectContaining({ code: "READ_ONLY_UNSUPPORTED" }));
+      } else {
+        const planInvocation = buildPlanInvocation();
+        expect(planInvocation.executable).toBe("C:/fake/bin/tool.exe");
+        expect(Array.isArray(planInvocation.args)).toBe(true);
+      }
 
       const execInvocation = adapter.buildInvocation(
         {

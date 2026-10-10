@@ -1,5 +1,5 @@
 import { it, expect } from "vitest";
-import { setup, repository, project, proof } from "../helpers.js";
+import { setup, repository, project, proof, seedCreateAccess } from "../helpers.js";
 import { CreateWorkflowService } from "../../packages/core/src/create-workflow.js";
 import { LocalRuntime } from "../../packages/runtime/src/runtime.js";
 import { git } from "../../packages/git/src/git.js";
@@ -24,6 +24,7 @@ it(
       modelId: "fixture-only",
       options: { prefixArgs: [resolve("tests/fixtures/native-cli.mjs")] },
     });
+    seedCreateAccess(s.store, { planner_profile_id: "profile-codex" });
     const w = new CreateWorkflowService(s.store).execute({
       request_id: "merge",
       workspace_root: r.repo,
@@ -31,6 +32,11 @@ it(
       workspace_mode: "new_worktree",
       planner_profile_id: "profile-codex",
     }).workflow;
+    // This regression covers legacy coordinator delivery when main advances.
+    // Policy 2 planner-owned commits are covered by planner-commit-git.
+    w.quality_policy_version = 1;
+    s.store.put("workflow", w.id, p.id, w);
+    s.store.put("preserve_quality_policy", w.id, w.id, true);
     const native = new LocalRuntime(s.engine);
     let advanced = false;
     s.engine.runtime = {
@@ -57,7 +63,7 @@ it(
         await s.engine.dispatch();
         const current = s.engine.get(w.id);
         if (
-          ["BLOCKED", "COMMIT_PARTIAL"].includes(current.state) &&
+          ["BLOCKED", "COMMIT_PARTIAL", "WAITING_INPUT"].includes(current.state) &&
           current.state !== state
         )
           throw Error(JSON.stringify(current.blocker));

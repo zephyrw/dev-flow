@@ -2,8 +2,8 @@ import {
   GitDeliveryCoordinator,
   mergeConflictResolutionInstructions,
 } from "../../packages/git/src/delivery-coordinator.js";
-import { describe, it, expect } from "vitest";
-import { setup, repository, project, proof } from "../helpers.js";
+import { describe, it, expect, vi } from "vitest";
+import { setup, repository, project, proof, seedCreateAccess } from "../helpers.js";
 import { CreateWorkflowService } from "../../packages/core/src/create-workflow.js";
 import { LocalRuntime } from "../../packages/runtime/src/runtime.js";
 import { git } from "../../packages/git/src/git.js";
@@ -18,6 +18,7 @@ import type {
 import { MergeConflictReceiptSchema } from "../../packages/contracts/src/merge-conflict.js";
 import { fixture, cleanup } from "../fixtures/native-flow.js";
 import { seedVerifiedAccess } from "../../packages/core/src/access-guard.js";
+import type { Lease } from "../../packages/scheduler/src/scheduler.js";
 
 describe("DevFlow v2 Git 冲突模型修复与终态保护", () => {
   it(
@@ -38,6 +39,7 @@ describe("DevFlow v2 Git 冲突模型修复与终态保护", () => {
       };
       s.store.put("tool_profile", "profile-codex", "global", profileCodex);
       seedVerifiedAccess(s.store, profileCodex);
+      seedCreateAccess(s.store, { planner_profile_id: "profile-codex" });
 
       const w = new CreateWorkflowService(s.store).execute({
         request_id: "conflict-main",
@@ -53,6 +55,25 @@ describe("DevFlow v2 Git 冲突模型修复与终态保护", () => {
       const native = new LocalRuntime(s.engine);
       let conflictInjected = false;
       let conflictResolved = false;
+      const deliver = GitDeliveryCoordinator.prototype.executeDelivery;
+      const deliverySpy = vi.spyOn(GitDeliveryCoordinator.prototype, "executeDelivery").mockImplementation(async function (this: GitDeliveryCoordinator, workflowId, message) {
+        const active = s.engine.get(workflowId);
+        const reads = s.store.list<Lease>("lease", workflowId).filter(lease =>
+          lease.run_id === active.run_id && lease.id.startsWith("read:"));
+        expect(reads.length).toBeGreaterThan(0);
+        const workspace = s.store.list<any>("workspace", workflowId)[0];
+        for (const root of [workspace.root, workspace.source_root]) {
+          expect(s.store.get<Lease>("lease", "write:" + root.toLowerCase())).toMatchObject({
+            owner: workflowId, run_id: active.run_id, status: "active",
+          });
+        }
+        try { return await deliver.call(this, workflowId, message); }
+        finally {
+          for (const lease of reads) expect(s.store.get("lease", lease.id)).toMatchObject({
+            id: lease.id, owner: lease.owner, run_id: lease.run_id, fence: lease.fence, status: lease.status,
+          });
+        }
+      });
 
       s.engine.runtime = {
         plan: (w, r) => native.plan(w, r),
@@ -157,6 +178,7 @@ describe("DevFlow v2 Git 冲突模型修复与终态保护", () => {
         expect(existsSync(ws.root)).toBe(false);
         expect(await git(r.repo, ["branch", "--list", ws.branch])).toBe("");
       } finally {
+        deliverySpy.mockRestore();
         if (
           ![
             "COMPLETED",
@@ -175,6 +197,78 @@ describe("DevFlow v2 Git 冲突模型修复与终态保护", () => {
       }
     },
   );
+
+  it.each(["foreign", "same-workflow"] as const)("a %s writer blocks review commit without changing HEAD or its lease", async ownership => {
+    const s = await fixture();
+    const runId = "current-review";
+    const current = s.engine.get(s.w.id);
+    s.store.put("workflow", current.id, current.project_id, {
+      ...current, state: "REVIEWING", stage: "review", run_id: runId,
+    });
+    s.store.put("run", runId, current.id, {
+      id: runId, workflow_id: current.id, plan_revision: current.plan_revision,
+      adapter: "codex", purpose: "quality_review", protocol: "lightweight",
+      stage: "review", status: "running", started_at: new Date().toISOString(), package_hash: "review",
+    });
+    const lock = "write:" + s.repo.toLowerCase();
+    const owner = ownership === "foreign" ? "other-workflow" : current.id;
+    const lease = s.engine.scheduler.acquire(owner, "other-live-run", [lock])![0]!;
+    const before = await git(s.repo, ["rev-parse", "HEAD"]);
+    const write = vi.fn(async () => {
+      writeFileSync(join(s.repo, "app.txt"), "unsafe commit\n");
+      await git(s.repo, ["add", "app.txt"]);
+      await git(s.repo, ["commit", "-m", "must never run"]);
+    });
+    try {
+      await expect((s.engine as any).withWorkspaceWrite(current.id, runId, write))
+        .rejects.toMatchObject({ code: "WORKSPACE_BUSY" });
+      expect(write).not.toHaveBeenCalled();
+      expect(await git(s.repo, ["rev-parse", "HEAD"])).toBe(before);
+      expect(readFileSync(join(s.repo, "app.txt"), "utf8")).toBe("before\n");
+      expect(s.store.get("lease", lock)).toEqual(lease);
+    } finally {
+      s.engine.scheduler.release(owner, "other-live-run", [lock], true);
+      await cleanup(s);
+    }
+  });
+
+  it("review commit preserves its existing write lease and releases only the new source lease", async () => {
+    const s = setup();
+    const r = await repository(s.root);
+    const p = project(r.repo);
+    s.store.put("project", p.id, "global", p);
+    const w = s.engine.create({ project_id: p.id, title: "owned commit locks", request: "retain locks",
+      complexity: "simple", workspace_mode: "new_worktree" }, "owned-commit-locks");
+    const [ws] = await s.engine.git.prepare(p, w.id, "new_worktree", { main: r.baseline });
+    const runId = "current-review";
+    s.store.put("workflow", w.id, p.id, { ...s.engine.get(w.id), state: "REVIEWING", stage: "review", run_id: runId });
+    s.store.put("run", runId, w.id, {
+      id: runId, workflow_id: w.id, plan_revision: 0, adapter: "codex",
+      purpose: "quality_review", stage: "review", status: "running", protocol: "lightweight",
+      started_at: new Date().toISOString(), package_hash: "review",
+    });
+    const lock = "write:" + ws!.root.toLowerCase();
+    const sourceLock = "write:" + r.repo.toLowerCase();
+    const lease = s.engine.scheduler.acquire(w.id, runId, [lock])![0]!;
+    try {
+      expect(s.store.get("lease", sourceLock)).toBeUndefined();
+      await (s.engine as any).withWorkspaceWrite(w.id, runId, async () => {
+        expect(s.store.get("lease", lock)).toEqual(lease);
+        expect(s.store.get("lease", sourceLock)).toMatchObject({ owner: w.id, run_id: runId, status: "active" });
+        writeFileSync(join(ws!.root, "app.txt"), "after\n");
+        await git(ws!.root, ["add", "app.txt"]);
+        await git(ws!.root, ["commit", "-m", "fix: fixture owned commit"]);
+      });
+      expect(await git(ws!.root, ["rev-parse", "HEAD"])).not.toBe(r.baseline);
+      expect(await git(ws!.root, ["show", "HEAD:app.txt"])).toBe("after");
+      expect(await git(r.repo, ["rev-parse", "HEAD"])).toBe(r.baseline);
+      expect(s.store.get("lease", lock)).toEqual(lease);
+      expect(s.store.get("lease", sourceLock)).toBeUndefined();
+    } finally {
+      s.engine.scheduler.release(w.id, runId, [lock], true);
+      s.store.close();
+    }
+  });
 
   it("未批准路径与模型异常退出时主工作区HEAD不变且保留工作树现场", async () => {
     const s = setup(),
@@ -643,7 +737,12 @@ function reviewingRun(
     started_at: new Date().toISOString(),
     package_hash: "pkg",
     profile,
+    dispatch_context: { purpose: "quality_review", review_phase: "after_human", source_run_id: "implementation-" + runId },
   };
+  s.store.put("run", "implementation-" + runId, w.id, {
+    ...run, id: "implementation-" + runId, purpose: "implement", stage: "execute",
+    status: "completed", dispatch_context: { purpose: "implement" },
+  });
   s.store.put("run", run.id, w.id, run);
   return run;
 }

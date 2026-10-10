@@ -1,11 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, existsSync, readFileSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, readFileSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { Store } from "../../packages/store/src/store.js";
 import { CreateWorkflowService } from "../../packages/core/src/create-workflow.js";
 import { FlowError } from "../../packages/contracts/src/index.js";
+import { seedCreateAccess } from "../helpers.js";
 
 describe("NV-I02 & NV-I13: 项目工作区归属与工作树路径集成测试", () => {
   let tempDir: string;
@@ -14,10 +15,11 @@ describe("NV-I02 & NV-I13: 项目工作区归属与工作树路径集成测试",
   let service: CreateWorkflowService;
 
   beforeEach(() => {
-    tempDir = mkdtempSync(join(tmpdir(), "devflow-ws-ownership-"));
+    tempDir = mkdtempSync(join(realpathSync(tmpdir()), "devflow-ws-ownership-"));
     repoDir = join(tempDir, "sample-repo");
     const dbPath = join(tempDir, "test.db");
     store = new Store(dbPath);
+    seedCreateAccess(store);
     service = new CreateWorkflowService(store);
 
     // 初始化测试 Git 仓库

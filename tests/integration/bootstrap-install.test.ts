@@ -6,6 +6,7 @@ import {
   rmSync,
   existsSync,
   readFileSync,
+  realpathSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, win32 } from "node:path";
@@ -135,7 +136,7 @@ function mockInstallerBundle(dir: string, exitCode: number, body = ""): string {
 let work: string;
 
 beforeAll(() => {
-  work = mkdtempSync(join(tmpdir(), "bootstrap-int-"));
+  work = mkdtempSync(join(realpathSync(tmpdir()), "bootstrap-int-"));
 });
 
 afterAll(() => {

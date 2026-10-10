@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { setup, repository, project, proof } from "../helpers.js";
+import { setup, repository, project, proof, testConsoleHeaders } from "../helpers.js";
 import { CreateWorkflowService } from "../../packages/core/src/create-workflow.js";
 import { seedVerifiedAccess } from "../../packages/core/src/access-guard.js";
 import { LocalRuntime } from "../../packages/runtime/src/runtime.js";
@@ -8,8 +8,8 @@ import { join, resolve } from "node:path";
 import { readFileSync } from "node:fs";
 import { git } from "../../packages/git/src/git.js";
 const headers = {
-  host: "localhost:14810",
-  origin: "http://localhost:14810",
+  host: testConsoleHeaders().host,
+  origin: testConsoleHeaders().origin,
   "content-type": "application/json",
 };
 describe("新任务真实 API/原生 CLI 进程/SQLite/Git", { timeout: 300000 }, () => {
@@ -38,7 +38,9 @@ describe("新任务真实 API/原生 CLI 进程/SQLite/Git", { timeout: 300000 }
     });
     const runtime = new LocalRuntime(s.engine);
     s.engine.runtime = runtime;
-    const app = await buildServer(s.engine);
+    const app = await buildServer(s.engine, { accountService: {
+      getRepository: () => ({}), syncActiveAccountFromHost: async () => {},
+    } as any });
     let id: string | undefined;
     const wait = async (state: string) => {
       const end = Date.now() + 90000;
@@ -170,7 +172,9 @@ describe("新任务真实 API/原生 CLI 进程/SQLite/Git", { timeout: 300000 }
       const confirmed = s.store.must<any>("acceptance", id!);
       expect(confirmed.snapshot_id).toBeUndefined();
       expect(confirmed.commit_snapshot_id).toBe(committed.snapshot_id);
-      expect(committed.snapshot_id).toBeTruthy();
+      // Lightweight completion commits the real Git tree without requiring a
+      // platform evidence snapshot. The acceptance binding remains authoritative.
+      expect(await git(repo.repo, ["rev-parse", "HEAD"])).not.toBe(repo.baseline);
       s.store.put("workflow", id!, committed.project_id, { ...committed, snapshot_id: "later-snapshot" });
       expect(s.engine.displayHumanAccepted(id!)).toBe(false);
       s.store.put("workflow", id!, committed.project_id, committed);

@@ -1,9 +1,9 @@
 import { attestFixture } from "../native-fixture.js";
 import { describe, it, expect, beforeEach } from "vitest";
-import { mkdirSync, writeFileSync, readFileSync, mkdtempSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync, mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { setup, repository, project, plan, proof } from "../helpers.js";
+import { setup, repository, project, plan, proof, publishPlanFixture } from "../helpers.js";
 import { objectHash } from "../../packages/core/src/util.js";
 import { NativeRunRecordReader } from "../../packages/evidence/src/native-run-records.js";
 import { WorkspaceFingerprintService } from "../../packages/workspace/src/fingerprint.js";
@@ -19,7 +19,7 @@ describe("DevFlow 原生执行改造审核缺陷回归套件 (R1~R10)", () => {
   let ri: { repo: string; baseline: string };
 
   beforeEach(async () => {
-    isolatedRoot = mkdtempSync(join(tmpdir(), "devflow-review-reg-"));
+    isolatedRoot = mkdtempSync(join(realpathSync(tmpdir()), "devflow-review-reg-"));
     ri = await repository(isolatedRoot);
   });
 
@@ -68,9 +68,6 @@ describe("DevFlow 原生执行改造审核缺陷回归套件 (R1~R10)", () => {
       },
       "create",
     );
-    s.engine.submitPlan(w.id, pl, w.version, "plan");
-    const pr = proof(s.engine, w.id, "approve");
-    s.engine.approve(w.id, pr.proof, pr.binding);
     s.store.put("workspace", "ws", w.id, {
       id: "ws",
       workflow_id: w.id,
@@ -81,6 +78,10 @@ describe("DevFlow 原生执行改造审核缺陷回归套件 (R1~R10)", () => {
       branch: "task/fixture",
       owned: true,
     });
+    s.engine.submitPlan(w.id, pl, w.version, "plan");
+    publishPlanFixture(s.engine, w.id);
+    const pr = proof(s.engine, w.id, "approve");
+    s.engine.approve(w.id, pr.proof, pr.binding);
     const runId = "run-" + w.id;
     s.engine.transition(w.id, ["QUEUED"], "EXECUTING", "execute", {
       run_id: runId,

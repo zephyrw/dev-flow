@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, it } from "vitest";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, unlinkSync, rmSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Store } from "../../packages/store/src/store.js";
@@ -15,7 +15,7 @@ let docs: DocumentService;
 const wid = "single-original";
 beforeEach(() => {
   store = new Store(":memory:");
-  root = mkdtempSync(join(tmpdir(), "devflow-single-document-"));
+  root = mkdtempSync(join(realpathSync(tmpdir()), "devflow-single-document-"));
   docs = new DocumentService(store, join(root, ".devflow"));
   store.put("project", "project", "project", { id: "project", primary_repo_id: "main", repositories: [{ id: "main", path: root }] });
   store.put("workflow", wid, "project", { id: wid, project_id: "project", plan_revision: 1, plan_hash: "contract-hash" });
@@ -23,7 +23,7 @@ beforeEach(() => {
     markdown: "legacy cached prose", design_ref: { content_hash: "stale-prose-hash" }, tasks: [], tests: [],
   } });
 });
-afterEach(() => store.close());
+afterEach(() => { store.close(); rmSync(root, { recursive: true, force: true }); });
 function planRef(path: string) {
   const p = store.must<any>("plan", `${wid}-1`);
   store.put("plan", p.id, wid, { ...p, plan: { ...p.plan, design_ref: { ...p.plan.design_ref, file_ref: path } } });
@@ -70,7 +70,7 @@ it("prefers the explicit design original over stale revision materials and docum
   planRef(original);
   store.put("project_material", "old-copy", wid, { id: "old-copy", workflow_id: wid, kind: "plan", revision: 1,
     workspace_id: "workspace", path: "wrong.md", source_hash: "old", status: "conflict" });
-  const doc = docs.publishDocument(wid, "plan", "# cached replacement", 2, join(root, "new-copy.md"));
+  const doc = docs.publishDocument(wid, "plan", "# cached replacement", 1, join(root, "new-copy.md"));
   expect(doc.path).toBe(original);
   expect(readPlanMaterial(store, wid, 1).markdown).toContain("User original");
   expect(existsSync(join(root, "new-copy.md"))).toBe(false);
@@ -89,8 +89,11 @@ it("supports relative file references and prioritizes explicit material_path ove
 });
 
 it("does not mask a missing referenced original with cached prose", () => {
-  planRef(join(root, "missing.md"));
-  expect(() => readPlanMaterial(store, wid, 1)).toThrow("项目计划原件不存在");
+  const missing = join(root, "missing.md");
+  planRef(missing);
+  docs.publishDocument(wid, "plan", "# Registered original", 1, missing);
+  unlinkSync(missing);
+  expect(() => readPlanMaterial(store, wid, 1)).toThrow("已登记的项目计划原件已丢失");
   expect(existsSync(join(root, "missing.md"))).toBe(false);
 });
 
@@ -104,14 +107,15 @@ it("does not mistake legacy platform documents inside the project for the projec
   expect(readFileSync(legacy, "utf8")).toBe("legacy");
 });
 
-it("material reads accept appended prose and pending outbox never writes a cache back", () => {
+it("immutable material objects reject appended prose and pending legacy outbox never writes a cache back", () => {
+  store.put("workspace", "ws", wid, { id: "ws", workflow_id: wid, repo_id: "main", root });
   const locator = resolveMaterialLocator({ store, workflowId: wid, kind: "plan", revision: 1, run_id: "first" });
-  publishProjectMaterialSafely({ store, locator, content: "# Original" });
-  writeFileSync(locator.absolute_path, "# Original\nProgress", "utf8");
-  expect(readProjectMaterialByLocator({ store, locator })).toMatchObject({ content: "# Original\nProgress", exists: true });
-  expect(readProjectMaterialByLocator({ store, locator }).is_conflict).toBeUndefined();
+  const published = publishProjectMaterialSafely({ store, locator, content: "# Original" });
+  expect(published.writtenToDisk).toBe(true);
+  expect(readProjectMaterialByLocator({ store, locator })).toMatchObject({ content: "# Original", exists: true });
+  writeFileSync(join(root, published.material.path), "# Original\nProgress", "utf8");
+  expect(readProjectMaterialByLocator({ store, locator })).toMatchObject({ exists: false, is_conflict: true });
   const cache = join(root, "cache.md"); writeFileSync(cache, "old cache");
-  store.put("workspace", "ws", wid, { id: "ws", workflow_id: wid, root });
   store.put("project_material", "pending", wid, { id: "pending", workflow_id: wid, kind: "plan", revision: 2,
     workspace_id: "ws", path: "must-not-write.md", source_hash: "stale", cache_path: cache, status: "pending" });
   expect(reconcileMaterialOutbox(store, wid)).toBe(0);

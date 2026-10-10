@@ -2,7 +2,9 @@ import { afterEach, expect, it, vi } from "vitest";
 import { Store } from "../../packages/store/src/store.js";
 import { Engine } from "../../packages/core/src/engine.js";
 import { ConfigSchema } from "../../packages/contracts/src/config.js";
-import type { FeedbackMessage, Workflow } from "../../packages/contracts/src/index.js";
+import type { FeedbackMessage, Run, Workflow } from "../../packages/contracts/src/index.js";
+import { CONVERSATION_ENTITY } from "../../packages/contracts/src/conversation.js";
+import { ConversationService } from "../../packages/core/src/conversation-service.js";
 import { UserInteractionService } from "../../packages/core/src/user-interaction-service.js";
 import { FeedbackService } from "../../packages/core/src/feedback-service.js";
 import { saveWaitingContext } from "../../packages/core/src/waiting-context.js";
@@ -24,8 +26,19 @@ function setup(kind: "action_required" | "question" = "action_required") {
   store.put("workflow", workflow.id, workflow.project_id, workflow);
   store.put("run", "source-run", workflow.id, {
     id: "source-run", workflow_id: workflow.id, plan_revision: 1, purpose: "executor_test",
-    stage: "executor_test", status: "completed", conversation_id: "original-session",
+    adapter: "codex", stage: "executor_test", status: "completed", conversation_id: "original-session",
+    started_at: "2026-09-29T00:00:00.000Z", package_hash: "fixture",
+  } satisfies Run);
+  const conversation = new ConversationService(store).applyEvent({
+    project_id: workflow.project_id, workflow_id: workflow.id, run_id: "source-run",
+    adapter_id: "codex", scope: "fixture", lineage_id: "executor-test", purpose: "executor_test",
+    root_native_id: "original-session",
+  }, {
+    source_id: "fixture-guidance", source_seq: "1", root_native_id: "original-session",
+    session_native_id: "original-session", kind: "discovered", payload: { status: "waiting" },
   });
+  expect(conversation.node?.native_session_id).toBe("original-session");
+  expect(conversation.attempt?.run_id).toBe("source-run");
   const record = service.createInteraction({
     workflowId: workflow.id, sourceRunId: "source-run", sourcePlanRevision: 1,
     purpose: "execute", role: "executor", nativeSessionId: "original-session",
@@ -64,16 +77,18 @@ it("carries a confirmation correction through the real resume and feedback curso
 
   // Consume through the same feedback acknowledgement API used for an active
   // Run; no native CLI or account is involved in this isolated integration.
-  const run = { id: "resumed-run", purpose: "executor_test" as const };
-  s.store.put("run", run.id, s.workflow.id, { ...run, workflow_id: s.workflow.id, status: "running" });
+  const run = {
+    id: "resumed-run", purpose: "executor_test", workflow_id: s.workflow.id,
+    plan_revision: 1, adapter: "codex", stage: "executor_test", status: "running",
+    started_at: new Date().toISOString(), package_hash: "resumed-fixture",
+  } satisfies Run;
+  s.store.put("run", run.id, s.workflow.id, run);
   s.store.put("workflow", s.workflow.id, s.workflow.project_id, { ...s.engine.get(s.workflow.id), run_id: run.id });
   new FeedbackService(s.store).acknowledgeMessage(s.workflow.id, messages[0]!.message_id);
   const guidance = currentRunUserGuidance(s.store, s.workflow.id, run);
   expect(guidance?.messages.map(m => m.text)).toEqual([answer]);
   const prompt = invokePrompt(run.purpose, "HANDOFF.json", "schema.json", continuation, undefined, guidance);
-  expect(prompt.startsWith("本轮用户指导")).toBe(true);
-  expect(JSON.parse(prompt.split("\n")[1]!).messages[0].text).toBe(answer);
-  expect(prompt).toContain("最新用户指导优先");
+  expect(prompt).toBe(answer);
   expect(currentRunUserGuidance(s.store, s.workflow.id, { id: "later-run", purpose: "executor_test" })).toBeUndefined();
   expect(currentRunUserGuidance(s.store, s.workflow.id, { id: run.id, purpose: "aside" })).toBeUndefined();
 });
@@ -101,6 +116,19 @@ it("rolls back guidance and the receipt if resuming the original role fails", as
   const s = setup();
   vi.spyOn(s.engine, "resumeFromWaiting").mockImplementation(() => { throw new Error("resume failed"); });
   await expect(s.service.respondInteraction(s.workflow.id, s.record.id, { ...s.payload, answer: "继续" }, s.engine)).rejects.toThrow("resume failed");
+  expect(s.store.list("feedback_message", s.workflow.id)).toHaveLength(0);
+  expect(s.service.getInteraction(s.record.id)?.status).toBe("pending");
+  expect(s.store.list("user_interaction_receipt", s.workflow.id)).toHaveLength(0);
+});
+
+it("rejects a native continuation without its owned attempt and retains the pending answer", async () => {
+  const s = setup();
+  const tree = new ConversationService(s.store).getTree(s.workflow.id);
+  const root = tree.nodes.find(node => node.native_session_id === "original-session")!;
+  s.store.remove(CONVERSATION_ENTITY.attempt, root.current_attempt_id!);
+  await expect(s.service.respondInteraction(s.workflow.id, s.record.id,
+    { ...s.payload, answer: "继续" }, s.engine)).rejects.toMatchObject({ code: "STALE_CONTINUATION" });
+  expect(s.engine.get(s.workflow.id).state).toBe("WAITING_INPUT");
   expect(s.store.list("feedback_message", s.workflow.id)).toHaveLength(0);
   expect(s.service.getInteraction(s.record.id)?.status).toBe("pending");
   expect(s.store.list("user_interaction_receipt", s.workflow.id)).toHaveLength(0);

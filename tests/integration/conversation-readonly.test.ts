@@ -137,6 +137,9 @@ describe("SA-I04 readonly purposes and write refusal", () => {
     putWorkflow(s.store);
     const conversations = new ConversationService(s.store);
     for (const item of PURPOSES) {
+      s.store.put("workflow", "wf1", "p1", {
+        ...s.store.must<Workflow>("workflow", "wf1"), run_id: item.runId,
+      });
       const context = ctx({
         purpose: item.purpose,
         run_id: item.runId,
@@ -223,9 +226,11 @@ describe("SA-I04 readonly purposes and write refusal", () => {
       }
       expect(readonlyText).not.toEqual(writeText);
     }
-    const kimiReadonly = clientInvocation("kimi-code", readonlyCtx, "kimi");
+    expect(() => clientInvocation("kimi-code", readonlyCtx, "kimi")).toThrowError(
+      expect.objectContaining({ code: "READ_ONLY_UNSUPPORTED" }),
+    );
     const kimiWrite = clientInvocation("kimi-code", writeCtx, "kimi");
-    expect(kimiReadonly.args.join(" ")).toBe(kimiWrite.args.join(" "));
-    expect(kimiReadonly.args.join(" ")).not.toMatch(/disallowed|deny|read-only/);
+    expect(kimiWrite.args).toContain("-p");
+    expect(kimiWrite.args.join(" ")).not.toMatch(/disallowed|deny|read-only/);
   });
 });

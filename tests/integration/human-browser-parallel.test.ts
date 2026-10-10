@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { setup, project } from "../helpers.js";
+import { setup, project, testConsoleHeaders } from "../helpers.js";
 import { buildServer } from "../../apps/api/src/server.js";
 
 it("human browser acceptance of two workflows does not occupy automated browser capacity", async () => {
@@ -10,7 +10,7 @@ it("human browser acceptance of two workflows does not occupy automated browser 
     s.store.put("workflow", w.id, p.id, { ...w, state: "HUMAN_PENDING" }); return w.id;
   });
   const app = await buildServer(s.engine);
-  const headers = { host: "localhost:14810", origin: "http://localhost:14810", "content-type": "application/json" };
+  const headers = { host: testConsoleHeaders().host, origin: testConsoleHeaders().origin, "content-type": "application/json" };
   try {
     for (const id of ids) expect((await app.inject({ method: "POST", url: `/api/workflows/${id}/browser/lock`, headers, payload: {} })).statusCode).toBe(200);
     expect(s.store.list("human_browser_acceptance")).toHaveLength(2);

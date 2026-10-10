@@ -2,7 +2,7 @@ import { afterEach, expect, it } from "vitest";
 import { appendFileSync, existsSync, readFileSync, rmSync, mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
-import { setup, project, plan, proof } from "../helpers.js";
+import { setup, project, plan, proof, testConsoleHeaders } from "../helpers.js";
 import { objectHash } from "../../packages/core/src/util.js";
 import { assertPlanMaterialReady, readPlanMaterial } from "../../packages/core/src/plan-review.js";
 import { ProfileRuntime } from "../../packages/runtime/src/profile-runtime.js";
@@ -46,10 +46,10 @@ it("detail and download read the same current original instead of old cached tex
   try {
     const material = readPlanMaterial(s.store, s.w.id, s.w.plan_revision);
     appendFileSync(material.path!, "\n后续进度：继续处理未解决项。\n");
-    const response = await app.inject({ method: "GET", url: `/api/workflows/${s.w.id}/documents/plan?revision=99`, headers: { host: "localhost:14810" } });
+    const response = await app.inject({ method: "GET", url: `/api/workflows/${s.w.id}/documents/plan?revision=99`, headers: { host: testConsoleHeaders().host } });
     expect(response.statusCode, response.body).toBe(200);
     expect(response.json().document.content).toBe(readFileSync(material.path!, "utf8"));
-    const download = await app.inject({ method: "GET", url: `/api/workflows/${s.w.id}/documents/plan?format=markdown`, headers: { host: "localhost:14810" } });
+    const download = await app.inject({ method: "GET", url: `/api/workflows/${s.w.id}/documents/plan?format=markdown`, headers: { host: testConsoleHeaders().host } });
     expect(download.body).toBe(response.json().document.content);
   } finally { await app.close(); }
 });

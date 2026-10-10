@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach } from "vitest";
-import { setup, repository, project } from "../helpers.js";
+import { setup, repository, project, testConsoleHeaders } from "../helpers.js";
 import {
   projectWorkflowOverview,
   extractMarkdownSection,
@@ -250,7 +250,7 @@ describe("W08 & W09: 概览业务摘要投影与文档下载修复测试 (D07/D0
     const jsonRes = await app.inject({
       method: "GET",
       url: `/api/workflows/${wfId}/documents/plan`,
-      headers: { host: "localhost:14810", origin: "http://localhost:14810" },
+      headers: testConsoleHeaders(env.engine.config),
     });
     expect(jsonRes.statusCode).toBe(200);
     const jsonBody = JSON.parse(jsonRes.body);
@@ -261,7 +261,7 @@ describe("W08 & W09: 概览业务摘要投影与文档下载修复测试 (D07/D0
     const dlRes = await app.inject({
       method: "GET",
       url: `/api/workflows/${wfId}/documents/plan?format=markdown&download=1`,
-      headers: { host: "localhost:14810", origin: "http://localhost:14810" },
+      headers: testConsoleHeaders(env.engine.config),
     });
     expect(dlRes.statusCode).toBe(200);
     expect(dlRes.headers["content-type"]).toContain("text/markdown");
@@ -274,7 +274,7 @@ describe("W08 & W09: 概览业务摘要投影与文档下载修复测试 (D07/D0
     const ovRes = await app.inject({
       method: "GET",
       url: `/api/workflows/${wfId}/overview`,
-      headers: { host: "localhost:14810", origin: "http://localhost:14810" },
+      headers: testConsoleHeaders(env.engine.config),
     });
     expect(ovRes.statusCode).toBe(200);
     const ovData = JSON.parse(ovRes.body);

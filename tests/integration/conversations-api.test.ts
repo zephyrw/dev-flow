@@ -42,7 +42,7 @@ function workflow(id: string, runId?: string): Workflow {
     state: "EXECUTING",
     stage: "exec",
     version: 1,
-    plan_revision: 0,
+    plan_revision: 1,
     environment_revision: 0,
     created_at: now(),
     updated_at: now(),
@@ -234,7 +234,7 @@ describe("SA-I05 conversation query API", () => {
   });
 
   it("returns current tree, historical root summaries, capabilities and cursor", async () => {
-    const { app, s } = await startApp((service) => {
+    const { app, s } = await startApp((service, store) => {
       const oldRoot = service.applyEvent(
         ctx(),
         event({
@@ -242,6 +242,8 @@ describe("SA-I05 conversation query API", () => {
           payload: { title: "上一轮主会话", status: "completed" },
         }),
       ).node!;
+      store.put("run", "run-new", "wf1", runRecord("run-new", "wf1", { status: "running" }));
+      store.put("workflow", "wf1", "p1", workflow("wf1", "run-new"));
       const next = ctx({
         run_id: "run-new",
         root_native_id: "root-native-2",

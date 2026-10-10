@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach } from "vitest";
-import { setup, repository } from "../helpers.js";
+import { setup, repository, testConsoleHeaders } from "../helpers.js";
 import { ModelDefaultsService } from "../../packages/core/src/model-defaults-service.js";
 import { CreateWorkflowService } from "../../packages/core/src/create-workflow.js";
 import { ExecutionSpecService } from "../../packages/core/src/execution-spec-service.js";
@@ -157,7 +157,7 @@ describe("W06: 三阶段默认模型与工作流创建绑定测试", () => {
     const getRes = await app.inject({
       method: "GET",
       url: "/api/settings/model-defaults",
-      headers: { host: "localhost:14810", origin: "http://localhost:14810" },
+      headers: testConsoleHeaders(env.engine.config),
     });
     expect(getRes.statusCode).toBe(200);
     const getData = JSON.parse(getRes.body);
@@ -170,8 +170,7 @@ describe("W06: 三阶段默认模型与工作流创建绑定测试", () => {
       method: "PUT",
       url: "/api/settings/model-defaults",
       headers: {
-        host: "localhost:14810",
-        origin: "http://localhost:14810",
+        ...testConsoleHeaders(env.engine.config),
         "content-type": "application/json",
       },
       body: JSON.stringify({
@@ -194,7 +193,7 @@ describe("W06: 三阶段默认模型与工作流创建绑定测试", () => {
     const getRes2 = await app.inject({
       method: "GET",
       url: "/api/settings/model-defaults",
-      headers: { host: "localhost:14810", origin: "http://localhost:14810" },
+      headers: testConsoleHeaders(env.engine.config),
     });
     const getData2 = JSON.parse(getRes2.body);
     expect(getData2.defaults.reviewerBinding.mode).toBe("explicit");

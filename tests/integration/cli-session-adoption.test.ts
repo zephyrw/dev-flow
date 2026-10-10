@@ -6,7 +6,7 @@ import { Store } from "../../packages/store/src/store.js";
 import { ExecutionSessionStore } from "../../packages/core/src/execution-session-store.js";
 import { CliDispatchManager } from "../../packages/runtime/src/cli-dispatch.js";
 import { buildServer } from "../../apps/api/src/server.js";
-import { setup } from "../helpers.js";
+import { setup, testConsoleHeaders } from "../helpers.js";
 import {
   type SessionBindingAdoptInput,
   SessionBindingAdoptInputSchema,
@@ -421,7 +421,7 @@ describe("CW4-F05: Adopt API 路由端到端行为验证", () => {
   let s: ReturnType<typeof setup>;
   let app: any;
   let dispatchManager: CliDispatchManager;
-  const headers = { host: "localhost:14810", origin: "http://localhost:14810" };
+  const headers = { host: testConsoleHeaders().host, origin: testConsoleHeaders().origin };
 
   beforeEach(async () => {
     s = setup();

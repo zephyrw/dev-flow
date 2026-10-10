@@ -24,7 +24,7 @@ it.each([
   [
     "stderr",
     "MODEL_AUTH",
-    "console.error('Please run agy login to continue (unauthenticated)');",
+    "process.stderr.write('Please run agy '); setTimeout(() => console.error('login to continue (unauthenticated) token=fixture-secret'), 10);",
   ],
   [
     "unknown",
@@ -86,7 +86,8 @@ it.each([
       expect(s.store.get("conversation", s.w.id)).toMatchObject({
         id: "isolated-session",
       });
-      expect(s.store.list("native_conversation", s.w.id)).toHaveLength(1);
+      expect(new Set(s.store.list<{ id: string }>("native_conversation", s.w.id).map(record => record.id)))
+        .toEqual(new Set(["isolated-session"]));
       expect(
         s.store
           .events(s.w.id)
@@ -102,6 +103,7 @@ it.each([
         executable: process.execPath,
       });
       expect(attention.runtime_context.diagnostic).toBeTruthy();
+      expect(JSON.stringify(attention)).not.toContain("fixture-secret");
       // A later explicit resume retains the plan/workspace, but not a legacy
       // planner assignment which was based only on execution failures.
       const workspaces = s.store.list("workspace", s.w.id);

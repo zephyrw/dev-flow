@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, existsSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, normalize, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -18,7 +18,7 @@ describe("CW2-T01 & CW2-T02: 项目资产与工作树迁移、恢复及回退集
   let service: ProjectAssetMigrationService;
 
   beforeEach(() => {
-    tempDir = mkdtempSync(join(tmpdir(), "devflow-mig-rec-"));
+    tempDir = mkdtempSync(join(realpathSync(tmpdir()), "devflow-mig-rec-"));
     repoDir = join(tempDir, "sample-repo");
     oldWorktreeDir = join(tempDir, "old-worktree");
     storageRoot = join(tempDir, ".devflow-storage");

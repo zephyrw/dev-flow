@@ -54,12 +54,12 @@ describe("UI/API 工具一致性护栏", () => {
 });
 
 describe("思考强度严格按模型对齐（不臆造档位）", () => {
-  it("Gemini 3.8/3.7/3.6 Flash 只有 high/medium，不存在 xhigh/max/ultra", () => {
+  it("Gemini 3.8/3.7/3.6 Flash 只有 high/medium/low，不存在 xhigh/max/ultra", () => {
     for (const family of ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash"]) {
       const known = knownAgyEffortFor(`${family}-high`);
       expect(known, family).toBeDefined();
       expect(known!.effort.status).toBe("supported");
-      expect(known!.effort.values).toEqual(["high", "medium"]);
+      expect(known!.effort.values).toEqual(["high", "medium", "low"]);
       expect(known!.effort.fixedValue).toBe("high");
       expect(known!.effort.values).not.toContain("xhigh");
       expect(known!.effort.values).not.toContain("max");
@@ -67,12 +67,12 @@ describe("思考强度严格按模型对齐（不臆造档位）", () => {
     }
   });
 
-  it("Gemini 3.1 Pro 只有 high", () => {
+  it("Gemini 3.1 Pro 只有 high/low", () => {
     const known = knownAgyEffortFor("gemini-3.1-pro-high");
     expect(known).toBeDefined();
-    expect(known!.effort.values).toEqual(["high"]);
+    expect(known!.effort.values).toEqual(["high", "low"]);
     expect(known!.effort.fixedValue).toBe("high");
-    expect(AGY_VARIANTS["gemini-3.1-pro"]).toEqual({ high: "gemini-3.1-pro-high" });
+    expect(AGY_VARIANTS["gemini-3.1-pro"]).toEqual({ high: "gemini-3.1-pro-high", low: "gemini-3.1-pro-low" });
   });
 
   it("AGY 未知 ID 不获得任何思考强度能力", () => {
@@ -130,6 +130,7 @@ describe("手工候补 effort 合成", () => {
     expect(enriched.effort.variants).toEqual({
       high: "gemini-3.8-flash-high",
       medium: "gemini-3.8-flash-medium",
+      low: "gemini-3.8-flash-low",
     });
     expect(enriched.familyId).toBe("gemini-3.8-flash");
     expect(enriched.accessModelKey).toBe("gemini-3.8-flash");
@@ -171,7 +172,7 @@ describe("手工候补 effort 合成", () => {
         nativeConfigScope: "default",
       };
       const entry = service.ensureManualCandidate(scope, "gemini-3.8-flash-high");
-      expect(entry.effort.values).toEqual(["high", "medium"]);
+      expect(entry.effort.values).toEqual(["high", "medium", "low"]);
       const catalog = service.loadForSelector(scope);
       expect(catalog.status).toBe("missing");
       expect(catalog.discoveryStatus).toBe("missing");

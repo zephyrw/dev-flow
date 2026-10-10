@@ -386,13 +386,11 @@ export function parseCursorModelCatalog(input: CatalogParseInput): ModelCatalog 
     if (ids.length === 0) {
       return fallbackCursorCatalog(input);
     }
-    const mergedIds =
-      ids.length > 10
-        ? [...new Set([...CURSOR_DEFAULT_SEEDS, ...ids])]
-        : ids;
-    const listed = new Set(mergedIds);
+    // A live listing is authoritative. Seeds must not manufacture callable
+    // models or effort variants that the client did not actually advertise.
+    const listed = new Set(ids);
     const clock = input.discoveredAt ?? new Date().toISOString();
-    const entries = mergedIds.map((nativeId) =>
+    const entries = ids.map((nativeId) =>
       toCursorEntry(nativeId, listed, clock, input.source),
     );
     return freshModelCatalog(ADAPTER_ID, { ...input, discoveredAt: clock }, entries);

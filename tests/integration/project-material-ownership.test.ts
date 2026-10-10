@@ -572,7 +572,7 @@ describe("CW4-F03: readPlanMaterial 计划材料归属、版本关联与原件�
     expect(res.source_type).toBe("platform_legacy");
     expect(res.markdown).toBe("# 纯历史无工作区计划正文");
   });
-  it("仅 material_path 和匹配 design_ref 没有 verified 记录时仍只读", () => {
+  it("显式项目原件路径与匹配 design_ref 可核验，无材料记录时仍拒绝正文篡改", () => {
     const text = "# path-only original\n";
     mkdirSync(join(workspaceRoot, "docs", "plan"), { recursive: true });
     writeFileSync(join(workspaceRoot, "docs", "plan", "path-only.md"), text);
@@ -585,8 +585,10 @@ describe("CW4-F03: readPlanMaterial 计划材料归属、版本关联与原件�
     const result = readPlanMaterial(store, wfId, 1);
     expect(result.source_type).toBe("project");
     expect(result.markdown).toBe(text);
-    expect(result.authority_ready).toBe(false);
-    expect(() => assertPlanMaterialReady(store, wfId, 1)).toThrow(/只可查看/);
+    expect(result.authority_ready).toBe(true);
+    expect(assertPlanMaterialReady(store, wfId, 1).markdown).toBe(text);
+    writeFileSync(join(workspaceRoot, "docs", "plan", "path-only.md"), "# Tampered original\n");
+    expect(() => assertPlanMaterialReady(store, wfId, 1)).toThrow(/计划正文与当前版本不一致/);
   });
 
   it("显式项目路径丢失时不得回退已保存的 DB 正文，缺工作区也拒绝", () => {

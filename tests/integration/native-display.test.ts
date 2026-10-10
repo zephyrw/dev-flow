@@ -1,7 +1,7 @@
 import { expect, it } from "vitest";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { setup, plan, project } from "../helpers.js";
+import { setup, plan, project, testConsoleHeaders } from "../helpers.js";
 import { hash } from "../../packages/core/src/util.js";
 import { buildServer } from "../../apps/api/src/server.js";
 import { createElement } from "react";
@@ -72,7 +72,7 @@ function fixture() {
 it("summary, detail and report downloads use native delivery results without changing review evidence or workflow", async () => {
   const s = fixture();
   const app = await buildServer(s.engine);
-  const headers = { host: "localhost:14810" };
+  const headers = { host: testConsoleHeaders().host };
   try {
     expect(s.store.list("evidence", s.w.id)).toEqual([]);
     const before = s.engine.get(s.w.id);

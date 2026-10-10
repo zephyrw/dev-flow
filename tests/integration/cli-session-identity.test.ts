@@ -86,7 +86,8 @@ describe("CW2-T10: CLI 会话真实身份解析与隔离集成测试", () => {
     expect(result.resolved).toBe(true);
     expect(result.canonical_model_id).toBe("o3-mini");
     expect(result.provider_account_scope).toBe("user-codex-org-123");
-    expect(result.client_scope_id).toBe(normalize(resolve(codexHome)).toLowerCase());
+    const homeIdentity = normalize(resolve(codexHome));
+    expect(result.client_scope_id).toBe(process.platform === "win32" ? homeIdentity.toLowerCase() : homeIdentity);
     expect(result.host_id).toBe("testhost-01");
   });
 
@@ -228,7 +229,8 @@ describe("CW2-T10: CLI 会话真实身份解析与隔离集成测试", () => {
     expect(result.resolved).toBe(true);
     expect(result.canonical_model_id).toBe("claude-sonnet-4-20250514");
     expect(result.provider_account_scope).toBe("_");
-    expect(result.client_scope_id).toBe(normalize(resolve(claudeHome)).toLowerCase());
+    const homeIdentity = normalize(resolve(claudeHome));
+    expect(result.client_scope_id).toBe(process.platform === "win32" ? homeIdentity.toLowerCase() : homeIdentity);
   });
 
   it("CW2-T10: claude-code 读取 .env.ANTHROPIC_MODEL 作为 fallback", async () => {

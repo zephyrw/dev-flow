@@ -1,5 +1,5 @@
 import { it, expect, vi } from "vitest";
-import { prepared } from "../helpers.js";
+import { prepared, testConsoleHeaders } from "../helpers.js";
 import { FlowError, type Run } from "../../packages/contracts/src/index.js";
 import { bindProfile } from "../../packages/core/src/run-profile.js";
 import { now } from "../../packages/core/src/util.js";
@@ -16,15 +16,17 @@ it("manual recovery after account switch clears the quota wait and dispatches im
       result: { error: "Resets in 3h." },
     }),
   );
+  const source = s.store.must<Run>("run", s.workflow.run_id!);
+  s.store.put("run", source.id, s.workflow.id, { ...source, status: "failed", exit_code: 1, ended_at: now() });
   const app = await buildServer(s.engine);
   try {
     const response = await app.inject({
       method: "POST",
       url: `/api/workflows/${s.workflow.id}/recover`,
-      headers: { host: "localhost:14810", origin: "http://localhost:14810" },
+      headers: { host: testConsoleHeaders().host, origin: testConsoleHeaders().origin },
       payload: {},
     });
-    expect(response.statusCode).toBe(200);
+    expect(response.statusCode, response.body).toBe(200);
     expect(response.json().state).toBe("QUEUED");
     expect(s.store.get("model_retry", s.workflow.id)).toBeUndefined();
     expect(dispatch).toHaveBeenCalledOnce();

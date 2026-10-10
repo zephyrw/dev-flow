@@ -1,14 +1,18 @@
 import { it, expect, vi } from "vitest";
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fixture, cleanup } from "../fixtures/native-flow.js";
 import { LocalRuntime } from "../../packages/runtime/src/runtime.js";
 import { ProfileRuntime } from "../../packages/runtime/src/profile-runtime.js";
-import { INTENT_CLARIFICATION_INSTRUCTION } from "../../packages/core/src/round-intent.js";
-import type { Run } from "../../packages/contracts/src/index.js";
-import { frozenInvocationFromProfile, invocationFingerprintFromFrozen, permissionCategoryForPurpose, workflowWorkspaceIdentity } from "../../packages/core/src/run-profile.js";
+import type { Run, Workspace } from "../../packages/contracts/src/index.js";
+import { invocationFingerprintFromFrozen, permissionCategoryForPurpose, workflowWorkspaceIdentity } from "../../packages/core/src/run-profile.js";
+import { buildFrozenInvocation } from "../../packages/adapters/sdk/src/frozen-invocation.js";
+import { ModelAccessService } from "../../packages/core/src/model-access-service.js";
 import { beginRunConversation, retainRunConversation } from "../../packages/core/src/conversation-lineage.js";
 import { resumeApproved } from "../../packages/runtime/src/recovery.js";
+import { ExecutionSessionStore } from "../../packages/core/src/execution-session-store.js";
+import { createDefaultAdapterRegistry, resolveSessionIdentity } from "../../packages/adapters/sdk/src/index.js";
+import { readPlanMaterial } from "../../packages/core/src/plan-review.js";
 import {
   readPlanningHandoff,
   readRunContinuation,
@@ -88,7 +92,8 @@ function captureReviewCli(root: string) {
     cli,
     [
       "const fs = require('node:fs');",
-      "try { fs.readFileSync(0, 'utf8'); } catch {}",
+      "let input = ''; try { input = fs.readFileSync(0, 'utf8'); } catch {}",
+      `fs.writeFileSync(${JSON.stringify(join(root, "review-captured-input.json"))}, JSON.stringify({ args: process.argv.slice(2), input }));`,
       "const emit = (value) => console.log(JSON.stringify(value));",
       "const resume = process.argv.indexOf('resume');",
       "emit({ type: 'thread.started', thread_id: resume >= 0 ? process.argv[resume + 1] : 'new-session' });",
@@ -109,12 +114,13 @@ function captureReviewCli(root: string) {
   };
 }
 
-function persistReviewBinding(
+async function persistReviewBinding(
   s: Awaited<ReturnType<typeof fixture>>,
   run: Run,
   sourceSession?: string,
 ) {
-  const frozen = frozenInvocationFromProfile(run.profile!, "profile-native");
+  const frozen = buildFrozenInvocation(run.profile!, undefined, {},
+    new ModelAccessService(s.store).resolveNativeConfig(run.profile!), "profile-native");
   run.frozen_invocation = frozen;
   run.runtime_flavor = "profile-native";
   run.invocation_fingerprint = invocationFingerprintFromFrozen(
@@ -133,6 +139,24 @@ function persistReviewBinding(
     s.store.put("run", source.id, source.workflow_id, source);
     beginRunConversation(s.store, source);
     retainRunConversation(s.store, source, sourceSession);
+    const workspaces = s.store.list<Workspace>("workspace", run.workflow_id);
+    const primary = workspaces[0]!;
+    const native = new ModelAccessService(s.store).resolveNativeConfig(run.profile!);
+    const identity = await resolveSessionIdentity(createDefaultAdapterRegistry().get(run.profile!.adapterId)!, {
+      frozenProfile: run.profile!,
+      verifiedAccountScope: native.identityConfidence === "account" ? native.accountId ?? native.accountFingerprint : undefined,
+      workspace: { root: primary.root, source_root: primary.source_root ?? primary.root,
+        repo_id: primary.repo_id, common_dir: primary.common_dir,
+        all_workspaces: workspaces.map(ws => ({ repo_id: ws.repo_id, root: ws.root,
+          source_root: ws.source_root ?? ws.root, common_dir: ws.common_dir })) },
+      effectiveEnvironment: process.env as Record<string, string>,
+    });
+    expect(identity.resolved).toBe(true);
+    const sessions = new ExecutionSessionStore(s.store);
+    const binding = sessions.getOrCreateBinding({ workflow_id: run.workflow_id, ...identity }, {
+      workspace_root: primary.root, source_root: primary.source_root ?? primary.root, repo_id: primary.repo_id,
+    });
+    sessions.bindConversationId(binding.id, sourceSession, source.id);
   }
   s.store.put("run", run.id, run.workflow_id, run);
 }
@@ -191,19 +215,15 @@ it("审查续接只补问结论并 resume 原会话", async () => {
     },
     profile: captureReviewCli(s.root),
   };
-  persistReviewBinding(s, run, "review-session");
+  await persistReviewBinding(s, run, "review-session");
   try {
     await runtime.review(w, run);
-    const materials = JSON.parse(
-      readFileSync(
-        join(s.config.storage_root, "native-runs", run.id, "HANDOFF.json"),
-        "utf8",
-      ),
-    );
-    expect(materials.instructions).toBe(INTENT_CLARIFICATION_INSTRUCTION);
-    expect(materials.original_text).toBe("稍后补充结论");
-    expect(materials).not.toHaveProperty("skill_resources");
-    expect(String(materials.instructions)).not.toContain("完整汇总后统一给出审查结论");
+    const captured = JSON.parse(readFileSync(join(s.root, "review-captured-input.json"), "utf8"));
+    expect(captured.args).toContain("resume");
+    expect(captured.args).toContain("review-session");
+    expect(captured.input).toContain("只补充结果，不重新执行开发、测试或其他操作");
+    expect(captured.input).not.toContain("完整汇总后统一给出审查结论");
+    expect(existsSync(join(s.config.storage_root, "native-runs", run.id, "HANDOFF.json"))).toBe(false);
     const stored = s.store.must<Run>("run", run.id);
     expect(stored.conversation_id).toBe("review-session");
   } finally {
@@ -238,19 +258,15 @@ it("审查用户回答进入原审查上下文并续接原会话", async () => {
     },
     profile: captureReviewCli(s.root),
   };
-  persistReviewBinding(s, run, "review-session");
+  await persistReviewBinding(s, run, "review-session");
   try {
     await runtime.review(w, run);
-    const materials = JSON.parse(
-      readFileSync(
-        join(s.config.storage_root, "native-runs", run.id, "HANDOFF.json"),
-        "utf8",
-      ),
-    );
-    expect(materials.answer).toBe("API_BASE");
-    expect(materials.questions).toEqual(["缺哪个配置项？"]);
-    expect(materials.instructions).toContain("你负责本次需求和变更的代码质量");
-    expect(materials.instructions).toContain("不检查测试是否真实执行");
+    const captured = JSON.parse(readFileSync(join(s.root, "review-captured-input.json"), "utf8"));
+    expect(captured.args).toContain("resume");
+    expect(captured.args).toContain("review-session");
+    expect(captured.input).toBe("API_BASE");
+    expect(existsSync(join(s.config.storage_root, "native-runs", run.id, "HANDOFF.json"))).toBe(false);
+    expect(s.store.get("session_input", run.id)).toMatchObject({ kind: "followup", user_input: true, state: "delivered" });
     const stored = s.store.must<Run>("run", run.id);
     expect(stored.conversation_id).toBe("review-session");
   } finally {
@@ -284,7 +300,7 @@ it("续接会话缺失时新会话获得完整背景与原文，不要求重复�
     },
     profile: captureReviewCli(s.root),
   };
-  persistReviewBinding(s, run);
+  await persistReviewBinding(s, run);
   const gateBefore = structuredClone(s.engine.quality.getOrCreateGate(w.id, "before_human"));
   try {
     await expect(runtime.review(w, run)).resolves.toMatchObject({ verdict: "passed" });
@@ -293,7 +309,12 @@ it("续接会话缺失时新会话获得完整背景与原文，不要求重复�
     ));
     expect(materials.original_text).toBe("稍后补充结论");
     expect(materials.questions).toEqual(["请明确本轮审查结论"]);
-    expect(materials.plan).toEqual(s.engine.plan(w.id));
+    const approved = s.engine.plan(w.id);
+    const original = readPlanMaterial(s.store, w.id, w.plan_revision).markdown;
+    expect(materials.plan).toMatchObject({ id: approved.id, revision: approved.revision, hash: approved.hash,
+      material_id: approved.material_id, markdown: original });
+    expect(readFileSync(materials.plan.path, "utf8")).toBe(original);
+    expect(s.engine.plan(w.id)).toEqual(approved);
     expect(materials.project).toEqual(s.engine.project(w.project_id));
     expect(materials.snapshot.id).toBe(w.snapshot_id);
     expect(materials).toHaveProperty("review_contract");

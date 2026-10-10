@@ -8,11 +8,13 @@ import {
   utimesSync,
   renameSync,
   mkdtempSync,
+  realpathSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setup, repository, project, plan, proof } from "../helpers.js";
 import { objectHash } from "../../packages/core/src/util.js";
+import { git } from "../../packages/git/src/git.js";
 import { NativeRunRecordReader } from "../../packages/evidence/src/native-run-records.js";
 import { BufferedEventSink } from "../../packages/core/src/buffered-sink.js";
 import {
@@ -34,7 +36,7 @@ describe("DevFlow 原生执行改造第二轮复核缺陷回归套件 (S01~S14)"
   };
 
   beforeEach(async () => {
-    isolatedRoot = mkdtempSync(join(tmpdir(), "devflow-rereview-reg-"));
+    isolatedRoot = mkdtempSync(join(realpathSync(tmpdir()), "devflow-rereview-reg-"));
     ri = await repository(isolatedRoot);
   });
 
@@ -47,6 +49,7 @@ describe("DevFlow 原生执行改造第二轮复核缺陷回归套件 (S01~S14)"
     if (options.multi) {
       other = await repository(isolatedRoot, "second");
       p.repositories.push({ id: "second", path: other.repo });
+      p.primary_repo_id = "main";
     }
     if (options.hook) {
       p.commands[0]!.required_before_commit = true;
@@ -353,6 +356,10 @@ describe("DevFlow 原生执行改造第二轮复核缺陷回归套件 (S01~S14)"
 
   it("S08: 两次规划审查均识别 native acceptance_result 后提交", async () => {
     const s = await fixture({ hook: true });
+    const legacyDelivery = s.engine.get(s.w.id);
+    legacyDelivery.quality_policy_version = 1;
+    s.store.put("workflow", s.w.id, s.w.project_id, legacyDelivery);
+    s.store.put("preserve_quality_policy", s.w.id, s.w.id, true);
     const stages: string[] = [];
     try {
       expect(
@@ -403,7 +410,10 @@ describe("DevFlow 原生执行改造第二轮复核缺陷回归套件 (S01~S14)"
           .poll(
             async () => {
               await s.engine.dispatch();
-              return s.engine.get(s.w.id).state;
+              const current = s.engine.get(s.w.id);
+              if (["BLOCKED", "WAITING_INPUT", "COMMIT_PARTIAL"].includes(current.state))
+                throw Error(JSON.stringify(current.blocker));
+              return current.state;
             },
             { timeout: 180000, interval: 200 },
           )
@@ -416,6 +426,8 @@ describe("DevFlow 原生执行改造第二轮复核缺陷回归套件 (S01~S14)"
       await s.engine.accept(s.w.id, p.proof, p.binding);
       await waitFor("COMMITTED");
       expect(stages).toEqual(["quality_before_human", "review"]);
+      expect(await git(ri.repo, ["rev-parse", "HEAD"])).not.toBe(ri.baseline);
+      expect(await git(ri.repo, ["show", "HEAD:app.txt"])).toBe("after");
     } finally {
       s.engine.runtime = undefined;
       if (

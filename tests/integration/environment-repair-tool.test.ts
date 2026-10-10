@@ -25,14 +25,14 @@ it("development environment MCP calls escalate repeated failures to diagnosis an
   const app = await buildServer(s.engine);
   const client = new Client({ name: "environment-repair-test", version: "1" });
   try {
-    await app.listen({ host: "127.0.0.1", port: 14810 });
+    await app.listen({ host: "127.0.0.1", port: s.config.server.port });
     const token = s.engine.auth.issue({
       role: "worker",
       workflow_id: s.workflow.id,
       run_id: s.principal.run_id,
     });
     await client.connect(
-      new StreamableHTTPClientTransport(new URL("http://127.0.0.1:14810/mcp"), {
+      new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${s.config.server.port}/mcp`), {
         requestInit: { headers: { Authorization: "Bearer " + token } },
       }),
     );

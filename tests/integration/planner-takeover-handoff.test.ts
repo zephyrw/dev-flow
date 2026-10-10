@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { setup, project, plan, repository } from "../helpers.js";
+import { setup, project, plan, repository, publishPlanFixture } from "../helpers.js";
 import { unknownSubagentCapabilities, type Run, type Workflow } from "../../packages/contracts/src/index.js";
 import type { RunContinuation } from "../../packages/contracts/src/tr-handoff.js";
 import { prepareRepairResume } from "../../packages/core/src/repair.js";
@@ -33,7 +33,9 @@ beforeEach(() => {
     plan_revision: 1, plan_hash: "approved-hash", version: 1, environment_revision: 0, feedback: [], created_at: time, updated_at: time };
   s.store.put("project", "p1", "p1", project(s.root));
   s.store.put("workflow", wid, "p1", w);
-  s.store.put("plan", `${wid}-1`, wid, { revision: 1, hash: w.plan_hash, plan: { ...plan("hash", "a".repeat(40)), task_model: "native-v2" } });
+  s.store.put("workspace", "takeover-workspace", wid, { id: "takeover-workspace", workflow_id: wid, repo_id: "main", root: s.root });
+  s.store.put("plan", `${wid}-1`, wid, { id: `${wid}-1`, revision: 1, hash: w.plan_hash, plan: { ...plan("hash", "a".repeat(40)), task_model: "native-v2" } });
+  publishPlanFixture(s.engine, wid);
   s.store.put("approval", `${wid}-1`, wid, { plan_hash: w.plan_hash });
   s.store.put("quality_flow", wid, wid, { workflow_id: wid, phase: "before_human", executor_repair_completed: true, planner_repairs_only: true });
   s.store.put("repair_assignment", wid, wid, assignment);
@@ -122,6 +124,7 @@ it.each(["owner", "plan", "source", "aside", "assignment"])("does not backfill a
 it.each(["user_answer", "runtime_resume", "intent_clarification"] as const)("preserves legitimate same-role same-purpose %s", (kind) => {
   const source = run({ id: "same-source" });
   s.store.put("run", source.id, wid, source);
+  s.store.put("workflow", wid, "p1", { ...s.engine.get(wid), run_id: source.id });
   const value = { ...old, kind, role: "planner" as const, source_run_id: source.id };
   expect(continuationMatchesRun(s.store, run(), value)).toBe(true);
   s.store.put("run_continuation", wid, wid, value);

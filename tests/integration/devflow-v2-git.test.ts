@@ -67,6 +67,9 @@ describe("Git 真实副作用与拒绝路径", { timeout: 60000 }, () => {
         s.engine.git,
       );
       await expect(manager.cleanupWorkspaces(w.id, ws)).rejects.toMatchObject({
+        code: "EXPLICIT_SELECTION_REQUIRED",
+      });
+      await expect(manager.cleanupWorkspaces(w.id, ws, { explicit_selection: true })).rejects.toMatchObject({
         code: "INVALID_STATE",
       });
       await expect(manager.executeDelivery(w.id)).rejects.toMatchObject({

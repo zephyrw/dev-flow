@@ -55,6 +55,10 @@ async function invoke(scenario: Scenario, managed = true) {
   // Sanitized live order: new user 751 -> last real tool 813 -> final response 815.
   const events: any[] = [step(751, "user_input"), step(813, "tool", "ACTIVE", { tool_name: "run_command" }),
     step(813, "tool", "DONE", { tool_name: "run_command" })];
+  if (scenario === "denied") events.push(step(814, "tool", "ERROR", { tool_info: {
+    name: "run_command", parameters: { CommandLine: "echo permission-fixture" },
+    error: { type: "TOOL_ERROR", message: "permission check failed for run_command: user denied permission for run_command" },
+  } }));
   if (scenario === "quota" || scenario === "tls") events.push(step(814, "error_message"));
   if (scenario === "top_error") events.push({ type: "error", error: "fixture transport failed" });
   if (scenario === "reported_tool_error") events.push(step(814, "tool", "ERROR", { tool_name: "read_file",
@@ -76,6 +80,7 @@ async function invoke(scenario: Scenario, managed = true) {
   const proc = new EventEmitter() as any;
   const exit = { code: scenario === "quota" ? 3 : 0, ...(scenario === "terminated" ? { termination_reason: "manual" } : {}) };
   const start = vi.fn(() => {
+    proc.ready = Promise.resolve();
     proc.completion = new Promise(resolve => setImmediate(() => {
       if (scenario === "stderr_tls") proc.emit("stderr", Buffer.from(tls));
       else if (scenario === "stderr_disk") proc.emit("stderr", Buffer.from("ENOSPC: disk full"));
@@ -86,8 +91,8 @@ async function invoke(scenario: Scenario, managed = true) {
     proc.stop = vi.fn(); return proc;
   });
   const bridge = { prepareProfileRun: vi.fn(async () => ({ realm_id: "fixture", account_id: "fixture-account", auth_epoch: 53,
-    source_run_id: rid, permit_id: "fixture-permit" })), observeNativeEvent: vi.fn(), observeFailure: vi.fn(async () => true),
-    releaseRun: vi.fn(async () => {}), attachProcess: vi.fn() };
+    source_run_id: rid, permit_id: "fixture-permit" })), observeNativeEvent: vi.fn(), observeFailure: vi.fn(async () => "waiting"),
+    releaseRun: vi.fn(async () => {}), attachProcess: vi.fn(), observeAccountQuota: vi.fn(() => vi.fn()) };
   const runtime = new ProfileRuntime(s.engine, { start } as any, managed ? bridge as any : undefined) as any;
   return { result: runtime.invoke(w, run, {}, {}, undefined, [{ id: "ws", workflow_id: wid, ...context, root: s.root }]), bridge, s, rid };
 }

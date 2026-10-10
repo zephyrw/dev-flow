@@ -1,12 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { setup, project, plan, proof } from "../helpers.js";
+import { setup, project, plan, proof, testConsoleHeaders } from "../helpers.js";
 import { buildServer } from "../../apps/api/src/server.js";
 import { objectHash } from "../../packages/core/src/util.js";
 import type { FastifyInstance } from "fastify";
 
 const headers = {
-  host: "localhost:14810",
-  origin: "http://localhost:14810",
+  host: testConsoleHeaders().host,
+  origin: testConsoleHeaders().origin,
   "content-type": "application/json",
 };
 describe("计划驳回与只读问答 API", () => {

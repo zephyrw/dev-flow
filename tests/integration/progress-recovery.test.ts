@@ -1,7 +1,7 @@
 import { it, expect, vi } from "vitest";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { prepared } from "../helpers.js";
+import { prepared, testConsoleHeaders } from "../helpers.js";
 import { LocalRuntime } from "../../packages/runtime/src/runtime.js";
 import {
   startTask,
@@ -89,8 +89,8 @@ it("a shared test failure preserves unchanged implementation and displays passed
     const app = await buildServer(s.engine);
     try {
       const headers = {
-        host: "localhost:14810",
-        origin: "http://localhost:14810",
+        host: testConsoleHeaders().host,
+        origin: testConsoleHeaders().origin,
       };
       const report = await app.inject({
         url: `/api/workflows/${s.workflow.id}/evidence/${e.id}/files/0`,

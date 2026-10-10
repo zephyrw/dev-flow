@@ -55,9 +55,10 @@ describe("IT-INSTALLER: 六核心 Skill/MCP 完整分发、选定闭包与配置
       });
       expect(upgrade.installSkillsForClient(client).mcpConfigured).toBe(true);
       const after = readFileSync(file, "utf8");
-      expect(after).toContain(nextBridge);
+      const encodedNextBridge = JSON.stringify(nextBridge);
+      expect(after).toContain(encodedNextBridge);
       expect(after).toContain(client === "codex" ? 'command = "other"' : '"userSetting": "preserved"');
-      const edited = after.replace(nextBridge, join(env.root, "user-bridge.js"));
+      const edited = after.replace(encodedNextBridge, JSON.stringify(join(env.root, "user-bridge.js")));
       writeFileSync(file, edited);
       expect(upgrade.installSkillsForClient(client).mcpConfigured).toBe(false);
       expect(readFileSync(file, "utf8")).toBe(edited);

@@ -562,6 +562,9 @@ describe("node-native-primitives", () => {
       const attemptId = randomUUID();
       const child = fork(runnerEntry, [attemptId], {
         cwd: tmpDir,
+        // The SDK's POSIX launcher is its own process-group leader. Reproduce
+        // that real launch contract before testing stop/disconnect cleanup.
+        detached: !isWindows,
         env: cleanedEnv(),
         execArgv: [],
         stdio: ["pipe", "pipe", "pipe", "ipc"],

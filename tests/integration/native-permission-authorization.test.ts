@@ -223,7 +223,7 @@ it.each(["footer", "immediate", "redacted-footer", "historical-footer", "histori
   if (historical) {
     if (mode === "historical-error-footer") await expect(invocation).rejects.not.toMatchObject({ code: "NATIVE_PERMISSION_DENIED" });
     else {
-      await expect(invocation).resolves.toEqual({});
+      await expect(invocation).resolves.toMatchObject({ summary: "{}" });
       expect(s.store.must<Run>("run", run.id).status).toBe("completed");
     }
     expect(new UserInteractionService(s.store).getCurrentInteraction(s.workflow.id)).toBeUndefined();

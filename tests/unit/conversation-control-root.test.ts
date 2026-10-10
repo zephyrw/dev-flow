@@ -55,15 +55,16 @@ describe("control root follows the current role rather than the display root", (
     } finally { s.store.close(); }
   });
 
-  it("does not fallback to an unrelated model or choose an ambiguous binding", () => {
+  it("keeps the native session across model changes and refuses ambiguous ownership scopes", () => {
     const s = fixture();
     try {
       expect(s.service.resolveControlRoot("wf", s.tree)).toBeUndefined();
       s.store.put("session_binding", "wrong", "wf", { adapter_id: "agy", canonical_model_id: "other-model", state: "bound", conversation_id: "native-agy" });
-      expect(s.service.resolveControlRoot("wf", s.tree)).toBeUndefined();
+      expect(s.service.resolveControlRoot("wf", s.tree)).toBe("execute-root");
+      s.store.remove("session_binding", "wrong");
       s.tree.nodes.push({ id: "another-root", root_id: "another-root", adapter_id: "agy", native_session_id: "another-native", kind: "main" } as any);
       for (const conversation of ["native-agy", "another-native"])
-        s.store.put("session_binding", conversation, "wf", { adapter_id: "agy", canonical_model_id: "gemini-flash", state: "bound", conversation_id: conversation });
+        s.store.put("session_binding", conversation, "wf", { adapter_id: "agy", canonical_model_id: "gemini-flash", state: "bound", conversation_id: conversation, workspace_identity: conversation });
       expect(s.service.resolveControlRoot("wf", s.tree)).toBeUndefined();
     } finally { s.store.close(); }
   });

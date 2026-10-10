@@ -64,16 +64,21 @@ export function seedPlannerTakeover(s: Fixture) {
   const w = s.engine.get(s.w.id);
   const phase = "before_human";
   const reviewIds = Array.from({ length: 3 }, (_, i) => `repair-review-${i}`);
-  for (const reviewId of reviewIds) {
+  for (const [i, reviewId] of reviewIds.entries()) {
     const runId = `implementation-${reviewId}`;
     s.store.put("run", runId, w.id, {
       id: runId,
       workflow_id: w.id,
       purpose: "implement",
+      adapter: "agy",
+      stage: "execute",
       status: "completed",
       exit_code: 0,
       plan_revision: w.plan_revision,
-    });
+      started_at: new Date(Date.now() - 1000 + i).toISOString(),
+      ended_at: new Date(Date.now() - 500 + i).toISOString(),
+      package_hash: "fixture-implementation",
+    } satisfies Run);
     s.store.put("quality_review", reviewId, w.id, {
       workflow_id: w.id,
       phase,
@@ -201,6 +206,16 @@ export function runtime(
       expect(s.engine.get(w.id).state).toBe("EXECUTING");
       if (onCheck) return onCheck(run);
       writeFileSync(join(s.repo, "app.txt"), "after\n");
+      if (run.purpose === "planner_commit" || run.purpose === "functional_fix") {
+        const commits = run.purpose === "planner_commit"
+          ? await s.engine.git.commit(await s.engine.git.snapshot(w.id, w.environment_revision), s.p, "fix: update fixture")
+          : undefined;
+        await s.engine.receiveRoundResult(w.id, run.id, {
+          status: "completed", summary: "Completed the current fixture role",
+          ...(commits ? { repositories: commits.map(item => ({ repo_id: item.repo_id, commit: item.commit })) } : {}),
+        });
+        return;
+      }
       expect((await deliver(s, run)).status).toBe("accepted");
       expect(s.engine.get(w.id).state).toBe("VERIFYING");
     },

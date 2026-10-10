@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { rmSync } from "node:fs";
-import { setup, repository, project } from "../helpers.js";
+import { setup, repository, project, testConsoleHeaders } from "../helpers.js";
 import { buildServer } from "../../apps/api/src/server.js";
 
 describe("W05: 任务归档与可见性 HTTP 接口集成测试", () => {
@@ -47,8 +47,8 @@ describe("W05: 任务归档与可见性 HTTP 接口集成测试", () => {
     );
 
     const headers = {
-      host: "localhost:14810",
-      origin: "http://localhost:14810",
+      host: testConsoleHeaders().host,
+      origin: testConsoleHeaders().origin,
     };
 
     // 1. 默认 GET /api/workflows 返回全部

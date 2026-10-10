@@ -83,12 +83,13 @@ it("普通执行故障自动恢复固定到失败轮次，不读取执行中更�
     roleOverrides: inheritRoleOverrides(), template_id: "native-development", template_revision: 3,
     mode: "composite", created_at: now(),
   });
-  saveSpec(1, oldProfile);
+  const initialRevision = Math.max(...s.store.list<{ revision: number }>("execution_spec", s.workflow.id).map(spec => spec.revision)) + 1;
+  saveSpec(initialRevision, oldProfile);
   s.engine.transition(s.workflow.id, ["EXECUTING"], "QUEUED", "execute");
   vi.spyOn(s.engine, "dispatch").mockResolvedValue(undefined);
   s.engine.runtime = {
     execute: async () => {
-      saveSpec(2, profile("agy", "new-model"));
+      saveSpec(initialRevision + 1, profile("agy", "new-model"));
       throw new FlowError("BUILD_FAILED", "fixture compilation failed");
     }, stop: async () => {}, review: async () => ({}),
     check: async () => { throw new Error("unused"); }, close: async () => {},

@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest";
 import { writeFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { git } from "../../packages/git/src/git.js";
+import { readQualityFlow } from "../../packages/core/src/quality-policy-migration.js";
 import {
   FlowError,
   type Run,
@@ -29,9 +31,11 @@ describe("真实调度入口的执行模型计划复核门禁", { timeout: 36000
       expect(readFileSync(join(s.repo, "app.txt"), "utf8")).toBe("after\n");
       const p = proof(s.engine, s.w.id, "accept");
       await s.engine.accept(s.w.id, p.proof, p.binding);
-      await until(s, ["COMMITTED", "BLOCKED", "COMMIT_PARTIAL"]);
-      expect(s.stages.at(-1)).toBe("review");
+      await until(s, ["COMMITTED", "BLOCKED", "COMMIT_PARTIAL", "WAITING_INPUT"]);
+      expect(s.stages.slice(-2)).toEqual(["review", "planner_commit"]);
       expect(s.engine.get(s.w.id).state).toBe("COMMITTED");
+      expect(await git(s.repo, ["rev-parse", "HEAD"])).not.toBe(s.baseline);
+      expect(await git(s.repo, ["show", "HEAD:app.txt"])).toBe("after");
     } finally {
       await cleanup(s);
     }
@@ -42,7 +46,7 @@ describe("真实调度入口的执行模型计划复核门禁", { timeout: 36000
       s.engine.runtime = runtime(s);
       await until(s, ["HUMAN_PENDING", "BLOCKED"]);
       expect(s.engine.get(s.w.id).state).toBe("HUMAN_PENDING");
-      expect(s.engine.get(s.w.id).stage).toBe("manual_acceptance");
+      expect(s.engine.get(s.w.id).stage).toBe("accept");
       expect(s.stages).toEqual(["execute", "quality_before_human"]);
       expect(s.engine.planSelfCheck.current(s.w.id)).toBeUndefined();
       expect(s.store.list("delivery_revision", s.w.id)).toHaveLength(1);
@@ -94,7 +98,7 @@ describe("真实调度入口的执行模型计划复核门禁", { timeout: 36000
         ).status,
       ).toBe("accepted");
       await s.engine.finalizeNativeDelivery(s.w.id, r.id);
-      expect(s.engine.get(s.w.id).state).toBe("VERIFYING");
+      expect(s.engine.get(s.w.id).state).toBe("REVIEW_QUEUED");
       s.store.put("run", r.id, s.w.id, {
         ...r,
         status: "completed",
@@ -139,7 +143,7 @@ describe("真实调度入口的执行模型计划复核门禁", { timeout: 36000
       await cleanup(s);
     }
   });
-  it("反馈整改重新经历执行后由规划模型审查；计划版本变化不能沿用旧质量指纹", async () => {
+  it("人工反馈派发功能修复并保留首次审查；计划版本变化不能沿用旧质量指纹", async () => {
     const s = await fixture();
     try {
       s.engine.runtime = runtime(s);
@@ -157,13 +161,17 @@ describe("真实调度入口的执行模型计划复核门禁", { timeout: 36000
           (run) =>
             run.stage === "quality_before_human" && run.id !== firstReviewRun.id,
         );
-      expect(secondReviewRun).toBeDefined();
+      expect(secondReviewRun).toBeUndefined();
+      expect(s.store.must<Run>("run", firstReviewRun.id)).toEqual(firstReviewRun);
+      expect(readQualityFlow(s.store, s.w.id).phase).toBe("before_human");
       expect(s.stages).toEqual([
         "execute",
         "quality_before_human",
-        "execute",
-        "quality_before_human",
+        "acceptance_guidance",
       ]);
+      expect(s.store.list<Run>("run", s.w.id).at(-1)).toMatchObject({
+        purpose: "functional_fix", dispatch_context: { guidance_mode: "human_acceptance" },
+      });
       const w = s.engine.get(s.w.id);
       s.store.put("workflow", w.id, w.id, {
         ...w,

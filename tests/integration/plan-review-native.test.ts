@@ -10,7 +10,6 @@ import { LocalRuntime } from "../../packages/runtime/src/runtime.js";
 import { DocumentService } from "../../packages/core/src/document-service.js";
 import { ExecutionSpecSchema } from "../../packages/contracts/src/execution-spec.js";
 import { PlanReviewService } from "../../packages/core/src/plan-review.js";
-import { AsideSessionService } from "../../packages/asides/src/service.js";
 
 function fixtureHandoff(root: string, name: string) {
   const directory = join(root, name);
@@ -227,9 +226,8 @@ it("外部提交且无执行工作区的计划可问答和修正，排队问答�
     expect(predicate()).toBe(true);
   };
   try {
-    // Occupy the aside slot so the question is answered after a new plan exists.
-    const asides = new AsideSessionService(s.store);
-    const occupied = asides.submitQuestion("other-workflow", "占位");
+    // Hold the pending dispatch job to reproduce a question waiting while the
+    // original plan changes; there is no global one-question capacity limit.
     for (const job of s.store.jobs()) s.store.jobStatus(job.id, "delivered");
     const before = s.engine.get(w.id);
     const question = review.question(w.id, {
@@ -238,7 +236,10 @@ it("外部提交且无执行工作区的计划可问答和修正，排队问答�
       plan_hash: before.plan_hash,
       text: "正文有哪些约束？",
     });
-    expect(question.status).toBe("queued");
+    expect(question.status).toBe("active");
+    for (const job of s.store.jobs()) {
+      if (JSON.parse(job.data).aside_id === question.id) s.store.jobStatus(job.id, "delivered");
+    }
     expect(s.engine.get(w.id)).toEqual(before);
     review.reject(w.id, {
       request_id: "reject",
@@ -251,6 +252,11 @@ it("外部提交且无执行工作区的计划可问答和修正，排队问答�
     await s.engine.waitForIdle(w.id);
     const revised = s.engine.get(w.id);
     expect(revised.plan_revision).toBe(2);
+    const initialRun = s.store.list<{ id: string; purpose: string }>("run", w.id).find(run => run.purpose === "planning")!;
+    const initialInput = JSON.parse(readFileSync(join(s.config.storage_root, "native-runs", initialRun.id, "input.json"), "utf8"));
+    expect(initialInput).toMatchObject({ kind: "stage_start", user_input: false });
+    expect(initialInput.text).toContain(join(s.config.storage_root, "native-runs", initialRun.id, "HANDOFF.json"));
+    expect(initialInput.text).toContain("补充第二版回滚方案");
     const followupTexts = [
       "任务工作包里的保留文件要求没落实，请补齐第三版说明",
       "任务工作包：保留文件要求没落实，请补齐第四版说明",
@@ -274,7 +280,7 @@ it("外部提交且无执行工作区的计划可问答和修正，排队问答�
       expect(document.content).not.toContain("补充第二版回滚方案");
     }
     const latest = s.engine.get(w.id);
-    asides.completeSession("other-workflow", occupied.id, "释放槽位");
+    s.store.enqueue(w.id, "dispatch_run", { workflow_id: w.id, aside_id: question.id, purpose: "aside" });
     await wait(
       () =>
         s.store.must<any>("aside_session", question.id).status === "completed",
@@ -293,6 +299,10 @@ it("外部提交且无执行工作区的计划可问答和修正，排队问答�
     );
     expect(runs[1].conversation_id).toBe(runs[0].conversation_id);
     expect(runs[2].conversation_id).toBe(runs[0].conversation_id);
+    for (const [index, text] of followupTexts.entries()) {
+      const input = JSON.parse(readFileSync(join(s.config.storage_root, "native-runs", runs[index + 1].id, "input.json"), "utf8"));
+      expect(input).toMatchObject({ kind: "followup", user_input: true, text });
+    }
     expect(runs[3].plan_revision).toBe(1);
     expect(readFileSync(join(repo.repo, "app.txt"), "utf8")).toBe("before\n");
     const handoff = JSON.parse(

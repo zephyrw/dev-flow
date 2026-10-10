@@ -9,8 +9,9 @@ import { FunctionalIssueService } from "../../packages/core/src/functional-issue
 import { buildServer } from "../../apps/api/src/server.js";
 import { now } from "../../packages/core/src/util.js";
 import type { FastifyInstance } from "fastify";
+import { readFileSync, writeFileSync } from "node:fs";
 
-describe("IT-FEEDBACK: 文档版本竞争、游标增量推进、问题跟踪与用户确认权限 (LF-03, LF-14~16, RQ-04, RQ-08, RQ-12)", () => {
+describe("IT-FEEDBACK: 项目原件、游标增量推进、问题跟踪与用户确认权限", () => {
   let env: IsolatedTestEnv;
   let app: FastifyInstance;
   let docService: DocumentService;
@@ -35,6 +36,10 @@ describe("IT-FEEDBACK: 文档版本竞争、游标增量推进、问题跟踪与
       created_at: now(),
       updated_at: now(),
     });
+    env.store.put("workspace", "workspace-feedback", workflowId, {
+      id: "workspace-feedback", workflow_id: workflowId, repo_id: "main",
+      root: env.repoRoot, source_root: env.repoRoot, branch: "fixture", baseline: "a".repeat(40),
+    });
   });
 
   afterEach(async () => {
@@ -42,7 +47,7 @@ describe("IT-FEEDBACK: 文档版本竞争、游标增量推进、问题跟踪与
     await env.cleanup();
   });
 
-  it("TC-FB-01: 文档审批必须检查版本与 Hash，竞争冲突与正文篡改直接拒绝 (LF-03, RQ-04)", () => {
+  it("TC-FB-01: 重新登记保留项目原件，审批读取当前原件并拒绝其他工作流文档", () => {
     // 1. 发布第一版计划
     const doc1 = docService.publishDocument(
       workflowId,
@@ -61,35 +66,38 @@ describe("IT-FEEDBACK: 文档版本竞争、游标增量推进、问题跟踪与
     });
     expect(approved.approved_by_human).toBe(true);
 
-    // 3. 发布第二版计划
+    // Registration uses the same project original and cannot overwrite user progress.
     const doc2 = docService.publishDocument(
       workflowId,
       "plan",
       "# 更新计划\n\n## 新模块划分\n",
     );
-    expect(doc2.revision).toBe(2);
+    expect(doc2.id).toBe(doc1.id);
+    expect(doc2.path).toBe(doc1.path);
+    expect(doc2.content).toBe(doc1.content);
+    expect(readFileSync(doc1.path!, "utf8")).toBe(doc1.content);
 
-    // 4. 版本竞争/陈旧审批拒绝：客户端拿着旧版本号或错误 Hash 审批 doc2
-    expect(() => {
-      docService.approveDocument(workflowId, doc2.id, {
-        request_id: "req_app_conflict",
-        expected_version: 1,
-        document_revision: 1, // 实际已是 r2
-        document_hash: doc1.hash,
-        feedback_cursor: 0,
-      });
-    }).toThrow(/版本不一致/);
+    const progress = doc1.content + "\n- [x] 原计划的实现进度\n";
+    writeFileSync(doc1.path!, progress, "utf8");
+    const latest = docService.approveDocument(workflowId, doc2.id, {
+      request_id: "req_app_current", expected_version: 1,
+      document_revision: 1, document_hash: doc1.hash, feedback_cursor: 0,
+    });
+    expect(latest.content).toBe(progress);
+    expect(latest.hash).not.toBe(doc1.hash);
+    expect(latest.approved_by_human).toBe(true);
+    expect(env.store.get<any>("project_document", doc1.id)).not.toHaveProperty("content");
 
-    // 5. Hash 篡改拒绝
+    // Workflow ownership remains a real authorization boundary.
     expect(() => {
-      docService.approveDocument(workflowId, doc2.id, {
+      docService.approveDocument("another-workflow", doc2.id, {
         request_id: "req_app_tamper",
         expected_version: 1,
         document_revision: 2,
         document_hash: "tampered_hash_val",
         feedback_cursor: 0,
       });
-    }).toThrow(/Hash 与服务器当前版本不一致/);
+    }).toThrow(/审批的文档不存在/);
   });
 
   it("TC-FB-02: 反馈消息按 seq 严格有序，游标增量分页查询且幂等记录 (RQ-08)", () => {

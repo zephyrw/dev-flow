@@ -60,7 +60,7 @@ async function conflictFixture(cleanCompanionFirst = false) {
 }
 
 describe("multi-repository conflict continuation", () => {
-  it("retains every committed candidate and delivers both repositories after conflict review", async () => {
+  it("retains every committed candidate, delivers both repositories and preserves the active model workspaces", async () => {
     const s = await conflictFixture();
     try {
       const other = s.workspaces.find((ws) => ws.repo_id === "b")!;
@@ -79,7 +79,23 @@ describe("multi-repository conflict continuation", () => {
       expect(s.engine.get(s.workflowId).state).toBe("COMPLETED");
       expect(readFileSync(join(s.a.repo, "app.txt"), "utf8")).toBe("task a\nupstream a\n");
       expect(readFileSync(join(s.b.repo, "app.txt"), "utf8")).toBe("task b\n");
-      expect(s.workspaces.every((ws) => !existsSync(ws.root))).toBe(true);
+      expect(s.workspaces.every((ws) => existsSync(ws.root))).toBe(true);
+      const preserved = async () => ({
+        heads: await Promise.all([s.a.repo, s.b.repo, ...s.workspaces.map(ws => ws.root)]
+          .map(root => git(root, ["rev-parse", "HEAD"]))),
+        leases: s.store.list("lease"),
+        workspaces: s.workspaces.map(ws => ({ root: ws.root, exists: existsSync(ws.root) })),
+      });
+      const beforeCleanup = await preserved();
+      await expect(s.coordinator.cleanupWorkspaces(s.workflowId, s.workspaces))
+        .rejects.toMatchObject({ code: "EXPLICIT_SELECTION_REQUIRED" });
+      expect(await preserved()).toEqual(beforeCleanup);
+      // This coordinator-level fixture has not completed its model Run via
+      // Engine.handleMergeConflictResult, so even explicit cleanup must wait.
+      await expect(s.coordinator.cleanupWorkspaces(s.workflowId, s.workspaces, {
+        explicit_selection: true,
+      })).rejects.toMatchObject({ code: "WRITER_ACTIVE" });
+      expect(await preserved()).toEqual(beforeCleanup);
     } finally { s.store.close(); }
   });
 

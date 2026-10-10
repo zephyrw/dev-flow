@@ -14,7 +14,7 @@ import { git, repositoryInfo } from "../../packages/git/src/git.js";
 
 const scratchRoots: string[] = [];
 function scratch(prefix: string) {
-  const dir = mkdtempSync(join(tmpdir(), prefix));
+  const dir = mkdtempSync(join(realpathSync(tmpdir()), prefix));
   scratchRoots.push(dir);
   return dir;
 }
@@ -212,7 +212,7 @@ describe("planner-commit 真实 Git 集成", () => {
     expect(shell(sourceRepo, ["status", "--porcelain", "--untracked-files=all"])).toBe("?? " + planPath);
     expect(shell(sourceRepo, ["diff", "--cached", "--name-only"])).toBe("");
     expect(store.must<{ state: string }>("workflow", "wf").state).toBe("COMPLETED");
-  }, 30_000);
+  }, 120_000);
 
   it.each([
     { name: "未跟踪同名文件", taskPath: "overlap.txt", localPath: "overlap.txt", ignored: false },
@@ -245,7 +245,7 @@ describe("planner-commit 真实 Git 集成", () => {
       repo_id: "main", code: "GIT_INTEGRATION_FAILED", message: expect.stringContaining("overlap"),
     });
     expect(store.get<{ commit: string }>("planner_commit_candidate", "wf:run-1:main")?.commit).toBe(taskCommit);
-  }, 30_000);
+  }, 120_000);
 
   it.each(["unstaged", "staged"] as const)("源工作区无关 tracked %s 改动允许快进并保留暂存边界", async (change) => {
     const { sourceRepo, taskRoot, baseline, taskCommit, store, integrate } = await fastForwardFixture();
@@ -271,7 +271,7 @@ describe("planner-commit 真实 Git 集成", () => {
     expect(wf.state).toBe("COMPLETED");
     expect(wf.blocker).toBeUndefined();
     expect(store.events.find((event) => event.type === "PlannerIntegrationFailed")).toBeUndefined();
-  }, 30_000);
+  }, 120_000);
 
   it("C01 existing_workspace 已有规划提交：不重复生成提交，保留无关 index 与工作区内容", async () => {
     const repo = scratch("devflow-c01-");

@@ -124,6 +124,14 @@ describe("SA-I24 conversation lifecycle", () => {
   it("keeps the review phase when resuming", async () => {
     const s = await prepared();
     opened.push({ close: () => s.store.close() });
+    s.store.put("run", s.workflow.run_id!, s.workflow.id, {
+      ...s.store.must<Run>("run", s.workflow.run_id!),
+      purpose: "quality_review", stage: "quality_before_human",
+      routing_role: "reviewer", dispatch_context: { purpose: "quality_review", review_phase: "before_human" },
+    });
+    s.store.put("workflow", s.workflow.id, s.workflow.project_id, {
+      ...s.engine.get(s.workflow.id), state: "REVIEWING", stage: "quality_before_human",
+    });
     saveWaitingContext(s.store, s.workflow.id, {
       purpose: "review",
       role: "planner",

@@ -1,5 +1,5 @@
 import { expect, it, vi } from "vitest";
-import { setup, repository, project, plan, proof } from "../helpers.js";
+import { setup, repository, project, plan, proof, testConsoleHeaders } from "../helpers.js";
 import { objectHash } from "../../packages/core/src/util.js";
 import { buildServer } from "../../apps/api/src/server.js";
 import { ProcessManager } from "../../packages/process/src/manager.js";
@@ -36,7 +36,7 @@ async function fixture() {
     getRepository: () => ({}), syncActiveAccountFromHost: async () => {},
   } as any });
   const recover = () => app.inject({ method: "POST", url: `/api/workflows/${w.id}/recover`,
-    headers: { host: "localhost:14810", origin: "http://localhost:14810" }, payload: {} });
+    headers: { host: testConsoleHeaders().host, origin: testConsoleHeaders().origin }, payload: {} });
   return { ...s, workflow: w, run, rootNode, conversations, dispatch, app, recover };
 }
 

@@ -1,6 +1,6 @@
 import { it, expect } from "vitest";
 import { randomUUID } from "node:crypto";
-import { inheritRoleOverrides } from "../../packages/contracts/src/index.js";
+import { inheritRoleOverrides, SupportedAdapters } from "../../packages/contracts/src/index.js";
 import { setup, repository } from "../helpers.js";
 import { buildServer } from "../../apps/api/src/server.js";
 import { seedVerifiedAccess } from "../../packages/core/src/access-guard.js";
@@ -54,7 +54,11 @@ it("规划工具通过真实 MCP 入口创建原生任务并拒绝未知配置",
   };
   try {
     const profiles = await call({}, "devflow_list_tool_profiles");
-    expect(JSON.parse(profiles.content[0].text).profiles).toHaveLength(8);
+    const listed = JSON.parse(profiles.content[0].text).profiles as Array<{ id: string; adapterId: string; modelId?: string }>;
+    expect(listed.map(item => item.adapterId).sort()).toEqual([...SupportedAdapters].sort());
+    expect(listed.filter(item => item.id === profile.id)).toEqual([
+      expect.objectContaining({ id: profile.id, adapterId: "codex", modelId: "fixture-only" }),
+    ]);
     const result = await call(args);
     expect(result.isError).not.toBe(true);
     const w = s.store.list<any>("workflow")[0];

@@ -34,19 +34,28 @@ it("native plan submission and both handoffs preserve new and regression E2E cas
       packageHash: "pkg-test",
       directory: join(s.root, "container"),
     };
-    for (const pkg of [HandoffBuilder.buildFullHandoff(args), HandoffBuilder.buildResumeHandoff({ ...args, conversationId: "conv-test" })]) {
+    const full = HandoffBuilder.buildFullHandoff(args);
+    const resumed = HandoffBuilder.buildResumeHandoff({ ...args, conversationId: "conv-test" });
+    for (const pkg of [full, resumed]) {
       expect(pkg.index.acceptance_items.find((t) => t.layer === "e2e")?.expected_case_ids).toEqual(["NEW-01", "REG-01"]);
       expect(pkg.test_exemptions).toEqual([]);
-      expect(pkg.instructions).toContain("新需求全部业务流程");
-      expect(pkg.instructions).toContain("旧功能回归");
-      expect(pkg.instructions).toContain("真实浏览器连接真实应用");
-      expect(pkg.instructions).toContain("仍保留用户功能确认");
-      expect(pkg.instructions).toContain("四项结果独立");
-      expect(pkg.instructions).toContain("不跨层映射");
-      expect(pkg.instructions).toContain("E2E 的通过或跳过不代表 OpenTabs 已完成或不适用");
-      expect(pkg.instructions).toContain("保留当前任务已完成且未受影响的结果，仅补未完成项");
-      expect(pkg.instructions).toContain("不凭提示词宣称工具一定可用");
     }
+    // A native session receives policy on its first handoff and a short
+    // continuation on resume; the resume keeps the frozen plan and tests.
+    expect(resumed.conversation_id).toBe("conv-test");
+    expect(resumed.plan_revision).toBe(full.plan_revision);
+    expect(resumed.plan_hash).toBe(full.plan_hash);
+    expect(resumed.index).toEqual(full.index);
+    expect(resumed.instructions).toBe("继续");
+    expect(full.instructions).toContain("新需求全部业务流程");
+    expect(full.instructions).toContain("旧功能回归");
+    expect(full.instructions).toContain("真实浏览器连接真实应用");
+    expect(full.instructions).toContain("仍保留用户功能确认");
+    expect(full.instructions).toContain("四项结果独立");
+    expect(full.instructions).toContain("不跨层映射");
+    expect(full.instructions).toContain("E2E 的通过或跳过不代表 OpenTabs 已完成或不适用");
+    expect(full.instructions).toContain("保留当前任务已完成且未受影响的结果，仅补未完成项");
+    expect(full.instructions).toContain("不凭提示词宣称工具一定可用");
     stored.exemptions = [{ layer: "integration", reason: "无集成边界的任务须保留明确批准的豁免依据" }];
     const pkg = HandoffBuilder.buildResumeHandoff({ ...args, plan: stored, conversationId: "conv-test" });
     expect(pkg.test_exemptions).toEqual(stored.exemptions);

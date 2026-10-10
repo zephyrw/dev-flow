@@ -3,6 +3,7 @@ import { writeFileSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { prepared } from "../helpers.js";
 import { LocalRuntime } from "../../packages/runtime/src/runtime.js";
+import { latestSpec } from "../../packages/core/src/run-profile.js";
 
 it("a rejected output schema retries once without wire constraints and validates the actual returned diagnosis", async () => {
   const s = await prepared(),
@@ -21,6 +22,12 @@ it("a rejected output schema retries once without wire constraints and validates
   );
   s.config.models.codex_executable = process.execPath;
   s.config.models.codex_prefix_args = [cli];
+  const selected = latestSpec(s.store, s.workflow.id)!;
+  s.store.put("execution_spec", selected.id, s.workflow.id, {
+    ...selected,
+    plannerProfile: { ...selected.plannerProfile, executableRef: process.execPath,
+      modelSelection: "explicit", modelId: "fixture-planner", options: { prefixArgs: [cli] } },
+  });
   s.store.put("evidence", "delivery-fixture", s.workflow.id, {
     id: "delivery-fixture",
   });

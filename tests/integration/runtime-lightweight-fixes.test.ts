@@ -62,7 +62,23 @@ it.each(["lightweight", "legacy"] as const)("worker MCP routes a historical leaf
     const names = tools.tools.map((tool: any) => tool.name);
     const result = await request("tools/call", { name: "devflow_execute_context", arguments: { section: "overview" } });
     expect(result.isError).not.toBe(true);
-    const overview = JSON.parse(result.content[0].text);
+    let overview = JSON.parse(result.content[0].text);
+    if (overview.response_id) {
+      const responseId = overview.response_id;
+      let text = overview.text;
+      let nextOffset = overview.next_offset;
+      while (nextOffset !== null) {
+        const page = await request("tools/call", { name: "devflow_execute_context", arguments: {
+          section: "response", id: responseId, offset: nextOffset,
+        } });
+        expect(page.isError).not.toBe(true);
+        const chunk = JSON.parse(page.content[0].text);
+        expect(chunk.next_offset === null || chunk.next_offset > nextOffset).toBe(true);
+        text += chunk.text;
+        nextOffset = chunk.next_offset;
+      }
+      overview = JSON.parse(text);
+    }
     if (protocol === "legacy") {
       expect(names).toContain("devflow_finish");
       expect(overview.instructions).toContain("禁止原生工具");

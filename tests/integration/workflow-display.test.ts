@@ -1,12 +1,12 @@
 import { afterEach, beforeEach, expect, it } from "vitest";
 import { buildServer } from "../../apps/api/src/server.js";
-import { setup, project } from "../helpers.js";
+import { setup, project, testConsoleHeaders } from "../helpers.js";
 import { now } from "../../packages/core/src/util.js";
 import { ConversationService } from "../../packages/core/src/conversation-service.js";
 
 let env: ReturnType<typeof setup>;
 let app: Awaited<ReturnType<typeof buildServer>>;
-const headers = { host: "localhost:14810", origin: "http://localhost:14810" };
+const headers = { host: testConsoleHeaders().host, origin: testConsoleHeaders().origin };
 const url = "/api/workflows/wf_display";
 beforeEach(async () => {
   env = setup();

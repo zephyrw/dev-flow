@@ -1,7 +1,7 @@
 import { it, expect, vi } from "vitest";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { prepared } from "../helpers.js";
+import { prepared, testConsoleHeaders } from "../helpers.js";
 import {
   requestOperation,
   decideOperation,
@@ -227,7 +227,7 @@ it("HTTP authorization rejects foreign callers and resumes the original workflow
           url,
           payload,
           headers: {
-            host: "localhost:14810",
+            host: testConsoleHeaders().host,
             origin: "https://foreign.invalid",
           },
         })
@@ -237,7 +237,7 @@ it("HTTP authorization rejects foreign callers and resumes the original workflow
       method: "POST",
       url,
       payload,
-      headers: { host: "localhost:14810", origin: "http://localhost:14810" },
+      headers: { host: testConsoleHeaders().host, origin: testConsoleHeaders().origin },
     });
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({
@@ -537,7 +537,7 @@ it("HTTP summary and detail use read projections; history has a bounded backward
       s.store.event(s.workflow.id, s.project.id, "AgentDiagnostic", {
         text: "ordinary output " + i,
       });
-    const headers = { host: "localhost:14810" };
+    const headers = { host: testConsoleHeaders().host };
     const summary = await app.inject({
       url: `/api/workflows/${s.workflow.id}?view=summary`,
       headers,

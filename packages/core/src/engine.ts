@@ -3430,9 +3430,9 @@ export class Engine {
         return;
       }
       if (review && !ownsPreparation()) return;
+      if (!review) prepareRepairResume(this, key);
       if (!review && !this.project(w.project_id).repositories.every(repo =>
         this.store.list<Workspace>("workspace", key).some(ws => ws.repo_id === repo.id && !!ws.root))) {
-        prepareRepairResume(this, key);
         const plan = this.plan(key);
         const approval = this.store.must<{ plan_hash: string }>(
           "approval",
@@ -4503,7 +4503,7 @@ export class Engine {
     this.transition(key, ["REVIEWING"], "COMMITTING", "planner_commit");
     try {
       if (lightweight) {
-        const outcome = await this.withWorkspaceWrite(key, id("commit"), () =>
+        const outcome = await this.withWorkspaceWrite(key, w.run_id!, () =>
           new GitDeliveryCoordinator(
             this.store,
             this.config.workspace_root,
@@ -5034,30 +5034,25 @@ export class Engine {
     });
   }
   private workspaceWriteKeys(key: string) {
-    return this.store
-      .list<Workspace>("workspace", key)
-      .map((ws) => "write:" + ws.root.toLowerCase());
-  }
-  private holdsWorkspaceWrite(key: string) {
-    const keys = this.workspaceWriteKeys(key);
-    return (
-      keys.length > 0 &&
-      keys.every((lock) => {
-        const lease = this.store.get<{ owner: string; status: string }>(
-          "lease",
-          lock,
-        );
-        return lease?.owner === key && lease.status === "active";
-      })
-    );
+    const workflow = this.get(key);
+    const roots = this.store.list<Workspace>("workspace", key).flatMap((ws) => [
+      ws.root,
+      ...(workflow.workspace_mode === "new_worktree"
+        ? [ws.source_root ?? this.project(workflow.project_id).repositories.find(repo => repo.id === ws.repo_id)?.path]
+            .filter((root): root is string => !!root)
+        : []),
+    ]);
+    return [...new Set(roots.map(root => "write:" + root.toLowerCase()))];
   }
   private async withWorkspaceWrite<T>(
     key: string,
     runId: string,
     fn: () => Promise<T>,
   ): Promise<T> {
+    requireCondition(this.get(key).run_id === runId && !this.store.get("run_stop", runId),
+      "RUN_REVOKED", "提交运行已被替代或停止");
     const keys = this.workspaceWriteKeys(key);
-    if (!keys.length || this.holdsWorkspaceWrite(key)) return fn();
+    const acquired = keys.filter(lock => !this.store.get("lease", lock));
     requireCondition(
       this.scheduler.acquire(key, runId, keys),
       "WORKSPACE_BUSY",
@@ -5066,7 +5061,7 @@ export class Engine {
     try {
       return await fn();
     } finally {
-      this.scheduler.release(key, runId, keys, true);
+      this.scheduler.release(key, runId, acquired, true);
     }
   }
   private async applyCommitOutcome(

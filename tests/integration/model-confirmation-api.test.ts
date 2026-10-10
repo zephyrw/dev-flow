@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
-import { setup, project, plan } from "../helpers.js";
+import { setup, project, plan, testConsoleHeaders } from "../helpers.js";
 import { buildServer } from "../../apps/api/src/server.js";
 import { now, objectHash } from "../../packages/core/src/util.js";
 import { seedVerifiedAccess } from "../../packages/core/src/access-guard.js";
@@ -19,8 +19,8 @@ import {
 } from "../../packages/contracts/src/index.js";
 
 const headers = {
-  host: "localhost:14810",
-  origin: "http://localhost:14810",
+  host: testConsoleHeaders().host,
+  origin: testConsoleHeaders().origin,
   "content-type": "application/json",
 };
 let dispose: (() => Promise<void>) | undefined;

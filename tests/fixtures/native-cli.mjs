@@ -173,8 +173,41 @@ if (stage === "planning") {
 } else if (stage === "planner_commit") {
   const repositories = m.workspaces.map((workspace) => {
     const options = { cwd: workspace.root, encoding: "utf8" };
+    const target = m.integration_repair?.targets?.find(target => target.repo_id === workspace.repo_id);
+    if (target) {
+      let mergeHead;
+      try { mergeHead = execFileSync("git", ["rev-parse", "--verify", "MERGE_HEAD"], { ...options, stdio: ["ignore", "pipe", "pipe"] }).trim(); } catch {}
+      if (mergeHead && mergeHead !== target.source_commit) throw new Error("FIXTURE_MERGE_HEAD_MISMATCH");
+      if (!mergeHead) {
+        try {
+          execFileSync("git", ["merge", "--no-commit", "--no-ff", "--no-autostash", "--no-overwrite-ignore", target.source_commit], options);
+        } catch (error) {
+          if (error.status !== 1) throw error;
+        }
+      }
+      const conflicts = execFileSync("git", ["diff", "--name-only", "--diff-filter=U"], options).trim().split(/\r?\n/).filter(Boolean);
+      if (conflicts.some(file => file !== "app.txt")) throw new Error("FIXTURE_UNEXPECTED_CONFLICT_PATH");
+      for (const file of conflicts) {
+        const fullPath = path.join(workspace.root, file);
+        const original = fs.readFileSync(fullPath, "utf8");
+        const resolved = original.replace(/<{7}[^\n]*\r?\n([\s\S]*?)={7}\r?\n([\s\S]*?)>{7}[^\n]*(?:\r?\n|$)/g,
+          (_match, ours, theirs) => ours.trimEnd() + "\n" + theirs.trimEnd() + "\n");
+        if (resolved === original || /^(?:<{7}|={7}|>{7})/m.test(resolved)) throw new Error("FIXTURE_CONFLICT_NOT_RESOLVED");
+        fs.writeFileSync(fullPath, resolved);
+      }
+      const checkArgs = ["-e", "const fs=require('node:fs'),assert=require('node:assert/strict');const text=fs.readFileSync('app.txt','utf8');assert.ok(text.includes('after\\n'));assert.ok(text.includes('upstream line\\n'));assert.ok(!/^<{7}|^>{7}/m.test(text));"];
+      const command = [process.execPath, ...checkArgs].map(value => JSON.stringify(value)).join(" ");
+      const call = "merge-check-" + process.env.DEVFLOW_RUN_ID;
+      emit({ type: "item.started", item: { type: "command_execution", id: call, command, cwd: workspace.root } });
+      execFileSync(process.execPath, checkArgs, options);
+      emit({ type: "item.completed", item: { type: "command_execution", id: call, exit_code: 0 } });
+    }
     execFileSync("git", ["add", "--", "app.txt"], options);
     execFileSync("git", ["commit", "-m", "test: native fixture"], options);
+    if (target) {
+      execFileSync("git", ["merge-base", "--is-ancestor", target.candidate_commit, "HEAD"], options);
+      execFileSync("git", ["merge-base", "--is-ancestor", target.source_commit, "HEAD"], options);
+    }
     return {
       repo_id: workspace.repo_id,
       commit: execFileSync("git", ["rev-parse", "HEAD"], options).trim(),
@@ -723,9 +756,11 @@ function collectAttachmentPaths(handoff) {
 }
 
 function emitAttachmentReads(paths) {
+  const reads = [];
   for (const filePath of paths) {
     const buf = fs.readFileSync(filePath);
     const sha256 = createHash("sha256").update(buf).digest("hex");
+    reads.push({ path: filePath, bytes: buf.length, sha256 });
     const call = "attach-" + sha256.slice(0, 12);
     emit({
       type: "item.started",
@@ -750,6 +785,8 @@ function emitAttachmentReads(paths) {
       },
     });
   }
+  if (reads.length) writeFixtureSidecar(".devflow-fixture-attachment-reads.json",
+    JSON.stringify({ runId: process.env.DEVFLOW_RUN_ID, sessionId: rootThread, reads }));
 }
 
 function emitQuotaInterrupt() {

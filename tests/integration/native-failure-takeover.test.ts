@@ -9,6 +9,7 @@ import {
 import { FlowError } from "../../packages/contracts/src/index.js";
 import { rejectedDeliveryFeedback } from "../../packages/core/src/delivery-feedback.js";
 import { resumeApproved } from "../../packages/runtime/src/recovery.js";
+import { readQualityFlow } from "../../packages/core/src/quality-policy-migration.js";
 
 it.each(["feedback", "recover"])(
   "resuming an exhausted delivery through %s removes legacy execution-failure takeover",
@@ -68,9 +69,9 @@ it("three failed native execution rounds keep the executor and do not count as q
     expect(s.engine.get(s.w.id).state).toBe("HUMAN_PENDING");
     expect(s.engine.get(s.w.id).plan_revision).toBe(1);
     expect(owners).toEqual(["agy", "agy", "agy", "agy"]);
-    expect(s.engine.quality.getGate(s.w.id, "before_human")).toMatchObject({
-      executor_rejections: 0,
-      takeover: false,
+    expect(readQualityFlow(s.store, s.w.id)).toMatchObject({
+      executor_repair_completed: false,
+      planner_repairs_only: false,
     });
     expect(diagnose).not.toHaveBeenCalled();
     expect(
@@ -109,6 +110,9 @@ it("execution recovery stops after six failed runs without switching to the plan
 
 it("a legitimate quality takeover keeps planner ownership during bounded execution recovery", async () => {
   const s = await fixture();
+  // This isolated historical gate belongs to policy 1; policy 2 takeover is
+  // covered through real quality_flow scheduling in devflow-v2-quality-flow.
+  s.store.put("workflow", s.w.id, s.w.project_id, { ...s.engine.get(s.w.id), quality_policy_version: 1 });
   seedPlannerTakeover(s);
   const owners: string[] = [];
   s.engine.runtime = {
@@ -178,9 +182,9 @@ it("执行交付后直接进入规划审查，不会把执行失败计为质量�
     await until(s, ["HUMAN_PENDING", "BLOCKED"]);
     expect(s.engine.get(s.w.id).state).toBe("HUMAN_PENDING");
     expect(owners).toEqual(["agy"]);
-    expect(s.engine.quality.getGate(s.w.id, "before_human")).toMatchObject({
-      executor_rejections: 0,
-      takeover: false,
+    expect(readQualityFlow(s.store, s.w.id)).toMatchObject({
+      executor_repair_completed: false,
+      planner_repairs_only: false,
     });
   } finally {
     await cleanup(s);

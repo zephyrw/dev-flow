@@ -29,6 +29,10 @@ export async function seedSourceChange(engine: Engine, root: string) {
     id("source-create"),
   );
   const markdown = "# 正式计划\n\n将 app.txt 改为 after，保留其他文件。\n";
+  // This scenario begins under the current policy; a timer must not migrate it
+  // and invalidate the version held by the source-change confirmation dialog.
+  w.quality_policy_version = 2;
+  engine.store.put("workflow", w.id, w.project_id, w);
   new DocumentService(engine.store, engine.config.storage_root).publishDocument(
     w.id,
     "plan",

@@ -291,19 +291,18 @@ describe("SA-U20 project asides", () => {
     );
   });
 
-  it("不扩大全局 1 个 active 与每任务 3 个 queued", () => {
+  it("同任务与跨任务提问均可独立激活，不增加人工全局或排队限额", () => {
     const first = asides.submitQuestion(WF_A1, "占用");
     expect(first.status).toBe("active");
-    expect(asides.submitQuestion(WF_A1, "排队 1").status).toBe("queued");
-    expect(asides.submitQuestion(WF_A1, "排队 2").status).toBe("queued");
-    expect(asides.submitQuestion(WF_A1, "排队 3").status).toBe("queued");
-    expect(() => asides.submitQuestion(WF_A1, "超限")).toThrow(/排队提问已达上限/);
-    expect(asides.submitQuestion(WF_A2, "跨任务排队").status).toBe("queued");
+    for (let index = 1; index <= 4; index++) {
+      expect(asides.submitQuestion(WF_A1, `并发 ${index}`).status).toBe("active");
+    }
+    expect(asides.submitQuestion(WF_A2, "跨任务并发").status).toBe("active");
     const all = store.list<AsideSession>("aside_session");
-    expect(all.filter((item) => item.status === "active")).toHaveLength(1);
+    expect(all.filter((item) => item.status === "active")).toHaveLength(6);
     expect(
       all.filter((item) => item.workflow_id === WF_A1 && item.status === "queued"),
-    ).toHaveLength(3);
+    ).toHaveLength(0);
   });
 });
 
