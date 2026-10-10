@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -51,30 +51,34 @@ describe("AGY Account Service Lifecycle & Operations (AC-U17, AC-U18, AC-U20)", 
         cli_version: "1.2.7",
         raw_output: "agy whoami",
       }),
-      probeUsage: async () => ({
-        email: "target@example.com",
-        cli_version: "1.2.7",
-        windows: [
-          {
-            kind: "weekly",
-            duration_minutes: 10080,
-            remaining_fraction: 0.8,
-            reset_at: null,
-            observed_at: new Date().toISOString(),
-            status: "observed",
-          },
-          {
-            kind: "five_hour",
-            duration_minutes: 300,
-            remaining_fraction: 0.5,
-            reset_at: null,
-            observed_at: new Date().toISOString(),
-            status: "observed",
-          },
-        ],
-        raw_output: "",
-        pools: [], executable_fingerprint: "fixture", capability_verified: false,
-      }),
+      probeUsage: async () => {
+        // Both windows are one official observation, even if clock reads cross a millisecond.
+        const observedAt = new Date().toISOString();
+        return {
+          email: "target@example.com",
+          cli_version: "1.2.7",
+          windows: [
+            {
+              kind: "weekly",
+              duration_minutes: 10080,
+              remaining_fraction: 0.8,
+              reset_at: null,
+              observed_at: observedAt,
+              status: "observed",
+            },
+            {
+              kind: "five_hour",
+              duration_minutes: 300,
+              remaining_fraction: 0.5,
+              reset_at: null,
+              observed_at: observedAt,
+              status: "observed",
+            },
+          ],
+          raw_output: "",
+          pools: [], executable_fingerprint: "fixture", capability_verified: false,
+        };
+      },
       probeModelAccess: async () => true,
     };
 
@@ -177,7 +181,10 @@ describe("AGY Account Service Lifecycle & Operations (AC-U17, AC-U18, AC-U20)", 
     expect(after.maintenance).toEqual({ ...before.maintenance, refresh_verified_max_age_hours: 12 });
   });
 
-  it("issues and releases usage permits during running state", async () => {
+  it.each([
+    ["issues and releases usage permits during running state", 0],
+    ["rejects a split quota observation batch without issuing usage or changing the active account", 1],
+  ] as const)("%s", async (_scenario, windowSkewMs) => {
     const realmId = "default-agy-realm";
 
     // Setup account in repo
@@ -186,7 +193,7 @@ describe("AGY Account Service Lifecycle & Operations (AC-U17, AC-U18, AC-U20)", 
       realm_id: realmId,
       revision: 1,
       alias: "Test Account",
-      identity: { email: "acc1@example.com", verified_at: new Date().toISOString() },
+      identity: { email: "acc1@example.com", subject: "fixture-subject-1", verified_at: new Date().toISOString() },
       secret_ref: "vault-acc-1",
       credential_revision: 1,
       state: "ready",
@@ -194,6 +201,17 @@ describe("AGY Account Service Lifecycle & Operations (AC-U17, AC-U18, AC-U20)", 
       auth: { has_refresh_credential: true, metadata_status: "verified", refresh_expiry_source: "not_provided" },
     };
     repo.saveAccount(account);
+    mockAuthHost.inspectActive = async () => ({ exists: true, secret_ref: account.secret_ref,
+      auth: { email: account.identity.email, subject: account.identity.subject } });
+    mockProbe.probeIdentity = async () => ({ email: account.identity.email, subject: account.identity.subject,
+      cli_version: "1.2.7", raw_output: "agy whoami" });
+    const originalProbeUsage = mockProbe.probeUsage;
+    mockProbe.probeUsage = async options => {
+      const observed = await originalProbeUsage(options);
+      return { ...observed, email: account.identity.email, capability_verified: true,
+        pools: [{ pool_id: "default", model_ids: ["gemini-fixture"], windows: observed.windows }] };
+    };
+    const usageProbe = vi.spyOn(mockProbe, "probeUsage");
 
     await service.start({ realmId, requestId: "req-start" });
 
@@ -203,20 +221,43 @@ describe("AGY Account Service Lifecycle & Operations (AC-U17, AC-U18, AC-U20)", 
     realm.active_secret_ref = "vault-acc-1";
     realm.auth_epoch = 1;
     repo.saveRealm(realm);
-    repo.saveQuotaSnapshot({ id: "q-permit", realm_id: realmId, account_id: "acc-1", auth_epoch: 1, pool_id: "default", model_ids: ["gemini-fixture"], source: "official_cli_usage", cli_version: "fixture", parser_revision: 1, observed_at: new Date().toISOString(), windows: (await mockProbe.probeUsage()).windows, executable_fingerprint: "fixture", capability_verified: true });
+    const usage = await mockProbe.probeUsage();
+    const observedAt = usage.windows[0]!.observed_at;
+    const windows = usage.windows.map(window => window.kind === "five_hour" && windowSkewMs
+      ? { ...window, observed_at: new Date(Date.parse(observedAt) + windowSkewMs).toISOString() }
+      : window);
+    repo.saveQuotaSnapshot({ id: "q-permit", realm_id: realmId, account_id: "acc-1", auth_epoch: 1, pool_id: "default", model_ids: ["gemini-fixture"], source: "official_cli_usage", cli_version: "fixture", parser_revision: 1, observed_at: observedAt, windows, executable_fingerprint: "fixture", capability_verified: true });
+    const accountBefore = repo.getAccount(realmId, "acc-1");
+    const realmBefore = repo.getRealm(realmId);
+    const snapshotsBefore = repo.listQuotaSnapshots(realmId);
 
-    const permit = await service.acquireUsagePermit({
+    const acquirePermit = () => service.acquireUsagePermit({
       realm_id: realmId,
       consumer_id: "workflow-wf-1",
       usage_kind: "execution",
       required_pool_ids: ["default"], required_model_ids: ["gemini-fixture"],
     });
 
+    if (windowSkewMs) {
+      expect(windows[1]!.observed_at).toBe(new Date(Date.parse(windows[0]!.observed_at) + 1).toISOString());
+      await expect(acquirePermit()).rejects.toMatchObject({ code: "active_account_unavailable" });
+      expect(repo.listPermits(realmId)).toEqual([]);
+      expect(repo.getRealm(realmId)).toEqual(realmBefore);
+      expect(repo.getAccount(realmId, "acc-1")).toEqual(accountBefore);
+      expect(repo.listQuotaSnapshots(realmId)).toEqual(snapshotsBefore);
+      return;
+    }
+
+    expect(windows[0]!.observed_at).toBe(windows[1]!.observed_at);
+    const permit = await acquirePermit();
+
     expect(permit.account_id).toBe("acc-1");
     expect(permit.auth_epoch).toBe(1);
 
     const savedPermit = repo.getPermit(permit.permit_id);
-    expect(savedPermit?.status).toBe("issued");
+    expect(savedPermit).toMatchObject({ status: "issued", realm_id: realmId, account_id: "acc-1",
+      auth_epoch: 1, consumer_id: "workflow-wf-1", usage_kind: "execution", model_id: "gemini-fixture",
+      model_category: "gemini", required_pool_ids: ["default"] });
 
     await service.releaseUsagePermit(permit.permit_id, {
       permit_id: permit.permit_id,
@@ -224,7 +265,21 @@ describe("AGY Account Service Lifecycle & Operations (AC-U17, AC-U18, AC-U20)", 
     });
 
     const releasedPermit = repo.getPermit(permit.permit_id);
-    expect(releasedPermit?.status).toBe("released");
+    expect(releasedPermit).toMatchObject({ status: "released", account_id: "acc-1", auth_epoch: 1,
+      consumer_id: "workflow-wf-1", usage_kind: "execution" });
+    expect(repo.getRealm(realmId)).toMatchObject({ service_state: "running", phase: "idle",
+      active_account_id: "acc-1", active_secret_ref: account.secret_ref, auth_epoch: 1 });
+    expect(repo.getRealm(realmId)?.last_error).toBeUndefined();
+    expect(repo.getAccount(realmId, "acc-1")).toMatchObject({ id: "acc-1", identity: account.identity,
+      secret_ref: account.secret_ref, credential_revision: 1, state: "ready" });
+    expect(usageProbe).toHaveBeenLastCalledWith(expect.objectContaining({ account_id: "acc-1", credential_revision: 1 }));
+    const refreshedQuota = repo.getQuotaSnapshot(realmId, "acc-1", "default")!;
+    expect(refreshedQuota.id).not.toBe("q-permit");
+    expect(refreshedQuota).toMatchObject({ realm_id: realmId, account_id: "acc-1", auth_epoch: 1,
+      source: "official_cli_usage", capability_verified: true, model_ids: ["gemini-fixture"] });
+    expect(refreshedQuota.windows[0]!.observed_at).toBe(refreshedQuota.windows[1]!.observed_at);
+    expect(refreshedQuota.windows.map(window => [window.kind, window.remaining_fraction]))
+      .toEqual([["weekly", 0.8], ["five_hour", 0.5]]);
   });
 
   it("rejects usage permit acquisition when service is stopped", async () => {
