@@ -30,7 +30,7 @@ function mergeOne(map, file) {
         if (!Object.hasOwn(locations, id) || !Array.isArray(values) ||
             values.some(value => !Number.isFinite(value) || value < 0) ||
             branch && values.length !== locations[id].locations?.length)
-          throw new Error(`Invalid coverage counter in ${file}: ${path}`);
+          throw new Error(`Invalid coverage counter in ${file}: ${path} (${branch ? "branch" : locations === record.fnMap ? "function" : "statement"} ${id})`);
       }
     }
   }

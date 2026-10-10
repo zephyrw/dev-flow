@@ -5,9 +5,15 @@ import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { pathToFileURL } from "node:url";
 
-// Type checking precedes build in CI. Load the existing pure diagnostic policy
-// from source with the already-installed tsx dependency, never from stale dist.
+// Type checking precedes build in CI. Use the host's source loader first so
+// coverage observes the same transformed code that actually executes. Standalone
+// Node needs tsx for unsupported TypeScript syntax; never load stale dist.
 async function loadRedaction() {
+  try { return await import("../../packages/presentation/src/secret-redactor.ts"); }
+  catch (error) {
+    if (error?.code !== "ERR_UNKNOWN_FILE_EXTENSION" &&
+        error?.code !== "ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX") throw error;
+  }
   const { tsImport } = await import("tsx/esm/api");
   return tsImport("../../packages/presentation/src/secret-redactor.ts", import.meta.url);
 }

@@ -1,15 +1,29 @@
 import { describe, expect, it } from "vitest";
 import { EventEmitter } from "node:events";
 import { PassThrough, Writable } from "node:stream";
-import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync, mkdirSync, copyFileSync, symlinkSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { execFileSync } from "node:child_process";
+import { pathToFileURL } from "node:url";
 import { runTypecheck } from "../../scripts/ci/typecheck.mjs";
 
 class TypecheckChild extends EventEmitter {
   stdout = new PassThrough();
   stderr = new PassThrough();
   kill() { return true; }
+}
+
+function sourcePolicyFixture() {
+  const root = mkdtempSync(join(realpathSync(tmpdir()), "devflow-ci-source-policy-"));
+  mkdirSync(join(root, "scripts/ci"), { recursive: true });
+  mkdirSync(join(root, "packages/presentation/src"), { recursive: true });
+  copyFileSync(resolve("scripts/ci/typecheck.mjs"), join(root, "scripts/ci/typecheck.mjs"));
+  copyFileSync(resolve("packages/presentation/src/secret-redactor.ts"), join(root, "packages/presentation/src/secret-redactor.ts"));
+  writeFileSync(join(root, "package.json"), JSON.stringify({ type: "module" }));
+  symlinkSync(resolve("node_modules"), join(root, "node_modules"), process.platform === "win32" ? "junction" : "dir");
+  return { root, entry: pathToFileURL(join(root, "scripts/ci/typecheck.mjs")).href,
+    policy: join(root, "packages/presentation/src/secret-redactor.ts") };
 }
 
 async function fixture(stdout: string[], stderr: string[], code: number | null, signal: string | null = null) {
@@ -40,6 +54,50 @@ async function fixture(stdout: string[], stderr: string[], code: number | null, 
 }
 
 describe("CI typecheck diagnostic projection", () => {
+  it("standalone Node loads the real source policy before dist exists and redacts split compiler output", () => {
+    const { root, entry } = sourcePolicyFixture();
+    try {
+      const script = `import {runTypecheck} from ${JSON.stringify(entry)};
+        import {EventEmitter} from 'node:events'; import {PassThrough,Writable} from 'node:stream';
+        let output=''; const sink=()=>new Writable({write(chunk,_encoding,done){output+=chunk.toString();done();}});
+        const summary=await runTypecheck({stdout:sink(),stderr:sink(),spawn:()=>{
+          const child=new EventEmitter(); child.stdout=new PassThrough(); child.stderr=new PassThrough();
+          queueMicrotask(()=>{child.stdout.write('source.ts(4,2): error TS2322: invalid type\\nAuthorization: Bea');
+            child.stdout.end('rer standalone-fixture-secret\\n'); child.stderr.end(); child.emit('close',2,null);});
+          return child;
+        }}); console.log(JSON.stringify({summary,output}));`;
+      const result = JSON.parse(execFileSync(process.execPath, ["--input-type=module", "-e", script], {
+        cwd: root, encoding: "utf8", windowsHide: true, timeout: 30000,
+      }));
+      expect(existsSync(join(root, "dist"))).toBe(false);
+      expect(result.summary).toMatchObject({ status: "failed", exit_code: 2, error: "TypeScript typecheck failed" });
+      expect(result.output).toContain("source.ts(4,2)");
+      expect(result.output).toContain("[REDACTED]");
+      expect(JSON.stringify(result)).not.toContain("standalone-fixture-secret");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  }, 45000);
+
+  it("source policy dependency or runtime loading failures do not start a compiler or expose the raw error", () => {
+    for (const failure of [
+      'import "devflow-missing-policy-dependency";',
+      'throw Error("token=policy-load-fixture-secret");',
+    ]) {
+      const { root, entry, policy } = sourcePolicyFixture();
+      try {
+        writeFileSync(policy, failure);
+        const script = `import {runTypecheck} from ${JSON.stringify(entry)};
+          let started=false; const summary=await runTypecheck({spawn:()=>{started=true;throw Error('compiler must not start');}});
+          console.log(JSON.stringify({summary,started}));`;
+        const result = JSON.parse(execFileSync(process.execPath, ["--input-type=module", "-e", script], {
+          cwd: root, encoding: "utf8", windowsHide: true, timeout: 30000,
+        }));
+        expect(result).toMatchObject({ started: false,
+          summary: { status: "failed", exit_code: 1, error: "TYPECHECK_REDACTOR_LOAD_FAILED", stdout_summary: "", stderr_summary: "" } });
+        expect(JSON.stringify(result)).not.toContain("policy-load-fixture-secret");
+        expect(JSON.stringify(result)).not.toContain("devflow-missing-policy-dependency");
+      } finally { rmSync(root, { recursive: true, force: true }); }
+    }
+  }, 45000);
   it("protects console and artifact across chunks while retaining compiler locations and exit codes", async () => {
     const result = await fixture([
       "tests/example.ts(4,2): error TS2322: ordinary type mismatch\nAuthorization: Bea",

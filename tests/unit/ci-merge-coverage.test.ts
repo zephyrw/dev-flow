@@ -53,6 +53,26 @@ it("fails closed for missing, corrupt, empty or invalid counter input", () => {
   expect(existsSync(output)).toBe(false);
 });
 
+it("preserves a valid implicit else location while refusing negative or nonfinite counters in every map", () => {
+  const f = fixture();
+  const implicit = { ...f.record, branchMap: { "0": { ...f.record.branchMap["0"], locations: [f.loc(2), { start: {}, end: {} }] } } };
+  const output = join(f.root, "implicit-else");
+  mergeCoverageReports([f.save("implicit.json", { [f.file]: implicit })], output);
+  const merged = JSON.parse(readFileSync(join(output, "coverage-final.json"), "utf8"));
+  expect(merged[f.file].b).toEqual({ "0": [1, 0] });
+  expect(merged[f.file].branchMap["0"].locations[1]).toEqual({ start: {}, end: {} });
+  for (const [index, record] of [
+    { ...implicit, b: { "0": [1, -1] } },
+    { ...f.record, s: { ...f.record.s, "0": -1 } },
+    { ...f.record, f: { "0": -1 } },
+    { ...f.record, b: { "0": [Number.NaN, 0] } },
+    { ...f.record, s: { ...f.record.s, "0": Number.POSITIVE_INFINITY } },
+    { ...f.record, f: { "0": Number.NEGATIVE_INFINITY } },
+  ].entries()) {
+    expect(() => mergeCoverageReports([f.save(`invalid-${index}.json`, { [f.file]: record })], join(f.root, `invalid-${index}`))).toThrow(/Invalid coverage counter/);
+  }
+});
+
 it("merges many reports in a child with a fixed heap without retaining every input", () => {
   const f = fixture();
   const count = 6000;

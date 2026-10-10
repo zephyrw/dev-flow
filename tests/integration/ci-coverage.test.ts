@@ -47,6 +47,27 @@ it("a missing test remains a target failure even when Vitest emits unexecuted co
   expect(result.summary.targets[0]!.exit_code).not.toBe(0);
 }, 300000);
 
+it("real typecheck and redaction targets emit valid counters and cumulatively retain all policy hits", async () => {
+  const result = await invoke([
+    { kind: "vitest", file: "tests/unit/ci-typecheck.test.ts" },
+    { kind: "vitest", file: "tests/unit/log-safety.test.ts" },
+  ]);
+  expect(result.code, JSON.stringify(result.summary, null, 2)).toBe(0);
+  expect(result.summary.targets.map(target => target.exit_code)).toEqual([0, 0]);
+  expect(result.summary.coverage_merge_exit_code).toBe(0);
+  const merged = JSON.parse(readFileSync(result.summary.coverage_report_path!, "utf8"));
+  const file = Object.keys(merged).find(path => path.replaceAll("\\", "/").endsWith("packages/presentation/src/secret-redactor.ts"));
+  expect(file).toBeDefined();
+  const inputs = [0, 1].map(index => {
+    const report = JSON.parse(readFileSync(join(result.summary.report_root!, `target-${index}`, "coverage", "coverage-final.json"), "utf8"));
+    expect(Object.values(report[file!].s).some(count => typeof count === "number" && count > 0)).toBe(true);
+    return report[file!];
+  });
+  const hits = (values: unknown[]) => values.reduce<number>((total, value) => total + Number(value), 0);
+  expect(hits(Object.values(merged[file!].s))).toBe(inputs.reduce((total, input) => total + hits(Object.values(input.s)), 0));
+  expect(hits(Object.values(merged[file!].b).flat())).toBe(inputs.reduce((total, input) => total + hits(Object.values(input.b).flat()), 0));
+}, 300000);
+
 it("a target killed before emitting coverage remains a target and merge failure", async () => {
   const result = await invoke([{ kind: "vitest", file: "tests/unit/round-intent.test.ts" }], 100);
   expect(result.code).not.toBe(0);
