@@ -1,4 +1,4 @@
-# DevFlow release bootstrap (Windows PowerShell).
+﻿# DevFlow release bootstrap (Windows PowerShell).
 #
 # Release builds must replace __DEVFLOW_RELEASE_TAG__ with the immutable tag
 # (e.g. v0.2.0) so the script pins manifest + artifacts to that tag and never
@@ -406,5 +406,19 @@ function Invoke-DevflowBootstrapMain {
 
 # Dot-source (tests) loads functions only; -File / iex runs the installer.
 if ($MyInvocation.InvocationName -ne '.') {
-  Invoke-DevflowBootstrapMain
+  # Native Node emits UTF-8. A detached Windows automation host can default to
+  # ASCII, which loses both onboarding messages and the setup URL prefix.
+  # Keep library imports and the caller's interactive encoding unchanged.
+  $previousConsoleEncoding = [Console]::OutputEncoding
+  $previousOutputEncoding = $OutputEncoding
+  try {
+    if ([Console]::IsOutputRedirected) {
+      [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+      $OutputEncoding = [Console]::OutputEncoding
+    }
+    Invoke-DevflowBootstrapMain
+  } finally {
+    [Console]::OutputEncoding = $previousConsoleEncoding
+    $OutputEncoding = $previousOutputEncoding
+  }
 }

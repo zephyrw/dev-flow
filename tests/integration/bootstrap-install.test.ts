@@ -116,7 +116,9 @@ function invokePs1File(params: string[]) {
 
 function invokePs1DotSource(expr: string): { status: number; stdout: string; stderr: string } {
   // Dot-source loads functions only (InvocationName == '.'); then evaluate expr.
-  const command = `$ErrorActionPreference='Stop'; . "${ps1Path.replace(/\\/g, "\\\\")}"; ${expr}`;
+  // This caller writes UTF-8 to Node's redirected pipe; helper imports do not
+  // control the host's encoding. Do not rely on a developer console code page.
+  const command = `[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); $ErrorActionPreference='Stop'; . "${ps1Path.replace(/\\/g, "\\\\")}"; ${expr}`;
   return runPs(["-NoProfile", "-NonInteractive", "-Command", command]);
 }
 
@@ -229,6 +231,22 @@ describe.skipIf(powershellUnavailable)("DFP-04 install.ps1 退出码与宿主窗
     ]);
     expect(r.status).toBe(0);
     expect(r.stdout).toContain("模型设置待完成");
+  });
+
+  it("ASCII 自动化宿主仍保留中文设置提示与真实设置 URL，函数导入保留宿主编码", () => {
+    const dir = mockInstallerBundle(join(work, "ps-ascii-host"), 10);
+    const literal = (path: string) => "'" + path.replaceAll("'", "''") + "'";
+    const r = runPs(["-NoProfile", "-NonInteractive", "-Command",
+      `[Console]::OutputEncoding=[Text.Encoding]::ASCII; & ${literal(ps1Path)} -Source ${literal(dir)} -InstallDir ${literal(join(work, "ps-ascii-install"))} -NoOpen`]);
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain("模型设置待完成");
+    expect(r.stdout).toContain("首次设置页面：http://127.0.0.1:4810");
+    expect(r.stdout).not.toContain("http://localhost:4810");
+    expect(r.stdout).toContain('"exit_code":0');
+    const imported = runPs(["-NoProfile", "-NonInteractive", "-Command",
+      `[Console]::OutputEncoding=[Text.Encoding]::ASCII; . ${literal(ps1Path)}; if([Console]::OutputEncoding.CodePage -ne 20127){throw 'Host encoding changed'}; Write-Host 'HOST_ENCODING_RETAINED'`]);
+    expect(imported.status).toBe(0);
+    expect(imported.stdout).toContain("HOST_ENCODING_RETAINED");
   });
 
   it("-RequireReady：安装器 10 为非成功（-File 退出 10）", () => {
