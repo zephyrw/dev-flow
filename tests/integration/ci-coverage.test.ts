@@ -1,88 +1,68 @@
-import { describe, expect, it, vi } from "vitest";
-import { readFileSync, writeFileSync, mkdirSync, rmSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { afterEach, expect, it } from "vitest";
+import { execFile } from "node:child_process";
+import { mkdtempSync, readFileSync, writeFileSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { spawnTarget } from "../../scripts/ci/run-targets.mjs";
+import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+import type { Target, RunTargetsSummary } from "../../scripts/ci/run-targets.mjs";
 
-describe("CI coverage and console interception integration (A12, A13)", () => {
-  it("A13-1: console spy and mock work properly with disableConsoleIntercept", () => {
-    const spy = vi.spyOn(console, "log").mockImplementation(() => {});
-    console.log("test-message-for-spy");
-    expect(spy).toHaveBeenCalledWith("test-message-for-spy");
-    spy.mockRestore();
+const roots: string[] = [];
+afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+async function invoke(targets: Target[], timeoutMs?: number) {
+  const root = mkdtempSync(join(tmpdir(), "devflow-ci-delivery-")); roots.push(root);
+  const resultFile = join(root, "result.json");
+  const script = `import {runTargets} from ${JSON.stringify(pathToFileURL(resolve("scripts/ci/run-targets.mjs")).href)};
+    import {writeFileSync} from 'node:fs';
+    const summary=await runTargets(${JSON.stringify({ targets, ...(timeoutMs === undefined ? {} : { timeoutMs }) })});
+    writeFileSync(${JSON.stringify(resultFile)},JSON.stringify(summary));`;
+  const result = await new Promise<{ code: number; stderr: string }>((done) => {
+    execFile(process.execPath, ["--input-type=module", "-e", script], {
+      cwd: process.cwd(), windowsHide: true, timeout: 240000, maxBuffer: 16 * 1024 * 1024,
+    }, (error, _stdout, stderr) => done({ code: error ? typeof error.code === "number" ? error.code : -1 : 0, stderr }));
   });
+  if (!existsSync(resultFile)) throw new Error(`CI child did not finish: ${result.stderr.slice(-2000)}`);
+  return { code: result.code, summary: JSON.parse(readFileSync(resultFile, "utf8")) as RunTargetsSummary };
+}
 
-  it("A13-2: assertion failures still fail test cleanly without console interception", () => {
-    expect(() => {
-      expect("actual").toBe("expected");
-    }).toThrow();
-  });
+it("real independent Vitest targets create coverage that the runner cumulatively merges", async () => {
+  const result = await invoke([
+    { kind: "vitest", file: "tests/unit/round-intent.test.ts" },
+    { kind: "vitest", file: "tests/unit/runtime-failure.test.ts" },
+  ]);
+  expect(result.code).toBe(0);
+  expect(result.summary.targets.map(target => target.exit_code)).toEqual([0, 0]);
+  expect(result.summary.coverage_merge_exit_code).toBe(0);
+  expect(result.summary.coverage_report_path).toBeTruthy();
+  const coverage = JSON.parse(readFileSync(result.summary.coverage_report_path!, "utf8"));
+  for (const module of ["packages/core/src/round-intent.ts", "packages/contracts/src/runtime-failure.ts"]) {
+    const file = Object.keys(coverage).find(path => path.replaceAll("\\", "/").endsWith(module));
+    expect(file).toBeDefined();
+    expect(Object.values(coverage[file!].s).some(count => typeof count === "number" && count > 0)).toBe(true);
+  }
+}, 300000);
 
-  it("A13-3: unhandled error in promise or function throws expectedly", async () => {
-    await expect(async () => {
-      throw new Error("unhandled-error-simulation");
-    }).rejects.toThrow("unhandled-error-simulation");
-  });
+it("a missing test remains a target failure even when Vitest emits unexecuted coverage", async () => {
+  const result = await invoke([{ kind: "vitest", file: "tests/unit/does-not-exist.test.ts" }]);
+  expect(result.code).not.toBe(0);
+  expect(result.summary.targets[0]!.exit_code).not.toBe(0);
+}, 300000);
 
-  it("A12-1: vitest configuration includes disableConsoleIntercept and processingConcurrency=1", async () => {
-    const configContent = readFileSync("vitest.config.ts", "utf8");
-    expect(configContent).toContain("disableConsoleIntercept: true");
-    expect(configContent).toContain("processingConcurrency: 1");
-    expect(configContent).toContain("include: [\"apps/**/*.{ts,tsx}\", \"packages/**/*.{ts,tsx}\"]");
-  });
+it("a target killed before emitting coverage remains a target and merge failure", async () => {
+  const result = await invoke([{ kind: "vitest", file: "tests/unit/round-intent.test.ts" }], 100);
+  expect(result.code).not.toBe(0);
+  expect(result.summary.targets[0]!.timed_out).toBe(true);
+  expect(result.summary.targets[0]!.exit_code).not.toBe(0);
+  expect(result.summary.coverage_merge_exit_code).not.toBe(0);
+}, 300000);
 
-  it("A12-2: corrupted or missing blob causes merge failure and returns non-zero code", async () => {
-    const testDir = join(tmpdir(), `test-ci-cov-${Date.now()}`);
-    mkdirSync(testDir, { recursive: true });
-    const blobsDir = join(testDir, "blobs");
-    mkdirSync(blobsDir, { recursive: true });
-
-    // Write a corrupted blob file
-    writeFileSync(join(blobsDir, "corrupted.json"), "invalid-json-content{{{");
-
-    const result = await spawnTarget([
-      "-e",
-      `
-      const fs = require('fs');
-      try {
-        JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
-        process.exit(0);
-      } catch (err) {
-        process.exit(1);
-      }
-      `,
-      join(blobsDir, "corrupted.json"),
-    ], {});
-
-    expect(result.exit_code).not.toBe(0);
-
-    // Clean up
-    try {
-      rmSync(testDir, { recursive: true, force: true });
-    } catch {}
-  });
-
-  it("A12-3: target failure is not masked by subsequent successful operations", async () => {
-    const targetFailure = { exit_code: 1, file: "failed.test.ts" };
-    const mergeSuccess = { exit_code: 0 };
-    const allResults = [targetFailure];
-
-    const overallFailed = mergeSuccess.exit_code !== 0 || allResults.some(r => r.exit_code !== 0);
-    expect(overallFailed).toBe(true);
-  });
-
-  it("A12-4: summary preserves coverage merge error, signal and timeout details", () => {
-    const summary = {
-      targets: [],
-      coverage_merge_exit_code: 1,
-      coverage_merge_signal: "SIGTERM",
-      coverage_merge_error: "Coverage merge timeout",
-      coverage_merge_timed_out: true,
-    };
-    expect(summary.coverage_merge_exit_code).toBe(1);
-    expect(summary.coverage_merge_signal).toBe("SIGTERM");
-    expect(summary.coverage_merge_error).toBe("Coverage merge timeout");
-    expect(summary.coverage_merge_timed_out).toBe(true);
-  });
-});
-
+it("a failed target is not masked by a subsequent real successful target", async () => {
+  const root = mkdtempSync(join(tmpdir(), "devflow-ci-exit-")); roots.push(root);
+  const fail = join(root, "failed.test.mjs"); const pass = join(root, "passed.test.mjs");
+  writeFileSync(fail, "import{test}from'node:test';test('fails',()=>{throw Error('expected fixture failure')});");
+  writeFileSync(pass, "import{test}from'node:test';test('passes',()=>{});");
+  const result = await invoke([{ kind: "node", file: fail }, { kind: "node", file: pass }]);
+  expect(result.code).not.toBe(0);
+  expect(result.summary.targets[0]!.exit_code).not.toBe(0);
+  expect(result.summary.targets[1]!.exit_code).toBe(0);
+  expect(result.summary.coverage_merge_exit_code).toBe(0);
+}, 300000);

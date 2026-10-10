@@ -7,12 +7,20 @@ const value = String.raw`(?:\[REDACTED\]|"(?:\\.|[^"\\])*(?:"|$)|'(?:\\.|[^'\\])
 const assignment = new RegExp(`(^|[^\\w.-])((?:["']?${KEY}["']?)\\s*[:=]\\s*)${value}`, "gi");
 const cli = new RegExp(`(^|[\\s"';])(--${KEY}|-p)(?:=|\\s+)${value}`, "gi");
 
+// SGR sequences format ordinary terminal diagnostics; unknown escape/control
+// sequences remain subject to the binary-content guard below.
+const plainTerminalText = (text: string) => text.replace(/\u001b\[[\d;]*m/g, "");
+const looksLikeJsonRecord = (text: string) =>
+  /^\s*(?:\{\s*["}]|\[\s*["{\[])/.test(plainTerminalText(text)) ||
+  /^\s*\[\s*(?:-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null)(?=\s|,|\]|$)/.test(plainTerminalText(text));
+
 export function highRiskDiagnostic(text: string): boolean {
+  text = plainTerminalText(text);
   return /Get-ChildItem\s+Env:|(?:^|\s)(?:env|set)\s*(?:$|[;&|])|(?:^|[;\n])\s*export\s+(?:-p(?:\s|$)|[A-Za-z_]\w*=)|敏感认证操作|(?:^|[^\p{L}\p{N}])(?:login|signin|sign-in|enroll|enrollment|authorization_code|oauth|2fa|mfa|totp|otp|credential-store)(?:$|[^\p{L}\p{N}])/iu.test(text);
 }
 
 export function redactSecrets(text: string): string {
-  return text
+  return plainTerminalText(text)
     // An unfinished private key is sensitive through the end of the input too.
     .replace(/-----BEGIN (?:[A-Z0-9 ]*PRIVATE KEY)-----[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----|$)/g, MASK)
     .replace(/\b(Bearer|Basic)\s+(?:\[REDACTED\]|[^\s,"';}\]]+)/gi, `$1 ${MASK}`)
@@ -42,16 +50,17 @@ export function diagnosticClip(text: string | undefined, max: number): string | 
 /** Recursive copies also sanitize JSON encoded inside tool output strings. */
 export function publicDiagnostic(input: unknown): any {
   if (typeof input === "string") {
-    if (/[\u0000-\u0008\u000e-\u001f]/.test(input)) return "[已省略二进制内容]";
-    if (/^[\s]*[\[{]/.test(input)) {
+    const text = plainTerminalText(input);
+    if (/[\u0000-\u0008\u000e-\u001f]/.test(text)) return "[已省略二进制内容]";
+    if (/^[\s]*[\[{]/.test(text)) {
       try {
-        const parsed: unknown = JSON.parse(input);
+        const parsed: unknown = JSON.parse(text);
         if (parsed && typeof parsed === "object") return JSON.stringify(publicDiagnostic(parsed));
       } catch {
-        if (/^\s*(?:\{\s*["}]|\[\s*["{\[])/.test(input)) return "[不完整诊断记录已省略]";
+        if (looksLikeJsonRecord(text)) return "[不完整诊断记录已省略]";
       }
     }
-    return diagnosticText(input);
+    return diagnosticText(text);
   }
   if (Array.isArray(input)) return input.map(publicDiagnostic);
   if (!input || typeof input !== "object") return input;
@@ -105,11 +114,12 @@ export class DiagnosticRedactionContext {
 
   project(input: unknown): any {
     if (typeof input === "string") {
-      try { return JSON.stringify(this.project(JSON.parse(input))); }
+      const text = plainTerminalText(input);
+      try { return JSON.stringify(this.project(JSON.parse(text))); }
       catch { /* Plain text has no trustworthy call association. */ }
-      if (highRiskDiagnostic(input)) this.authenticationSeen = true;
+      if (highRiskDiagnostic(text)) this.authenticationSeen = true;
       return this.saturated || this.authenticationSeen
-        ? "[敏感认证操作：仅保留状态]" : publicDiagnostic(input);
+        ? "[敏感认证操作：仅保留状态]" : publicDiagnostic(text);
     }
     const nodes: Array<{ value: Record<string, any>; scope: string }> = [];
     let seen = 0;
@@ -237,7 +247,7 @@ export class DiagnosticStreamRedactor {
         const match = /-----END [A-Z0-9 ]*PRIVATE KEY-----/.exec(this.pending);
         if (!match) break;
         end = match.index + match[0].length;
-      } else if (/^\s*(?:\{\s*["}]|\[\s*["{\[\d-])/.test(first)) {
+      } else if (looksLikeJsonRecord(first)) {
         try { JSON.parse(first); } catch { break; }
       } else if (/(?:[:=]\s*|--[\w-]+\s+)["'][^"'\r\n]*\r?\n$/.test(first)) {
         break;
@@ -251,7 +261,7 @@ export class DiagnosticStreamRedactor {
       // Invalid JSON or a multiline unfinished value cannot be projected safely.
       const rest = this.pending;
       this.pending = "";
-      if (/^\s*(?:\{\s*["}]|\[\s*["{\[\d-])/.test(rest)) {
+      if (looksLikeJsonRecord(rest)) {
         try { output += JSON.stringify(this.context.project(JSON.parse(rest))); }
         catch { this.context.suppress(); output += "[不完整诊断记录已省略]"; }
       } else output += String(this.context.project(rest));

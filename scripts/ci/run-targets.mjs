@@ -371,31 +371,29 @@ export async function runTargets(options = {}) {
   const reportRoot = resolve(".cache/quality");
   mkdirSync(reportRoot, { recursive: true });
   const root = mkdtempSync(join(reportRoot, "run-"));
-  const blobs = join(root, "blobs");
-  mkdirSync(blobs, { recursive: true });
   const targets = options.targets ?? discoverTargets();
   const results = [];
   const vitest = join(dirname(require.resolve("vitest/package.json")), "vitest.mjs");
   const playwright = require.resolve("@playwright/test/cli");
-  const expectedBlobs = [];
+  const coverageInputs = [];
 
   for (const [index, target] of targets.entries()) {
     const directory = join(root, `target-${index}`);
     mkdirSync(directory, { recursive: true });
     let args;
     if (target.kind === "vitest") {
-      const blobPath = join(blobs, `${index}.json`);
-      expectedBlobs.push({ index, target, blobPath });
+      coverageInputs.push({ index, target, file: join(directory, "coverage", "coverage-final.json") });
       args = [
         vitest, "run", target.file, "--coverage", "--coverage.reporter=json",
-        "--maxWorkers=1", "--reporter=default", "--reporter=blob",
-        `--outputFile.blob=${blobPath}`,
+        "--maxWorkers=1", "--reporter=default",
         `--coverage.reportsDirectory=${join(directory, "coverage")}`
       ];
     } else if (target.kind === "node") {
       args = ["--test", target.file];
     } else {
       args = [playwright, "test", target.file.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "$"];
+      if (target.file === "tests/e2e/agy-accounts-browser.spec.ts")
+        args.push("--config", "playwright.accounts.config.ts");
     }
 
     const runResult = await spawnTarget(args, { DEVFLOW_TEST_RUN_DIR: join(directory, "instance") }, options);
@@ -426,24 +424,24 @@ export async function runTargets(options = {}) {
     }
   }
 
-  let missingBlobs = false;
-  for (const item of expectedBlobs) {
-    if (!existsSync(item.blobPath)) {
-      missingBlobs = true;
+  let missingCoverage = false;
+  for (const item of coverageInputs) {
+    if (!existsSync(item.file)) {
+      missingCoverage = true;
       const targetResult = results[item.index];
       if (targetResult && targetResult.exit_code === 0) {
         targetResult.exit_code = 1;
-        targetResult.error = targetResult.error ? `${targetResult.error}; Missing coverage blob` : "Missing coverage blob";
+        targetResult.error = targetResult.error ? `${targetResult.error}; Missing coverage report` : "Missing coverage report";
       }
     }
   }
 
   let mergeResult = { exit_code: 0, signal: null, error: null, timed_out: false };
-  if (targets.some((t) => t.kind === "vitest")) {
+  if (coverageInputs.length) {
+    const manifest = join(root, "coverage-inputs.json");
+    writeFileSync(manifest, JSON.stringify(coverageInputs.map(item => item.file)));
     mergeResult = await spawnTarget([
-      vitest, "--merge-reports", blobs, "--coverage",
-      "--coverage.reporter=text", "--coverage.reporter=json", "--coverage.reporter=html",
-      "--reporter=default", `--coverage.reportsDirectory=${join(root, "coverage")}`
+      resolve("scripts/ci/merge-coverage.mjs"), manifest, join(root, "coverage"),
     ], {}, options);
     if (mergeResult.exit_code !== 0 && mergeResult.error) {
       console.error(`Coverage merge failed: ${mergeResult.error}`);
@@ -452,13 +450,15 @@ export async function runTargets(options = {}) {
 
   const summary = {
     targets: results,
+    report_root: root,
+    coverage_report_path: coverageInputs.length ? join(root, "coverage", "coverage-final.json") : null,
     coverage_merge_exit_code: mergeResult.exit_code,
     coverage_merge_signal: mergeResult.signal ?? null,
     coverage_merge_error: mergeResult.error ?? null,
     coverage_merge_timed_out: mergeResult.timed_out ?? false,
   };
   writeFileSync(join(root, "results.json"), JSON.stringify(summary, null, 2));
-  const failed = missingBlobs || mergeResult.exit_code !== 0 || results.some((item) => item.exit_code !== 0);
+  const failed = missingCoverage || mergeResult.exit_code !== 0 || results.some((item) => item.exit_code !== 0);
   process.exitCode = failed ? 1 : 0;
   return summary;
 }

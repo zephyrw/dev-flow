@@ -1,8 +1,26 @@
 import { execFile } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
 
+export function darwinProcessRecords(records) {
+  return records.map(record => {
+    if (!Number.isSafeInteger(record.pid) || record.pid <= 0 ||
+        !Number.isSafeInteger(record.parent) || record.parent < 0 ||
+        !Number.isSafeInteger(record.pgid) || record.pgid < 0 ||
+        typeof record.creation_time !== "string" || !/^\d+:\d+$/.test(record.creation_time))
+      throw new Error("PROCESS_IDENTITY_INVALID");
+    return { pid: record.pid, parent: record.parent, group: record.pgid,
+      creation: record.creation_time, zombie: false };
+  });
+}
+
 // Only identity and parent/group metadata are read: never process arguments or env.
 export async function readPosixProcesses() {
+  if (process.platform === "darwin") {
+    // Use the same kernel birth identity as the SDK launcher (seconds:micros).
+    // ps lstart has only second precision and cannot anchor that launcher.
+    const { listDarwinProcesses } = await import("../../dist/packages/process/src/native/darwin-processes.js");
+    return darwinProcessRecords(listDarwinProcesses());
+  }
   if (process.platform === "linux") {
     const boot = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
     const records = [];

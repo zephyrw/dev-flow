@@ -12,6 +12,9 @@ export interface CleanupResult {
 }
 
 export declare function readPosixProcesses(): Promise<ProcessRecord[]>;
+export declare function darwinProcessRecords(records: Array<{
+  pid: number; parent: number; pgid: number; creation_time: string;
+}>): ProcessRecord[];
 
 export declare class OwnedProcessTracker {
   constructor(

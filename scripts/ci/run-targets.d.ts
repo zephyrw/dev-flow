@@ -42,6 +42,8 @@ export interface RunTargetsOptions {
 
 export interface RunTargetsSummary {
   targets: TargetResult[];
+  report_root?: string;
+  coverage_report_path?: string | null;
   coverage_merge_exit_code: number;
   coverage_merge_signal?: string | null;
   coverage_merge_error?: string | null;

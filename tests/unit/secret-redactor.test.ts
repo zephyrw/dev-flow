@@ -7,6 +7,40 @@ import { AgentTelemetry } from "../../packages/runtime/src/agent-telemetry.js";
 import { createActivityPayload } from "../../packages/core/src/conversation-service.js";
 
 describe("F11 diagnostic copies", () => {
+  it("preserves colored test failures and heap diagnostics while masking credentials", () => {
+    const colored = '\u001b[31mFAIL\u001b[0m fixture.test.ts: expected 1, received 2\n' +
+      '\u001b[2mFATAL ERROR: Reached heap limit\u001b[0m password=secret-value';
+    const safe = publicDiagnostic(colored);
+    expect(safe).toContain("FAIL fixture.test.ts: expected 1, received 2");
+    expect(safe).toContain("FATAL ERROR: Reached heap limit");
+    expect(safe).toContain("[REDACTED]");
+    expect(safe).not.toContain("secret-value");
+    expect(safe).not.toContain("\u001b");
+    expect(publicDiagnostic("binary\u0000payload")).toBe("[已省略二进制内容]");
+    expect(publicDiagnostic("unknown\u001b]escape")).toBe("[已省略二进制内容]");
+  });
+
+  it("strips SGR split across chunks before detecting an authentication operation", () => {
+    const raw = 'tool lo\u001b[31mg\u001b[0min\nunlabelled-credential\n';
+    for (let split = 1; split < raw.length; split++) {
+      const stream = new DiagnosticStreamRedactor();
+      const safe = stream.push(raw.slice(0, split)) + stream.push(raw.slice(split), true);
+      expect(safe).toContain("仅保留状态");
+      expect(safe).not.toContain("unlabelled-credential");
+    }
+  });
+
+  it("does not mistake V8 GC process prefixes for an unfinished JSON array", () => {
+    const raw = '[1234:0xabc] 100 ms: Mark-Compact 4095 MB\nFATAL ERROR: Reached heap limit\n';
+    const stream = new DiagnosticStreamRedactor();
+    const safe = stream.push(raw, true);
+    expect(safe).toContain("Mark-Compact 4095 MB");
+    expect(safe).toContain("FATAL ERROR: Reached heap limit");
+    expect(safe).not.toContain("不完整诊断");
+    const partial = new DiagnosticStreamRedactor();
+    expect(partial.push('[1,', true)).toContain("不完整诊断记录已省略");
+  });
+
   it.each([
     'password="two words" after', "--password='two words' after",
     '--api-key "two words" after', "Authorization: Basic dHdvIHdvcmRz after",

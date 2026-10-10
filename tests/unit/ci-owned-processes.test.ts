@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { OwnedProcessTracker } from "../../scripts/ci/owned-processes.mjs";
+import { OwnedProcessTracker, darwinProcessRecords } from "../../scripts/ci/owned-processes.mjs";
 
 type ProcessRecord = {
   pid: number;
@@ -13,6 +13,24 @@ const record = (pid: number, parent: number, group: number, creation = `birth-${
   ({ pid, parent, group, creation, zombie: false });
 
 describe("CI owned descendant cleanup (R04 / A11)", () => {
+  it("anchors macOS descendants with the SDK's microsecond kernel birth identity", async () => {
+    let processes = darwinProcessRecords([
+      { pid: 100, parent: 1, pgid: 100, creation_time: "1791000000:123456" },
+      { pid: 101, parent: 100, pgid: 101, creation_time: "1791000000:234567" },
+      { pid: 200, parent: 1, pgid: 200, creation_time: "1791000000:345678" },
+    ]);
+    const signalled: number[] = [];
+    const tracker = new OwnedProcessTracker(async () => processes, pid => {
+      signalled.push(pid); processes = processes.filter(process => process.pid !== pid);
+    });
+    tracker.setRoot(100, "1791000000:123456");
+    await tracker.capture();
+    expect(await tracker.cleanup(Date.now() + 1000)).toEqual({ confirmed: true, error: null });
+    expect(signalled).toEqual([101]);
+    expect(processes.map(process => process.pid)).toEqual([100, 200]);
+    expect(() => darwinProcessRecords([{ pid: 100, parent: 1, pgid: 100, creation_time: "Thu Oct 9" }]))
+      .toThrow("PROCESS_IDENTITY_INVALID");
+  });
   it("retains detached descendants after their parent exits and leaves unrelated processes alone", async () => {
     let processes = [record(100, 1, 100), record(101, 100, 100),
       record(102, 101, 102), record(103, 102, 102), record(200, 1, 200)];
