@@ -2,6 +2,7 @@ import type { Run } from "../../contracts/src/index.js";
 import { FlowError } from "../../contracts/src/index.js";
 import { computeSessionOwnerKey, type SessionBinding, type SessionBindingKey } from "../../contracts/src/session-binding.js";
 import type { Store } from "../../store/src/store.js";
+import { confirmedBindingComparator } from "../../core/src/session-binding-recency.js";
 
 /** AGY stores native conversations locally; switching credentials does not move them. */
 export function agySessionAcrossAccounts(store: Store, key: SessionBindingKey, preferredConversationId?: string): SessionBinding | undefined {
@@ -16,10 +17,7 @@ export function agySessionAcrossAccounts(store: Store, key: SessionBindingKey, p
       const latest = binding.latest_run_id ? store.get<Run>("run", binding.latest_run_id) : undefined;
       return !latest || (latest.workflow_id === key.workflow_id && latest.purpose !== "aside");
     })
-    .sort((a, b) => b.updated_at.localeCompare(a.updated_at) ||
-      (b.latest_run_id ? store.get<Run>("run", b.latest_run_id)?.started_at ?? "" : "")
-        .localeCompare(a.latest_run_id ? store.get<Run>("run", a.latest_run_id)?.started_at ?? "" : "") ||
-      b.created_at.localeCompare(a.created_at) || a.id.localeCompare(b.id));
+    .sort(confirmedBindingComparator(store, key.workflow_id));
   const binding = compatible[0];
   if (!binding?.conversation_id) return undefined;
   // Preserve ownership in both credential scopes before asking the CLI to resume.

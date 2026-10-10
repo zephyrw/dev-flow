@@ -13,6 +13,7 @@ import {
 } from "../../contracts/src/session-binding.js";
 import { FlowError, requireCondition, type Workspace, type Workflow } from "../../contracts/src/index.js";
 import { id, now } from "./util.js";
+import { confirmedBindingComparator, recordNativeConfirmation } from "./session-binding-recency.js";
 
 export class ExecutionSessionStore {
   constructor(private store: Store) {}
@@ -104,7 +105,7 @@ export class ExecutionSessionStore {
       binding.workspace_identity === key.workspace_identity &&
       (!binding.latest_run_id || this.store.get<{ purpose?: string }>("run", binding.latest_run_id)?.purpose !== "aside"));
     const preferred = preferredNativeId && candidates.find(binding => binding.conversation_id === preferredNativeId);
-    const selected = preferred || candidates.sort((a, b) => b.updated_at.localeCompare(a.updated_at) || a.id.localeCompare(b.id))[0];
+    const selected = preferred || candidates.sort(confirmedBindingComparator(this.store, key.workflow_id))[0];
     if (!selected) this.assertNoPendingClientScopeRepair(key);
     if (selected?.conversation_id) {
       this.assertNativeOwner(selected, selected.conversation_id);
@@ -228,6 +229,7 @@ export class ExecutionSessionStore {
           updated_at: now(),
         };
         this.store.put("session_binding", index.keyStr, current.workflow_id, observed);
+        recordNativeConfirmation(this.store, observed);
         return observed;
       }
 
@@ -252,6 +254,7 @@ export class ExecutionSessionStore {
       };
 
       this.store.put("session_binding", index.keyStr, current.workflow_id, updated);
+      recordNativeConfirmation(this.store, updated);
       this.store.put("session_owner_index", ownerKey, current.workflow_id, {
         owner_key: ownerKey,
         workflow_id: current.workflow_id,
@@ -447,6 +450,7 @@ export class ExecutionSessionStore {
       };
 
       this.store.put("session_binding", keyStr, key.workflow_id, binding);
+      recordNativeConfirmation(this.store, binding);
       this.store.put("session_binding_by_id", binding.id, key.workflow_id, {
         keyStr,
       });
