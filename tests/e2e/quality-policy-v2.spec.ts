@@ -6,19 +6,40 @@ test.describe.configure({ mode: "serial" });
 test("E2E-QP2-01 设置页仅可选 Codex 与 AGY 并出现模型搜索", async ({ page }) => {
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "任务总览" })).toBeVisible();
-  await page.getByRole("button", { name: "设置", exact: true }).click();
-  const drawer = page.getByRole("dialog", { name: "设置" });
-  await expect(drawer).toBeVisible();
-  const toolSelect = exactLabel(drawer, "工具").first();
-  expect(await toolSelect.locator("option").evaluateAll((options) => options.map((option) => (option as HTMLOptionElement).value))).toEqual(["codex", "agy"]);
-  await toolSelect.selectOption("agy");
-  // 模型搜索框可聚焦；目录为空时提示搜索，不冒充已接入
-  const modelSearch = exactLabel(drawer, "工具模型搜索").first();
-  await expect(modelSearch).toBeEnabled();
-  await modelSearch.click();
-  await expect(modelSearch).toBeFocused();
-  // 不出现“已验证可访问”冒充真实调用结果
-  await expect(drawer.getByText("DevFlow 已验证测试通过")).toHaveCount(0);
+  const defaultsPath = "**/api/settings/model-defaults";
+  let releaseDefaults!: () => void;
+  const defaultsGate = new Promise<void>((resolve) => { releaseDefaults = resolve; });
+  // Hold the real backend response to exercise dialog visibility before the
+  // defaults editor mounts, independently of the machine's response speed.
+  await page.route(defaultsPath, async (route) => {
+    const response = await route.fetch();
+    expect(response.ok(), await response.text()).toBe(true);
+    await defaultsGate;
+    await route.fulfill({ response });
+  });
+  try {
+    await page.getByRole("button", { name: "设置", exact: true }).click();
+    const drawer = page.getByRole("dialog", { name: "设置" });
+    await expect(drawer).toBeVisible();
+    const toolSelect = exactLabel(drawer, "工具");
+    await expect(drawer.getByText("正在读取默认配置…", { exact: true })).toBeVisible();
+    await expect(toolSelect).toHaveCount(0);
+    releaseDefaults();
+    await expect(toolSelect).toHaveCount(1);
+    await expect(toolSelect).toBeEnabled();
+    expect(await toolSelect.locator("option").evaluateAll((options) => options.map((option) => (option as HTMLOptionElement).value))).toEqual(["codex", "agy"]);
+    await toolSelect.selectOption("agy");
+    // 模型搜索框可聚焦；目录为空时提示搜索，不冒充已接入
+    const modelSearch = exactLabel(drawer, "工具模型搜索");
+    await expect(modelSearch).toBeEnabled();
+    await modelSearch.click();
+    await expect(modelSearch).toBeFocused();
+    // 不出现“已验证可访问”冒充真实调用结果
+    await expect(drawer.getByText("DevFlow 已验证测试通过")).toHaveCount(0);
+  } finally {
+    releaseDefaults();
+    await page.unroute(defaultsPath);
+  }
 });
 
 test("E2E-QP2-02 新策略用途文案包含执行测试与规划提交", async ({ page }) => {
@@ -51,7 +72,10 @@ test("E2E-QP2-04 当前任务只提供已支持工具和规划执行职责", asy
   const dialog = await openTaskModels(page);
   for (const role of ["规划", "执行"]) {
     await dialog.getByRole("tab", { name: role, exact: true }).click();
-    const tools = await exactLabel(dialog, "工具").locator("option").evaluateAll(options => options.map(option => (option as HTMLOptionElement).value));
+    const toolSelect = exactLabel(dialog, "工具");
+    await expect(toolSelect).toHaveCount(1);
+    await expect(toolSelect).toBeEnabled();
+    const tools = await toolSelect.locator("option").evaluateAll(options => options.map(option => (option as HTMLOptionElement).value));
     expect(tools).toEqual(["codex", "agy"]);
     await expect(exactLabel(dialog, "工具模型搜索")).toBeEnabled();
   }
