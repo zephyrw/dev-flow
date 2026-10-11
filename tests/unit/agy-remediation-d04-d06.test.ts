@@ -278,40 +278,50 @@ describe("AGF-D05: 账号可用性与 FIFO 批次规划 (AGF-U06 & AGF-U07)", ()
     ],
   };
 
-  it("当账号配额耗尽且有明确 reset 时，可信唤醒时间取其重置时刻", () => {
-    const futureReset = new Date(Date.now() + 1800_000).toISOString();
-    const snapExhausted: AgyQuotaSnapshot = {
+  function exhaustedSnapshot(nowMs: number): AgyQuotaSnapshot {
+    const observedAt = new Date(nowMs).toISOString();
+    return {
       ...snapA,
-      windows: [
-        {
-          kind: "weekly",
-          duration_minutes: 10080,
-          remaining_fraction: 0,
-          reset_at: futureReset,
-          observed_at: new Date().toISOString(),
-          status: "observed",
-        },
-        {
-          kind: "five_hour",
-          duration_minutes: 300,
-          remaining_fraction: 0.5,
-          reset_at: null,
-          observed_at: new Date().toISOString(),
-          status: "observed",
-        },
-      ],
+      observed_at: observedAt,
+      windows: snapA.windows.map((window) => ({
+        ...window,
+        observed_at: observedAt,
+        ...(window.kind === "weekly"
+          ? { remaining_fraction: 0, reset_at: new Date(nowMs + 1800_000).toISOString() }
+          : {}),
+      })),
     };
+  }
+
+  it("当账号配额耗尽且有明确 reset 时，可信唤醒时间取其重置时刻", () => {
+    const nowMs = Date.parse("2026-09-21T10:00:00.000Z");
+    const snapExhausted = exhaustedSnapshot(nowMs);
 
     const res = evaluateAccountAvailability(
       accountA,
       [snapExhausted],
       ["pool_1"],
-      Date.now(),
+      nowMs,
       { reset_clock_skew_seconds: 60 },
     );
     expect(res.eligible).toBe(false);
     expect(res.credible_wake_at).not.toBeNull();
-    expect(res.credible_wake_at).toBeGreaterThan(Date.now());
+    expect(res.credible_wake_at).toBeGreaterThan(nowMs);
+    expect(res.credible_wake_at).toBe(nowMs + 1800_000 + 60_000);
+    expect(res.blocking_reasons).toEqual(["quota_exhausted_not_reset"]);
+  });
+
+  it("两窗口观测相差 1 毫秒时拒绝配额批次，不从其 reset 生成可信唤醒时间", () => {
+    const nowMs = Date.parse("2026-09-21T10:00:00.000Z");
+    const snapshot = exhaustedSnapshot(nowMs);
+    snapshot.windows = snapshot.windows.map((window) => window.kind === "five_hour"
+      ? { ...window, observed_at: new Date(nowMs + 1).toISOString() }
+      : window);
+    const res = evaluateAccountAvailability(accountA, [snapshot], ["pool_1"], nowMs,
+      { reset_clock_skew_seconds: 60 });
+    expect(res.eligible).toBe(false);
+    expect(res.credible_wake_at).toBeNull();
+    expect(res.blocking_reasons).toEqual(["missing_required_quota_pools"]);
   });
 
   it("当无共同候选时，采用就绪需求 FIFO，最早可运行的成为 anchor，不被不相容需求阻塞", () => {

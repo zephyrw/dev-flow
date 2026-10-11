@@ -529,7 +529,9 @@ describe("independent account server", () => {
 
   it("A10: 新周期较低额度及未来时间保存/重读后显示新值，旧满额推导不覆盖", async () => {
     const realmId = "default-agy-realm";
-    const futureReset = new Date(Date.now() + 5 * 86400 * 1000).toISOString();
+    const now = Date.now();
+    const observedAt = new Date(now).toISOString();
+    const futureReset = new Date(now + 5 * 86400 * 1000).toISOString();
 
     // 账号进入新周期，CLI 探测到新的较低额度（45%）且有未来重置时间
     fixture.repository.saveQuotaSnapshot({
@@ -542,14 +544,14 @@ describe("independent account server", () => {
       source: "official_cli_usage",
       cli_version: "1.2.7",
       parser_revision: 1,
-      observed_at: new Date().toISOString(),
+      observed_at: observedAt,
       windows: [
         {
           kind: "weekly",
           duration_minutes: 10080,
           remaining_fraction: 0.45,
           reset_at: futureReset,
-          observed_at: new Date().toISOString(),
+          observed_at: observedAt,
           status: "observed",
         },
         {
@@ -557,7 +559,7 @@ describe("independent account server", () => {
           duration_minutes: 300,
           remaining_fraction: 0.8,
           reset_at: null,
-          observed_at: new Date().toISOString(),
+          observed_at: observedAt,
           status: "observed",
         },
       ],

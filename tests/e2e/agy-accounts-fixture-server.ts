@@ -163,24 +163,28 @@ app.route({
     const futureReset = new Date(now + 2 * 86400 * 1000).toISOString();
 
     // 配置活动账号探测返回已重置周额度 (reset_at: null)
-    fixture.setCustomWindows((activeId) => [
-      {
-        kind: "weekly" as const,
-        duration_minutes: 10080 as const,
-        remaining_fraction: activeId === "a" ? 0.6 : 0.69,
-        reset_at: null,
-        observed_at: new Date().toISOString(),
-        status: "observed" as const,
-      },
-      {
-        kind: "five_hour" as const,
-        duration_minutes: 300 as const,
-        remaining_fraction: 0.7,
-        reset_at: futureReset,
-        observed_at: new Date().toISOString(),
-        status: "observed" as const,
-      },
-    ]);
+    fixture.setCustomWindows((activeId) => {
+      // A probe is one observation batch; later probes still sample a new time.
+      const observedAt = new Date().toISOString();
+      return [
+        {
+          kind: "weekly" as const,
+          duration_minutes: 10080 as const,
+          remaining_fraction: activeId === "a" ? 0.6 : 0.69,
+          reset_at: null,
+          observed_at: observedAt,
+          status: "observed" as const,
+        },
+        {
+          kind: "five_hour" as const,
+          duration_minutes: 300 as const,
+          remaining_fraction: 0.7,
+          reset_at: futureReset,
+          observed_at: observedAt,
+          status: "observed" as const,
+        },
+      ];
+    });
 
     // 添加第四个账号 d 作为未来时间对照账号
     const nowIso = new Date(now).toISOString();
@@ -377,24 +381,28 @@ app.route({
     const nowIso = new Date(now).toISOString();
 
     // 更新探测返回值为新周期
-    fixture.setCustomWindows(() => [
-      {
-        kind: "weekly" as const,
-        duration_minutes: 10080 as const,
-        remaining_fraction: 0.45,
-        reset_at: futureReset,
-        observed_at: new Date().toISOString(),
-        status: "observed" as const,
-      },
-      {
-        kind: "five_hour" as const,
-        duration_minutes: 300 as const,
-        remaining_fraction: 0.88,
-        reset_at: futureReset,
-        observed_at: new Date().toISOString(),
-        status: "observed" as const,
-      },
-    ]);
+    fixture.setCustomWindows(() => {
+      // Sample per callback, rather than freezing the whole scenario's clock.
+      const observedAt = new Date().toISOString();
+      return [
+        {
+          kind: "weekly" as const,
+          duration_minutes: 10080 as const,
+          remaining_fraction: 0.45,
+          reset_at: futureReset,
+          observed_at: observedAt,
+          status: "observed" as const,
+        },
+        {
+          kind: "five_hour" as const,
+          duration_minutes: 300 as const,
+          remaining_fraction: 0.88,
+          reset_at: futureReset,
+          observed_at: observedAt,
+          status: "observed" as const,
+        },
+      ];
+    });
 
     // 账号 a 在新周期探测到 45% 额度与未来 6 天重置时间
     fixture.repository.saveQuotaSnapshot({

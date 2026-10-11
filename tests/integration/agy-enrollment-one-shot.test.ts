@@ -65,55 +65,58 @@ describe("W03 D03修复验证：关闭自动调度时手动录入one-shot闭环�
         cli_version: "1.2.8",
         raw_output: "whoami",
       }),
-      probeUsage: async () => ({
-        email: "user@example.com",
-        cli_version: "1.2.8",
-        windows: [
-          {
-            kind: "weekly",
-            duration_minutes: 10080,
-            remaining_fraction: 0.85,
-            reset_at: "2026-09-30T09:58:52Z",
-            observed_at: new Date().toISOString(),
-            status: "observed",
-          },
-          {
-            kind: "five_hour",
-            duration_minutes: 300,
-            remaining_fraction: 0.21,
-            reset_at: "2026-09-24T05:33:38Z",
-            observed_at: new Date().toISOString(),
-            status: "observed",
-          },
-        ],
-        raw_output: "",
-        pools: [
-          {
-            pool_id: "Gemini Models",
-            model_ids: ["*"],
-            windows: [
-              {
-                kind: "weekly",
-                duration_minutes: 10080,
-                remaining_fraction: 0.85,
-                reset_at: "2026-09-30T09:58:52Z",
-                observed_at: new Date().toISOString(),
-                status: "observed",
-              },
-              {
-                kind: "five_hour",
-                duration_minutes: 300,
-                remaining_fraction: 0.21,
-                reset_at: "2026-09-24T05:33:38Z",
-                observed_at: new Date().toISOString(),
-                status: "observed",
-              },
-            ],
-          },
-        ],
-        executable_fingerprint: "fake-sha256",
-        capability_verified: true,
-      }),
+      probeUsage: async () => {
+        const observedAt = new Date().toISOString();
+        return {
+          email: "user@example.com",
+          cli_version: "1.2.8",
+          windows: [
+            {
+              kind: "weekly",
+              duration_minutes: 10080,
+              remaining_fraction: 0.85,
+              reset_at: "2026-09-30T09:58:52Z",
+              observed_at: observedAt,
+              status: "observed",
+            },
+            {
+              kind: "five_hour",
+              duration_minutes: 300,
+              remaining_fraction: 0.21,
+              reset_at: "2026-09-24T05:33:38Z",
+              observed_at: observedAt,
+              status: "observed",
+            },
+          ],
+          raw_output: "",
+          pools: [
+            {
+              pool_id: "Gemini Models",
+              model_ids: ["*"],
+              windows: [
+                {
+                  kind: "weekly",
+                  duration_minutes: 10080,
+                  remaining_fraction: 0.85,
+                  reset_at: "2026-09-30T09:58:52Z",
+                  observed_at: observedAt,
+                  status: "observed",
+                },
+                {
+                  kind: "five_hour",
+                  duration_minutes: 300,
+                  remaining_fraction: 0.21,
+                  reset_at: "2026-09-24T05:33:38Z",
+                  observed_at: observedAt,
+                  status: "observed",
+                },
+              ],
+            },
+          ],
+          executable_fingerprint: "fake-sha256",
+          capability_verified: true,
+        };
+      },
       probeModelAccess: async () => true,
     };
 

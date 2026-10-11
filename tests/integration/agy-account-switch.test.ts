@@ -68,33 +68,36 @@ describe("AGY Account Switch Concurrency & CAS Integrity (AC-I04 & AC-I25)", () 
         cli_version: "1.2.7",
         raw_output: "agy whoami",
       }),
-      probeUsage: async () => ({
-        email: "target@example.com",
-        cli_version: "1.2.7",
-        windows: [
-          {
-            kind: "weekly",
-            duration_minutes: 10080,
-            remaining_fraction: 0.9,
-            reset_at: null,
-            observed_at: new Date().toISOString(),
-            status: "observed",
-          },
-          {
-            kind: "five_hour",
-            duration_minutes: 300,
-            remaining_fraction: 0.6,
-            reset_at: null,
-            observed_at: new Date().toISOString(),
-            status: "observed",
-          },
-        ],
-        raw_output: "",
-        pools: [{ pool_id: "fixture-pool", model_ids: ["fixture-model"], windows: [
-          { kind: "weekly", duration_minutes: 10080, remaining_fraction: 0.9, reset_at: null, observed_at: new Date().toISOString(), status: "observed" },
-          { kind: "five_hour", duration_minutes: 300, remaining_fraction: 0.6, reset_at: null, observed_at: new Date().toISOString(), status: "observed" },
-        ] }], executable_fingerprint: "fixture", capability_verified: true,
-      }),
+      probeUsage: async () => {
+        const observedAt = new Date().toISOString();
+        return {
+          email: "target@example.com",
+          cli_version: "1.2.7",
+          windows: [
+            {
+              kind: "weekly",
+              duration_minutes: 10080,
+              remaining_fraction: 0.9,
+              reset_at: null,
+              observed_at: observedAt,
+              status: "observed",
+            },
+            {
+              kind: "five_hour",
+              duration_minutes: 300,
+              remaining_fraction: 0.6,
+              reset_at: null,
+              observed_at: observedAt,
+              status: "observed",
+            },
+          ],
+          raw_output: "",
+          pools: [{ pool_id: "fixture-pool", model_ids: ["fixture-model"], windows: [
+            { kind: "weekly", duration_minutes: 10080, remaining_fraction: 0.9, reset_at: null, observed_at: observedAt, status: "observed" },
+            { kind: "five_hour", duration_minutes: 300, remaining_fraction: 0.6, reset_at: null, observed_at: observedAt, status: "observed" },
+          ] }], executable_fingerprint: "fixture", capability_verified: true,
+        };
+      },
       probeModelAccess: async () => true,
     };
 
@@ -214,10 +217,13 @@ describe("AGY Account Switch Concurrency & CAS Integrity (AC-I04 & AC-I25)", () 
       vi.spyOn(mockConsumer, "prepareSwitch").mockResolvedValue({ savedRef: { runs: [] } });
     }
     repo.saveRealm(realm);
-    for (const account of [a1, a2]) repo.saveQuotaSnapshot({ id: `q-${account.id}`, realm_id: realmId, account_id: account.id, auth_epoch: 1, pool_id: "fixture-pool", model_ids: ["fixture-model"], source: "official_cli_usage", cli_version: "fixture", parser_revision: 1, observed_at: new Date().toISOString(), executable_fingerprint: "fixture", capability_verified: true, windows: [
-      { kind: "weekly", duration_minutes: 10080, remaining_fraction: 0.9, reset_at: null, observed_at: new Date().toISOString(), status: "observed" },
-      { kind: "five_hour", duration_minutes: 300, remaining_fraction: 0.6, reset_at: null, observed_at: new Date().toISOString(), status: "observed" },
-    ] });
+    for (const account of [a1, a2]) {
+      const observedAt = new Date().toISOString();
+      repo.saveQuotaSnapshot({ id: `q-${account.id}`, realm_id: realmId, account_id: account.id, auth_epoch: 1, pool_id: "fixture-pool", model_ids: ["fixture-model"], source: "official_cli_usage", cli_version: "fixture", parser_revision: 1, observed_at: observedAt, executable_fingerprint: "fixture", capability_verified: true, windows: [
+        { kind: "weekly", duration_minutes: 10080, remaining_fraction: 0.9, reset_at: null, observed_at: observedAt, status: "observed" },
+        { kind: "five_hour", duration_minutes: 300, remaining_fraction: 0.6, reset_at: null, observed_at: observedAt, status: "observed" },
+      ] });
+    }
 
     // Explicit switch to acc-2
     const res = await service.requestOperation({

@@ -288,13 +288,14 @@ describe("AGY 类别并发与额度池单元测试 (U02, U03, U04)", () => {
       realm.auth_epoch = 1;
       repo.saveRealm(realm);
 
+      const observedAt = new Date().toISOString();
       const windows = [
         {
           kind: "weekly" as const,
           duration_minutes: 10080 as const,
           remaining_fraction: 0.8,
           reset_at: null,
-          observed_at: new Date().toISOString(),
+          observed_at: observedAt,
           status: "observed" as const,
         },
         {
@@ -302,7 +303,7 @@ describe("AGY 类别并发与额度池单元测试 (U02, U03, U04)", () => {
           duration_minutes: 300 as const,
           remaining_fraction: 0.8,
           reset_at: null,
-          observed_at: new Date().toISOString(),
+          observed_at: observedAt,
           status: "observed" as const,
         },
       ];
@@ -317,7 +318,7 @@ describe("AGY 类别并发与额度池单元测试 (U02, U03, U04)", () => {
         source: "official_cli_usage",
         cli_version: "fixture",
         parser_revision: 1,
-        observed_at: new Date().toISOString(),
+        observed_at: observedAt,
         windows,
         executable_fingerprint: "fixture",
         capability_verified: true,
@@ -333,7 +334,7 @@ describe("AGY 类别并发与额度池单元测试 (U02, U03, U04)", () => {
         source: "official_cli_usage",
         cli_version: "fixture",
         parser_revision: 1,
-        observed_at: new Date().toISOString(),
+        observed_at: observedAt,
         windows,
         executable_fingerprint: "fixture",
         capability_verified: true,
