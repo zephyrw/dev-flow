@@ -31,6 +31,18 @@ async function stopOwnedController() {
   for (let i = 0; i < 100; i++) {
     try {
       if (String(native.getProcessCreationTime(owned.pid)) !== owned.creation_time) return;
+      if (process.platform === "win32") {
+        // Windows retains process identity while another handle references an
+        // exited process. The kernel wait signal, not identity retention,
+        // proves whether that process is still running.
+        const handle = native.openProcess(owned.pid, 0x00100000); // SYNCHRONIZE
+        if (handle === null) return;
+        try {
+          if (!native.isProcessRunning(handle)) return;
+        } finally {
+          assert(native.closeHandle(handle), "Controller wait handle could not be closed");
+        }
+      }
     } catch (error) {
       // A terminating macOS process can briefly hide its BSD identity while
       // still answering kill(0). Wait for kernel proof of exit; never kill an
@@ -39,6 +51,6 @@ async function stopOwnedController() {
     }
     await new Promise((yes) => setTimeout(yes, 100));
   }
-  assert.fail("Owned controller did not exit with a confirmed identity");
+  assert.fail("Owned controller did not exit with a confirmed identity: " + stopped.stdout);
 }
 await stopOwnedController();
