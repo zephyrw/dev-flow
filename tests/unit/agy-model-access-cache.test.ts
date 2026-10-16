@@ -12,7 +12,7 @@ const success = {
   code: 0,
   stdout: [
     JSON.stringify({ event: "init", init: { model } }),
-    JSON.stringify({ event: "result", result: { status: "SUCCESS" } }),
+    JSON.stringify({ event: "result", result: { status: "SUCCESS", response: "OK\n" } }),
   ].join("\n"),
   stderr: "",
 };
@@ -39,8 +39,8 @@ describe("AGY model access probe cache and shared calls", () => {
     await expect(f.probe.probeModelAccess(model, { ...identity, timeoutMs: 30000 }))
       .rejects.toMatchObject({ code: "agy_model_probe_timeout" });
     const call = f.runAuxiliaryProbe.mock.calls[0]![0];
-    expect(call.timeoutMs).toBeGreaterThanOrEqual(90000);
-    expect(call.args[call.args.indexOf("--print-timeout") + 1]).toBe("30s");
+    expect(call.timeoutMs).toBeGreaterThanOrEqual(180000);
+    expect(call.args[call.args.indexOf("--print-timeout") + 1]).toBe("120s");
     expect(await f.probe.probeModelAccess(model, identity)).toBe(true);
     expect(f.runAuxiliaryProbe).toHaveBeenCalledTimes(2);
   });
@@ -52,6 +52,27 @@ describe("AGY model access probe cache and shared calls", () => {
     ].join("\n") });
     await expect(f.probe.probeModelAccess(model, identity)).rejects.toMatchObject({ code: "agy_model_probe_timeout" });
     expect(await f.probe.probeModelAccess(model, identity)).toBe(true);
+  });
+  it.each(["", "OK\n"])("preserves native partial-output timeout despite exit zero and response %j", async response => {
+    const f = fixture();
+    f.runAuxiliaryProbe.mockResolvedValueOnce({ code: 0, stdout: [
+      JSON.stringify({ event: "init", init: { model } }),
+      JSON.stringify({ event: "step_update", step_update: { step_type: "user_input", state: "DONE", step_index: 0 } }),
+      JSON.stringify({ event: "result", result: { status: "SUCCESS", response, duration_seconds: 0 } }),
+    ].join("\n"), stderr: "[agy] print timeout after 30s with turn in progress; returning partial output\n" });
+    await expect(f.probe.probeModelAccess(model, identity)).rejects.toMatchObject({ code: "agy_model_probe_timeout" });
+    expect(await f.probe.probeModelAccess(model, identity)).toBe(true);
+    expect(f.runAuxiliaryProbe).toHaveBeenCalledTimes(2);
+  });
+  it.each([undefined, "", " \n"])("does not cache an incomplete SUCCESS with response %j as access or denial", async response => {
+    const f = fixture();
+    f.runAuxiliaryProbe.mockResolvedValueOnce({ code: 0, stdout: [
+      JSON.stringify({ event: "init", init: { model } }),
+      JSON.stringify({ event: "result", result: { status: "SUCCESS", response } }),
+    ].join("\n"), stderr: "" });
+    await expect(f.probe.probeModelAccess(model, identity)).rejects.toMatchObject({ code: "agy_model_probe_timeout" });
+    expect(await f.probe.probeModelAccess(model, identity)).toBe(true);
+    expect(f.runAuxiliaryProbe).toHaveBeenCalledTimes(2);
   });
   it("preserves quota failure on fresh matching model probes despite exit 3 and never caches it", async () => {
     const f = fixture();
@@ -95,6 +116,7 @@ describe("AGY model access probe cache and shared calls", () => {
     { ...success, stdout: success.stdout.replace("SUCCESS", "ERROR") },
     { ...success, stdout: success.stdout.replace(model, "other-model") },
     { ...success, stdout: JSON.stringify({ event: "init", init: { model } }) },
+    { ...success, stdout: success.stdout.replace('"response":"OK\\n"', '"denied_actions":[{"name":"fixture"}]') },
   ])("does not cache an unsuccessful or unproven response %#", async (result) => {
     const f = fixture();
     f.runAuxiliaryProbe.mockResolvedValueOnce(result);

@@ -1,6 +1,7 @@
 import type { ProbeTerminal } from "../../../contracts/src/model-access.js";
 import type { ProbeTerminalInput } from "./interface.js";
 import { stripAnsi } from "./catalog-parse.js";
+import { hasAgyPrintTimeout } from "../../agy/src/failure-fact.js";
 
 type JsonRecord = Record<string, unknown>;
 const METADATA_KEYS = ["init", "item", "message", "result", "data", "payload", "response", "part", "state", "properties", "info"];
@@ -131,6 +132,8 @@ export function parseStructuredProbeTerminal(input: ProbeTerminalInput): ProbeTe
   }
   const stdout = stripAnsi(input.stdout);
   const stderr = stripAnsi(input.stderr);
+  if (input.adapterId === "agy" && hasAgyPrintTimeout(stderr))
+    return { success: false, observedModelStatus: "unknown", errorCode: "MODEL_PROBE_TIMEOUT", message: "模型访问探测未完成，CLI 返回了超时部分输出" };
   const combined = `${stdout}\n${stderr}`;
   const stdoutRecords = collectProbeJsonRecords(stdout);
   const records = [...stdoutRecords, ...collectProbeJsonRecords(stderr)];
@@ -151,6 +154,15 @@ export function parseStructuredProbeTerminal(input: ProbeTerminalInput): ProbeTe
   if (records.some(recordIsTerminalError) || plainError) return failed("原生调用包含错误，探测未通过");
   if (input.exitCode !== 0 || input.cancelled || input.truncated || input.launchFailed) {
     return failed("原生调用未完整成功结束");
+  }
+  if (input.adapterId === "agy" && stdoutRecords.length > 0) {
+    const last = stdoutRecords.at(-1);
+    const result = asRecord(last?.result);
+    if (Array.isArray(result?.denied_actions) && result.denied_actions.length)
+      return failed("原生探测操作被拒绝，不能当作模型访问成功");
+    const response = result?.response;
+    if (!last || eventType(last) !== "result" || result?.status !== "SUCCESS" || typeof response !== "string" || !response.trim())
+      return { success: false, observedModel, observedModelStatus, errorCode: "MODEL_PROBE_TIMEOUT", message: "模型访问探测未完成，尚未收到模型响应" };
   }
   const structuredSuccess = stdoutRecords.some(recordIsTerminalSuccess);
   const hasStructuredOutput = records.length > 0 || /(?:^|\n)\s*[\[{]/.test(stdout);

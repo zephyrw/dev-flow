@@ -89,6 +89,52 @@ describe("访问验证的整轮终态", () => {
     expect(parseStructuredProbeTerminal({ stdout: "OK", stderr: "", exitCode: 0, launchFailed: true }).success).toBe(false);
   });
 
+  it.each(["", "OK\n"])("AGY print timeout cannot certify a partial successful result with response %j", response => {
+    expect(parse([
+      { event: "init", init: { model: "chosen" } },
+      { event: "result", result: { status: "SUCCESS", response, duration_seconds: 0 } },
+    ], { adapterId: "agy", stderr: "[agy] print timeout after 120s with turn in progress; returning partial output\n" }))
+      .toMatchObject({ success: false, errorCode: "MODEL_PROBE_TIMEOUT" });
+  });
+
+  it.each([undefined, "", " \n"])("AGY SUCCESS without a completed response cannot certify model access: %j", response => {
+    expect(parse([
+      { event: "init", init: { model: "chosen" } },
+      { event: "result", result: { status: "SUCCESS", response } },
+    ], { adapterId: "agy" })).toMatchObject({ success: false, errorCode: "MODEL_PROBE_TIMEOUT" });
+  });
+
+  it("AGY accepts a nonempty successful native response without timeout diagnostics", () => {
+    expect(parse([
+      { event: "init", init: { model: "chosen" } },
+      { event: "result", result: { status: "SUCCESS", response: "OK\n" } },
+    ], { adapterId: "agy" })).toMatchObject({ success: true, observedModelStatus: "matched" });
+  });
+
+  it.each([
+    { status: "IN_PROGRESS", response: "partial response" },
+    { status: "SUCCESS", response: "OK", denied_actions: [{ name: "fixture" }] },
+  ])("AGY cannot certify an unfinished or denied structured result: %j", result => {
+    expect(parse([
+      { event: "init", init: { model: "chosen" } },
+      { event: "result", result },
+    ], { adapterId: "agy" }).success).toBe(false);
+  });
+
+  it("AGY text probe accepts a standalone OK only without native partial-output timeout", () => {
+    expect(parse([], { adapterId: "agy", stdout: "OK\n" }).success).toBe(true);
+    expect(parse([], {
+      adapterId: "agy", stdout: "OK\n",
+      stderr: "[agy] print timeout after 30s with turn in progress; returning partial output\n",
+    })).toMatchObject({ success: false, errorCode: "MODEL_PROBE_TIMEOUT" });
+  });
+
+  it("keeps other adapters' terminal result contract unchanged", () => {
+    expect(parse([{ type: "result", model: "chosen", result: "OK" }], {
+      adapterId: "codex", stderr: "[agy] print timeout after 30s with turn in progress; returning partial output",
+    })).toMatchObject({ success: true, observedModelStatus: "matched" });
+  });
+
   it("目录确认的原生路由可报告实际模型，错误仍不能被路由豁免", () => {
     const routed = { selectedModel: "auto", selectionKind: "native-router" as const };
     expect(parse([{ type: "result", model: "chosen-by-client" }], routed))

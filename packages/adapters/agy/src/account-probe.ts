@@ -8,7 +8,7 @@ import type {
 } from "../../../agy-accounts/src/ports.js";
 import { parseAgyUsageOutput, type ParsedQuotaResult } from "./quota-parser.js";
 import { resolveAgyExecutable } from "./executable-resolver.js";
-import { hasConflictingAgyFailureDiagnostic, isAgyIndividualQuotaError } from "./failure-fact.js";
+import { hasAgyPrintTimeout, hasConflictingAgyFailureDiagnostic, isAgyIndividualQuotaError } from "./failure-fact.js";
 
 export interface VerifiedUsageAdapter {
   /** Installed by a code-reviewed official-output adapter, never supplied by HTTP. */
@@ -94,18 +94,21 @@ export function parseModelAccessOutput(
       !((last?.result as any)?.denied_actions?.length))
     return { success: false, reason: "agy_model_quota_exhausted" };
   const hasError = events.some(event => event.event === "error" || event.type === "error" ||
-    (event.result as any)?.status === "ERROR" || event.is_error === true);
+    (event.result as any)?.status === "ERROR" || event.is_error === true ||
+    (event.result as any)?.denied_actions?.length || (event as any).denied_actions?.length);
   if (hasError) return { success: false, reason: "error_event_present" };
 
   // 必须有明确成功终态
-  const hasSuccessResult = events.some(
-    (event) =>
-      (event.event === "result" && (event.result as any)?.status === "SUCCESS") ||
-      (event.type === "result" && ((event as any).status === "success" || event.is_error === false)),
+  const hasSuccessResult = last && (
+    (last.event === "result" && (last.result as any)?.status === "SUCCESS") ||
+    (last.type === "result" && ((last as any).status === "success" || last.is_error === false))
   );
-  if (!hasSuccessResult) {
+  if (!last || !hasSuccessResult) {
     return { success: false, reason: "missing_success_result" };
   }
+  const response = (last.result as any)?.response ?? last.response;
+  if (typeof response !== "string" || !response.trim())
+    return { success: false, reason: "agy_model_probe_timeout" };
 
   return { success: true };
 }
@@ -342,16 +345,16 @@ export class AgyAccountProbe implements AccountProbePort {
           "--output-format",
           "stream-json",
           "--print-timeout",
-          "30s",
+          "120s",
           "-p",
           "Reply only OK.",
         ],
         // The native print timeout starts after CLI initialization. Account/model
-        // discovery alone can take most of the former 30s host deadline.
-        { ...options, timeoutMs: Math.max(options.timeoutMs ?? 0, 90000), signal: flight.controller.signal },
+        // discovery and the first inference can both be slow after a restart.
+        { ...options, timeoutMs: Math.max(options.timeoutMs ?? 0, 180000), signal: flight.controller.signal },
       );
       flight.controller.signal.throwIfAborted();
-      if (result.termination_reason === "timeout")
+      if (result.termination_reason === "timeout" || hasAgyPrintTimeout(result.stderr))
         throw Object.assign(new Error("agy_model_probe_timeout"), { code: "agy_model_probe_timeout" });
       const parsed = parseModelAccessOutput(result.stdout, {
         modelId,

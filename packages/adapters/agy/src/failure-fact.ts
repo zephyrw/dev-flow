@@ -56,6 +56,11 @@ export function hasConflictingAgyFailureDiagnostic(text: string) {
   return isRetryableModelTransportFailure(text) || /tls|bad record mac|econn|etimedout|enotfound|network|connection|fetch failed|permission.?denied|unauthorized|unauthenticated|invalid_grant|timeout|timed out/i.test(text);
 }
 
+/** Current CLI stderr can report an unfinished turn despite exit 0 / SUCCESS. */
+export function hasAgyPrintTimeout(stderr: string): boolean {
+  return /^\s*\[agy\]\s+print timeout after [^\r\n]+ with turn in progress; returning partial output\s*$/im.test(stderr);
+}
+
 /** A resumed footer alone is historical. Confirm it only with this process's
  * quota exit and unfinished current turn, with no conflicting host failure. */
 export function confirmAgyQuotaFailure(fact: AgyFailureFact, completion: {

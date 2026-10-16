@@ -1012,7 +1012,10 @@ function managedAccount(
 function managedAccessFixture(
   delegate?: ModelAccessServiceOptions["withManagedAccountVerification"],
 ) {
-  const env = openAccess({ adapterId: "agy", behavior: "ok" });
+  const env = openAccess({ adapterId: "agy", behavior: "ok", probeStdout: [
+    JSON.stringify({ event: "init", init: { model: "gemini-3.7-flash-high" } }),
+    JSON.stringify({ event: "result", result: { status: "SUCCESS", response: "OK\n" } }),
+  ].join("\n") + "\n" });
   managedAccount(env);
   const access = new ModelAccessService(env.store, {
     catalog: env.catalog, extraEnv: env.extraEnv, probeRoot: env.probeRoot,
@@ -1098,6 +1101,32 @@ it("managed verification delegates the existing exact model probe and retains ac
   expect(delegated).toHaveLength(1);
   managedAccount(env, "account-b", 2);
   expectCode(() => access.assertCachedAccess(chosen, access.identityFromProfile(chosen), catalog), "MODEL_ACCESS_REQUIRED");
+});
+
+it.each([
+  "[agy] print timeout after 30s with turn in progress; returning partial output\n",
+  "",
+])("AGY incomplete SUCCESS remains a retryable probe timeout without publishing access: %j", async stderr => {
+  const { env, access, chosen, catalog } = managedAccessFixture(async (_identity, verify) => verify());
+  writeControl(env.logDir, { probeStdout: [
+    JSON.stringify({ event: "init", init: { model: chosen.modelId } }),
+    JSON.stringify({ event: "step_update", step_update: { step_type: "user_input", state: "DONE", step_index: 0 } }),
+    JSON.stringify({ event: "result", result: { status: "SUCCESS", response: "", duration_seconds: 0 } }),
+  ].join("\n") + "\n", probeStderr: stderr, probeExit: 0 });
+  const result = await verifyNow(access, chosen, access.identityFromProfile(chosen), catalog);
+  expect(result.job).toMatchObject({ status: "temporary_error", error_code: "MODEL_PROBE_TIMEOUT", retryable: true });
+  expect(env.store.list<{ status: string }>("model_access").some(record =>
+    ["verified", "model_forbidden", "unavailable"].includes(record.status),
+  )).toBe(false);
+  expect(probeCount(env.logDir)).toBe(1);
+
+  writeControl(env.logDir, { probeStdout: [
+    JSON.stringify({ event: "init", init: { model: chosen.modelId } }),
+    JSON.stringify({ event: "result", result: { status: "SUCCESS", response: "OK\n" } }),
+  ].join("\n") + "\n", probeStderr: "" });
+  const recovered = await verifyNow(access, chosen, access.identityFromProfile(chosen), catalog, true);
+  expect(recovered.job?.status).toBe("verified");
+  expect(probeCount(env.logDir)).toBe(2);
 });
 
 it("a successful managed probe cannot publish after the account epoch changes", async () => {

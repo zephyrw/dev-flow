@@ -1553,6 +1553,13 @@ export class ModelAccessService {
       });
       return;
     }
+    if (terminal.errorCode === "MODEL_PROBE_TIMEOUT") {
+      this.finishFailure(job, {
+        status: "temporary_error", errorCode: "MODEL_PROBE_TIMEOUT", retryable: true,
+        message: terminal.message ?? "模型访问探测尚未完成",
+      });
+      return;
+    }
     const classified = classifyProbeFailure(result);
     this.finishFailure(job, {
       ...classified,

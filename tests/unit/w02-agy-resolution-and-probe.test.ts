@@ -107,7 +107,7 @@ describe("W02 AGY 发现、能力与真实输出适配测试", () => {
     // 只有 init 和 result，缺少 model 证据
     const noModelOutput = [
       JSON.stringify({ event: "init", session_id: "s1" }),
-      JSON.stringify({ event: "result", result: { status: "SUCCESS" } }),
+      JSON.stringify({ event: "result", result: { status: "SUCCESS", response: "OK" } }),
     ].join("\n");
 
     const resNoModel = parseModelAccessOutput(noModelOutput, {
@@ -119,7 +119,7 @@ describe("W02 AGY 发现、能力与真实输出适配测试", () => {
     // 模型不匹配
     const mismatchOutput = [
       JSON.stringify({ event: "init", model: "claude-3-opus" }),
-      JSON.stringify({ event: "result", result: { status: "SUCCESS" } }),
+      JSON.stringify({ event: "result", result: { status: "SUCCESS", response: "OK" } }),
     ].join("\n");
     const resMismatch = parseModelAccessOutput(mismatchOutput, {
       modelId: "gemini-3.8-flash-high",
@@ -130,7 +130,7 @@ describe("W02 AGY 发现、能力与真实输出适配测试", () => {
     // 匹配且成功
     const matchedOutput = [
       JSON.stringify({ event: "init", model: "gemini-3.8-flash-high" }),
-      JSON.stringify({ event: "result", result: { status: "SUCCESS" } }),
+      JSON.stringify({ event: "result", result: { status: "SUCCESS", response: "OK" } }),
     ].join("\n");
     const resMatched = parseModelAccessOutput(matchedOutput, {
       modelId: "gemini-3.8-flash-high",
@@ -141,12 +141,34 @@ describe("W02 AGY 发现、能力与真实输出适配测试", () => {
   it("reads the native CLI nested init model and rejects mismatched or failed results", () => {
     const output = (model: string, status: string) => [
       JSON.stringify({ event: "init", init: { model, cwd: "C:/workspace" } }),
-      JSON.stringify({ event: "result", result: { status } }),
+      JSON.stringify({ event: "result", result: { status, response: "OK" } }),
     ].join("\n");
     const expected = { modelId: "gemini-3.8-flash-high" };
     expect(parseModelAccessOutput(output(expected.modelId, "SUCCESS"), expected).success).toBe(true);
     expect(parseModelAccessOutput(output("another-model", "SUCCESS"), expected).reason).toBe("model_mismatch");
     expect(parseModelAccessOutput(output(expected.modelId, "ERROR"), expected).success).toBe(false);
+  });
+
+  it.each([
+    { status: "SUCCESS" },
+    { status: "SUCCESS", response: "" },
+    { status: "SUCCESS", response: " \n" },
+    { status: "SUCCESS", response: "OK", denied_actions: [{}] },
+  ])("does not accept an empty or denied native success result: %j", result => {
+    const stdout = [
+      JSON.stringify({ event: "init", init: { model: "gemini-3.8-flash-high" } }),
+      JSON.stringify({ event: "result", result }),
+    ].join("\n");
+    expect(parseModelAccessOutput(stdout, { modelId: "gemini-3.8-flash-high" }).success).toBe(false);
+  });
+
+  it.each(["ERROR", "IN_PROGRESS"])("does not reuse an earlier success when the final result is %s", status => {
+    const stdout = [
+      JSON.stringify({ event: "init", init: { model: "gemini-3.8-flash-high" } }),
+      JSON.stringify({ event: "result", result: { status: "SUCCESS", response: "OK" } }),
+      JSON.stringify({ event: "result", result: { status } }),
+    ].join("\n");
+    expect(parseModelAccessOutput(stdout, { modelId: "gemini-3.8-flash-high" }).success).toBe(false);
   });
 
   it("解析真实 CLI 制表符格式的双额度", () => {
