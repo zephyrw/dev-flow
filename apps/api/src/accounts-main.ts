@@ -20,38 +20,34 @@ const app = buildAccountsServer(accountService, {
   storageInstance: config.storage_root,
   onMaintenanceShutdown: close,
 });
-try {
-  await app.listen({ port: config.server.port, host: config.server.host });
-  await accountService.reconcileStartup();
-  await recordController(
-    config.storage_root,
-    fileURLToPath(import.meta.url),
-    "accounts",
-  );
-} catch (error) {
-  await accountService.close();
-  await app.close();
-  store.close();
-  await unlock();
-  throw error;
-}
-console.log(`DevFlow AGY Accounts ${config.server.human_origin}/accounts`);
-const timer = setInterval(() => {
-  if (readMaintenanceMarker(config.storage_root)?.block_new_dispatch) return;
-  void accountService
-    .tick(Date.now())
-    .catch(() => console.error("账号调度失败，请检查管理状态"));
-}, 5000);
-let closing = false;
-async function close() {
-  if (closing) return;
-  closing = true;
-  clearInterval(timer);
-  // Retain ownership if safe credential/process shutdown fails.
-  await accountService.close();
-  await app.close();
-  store.close();
-  await unlock();
+let timer: ReturnType<typeof setInterval> | undefined;
+let closing: Promise<void> | undefined;
+function close(): Promise<void> {
+  return closing ??= (async () => {
+    clearInterval(timer);
+    // Retain ownership if safe credential/process shutdown fails.
+    await accountService.close();
+    await app.close();
+    store.close();
+    await unlock();
+  })();
 }
 process.once("SIGINT", () => void close().catch(console.error));
 process.once("SIGTERM", () => void close().catch(console.error));
+try {
+  recordController(config.storage_root, fileURLToPath(import.meta.url), "accounts");
+  await app.listen({ port: config.server.port, host: config.server.host });
+  await accountService.reconcileStartup();
+  if (!closing) {
+    console.log(`DevFlow AGY Accounts ${config.server.human_origin}/accounts`);
+    timer = setInterval(() => {
+      if (readMaintenanceMarker(config.storage_root)?.block_new_dispatch) return;
+      void accountService
+        .tick(Date.now())
+        .catch(() => console.error("账号调度失败，请检查管理状态"));
+    }, 5000);
+  }
+} catch (error) {
+  await close();
+  throw error;
+}

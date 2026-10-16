@@ -71,58 +71,63 @@ const app = await buildServer(engine, {
   onMaintenanceQuiesce,
   onMaintenanceShutdown: () => close(),
 });
-try {
-  await app.listen({ host: config.server.host, port: config.server.port });
-} catch (e) {
-  store.close();
-  await unlock();
-  throw e;
+let workspaceObserver: WorkspaceObserver | undefined;
+let tick: ReturnType<typeof setInterval> | undefined;
+let maintenance: ReturnType<typeof setInterval> | undefined;
+let closing: Promise<void> | undefined;
+function close(): Promise<void> {
+  return closing ??= (async () => {
+    accountService.beginShutdown();
+    workspaceObserver?.close();
+    clearInterval(tick);
+    clearInterval(maintenance);
+    await engine.runtime!.close();
+    bridge.dispose();
+    for (const socket of app.websocketServer.clients) socket.terminate();
+    // Cancel model probes before waiting for the account coordinator to drain.
+    await app.close();
+    await accountService.close();
+    store.close();
+    await unlock();
+  })();
 }
-await accountService.reconcileStartup();
-// Bind first: a duplicate controller must fail before mutating persisted runs.
-reconcileInactiveRuns(engine);
-engine.recover();
-const workspaceObserver = new WorkspaceObserver(engine);
-await recordController(config.storage_root, fileURLToPath(import.meta.url), "full");
-console.log(`DevFlow ${config.server.human_origin}`);
-const tick = setInterval(() => {
-  maintenanceBlocked = !!readMaintenanceMarker(config.storage_root)?.block_new_dispatch;
-  engine.maintenanceBlocked = maintenanceBlocked;
-  if (maintenanceBlocked) return;
-  void engine.dispatch().catch((e) => console.error("调度失败", String(e)));
-  void resumeModelWaits(engine).catch((e) =>
-    console.error("额度恢复调度失败", String(e)),
-  );
-  void accountService
-    .tick(Date.now())
-    .catch((e) => console.error("账号调度tick失败", String(e)));
-}, 5000);
-const maintenance = setInterval(() => {
-  maintenanceBlocked = !!readMaintenanceMarker(config.storage_root)?.block_new_dispatch;
-  engine.maintenanceBlocked = maintenanceBlocked;
-  if (maintenanceBlocked) return;
-  try {
-    archiveLogs(engine);
-  } catch (e) {
-    console.error("日志归档失败", String(e));
+process.once("SIGINT", () => void close().catch(console.error));
+process.once("SIGTERM", () => void close().catch(console.error));
+try {
+  // Persist ownership and initialize shutdown before health can report success.
+  recordController(config.storage_root, fileURLToPath(import.meta.url), "full");
+  await app.listen({ host: config.server.host, port: config.server.port });
+  await accountService.reconcileStartup();
+  if (!closing) {
+    // Bind first: a duplicate controller must fail before mutating persisted runs.
+    reconcileInactiveRuns(engine);
+    engine.recover();
+    workspaceObserver = new WorkspaceObserver(engine);
+    console.log(`DevFlow ${config.server.human_origin}`);
+    tick = setInterval(() => {
+      maintenanceBlocked = !!readMaintenanceMarker(config.storage_root)?.block_new_dispatch;
+      engine.maintenanceBlocked = maintenanceBlocked;
+      if (maintenanceBlocked) return;
+      void engine.dispatch().catch((e) => console.error("调度失败", String(e)));
+      void resumeModelWaits(engine).catch((e) =>
+        console.error("额度恢复调度失败", String(e)),
+      );
+      void accountService
+        .tick(Date.now())
+        .catch((e) => console.error("账号调度tick失败", String(e)));
+    }, 5000);
+    maintenance = setInterval(() => {
+      maintenanceBlocked = !!readMaintenanceMarker(config.storage_root)?.block_new_dispatch;
+      engine.maintenanceBlocked = maintenanceBlocked;
+      if (maintenanceBlocked) return;
+      try {
+        archiveLogs(engine);
+      } catch (e) {
+        console.error("日志归档失败", String(e));
+      }
+    }, 86400000);
   }
-}, 86400000);
-let closing = false;
-const close = async () => {
-  if (closing) return;
-  closing = true;
-  accountService.beginShutdown();
-  workspaceObserver.close();
-  clearInterval(tick);
-  clearInterval(maintenance);
-  await engine.runtime!.close();
-  bridge.dispose();
-  for (const socket of app.websocketServer.clients) socket.terminate();
-  // Cancel model probes before waiting for the account coordinator to drain.
-  await app.close();
-  await accountService.close();
-  store.close();
-  await unlock();
-};
-process.once("SIGINT", () => void close());
-process.once("SIGTERM", () => void close());
+} catch (error) {
+  await close();
+  throw error;
+}
