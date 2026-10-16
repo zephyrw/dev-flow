@@ -333,17 +333,19 @@ export function migrateMaterialBinding(store: Store, workspaceId: string, newRoo
   });
 }
 
-export function readVerifiedProjectMaterial(store: Store, material: ProjectMaterial): string {
+export function readVerifiedProjectMaterial(store: Store, material: ProjectMaterial, options: { allowUpdatedContent?: boolean } = {}): string {
   requireCondition(material.status === "verified", "PLAN_MATERIAL_CONFLICT", "材料尚未核验", 409);
   const ws = store.get<Workspace>("workspace", material.workspace_id);
   requireCondition(ws && ws.workflow_id === material.workflow_id && (!material.repo_id || material.repo_id === ws.repo_id), "PLAN_MATERIAL_CONFLICT", "材料工作区归属不一致", 409);
-  resolveMaterialLocator({ store, workflowId: material.workflow_id, kind: material.kind, revision: material.revision, preferredWorkspaceId: ws.id, customRelPath: material.path });
+  const path = options.allowUpdatedContent ? material.logical_path ?? material.path : material.path;
+  resolveMaterialLocator({ store, workflowId: material.workflow_id, kind: material.kind, revision: material.revision, preferredWorkspaceId: ws.id, customRelPath: path });
   return withMaterialRoot(ws.root, (port) => {
     if (material.protocol_version === 2 || material.root_identity) assertFrozenBinding(store, material, port.identity);
-    const data = port.read(materialRelativePath(material.path));
+    const data = port.read(materialRelativePath(path));
     requireCondition(data, "PLAN_MATERIAL_LOST", "已发布的项目计划原件已丢失，禁止以平台缓存掩盖", 409);
     const text = data.toString("utf8");
-    requireCondition(materialBodyMatches(material, data), "PLAN_MATERIAL_CONFLICT", "项目中的计划原件已被修改，发生原件冲突", 409);
+    if (!options.allowUpdatedContent)
+      requireCondition(materialBodyMatches(material, data), "PLAN_MATERIAL_CONFLICT", "项目中的计划原件已被修改，发生原件冲突", 409);
     port.validate();
     requireCondition(withMaterialRoot(ws.root, (current) => current.identity) === port.identity, "MATERIAL_BINDING_CONFLICT", "材料根目录已迁移", 409);
     if (!material.root_identity && material.protocol_version !== 2) {

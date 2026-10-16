@@ -181,6 +181,28 @@ it("preserves a user's pause against a late mixed result", async () => {
   }
 });
 
+it("exposes cross-task ownership failures instead of hiding them behind an unrecognized status", async () => {
+  const s = await fixture();
+  try {
+    const run = executing(s, "stale-plan-result");
+    const w = s.engine.get(s.w.id);
+    const parsed = extractRoundOutput({kind: "execution", workflow_id: w.id, run_id: run.id,
+      plan_revision: w.plan_revision, plan_hash: w.plan_hash,
+      replyText: JSON.stringify({status: "completed", delivery: {status: "completed", workflow_id: "another-task"}})});
+    if (parsed.kind === "resolved") throw new Error("Cross-task ownership was accepted");
+    s.store.put("run_result_parse", run.id, w.id, {kind: parsed.kind, reason: parsed.reason});
+    await s.engine.receiveRoundResult(w.id, run.id, {status: "unclear", summary: parsed.rawText});
+    const interaction = new UserInteractionService(s.store).getCurrentInteraction(w.id)!;
+    expect(interaction.request.message).toContain("delivery.workflow_id 不匹配");
+    expect(interaction.request.message).not.toContain("未能明确识别");
+    expect(s.engine.get(w.id)).toMatchObject({state: "WAITING_INPUT",
+      blocker: {message: expect.stringContaining("delivery.workflow_id 不匹配")}});
+    expect(s.store.get("execution_completion", run.id)).toBeUndefined();
+  } finally {
+    await cleanup(s);
+  }
+});
+
 it("keeps an explicit review need_user when optional review material is malformed", async () => {
   const s = await fixture();
   try {

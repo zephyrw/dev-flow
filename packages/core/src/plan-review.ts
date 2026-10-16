@@ -35,6 +35,8 @@ export function readPlanMaterial(
     .list<PlanRecord>("plan", workflowId)
     .find((p) => p.revision === revision);
   requireCondition(record, "PLAN_MISSING", "计划版本不存在", 404);
+  const currentWorkflow = store.get<{ plan_revision: number }>("workflow", workflowId);
+  const isCurrentVersion = !currentWorkflow || currentWorkflow.plan_revision === revision;
 
   const planDoc = store.get<{ document_id?: string; material_id?: string; run_id?: string; plan_revision?: number; material_status?: string }>(
     "planning_document",
@@ -154,8 +156,8 @@ export function readPlanMaterial(
       markdown = document?.content ?? record.plan.markdown;
       sourceType = "result_pending";
     } else if (material.status === "verified") {
-      // 若 material.status === 'verified'，校验绑定与文件存在及哈希，若文件丢失抛出 PLAN_MATERIAL_LOST
-      markdown = readVerifiedProjectMaterial(store, material);
+      // Current plans are live references; historical versions retain their archived contents.
+      markdown = readVerifiedProjectMaterial(store, material, { allowUpdatedContent: isCurrentVersion });
       sourceType = "project";
     } else {
       throw new FlowError(
@@ -198,10 +200,7 @@ export function readPlanMaterial(
       const raw = readMaterialFile(locator.workspace_root, locator.relative_path);
       const expectedHash = record.plan.design_ref?.content_hash;
       const fileHash = raw ? hash(raw.toString("utf8").replace(/\r\n/g, "\n")) : undefined;
-      const isFileValid = Boolean(raw) && (!expectedHash || fileHash === expectedHash);
-
-      const currentWf = store.get<{ plan_revision: number }>("workflow", workflowId);
-      const isCurrentVersion = !currentWf || currentWf.plan_revision === revision;
+      const isFileValid = Boolean(raw) && (isCurrentVersion || !expectedHash || fileHash === expectedHash);
 
       if (isFileValid) {
         markdown = raw!.toString("utf8");
@@ -249,7 +248,7 @@ export function readPlanMaterial(
     409,
   );
   requireCondition(
-    !record.plan.design_ref?.content_hash ||
+    isCurrentVersion || !record.plan.design_ref?.content_hash ||
       hash(markdown.replace(/\r\n/g, "\n")) ===
         record.plan.design_ref.content_hash,
     "PLAN_DOCUMENT_HASH_MISMATCH",
@@ -257,7 +256,8 @@ export function readPlanMaterial(
     409,
   );
   const workspace = material && store.get<Workspace>("workspace", material.workspace_id);
-  const path = locator?.absolute_path ?? (material && workspace ? resolve(workspace.root, material.path) : undefined);
+  const path = locator?.absolute_path ?? (material && workspace
+    ? resolve(workspace.root, isCurrentVersion ? material.logical_path ?? material.path : material.path) : undefined);
   const isAuthoritative = sourceType === "project" && (material ? material.status === "verified" : Boolean(record.material_path));
   return { ...record, markdown, path, document_path: path, source_type: sourceType, authority_ready: isAuthoritative };
 }

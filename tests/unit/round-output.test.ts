@@ -95,7 +95,7 @@ it("honors structured output and file precedence while falling through a broken/
     });
 });
 
-it.each(["workflow_id", "run_id", "plan_revision", "plan_hash"])(
+it.each(["workflow_id", "run_id"])(
   "rejects stale ownership: %s",
   (key) => {
     const expected = {
@@ -108,7 +108,7 @@ it.each(["workflow_id", "run_id", "plan_revision", "plan_hash"])(
       extract(
         JSON.stringify({
           ...result,
-          [key]: key === "plan_revision" ? 1 : "old",
+          [key]: "old",
         }),
         expected,
       ).kind,
@@ -147,6 +147,17 @@ it("accepts a previous session run_id when included in acceptable_run_ids and no
       },
     },
   });
+});
+
+it.each(["execution", "review"] as const)("binds stale plan metadata to the current %s result without blocking", kind => {
+  const nestedKey = kind === "execution" ? "delivery" : "quality";
+  const status = kind === "execution" ? {status: "completed"} : {verdict: "passed"};
+  expect(extractRoundOutput({workflow_id: "current", run_id: "new-run",
+    kind, acceptable_run_ids: ["old-run"], plan_revision: 2, plan_hash: "approved",
+    replyText: JSON.stringify({...status, plan_revision: 1, plan_hash: "stale",
+      [nestedKey]: {...status, workflow_id: "current", run_id: "old-run", plan_revision: 1, plan_hash: "stale"}}),
+  })).toMatchObject({kind: "resolved", value: {plan_revision: 2, plan_hash: "approved",
+    [nestedKey]: {run_id: "new-run", plan_revision: 2, plan_hash: "approved"}}});
 });
 
 it("recognizes review results independently from execution and retains optional malformed material", () => {

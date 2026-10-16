@@ -94,8 +94,6 @@ function envelope(
     for (const key of [
       "workflow_id",
       "run_id",
-      "plan_revision",
-      "plan_hash",
     ] as const) {
       if (owner[key] != null) {
         if (key === "run_id") {
@@ -106,20 +104,28 @@ function envelope(
             return {
               value: rec,
               intent: "unclear",
-              conflict: "结果不属于当前运行或批准计划",
+              conflict: `结果不属于当前任务或运行：${owner === rec ? "" : input.kind === "execution" ? "delivery." : "quality."}${key} 不匹配`,
             };
           }
         } else if (input[key] !== undefined && owner[key] !== input[key]) {
           return {
             value: rec,
             intent: "unclear",
-            conflict: "结果不属于当前运行或批准计划",
+            conflict: `结果不属于当前任务或运行：${owner === rec ? "" : input.kind === "execution" ? "delivery." : "quality."}${key} 不匹配`,
           };
         }
       }
     }
   }
-  return { value: rec, intent: intents[0]!, conflict };
+  // Plan metadata is owned by the scheduler. A model may echo an older plan
+  // from its conversation; that must not block an otherwise current result.
+  const bindPlan = (owner: RecordValue): RecordValue => ({
+    ...owner,
+    ...(input.plan_revision !== undefined ? { plan_revision: input.plan_revision } : {}),
+    ...(input.plan_hash !== undefined ? { plan_hash: input.plan_hash } : {}),
+  });
+  const nestedKey = input.kind === "execution" ? "delivery" : "quality";
+  return { value: { ...bindPlan(rec), ...(nested ? { [nestedKey]: bindPlan(nested) } : {}) }, intent: intents[0]!, conflict };
 }
 
 type TextCandidates = { values: unknown[]; limited?: string };
@@ -260,9 +266,9 @@ function select(
     if (resolvedValue.run_id && resolvedValue.run_id !== input.run_id) {
       resolvedValue.run_id = input.run_id;
     }
-    const delivery = record(resolvedValue.delivery);
-    if (delivery?.run_id && delivery.run_id !== input.run_id) {
-      delivery.run_id = input.run_id;
+    const nested = record(resolvedValue[input.kind === "execution" ? "delivery" : "quality"]);
+    if (nested?.run_id && nested.run_id !== input.run_id) {
+      nested.run_id = input.run_id;
     }
   }
   return {

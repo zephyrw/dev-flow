@@ -1582,7 +1582,7 @@ export class ProfileRuntime {
       const outputText = existsSync(output) ? readFileSync(output, "utf8") : undefined;
       const sessionRuns = conversation
         ? this.engine.store.list<Run>("run", w.id)
-            .filter((r) => r.conversation_id === conversation && r.plan_revision === w.plan_revision)
+            .filter((r) => r.conversation_id === conversation)
             .map((r) => r.id)
         : [];
       const continuationSourceId = this.readContinuation(run)?.source_run_id;

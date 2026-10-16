@@ -1748,6 +1748,12 @@ export class Engine {
     const w = this.get(key);
     if (["STOPPED", "STOPPING"].includes(w.state) ||
         context.run_id && this.store.get("run_stop", context.run_id)) return;
+    const parse = context.run_id
+      ? this.store.get<{ kind: string; reason?: string }>("run_result_parse", context.run_id)
+      : undefined;
+    const failureMessage = parse?.reason && ["ambiguous", "unrecognized"].includes(parse.kind)
+      ? `结果校验未通过：${parse.reason}。已有原文和进度已保留。`
+      : "未能明确识别模型的本轮结果。已有进度已保留，等待你的决定。";
     const conv = interactionConversationContext(this.store, key, context.run_id, context.conversation_id);
     const interaction = new UserInteractionService(this.store).createInteraction({
       workflowId: key, sourceRunId: context.run_id ?? context.source_execution_run_id ?? "",
@@ -1756,7 +1762,7 @@ export class Engine {
       nativeSessionId: conv.nativeSessionId, purpose: context.purpose, role: context.role,
       rawInput: {
         kind: "question", title: "本轮结果需要确认",
-        message: ("未能明确识别模型的本轮结果。已有进度已保留，等待你的决定。" +
+        message: (failureMessage +
           (context.original_text ? "\n\n模型原文：\n" + context.original_text : "")).slice(0, 4000),
         question: "是否让模型仅补充刚才的结果说明？关闭弹窗或稍后处理将保持等待。",
         choices: [{ id: "clarify", label: "仅补充结果说明" }], allow_free_text: false,
@@ -1780,7 +1786,7 @@ export class Engine {
     this.store.remove("queue", key);
     this.transition(key, [w.state], "WAITING_INPUT", context.stage, {
       blocker: { code: context.purpose === "review" ? "REVIEW_INTENT_UNCLEAR" : "EXECUTION_INTENT_UNCLEAR",
-        message: "未能明确识别本轮结果，已保留原文和进度，等待你的确认。" },
+        message: parse?.reason ? failureMessage : "未能明确识别本轮结果，已保留原文和进度，等待你的确认。" },
     });
     });
   }
@@ -1835,19 +1841,18 @@ export class Engine {
           const payloadRun = this.store.get<Run>("run", payload.run_id);
           const sameSessionRun = payloadRun && guidanceRun.conversation_id &&
             payloadRun.conversation_id === guidanceRun.conversation_id &&
-            payloadRun.workflow_id === key && payloadRun.plan_revision === w.plan_revision;
+            payloadRun.workflow_id === key;
           if (sameSessionRun) {
             payload.run_id = runId;
           }
         }
         requireCondition(
           (!payload.workflow_id || payload.workflow_id === key) &&
-          (!payload.run_id || payload.run_id === runId) &&
-          (payload.plan_revision === undefined || payload.plan_revision === w.plan_revision) &&
-          (!payload.plan_hash || payload.plan_hash === w.plan_hash),
-          "ROUND_RESULT_IDENTITY_MISMATCH", "本轮结果与当前运行或批准计划不匹配",
+          (!payload.run_id || payload.run_id === runId),
+          "ROUND_RESULT_IDENTITY_MISMATCH", "本轮结果与当前任务或运行不匹配",
         );
       }
+      payload = { ...payload, plan_revision: w.plan_revision, plan_hash: w.plan_hash };
       if (runScopedDelivery || payload.submission_id) {
         const existingDeliveries = this.store.list<Delivery>("delivery", key);
         const matchedDelivery = existingDeliveries.find(
@@ -1867,8 +1872,6 @@ export class Engine {
             );
             if (
               matchedRev?.invalidated ||
-              matchedDelivery.plan_revision !== w.plan_revision ||
-              matchedDelivery.plan_hash !== w.plan_hash ||
               (w.state === "EXECUTING" && matchedDelivery.run_id !== w.run_id)
             ) {
               return {

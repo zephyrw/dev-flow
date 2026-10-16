@@ -535,7 +535,16 @@ export const ExecutorRoundOutputSchema = z
     notes: z.string().optional(),
     artifacts: z.array(ExecutorArtifactOutputSchema).optional(),
     repositories: z.array(z.object({ repo_id: z.string(), commit: z.string() })).optional(),
-    delivery: DeliveryManifestSchema.extend({
+    delivery: DeliveryManifestSchema.omit({
+      schema_version: true,
+      submission_id: true,
+      workflow_id: true,
+      run_id: true,
+      conversation_id: true,
+      plan_revision: true,
+      plan_hash: true,
+      plan_self_check: true,
+    }).extend({
       artifacts: z.array(ExecutorArtifactOutputSchema).optional(),
     }).optional(),
   })

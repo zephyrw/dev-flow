@@ -16,6 +16,11 @@ it("structured output guidance retains typed intent and text while input remains
   expect(schema.properties.status.anyOf[0].enum).toEqual(["completed", "need_planner", "need_user", "unclear"]);
   expect(schema.properties.summary.anyOf[0].type).toBe("string");
   expect(schema.properties.notes.anyOf[0].type).toBe("string");
+  const delivery = schema.properties.delivery.anyOf[0];
+  for (const key of ["schema_version", "submission_id", "workflow_id", "run_id", "conversation_id", "plan_revision", "plan_hash", "plan_self_check"]) {
+    expect(delivery.properties).not.toHaveProperty(key);
+    expect(delivery.required).not.toContain(key);
+  }
   expect(ExecutorRoundOutputSchema.safeParse({ status: "completed" }).success).toBe(true);
   const received = { status: "completed", notes: { unexpected: true }, delivery: { test_executions: [{ report_paths: ["report.json"] }] } };
   expect(ExecutorRoundOutputSchema.safeParse(received).success).toBe(false);

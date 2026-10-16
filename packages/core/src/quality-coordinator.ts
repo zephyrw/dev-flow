@@ -82,13 +82,6 @@ export class QualityCoordinator {
       "当前任务尚未通过 " + phase + " 代码质量审查",
       422,
     );
-    const fingerprint = this.fingerprint(workflowId);
-    requireCondition(
-      gate.passed_input_fingerprint?.plan_hash === fingerprint.plan_hash,
-      "QUALITY_GATE_STALE",
-      "计划已变化，需要重新进行 " + phase + " 代码质量审查",
-      422,
-    );
     return gate;
   }
   canTakeOver(workflowId: string, phase: QualityPhase) {
@@ -256,7 +249,12 @@ export class QualityCoordinator {
     );
   }
   prepareQualityTransfer(workflowId: string, input: unknown): QualityTransfer {
-    const parsed = QualityReviewResultSchema.safeParse(input);
+    const decision = input && typeof input === "object" && !Array.isArray(input) ? { ...input } : input;
+    if (decision && typeof decision === "object" && !Array.isArray(decision)) {
+      for (const key of ["phase", "cycle", "plan_revision", "feedback_cursor"])
+        delete (decision as Record<string, unknown>)[key];
+    }
+    const parsed = QualityReviewResultSchema.safeParse(decision);
     const fallbackPhase =
       (parsed.success ? parsed.data.phase : undefined) ?? "before_human";
     if (!parsed.success)
@@ -293,10 +291,10 @@ export class QualityCoordinator {
       ...parsed.data,
       workflow_id: parsed.data.workflow_id ?? workflowId,
       run_id: runId,
-      phase: prior?.canonical?.phase ?? parsed.data.phase ?? expectedPhase,
-      cycle: prior?.canonical?.cycle ?? parsed.data.cycle ?? existing?.cycle ?? 1,
-      plan_revision: parsed.data.plan_revision ?? w.plan_revision,
-      feedback_cursor: parsed.data.feedback_cursor ?? cursor,
+      phase: prior?.canonical?.phase ?? expectedPhase,
+      cycle: prior?.canonical?.cycle ?? existing?.cycle ?? 1,
+      plan_revision: w.plan_revision,
+      feedback_cursor: cursor,
       verdict:
         parsed.data.verdict ??
         (parsed.data.findings?.length || parsed.data.repair_plan?.length
@@ -331,13 +329,6 @@ export class QualityCoordinator {
         runId,
         result.phase,
         "REVIEW_BINDING_INVALID: 审查轮次、阶段或运行身份不匹配",
-      );
-    if (result.cycle !== (existing?.cycle ?? 1))
-      return this.retryTransfer(
-        workflowId,
-        runId,
-        result.phase,
-        "REVIEW_CYCLE_STALE: 审查周期已变化",
       );
     if (result.verdict === "incomplete" || result.verdict === "need_user")
       return this.retryTransfer(
