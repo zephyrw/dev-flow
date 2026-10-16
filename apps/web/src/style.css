@@ -3078,11 +3078,11 @@ select:focus {
   }
 }
 
-/* Diff 代码流容器 */
+/* Diff 代码流容器：撑满可视区宽度且随长行展开，由外层 diff-code-scroll 统一承担横纵向滚动 */
 .diff-table-container {
-  width: 100%;
-  min-width: 0;
-  overflow-x: auto;
+  min-width: 100%;
+  width: max-content;
+  box-sizing: border-box;
 }
 
 .diff-lines-flow {
@@ -3195,6 +3195,9 @@ select:focus {
   color: #fde68a;
   font-size: 11.5px;
   text-align: center;
+  position: sticky;
+  left: 0;
+  box-sizing: border-box;
 }
 
 .diff-inspector-foot {
