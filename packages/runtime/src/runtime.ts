@@ -185,9 +185,21 @@ export class LocalRuntime implements Runtime {
   attachAccountService(service: AgyAccountService): AgyWorkflowBridge {
     if (this.accountBridge)
       throw new Error("AGY_ACCOUNT_SERVICE_ALREADY_ATTACHED");
+    const accountExecutableIdentity = () => {
+      const configured = this.engine.config.models.agy_executable;
+      try {
+        return executablePath(configured);
+      } catch (error) {
+        // Identity checks must work before optional AGY is installed. Actual
+        // launches still use strict executable resolution and account permits.
+        if (error instanceof FlowError && error.code === "EXECUTABLE_MISSING")
+          return configured;
+        throw error;
+      }
+    };
     const processHost = new AgyAccountProcessHost({
       store: this.engine.store,
-      agyExecutable: executablePath(this.engine.config.models.agy_executable),
+      agyExecutable: accountExecutableIdentity(),
       processManager: this.processes,
     });
     const bridge = new AgyWorkflowBridge(
@@ -201,9 +213,7 @@ export class LocalRuntime implements Runtime {
       const isAgy =
         this.engine.store.get<Run>("run", spec.id)?.adapter === "agy" ||
         resolve(spec.executable).toLowerCase() ===
-          resolve(
-            executablePath(this.engine.config.models.agy_executable),
-          ).toLowerCase() ||
+          resolve(accountExecutableIdentity()).toLowerCase() ||
         /(?:^|[\\/])agy(?:\.exe|\.cmd)?$/i.test(spec.executable);
       if (!isAgy && !spec.agy_account) return;
       if (!spec.agy_account) {
