@@ -80,18 +80,19 @@ afterEach(async () => {
   s.store.close();
 });
 
-function source(id: string, purpose: Run["purpose"] = "implement") {
+function source(id: string, purpose: Run["purpose"] = "implement", selected = profile) {
   const workflowId = `wf-${id}`;
   accounts.repository.savePolicy({ workflow_id: workflowId, revision: 1, auto_switch: true,
     allowed_account_ids: null, recreation_policy: "exact_only", night_pool: "normal", created_at: new Date().toISOString() });
-  const native = access.resolveNativeConfig(profile);
+  access.seedVerified(selected);
+  const native = access.resolveNativeConfig(selected);
   const run: Run = { id, workflow_id: workflowId, adapter: "agy", purpose,
     stage: purpose === "planning" ? "planning" : purpose === "quality_review" ? "quality_before_human" : "execute",
     status: "running", plan_revision: 1, started_at: new Date().toISOString(), package_hash: "package",
-    profile, runtime_flavor: "profile-native", execution_spec_id: "original-spec", execution_spec_revision: 1,
+    profile: selected, runtime_flavor: "profile-native", execution_spec_id: "original-spec", execution_spec_revision: 1,
     routing_role: purpose === "planning" ? "planner" : purpose === "quality_review" ? "reviewer" : "executor",
     routing_source: "user-repair", logical_round_id: `round-${id}`, conversation_id: `native-${id}`,
-    frozen_invocation: { ...frozenInvocationFromProfile(profile, "profile-native"), accountScope: native.accountFingerprint,
+    frozen_invocation: { ...frozenInvocationFromProfile(selected, "profile-native"), accountScope: native.accountFingerprint,
       providerScope: native.providerEndpointFingerprint ?? "default", identityConfidence: native.identityConfidence ?? "account" } };
   const workflow: Workflow = { id: workflowId, project_id: "p1", title: id, request: "same task",
     complexity: "simple", workspace_mode: "existing_workspace", state: purpose === "planning" ? "PLANNING" : purpose === "quality_review" ? "REVIEWING" : "EXECUTING",
@@ -102,8 +103,10 @@ function source(id: string, purpose: Run["purpose"] = "implement") {
   return run;
 }
 function request(run: Run) {
-  return { workflow_id: run.workflow_id, run_id: run.id, effective_model_id: "fixture-model",
-    account_policy_revision: accounts.repository.getPolicy(run.workflow_id)!.revision, required_pool_ids: ["fixture-pool"] };
+  const model = run.profile!.modelId!;
+  const pools = accounts.service.resolveModelPools(model);
+  return { workflow_id: run.workflow_id, run_id: run.id, effective_model_id: model,
+    account_policy_revision: accounts.repository.getPolicy(run.workflow_id)!.revision, required_pool_ids: pools.length ? pools : ["fixture-pool"] };
 }
 function markWaiting(run: Run) {
   const w = s.engine.get(run.workflow_id);
@@ -137,13 +140,19 @@ function quotaText(binding: AgyRunBinding) {
 }
 const switches = () => accounts.repository.listOperations(realmId).filter((op) => op.kind === "switch");
 
+function quotaWindow(binding: AgyRunBinding) {
+  return classifyAgyFailure({ realmId, accountId: binding.account_id, authEpoch: binding.auth_epoch,
+    runId: binding.source_run_id, currentTurn: true, eventOffset: 7,
+    event: { type: "error", code: "five_hour_quota_exhausted" } });
+}
+
 it.each(["positive", "probe_failure"])("accepts the bound current quota exit even when usage is %s and coalesces two failures", async mode => {
   const one = source("quota-exit-one"), two = source("quota-exit-two");
   const a = await started(one), b = await started(two);
   const verify = vi.spyOn(accounts.service, "verifyActiveQuotaExhausted");
   probeFails = mode === "probe_failure";
   for (const [run, binding] of [[one, a], [two, b]] as const) {
-    const fact = confirmAgyQuotaFailure(quotaText(binding), { exitCode: 3, currentTurn: true, stderr: "" });
+    const fact = quotaWindow(binding);
     expect(await bridge.observeFailure(binding, fact)).toBe("waiting");
     markWaiting(run);
   }
@@ -179,9 +188,7 @@ it("automatically switches and resumes after a confirmed quota exit without stop
   const binding = await started(run);
   accounts.setExternal([{ pid: 999, exe_path: "external-agy" }]);
   const stopExternal = vi.spyOn(accounts.processHost, "stopProcess");
-  expect(await bridge.observeFailure(binding, confirmAgyQuotaFailure(quotaText(binding), {
-    exitCode: 3, currentTurn: true,
-  }))).toBe("waiting");
+  expect(await bridge.observeFailure(binding, quotaWindow(binding))).toBe("waiting");
   markWaiting(run);
   await accounts.service.tick(Date.now());
   expect(installs).toHaveBeenCalledTimes(1);
@@ -190,8 +197,34 @@ it("automatically switches and resumes after a confirmed quota exit without stop
   expect(restore).toHaveBeenCalledTimes(1);
 });
 
+it("detects an official zero during background monitoring and checkpoints both running tasks", async () => {
+  const one = source("monitor-one"), two = source("monitor-two");
+  await started(one); await started(two);
+  exhausted = true;
+  await accounts.service.tick(Date.now());
+  expect(switches()).toHaveLength(1);
+  expect(switches()[0]!.quota_trigger).toMatchObject({ window: "five_hour", source: "official_cli_usage" });
+  expect(accounts.active()).toBe("b");
+  expect(stop).toHaveBeenCalledTimes(2);
+  expect(restore, JSON.stringify(recoveryErrors)).toHaveBeenCalledTimes(2);
+});
+
+it("does not bypass another running task's disabled automatic switch policy", async () => {
+  const one = source("auto-peer-one"), two = source("auto-peer-two");
+  const binding = await started(one); await started(two);
+  const policy = accounts.repository.getPolicy(two.workflow_id)!;
+  accounts.repository.savePolicy({ ...policy, revision: policy.revision + 1, auto_switch: false });
+  expect(await bridge.observeFailure(binding, quotaWindow(binding))).toBe("waiting");
+  markWaiting(one);
+  await accounts.service.tick(Date.now());
+  expect(switches()[0]).toMatchObject({ phase: "waiting", error: "automatic_switch_policy_conflict" });
+  expect(accounts.active()).toBe("a");
+  expect(stop).not.toHaveBeenCalled();
+});
+
 it("routes a fresh admission quota probe into the same switch and skips a quota-exhausted candidate", async () => {
   const run = source("quota-probe-admission");
+  await verifyZero();
   vi.spyOn(accounts.probe, "probeModelAccess").mockImplementation(async (model, options) => {
     if (options?.account_id === "a" || options?.account_id === "b")
       throw Object.assign(new Error("agy_model_quota_exhausted"), {
@@ -280,6 +313,54 @@ it("coalesces concurrent prelaunch rejections into the same queued switch withou
   expect(stop).not.toHaveBeenCalled();
   expect(installs).toHaveBeenCalledTimes(1);
   expect(restore).toHaveBeenCalledTimes(2);
+});
+
+it.each(["failure", "background"])("switches mixed tasks after %s without replacing models, conversations, plans or directories", async mode => {
+  const selected = ["gemini-3.8-flash", "claude-sonnet-4-6"].map(modelId => ({ ...profile, modelId }));
+  const base = accounts.repository.listQuotaSnapshots(realmId)[0]!;
+  let zeroClaude = false;
+  const pools = (account: string) => {
+    const observed_at = new Date().toISOString();
+    return selected.map((model, index) => ({
+      pool_id: index === 0 ? "Gemini Models" : "Claude and GPT models", model_ids: [model.modelId],
+      windows: base.windows.map(window => ({ ...window, observed_at,
+        remaining_fraction: zeroClaude && account === "a" && index === 1 && window.kind === "five_hour"
+          ? 0 : account === "b" ? .9 : .6 })),
+    }));
+  };
+  for (const account of ["a", "b", "c"]) {
+    accounts.repository.retainQuotaPools(realmId, account, []);
+    for (const pool of pools(account)) accounts.repository.saveQuotaSnapshot({ ...base, ...pool,
+      account_id: account, id: crypto.randomUUID(), observed_at: new Date().toISOString() });
+  }
+  vi.spyOn(accounts.probe, "probeUsage").mockImplementation(async () => ({
+    email: `${accounts.active()}@example.com`, cli_version: "fixture", raw_output: "", capability_verified: true,
+    executable_fingerprint: "fixture", pools: pools(accounts.active()), windows: pools(accounts.active())[0]!.windows,
+  }));
+  const runs = selected.map((model, index) => source(`mixed-${index}`, "implement", model));
+  const bindings = [await started(runs[0]!), await started(runs[1]!)];
+  expect(accounts.service.getActiveCategory().category).toBe("mixed");
+  if (mode === "failure") {
+    const claudeBinding = bindings[1]!;
+    expect(await bridge.observeFailure(claudeBinding, quotaWindow(claudeBinding))).toBe("waiting");
+    markWaiting(runs[1]!);
+  } else zeroClaude = true;
+  await accounts.service.tick(Date.now());
+  const operation = switches()[0]!;
+  expect(accounts.active()).toBe("b");
+  expect(switches()).toHaveLength(1);
+  expect(restore, JSON.stringify(recoveryErrors)).toHaveBeenCalledTimes(2);
+  for (const run of runs) {
+    expect(s.store.get<any>("agy_recovery_checkpoint", `${operation.operation_id}:${run.id}`))
+      .toMatchObject({ source_run_id: run.id, root_conversation_id: run.conversation_id, root_purpose: "implement" });
+    const original = s.store.must<Run>("run", run.id);
+    expect(original.profile).toMatchObject({ modelId: run.profile!.modelId });
+    expect(original.conversation_id).toBe(run.conversation_id);
+    expect(s.engine.get(run.workflow_id).plan_hash).toBe("same-plan");
+    const retry = bindProfile(s.store, s.config, run.workflow_id, run.purpose!, buildDispatchContext(s.store, run.workflow_id, run.purpose!));
+    expect(retry.frozen_invocation.modelToken).toBe(run.profile!.modelId);
+    expect(retry.profile.modelId).toBe(run.profile!.modelId);
+  }
 });
 
 it.each(["positive", "probe_failure"])("does not switch for a text quota candidate when official active quota is %s", async (mode) => {

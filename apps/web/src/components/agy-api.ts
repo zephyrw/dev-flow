@@ -1,4 +1,8 @@
+import type { AgyQuotaTrigger } from "../../../../packages/contracts/src/agy-account.js";
+
 export interface AccountOperationView {
+  quota_trigger?: AgyQuotaTrigger;
+  selected_quota?: { weekly: number; five_hour?: number };
   created_at?: string;
   before_account_id?: string;
   target_account_id?: string;
@@ -83,6 +87,7 @@ export const operationLabels: Record<string, string> = {
   cancelled: "已取消",
   cancellation_requested: "正在取消",
   waiting_external_exit: "等待外部 AGY 会话退出",
+  waiting: "等待可用账号",
   blocked: "需要处理",
   consumer_unavailable: "请在完整服务中继续",
 };

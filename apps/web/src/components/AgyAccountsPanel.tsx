@@ -43,7 +43,7 @@ interface AccountView {
   refresh_scope?: "all" | "active_only";
   refresh_errors?: Array<{ account_id: string }>;
   model_id?: string | null;
-  active_category?: "gemini" | "other" | "unknown" | null;
+  active_category?: "gemini" | "other" | "mixed" | "unknown" | null;
   selection_context?: AgyManagementSelectionContext;
   accounts: AgyAccountDto[];
   snapshots: AgyQuotaSnapshot[];
@@ -369,6 +369,8 @@ export const AgyAccountsPanel = forwardRef<
                 ? "当前活跃 Gemini 任务所属额度池"
                 : view?.selection_context?.category === "other"
                   ? "当前活跃其他模型任务所属额度池（Claude / GPT）"
+                  : view?.selection_context?.category === "mixed"
+                    ? "Gemini 与 Claude/GPT 任务同时运行；切换时按首个归零配额排序"
                    : view?.selection_context?.category === "unknown"
                      ? "当前类别尚未确认，等待恢复核对"
                      : "等待任务启动后按所属类别匹配（当前无活跃类别占用）"}
@@ -394,6 +396,19 @@ export const AgyAccountsPanel = forwardRef<
               <span>
                 正在执行：{operationLabels[activeOperation.phase] ?? activeOperation.phase}
               </span>
+              {activeOperation.quota_trigger && (
+                <span>
+                  {activeOperation.quota_trigger.pool_id === "Claude and GPT models" ? "Claude/GPT" :
+                    activeOperation.quota_trigger.pool_id === "Gemini Models" ? "Gemini" : activeOperation.quota_trigger.pool_id}
+                  {activeOperation.quota_trigger.window === "weekly" ? "周额度" : "五小时额度"}
+                  为 0，按该配额余额选择账号；目标账号两池均须可用
+                  {activeOperation.selected_quota && `（目标余额 ${Math.round((activeOperation.quota_trigger.window === "weekly"
+                    ? activeOperation.selected_quota.weekly : activeOperation.selected_quota.five_hour ?? 0) * 100)}%）`}
+                </span>
+              )}
+              {activeOperation.phase === "waiting" && activeOperation.error && (
+                <span>{formatFriendlyError(activeOperation.error)}</span>
+              )}
               {activeOperation.phase === "waiting_external_exit" && (
                 <div style={{ fontSize: "12px", color: "#64748b" }}>
                   {activeOperation.external_processes && activeOperation.external_processes.length > 0 ? (

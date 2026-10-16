@@ -23,7 +23,10 @@ import type {
   AgyQuotaSnapshot,
   AgyPendingDemand,
   AgyManagementSelectionContext,
+  AgyQuotaTrigger,
+  WindowKind,
 } from "../../contracts/src/agy-account.js";
+import { AGY_MODEL_POOL_IDS } from "./quota-ranking.js";
 import type { AgyAccountRepository } from "./repository.js";
 import type {
   AuthHostPort,
@@ -157,6 +160,8 @@ export interface WorkflowAccountOperationRequest
   allowed_account_ids?: string[] | null;
   night_pool?: "normal" | "strict";
   required_model_ids?: string[];
+  quota_trigger?: AgyQuotaTrigger;
+  quota_window?: WindowKind | "unknown";
 }
 
 export interface WorkflowWaitReference {
@@ -193,6 +198,7 @@ export class AgyAccountService {
   private automationRealms = new Set<string>();
   private workflowWaitValidator?: (ref: WorkflowWaitReference) => boolean;
   private workflowWaitDiscarded?: (ref: WorkflowWaitReference) => void;
+  private lastActiveQuotaProbe = new Map<string, number>();
 
   setWorkflowWaitValidator(
     validator: ((ref: WorkflowWaitReference) => boolean) | undefined,
@@ -307,7 +313,8 @@ export class AgyAccountService {
   }
 
   getActiveCategory(realmId = "default-agy-realm", excludeConsumerId?: string): {
-    category: AgyModelCategory | "unknown" | null;
+    category: AgyModelCategory | "mixed" | null;
+    categories: AgyModelCategory[];
     activePermits: AgyUsagePermit[];
   } {
     let activePermits = this.repository
@@ -317,23 +324,11 @@ export class AgyAccountService {
       activePermits = activePermits.filter((p) => p.consumer_id !== excludeConsumerId);
     }
     if (activePermits.length === 0) {
-      return { category: null, activePermits: [] };
+      return { category: null, categories: [], activePermits: [] };
     }
-    let category: AgyModelCategory | "unknown" | null = null;
-    for (const permit of activePermits) {
-      const cat = inferPermitCategory(permit);
-      if (cat === "unknown") {
-        category = "unknown";
-        break;
-      }
-      if (!category) {
-        category = cat;
-      } else if (category !== cat) {
-        category = "unknown";
-        break;
-      }
-    }
-    return { category, activePermits };
+    const categories = [...new Set(activePermits.map(inferPermitCategory))].sort();
+    const category = categories.includes("unknown") ? "unknown" : categories.length > 1 ? "mixed" : categories[0]!;
+    return { category, categories, activePermits };
   }
 
   private deduplicate<T>(
@@ -532,16 +527,18 @@ export class AgyAccountService {
 
   private managementSelectionContext(realmId: string, modelId?: string | null): AgyManagementSelectionContext {
     const active = this.getActiveCategory(realmId);
-    const model = active.activePermits.length
+    const model = active.category === "mixed" ? null : active.activePermits.length
       ? active.activePermits.find(permit => permit.model_id)?.model_id ?? null
       : modelId ?? this.repository.getSettings(realmId)?.standalone_model_id ?? null;
     const category = active.activePermits.length ? active.category : model ? getAgyModelCategory(model) : null;
     return {
       model_id: model,
       category,
+      categories: active.activePermits.length ? active.categories : category ? [category as AgyModelCategory] : [],
       source: active.activePermits.length ? "active_category" : model ? "standalone_model" : "none",
       required_pool_ids: category === "gemini" ? ["Gemini Models", "global"] :
-        category === "other" ? ["Claude and GPT models", "global"] : ["global"],
+        category === "other" ? ["Claude and GPT models", "global"] :
+          category === "mixed" ? [...AGY_MODEL_POOL_IDS, "global"] : ["global"],
     };
   }
 
@@ -570,10 +567,16 @@ export class AgyAccountService {
       ...account,
       state: resolveEffectiveAccountState(account, rawSnapshots, nowMs),
     }));
-    const activeCat = this.getActiveCategory(realmId).category;
+    const active = this.getActiveCategory(realmId);
+    const activeCat = active.category;
     const context = this.managementSelectionContext(realmId);
-    const pools = context.required_pool_ids;
+    const pending = realm?.pending_operation_id ? this.repository.getOperation(realm.pending_operation_id) : undefined;
+    const quotaTrigger = pending?.quota_trigger ?? (realm?.active_account_id
+      ? this.repository.getQuotaTrigger(realmId, realm.active_account_id, realm.auth_epoch) : undefined);
+    const pools = quotaTrigger && AGY_MODEL_POOL_IDS.includes(quotaTrigger.pool_id)
+      ? [...new Set([...context.required_pool_ids, ...AGY_MODEL_POOL_IDS])] : context.required_pool_ids;
     const selection = selectCandidates(accounts, rawSnapshots, pools, nowMs, {
+      quota_trigger: quotaTrigger,
       required_model_ids: context.source === "active_category"
         ? [...new Set(this.getActiveCategory(realmId).activePermits.flatMap(permit => permit.model_id ? [permit.model_id] : []))]
         : context.model_id ? [context.model_id] : [],
@@ -587,7 +590,9 @@ export class AgyAccountService {
       realm: publicRealm,
       settings,
       selection_context: context,
+      quota_trigger: quotaTrigger,
       active_category: activeCat,
+      active_categories: active.categories,
       candidates: selection.ranked_candidates,
       excluded_accounts: selection.excluded_accounts,
       next_eligible_at: selection.next_eligible_at,
@@ -1341,9 +1346,6 @@ export class AgyAccountService {
     const managed = this.isManaged(realmId);
     const initialEpoch = this.repository.getRealm(realmId)?.auth_epoch ?? 0;
     this.repository.transaction(() => {
-      const active = this.getActiveCategory(realmId).category;
-      if (active && active !== category)
-        throw new AccountServiceError("agy_category_conflict", 409, "当前 AGY 类别占用与目标模型不一致，请等待占用任务结束后核验");
       const realm = this.isManaged(realmId) ? this.repository.getRealm(realmId) : undefined;
       this.repository.savePermit({
         permit_id: permitId, realm_id: realmId, account_id: realm?.active_account_id ?? "unmanaged",
@@ -1415,19 +1417,6 @@ export class AgyAccountService {
         const category = getAgyModelCategory(input.model_id);
         if (category === "unknown") {
           throw new AccountServiceError("agy_model_unknown", 409, `无法确认模型 ${input.model_id} 的类别，禁止核验`);
-        }
-        const active = this.getActiveCategory(input.realm_id);
-        if (active.category === "unknown") {
-          throw new AccountServiceError("agy_category_conflict", 409, "当前存在未确认模型类别的 AGY 任务占用，禁止核验");
-        }
-        if (active.category && active.category !== category) {
-          const activeDesc = active.category === "gemini" ? "Gemini 类" : "其他模型类（Claude / GPT）";
-          const targetDesc = category === "gemini" ? "Gemini 类" : "其他模型类（Claude / GPT）";
-          throw new AccountServiceError(
-            "agy_category_conflict",
-            409,
-            `AGY 当前正被 ${activeDesc} 任务占用，无法同时核验 ${targetDesc} 模型。全部同时占用 AGY 的任务只能使用同一类别。`,
-          );
         }
       }
 
@@ -1573,6 +1562,13 @@ export class AgyAccountService {
           capability_verified: isQuotaPoolVerified(observed, pool), observed_at: this.clock.toISOString(), windows: pool.windows,
         }));
         for (const snapshot of snapshots) this.repository.saveQuotaSnapshot(snapshot);
+        const capture = await this.captureUsageCredential(input.realm_id, account);
+        this.saveCapture(input.realm_id, account.id, capture);
+        const capturedRealm = this.repository.getRealm(input.realm_id)!;
+        capturedRealm.active_secret_ref = capture.secret_ref;
+        capturedRealm.last_capture_at = this.clock.toISOString();
+        capturedRealm.revision++;
+        this.repository.saveRealm(capturedRealm);
         const exhausted = isOnlyQuotaExhaustion(evaluateAccountForDemand({ account, snapshots,
           policy: { required_pool_ids: input.required_pool_ids, required_model_ids: input.required_model_ids },
           evaluationTime: this.clock.now() }));
@@ -1628,18 +1624,6 @@ export class AgyAccountService {
         );
       }
 
-      const active = this.getActiveCategory(input.realm_id);
-      if (
-        active.category &&
-        requestedCategory !== "unknown" &&
-        active.category !== requestedCategory
-      ) {
-        const message =
-          active.category === "unknown"
-            ? "当前存在未释放的 AGY 任务占用，无法确认模型类别，禁止跨类启动"
-            : `全部同时占用 AGY 的任务只能使用同一类别：Gemini 类或其他模型类；当前已有任务正在占用 ${active.category === "gemini" ? "Gemini 类" : "其他模型类（Claude / GPT）"}，不能混用`;
-        throw new AccountServiceError("agy_category_conflict", 409, message);
-      }
     }
     let realm = this.repository.getRealm(input.realm_id);
     if (
@@ -1758,7 +1742,7 @@ export class AgyAccountService {
     }
 
     if (!evalOutput.eligible_for_permit) {
-      if (isOnlyQuotaExhaustion(evalOutput) && realm.active_secret_ref &&
+      if ((isOnlyQuotaExhaustion(evalOutput) || this.repository.getQuotaTrigger(input.realm_id, activeAccount.id, realm.auth_epoch)) && realm.active_secret_ref &&
           await this.authHost.compareActive(input.realm_id, realm.active_secret_ref)) {
         const current = this.repository.getRealm(input.realm_id);
         if (current?.active_account_id === activeAccount.id && current.auth_epoch === realm.auth_epoch &&
@@ -1995,6 +1979,28 @@ export class AgyAccountService {
       !this.consumers.length
     )
       throw new AccountServiceError("invalid_workflow_source", 400);
+    if (input.trigger === "workflow_quota") {
+      const realm = this.repository.getRealm(input.realm_id);
+      if (!realm || realm.auth_epoch !== input.expected_epoch) throw new AccountServiceError("epoch_conflict");
+      const pending = realm?.pending_operation_id ? this.repository.getOperation(realm.pending_operation_id) : undefined;
+      const original = input.original_operation_id ? this.repository.getOperation(input.original_operation_id) : undefined;
+      let trigger = pending?.before_auth_epoch === input.expected_epoch ? pending.quota_trigger : undefined;
+      trigger ??= original?.realm_id === input.realm_id ? original.quota_trigger : undefined;
+      trigger ??= realm?.active_account_id
+        ? this.repository.getQuotaTrigger(input.realm_id, realm.active_account_id, input.expected_epoch!) : undefined;
+      if (!trigger && input.quota_window && input.quota_window !== "unknown" && realm?.active_account_id) {
+        const model = input.model_id ?? input.required_model_ids?.[0];
+        const pools = this.resolveModelPools(model);
+        const mapped = this.repository.listQuotaSnapshots(input.realm_id, realm.active_account_id)
+          .filter(snapshot => model && modelCovered(snapshot.model_ids, model));
+        const poolId = pools.length === 1 ? pools[0] : mapped.length === 1 ? mapped[0]!.pool_id : undefined;
+        if (poolId) trigger = this.repository.recordQuotaTrigger(input.realm_id, {
+          account_id: realm.active_account_id, auth_epoch: input.expected_epoch!, pool_id: poolId,
+          window: input.quota_window, observed_at: this.clock.toISOString(), source: "current_turn",
+        });
+      }
+      input = { ...input, quota_trigger: trigger };
+    }
     return this.acceptOperation(input, input);
   }
 
@@ -2080,10 +2086,9 @@ export class AgyAccountService {
       input,
       () => {
         if (input.kind === "switch" && !trusted && input.model_id) {
-          const active = this.getActiveCategory(input.realm_id).category;
           const target = getAgyModelCategory(input.model_id);
-          if (target === "unknown" || active && active !== target)
-            throw new AccountServiceError("agy_category_conflict", 409, "目标模型与当前 AGY 类别占用不一致，现有任务已保留");
+          if (target === "unknown")
+            throw new AccountServiceError("agy_model_unknown", 409, "目标模型的配额池尚未确认，现有任务已保留");
         }
         const isManualOneShot =
           input.kind === "enroll" ||
@@ -2292,6 +2297,7 @@ export class AgyAccountService {
                 1000,
           ).toISOString(),
           required_pool_ids: pools,
+          quota_trigger: trusted?.quota_trigger,
           required_model_ids: [
             ...new Set([
               ...(model ? [model] : []),
@@ -2408,6 +2414,30 @@ export class AgyAccountService {
     }
   }
 
+  private async monitorActiveQuota(realmId: string, now: number): Promise<void> {
+    const active = this.repository.listPermits(realmId).filter(permit =>
+      permit.usage_kind === "execution" && permit.status === "started");
+    const listeners = this.consumers.filter(consumer => consumer.onQuotaExhausted);
+    if (!active.length || !listeners.length) return;
+    for (const consumer of this.consumers)
+      if (consumer.allowsAutoSwitch && !await consumer.allowsAutoSwitch()) return;
+    let realm = this.repository.getRealm(realmId);
+    if (!realm?.active_account_id || realm.pending_operation_id || realm.phase !== "idle" ||
+        realm.service_state !== "running" || !realm.desired_enabled) return;
+    if (now - (this.lastActiveQuotaProbe.get(realmId) ?? 0) >= 60_000) {
+      this.lastActiveQuotaProbe.set(realmId, now);
+      // The verifier checks active identity and serializes only a read/capture;
+      // it does not activate another account or probe the rest of the pool.
+      await this.verifyActiveQuotaExhausted({ realm_id: realmId, account_id: realm.active_account_id,
+        auth_epoch: realm.auth_epoch, required_pool_ids: AGY_MODEL_POOL_IDS,
+        required_model_ids: active.flatMap(permit => permit.model_id ? [permit.model_id] : []) });
+    }
+    realm = this.repository.getRealm(realmId);
+    if (!realm?.active_account_id || realm.pending_operation_id || realm.phase !== "idle") return;
+    const trigger = this.repository.getQuotaTrigger(realmId, realm.active_account_id, realm.auth_epoch);
+    if (trigger) for (const consumer of listeners) await consumer.onQuotaExhausted!(trigger);
+  }
+
   // 定时驱动 tick（5 秒调用一次，无任务无网络请求）
   async tick(now: number): Promise<void> {
     if (this.closing || this.isTicking) return;
@@ -2458,6 +2488,11 @@ export class AgyAccountService {
           ))
             await this.processHost.stopProcess(process.pid, "account_switch");
           continue;
+        }
+        if (realm.service_state === "running" && realm.phase === "idle" && !realm.pending_operation_id) {
+          await this.monitorActiveQuota(realm.realm_id, now);
+          // Monitoring can atomically admit one switch. Use its latest state.
+          Object.assign(realm, this.repository.getRealm(realm.realm_id));
         }
         if (realm.pending_operation_id) {
           const operation = this.repository.getOperation(
@@ -2561,6 +2596,8 @@ export class AgyAccountService {
                   allowed_account_ids: dueDemand.allowed_account_ids,
                   night_pool: dueDemand.night_pool,
                   required_model_ids: dueDemand.required_model_keys,
+                  quota_trigger: dueDemand.quota_trigger,
+                  quota_window: dueDemand.quota_trigger?.window,
                   expected_epoch: current.auth_epoch,
                 });
               } catch (err) {
@@ -2762,6 +2799,8 @@ export class AgyAccountService {
                 source_epoch: this.repository.getRealm(op.realm_id)!.auth_epoch,
                 control_generation: op.control_generation,
                 reason: "no_eligible_account",
+                quota_trigger: op.quota_trigger,
+                blocked_window: op.quota_trigger?.window,
                 created_at: this.clock.toISOString(),
               });
               this.saveStep(op, "waiting");
@@ -2815,12 +2854,13 @@ export class AgyAccountService {
         }
         await this.rollbackOperation(op);
         if (
-          op.error === "network_wait" &&
+          ["network_wait", "candidate_selection_incomplete", "quota_trigger_unconfirmed", "automatic_switch_policy_conflict"].includes(op.error) &&
           op.trigger.startsWith("workflow") &&
           !op.cancel_requested
         ) {
-          await this.enterDomainWait(op.realm_id, op, "network_wait", {
-            next_eligible_at: new Date(this.clock.now() + 60_000).toISOString(),
+          await this.enterDomainWait(op.realm_id, op, op.error, {
+            next_eligible_at: ["quota_trigger_unconfirmed", "automatic_switch_policy_conflict"].includes(op.error)
+              ? null : new Date(this.clock.now() + 60_000).toISOString(),
           });
           return;
         }
@@ -2944,6 +2984,7 @@ export class AgyAccountService {
       settings_revision: 1,
       control_generation: op.control_generation,
       required_model_keys: op.required_model_ids,
+      quota_trigger: op.quota_trigger,
       required_pool_ids: op.required_pool_ids,
       allowed_account_ids: op.allowed_account_ids,
       night_pool: op.night_pool,
@@ -2960,6 +3001,8 @@ export class AgyAccountService {
       control_generation: op.control_generation,
       next_eligible_at: waitResult.next_eligible_at,
       reason,
+      quota_trigger: op.quota_trigger,
+      blocked_window: op.quota_trigger?.window,
       created_at: this.clock.toISOString(),
     });
 

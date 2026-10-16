@@ -11,6 +11,7 @@ import type {
   AgyRunBinding,
   AgyAccountPolicy,
   AgyUsagePermit,
+  AgyQuotaTrigger,
 } from "../../contracts/src/agy-account.js";
 import type { AgyFailureFact } from "../../adapters/agy/src/failure-fact.js";
 import type { ProcessManager } from "../../process/src/manager.js";
@@ -235,16 +236,6 @@ export class AgyWorkflowBridge implements AccountConsumerPort {
     }
 
     if (!this.isManaged()) {
-      const active = this.accountService.getActiveCategory("default-agy-realm");
-      if (active.category && active.category !== category) {
-        const activeDesc = active.category === "gemini" ? "Gemini 类" : "其他模型类（Claude / GPT）";
-        const targetDesc = category === "gemini" ? "Gemini 类" : "其他模型类（Claude / GPT）";
-        throw new FlowError(
-          "AGY_CATEGORY_CONFLICT",
-          `全部同时占用 AGY 的任务只能使用同一类别：Gemini 类或其他模型类；当前已有任务正在占用 ${activeDesc}，无法同时启动 ${targetDesc} 任务。`,
-          409,
-        );
-      }
       const permitId = `unmanaged_${randomUUID()}`;
       const permit: AgyUsagePermit = {
         permit_id: permitId,
@@ -343,9 +334,6 @@ export class AgyWorkflowBridge implements AccountConsumerPort {
       });
     } catch (error) {
       if (error instanceof FlowError) throw error;
-      if (error instanceof AccountServiceError && error.code === "agy_category_conflict") {
-        throw new FlowError("AGY_CATEGORY_CONFLICT", error.message, 409);
-      }
       const rawCode = (error as { code?: unknown } | null)?.code;
       const safeCode = typeof rawCode === "string" && /^[a-zA-Z][a-zA-Z0-9_]{0,79}$/.test(rawCode)
         ? rawCode
@@ -520,8 +508,6 @@ export class AgyWorkflowBridge implements AccountConsumerPort {
     }); } catch (error) {
       if (error instanceof AccountQuotaAdmissionError && await this.waitForAdmissionSwitch(req, error))
         throw new FlowError("AGY_ACCOUNT_WAIT", "当前账号额度不可用，等待切换后继续原任务", 409);
-      if (error instanceof AccountServiceError && error.code === "agy_category_conflict")
-        throw new FlowError("AGY_CATEGORY_CONFLICT", error.message, 409);
       throw error;
     }
     const repository = this.accountService.getRepository();
@@ -760,6 +746,16 @@ export class AgyWorkflowBridge implements AccountConsumerPort {
       }
     }
 
+    if (fact.category === "quota_exhausted" && (!fact.window || fact.window === "unknown") &&
+        !repository.getQuotaTrigger(binding.realm_id, binding.account_id, binding.auth_epoch) &&
+        !repository.getRealm(binding.realm_id)?.pending_operation_id) {
+      await this.accountService.verifyActiveQuotaExhausted({
+        realm_id: binding.realm_id, account_id: binding.account_id, auth_epoch: binding.auth_epoch,
+        required_pool_ids: runInfo.required_pool_ids,
+        required_model_ids: runInfo.effective_model_id ? [runInfo.effective_model_id] : [],
+      });
+    }
+
     // This verified current-turn auth failure will become AGY_ACCOUNT_WAIT;
     // invalidate its original identity before that code hides the auth error.
     if (this.engine && fact.category === "auth_invalid") {
@@ -783,6 +779,7 @@ export class AgyWorkflowBridge implements AccountConsumerPort {
         expected_epoch: binding.auth_epoch,
         required_pool_ids: runInfo.required_pool_ids,
         allowed_account_ids: policy.allowed_account_ids,
+        quota_window: fact.window,
         night_pool: policy.night_pool,
         trigger: fact.requires_reauth ? "workflow_auth" : "workflow_quota",
         source_event_key: `${binding.source_run_id}:${binding.auth_epoch}:${fact.source_offset}`,
@@ -799,6 +796,40 @@ export class AgyWorkflowBridge implements AccountConsumerPort {
   }
 
   // --- AccountConsumerPort 接口实现 ---
+
+  async allowsAutoSwitch(): Promise<boolean> {
+    const repository = this.accountService.getRepository();
+    const settings = repository.getSettings("default-agy-realm");
+    return this.liveActiveRuns().every(run => {
+      const policy = repository.getPolicy(run.workflow_id);
+      return Boolean(policy && policy.revision === run.account_policy_revision &&
+        (policy.auto_switch ?? settings?.workflow_auto_switch));
+    });
+  }
+
+  async onQuotaExhausted(trigger: AgyQuotaTrigger): Promise<void> {
+    if (!this.engine || !await this.allowsAutoSwitch()) return;
+    const repository = this.accountService.getRepository();
+    const realm = repository.getRealm("default-agy-realm");
+    if (realm?.active_account_id !== trigger.account_id || realm.auth_epoch !== trigger.auth_epoch || realm.pending_operation_id) return;
+    const runs = this.liveActiveRuns().filter(run => run.account_id === trigger.account_id && run.auth_epoch === trigger.auth_epoch &&
+      !this.engine!.store.get("run_stop", run.run_id));
+    const source = runs.find(run => run.required_pool_ids.includes(trigger.pool_id)) ?? runs[0];
+    if (!source) return;
+    const w = this.engine.get(source.workflow_id);
+    const run = this.engine.store.must<Run>("run", source.run_id);
+    if (["STOPPING", "STOPPED", "COMPLETED", "COMMITTED", "COMMIT_PARTIAL"].includes(w.state) ||
+        (run.purpose === "aside" ? this.asideForRun(w.id, run.id)?.status !== "active" : w.run_id !== run.id)) return;
+    const policy = repository.getPolicy(w.id)!;
+    await this.accountService.requestWorkflowOperation({
+      realm_id: realm.realm_id, request_id: `monitor_${trigger.account_id}_${trigger.auth_epoch}_${trigger.event_seq}`,
+      kind: "switch", trigger: "workflow_quota", source_event_key: `quota_${trigger.event_seq}`,
+      workflow_id: w.id, source_run_id: run.id, expected_epoch: trigger.auth_epoch,
+      model_id: source.effective_model_id, required_model_ids: source.effective_model_id ? [source.effective_model_id] : [],
+      required_pool_ids: source.required_pool_ids, allowed_account_ids: policy.allowed_account_ids,
+      night_pool: policy.night_pool, quota_trigger: trigger,
+    });
+  }
 
   private liveActiveRuns(): AccountRecoveryRun[] {
     for (const [id, run] of this.activeRuns) {

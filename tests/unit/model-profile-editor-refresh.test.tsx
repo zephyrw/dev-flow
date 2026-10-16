@@ -86,7 +86,7 @@ describe("model selector directory refresh", () => {
     ["agy", "gemini-3.8-flash-high", "Gemini 3.8 Flash"],
     ["agy", "gemini-3.8-flash-medium", "Gemini 3.8 Flash"],
     ["agy", "gemini-3.8-flash-low", "Gemini 3.8 Flash"],
-    ["agy", "claude-opus-5-5", "Claude Opus 5.5"],
+    ["agy", "claude-opus-4-6-thinking", "Claude Opus 4.6 Thinking"],
     ["codex", "gpt-6-astra", "GPT-6 Astra"],
     ["agy", "custom-model-high", "custom-model-high"],
   ] as const)("keeps %s %s readable before and after the catalog loads", async (adapterId, modelId, label) => {

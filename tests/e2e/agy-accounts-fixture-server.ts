@@ -63,7 +63,7 @@ fixture.probe.probeUsage = async (...args) => {
       },
       {
         pool_id: "Claude and GPT models",
-        model_ids: ["claude-opus-5-5", "claude-sonnet-5-5"],
+        model_ids: ["claude-opus-4-6-thinking", "claude-sonnet-4-6"],
         windows: [
           { kind: "weekly" as const, duration_minutes: 10080 as const, remaining_fraction: 0.75, reset_at: curReset, observed_at: curIso, status: "observed" as const },
           { kind: "five_hour" as const, duration_minutes: 300 as const, remaining_fraction: 0.6, reset_at: curReset, observed_at: curIso, status: "observed" as const },
@@ -100,7 +100,7 @@ for (const id of ["a", "b", "c"]) {
     account_id: id,
     auth_epoch: 1,
     pool_id: "Claude and GPT models",
-    model_ids: ["claude-opus-5-5", "claude-sonnet-5-5"],
+    model_ids: ["claude-opus-4-6-thinking", "claude-sonnet-4-6"],
     source: "official_cli_usage",
     cli_version: "1.2.7",
     parser_revision: 1,
@@ -321,7 +321,7 @@ app.route({
         account_id: id,
         auth_epoch: 1,
         pool_id: "Claude and GPT models",
-        model_ids: ["claude-opus-5-5", "claude-sonnet-5-5"],
+        model_ids: ["claude-opus-4-6-thinking", "claude-sonnet-4-6"],
         source: "official_cli_usage",
         cli_version: "1.2.7",
         parser_revision: 1,

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import {
   getAgyModelCategory,
   buildAgyCandidateEntry,
-  AGY_55_CANDIDATE_IDS,
+  AGY_CLAUDE_CANDIDATE_IDS,
 } from "../../packages/adapters/agy/src/model-configuration.js";
 import { formatModelName } from "../../packages/presentation/src/model-display.js";
 import { selectCandidates } from "../../packages/agy-accounts/src/selector.js";
@@ -15,21 +15,20 @@ import { AgyAccountService } from "../../packages/agy-accounts/src/service.js";
 import type { AgyAccount, AgyQuotaSnapshot } from "../../packages/contracts/src/agy-account.js";
 
 describe("AGY 类别并发与额度池单元测试 (U02, U03, U04)", () => {
-  describe("U02: 5.5 目录候补条目、token、未知思考强度与展示名兼容", () => {
+  describe("U02: 4.6 目录候补条目、token、未知思考强度与展示名兼容", () => {
     it("正确识别模型类别：Gemini 模型为 gemini，Claude/GPT 为 other", () => {
       expect(getAgyModelCategory("gemini-3.8-flash-high")).toBe("gemini");
       expect(getAgyModelCategory("gemini-3.7-flash")).toBe("gemini");
       expect(getAgyModelCategory("gemini-3.1-pro")).toBe("gemini");
-      expect(getAgyModelCategory("claude-opus-5-5")).toBe("other");
-      expect(getAgyModelCategory("claude-sonnet-5-5")).toBe("other");
+      expect(getAgyModelCategory("claude-opus-4-6-thinking")).toBe("other");
       expect(getAgyModelCategory("claude-sonnet-4-6")).toBe("other");
       expect(getAgyModelCategory("gpt-oss-120b-medium")).toBe("other");
       expect(getAgyModelCategory(null)).toBe("unknown");
       expect(getAgyModelCategory("unknown-custom-model")).toBe("unknown");
     });
 
-    it("5.5 候补条目思考强度标记为 unknown，不臆造强度，标记为 candidate", () => {
-      for (const modelId of AGY_55_CANDIDATE_IDS) {
+    it("4.6 候补条目思考强度标记为 unknown，不臆造强度，标记为 candidate", () => {
+      for (const modelId of AGY_CLAUDE_CANDIDATE_IDS) {
         const candidate = buildAgyCandidateEntry(modelId);
         expect(candidate.nativeId).toBe(modelId);
         expect(candidate.availability).toBe("candidate");
@@ -38,9 +37,9 @@ describe("AGY 类别并发与额度池单元测试 (U02, U03, U04)", () => {
       }
     });
 
-    it("展示名称正确格式化为 Claude Opus 5.5 与 Claude Sonnet 5.5", () => {
-      expect(formatModelName("agy", "claude-opus-5-5")).toBe("Claude Opus 5.5");
-      expect(formatModelName("agy", "claude-sonnet-5-5")).toBe("Claude Sonnet 5.5");
+    it("展示名称正确格式化为 Claude Opus 4.6 Thinking 与 Claude Sonnet 4.6", () => {
+      expect(formatModelName("agy", "claude-opus-4-6-thinking")).toBe("Claude Opus 4.6 Thinking");
+      expect(formatModelName("agy", "claude-sonnet-4-6")).toBe("Claude Sonnet 4.6");
     });
   });
 
@@ -101,7 +100,7 @@ describe("AGY 类别并发与额度池单元测试 (U02, U03, U04)", () => {
         auth_epoch: 1,
         realm_id: "default-agy-realm",
         pool_id: "Claude and GPT models",
-        model_ids: ["claude-opus-5-5", "claude-sonnet-5-5"],
+        model_ids: ["claude-opus-4-6-thinking", "claude-sonnet-4-6"],
         source: "official_cli_usage",
         cli_version: "1.2.7",
         parser_revision: 1,
@@ -161,7 +160,7 @@ describe("AGY 类别并发与额度池单元测试 (U02, U03, U04)", () => {
         auth_epoch: 1,
         realm_id: "default-agy-realm",
         pool_id: "Claude and GPT models",
-        model_ids: ["claude-opus-5-5", "claude-sonnet-5-5"],
+        model_ids: ["claude-opus-4-6-thinking", "claude-sonnet-4-6"],
         source: "official_cli_usage",
         cli_version: "1.2.7",
         parser_revision: 1,
@@ -189,7 +188,7 @@ describe("AGY 类别并发与额度池单元测试 (U02, U03, U04)", () => {
 
     it("请求 Claude 模型时按 Claude and GPT models 池余额排序，优选账号 A，不被 Gemini 0% 阻断", () => {
       const selection = selectCandidates([accountA, accountB], snapshots, ["Claude and GPT models"], nowMs, {
-        required_model_ids: ["claude-opus-5-5"],
+        required_model_ids: ["claude-opus-4-6-thinking"],
       });
       expect(selection.ranked_candidates.length).toBe(2);
       expect(selection.ranked_candidates[0]!.account_id).toBe("acc-a");
@@ -205,7 +204,7 @@ describe("AGY 类别并发与额度池单元测试 (U02, U03, U04)", () => {
     });
   });
 
-  describe("U04: 类别占用原子竞争、同类并发与跨类互斥", () => {
+  describe("U04: 独立许可、同类与跨类并发", () => {
     let tmpDir: string;
     let store: Store;
     let repo: AgyAccountRepository;
@@ -314,7 +313,7 @@ describe("AGY 类别并发与额度池单元测试 (U02, U03, U04)", () => {
         account_id: "acc-1",
         auth_epoch: 1,
         pool_id: "Claude and GPT models",
-        model_ids: ["claude-opus-5-5", "claude-sonnet-5-5"],
+        model_ids: ["claude-opus-4-6-thinking", "claude-sonnet-4-6"],
         source: "official_cli_usage",
         cli_version: "fixture",
         parser_revision: 1,
@@ -353,13 +352,13 @@ describe("AGY 类别并发与额度池单元测试 (U02, U03, U04)", () => {
       } catch {}
     });
 
-    it("同类模型（Opus 5.5 与 Sonnet 5.5）可以同时取得 permit 并发运行", async () => {
+    it("同类模型（Opus 4.6 Thinking 与 Sonnet 4.6）可以同时取得 permit 并发运行", async () => {
       const permit1 = await service.acquireUsagePermit({
         realm_id: "default-agy-realm",
         consumer_id: "run-1",
         usage_kind: "execution",
         required_pool_ids: ["Claude and GPT models"],
-        required_model_ids: ["claude-opus-5-5"],
+        required_model_ids: ["claude-opus-4-6-thinking"],
       });
       expect(permit1.permit_id).toBeDefined();
       expect(service.getActiveCategory("default-agy-realm").category).toBe("other");
@@ -369,46 +368,37 @@ describe("AGY 类别并发与额度池单元测试 (U02, U03, U04)", () => {
         consumer_id: "run-2",
         usage_kind: "execution",
         required_pool_ids: ["Claude and GPT models"],
-        required_model_ids: ["claude-sonnet-5-5"],
+        required_model_ids: ["claude-sonnet-4-6"],
       });
       expect(permit2.permit_id).toBeDefined();
       expect(service.getActiveCategory("default-agy-realm").category).toBe("other");
     });
 
-    it("跨类模型（已占用 other 时请求 Gemini）被原子拒绝并给出明确冲突提示", async () => {
+    it("Gemini 与 Claude 同时取得独立许可，释放一类不会释放另一类", async () => {
       const permit1 = await service.acquireUsagePermit({
         realm_id: "default-agy-realm",
         consumer_id: "run-opus",
         usage_kind: "execution",
         required_pool_ids: ["Claude and GPT models"],
-        required_model_ids: ["claude-opus-5-5"],
+        required_model_ids: ["claude-opus-4-6-thinking"],
       });
       expect(permit1.permit_id).toBeDefined();
 
-      await expect(
-        service.acquireUsagePermit({
+      const permitGemini = await service.acquireUsagePermit({
           realm_id: "default-agy-realm",
           consumer_id: "run-gemini",
           usage_kind: "execution",
           required_pool_ids: ["Gemini Models"],
           required_model_ids: ["gemini-3.8-flash"],
-        })
-      ).rejects.toThrow(/当前已有任务正在占用 其他模型类/);
+        });
+      expect(service.getActiveCategory("default-agy-realm")).toMatchObject({ category: "mixed", categories: ["gemini", "other"] });
 
-      // 释放任务后，类别占用解除，Gemini 申请成功放行
+      // 原 Claude 任务释放后，Gemini 的许可及模型仍保留。
       await service.releaseUsagePermit(permit1.permit_id, {
         permit_id: permit1.permit_id,
         success: true,
       });
-      expect(service.getActiveCategory("default-agy-realm").category).toBe(null);
-
-      const permitGemini = await service.acquireUsagePermit({
-        realm_id: "default-agy-realm",
-        consumer_id: "run-gemini",
-        usage_kind: "execution",
-        required_pool_ids: ["Gemini Models"],
-        required_model_ids: ["gemini-3.8-flash"],
-      });
+      expect(service.getActiveCategory("default-agy-realm").activePermits.map(p => p.permit_id)).toEqual([permitGemini.permit_id]);
       expect(permitGemini.permit_id).toBeDefined();
       expect(service.getActiveCategory("default-agy-realm").category).toBe("gemini");
     });

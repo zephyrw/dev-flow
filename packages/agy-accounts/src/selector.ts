@@ -3,7 +3,9 @@ import type {
   AgyAccount,
   AgyQuotaSnapshot,
   QuotaWindow,
+  AgyQuotaTrigger,
 } from "../../contracts/src/agy-account.js";
+import { compareQuotaRanks, quotaRankingWindows } from "./quota-ranking.js";
 
 export interface CandidateEvaluation {
   account_id: string;
@@ -32,7 +34,9 @@ export interface SelectionPolicy {
   refresh_verified_max_age_hours?: number;
   night_end_at?: number;
   required_model_ids?: string[];
-  active_category?: "gemini" | "other" | "unknown" | null;
+  active_category?: "gemini" | "other" | "mixed" | "unknown" | null;
+  quota_trigger?: AgyQuotaTrigger;
+  snapshot_max_age_ms?: number;
   cooldown_until?: number;
   retry_after_until?: number;
 }
@@ -43,7 +47,9 @@ export interface AccountEvaluationInput {
   policy: {
     required_pool_ids: string[];
     required_model_ids?: string[];
-    active_category?: "gemini" | "other" | "unknown" | null;
+    active_category?: "gemini" | "other" | "mixed" | "unknown" | null;
+    quota_trigger?: AgyQuotaTrigger;
+    snapshot_max_age_ms?: number;
     allowed_account_ids?: string[] | null;
     night_pool?: "normal" | "strict";
     is_night?: boolean;
@@ -144,6 +150,7 @@ export function evaluateAccountForDemand(
   let hasZeroWindowUnreset = false;
   let hasZeroWindowProjected = false;
   let isProjectedExpiredOrZero = false;
+  let needsFreshProbe = false;
 
   const demandedPools = requiredQuotaPools(
     [...poolSnaps.values()],
@@ -154,6 +161,8 @@ export function evaluateAccountForDemand(
   if (policy.active_category === "unknown") excluded_reasons.push("model_category_unknown");
   if (!demandedPools) excluded_reasons.push("missing_required_quota_pools");
   for (const snap of demandedPools ?? []) {
+    if (policy.snapshot_max_age_ms !== undefined &&
+        evaluationTime - Date.parse(snap.observed_at) > policy.snapshot_max_age_ms) needsFreshProbe = true;
     if (!snap || snap.capability_verified === false ||
         !hasDualQuotaWindows(snap.windows) || !Number.isFinite(Date.parse(snap.observed_at)) ||
         Date.parse(snap.observed_at) > evaluationTime + clockSkewMs) {
@@ -249,12 +258,15 @@ export function evaluateAccountForDemand(
     ? Math.max(...blockingTimes)
     : null;
 
+  const probeable = policy.quota_trigger && excluded_reasons.length > 0 && excluded_reasons.every(reason =>
+    ["missing_required_quota_pools", "quota_exhausted_unknown_window", "five_hour_exhausted_unknown_reset",
+      "weekly_exhausted_unknown_reset"].includes(reason));
   const hasHardExclusion = excluded_reasons.length > 0;
   let eligible_for_permit = false;
   let eligible_for_candidate = false;
 
   if (!hasHardExclusion && !hasZeroWindowUnreset) {
-    if (hasZeroWindowProjected || isProjectedExpiredOrZero) {
+    if (hasZeroWindowProjected || isProjectedExpiredOrZero || needsFreshProbe) {
       // 实测为 0 或到期重置：不能直接发业务许可，但允许作为候选进入串行核验
       eligible_for_permit = false;
       eligible_for_candidate = true;
@@ -263,6 +275,8 @@ export function evaluateAccountForDemand(
       eligible_for_candidate = true;
     }
   }
+
+  if (probeable && !hasZeroWindowUnreset) eligible_for_candidate = true;
 
   if (hasZeroWindowUnreset && !hasHardExclusion) {
     excluded_reasons.push("quota_exhausted_not_reset");
@@ -512,6 +526,8 @@ export function selectCandidates(
         required_pool_ids: requiredPoolIds,
         required_model_ids: policy.required_model_ids,
         active_category: policy.active_category,
+        quota_trigger: policy.quota_trigger,
+        snapshot_max_age_ms: policy.snapshot_max_age_ms,
         allowed_account_ids: policy.allowed_account_ids,
         night_pool: policy.night_pool,
         is_night: policy.is_night,
@@ -525,12 +541,20 @@ export function selectCandidates(
     });
 
     if (evalRes.eligible_for_candidate) {
+      const accountSnapshots = snapshots.filter(snapshot => snapshot.account_id === acc.id)
+        .sort((a, b) => Date.parse(b.observed_at) - Date.parse(a.observed_at));
+      const latest = [...new Map(accountSnapshots.slice().reverse().map(snapshot => [snapshot.pool_id, snapshot])).values()];
+      const score = policy.quota_trigger ? quotaRankingWindows(latest, policy.quota_trigger) : undefined;
+      // Unknown/stale candidates can still beat the current leader. Probe them
+      // before claiming the maximum, and never use this bound to grant permits.
+      const pendingProbe = policy.quota_trigger && (!evalRes.eligible_for_permit || latest.some(snapshot =>
+        policy.snapshot_max_age_ms !== undefined && now - Date.parse(snapshot.observed_at) > policy.snapshot_max_age_ms));
       ranked.push({
         account_id: acc.id,
         alias: acc.alias,
-        projected_weekly: evalRes.projected_weekly,
+        projected_weekly: pendingProbe ? 1 : score?.weekly ?? evalRes.projected_weekly,
         is_projected_reset: evalRes.is_projected_reset,
-        min_five_hour: evalRes.min_five_hour,
+        min_five_hour: pendingProbe ? 1 : score?.five_hour ?? evalRes.min_five_hour,
         last_used_at: acc.last_used_at,
         enrolled_at: acc.enrolled_at,
       });
@@ -556,32 +580,11 @@ export function selectCandidates(
       if (b.account_id === policy.current_active_account_id) return 1;
     }
 
-    // 周余额降序
-    if (b.projected_weekly !== a.projected_weekly) {
-      return b.projected_weekly - a.projected_weekly;
-    }
-
-    // 周余额相同时，先选本轮五小时余额更多的账号，再用最近使用时间打平。
-    if (b.min_five_hour !== a.min_five_hour) {
-      return (b.min_five_hour ?? 0) - (a.min_five_hour ?? 0);
-    }
-
-    // 并列：last_used_at 更早（LRU，更久没用的优先）
-    const aUsed = parseTimeMs(a.last_used_at) ?? 0;
-    const bUsed = parseTimeMs(b.last_used_at) ?? 0;
-    if (aUsed !== bUsed) {
-      return aUsed - bUsed;
-    }
-
-    // 并列：enrolled_at 更早
-    const aEnrolled = parseTimeMs(a.enrolled_at) ?? 0;
-    const bEnrolled = parseTimeMs(b.enrolled_at) ?? 0;
-    if (aEnrolled !== bEnrolled) {
-      return aEnrolled - bEnrolled;
-    }
-
-    // 并列：account_id 字典序
-    return a.account_id.localeCompare(b.account_id);
+    return compareQuotaRanks(
+      { ...a, weekly: a.projected_weekly, five_hour: a.min_five_hour ?? 0 },
+      { ...b, weekly: b.projected_weekly, five_hour: b.min_five_hour ?? 0 },
+      policy.quota_trigger?.window,
+    );
   });
 
   const nextEligibleAt = eligibleTimestamps.length

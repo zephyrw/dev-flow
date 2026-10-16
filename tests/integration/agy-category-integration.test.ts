@@ -74,7 +74,7 @@ describe("AGY 分类并发与额度池集成测试 (I01, I02, I03, I04)", () => 
           },
           {
             pool_id: "Claude and GPT models",
-            model_ids: ["claude-opus-5-5", "claude-sonnet-5-5"],
+            model_ids: ["claude-opus-4-6-thinking", "claude-sonnet-4-6"],
             windows: [
               {
                 kind: "weekly" as const,
@@ -125,7 +125,7 @@ describe("AGY 分类并发与额度池集成测试 (I01, I02, I03, I04)", () => 
       account_id: accounts.active(),
       auth_epoch: 1,
       pool_id: "Claude and GPT models",
-      model_ids: ["claude-opus-5-5", "claude-sonnet-5-5"],
+      model_ids: ["claude-opus-4-6-thinking", "claude-sonnet-4-6"],
       source: "official_cli_usage",
       cli_version: "1.2.7",
       parser_revision: 1,
@@ -145,8 +145,8 @@ describe("AGY 分类并发与额度池集成测试 (I01, I02, I03, I04)", () => 
     } catch {}
   });
 
-  describe("I01: 配置保存、冻结模型与 permit 接线及混类直接拒绝 (409)", () => {
-    it("当 AGY 正被 other 类占用时，保存 Gemini 模型到 ExecutionSpec 会被拒绝抛出 409", async () => {
+  describe("I01: 配置保存、冻结模型与混合许可", () => {
+    it("已有 Claude 任务时可保存 Gemini，既有配置仍按版本更新", async () => {
       // 模拟当前被 other 任务占用
       const getActiveCategory = vi.fn().mockReturnValue("other");
       const specService = new ExecutionSpecService(s.store, undefined, getActiveCategory);
@@ -192,7 +192,7 @@ describe("AGY 分类并发与额度池集成测试 (I01, I02, I03, I04)", () => 
         adapterId: "agy",
         executableRef: "agy",
         modelSelection: "explicit",
-        modelId: "claude-opus-5-5",
+        modelId: "claude-opus-4-6-thinking",
         selectionKind: "fixed",
         options: {},
       };
@@ -211,9 +211,7 @@ describe("AGY 分类并发与额度池集成测试 (I01, I02, I03, I04)", () => 
       access.seedVerified(claudeProfile);
       access.seedVerified(codexProfile);
 
-      // 尝试保存 Gemini 配置 -> 拒绝
-      expect(() => {
-        specService.updateExecutionSpec({
+      const savedGemini = specService.updateExecutionSpec({
           request_id: "11111111-1111-4111-8111-111111111111",
           expected_spec_revision: 0,
           workflow_id: wf.id,
@@ -221,19 +219,19 @@ describe("AGY 分类并发与额度池集成测试 (I01, I02, I03, I04)", () => 
           executor_profile: geminiProfile,
           role_overrides: defaultOverrides,
         });
-      }).toThrowError(/AGY 当前正被 其他模型类（Claude \/ GPT） 任务占用/);
+      expect(savedGemini.status).toBe("committed");
 
       // 尝试保存同类 Claude 配置 -> 放行
       const saved = specService.updateExecutionSpec({
         request_id: "22222222-2222-4222-8222-222222222222",
-        expected_spec_revision: 0,
+        expected_spec_revision: savedGemini.entity_revision,
         workflow_id: wf.id,
         planner_profile: claudeProfile,
         executor_profile: claudeProfile,
         role_overrides: defaultOverrides,
       });
       expect(saved.status).toBe("committed");
-      expect(saved.entity_revision).toBe(1);
+      expect(saved.entity_revision).toBe(2);
 
       // 非 AGY 工具不受影响
       const savedCodex = specService.updateExecutionSpec({
@@ -245,31 +243,32 @@ describe("AGY 分类并发与额度池集成测试 (I01, I02, I03, I04)", () => 
         role_overrides: defaultOverrides,
       });
       expect(savedCodex.status).toBe("committed");
-      expect(savedCodex.entity_revision).toBe(2);
+      expect(savedCodex.entity_revision).toBe(3);
     });
 
-    it("直接使用 AgyWorkflowBridge.prepareRun 时，跨类申请 permit 被捕获并映射为 409 AGY_CATEGORY_CONFLICT", async () => {
+    it("运行桥接支持 Gemini 与 Claude 共用账号并分别保留模型", async () => {
       // 先申请一个 other 类 permit
       const permitOther = await accounts.service.acquireUsagePermit({
         realm_id: realmId,
         consumer_id: "run-other",
         usage_kind: "execution",
         required_pool_ids: ["Claude and GPT models"],
-        required_model_ids: ["claude-opus-5-5"],
+        required_model_ids: ["claude-opus-4-6-thinking"],
       });
       expect(permitOther.permit_id).toBeDefined();
 
       const bridge = new AgyWorkflowBridge(accounts.service, new ProcessManager());
 
-      await expect(
-        bridge.prepareRun({
+      const gemini = await bridge.prepareRun({
           workflow_id: "wf-bridge-test",
           run_id: "run-gemini-cross",
           effective_model_id: "gemini-3.8-flash",
           account_policy_revision: 1,
           required_pool_ids: ["Gemini Models"],
-        })
-      ).rejects.toThrowError(/全部同时占用 AGY 的任务只能使用同一类别/);
+        });
+      expect(accounts.service.getActiveCategory(realmId).category).toBe("mixed");
+      expect(accounts.repository.getPermit(gemini.permit_id)?.model_id).toBe("gemini-3.8-flash");
+      expect(accounts.repository.getPermit(permitOther.permit_id)?.model_id).toBe("claude-opus-4-6-thinking");
 
       // 释放后 Gemini 即可成功
       await accounts.service.releaseUsagePermit(permitOther.permit_id, {
@@ -277,14 +276,9 @@ describe("AGY 分类并发与额度池集成测试 (I01, I02, I03, I04)", () => 
         success: true,
       });
 
-      const binding = await bridge.prepareRun({
-        workflow_id: "wf-bridge-test",
-        run_id: "run-gemini-cross",
-        effective_model_id: "gemini-3.8-flash",
-        account_policy_revision: 1,
-        required_pool_ids: ["Gemini Models"],
-      });
-      expect(binding.permit_id).toBeDefined();
+      expect(accounts.service.getActiveCategory(realmId).category).toBe("gemini");
+      await bridge.releaseRun("run-gemini-cross", true);
+      bridge.dispose();
     });
   });
 
@@ -333,7 +327,7 @@ describe("AGY 分类并发与额度池集成测试 (I01, I02, I03, I04)", () => 
         consumer_id: "run-claude-ok",
         usage_kind: "execution",
         required_pool_ids: ["Claude and GPT models"],
-        required_model_ids: ["claude-opus-5-5"],
+        required_model_ids: ["claude-opus-4-6-thinking"],
       });
       expect(permitClaude.permit_id).toBeDefined();
       expect(accounts.service.getActiveCategory(realmId).category).toBe("other");
@@ -384,7 +378,7 @@ describe("AGY 分类并发与额度池集成测试 (I01, I02, I03, I04)", () => 
         consumer_id: "run-opus-1",
         usage_kind: "execution",
         required_pool_ids: ["Claude and GPT models"],
-        required_model_ids: ["claude-opus-5-5"],
+        required_model_ids: ["claude-opus-4-6-thinking"],
       });
 
       const p2 = await accounts.service.acquireUsagePermit({
@@ -392,7 +386,7 @@ describe("AGY 分类并发与额度池集成测试 (I01, I02, I03, I04)", () => 
         consumer_id: "run-sonnet-2",
         usage_kind: "execution",
         required_pool_ids: ["Claude and GPT models"],
-        required_model_ids: ["claude-sonnet-5-5"],
+        required_model_ids: ["claude-sonnet-4-6"],
       });
 
       const activeState = accounts.service.getActiveCategory(realmId);
@@ -410,16 +404,16 @@ describe("AGY 分类并发与额度池集成测试 (I01, I02, I03, I04)", () => 
       expect(stateAfterP1.category).toBe("other");
       expect(stateAfterP1.activePermits.length).toBe(1);
 
-      // 此时尝试 Gemini 仍然被拒绝
-      await expect(
-        accounts.service.acquireUsagePermit({
+      // 仍有 Sonnet 时也允许 Gemini，原许可不受影响。
+      const mixedGemini = await accounts.service.acquireUsagePermit({
           realm_id: realmId,
           consumer_id: "run-gemini-blocked",
           usage_kind: "execution",
           required_pool_ids: ["Gemini Models"],
           required_model_ids: ["gemini-3.8-flash"],
-        })
-      ).rejects.toThrowError(/当前已有任务正在占用 其他模型类/);
+        });
+      expect(accounts.service.getActiveCategory(realmId).category).toBe("mixed");
+      await accounts.service.releaseUsagePermit(mixedGemini.permit_id, { permit_id: mixedGemini.permit_id, success: true });
 
       // 释放最后一个任务（Sonnet）
       await accounts.service.releaseUsagePermit(p2.permit_id, {

@@ -8,6 +8,7 @@ import type {
   AgyDomainWait,
   AgyAccountAudit,
   QuotaWindow,
+  AgyQuotaTrigger,
   AgyAccountAuth,
 } from "../../contracts/src/agy-account.js";
 
@@ -163,6 +164,8 @@ export interface AccountCommittedEvent {
 }
 
 export interface AccountConsumerPort {
+  allowsAutoSwitch?(): Promise<boolean>;
+  onQuotaExhausted?(trigger: AgyQuotaTrigger): Promise<void>;
   listOccupancy(): Promise<ConsumerOccupancy[]>;
   prepareSwitch(operationId: string): Promise<{ savedRef: unknown }>;
   quiesce(operationId: string): Promise<void>;

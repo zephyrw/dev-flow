@@ -31,6 +31,11 @@ const FRIENDLY_ERRORS: Record<string, string> = {
   active_credential_missing: "未检测到本机已登录的 Antigravity 账号凭据，请先在客户端完成登录",
   account_identity_mismatch: "当前登录的账号与目标账号邮箱不一致",
   operation_in_progress: "当前已有另一项账号操作正在进行中，请稍候",
+  no_eligible_account: "暂无满足全部模型和配额要求的账号，任务进度已保留",
+  quota_trigger_unconfirmed: "尚未确认耗尽的模型池或配额窗口，任务已保留，等待额度核验",
+  automatic_switch_policy_conflict: "受影响任务中有任务关闭自动切换，已保留任务等待处理",
+  candidate_selection_incomplete: "候选账号核验尚未完成，已保留切换依据和任务，稍后重试",
+  network_wait: "官方额度查询暂不可用，已保留任务，稍后重试",
 };
 
 export function formatFriendlyError(raw: string): string {

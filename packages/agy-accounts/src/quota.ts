@@ -38,7 +38,7 @@ export function requiredQuotaPools<T extends { pool_id: string; model_ids: strin
   pools: T[],
   poolIds: string[],
   models: string[],
-  categoryContext?: "gemini" | "other" | "unknown" | null,
+  categoryContext?: "gemini" | "other" | "mixed" | "unknown" | null,
 ): T[] | null {
   if (new Set(pools.map((pool) => pool.pool_id)).size !== pools.length) return null;
   const selected = new Map<string, T>();
@@ -58,6 +58,9 @@ export function requiredQuotaPools<T extends { pool_id: string; model_ids: strin
     if (exact) selected.set(exact.pool_id, exact);
     if (id !== "global" || !models.length) {
       if (!exact && id !== "global") {
+        // A switch monitoring both categories must prove both pools. Keep the
+        // legacy exact-model mapping for single-pool demands and older CLI IDs.
+        if (poolIds.includes("Gemini Models") && poolIds.includes("Claude and GPT models")) return null;
         const covered = models.length > 0 && models.some((m) => pools.some((p) => modelCovered(p.model_ids, m)));
         if (!covered) return null;
       }
@@ -91,6 +94,12 @@ export function requiredQuotaPools<T extends { pool_id: string; model_ids: strin
         pools.find((p) => p.pool_id.toLowerCase() === "global" && p.model_ids.includes("*"));
       if (match) selected.set(match.pool_id, match);
       else return null;
+    } else if (categoryContext === "mixed") {
+      const gemini = pools.find(pool => pool.pool_id.toLowerCase().includes("gemini"));
+      const other = pools.find(pool => /claude|gpt/i.test(pool.pool_id));
+      if (!gemini || !other) return null;
+      selected.set(gemini.pool_id, gemini);
+      selected.set(other.pool_id, other);
     } else {
       // 无法确认可靠上下文时拒绝默认猜测
       return null;

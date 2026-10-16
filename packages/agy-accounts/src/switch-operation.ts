@@ -22,6 +22,7 @@ import {
   type SelectionResult,
 } from "./selector.js";
 import { computeDomainWait } from "./wait-policy.js";
+import { AGY_MODEL_POOL_IDS, compareQuotaRanks, quotaRankingWindows } from "./quota-ranking.js";
 
 export interface SwitchExecutionOptions {
   operationId: string;
@@ -159,10 +160,17 @@ export class SwitchOperationExecutor {
       await Promise.all(this.consumers.map((c) => c.listOccupancy()))
     ).flat();
     const occupiedModels = [...new Set(occupancy.flatMap(item => item.required_model_ids ?? []))];
-    const context = this.repository.getRecord<{ explicit_model_id: string | null }>("agy_switch_context", operation.operation_id);
-    if (context?.explicit_model_id && occupiedModels.some(model =>
-        getAgyModelCategory(model) === "unknown" || getAgyModelCategory(model) !== getAgyModelCategory(context.explicit_model_id)))
-      throw new Error("agy_category_conflict");
+    if (options.trigger.startsWith("workflow")) {
+      for (const consumer of this.consumers) {
+        if (consumer.allowsAutoSwitch && !await consumer.allowsAutoSwitch())
+          throw new Error("automatic_switch_policy_conflict");
+      }
+    }
+    if (options.trigger === "workflow_quota") {
+      operation.quota_trigger ??= operation.before_account_id && operation.before_auth_epoch
+        ? this.repository.getQuotaTrigger(options.realmId, operation.before_account_id, operation.before_auth_epoch) : undefined;
+      if (!operation.quota_trigger) throw new Error("quota_trigger_unconfirmed");
+    }
     if (
       occupancy.some((o) => !o.can_pause) ||
       (options.trigger.startsWith("manual") &&
@@ -193,6 +201,10 @@ export class SwitchOperationExecutor {
                 item.allowed_account_ids!.includes(id),
               );
     operation.required_pool_ids = options.requiredPoolIds;
+    if (operation.quota_trigger && AGY_MODEL_POOL_IDS.includes(operation.quota_trigger.pool_id)) {
+      options.requiredPoolIds = [...new Set([...options.requiredPoolIds, ...AGY_MODEL_POOL_IDS])];
+      operation.required_pool_ids = options.requiredPoolIds;
+    }
     operation.required_model_ids = [
       ...new Set([
         ...operation.required_model_ids,
@@ -206,6 +218,8 @@ export class SwitchOperationExecutor {
       operation.required_model_ids.length === 0;
     this.repository.saveOperation(operation);
     const selectionPolicy = {
+      quota_trigger: operation.quota_trigger,
+      snapshot_max_age_ms: settings.local_snapshot_stale_hours * 3600_000,
       required_model_ids: operation.required_model_ids,
       allowed_account_ids: operation.allowed_account_ids,
       reset_clock_skew_seconds: settings.reset_clock_skew_seconds,
@@ -401,6 +415,8 @@ export class SwitchOperationExecutor {
         options.requiredPoolIds,
         now,
         {
+          quota_trigger: operation.quota_trigger,
+          snapshot_max_age_ms: settings.local_snapshot_stale_hours * 3600_000,
           reset_clock_skew_seconds: settings.reset_clock_skew_seconds,
           current_active_account_id: beforeAccountId,
           required_model_ids: operation.required_model_ids,
@@ -432,6 +448,7 @@ export class SwitchOperationExecutor {
             next_eligible_at: waitEval.next_eligible_at,
             source_epoch: realm.auth_epoch,
             reason: waitEval.reason,
+            quota_trigger: operation.quota_trigger,
             created_at: this.clock.toISOString(),
           });
         }
@@ -649,18 +666,18 @@ export class SwitchOperationExecutor {
         targetAcc.state = probeRes.pools.some(pool => isQuotaPoolVerified(probeRes, pool)) ? "ready" : "pending_quota";
         targetAcc.revision++;
         this.repository.saveAccount(targetAcc);
-        throw new Error("quota_capability_unavailable");
+        if (options.selection.mode === "explicit") throw new Error("quota_capability_unavailable");
       }
-      const poolsToCheck = identityOnly ? probeRes.pools.filter(pool => isQuotaPoolVerified(probeRes!, pool)) : targetPools!;
+      const poolsToCheck = identityOnly ? probeRes.pools.filter(pool => isQuotaPoolVerified(probeRes!, pool)) : targetPools ?? [];
       const zero = poolsToCheck.some((p) =>
         p.windows.some(
           (w) => w.remaining_fraction === null || w.remaining_fraction <= 0,
         ),
       );
-      targetAcc.state = !poolsToCheck.length ? "pending_quota" : zero ? "waiting_quota" : "ready";
+      targetAcc.state = !complete && !identityOnly || !poolsToCheck.length ? "pending_quota" : zero ? "waiting_quota" : "ready";
       targetAcc.revision++;
       this.repository.saveAccount(targetAcc);
-      let accessible = identityOnly || !zero;
+      let accessible = identityOnly || (complete && !zero);
       const verifiedModelIds: string[] = [];
       if (accessible)
         for (const modelId of operation.required_model_ids) {
@@ -719,9 +736,7 @@ export class SwitchOperationExecutor {
           await this.pause(settings.switch_gap_seconds * 1000, options.signal);
           continue;
         }
-        const prior = operation.candidate_results.sort(
-          (a, b) => b.weekly - a.weekly,
-        )[0];
+        const prior = operation.candidate_results.sort((a, b) => compareQuotaRanks(a, b, operation.quota_trigger?.window))[0];
         if (
           prior &&
           candidateIndex < initialCandidateCount &&
@@ -733,20 +748,15 @@ export class SwitchOperationExecutor {
         }
         throw new Error("no_eligible_account");
       }
-      const weekly = poolsToCheck.length > 0
-        ? Math.min(
-            ...poolsToCheck.map(
-              (p) =>
-                p.windows.find((w) => w.kind === "weekly")?.remaining_fraction ?? 1,
-            ),
-          )
-        : 1;
+      const score = quotaRankingWindows(poolsToCheck, operation.quota_trigger);
       operation.candidate_results = operation.candidate_results.filter(
         (r) => r.account_id !== targetAcc.id,
       );
       operation.candidate_results.push({
         account_id: targetAcc.id,
-        weekly,
+        ...score,
+        last_used_at: targetAcc.last_used_at,
+        enrolled_at: targetAcc.enrolled_at,
         verified_at: this.clock.toISOString(),
         verified_model_ids: verifiedModelIds,
         credential_revision: targetAcc.credential_revision,
@@ -757,18 +767,18 @@ export class SwitchOperationExecutor {
         options.selection.mode === "auto" &&
         candidateIndex < initialCandidateCount
       ) {
-        const remainingBetter = initialSelection.ranked_candidates.some(
-          (c) =>
-            candidateIds.indexOf(c.account_id) > candidateIndex &&
-            c.projected_weekly > weekly,
-        );
+        const currentRank = { account_id: targetAcc.id, ...score, last_used_at: targetAcc.last_used_at, enrolled_at: targetAcc.enrolled_at };
+        const remainingBetter = initialSelection.ranked_candidates.some(c => {
+          if (candidateIds.slice(0, candidateIndex + 1).includes(c.account_id)) return false;
+          return compareQuotaRanks({ ...c, weekly: c.projected_weekly, five_hour: c.min_five_hour ?? 0 },
+            currentRank, operation.quota_trigger?.window) < 0;
+        });
         if (remainingBetter) {
+          if (candidateIndex + 1 >= initialCandidateCount) throw new Error("candidate_selection_incomplete");
           await this.pause(settings.switch_gap_seconds * 1000, options.signal);
           continue;
         }
-        const best = [...operation.candidate_results].sort(
-          (a, b) => b.weekly - a.weekly,
-        )[0]!;
+        const best = [...operation.candidate_results].sort((a, b) => compareQuotaRanks(a, b, operation.quota_trigger?.window))[0]!;
         if (best.account_id !== targetAcc.id) {
           if (this.clock.now() - Date.parse(best.verified_at) > 120_000)
             throw new Error("candidate_snapshot_expired");
@@ -815,6 +825,7 @@ export class SwitchOperationExecutor {
       });
 
       operation.phase = "committed";
+      operation.target_account_id = targetAcc.id;
       operation.result = {
         outcome: "switched",
         active_account_id: targetAcc.id,

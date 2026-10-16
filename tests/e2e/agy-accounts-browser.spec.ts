@@ -1,6 +1,21 @@
 import { test, expect } from "@playwright/test";
 
 test.describe("AGY 账号与周额度展示 E2E 测试", () => {
+  test("混用任务展示首个归零配额及等待原因", async ({ page }) => {
+    await page.route("**/api/agy-accounts/service", async route => {
+      const response = await route.fetch();
+      const body = await response.json();
+      body.operations = [{ operation_id: "mixed-quota-wait", phase: "waiting", kind: "switch",
+        error: "no_eligible_account", quota_trigger: { account_id: "a", auth_epoch: 1,
+          pool_id: "Claude and GPT models", window: "five_hour", observed_at: new Date().toISOString(),
+          event_seq: 1, source: "official_cli_usage" } }];
+      await route.fulfill({ response, json: body });
+    });
+    await page.goto("/");
+    await expect(page.locator(".agy-active-op-card")).toContainText("Claude/GPT五小时额度为 0");
+    await expect(page.locator(".agy-active-op-card")).toContainText("暂无满足全部模型和配额要求的账号");
+    await expect(page.locator(".agy-active-op-card")).toContainText("任务进度已保留");
+  });
   test.beforeEach(async ({ page }) => {
     // 注入标准测试场景数据：3 个已重置账号 (a, b, c) 和 1 个对照未来账号 (d)
     const res = await page.request.get("/api/account-fixture/setup-quota-scenarios");

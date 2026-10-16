@@ -43,6 +43,7 @@ function demand(id: string, overrides: Partial<WorkflowAccountOperationRequest> 
   return {
     realm_id: realmId, request_id: id, kind: "switch", selection: { mode: "auto" },
     trigger: "workflow_quota", source_event_key: `quota-${id}`,
+    quota_window: "weekly",
     workflow_id: `wf-${id}`, source_run_id: `run-${id}`,
     expected_epoch: f.repository.getRealm(realmId)!.auth_epoch,
     model_id: "fixture-model", required_model_ids: ["fixture-model"],
@@ -58,12 +59,12 @@ function usage(id: string) {
 it("manual auto selection uses the running Other demand instead of the standalone Gemini default", async () => {
   const settings = f.repository.getSettings(realmId)!;
   f.repository.saveSettings({ ...settings, revision: settings.revision + 1, standalone_model_id: "gemini-3.8-flash" });
-  const model = "claude-opus-5-5";
+  const model = "claude-opus-4-6-thinking";
   const realm = f.repository.getRealm(realmId)!;
   const source = f.repository.listQuotaSnapshots(realmId)[0]!;
   for (const id of ["a", "b"]) {
     for (const [pool_id, model_ids, remaining] of [
-      ["Gemini Models", ["gemini-3.8-flash"], id === "a" ? 0 : 0.9],
+      ["Gemini Models", ["gemini-3.8-flash"], id === "a" ? 0.1 : 0.9],
       ["Claude and GPT models", [model], id === "a" ? 0.8 : 0.2],
     ] as const) f.repository.saveQuotaSnapshot({
       ...source, id: `${id}-${pool_id.replaceAll(" ", "-")}`, account_id: id, auth_epoch: realm.auth_epoch,
@@ -85,15 +86,15 @@ it("manual auto selection uses the running Other demand instead of the standalon
   expect(consumer.quiesce).not.toHaveBeenCalled();
 });
 
-it("an explicit cross-category account-switch model is rejected before pausing consumers or queuing an operation", async () => {
+it("an explicit cross-category account-switch model is accepted without changing existing permits", async () => {
   const realm = f.repository.getRealm(realmId)!;
   f.repository.savePermit({ permit_id: "other-live", realm_id: realmId, account_id: "a", auth_epoch: realm.auth_epoch,
     consumer_id: "run-other", usage_kind: "execution", status: "started", issued_at: new Date().toISOString(),
-    required_pool_ids: ["Claude and GPT models"], allowed_account_ids: null, model_id: "claude-opus-5-5", model_category: "other" });
-  await expect(f.service.requestOperation({ realm_id: realmId, request_id: "cross-category-manual", kind: "switch",
-    selection: { mode: "explicit", account_id: "b" }, model_id: "gemini-3.8-flash" }))
-    .rejects.toMatchObject({ code: "agy_category_conflict" });
-  expect(f.repository.getRealm(realmId)?.pending_operation_id).toBeFalsy();
+    required_pool_ids: ["Claude and GPT models"], allowed_account_ids: null, model_id: "claude-opus-4-6-thinking", model_category: "other" });
+  const receipt = await f.service.requestOperation({ realm_id: realmId, request_id: "cross-category-manual", kind: "switch",
+    selection: { mode: "explicit", account_id: "b" }, model_id: "gemini-3.8-flash" });
+  expect(f.repository.getRealm(realmId)?.pending_operation_id).toBe(receipt.operation_id);
+  expect(f.repository.getPermit("other-live")?.model_id).toBe("claude-opus-4-6-thinking");
   expect(consumer.quiesce).not.toHaveBeenCalled();
 });
 

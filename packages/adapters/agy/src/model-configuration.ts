@@ -135,7 +135,7 @@ export function getAgyModelCategory(modelId?: string | null): AgyModelCategory {
   return "unknown";
 }
 
-export const AGY_55_CANDIDATE_IDS = ["claude-opus-5-5", "claude-sonnet-5-5"] as const;
+export const AGY_CLAUDE_CANDIDATE_IDS = ["claude-opus-4-6-thinking", "claude-sonnet-4-6"] as const;
 
 export function buildAgyCandidateEntry(nativeId: string, clock = new Date().toISOString()): ModelEntry {
   const providerId = providerFromSlug(nativeId) ?? "anthropic";

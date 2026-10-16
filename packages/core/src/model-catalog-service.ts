@@ -45,7 +45,7 @@ import {
 import {
   parseAgyModelCatalog,
   knownAgyEffortFor,
-  AGY_55_CANDIDATE_IDS,
+  AGY_CLAUDE_CANDIDATE_IDS,
   buildAgyCandidateEntry,
 } from "../../adapters/agy/src/model-configuration.js";
 import { parseCursorModelCatalog } from "../../adapters/cursor/src/model-configuration.js";
@@ -916,7 +916,7 @@ export class ModelCatalogService {
         // account/provider scope. discover() shares work across service instances.
         void this.discover(scope).catch(() => {});
       }
-      return this.enrichAgy55Candidates(freshCached);
+      return this.enrichAgyCandidates(freshCached);
     }
     try {
       const rawInput = adapterId === "claude-code" ? claudeCatalogStdout() : "";
@@ -934,7 +934,7 @@ export class ModelCatalogService {
         if (scope) {
           this.persistCatalog(scope, "seed", seedCatalog);
         }
-        return this.enrichAgy55Candidates(withFreshness(seedCatalog));
+        return this.enrichAgyCandidates(withFreshness(seedCatalog));
       }
     } catch {
       // ignore
@@ -1063,14 +1063,20 @@ export class ModelCatalogService {
     const parsed = ModelCatalogSchema.parse(raw);
     return withFreshness({
       ...parsed,
-      entries: parsed.entries.map(enrichManualEntry),
+      // Retire only the automatically injected, incorrect 5.5 suggestions.
+      // Explicit manual entries and frozen task/session selections remain intact.
+      entries: parsed.entries.filter((entry) => !(
+        parsed.adapterId === "agy" && entry.source === "manual" &&
+        ["claude-opus-5-5", "claude-sonnet-5-5"].includes(entry.nativeId) &&
+        entry.capabilityRevision === `${entry.nativeId}:candidate:unknown`
+      )).map(enrichManualEntry),
     });
   }
 
-  private enrichAgy55Candidates(catalog: ModelCatalog): ModelCatalog {
+  private enrichAgyCandidates(catalog: ModelCatalog): ModelCatalog {
     if (catalog.adapterId !== "agy") return catalog;
     const existingIds = new Set(catalog.entries.map((e) => e.nativeId));
-    const missingCandidates = AGY_55_CANDIDATE_IDS.filter((id) => !existingIds.has(id));
+    const missingCandidates = AGY_CLAUDE_CANDIDATE_IDS.filter((id) => !existingIds.has(id));
     if (missingCandidates.length === 0) return catalog;
     const additional = missingCandidates.map((id) => buildAgyCandidateEntry(id, catalog.discoveredAt));
     return ModelCatalogSchema.parse({
@@ -1082,7 +1088,7 @@ export class ModelCatalogService {
   loadForSelector(scope: CatalogScopeInput): ModelCatalog {
     const cached = this.readCached(scope);
     if (!cached) return missingCatalog(scope.adapterId, "missing");
-    return this.enrichAgy55Candidates(cached);
+    return this.enrichAgyCandidates(cached);
   }
 
   async scanTools(scopes: CatalogScopeInput[]): Promise<ToolSummary[]> {

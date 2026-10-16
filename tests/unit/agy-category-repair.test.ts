@@ -85,7 +85,7 @@ describe("AGY review regressions U03/U04/I03", () => {
 
   it("nonmanaged probes reserve a category until confirmed exit, including timeout settlement", async () => {
     let lifecycle!: ModelProbeLifecycle;
-    await service.withCategoryVerification(realmId, "claude-opus-5-5", async current => {
+    await service.withCategoryVerification(realmId, "claude-opus-4-6-thinking", async current => {
       lifecycle = current;
       current.started(456);
       return { timedOut: true };
@@ -93,8 +93,9 @@ describe("AGY review regressions U03/U04/I03", () => {
     expect(service.isManaged()).toBe(false);
     expect(service.getActiveCategory().category).toBe("other");
     const invoke = vi.fn();
-    await expect(service.withCategoryVerification(realmId, "gemini-3.8-flash", invoke)).rejects.toMatchObject({ code: "agy_category_conflict" });
-    expect(invoke).not.toHaveBeenCalled();
+    await service.withCategoryVerification(realmId, "gemini-3.8-flash", invoke);
+    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(service.getActiveCategory().activePermits).toHaveLength(1);
     lifecycle.stopped();
     expect(service.getActiveCategory().category).toBeNull();
   });
@@ -138,7 +139,7 @@ describe("AGY review regressions U03/U04/I03", () => {
   });
 
   it("management context includes the category alongside a real global constraint", () => {
-    const other = snapshot("Claude and GPT models", ["claude-opus-5-5"]);
+    const other = snapshot("Claude and GPT models", ["claude-opus-4-6-thinking"]);
     const global = snapshot("global", ["*"]);
     expect(requiredQuotaPools([global, other], ["global"], [], "other")?.map(p => p.pool_id))
       .toEqual(["global", "Claude and GPT models"]);
@@ -157,8 +158,8 @@ describe("AGY review regressions U03/U04/I03", () => {
     await bridge.releaseRun("run-a", false, "process_failed");
     expect(repository.getPermit(binding!.permit_id)?.status).toBe("started");
     expect(await bridge.listOccupancy()).toHaveLength(1);
-    await expect(service.withCategoryVerification(realmId, "claude-opus-5-5", async () => {}))
-      .rejects.toMatchObject({ code: "agy_category_conflict" });
+    await service.withCategoryVerification(realmId, "claude-opus-4-6-thinking", async () => {});
+    expect(repository.getPermit(binding!.permit_id)?.status).toBe("started");
     observe.mockResolvedValue({ state: "confirmed_exited" });
     await bridge.releaseRun("run-a", false, "process_failed");
     expect(repository.getPermit(binding!.permit_id)?.status).toBe("released");
@@ -186,7 +187,7 @@ describe("AGY review regressions U03/U04/I03", () => {
       started_at: observedAt, deadline_at: observedAt, retryable: false,
     });
     access.putAccess({ key: accessKey, status: "checking", checked_at: observedAt, adapterId: "agy",
-      cliFingerprint: "fixture", accountScope: "fixture", providerScope: "fixture", accessModelKey: "claude-opus-5-5",
+      cliFingerprint: "fixture", accountScope: "fixture", providerScope: "fixture", accessModelKey: "claude-opus-4-6-thinking",
       verification_method: "native-probe", identityConfidence: "account" });
     const stop = vi.fn<() => Promise<void>>()
       .mockRejectedValueOnce(new FlowError("PROCESS_STOP_UNCONFIRMED", "停止未确认", 409))
@@ -213,7 +214,7 @@ describe("AGY review regressions U03/U04/I03", () => {
   });
 
   it("an unrelated invalid pool does not exclude valid demanded quota on a legacy pending account", () => {
-    const other = snapshot("Claude and GPT models", ["claude-opus-5-5"]);
+    const other = snapshot("Claude and GPT models", ["claude-opus-4-6-thinking"]);
     const invalid = { ...snapshot("Gemini Models", ["gemini-3.8-flash"]), capability_verified: false };
     const selection = selectCandidates([account], [other, invalid], ["global"], nowMs, { active_category: "other" });
     expect(selection.ranked_candidates.map(candidate => candidate.account_id)).toEqual([account.id]);
@@ -224,27 +225,27 @@ describe("AGY review regressions U03/U04/I03", () => {
     vi.spyOn(Date, "now").mockReturnValue(nowMs);
     repository.saveRealm(AgyRealmSchema.parse({ realm_id: realmId, owner: "fixture", active_account_id: account.id, auth_epoch: 1 }));
     repository.saveQuotaSnapshot(snapshot("global", ["*"]));
-    repository.saveQuotaSnapshot(snapshot("Claude and GPT models", ["claude-opus-5-5"]));
+    repository.saveQuotaSnapshot(snapshot("Claude and GPT models", ["claude-opus-4-6-thinking"]));
     const bridge = new AgyWorkflowBridge(service, {} as ProcessManager);
     const bindings = (bridge as unknown as { activeRuns: Map<string, { account_id: string; auth_epoch: number }> }).activeRuns;
     bindings.set("run-a", { account_id: account.id, auth_epoch: 1 });
     const accountQuota = vi.fn();
-    let stop = bridge.observeAccountQuota("run-a", "claude-opus-5-5", { accountQuota } as unknown as RunTelemetry);
+    let stop = bridge.observeAccountQuota("run-a", "claude-opus-4-6-thinking", { accountQuota } as unknown as RunTelemetry);
     stop();
     const [buckets, sourceTime] = accountQuota.mock.calls[0]!;
     expect(buckets.map((bucket: { id: string }) => bucket.id)).toEqual(["Claude and GPT models"]);
     expect(buckets[0].windows[0].resets_at).toBe(Date.parse(windows[0]!.reset_at!) / 1000);
     expect(sourceTime).toBe(observedAt);
 
-    repository.saveQuotaSnapshot({ ...snapshot("Claude and GPT models", ["claude-opus-5-5"]), capability_verified: false });
+    repository.saveQuotaSnapshot({ ...snapshot("Claude and GPT models", ["claude-opus-4-6-thinking"]), capability_verified: false });
     accountQuota.mockClear();
-    stop = bridge.observeAccountQuota("run-a", "claude-opus-5-5", { accountQuota } as unknown as RunTelemetry);
+    stop = bridge.observeAccountQuota("run-a", "claude-opus-4-6-thinking", { accountQuota } as unknown as RunTelemetry);
     stop();
     expect(accountQuota.mock.calls[0]![0][0].windows).toEqual([]);
 
     bindings.set("run-a", { account_id: "unmanaged", auth_epoch: 1 });
     accountQuota.mockClear();
-    stop = bridge.observeAccountQuota("run-a", "claude-opus-5-5", { accountQuota } as unknown as RunTelemetry);
+    stop = bridge.observeAccountQuota("run-a", "claude-opus-4-6-thinking", { accountQuota } as unknown as RunTelemetry);
     stop();
     expect(accountQuota).not.toHaveBeenCalled();
   });
@@ -256,8 +257,8 @@ describe("AGY review regressions U03/U04/I03", () => {
     const bridge = new AgyWorkflowBridge(service, {} as ProcessManager);
     (bridge as unknown as { activeRuns: Map<string, unknown> }).activeRuns.set("run-a", { account_id: account.id, auth_epoch: 1 });
     const accountQuota = vi.fn();
-    bridge.observeAccountQuota("run-a", "claude-opus-5-5", { accountQuota } as unknown as RunTelemetry)();
-    expect(accountQuota.mock.calls[0]![0]).toEqual([{ id: "Claude and GPT models", model: "claude-opus-5-5", windows: [] }]);
+    bridge.observeAccountQuota("run-a", "claude-opus-4-6-thinking", { accountQuota } as unknown as RunTelemetry)();
+    expect(accountQuota.mock.calls[0]![0]).toEqual([{ id: "Claude and GPT models", model: "claude-opus-4-6-thinking", windows: [] }]);
     bridge.dispose();
   });
 });

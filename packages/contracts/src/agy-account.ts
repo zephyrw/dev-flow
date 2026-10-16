@@ -3,7 +3,8 @@ import { Id } from "./base.js";
 
 export interface AgyManagementSelectionContext {
   model_id: string | null;
-  category: "gemini" | "other" | "unknown" | null;
+  category: "gemini" | "other" | "mixed" | "unknown" | null;
+  categories?: AgyModelCategory[];
   source: "standalone_model" | "active_category" | "none";
   required_pool_ids: string[];
 }
@@ -20,6 +21,18 @@ export type AccountState = z.infer<typeof AccountStateSchema>;
 
 export const WindowKindSchema = z.enum(["five_hour", "weekly"]);
 export type WindowKind = z.infer<typeof WindowKindSchema>;
+
+/** Immutable first confirmed exhaustion for one authenticated account epoch. */
+export const AgyQuotaTriggerSchema = z.object({
+  account_id: Id,
+  auth_epoch: z.number().int().positive(),
+  pool_id: z.string().min(1),
+  window: WindowKindSchema,
+  observed_at: z.string().min(1),
+  event_seq: z.number().int().positive(),
+  source: z.enum(["official_cli_usage", "current_turn"]),
+});
+export type AgyQuotaTrigger = z.infer<typeof AgyQuotaTriggerSchema>;
 
 export const WindowStatusSchema = z.enum([
   "observed",
@@ -278,6 +291,7 @@ export const AgyAccountOperationSchema = z.object({
   attempted_account_ids: z.array(Id).default([]),
   required_pool_ids: z.array(z.string()).default([]),
   phase: z.string().default("pending"),
+  quota_trigger: AgyQuotaTriggerSchema.optional(),
   required_model_ids: z.array(z.string()).default([]),
   control_generation: z.number().int().nonnegative().default(0),
   request_id: z.string().min(1),
@@ -311,6 +325,9 @@ export const AgyAccountOperationSchema = z.object({
       z.object({
         account_id: Id,
         weekly: z.number(),
+        five_hour: z.number().optional(),
+        last_used_at: z.string().optional(),
+        enrolled_at: z.string().optional(),
         verified_at: z.string(),
         verified_model_ids: z.array(z.string()).default([]),
         credential_revision: z.number().int().nonnegative().optional(),
@@ -340,6 +357,7 @@ export type AgyAccountOperation = z.infer<typeof AgyAccountOperationSchema>;
 export const AgyDomainWaitSchema = z.object({
   realm_id: z.string().min(1),
   blocked_window: z.union([WindowKindSchema, z.literal("unknown")]).optional(),
+  quota_trigger: AgyQuotaTriggerSchema.optional(),
   next_eligible_at: z.string().min(1).nullable(),
   source_epoch: z.number().int().nonnegative(),
   target_workflow_version: z.number().int().optional(),
@@ -466,6 +484,7 @@ export const AgyPendingDemandSchema = z.object({
   settings_revision: z.number().int().nonnegative().default(1),
   control_generation: z.number().int().nonnegative().default(0),
   required_model_keys: z.array(z.string()).default([]),
+  quota_trigger: AgyQuotaTriggerSchema.optional(),
   required_pool_ids: z.array(z.string()).default([]),
   allowed_account_ids: z.array(Id).nullable().default(null),
   night_pool: z.enum(["normal", "strict"]).default("normal"),

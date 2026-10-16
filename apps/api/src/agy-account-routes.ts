@@ -61,6 +61,11 @@ export function publicAccountOperation(operation: AgyAccountOperation) {
           outcome: operation.result.outcome,
         }
       : undefined,
+    quota_trigger: operation.quota_trigger,
+    selected_quota: (() => {
+      const selected = operation.candidate_results.find(result => result.account_id === operation.target_account_id);
+      return selected ? { weekly: selected.weekly, five_hour: selected.five_hour } : undefined;
+    })(),
     external_processes: operation.external_processes,
     deadline_at: operation.deadline_at,
   };

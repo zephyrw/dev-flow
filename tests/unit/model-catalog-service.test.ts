@@ -13,6 +13,7 @@ import { FlowError } from "../../packages/contracts/src/index.js";
 import { selectionCapabilityFromCatalog } from "../../packages/adapters/sdk/src/frozen-invocation.js";
 import { resolveModelSelection } from "../../packages/adapters/sdk/src/model-selection.js";
 import * as modelIdentity from "../../packages/core/src/model-identity.js";
+import { buildAgyCandidateEntry } from "../../packages/adapters/agy/src/model-configuration.js";
 
 // Catalog tests exercise only the fixture CLI and a deterministic non-secret scope.
 vi.mock("../../packages/core/src/model-identity.js", () => ({
@@ -181,7 +182,40 @@ describe("model catalog operations", { timeout: 30000 }, () => {
     expect(env.catalog.listTools().find((tool) => tool.adapterId === "agy")?.probeStatus).toBe("detected");
     const models = env.catalog.getModels("agy");
     expect(models.status).toBe("fresh");
-    expect(models.entries.map((entry) => entry.nativeId)).toEqual(expect.arrayContaining(["claude-opus-5-5", "claude-sonnet-5-5"]));
+    expect(models.entries.map((entry) => entry.nativeId)).toEqual(expect.arrayContaining(["claude-opus-4-6-thinking", "claude-sonnet-4-6"]));
+    expect(models.entries.some((entry) => /claude-(opus|sonnet)-5-5/.test(entry.nativeId))).toBe(false);
+    expect(models.entries.find((entry) => entry.nativeId === "claude-sonnet-4-6")?.availability).toBe("listed");
+  });
+
+  it("replaces retired automatic 5.5 suggestions in cached selector output without rewriting saved records", async () => {
+    const env = openCatalog();
+    const scope = { adapterId: "agy" as const, executablePath: FIXTURE, nativeConfigScope: "default",
+      accountFingerprint: "test-account", providerFingerprint: "test-endpoint" };
+    const cached = await env.catalog.discover(scope);
+    const custom = env.catalog.ensureManualCandidate(scope, "custom-model");
+    const catalogId = "catalog:" + cached.scopeHash;
+    const saved = { ...cached, entries: [...cached.entries, custom,
+      buildAgyCandidateEntry("claude-opus-5-5"), buildAgyCandidateEntry("claude-sonnet-5-5")] };
+    env.store.put("model_catalog", catalogId, "agy", saved);
+    for (const catalog of [env.catalog.getModels("agy"), env.catalog.loadForSelector(scope)]) {
+      expect(catalog.entries.map(entry => entry.nativeId)).toEqual(expect.arrayContaining([
+        "claude-opus-4-6-thinking", "claude-sonnet-4-6", "custom-model",
+      ]));
+      expect(catalog.entries.some(entry => /claude-(opus|sonnet)-5-5/.test(entry.nativeId))).toBe(false);
+    }
+    expect(env.store.get("model_catalog", catalogId)).toEqual(saved);
+    const refreshed = await env.catalog.discover(scope);
+    expect(refreshed.entries.some(entry => /claude-(opus|sonnet)-5-5/.test(entry.nativeId))).toBe(false);
+    expect(refreshed.entries).toContainEqual(custom);
+  });
+
+  it("keeps native Opus and Sonnet 4.6 entries listed without duplicate candidates", async () => {
+    const env = openCatalog({ catalogStdout: "claude-opus-4-6-thinking\nclaude-sonnet-4-6\n" });
+    const operation = env.catalog.discoverTools({ request_id: randomUUID(), adapter_ids: ["agy"] });
+    await waitDone(env.catalog, operation.operation.id);
+    const entries = env.catalog.getModels("agy").entries;
+    expect(entries.map(entry => entry.nativeId)).toEqual(["claude-opus-4-6-thinking", "claude-sonnet-4-6"]);
+    expect(entries.every(entry => entry.source === "native-live" && entry.availability === "listed")).toBe(true);
   });
 
   it("手工 ID 登记 manual candidate，非法 ID 拒绝", () => {

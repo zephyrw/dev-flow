@@ -193,13 +193,11 @@ export class ExecutionSpecService {
   constructor(
     private store: Store,
     private config?: Config,
-    private getActiveCategory?: () => AgyModelCategory | "unknown" | null,
+    private getActiveCategory?: (excludeConsumerId?: string) => AgyModelCategory | "mixed" | "unknown" | null,
   ) {}
 
   private assertAgyCategoryConsistency(parsed: ParsedSpecWrite) {
     if (!this.getActiveCategory) return;
-    const activeCategory = this.getActiveCategory();
-    if (!activeCategory) return;
 
     const candidates = collectExplicitProfiles(
       parsed.planner_profile,
@@ -213,22 +211,6 @@ export class ExecutionSpecService {
           throw new FlowError(
             "AGY_MODEL_UNKNOWN",
             `无法确认模型 ${profile.modelId} 的类别，需先核验模型访问能力后方可保存使用。`,
-            409,
-          );
-        }
-        if (activeCategory === "unknown") {
-          throw new FlowError(
-            "AGY_CATEGORY_CONFLICT",
-            "当前存在未确认模型类别的 AGY 任务占用，无法核验类别互斥，禁止保存或启动新任务。请等待其结束或完成恢复核对。",
-            409,
-          );
-        }
-        if (targetCategory !== activeCategory) {
-          const activeDesc = activeCategory === "gemini" ? "Gemini 类" : "其他模型类（Claude / GPT）";
-          const targetDesc = targetCategory === "gemini" ? "Gemini 类" : "其他模型类（Claude / GPT）";
-          throw new FlowError(
-            "AGY_CATEGORY_CONFLICT",
-            `AGY 当前正被 ${activeDesc} 任务占用，无法保存并使用 ${targetDesc} 模型。全部同时占用 AGY 的任务只能使用同一类别。`,
             409,
           );
         }
