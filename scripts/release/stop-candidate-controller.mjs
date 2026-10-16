@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { spawnSync } from "node:child_process";
 const source = resolve(process.argv[2]);
 const install = resolve(process.argv[3]);
 const native = await (await import(pathToFileURL(join(source, "dist/packages/process/src/native/index.js")))).getNativeAsync();
@@ -19,20 +20,14 @@ async function stopOwnedController() {
   const current = native.getProcessCreationTime(owned.pid);
   if (current === null) return;
   assert.equal(String(current), owned.creation_time, "Controller PID was reused");
-  if (process.platform === "win32") {
-    // Anchor termination to a process handle; a recycled PID cannot redirect this action.
-    const handle = native.openProcess(owned.pid, 0x00101001);
-    if (!handle) return;
-    try {
-      assert.equal(String(native.getProcessCreationTime(owned.pid)), owned.creation_time);
-      const { default: koffi } = await import(pathToFileURL(join(source, "node_modules/koffi/index.js")));
-      const terminate = koffi.load("kernel32.dll").func("__stdcall", "TerminateProcess", "int", ["void *", "uint32"]);
-      assert(terminate(handle, 0), "Owned controller termination failed");
-    } finally { native.closeHandle(handle); }
-  } else {
-    assert.equal(String(native.getProcessCreationTime(owned.pid)), owned.creation_time);
-    process.kill(owned.pid, "SIGTERM");
-  }
+  // Exercise the same identity checks and graceful shutdown used by installed users.
+  const executable = join(install, "bootstrap/runtime", process.platform === "win32" ? "node.exe" : "node");
+  const entry = join(install, "bootstrap/entry.mjs");
+  const stopped = spawnSync(executable, [entry, "stop"], {
+    encoding: "utf8", windowsHide: true, timeout: 90000,
+  });
+  assert(!stopped.error, "Installed CLI stop failed: " + (stopped.error?.message ?? ""));
+  assert.equal(stopped.status, 0, stopped.stderr || stopped.stdout || "Installed CLI stop failed");
   for (let i = 0; i < 100; i++) {
     try {
       if (String(native.getProcessCreationTime(owned.pid)) !== owned.creation_time) return;

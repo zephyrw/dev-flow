@@ -1,8 +1,8 @@
 import { expect, it } from "vitest";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { acquireControllerLock } from "../../packages/process/src/controller-lock.js";
 import { getNativeAsync } from "../../packages/process/src/native/index.js";
@@ -17,7 +17,12 @@ async function unusedPort(): Promise<number> {
   return address.port;
 }
 
-it.each(["full", "accounts"] as const)("the %s controller records ownership before health succeeds and can immediately shut down", async mode => {
+it.each([
+  { mode: "full", stop: "api" },
+  { mode: "accounts", stop: "api" },
+  { mode: "full", stop: "cli" },
+  { mode: "accounts", stop: "cli" },
+] as const)("the $mode controller records ownership before health succeeds and can shut down through $stop", async ({ mode, stop }) => {
   const s = setup();
   s.store.close();
   const port = await unusedPort();
@@ -56,13 +61,41 @@ it.each(["full", "accounts"] as const)("the %s controller records ownership befo
     expect(descriptor).toMatchObject({ pid: child.pid, entry, mode, executable: process.execPath });
     const native = await getNativeAsync();
     expect(descriptor.creation_time).toBe(String(native.getProcessCreationTime(child.pid!)));
-    const response = await fetch(`http://127.0.0.1:${port}/api/maintenance/quiesce`, {
-      method: "POST",
-      headers: { origin, "content-type": "application/json", "sec-fetch-site": "same-origin" },
-      body: JSON.stringify({ shutdown: true, on_active_tasks: "pause-and-update", transaction_id: "startup-regression" }),
-      signal: AbortSignal.timeout(15000),
-    });
-    expect(response.status, await response.text()).toBe(200);
+    if (stop === "cli") {
+      const cli = resolve(process.env.DEVFLOW_BUILD_OUTDIR || "dist", "packages/cli/src/main.js");
+      const runStop = () => spawnSync(process.execPath, [cli, "stop"], {
+        windowsHide: true,
+        encoding: "utf8",
+        timeout: 30000,
+        env: {
+          ...process.env,
+          DEVFLOW_CONFIG: config,
+          DEVFLOW_INSTALL_ROOT: s.root,
+          DEVFLOW_VERSION_ROOT: resolve(dirname(entry), "../../../.."),
+        },
+      });
+      const record = join(s.config.storage_root, "controller-process.json");
+      // A matching display timestamp must never authorize a different process identity.
+      writeFileSync(record, JSON.stringify({ ...descriptor, started: descriptor.creation_time, creation_time: "stale-identity" }));
+      const rejected = runStop();
+      expect(rejected.error, rejected.stderr).toBeUndefined();
+      expect(rejected.status, rejected.stdout).not.toBe(0);
+      expect(rejected.stderr).toContain("无法确认控制器进程身份");
+      expect((await fetch(`http://127.0.0.1:${port}/api/health`)).ok).toBe(true);
+      writeFileSync(record, JSON.stringify(descriptor));
+      const stopped = runStop();
+      expect(stopped.error, stopped.stderr).toBeUndefined();
+      expect(stopped.status, stopped.stderr).toBe(0);
+      expect(stopped.stdout).toContain("DevFlow 服务已停止");
+    } else {
+      const response = await fetch(`http://127.0.0.1:${port}/api/maintenance/quiesce`, {
+        method: "POST",
+        headers: { origin, "content-type": "application/json", "sec-fetch-site": "same-origin" },
+        body: JSON.stringify({ shutdown: true, on_active_tasks: "pause-and-update", transaction_id: "startup-regression" }),
+        signal: AbortSignal.timeout(15000),
+      });
+      expect(response.status, await response.text()).toBe(200);
+    }
     const stopDeadline = Date.now() + 15000;
     while (!exited && Date.now() < stopDeadline) await delay(50);
     expect(exited, output).toBe(true);

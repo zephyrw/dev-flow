@@ -333,6 +333,7 @@ async function commandDoctor(): Promise<number> {
 interface ControllerRecord {
   pid: number;
   started: string;
+  creation_time: string;
   executable: string;
   entry: string;
   mode?: string;
@@ -388,7 +389,7 @@ async function commandStop(): Promise<number> {
     await import("../../process/src/native/index.js")
   ).getNativeAsync();
   const creation = native.getProcessCreationTime(record.pid);
-  if (creation == null || String(creation) !== record.started)
+  if (creation == null || String(creation) !== record.creation_time)
     throw new Error(
       "无法确认控制器进程身份，拒绝停止；请从原服务窗口安全退出。",
     );
@@ -442,7 +443,7 @@ async function commandStop(): Promise<number> {
       const current = native.getProcessCreationTime(record.pid);
       if (
         current == null ||
-        String(current) !== record.started ||
+        String(current) !== record.creation_time ||
         !processAlive(record.pid)
       ) {
         safeToClear = true;

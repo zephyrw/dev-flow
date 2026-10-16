@@ -87,7 +87,7 @@ const runInstaller = (options) => {
 // Run native ownership checks in a short-lived process so Windows can release addon files before cleanup.
 async function stopOwnedController() {
   const result = spawnSync(node, [resolve("scripts/release/stop-candidate-controller.mjs"), source, install],
-    { env, encoding: "utf8", windowsHide: true, timeout: 30000 });
+    { env, encoding: "utf8", windowsHide: true, timeout: 110000 });
   assert.equal(result.status, 0, safeLog(result.stderr || "Candidate controller stop failed"));
 }
 
