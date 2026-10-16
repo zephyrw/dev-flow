@@ -116,6 +116,39 @@ it.each(["workflow_id", "run_id", "plan_revision", "plan_hash"])(
   },
 );
 
+it("accepts a previous session run_id when included in acceptable_run_ids and normalizes to current run_id", () => {
+  const expected = {
+    workflow_id: "current",
+    run_id: "current-run",
+    acceptable_run_ids: ["current-run", "prior-session-run"],
+    plan_revision: 1,
+    plan_hash: "hash-1",
+  };
+  const extracted = extractRoundOutput({
+    kind: "execution",
+    replyText: JSON.stringify({
+      ...result,
+      status: "completed",
+      delivery: {
+        run_id: "prior-session-run",
+        workflow_id: "current",
+        plan_revision: 1,
+        plan_hash: "hash-1",
+      },
+    }),
+    ...expected,
+  });
+  expect(extracted).toMatchObject({
+    kind: "resolved",
+    value: {
+      status: "completed",
+      delivery: {
+        run_id: "current-run",
+      },
+    },
+  });
+});
+
 it("recognizes review results independently from execution and retains optional malformed material", () => {
   expect(
     extractRoundOutput({

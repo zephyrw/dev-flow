@@ -331,12 +331,12 @@ export class ProfileRuntime {
         };
     await this.engine.receiveRoundResult(w.id, run.id, {
       schema_version: "v2",
+      ...payload,
       workflow_id: w.id,
       run_id: run.id,
       conversation_id: currentRun.conversation_id,
       plan_revision: w.plan_revision,
       plan_hash: w.plan_hash,
-      ...payload,
     });
   }
   async resolveMergeConflict(
@@ -1580,10 +1580,17 @@ export class ProfileRuntime {
     }
     if (["implement", "execute", "executor_test", "functional_fix", "planner_takeover", "planner_commit", "quality_review"].includes(purpose)) {
       const outputText = existsSync(output) ? readFileSync(output, "utf8") : undefined;
+      const sessionRuns = conversation
+        ? this.engine.store.list<Run>("run", w.id)
+            .filter((r) => r.conversation_id === conversation && r.plan_revision === w.plan_revision)
+            .map((r) => r.id)
+        : [];
+      const continuationSourceId = this.readContinuation(run)?.source_run_id;
+      const acceptableRunIds = Array.from(new Set([run.id, ...sessionRuns, ...(continuationSourceId ? [continuationSourceId] : [])]));
       const extracted = extractRoundOutput({
         kind: purpose === "quality_review" ? "review" : "execution",
         structured: final, outputText, replyText: terminalText ?? text,
-        workflow_id: w.id, run_id: run.id, plan_revision: w.plan_revision, plan_hash: w.plan_hash,
+        workflow_id: w.id, run_id: run.id, acceptable_run_ids: acceptableRunIds, plan_revision: w.plan_revision, plan_hash: w.plan_hash,
       });
       const diagnostic = extracted.kind === "resolved"
         ? { kind: extracted.kind, source: extracted.source, candidate_count: extracted.candidate_count }

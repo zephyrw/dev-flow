@@ -1831,6 +1831,15 @@ export class Engine {
       // 幂等性检查 (C08 / R11, R12)
       const runScopedDelivery = guidanceRun.protocol === "lightweight" || usesPolicyV2(w);
       if (runScopedDelivery) {
+        if (payload.run_id && payload.run_id !== runId) {
+          const payloadRun = this.store.get<Run>("run", payload.run_id);
+          const sameSessionRun = payloadRun && guidanceRun.conversation_id &&
+            payloadRun.conversation_id === guidanceRun.conversation_id &&
+            payloadRun.workflow_id === key && payloadRun.plan_revision === w.plan_revision;
+          if (sameSessionRun) {
+            payload.run_id = runId;
+          }
+        }
         requireCondition(
           (!payload.workflow_id || payload.workflow_id === key) &&
           (!payload.run_id || payload.run_id === runId) &&

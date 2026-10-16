@@ -26,6 +26,7 @@ export interface RoundOutputInput {
   replyText?: string;
   workflow_id?: string;
   run_id?: string;
+  acceptable_run_ids?: string[];
   plan_revision?: number;
   plan_hash?: string;
 }
@@ -96,16 +97,26 @@ function envelope(
       "plan_revision",
       "plan_hash",
     ] as const) {
-      if (
-        owner[key] != null &&
-        input[key] !== undefined &&
-        owner[key] !== input[key]
-      )
-        return {
-          value: rec,
-          intent: "unclear",
-          conflict: "结果不属于当前运行或批准计划",
-        };
+      if (owner[key] != null) {
+        if (key === "run_id") {
+          const acceptable = input.acceptable_run_ids
+            ? (input.run_id ? [input.run_id, ...input.acceptable_run_ids] : input.acceptable_run_ids)
+            : (input.run_id ? [input.run_id] : undefined);
+          if (acceptable !== undefined && !acceptable.includes(String(owner[key]))) {
+            return {
+              value: rec,
+              intent: "unclear",
+              conflict: "结果不属于当前运行或批准计划",
+            };
+          }
+        } else if (input[key] !== undefined && owner[key] !== input[key]) {
+          return {
+            value: rec,
+            intent: "unclear",
+            conflict: "结果不属于当前运行或批准计划",
+          };
+        }
+      }
     }
   }
   return { value: rec, intent: intents[0]!, conflict };
@@ -244,9 +255,19 @@ function select(
   const selected = [...unique].reduce((a, b) =>
     a[0].length >= b[0].length ? a : b,
   );
+  const resolvedValue = selected[1];
+  if (input.run_id && resolvedValue) {
+    if (resolvedValue.run_id && resolvedValue.run_id !== input.run_id) {
+      resolvedValue.run_id = input.run_id;
+    }
+    const delivery = record(resolvedValue.delivery);
+    if (delivery?.run_id && delivery.run_id !== input.run_id) {
+      delivery.run_id = input.run_id;
+    }
+  }
   return {
     kind: "resolved",
-    value: selected[1],
+    value: resolvedValue,
     source,
     candidate_count: unique.size,
   };
