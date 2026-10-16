@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { approvePlan, createNative, fixtureState, openFixtureWorkflow, testInstance, sendComposerText } from "./native-helper.js";
+import { approvePlan, createNative, fixtureState, openExecutionSidebar, openFixtureWorkflow, testInstance, sendComposerText } from "./native-helper.js";
 import { git } from "../../packages/git/src/git.js";
 test.describe.configure({ mode: "serial" });
 test("empty console explains the natural-language entry without manual registration", async ({
@@ -63,8 +63,7 @@ test("E2E-01/05/06/08 local button approval, diagrams, evidence and accepted com
   const before = await (
     await page.request.get("/api/workflows/" + state.workflow_id)
   ).json();
-  if (!(await page.locator(".execution-sidebar").isVisible()))
-    await page.getByRole("button", { name: "执行过程", exact: true }).click();
+  await openExecutionSidebar(page);
   await sendComposerText(page, "请在原批准范围内再次核对内容与末尾换行，并重新运行测试。");
   await expect
     .poll(async () => {
@@ -93,8 +92,7 @@ test("E2E-01/05/06/08 local button approval, diagrams, evidence and accepted com
   expect(freshEvidence.length).toBeGreaterThan(0);
   expect(freshEvidence.every((e: any) => e.status === "passed" && e.passed === 1 && e.exit_code === 0)).toBe(true);
   await page.reload();
-  if (!(await page.locator(".execution-sidebar").isVisible()))
-    await page.getByRole("button", { name: "执行过程", exact: true }).click();
+  await openExecutionSidebar(page);
   await expect(page.locator(".logs")).toContainText("开始开发与自测");
   await page.getByRole("button", { name: "验收通过，启动复核" }).click();
   await expect(page.locator(".header-title-wrapper .badge")).toContainText(
