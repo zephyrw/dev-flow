@@ -34,7 +34,7 @@ bash -o pipefail -c 'curl -fsSL https://github.com/zephyrw/dev-flow/releases/lat
 **Windows x64 · PowerShell**
 
 ```powershell
-irm -ErrorAction Stop https://github.com/zephyrw/dev-flow/releases/latest/download/install.ps1 | iex
+[Text.Encoding]::UTF8.GetString((iwr -UseBasicParsing -ErrorAction Stop https://github.com/zephyrw/dev-flow/releases/latest/download/install.ps1).RawContentStream.ToArray()).TrimStart([char]0xFEFF) | iex
 ```
 
 安装完成后，用 `devflow` 打开工作台，按提示接入编程助手、完成授权并选择模型。固定版本、离线安装与更新方法见 [安装与升级](docs/guide/安装与升级.md)。
