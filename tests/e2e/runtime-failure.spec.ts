@@ -1,7 +1,7 @@
 import { test, expect, type Page } from "@playwright/test";
 import { openExecutionSidebar } from "./native-helper.js";
 
-async function screen(page: Page, blocked = true) {
+async function screen(page: Page, blocked = true, verificationFailure = false) {
   const workflow = {
     id: "wf-runtime-ui",
     title: "环境故障提示验证",
@@ -16,8 +16,8 @@ async function screen(page: Page, blocked = true) {
     updated_at: new Date().toISOString(),
     blocker: blocked
       ? {
-          code: "CLI_VERSION_UNSUPPORTED",
-          message: "The 'gpt-6-astra' model requires a newer version of Codex.",
+          code: verificationFailure ? "VERIFICATION_ENVIRONMENT_UNAVAILABLE" : "CLI_VERSION_UNSUPPORTED",
+          message: verificationFailure ? "本机环境无法完成模型访问验证" : "The 'gpt-6-astra' model requires a newer version of Codex.",
         }
       : undefined,
   };
@@ -118,6 +118,18 @@ test("runtime recovery instructions are beside task status and resume the same t
     body: { expected_version: 7, scope: "within_plan" },
   });
   await expect(page.getByText("已保存，正在继续这个任务。")).toHaveCount(0);
+});
+
+test("model verification failure shows access recovery instructions instead of a test service failure", async ({ page }) => {
+  const fixture = await screen(page, true, true);
+  const card = page.getByRole("region", { name: "运行问题处理方法" });
+  await expect(card.getByRole("heading", { name: "模型访问验证环境不可用" })).toBeVisible();
+  await expect(card).toContainText("重新验证本轮模型");
+  await expect(page.locator(".attention-message")).not.toContainText("测试服务没有成功启动");
+  await card.getByRole("button", { name: "已处理，继续原任务" }).click();
+  await expect(card).toHaveCount(0);
+  expect(fixture.submissions).toHaveLength(1);
+  expect(fixture.submissions[0].path).toBe("/api/workflows/wf-runtime-ui/feedback");
 });
 
 test("failed recovery stays with the recovery action and does not imply the task resumed", async ({

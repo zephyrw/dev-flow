@@ -7,6 +7,14 @@ export interface RuntimeFailureResolution {
 }
 
 const resolutions: Record<string, Omit<RuntimeFailureResolution, "code">> = {
+  VERIFICATION_ENVIRONMENT_UNAVAILABLE: {
+    title: "模型访问验证环境不可用",
+    message: "本机环境无法完成模型访问验证，执行尚未开始；原计划、模型和工作区已保留。",
+    steps: [
+      "核对当前工具的登录、网络和目录权限，在“工具与模型”中重新验证本轮模型；历史失败记录不能代表当前访问状态。",
+      "验证成功后继续原任务，无需重新规划或修改业务代码。",
+    ],
+  },
   AGY_MODEL_PROBE_TIMEOUT: {
     title: "AGY 模型访问核验超时",
     message: "核验尚未完成，不能据此判定模型不可用；原任务和模型已保留。",

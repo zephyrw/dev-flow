@@ -1,10 +1,10 @@
 import { expect, it } from "vitest";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { fixture, until, cleanup } from "../fixtures/native-flow.js";
+import { fixture, runtime, until, cleanup } from "../fixtures/native-flow.js";
 import { LocalRuntime } from "../../packages/runtime/src/runtime.js";
 import { workflowAttention } from "../../packages/core/src/attention.js";
-import { FlowError } from "../../packages/contracts/src/index.js";
+import { FlowError, type Run } from "../../packages/contracts/src/index.js";
 import { repairFailure } from "../../packages/core/src/repair.js";
 
 const versionError =
@@ -133,6 +133,7 @@ it.each([
   "MODEL_CONNECTION_FAILED",
   "NATIVE_PERMISSION_DENIED",
   "TIMEOUT",
+  "VERIFICATION_ENVIRONMENT_UNAVAILABLE",
 ])("%s does not create a repair counter", async (code) => {
   const s = await fixture();
   try {
@@ -147,6 +148,76 @@ it.each([
         "isolated-run",
       ),
     ).toBeNull();
+    expect(s.store.get("repair_state", s.w.id)).toBeUndefined();
+    expect(s.store.get("repair_assignment", s.w.id)).toBeUndefined();
+  } finally {
+    await cleanup(s);
+  }
+});
+
+it("verification environment failure blocks once and explicit recovery keeps the approved task", async () => {
+  const s = await fixture();
+  try {
+    const approved = s.engine.get(s.w.id);
+    const plan = s.engine.plan(s.w.id);
+    const workspaces = s.store.list("workspace", s.w.id);
+    const executionSpecs = s.store.list("execution_spec", s.w.id);
+    s.engine.runtime = {
+      ...runtime(s),
+      async execute() {
+        throw new FlowError(
+          "VERIFICATION_ENVIRONMENT_UNAVAILABLE",
+          "本机无法完成模型连接核验，请恢复核验环境后继续",
+        );
+      },
+    };
+
+    await until(s, ["BLOCKED"]);
+    // Periodic dispatch must not retry this infrastructure failure as code repair.
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await s.engine.dispatch();
+      await s.engine.waitForIdle(s.w.id);
+    }
+    expect(s.engine.get(s.w.id)).toMatchObject({
+      state: "BLOCKED",
+      stage: "blocked",
+      blocker: { code: "VERIFICATION_ENVIRONMENT_UNAVAILABLE" },
+      plan_revision: approved.plan_revision,
+      plan_hash: approved.plan_hash,
+    });
+    const runs = s.store.list<Run>("run", s.w.id);
+    expect(runs).toHaveLength(1);
+    expect(runs[0]).toMatchObject({ status: "failed", purpose: "implement" });
+    expect(runs[0]!.profile).toBeDefined();
+    expect(s.store.get("repair_state", s.w.id)).toBeUndefined();
+    expect(s.store.get("repair_assignment", s.w.id)).toBeUndefined();
+    expect(s.store.events(s.w.id).filter((event) =>
+      /^(PlannerRepairScheduled|RepairScheduled)$/.test(event.type),
+    )).toHaveLength(0);
+    expect(workflowAttention(s.engine, s.w.id)).toMatchObject({
+      category: "error",
+      resolution: { code: "VERIFICATION_ENVIRONMENT_UNAVAILABLE" },
+    });
+
+    s.engine.runtime = runtime(s);
+    s.engine.feedback(s.w.id, "核验环境已恢复，按原计划继续", "within_plan");
+    await until(s, ["HUMAN_PENDING", "BLOCKED"]);
+    expect(s.engine.get(s.w.id)).toMatchObject({
+      state: "HUMAN_PENDING",
+      plan_revision: approved.plan_revision,
+      plan_hash: approved.plan_hash,
+    });
+    expect(s.engine.get(s.w.id).blocker).toBeUndefined();
+    expect(s.engine.plan(s.w.id)).toEqual(plan);
+    expect(s.store.list("workspace", s.w.id)).toEqual(workspaces);
+    expect(s.store.list("execution_spec", s.w.id)).toEqual(executionSpecs);
+    const resumed = s.store.list<Run>("run", s.w.id)
+      .find((run) => run.purpose === "implement" && run.id !== runs[0]!.id);
+    expect(resumed).toMatchObject({
+      status: "completed",
+      profile: runs[0]!.profile,
+      execution_spec_revision: runs[0]!.execution_spec_revision,
+    });
     expect(s.store.get("repair_state", s.w.id)).toBeUndefined();
     expect(s.store.get("repair_assignment", s.w.id)).toBeUndefined();
   } finally {

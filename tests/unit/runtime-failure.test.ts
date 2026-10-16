@@ -11,6 +11,19 @@ import { readableLogs } from "../../packages/presentation/src/activity.js";
 const versionError =
   "The 'gpt-6-astra' model requires a newer version of Codex. Please upgrade to the latest app or CLI and try again.";
 
+it("keeps a model verification environment failure distinct from a test service failure", () => {
+  const error = normalizeRuntimeFailure(new FlowError(
+    "VERIFICATION_ENVIRONMENT_UNAVAILABLE", "本机环境无法完成模型访问验证", 503,
+  )) as FlowError;
+  expect(error.code).toBe("VERIFICATION_ENVIRONMENT_UNAVAILABLE");
+  expect(error.status).toBe(503);
+  expect((error.details as any).diagnostic).toBe("本机环境无法完成模型访问验证");
+  const summary = failureSummary(error.code, error.message);
+  expect(summary).toContain("模型访问验证环境不可用");
+  expect(summary).toContain("重新验证本轮模型");
+  expect(summary).not.toContain("测试服务");
+});
+
 it.each([
   "error: the connection to the agent was interrupted before the response finished: subscriber fell behind updates, stalled for 10s",
   "API error (attempt 1): INTERNAL (code 500): Internal error encountered.",
