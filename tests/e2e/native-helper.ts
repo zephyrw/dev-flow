@@ -65,19 +65,26 @@ export async function pickListedModel(
 ) {
   const search = exactLabel(root, `${toolLabel}模型搜索`);
   await expect(search).toBeEnabled({ timeout: 20000 });
+  // Initial catalog selection closes the list; wait for it before searching.
+  await expect(search).not.toHaveValue("", { timeout: 20000 });
   await search.click();
   await search.fill(nativeId);
-  const pattern = new RegExp(nativeId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/[-_]/g, "[-_ ]"), "i");
   const baseName = nativeId.replace(/-(high|medium|low|xhigh|max)$/i, "");
   const basePattern = new RegExp(baseName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/[-_]/g, "[-_ ]"), "i");
   const listbox = root.page().getByRole("listbox", { name: "模型选项列表" });
   await expect(listbox).toBeVisible({ timeout: 15000 });
-  let option = listbox.getByRole("option").filter({ hasText: pattern }).first();
-  if ((await option.count()) === 0) {
-    option = listbox.getByRole("option").filter({ hasText: basePattern }).first();
-  }
+  // A custom fallback can disappear as the catalog arrives. Only pick a listed
+  // model, including grouped effort variants whose label omits the suffix.
+  const option = listbox.locator('[role="option"]:not(.ms-custom-option)')
+    .filter({ hasText: basePattern }).first();
   await expect(option).toBeVisible({ timeout: 15000 });
   await option.click();
+  const effort = nativeId.match(/-(xhigh|high|medium|low|max)$/i)?.[1];
+  if (effort) {
+    const selector = exactLabel(root, `${toolLabel}思考强度`);
+    await selector.selectOption(effort.toLowerCase());
+    await expect(selector).toHaveValue(effort.toLowerCase());
+  }
 }
 
 export async function waitAccessStatus(root: Locator, text: string | RegExp) {
