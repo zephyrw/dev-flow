@@ -36,7 +36,7 @@ export function readPlanMaterial(
     .find((p) => p.revision === revision);
   requireCondition(record, "PLAN_MISSING", "计划版本不存在", 404);
   const currentWorkflow = store.get<{ plan_revision: number }>("workflow", workflowId);
-  const isCurrentVersion = !currentWorkflow || currentWorkflow.plan_revision === revision;
+  const isCurrentVersion = currentWorkflow?.plan_revision === revision;
 
   const planDoc = store.get<{ document_id?: string; material_id?: string; run_id?: string; plan_revision?: number; material_status?: string }>(
     "planning_document",
@@ -131,6 +131,12 @@ export function readPlanMaterial(
   let markdown: string | undefined;
   let locator: any;
   let sourceType: "project" | "result_pending" | "platform_legacy" = "project";
+  const materialWorkspace = material && store.get<Workspace>("workspace", material.workspace_id);
+  // A publication can own only its immutable object. A logical destination is
+  // a live original only when the plan explicitly points to that destination.
+  const readCurrentOriginal = isCurrentVersion && (!material?.logical_path ||
+    material.logical_path === material.path || Boolean(materialWorkspace && effectiveMaterialPath &&
+      resolve(materialWorkspace.root, effectiveMaterialPath) === resolve(materialWorkspace.root, material.logical_path)));
 
   if (material) {
     // F01_MATERIAL_AUTHORITY: 统一材料读取裁决：先判断材料状态
@@ -157,7 +163,7 @@ export function readPlanMaterial(
       sourceType = "result_pending";
     } else if (material.status === "verified") {
       // Current plans are live references; historical versions retain their archived contents.
-      markdown = readVerifiedProjectMaterial(store, material, { allowUpdatedContent: isCurrentVersion });
+      markdown = readVerifiedProjectMaterial(store, material, { allowUpdatedContent: readCurrentOriginal });
       sourceType = "project";
     } else {
       throw new FlowError(
@@ -255,9 +261,8 @@ export function readPlanMaterial(
     "计划正文与当前版本不一致",
     409,
   );
-  const workspace = material && store.get<Workspace>("workspace", material.workspace_id);
-  const path = locator?.absolute_path ?? (material && workspace
-    ? resolve(workspace.root, isCurrentVersion ? material.logical_path ?? material.path : material.path) : undefined);
+  const path = locator?.absolute_path ?? (material && materialWorkspace
+    ? resolve(materialWorkspace.root, readCurrentOriginal ? material.logical_path ?? material.path : material.path) : undefined);
   const isAuthoritative = sourceType === "project" && (material ? material.status === "verified" : Boolean(record.material_path));
   return { ...record, markdown, path, document_path: path, source_type: sourceType, authority_ready: isAuthoritative };
 }

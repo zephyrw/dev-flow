@@ -4,8 +4,8 @@ import { FlowError, type Run, type Workflow } from "../../packages/contracts/src
 import { repairFailure } from "../../packages/core/src/repair.js";
 import { readBusinessProgress } from "../../packages/core/src/workflow-progress.js";
 import { workflowProgress } from "../../packages/presentation/src/activity.js";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { hash } from "../../packages/core/src/util.js";
 import { readPlanMaterial } from "../../packages/core/src/plan-review.js";
 import { publishProjectMaterialSafely, resolveMaterialLocator } from "../../packages/core/src/project-materials.js";
@@ -70,7 +70,35 @@ it("reads the updated current plan original without requiring its old content ha
     const updated = "# 批准计划\n- [x] 任务\n\n用户已补充关联边界。\n";
     mkdirSync(dirname(locator.absolute_path), {recursive: true});
     writeFileSync(locator.absolute_path, updated);
-    expect(readPlanMaterial(s.store, w.id, 1)).toMatchObject({markdown: updated, authority_ready: true});
+    expect(readPlanMaterial(s.store, w.id, 1)).toMatchObject({markdown: updated, path: locator.absolute_path, authority_ready: true});
+    s.store.put("workflow", w.id, w.project_id, {...w, plan_revision: 2});
+    expect(readPlanMaterial(s.store, w.id, 1)).toMatchObject({markdown: original,
+      path: resolve(s.root, published.material.path)});
+    s.store.put("workflow", w.id, w.project_id, w);
+    rmSync(locator.absolute_path);
+    expect(() => readPlanMaterial(s.store, w.id, 1)).toThrow(/计划原件已丢失/);
+  } finally { await cleanup(s); }
+});
+
+it.each([false, true])("keeps object-only publications readable and immutable with an explicit path: %s", async explicitPath => {
+  const s = await fixture();
+  try {
+    const w = s.engine.get(s.w.id);
+    s.store.put("workspace", "plan-ws", w.id, {id: "plan-ws", workflow_id: w.id, repo_id: "main",
+      root: s.root, source_root: s.root, branch: "task", baseline: "a".repeat(40), owned: false});
+    const locator = resolveMaterialLocator({store: s.store, workflowId: w.id, kind: "plan", revision: 1});
+    const original = "# Published plan\n";
+    const published = publishProjectMaterialSafely({store: s.store, locator, content: original});
+    expect(published.material.status).toBe("verified");
+    expect(existsSync(locator.absolute_path)).toBe(false);
+    s.store.put("plan", `${w.id}-1`, w.id, {...s.engine.plan(w.id), material_id: published.material.id,
+      ...(explicitPath ? {material_path: published.material.path} : {})});
+    const path = resolve(s.root, published.material.path);
+    expect(readPlanMaterial(s.store, w.id, 1)).toMatchObject({markdown: original, path, authority_ready: true});
+    writeFileSync(path, "# Changed immutable object\n");
+    expect(() => readPlanMaterial(s.store, w.id, 1)).toThrow(/原件已被修改/);
+    rmSync(path);
+    expect(() => readPlanMaterial(s.store, w.id, 1)).toThrow(/计划原件已丢失/);
   } finally { await cleanup(s); }
 });
 
