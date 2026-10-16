@@ -65,7 +65,9 @@ test.describe("H02 Activity & Guidance Resilience", () => {
     const alert = page.getByRole("alert");
     await expect(alert).toBeVisible();
     await expect(alert).toContainText("任务反馈响应格式无效");
-    await page.keyboard.press("Escape");
+    const modelDialog = page.getByRole("dialog", { name: "工具与模型", exact: true });
+    await modelDialog.getByRole("button", { name: "取消", exact: true }).click();
+    await expect(modelDialog).not.toBeVisible();
 
     // 验证页面控制按钮和任务进度仍然可操作，页面主体正常存在
     const strip = page.getByLabel("交付进度");
@@ -253,8 +255,10 @@ test.describe("H02 Activity & Guidance Resilience", () => {
     // 启用对 B 的列表响应延迟
     delayBResponses = true;
 
-    // 切换到 B
-    await page.keyboard.press("Escape");
+    // 关闭配置弹窗后再切换到 B，避免弹窗遮挡任务导航。
+    const modelDialog = page.getByRole("dialog", { name: "工具与模型", exact: true });
+    await modelDialog.getByRole("button", { name: "取消", exact: true }).click();
+    await expect(modelDialog).not.toBeVisible();
     await page.locator(".flow-nav-btn").filter({ hasText: wfB.title }).click();
     await page.getByRole("button", { name: /^规划模型：/ }).click();
 
