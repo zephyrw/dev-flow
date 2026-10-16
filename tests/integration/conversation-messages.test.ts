@@ -429,6 +429,45 @@ describe("SA-I17 conversation message attachment paths", () => {
 });
 
 describe("SA-I18 conversation message routing and guards", () => {
+  it("keeps a projected root send bound to the same Run when native discovery replaces it", async () => {
+    const f = fixture();
+    const run = runRecord("run-discovery", "wf1");
+    f.s.store.put("run", run.id, "wf1", run);
+    const workflow = f.s.store.must<Workflow>("workflow", "wf1");
+    f.s.store.put("workflow", workflow.id, "p1", { ...workflow, run_id: run.id });
+    const projected = f.conversations.getTree("wf1").nodes.find(node => node.id === `leg-${run.id}`)!;
+    expect(projected).toBeDefined();
+    const request = payload(f.roots, "wf1", {
+      root_conversation_id: projected.id, expected_generation: 0, text: "/btw 当前进度？",
+    });
+    const discovered = f.conversations.applyEvent(ctx("wf1", run.id, "native-discovery"), event("native-discovery")).node!;
+    expect(f.conversations.getTree("wf1").nodes.some(node => node.id === projected.id)).toBe(false);
+    const accepted = await f.messages.submit("wf1", request);
+    expect(accepted.accepted).toBe(true);
+    expect(f.s.store.must<ConversationMessage>(CONVERSATION_ENTITY.message, accepted.message_id))
+      .toMatchObject({ root_conversation_id: discovered.id, expected_generation: 0 });
+    await expect(f.messages.submit("wf1", request)).resolves.toMatchObject({ message_id: accepted.message_id });
+    expect(f.control.calls).toHaveLength(0);
+  });
+
+  it("does not retarget a projected root to another workflow or a newer Run", async () => {
+    const f = fixture({ wf1: "EXECUTING", wf2: "EXECUTING" });
+    await expect(f.messages.submit("wf1", payload(f.roots, "wf1", {
+      root_conversation_id: "leg-run-wf2", text: "/btw 当前进度？",
+    }))).rejects.toMatchObject({ code: CONVERSATION_MESSAGE_ERROR.CONVERSATION_NOT_IN_WORKFLOW });
+    const newer = runRecord("run-newer", "wf1");
+    f.s.store.put("run", newer.id, "wf1", newer);
+    const workflow = f.s.store.must<Workflow>("workflow", "wf1");
+    f.s.store.put("workflow", workflow.id, "p1", { ...workflow, run_id: newer.id });
+    const resumed = f.conversations.applyEvent(ctx("wf1", newer.id, "native-wf1"), event("native-wf1", { source_id: "newer", source_seq: "2" }));
+    expect(resumed.attempt?.generation).toBe(1);
+    await expect(f.messages.submit("wf1", payload(f.roots, "wf1", {
+      root_conversation_id: "leg-run-wf1", text: "/btw 当前进度？",
+    }))).rejects.toMatchObject({ code: CONVERSATION_MESSAGE_ERROR.VERSION_CONFLICT });
+    expect(f.s.store.list(CONVERSATION_ENTITY.message, "wf1")).toHaveLength(0);
+    expect(f.control.calls).toHaveLength(0);
+  });
+
   it("splits slash aside and rejects file-only formal without rewriting it or pausing", async () => {
     const { app, messages, control, files, s, roots } = await startApp();
     const ready = await upload(

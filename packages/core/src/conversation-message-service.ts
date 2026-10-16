@@ -220,7 +220,7 @@ export class ConversationMessageService {
     const emptyQuestion =
       entry === "auto" ? parsed.empty_question : bodyText.trim().length === 0;
     assertSendable(mode, bodyText, emptyQuestion, request.attachment_ids);
-    this.assertRoot(workflow.id, request);
+    request = this.assertRoot(workflow.id, request);
     const files = this.loadReadyFiles(workflow.id, request.attachment_ids);
     this.assertAttachments(workflow, files, mode);
     const deliveredText = deliveredConversationText(bodyText, files.length);
@@ -348,9 +348,23 @@ export class ConversationMessageService {
 
   private assertRoot(workflowId: string, request: ConversationMessageRequest) {
     const tree = this.deps.conversations.getTree(workflowId);
-    const root = tree.nodes.find(
+    let root = tree.nodes.find(
       (node) => node.id === request.root_conversation_id,
     );
+    // Native discovery can replace a read-only legacy projection between GET
+    // and POST. Resolve only the exact same Run, never the current active root.
+    if (!root && request.expected_generation === 0 && request.root_conversation_id.startsWith("leg-")) {
+      const runs = this.deps.store.list<Run>("run", workflowId).filter(run =>
+        run.workflow_id === workflowId && `leg-${run.id}`.slice(0, 96) === request.root_conversation_id);
+      const replacements = runs.length === 1 ? tree.attempts.filter(attempt =>
+        attempt.run_id === runs[0]!.id && attempt.workflow_id === workflowId &&
+        attempt.conversation_id === attempt.root_id) : [];
+      if (replacements.length === 1) {
+        const replacement = replacements[0]!;
+        root = tree.nodes.find(node => node.id === replacement.conversation_id);
+        if (root) request = { ...request, root_conversation_id: root.id, expected_generation: replacement.generation };
+      }
+    }
     requireCondition(
       root && root.workflow_id === workflowId,
       CONVERSATION_MESSAGE_ERROR.CONVERSATION_NOT_IN_WORKFLOW,
@@ -370,6 +384,7 @@ export class ConversationMessageService {
       "会话代数已变化",
       409,
     );
+    return request;
   }
 
   private loadReadyFiles(
