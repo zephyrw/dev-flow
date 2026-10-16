@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { dirname, join, resolve } from "node:path";
@@ -63,28 +63,35 @@ it.each([
     expect(descriptor.creation_time).toBe(String(native.getProcessCreationTime(child.pid!)));
     if (stop === "cli") {
       const cli = resolve(process.env.DEVFLOW_BUILD_OUTDIR || "dist", "packages/cli/src/main.js");
-      const runStop = () => spawnSync(process.execPath, [cli, "stop"], {
-        windowsHide: true,
-        encoding: "utf8",
-        timeout: 30000,
-        env: {
-          ...process.env,
-          DEVFLOW_CONFIG: config,
-          DEVFLOW_INSTALL_ROOT: s.root,
-          DEVFLOW_VERSION_ROOT: resolve(dirname(entry), "../../../.."),
-        },
+      // Keep the parent event loop free to reap the controller on POSIX.
+      const runStop = () => new Promise<{ status: number | null; stdout: string; stderr: string }>((yes, no) => {
+        const command = spawn(process.execPath, [cli, "stop"], {
+          windowsHide: true,
+          timeout: 30000,
+          stdio: ["ignore", "pipe", "pipe"],
+          env: {
+            ...process.env,
+            DEVFLOW_CONFIG: config,
+            DEVFLOW_INSTALL_ROOT: s.root,
+            DEVFLOW_VERSION_ROOT: resolve(dirname(entry), "../../../.."),
+          },
+        });
+        let stdout = "";
+        let stderr = "";
+        command.stdout.setEncoding("utf8").on("data", chunk => { stdout += chunk; });
+        command.stderr.setEncoding("utf8").on("data", chunk => { stderr += chunk; });
+        command.once("error", no);
+        command.once("close", status => yes({ status, stdout, stderr }));
       });
       const record = join(s.config.storage_root, "controller-process.json");
       // A matching display timestamp must never authorize a different process identity.
       writeFileSync(record, JSON.stringify({ ...descriptor, started: descriptor.creation_time, creation_time: "stale-identity" }));
-      const rejected = runStop();
-      expect(rejected.error, rejected.stderr).toBeUndefined();
+      const rejected = await runStop();
       expect(rejected.status, rejected.stdout).not.toBe(0);
       expect(rejected.stderr).toContain("无法确认控制器进程身份");
       expect((await fetch(`http://127.0.0.1:${port}/api/health`)).ok).toBe(true);
       writeFileSync(record, JSON.stringify(descriptor));
-      const stopped = runStop();
-      expect(stopped.error, stopped.stderr).toBeUndefined();
+      const stopped = await runStop();
       expect(stopped.status, stopped.stderr).toBe(0);
       expect(stopped.stdout).toContain("DevFlow 服务已停止");
     } else {
