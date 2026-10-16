@@ -1,0 +1,95 @@
+/* 设置对话框（SettingsDialog）专用样式 */
+
+.settings-dialog-container {
+  display: flex;
+  flex-direction: column;
+}
+
+/* 一级 Tab 导航栏 */
+.settings-nav-tabs {
+  display: flex;
+  gap: 28px;
+  border-bottom: 1px solid var(--border-subtle, #e2e8f0);
+  margin-bottom: 18px;
+  position: relative;
+}
+
+/* 一级 Tab 项按钮 */
+button.settings-tab-btn,
+.settings-tab-btn {
+  appearance: none;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  padding: 8px 4px 12px 4px;
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 500;
+  color: var(--text-muted, #64748b);
+  cursor: pointer;
+  position: relative;
+  transition: color 0.15s ease;
+  user-select: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  outline: none;
+  border-radius: 0;
+}
+
+/* 覆盖全局 button:hover / button:active 默认样式，避免外边框、阴影和位移 */
+button.settings-tab-btn:hover,
+.settings-tab-btn:hover {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  color: var(--text-main, #0f172a);
+}
+
+button.settings-tab-btn:active,
+.settings-tab-btn:active {
+  transform: none;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+}
+
+button.settings-tab-btn:focus-visible,
+.settings-tab-btn:focus-visible {
+  outline: 2px solid var(--primary, #2563eb);
+  outline-offset: 4px;
+  border-radius: 4px;
+}
+
+/* 激活选中态 */
+button.settings-tab-btn.is-active,
+.settings-tab-btn.is-active {
+  color: var(--primary, #2563eb);
+  font-weight: 600;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+}
+
+button.settings-tab-btn.is-active::after,
+.settings-tab-btn.is-active::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 2px;
+  background-color: var(--primary, #2563eb);
+  border-radius: 2px 2px 0 0;
+}
+
+button.settings-tab-btn:disabled,
+.settings-tab-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.settings-tab-content {
+  flex: 1 1 auto;
+}

@@ -2,6 +2,7 @@ import React, { useState, useEffect } from "react";
 import { AppDialog } from "./AppDialog.js";
 import { DefaultModelsPanel } from "./DefaultModelsPanel.js";
 import { ArchivedWorkflowsPanel } from "./ArchivedWorkflowsPanel.js";
+import "./settings-dialog.css";
 
 export type SettingsTabId = "models" | "archives";
 
@@ -47,26 +48,18 @@ export function SettingsDialog({
       width={760}
       isDirty={false}
     >
-      <div className="settings-dialog-container" style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+      <div className="settings-dialog-container">
         {/* 一级 Tab 导航栏 */}
         <div
           className="settings-nav-tabs"
           role="tablist"
           aria-label="设置"
-          style={{
-            display: "flex",
-            gap: "8px",
-            borderBottom: "1px solid var(--border-color, #e5e7eb)",
-            paddingBottom: "8px",
-            marginBottom: "4px",
-          }}
         >
           <button
             type="button"
             role="tab"
             aria-selected={activeTab === "models"}
-            className={`btn ${activeTab === "models" ? "btn-primary" : "btn-secondary"}`}
-            style={{ fontSize: "14px", padding: "6px 16px" }}
+            className={`settings-tab-btn ${activeTab === "models" ? "is-active" : ""}`}
             disabled={saving}
             onClick={() => setActiveTab("models")}
           >
@@ -76,8 +69,7 @@ export function SettingsDialog({
             type="button"
             role="tab"
             aria-selected={activeTab === "archives"}
-            className={`btn ${activeTab === "archives" ? "btn-primary" : "btn-secondary"}`}
-            style={{ fontSize: "14px", padding: "6px 16px" }}
+            className={`settings-tab-btn ${activeTab === "archives" ? "is-active" : ""}`}
             disabled={saving}
             onClick={() => setActiveTab("archives")}
           >
