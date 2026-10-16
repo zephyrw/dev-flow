@@ -480,24 +480,14 @@ export function ModelProfileEditor({
     }
   };
 
-  // 关闭态展示友好名（已匹配 Choice 时直接展示选项名称；未匹配且不等价时才附带原始 ID）
+  // 目录加载前后均展示友好名；未知模型由格式化函数保留原始 ID。
   const activeChoice =
     currentChoice ??
     choices.find((c) => c.choiceId === profile.modelId || c.nativeId === profile.modelId);
 
   const currentModelLabel = (() => {
     if (!profile.modelId) return "";
-    let base = "";
-    if (activeChoice) {
-      base = activeChoice.label;
-    } else {
-      const label = formatModelName(adapter, profile.modelId);
-      if (label && !isEquivalentModelName(label, profile.modelId)) {
-        base = `${label} · ${profile.modelId}`;
-      } else {
-        base = label || profile.modelId;
-      }
-    }
+    const base = activeChoice?.label || formatModelName(adapter, profile.modelId);
     if (activeChoice?.availability === "candidate") {
       return `${base} [候补 / ${access?.status === "verified" ? "已核验" : "待核验"}]`;
     }

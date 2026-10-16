@@ -82,6 +82,41 @@ describe("model selector directory refresh", () => {
     expect(api.refresh).not.toHaveBeenCalled();
     expect(document.querySelectorAll("[role=option]")).toHaveLength(1);
   });
+  it.each([
+    ["agy", "gemini-3.8-flash-high", "Gemini 3.8 Flash"],
+    ["agy", "gemini-3.8-flash-medium", "Gemini 3.8 Flash"],
+    ["agy", "gemini-3.8-flash-low", "Gemini 3.8 Flash"],
+    ["agy", "claude-opus-5-5", "Claude Opus 5.5"],
+    ["codex", "gpt-6-astra", "GPT-6 Astra"],
+    ["agy", "custom-model-high", "custom-model-high"],
+  ] as const)("keeps %s %s readable before and after the catalog loads", async (adapterId, modelId, label) => {
+    let finish!: (result: { entries: ModelEntry[]; status: string; discoveryStatus: string }) => void;
+    api.get.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+    const selected: ToolProfile = { ...profile, adapterId, modelId, reasoning: { mode: "explicit", value: "high" } };
+    await act(async () => root.render(
+      <ModelProfileEditor profile={selected} onChange={onChange} autoVerify={false} />,
+    ));
+    const input = container.querySelector<HTMLInputElement>("[role=combobox]")!;
+    expect(input.value).toBe(label);
+    const catalogEntry: ModelEntry = { ...entry(modelId), adapterId, entryId: `${adapterId}/${modelId}` };
+    await act(async () => finish({ entries: [catalogEntry], status: "fresh", discoveryStatus: "complete" }));
+    expect(input.value).toBe(label);
+    expect(onChange).not.toHaveBeenCalled();
+  });
+  it("keeps the AGY name readable if the initial catalog request fails", async () => {
+    let fail!: (error: Error) => void;
+    api.get.mockImplementation(() => new Promise((_resolve, reject) => { fail = reject; }));
+    await act(async () => root.render(
+      <ModelProfileEditor profile={{ ...profile, adapterId: "agy", modelId: "gemini-3.8-flash-high" }}
+        onChange={onChange} autoVerify={false} />,
+    ));
+    const input = container.querySelector<HTMLInputElement>("[role=combobox]")!;
+    expect(input.value).toBe("Gemini 3.8 Flash");
+    await act(async () => fail(new Error("目录加载失败")));
+    expect(input.value).toBe("Gemini 3.8 Flash");
+    expect(container.textContent).toContain("目录加载失败");
+    expect(onChange).not.toHaveBeenCalled();
+  });
   it("only offers Codex and AGY without changing the current profile", async () => {
     api.get.mockResolvedValue({ entries: oldEntries, status: "fresh", discoveryStatus: "complete" });
     await render();
