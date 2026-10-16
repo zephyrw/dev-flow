@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="744" height="338" viewBox="0 0 744 338" role="img" aria-labelledby="title description">
+  <title id="title">DevFlow 从需求到本地交付</title>
+  <desc id="description">依次完成需求与计划、你批准计划、AI 开发与测试、代码质量复核、你验收功能，以及最终复核与本地交付。蓝色代表 AI 执行，橙色代表人工确认，绿色代表本地交付。</desc>
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M1 1 L6 4 L1 7" fill="none" stroke="#94a3b8" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+    </marker>
+  </defs>
+  <rect width="744" height="338" rx="16" fill="#f8fafc"/>
+  <g fill="none" stroke="#94a3b8" stroke-width="2" marker-end="url(#arrow)">
+    <path d="M230 80 H266"/>
+    <path d="M478 80 H514"/>
+    <path d="M620 136 V184"/>
+    <path d="M514 242 H478"/>
+    <path d="M266 242 H230"/>
+  </g>
+  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', sans-serif">
+    <g transform="translate(18 24)">
+      <rect width="212" height="112" rx="12" fill="#eff6ff" stroke="#93c5fd"/>
+      <text x="16" y="28" fill="#2563eb" font-size="15" font-weight="700">01</text>
+      <text x="106" y="60" fill="#1e3a8a" font-size="23" font-weight="600" text-anchor="middle">需求与计划</text>
+      <text x="106" y="89" fill="#475569" font-size="16" text-anchor="middle">规划模型</text>
+    </g>
+    <g transform="translate(266 24)">
+      <rect width="212" height="112" rx="12" fill="#fff7ed" stroke="#fdba74"/>
+      <text x="16" y="28" fill="#c2410c" font-size="15" font-weight="700">02</text>
+      <text x="106" y="60" fill="#7c2d12" font-size="23" font-weight="600" text-anchor="middle">你批准计划</text>
+      <text x="106" y="89" fill="#475569" font-size="16" text-anchor="middle">确认目标与范围</text>
+    </g>
+    <g transform="translate(514 24)">
+      <rect width="212" height="112" rx="12" fill="#eff6ff" stroke="#93c5fd"/>
+      <text x="16" y="28" fill="#2563eb" font-size="15" font-weight="700">03</text>
+      <text x="106" y="60" fill="#1e3a8a" font-size="23" font-weight="600" text-anchor="middle">AI 开发与测试</text>
+      <text x="106" y="89" fill="#475569" font-size="16" text-anchor="middle">执行模型</text>
+    </g>
+    <g transform="translate(514 186)">
+      <rect width="212" height="112" rx="12" fill="#eff6ff" stroke="#93c5fd"/>
+      <text x="16" y="28" fill="#2563eb" font-size="15" font-weight="700">04</text>
+      <text x="106" y="60" fill="#1e3a8a" font-size="23" font-weight="600" text-anchor="middle">代码质量复核</text>
+      <text x="106" y="89" fill="#475569" font-size="16" text-anchor="middle">复核模型</text>
+    </g>
+    <g transform="translate(266 186)">
+      <rect width="212" height="112" rx="12" fill="#fff7ed" stroke="#fdba74"/>
+      <text x="16" y="28" fill="#c2410c" font-size="15" font-weight="700">05</text>
+      <text x="106" y="60" fill="#7c2d12" font-size="23" font-weight="600" text-anchor="middle">你验收功能</text>
+      <text x="106" y="89" fill="#475569" font-size="16" text-anchor="middle">确认实际使用效果</text>
+    </g>
+    <g transform="translate(18 186)">
+      <rect width="212" height="112" rx="12" fill="#ecfdf5" stroke="#6ee7b7"/>
+      <text x="16" y="28" fill="#047857" font-size="15" font-weight="700">06</text>
+      <text x="106" y="60" fill="#065f46" font-size="23" font-weight="600" text-anchor="middle">最终复核</text>
+      <text x="106" y="89" fill="#475569" font-size="16" text-anchor="middle">本地交付</text>
+    </g>
+    <g font-size="13" fill="#64748b">
+      <circle cx="258" cy="321" r="4" fill="#3b82f6"/>
+      <text x="269" y="326">AI 执行</text>
+      <circle cx="355" cy="321" r="4" fill="#f59e0b"/>
+      <text x="366" y="326">人工确认</text>
+      <circle cx="465" cy="321" r="4" fill="#10b981"/>
+      <text x="476" y="326">本地交付</text>
+    </g>
+  </g>
+</svg>

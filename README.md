@@ -8,21 +8,7 @@
 
 ## 从需求到交付
 
-```mermaid
-flowchart LR
-    A["需求与计划"] --> B["你批准计划"]
-    B --> C["AI 开发与测试"]
-    C --> D["代码质量复核"]
-    D --> E["你验收功能"]
-    E --> F["最终复核<br/>本地交付"]
-
-    classDef agent fill:#eff6ff,stroke:#3b82f6,color:#1e3a8a
-    classDef human fill:#fff7ed,stroke:#f59e0b,color:#7c2d12
-    classDef delivery fill:#ecfdf5,stroke:#10b981,color:#064e3b
-    class A,C,D agent
-    class B,E human
-    class F delivery
-```
+![DevFlow 工作流：需求与计划 → 你批准计划 → AI 开发与测试 → 代码质量复核 → 你验收功能 → 最终复核与本地交付](docs/guide/assets/devflow-workflow.svg)
 
 代码或功能问题在原任务中修复；推送与发布由你另行授权。完整分工见 [职责与调度](packages/skills/devflow/references/role-and-schedule.md)。
 
