@@ -15,6 +15,34 @@ import {
 import { readableLogs } from "../../packages/presentation/src/activity.js";
 import type { Workflow, Run } from "../../packages/contracts/src/index.js";
 import type { NativeConversationEvent } from "../../packages/adapters/sdk/src/interface.js";
+import { decodeAgyConversationEvent } from "../../packages/adapters/agy/src/conversation-source.js";
+
+it("AGY decoded activity updates root runtime and completes the same tool", () => {
+  const s = fixture("implement", "agy");
+  const session = "d39a5c95-f76b-4556-8944-9c5916cf0f0b";
+  let observed = 0;
+  s.telemetry.bindConversationObserver({ applyConversationEvent() { observed++; } });
+  try {
+    for (const state of ["ACTIVE", "DONE"]) {
+      const events = decodeAgyConversationEvent({ event: "step_update", step_update: {
+        conversation_id: session, step_index: 1645, step_type: "tool", state,
+        tool_name: "run_command", tool_info: { parameters: { CommandLine: "python server.py" } },
+      } }, { rootNativeId: session });
+      expect(events).toHaveLength(1);
+      for (const event of events) s.telemetry.acceptConversationEvent(event);
+      s.telemetry.flush();
+      expect(s.telemetry.observation.status).toBe(state === "ACTIVE" ? "working" : "responding");
+      expect(s.telemetry.observation.active_tools).toBe(state === "ACTIVE" ? 1 : 0);
+      if (state === "ACTIVE") expect(s.telemetry.observation.current_activity?.command).toBe("python server.py");
+    }
+    expect(observed).toBe(2);
+    expect(s.store.events("w", 0, 1000).filter(event =>
+      event.type === "NativeActivity" || event.type === "ConversationActivity")).toHaveLength(0);
+  } finally {
+    s.telemetry.finish();
+    s.store.close();
+  }
+});
 
 function fixture(purpose: Run["purpose"] = "planner_takeover", adapter: "codex" | "agy" = "codex") {
   const s = setup();

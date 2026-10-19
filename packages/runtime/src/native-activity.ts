@@ -318,14 +318,14 @@ export function conversationEventActivities(
   if (
     payload &&
     typeof payload === "object" &&
-    str(payload.id) &&
+    str(payload.activity_id ?? payload.id) &&
     (payload.kind === "tool" ||
       payload.kind === "message" ||
       payload.kind === "event")
   )
     return [
       {
-        id: payload.id,
+        id: payload.activity_id ?? payload.id,
         kind: payload.kind,
         title:
           str(payload.title) ??

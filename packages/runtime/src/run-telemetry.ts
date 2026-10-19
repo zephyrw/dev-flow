@@ -537,9 +537,12 @@ export class RunTelemetry {
       this.quota(payload, event.occurred_at ?? now(), "native_event");
     if (event.kind !== "activity") return;
     const sourceId = `${event.source_id}:${event.source_seq}`;
+    // Adapter activities already persisted by the conversation observer only
+    // update the runtime snapshot here; publishing again duplicates the log.
+    const alreadyProjected = !!this.observer && typeof payload?.activity_id === "string";
     for (const activity of conversationEventActivities(event)) {
-      this.activity(activity, true);
-      this.queueConversationActivity(route, activity, sourceId);
+      this.activity(activity, !alreadyProjected);
+      if (!alreadyProjected) this.queueConversationActivity(route, activity, sourceId);
     }
   }
   private applyChildConversation(
