@@ -1448,6 +1448,9 @@ export class ProfileRuntime {
         const historical = exit.code === 0 && !exit.termination_reason &&
           !failure && !permissionFailure && !this.engine.store.get("run_stop", run.id) &&
           accountTurn.staleError(agyResult, [], exit.code);
+        // A historical footer can also retain an older structured_output.
+        // The completed current response remains the result authority.
+        if (historical) final = undefined;
         if (!historical) failure ??= nativeFailureDiagnostic({ event: "result", result: agyResult });
       }
     } finally {
