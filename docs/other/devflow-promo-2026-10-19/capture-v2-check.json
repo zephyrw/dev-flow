@@ -1,0 +1,367 @@
+{
+  "errors": [],
+  "requestCount": 72,
+  "allBusinessRequestsIntercepted": true,
+  "requests": [
+    {
+      "path": "/api/health",
+      "method": "GET",
+      "fulfilledLocally": true
+    },
+    {
+      "path": "/api/projects",
+      "method": "GET",
+      "fulfilledLocally": true
+    },
+    {
+      "path": "/api/workflows",
+      "method": "GET",
+      "fulfilledLocally": true
+    },
+    {
+      "path": "/api/workflows/demo-owner-filter",
+      "method": "GET",
+      "fulfilledLocally": true
+    },
+    {
+      "path": "/api/workflows/demo-owner-filter/diff",
+      "method": "GET",
+      "fulfilledLocally": true
+    },
+    {
+      "path": "/api/projects",
+      "method": "GET",
+      "fulfilledLocally": true
+    },
+    {
+      "path": "/api/workflows",
+      "method": "GET",
+      "fulfilledLocally": true
+    },
+    {
+      "path": "/api/health",
+      "method": "GET",
+      "fulfilledLocally": true
+    },
+    {
+      "path": "/api/projects",
+      "method": "GET",
+      "fulfilledLocally": true
+    },
+    {
+      "path": "/api/workflows",
+      "method": "GET",
+      "fulfilledLocally": true
+    },
+    {
+      "path": "/api/workflows/demo-owner-filter",
+      "method": "GET",
+      "fulfilledLocally": true
+    },
+    {
+      "path": "/api/workflows/demo-owner-filter/diff",
+      "method": "GET",
+      "fulfilledLocally": true
+    },
+    {
+      "path": "/api/model-tools/codex/models",
+      "method": "GET",
+      "fulfilledLocally": true
+    },
+    {
+      "path": "/api/workflows/demo-owner-filter/functional-issues",
+      "method": "GET",
+      "fulfilledLocally": true
+    },
+    {
+      "path": "/api/workflows/demo-owner-filter/functional-issue-views",
+      "method": "GET",
+      "fulfilledLocally": true
+    },
+    {
+      "path": "/api/workflows/demo-owner-filter/execution-spec",
+      "method": "GET",
+      "fulfilledLocally": true
+    },
+    {
+      "path": "/api/workflows/demo-owner-filter/execution-spec",
+      "method": "GET",
+      "fulfilledLocally": true
+    },
+    {
+      "path": "/api/projects",
+      "method": "GET",
+      "fulfilledLocally": true
+    },
+    {
+      "path": "/api/workflows",
+      "method": "GET",
+      "fulfilledLocally": true
+    },
+    {
+      "path": "/api/model-tools/codex/models",
+      "method": "GET",
+      "fulfilledLocally": true
+    },
+    {
+      "path": "/api/model-access/verify",
+      "method": "POST",
+      "fulfilledLocally": true
+    },
+    {
+      "path": "/api/model-tools/agy/models",
+      "method": "GET",
+      "fulfilledLocally": true
+    },
+    {
+      "path": "/api/model-access/verify",
+      "method": "POST",
+      "fulfilledLocally": true
+    },
+    {
+      "path": "/api/workflows/demo-owner-filter/execution-spec",
+      "method": "GET",
+      "fulfilledLocally": true
+    },
+    {
+      "path": "/api/health",
+      "method": "GET",
+      "fulfilledLocally": true
+    },
+    {
+      "path": "/api/projects",
+      "method": "GET",
+      "fulfilledLocally": true
+    },
+    {
+      "path": "/api/workflows",
+      "method": "GET",
+      "fulfilledLocally": true
+    },
+    {
+      "path": "/api/workflows/demo-owner-filter",
+      "method": "GET",
+      "fulfilledLocally": true
+    },
+    {
+      "path": "/api/projects/demo-crm/asides",
+      "method": "GET",
+      "fulfilledLocally": true
+    },
+    {
+      "path": "/api/workflows/demo-owner-filter/user-interactions/current",
+      "method": "GET",
+      "fulfilledLocally": true
+    },
+    {
+      "path": "/api/workflows/demo-owner-filter/diff",
+      "method": "GET",
+      "fulfilledLocally": true
+    },
+    {
+      "path": "/api/projects",
+      "method": "GET",
+      "fulfilledLocally": true
+    },
+    {
+      "path": "/api/workflows",
+      "method": "GET",
+      "fulfilledLocally": true
+    },
+    {
+      "path": "/api/workflows/demo-owner-filter/diff",
+      "method": "GET",
+      "fulfilledLocally": true
+    },
+    {
+      "path": "/api/health",
+      "method": "GET",
+      "fulfilledLocally": true
+    },
+    {
+      "path": "/api/projects",
+      "method": "GET",
+      "fulfilledLocally": true
+    },
+    {
+      "path": "/api/workflows",
+      "method": "GET",
+      "fulfilledLocally": true
+    },
+    {
+      "path": "/api/workflows/demo-owner-filter",
+      "method": "GET",
+      "fulfilledLocally": true
+    },
+    {
+      "path": "/api/projects/demo-crm/asides",
+      "method": "GET",
+      "fulfilledLocally": true
+    },
+    {
+      "path": "/api/workflows/demo-owner-filter/user-interactions/current",
+      "method": "GET",
+      "fulfilledLocally": true
+    },
+    {
+      "path": "/api/workflows/demo-owner-filter/diff",
+      "method": "GET",
+      "fulfilledLocally": true
+    },
+    {
+      "path": "/api/projects",
+      "method": "GET",
+      "fulfilledLocally": true
+    },
+    {
+      "path": "/api/workflows",
+      "method": "GET",
+      "fulfilledLocally": true
+    },
+    {
+      "path": "/api/workflows/demo-owner-filter/diff",
+      "method": "GET",
+      "fulfilledLocally": true
+    },
+    {
+      "path": "/api/health",
+      "method": "GET",
+      "fulfilledLocally": true
+    },
+    {
+      "path": "/api/projects",
+      "method": "GET",
+      "fulfilledLocally": true
+    },
+    {
+      "path": "/api/workflows",
+      "method": "GET",
+      "fulfilledLocally": true
+    },
+    {
+      "path": "/api/workflows/demo-owner-filter",
+      "method": "GET",
+      "fulfilledLocally": true
+    },
+    {
+      "path": "/api/workflows/demo-owner-filter/diff",
+      "method": "GET",
+      "fulfilledLocally": true
+    },
+    {
+      "path": "/api/projects",
+      "method": "GET",
+      "fulfilledLocally": true
+    },
+    {
+      "path": "/api/workflows",
+      "method": "GET",
+      "fulfilledLocally": true
+    },
+    {
+      "path": "/api/health",
+      "method": "GET",
+      "fulfilledLocally": true
+    },
+    {
+      "path": "/api/projects",
+      "method": "GET",
+      "fulfilledLocally": true
+    },
+    {
+      "path": "/api/workflows",
+      "method": "GET",
+      "fulfilledLocally": true
+    },
+    {
+      "path": "/api/workflows/demo-owner-filter",
+      "method": "GET",
+      "fulfilledLocally": true
+    },
+    {
+      "path": "/api/workflows/demo-owner-filter/diff",
+      "method": "GET",
+      "fulfilledLocally": true
+    },
+    {
+      "path": "/api/projects",
+      "method": "GET",
+      "fulfilledLocally": true
+    },
+    {
+      "path": "/api/workflows",
+      "method": "GET",
+      "fulfilledLocally": true
+    },
+    {
+      "path": "/api/health",
+      "method": "GET",
+      "fulfilledLocally": true
+    },
+    {
+      "path": "/api/projects",
+      "method": "GET",
+      "fulfilledLocally": true
+    },
+    {
+      "path": "/api/workflows",
+      "method": "GET",
+      "fulfilledLocally": true
+    },
+    {
+      "path": "/api/workflows/demo-owner-filter",
+      "method": "GET",
+      "fulfilledLocally": true
+    },
+    {
+      "path": "/api/workflows/demo-owner-filter/diff",
+      "method": "GET",
+      "fulfilledLocally": true
+    },
+    {
+      "path": "/api/projects",
+      "method": "GET",
+      "fulfilledLocally": true
+    },
+    {
+      "path": "/api/workflows",
+      "method": "GET",
+      "fulfilledLocally": true
+    },
+    {
+      "path": "/api/health",
+      "method": "GET",
+      "fulfilledLocally": true
+    },
+    {
+      "path": "/api/projects",
+      "method": "GET",
+      "fulfilledLocally": true
+    },
+    {
+      "path": "/api/workflows",
+      "method": "GET",
+      "fulfilledLocally": true
+    },
+    {
+      "path": "/api/workflows/demo-owner-filter",
+      "method": "GET",
+      "fulfilledLocally": true
+    },
+    {
+      "path": "/api/workflows/demo-owner-filter/diff",
+      "method": "GET",
+      "fulfilledLocally": true
+    },
+    {
+      "path": "/api/projects",
+      "method": "GET",
+      "fulfilledLocally": true
+    },
+    {
+      "path": "/api/workflows",
+      "method": "GET",
+      "fulfilledLocally": true
+    }
+  ]
+}

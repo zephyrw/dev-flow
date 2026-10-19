@@ -1,0 +1,238 @@
+{
+  "method": "Independently decoded final AAC to 48 kHz stereo PCM; reconstructed expected mixtures from delivered WAV and export timeline; waveform cross-correlation; no subjective listening performed.",
+  "files": {
+    "music": {
+      "decoded_samples": 3397632,
+      "peak_dbfs": -7.818262133168813,
+      "clipped_samples": 0,
+      "correlation": 0.9996150467519315,
+      "rms_error": 0.0015365604918731748,
+      "strongest_10ms_rms_frame": 1945.545,
+      "strongest_10ms_rms": 0.18887772519473447,
+      "sample_peak_frame": 665.879375,
+      "adts_audio_sha256": "4aa3edb80e2796923296df3c311cd4b17f8b469c17b9429205474e60a46f5254",
+      "validated_final_file_sha256": "1ff31ae7f422638301390fe2f3dc202a28f2a42e31dbc3a5f53ad5201d2f5215",
+      "final_audio_bitstream_match": true
+    },
+    "no_bgm": {
+      "decoded_samples": 3397632,
+      "peak_dbfs": -9.093531433960234,
+      "clipped_samples": 0,
+      "correlation": 0.9996965956541,
+      "rms_error": 0.00033118148219454606,
+      "strongest_10ms_rms_frame": 1947.973125,
+      "strongest_10ms_rms": 0.19081044546744746,
+      "sample_peak_frame": 1941.90125,
+      "adts_audio_sha256": "e29dd70a23b23f03170021a3248ff2a1ecf338dd5b8a5959e09473a40ad7f1d0",
+      "validated_final_file_sha256": "f3b479a071cb8d8859eceb2c21e3439187393fe494c6d4367f67e2878f2c7db4",
+      "final_audio_bitstream_match": true
+    }
+  },
+  "sfx_offsets": [
+    {
+      "name": "soft",
+      "target_frame": 42,
+      "offset_samples": 0,
+      "offset_frames": 0.0
+    },
+    {
+      "name": "sweep",
+      "target_frame": 177,
+      "offset_samples": 0,
+      "offset_frames": 0.0
+    },
+    {
+      "name": "switch",
+      "target_frame": 433,
+      "offset_samples": 0,
+      "offset_frames": 0.0
+    },
+    {
+      "name": "sweep",
+      "target_frame": 667,
+      "offset_samples": 0,
+      "offset_frames": 0.0
+    },
+    {
+      "name": "sweep",
+      "target_frame": 903,
+      "offset_samples": 0,
+      "offset_frames": 0.0
+    },
+    {
+      "name": "whoosh",
+      "target_frame": 1147,
+      "offset_samples": 0,
+      "offset_frames": 0.0
+    },
+    {
+      "name": "soft",
+      "target_frame": 1383,
+      "offset_samples": 0,
+      "offset_frames": 0.0
+    },
+    {
+      "name": "soft",
+      "target_frame": 1615,
+      "offset_samples": 0,
+      "offset_frames": 0.0
+    },
+    {
+      "name": "switch",
+      "target_frame": 1740,
+      "offset_samples": 0,
+      "offset_frames": 0.0
+    },
+    {
+      "name": "riser",
+      "target_frame": 1944,
+      "offset_samples": 0,
+      "offset_frames": 0.0
+    },
+    {
+      "name": "impact",
+      "target_frame": 1948,
+      "offset_samples": -1,
+      "offset_frames": -0.000625
+    },
+    {
+      "name": "sparkle",
+      "target_frame": 1971,
+      "offset_samples": 0,
+      "offset_frames": 0.0
+    }
+  ],
+  "outro_energy": {
+    "peak_frame": 1947.973125,
+    "rms": 0.19081044546744746
+  },
+  "impact_near": {
+    "peak_frame": 1947.973125,
+    "rms": 0.19081044546744746
+  },
+  "riser_near": {
+    "peak_frame": 1945.5475,
+    "rms": 0.1903619964977013
+  },
+  "sparkle_near": {
+    "peak_frame": 1970.8925,
+    "rms": 0.09227405362047172
+  },
+  "output_bgm_low_frequency_peak_check": {
+    "method": "Actual output difference (music AAC minus no-BGM AAC), 4th-order Butterworth 40-160 Hz, 5ms RMS blocks, min peak distance 300ms, prominence 30% of 55th percentile. Filter phase sensitivity is reported; not a subjective rhythm judgment.",
+    "estimators": {
+      "causal": [
+        {
+          "frame": 0,
+          "nearest_peak_seconds": 0.53,
+          "peak_minus_cut_frames": 15.9,
+          "peak_rms": 0.09234550218589598
+        },
+        {
+          "frame": 177,
+          "nearest_peak_seconds": 5.95,
+          "peak_minus_cut_frames": 1.4999999999999947,
+          "peak_rms": 0.07049190196260793
+        },
+        {
+          "frame": 413,
+          "nearest_peak_seconds": 13.685,
+          "peak_minus_cut_frames": -2.45000000000001,
+          "peak_rms": 0.07916691706517218
+        },
+        {
+          "frame": 649,
+          "nearest_peak_seconds": 21.545,
+          "peak_minus_cut_frames": -2.6499999999999346,
+          "peak_rms": 0.0745695211148944
+        },
+        {
+          "frame": 885,
+          "nearest_peak_seconds": 29.57,
+          "peak_minus_cut_frames": 2.1000000000000085,
+          "peak_rms": 0.06634174759013198
+        },
+        {
+          "frame": 1121,
+          "nearest_peak_seconds": 37.435,
+          "peak_minus_cut_frames": 2.050000000000054,
+          "peak_rms": 0.07922976917960038
+        },
+        {
+          "frame": 1357,
+          "nearest_peak_seconds": 45.16,
+          "peak_minus_cut_frames": -2.2000000000001307,
+          "peak_rms": 0.06894461459162968
+        },
+        {
+          "frame": 1592,
+          "nearest_peak_seconds": 53.125,
+          "peak_minus_cut_frames": 1.7499999999999005,
+          "peak_rms": 0.011569088556964674
+        },
+        {
+          "frame": 1887,
+          "nearest_peak_seconds": 62.995,
+          "peak_minus_cut_frames": 2.849999999999966,
+          "peak_rms": 0.11916661478012586
+        }
+      ],
+      "zero_phase": [
+        {
+          "frame": 0,
+          "nearest_peak_seconds": 0.515,
+          "peak_minus_cut_frames": 15.450000000000001,
+          "peak_rms": 0.0967567711809685
+        },
+        {
+          "frame": 177,
+          "nearest_peak_seconds": 5.915,
+          "peak_minus_cut_frames": 0.4499999999999904,
+          "peak_rms": 0.08387634857117315
+        },
+        {
+          "frame": 413,
+          "nearest_peak_seconds": 13.74,
+          "peak_minus_cut_frames": -0.8000000000000185,
+          "peak_rms": 0.07752417613108673
+        },
+        {
+          "frame": 649,
+          "nearest_peak_seconds": 21.54,
+          "peak_minus_cut_frames": -2.8000000000000114,
+          "peak_rms": 0.07574413735238646
+        },
+        {
+          "frame": 885,
+          "nearest_peak_seconds": 29.555,
+          "peak_minus_cut_frames": 1.6499999999999915,
+          "peak_rms": 0.07383999287020133
+        },
+        {
+          "frame": 1121,
+          "nearest_peak_seconds": 37.425,
+          "peak_minus_cut_frames": 1.7499999999999005,
+          "peak_rms": 0.07372660540432517
+        },
+        {
+          "frame": 1357,
+          "nearest_peak_seconds": 45.17,
+          "peak_minus_cut_frames": -1.8999999999999773,
+          "peak_rms": 0.06812138051102988
+        },
+        {
+          "frame": 1592,
+          "nearest_peak_seconds": 53.015,
+          "peak_minus_cut_frames": -1.5500000000000824,
+          "peak_rms": 0.008815049292910321
+        },
+        {
+          "frame": 1887,
+          "nearest_peak_seconds": 62.98,
+          "peak_minus_cut_frames": 2.399999999999949,
+          "peak_rms": 0.10319493777642882
+        }
+      ]
+    }
+  }
+}

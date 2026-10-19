@@ -9,6 +9,7 @@ export interface QuotaWindowData {
 }
 
 export interface QuotaPopoverProps {
+  triggerLabel?: string;
   categoryLabel?: string;
   showUnknownWindows?: boolean;
   weeklyData?: QuotaWindowData | null;
@@ -134,6 +135,7 @@ function UnknownQuotaRow({ title }: { title: string }) {
 }
 
 export function QuotaPopover({
+  triggerLabel = "查看额度",
   categoryLabel,
   showUnknownWindows = false,
   weeklyData,
@@ -209,8 +211,9 @@ export function QuotaPopover({
         ref={triggerRef}
         className={`quota-trigger-btn ${isOpen ? "is-active" : ""}`}
         onClick={handleClick}
-        aria-label="查看额度"
-        title="查看额度"
+        aria-label={triggerLabel}
+        title={triggerLabel}
+        aria-expanded={isOpen}
       >
         {/* 简洁仪表盘线性图标 */}
         <svg

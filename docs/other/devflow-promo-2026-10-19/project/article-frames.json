@@ -1,0 +1,87 @@
+[
+  {
+    "frame": 100,
+    "title": "轻量化模型调度工作流",
+    "file": "v2-f0100.png"
+  },
+  {
+    "frame": 320,
+    "title": "工具与模型可自定义 · 规划配置",
+    "file": "v2-f0320.png"
+  },
+  {
+    "frame": 405,
+    "title": "工具与模型可自定义 · 执行配置",
+    "file": "v2-f0405.png"
+  },
+  {
+    "frame": 625,
+    "title": "三段接力 · 完整八步工作流",
+    "file": "v3-f0625.png"
+  },
+  {
+    "frame": 798,
+    "title": "01 调研计划 · GPT-6 Astra",
+    "file": "v3-f0798.png"
+  },
+  {
+    "frame": 975,
+    "title": "02 人工审批 · 由你确认",
+    "file": "v3-f0975.png"
+  },
+  {
+    "frame": 1093,
+    "title": "03 开发实施 · Gemini 3.8 Flash",
+    "file": "v3-f1093.png"
+  },
+  {
+    "frame": 1270,
+    "title": "04 自动测试 · Gemini 3.8 Flash",
+    "file": "v3-f1270.png"
+  },
+  {
+    "frame": 1447,
+    "title": "05 验收前质量审查 · GPT-6 Astra",
+    "file": "v3-f1447.png"
+  },
+  {
+    "frame": 1623,
+    "title": "06 人工验收 · 由你确认",
+    "file": "v3-f1623.png"
+  },
+  {
+    "frame": 1741,
+    "title": "07 验收后代码复核 · GPT-6 Astra",
+    "file": "v3-f1741.png"
+  },
+  {
+    "frame": 1918,
+    "title": "08 本地提交 · GPT-6 Astra",
+    "file": "v3-f1918.png"
+  },
+  {
+    "frame": 2135,
+    "title": "Agy 账号管理",
+    "file": "v2-f2135.png"
+  },
+  {
+    "frame": 2371,
+    "title": "周额度与 5 小时额度",
+    "file": "v3-f2371.png"
+  },
+  {
+    "frame": 2577,
+    "title": "额度耗尽，自动选择可用账号",
+    "file": "v2-f2577.png"
+  },
+  {
+    "frame": 2687,
+    "title": "账号切换后继续任务",
+    "file": "v2-f2687.png"
+  },
+  {
+    "frame": 2940,
+    "title": "模型由你选择，DevFlow 负责衔接",
+    "file": "v2-f2940.png"
+  }
+]

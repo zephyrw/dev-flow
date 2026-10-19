@@ -1,0 +1,346 @@
+{
+  "method": "Actual MP4 frame RGB dark-pixel ink bounding boxes in manually selected text regions. Ink bounds differ from CSS em/effective typographic height; they are reported separately from fontSize x ancestor scale. Threshold R<160,G<170,B<200.",
+  "regions": [
+    {
+      "frame": 100,
+      "name": "opening_subtitle",
+      "roi": [
+        120,
+        690,
+        1200,
+        780
+      ],
+      "css_font_size": 60,
+      "ancestor_scale": 1,
+      "kind": "narrative",
+      "visible_ink_height": 58,
+      "occupied_bounds_in_roi": [
+        6,
+        20,
+        603,
+        77
+      ]
+    },
+    {
+      "frame": 320,
+      "name": "case_caption",
+      "roi": [
+        1112,
+        845,
+        1730,
+        930
+      ],
+      "css_font_size": 60,
+      "ancestor_scale": 1,
+      "kind": "narrative",
+      "visible_ink_height": 58,
+      "occupied_bounds_in_roi": [
+        10,
+        11,
+        607,
+        68
+      ]
+    },
+    {
+      "frame": 535,
+      "name": "role_note",
+      "roi": [
+        1212,
+        800,
+        1880,
+        895
+      ],
+      "css_font_size": 60,
+      "ancestor_scale": 1,
+      "kind": "narrative",
+      "visible_ink_height": 58,
+      "occupied_bounds_in_roi": [
+        5,
+        25,
+        302,
+        82
+      ]
+    },
+    {
+      "frame": 535,
+      "name": "role_footer",
+      "roi": [
+        98,
+        920,
+        1180,
+        1003
+      ],
+      "css_font_size": 60,
+      "ancestor_scale": 1,
+      "kind": "narrative",
+      "visible_ink_height": 58,
+      "occupied_bounds_in_roi": [
+        3,
+        9,
+        586,
+        66
+      ]
+    },
+    {
+      "frame": 1255,
+      "name": "account_description",
+      "roi": [
+        123,
+        530,
+        850,
+        614
+      ],
+      "css_font_size": 60,
+      "ancestor_scale": 1,
+      "kind": "narrative",
+      "visible_ink_height": 58,
+      "occupied_bounds_in_roi": [
+        4,
+        11,
+        540,
+        68
+      ]
+    },
+    {
+      "frame": 1255,
+      "name": "account_tools",
+      "roi": [
+        120,
+        758,
+        860,
+        830
+      ],
+      "css_font_size": 34,
+      "ancestor_scale": 1,
+      "kind": "auxiliary",
+      "visible_ink_height": 32,
+      "occupied_bounds_in_roi": [
+        6,
+        13,
+        532,
+        44
+      ]
+    },
+    {
+      "frame": 1460,
+      "name": "pool_caption",
+      "roi": [
+        120,
+        930,
+        1320,
+        1015
+      ],
+      "css_font_size": 60,
+      "ancestor_scale": 1,
+      "kind": "narrative",
+      "visible_ink_height": 58,
+      "occupied_bounds_in_roi": [
+        8,
+        17,
+        878,
+        74
+      ]
+    },
+    {
+      "frame": 1670,
+      "name": "switch_subtitle",
+      "roi": [
+        100,
+        208,
+        820,
+        290
+      ],
+      "css_font_size": 60,
+      "ancestor_scale": 1,
+      "kind": "narrative",
+      "visible_ink_height": 58,
+      "occupied_bounds_in_roi": [
+        7,
+        15,
+        719,
+        72
+      ]
+    },
+    {
+      "frame": 1670,
+      "name": "switch_step1",
+      "roi": [
+        190,
+        360,
+        790,
+        442
+      ],
+      "css_font_size": 60,
+      "ancestor_scale": 1,
+      "kind": "narrative",
+      "visible_ink_height": 58,
+      "occupied_bounds_in_roi": [
+        8,
+        13,
+        363,
+        70
+      ]
+    },
+    {
+      "frame": 1670,
+      "name": "switch_precondition",
+      "roi": [
+        105,
+        950,
+        1180,
+        1003
+      ],
+      "css_font_size": 34,
+      "ancestor_scale": 1,
+      "kind": "auxiliary",
+      "visible_ink_height": 33,
+      "occupied_bounds_in_roi": [
+        9,
+        11,
+        864,
+        43
+      ]
+    },
+    {
+      "frame": 1670,
+      "name": "demo_disclaimer",
+      "roi": [
+        1420,
+        1007,
+        1825,
+        1063
+      ],
+      "css_font_size": 34,
+      "ancestor_scale": 1,
+      "kind": "auxiliary",
+      "visible_ink_height": 33,
+      "occupied_bounds_in_roi": [
+        29,
+        11,
+        392,
+        43
+      ]
+    },
+    {
+      "frame": 2050,
+      "name": "outro_subtitle",
+      "roi": [
+        470,
+        648,
+        1430,
+        731
+      ],
+      "css_font_size": 60,
+      "ancestor_scale": 1,
+      "kind": "narrative",
+      "visible_ink_height": 58,
+      "occupied_bounds_in_roi": [
+        11,
+        17,
+        927,
+        74
+      ]
+    },
+    {
+      "frame": 2050,
+      "name": "outro_cta",
+      "roi": [
+        710,
+        753,
+        1180,
+        837
+      ],
+      "css_font_size": 60,
+      "ancestor_scale": 1,
+      "kind": "narrative",
+      "visible_ink_height": 58,
+      "occupied_bounds_in_roi": [
+        11,
+        16,
+        448,
+        73
+      ]
+    },
+    {
+      "frame": 2050,
+      "name": "outro_url",
+      "roi": [
+        680,
+        918,
+        1250,
+        986
+      ],
+      "css_font_size": 40,
+      "ancestor_scale": 1,
+      "kind": "auxiliary",
+      "visible_ink_height": 39,
+      "occupied_bounds_in_roi": [
+        15,
+        15,
+        545,
+        53
+      ]
+    },
+    {
+      "frame": 320,
+      "name": "case_task",
+      "roi": [
+        120,
+        208,
+        1700,
+        295
+      ],
+      "css_font_size": 60,
+      "ancestor_scale": 1,
+      "kind": "narrative",
+      "visible_ink_height": 58,
+      "occupied_bounds_in_roi": [
+        7,
+        16,
+        806,
+        73
+      ]
+    },
+    {
+      "frame": 535,
+      "name": "relay_title",
+      "roi": [
+        90,
+        75,
+        1100,
+        155
+      ],
+      "css_font_size": 57,
+      "ancestor_scale": 1,
+      "kind": "narrative",
+      "visible_ink_height": 56,
+      "occupied_bounds_in_roi": [
+        13,
+        17,
+        635,
+        72
+      ]
+    },
+    {
+      "frame": 535,
+      "name": "case_label",
+      "roi": [
+        1210,
+        212,
+        1880,
+        282
+      ],
+      "css_font_size": 34,
+      "ancestor_scale": 1,
+      "kind": "auxiliary",
+      "visible_ink_height": 33,
+      "occupied_bounds_in_roi": [
+        11,
+        17,
+        356,
+        49
+      ]
+    }
+  ],
+  "video_stream_sha256": "d08469c25c3bcfa9d886a0268b2451c5d65d2d8fab27ebb2553721c9381e0425"
+}

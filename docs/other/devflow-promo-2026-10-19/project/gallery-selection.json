@@ -1,0 +1,84 @@
+[
+  {
+    "name": "blur-slide",
+    "summary": "标题逐词入场，y 0.38em→0 + blur 18→0 + opacity 0→1 三通道走同一条 ease-out 同步收敛，词间隔约 4f；副标题在标题收完前就错峰跟进",
+    "use": "几乎所有标题/副标题成对出现的场合；产品页首屏文案、章节小标题；需要\"专业但不抢戏\"的默认文字 reveal",
+    "duration": "约 4.0s（120f@30fps）",
+    "energy": "低（一次性收敛，无峰值无循环）",
+    "intention": "这是文字 reveal 的**默认解**——没有奇观、没有机械感，只是把词一个个 柔和地放到位。它的专业感全来自一件事：y、blur、opacity 三个通道共用 同一个进度 `p`、同一条缓动，所以词是\"从虚焦里浮出来\"而不是\"滑进来 顺便淡一下\"。当一支片里已经有别的重手法（乱码/滚轮），标题就该 用这一卡，让位给主角。",
+    "source": "references/shots/typography/blur-slide.md",
+    "updatedAt": "2026-10-02T21:01:48Z",
+    "styles": [
+      {
+        "key": "blur-slide",
+        "label": "blur-slide",
+        "description": "标题逐词入场，y 0.38em→0 + blur 18→0 + opacity 0→1 三通道走同一条 ease-out 同步收敛，词间隔约 4f；副标题在标题收完前就错峰跟进",
+        "media": {
+          "url": "./media/blur-slide.mp4?v=1790980736774",
+          "type": "mp4"
+        }
+      }
+    ],
+    "sourceUrl": "./source/blur-slide.md",
+    "category": "typography",
+    "tags": [
+      "typography"
+    ],
+    "addedAt": "2026-08-07T04:03:34Z"
+  },
+  {
+    "name": "outro-group-photo-launch",
+    "summary": "全片元素从四面八方飞来围住字标合影，crane 落机位+舞台光+金尘做成发布会收场",
+    "use": "outro/品牌收尾；多功能产品的\"全家福\"式终镜",
+    "duration": "约 4.8s（145f）",
+    "energy": "峰值（全片最高点）",
+    "intention": "把看过的每个功能各抽一个代表元素叫回来合影，字标压轴登场——观众离场前最后记住的是\"这些东西属于同一个产品\"。规格必须是发布会级：能量推到全片最高。",
+    "source": "references/shots/outro/outro-group-photo-launch.md",
+    "updatedAt": "2026-10-02T21:01:48Z",
+    "styles": [
+      {
+        "key": "outro-group-photo-launch",
+        "label": "outro-group-photo-launch",
+        "description": "全片元素从四面八方飞来围住字标合影，crane 落机位+舞台光+金尘做成发布会收场",
+        "media": {
+          "url": "./media/outro-group-photo-launch.mp4?v=1790980736839",
+          "type": "mp4"
+        }
+      }
+    ],
+    "sourceUrl": "./source/outro-group-photo-launch.md",
+    "category": "outro",
+    "tags": [
+      "outro"
+    ],
+    "addedAt": "2026-07-19T05:45:41Z"
+  },
+  {
+    "name": "word-relay-filmstrip",
+    "summary": "左列黑白相间等高页面卡步进滚动（焦点卡全亮、邻卡离焦压暗）、右侧衬线大词原位接力（名词恒定+动词轮换）——切词瞬间才滚动一格，词块垂直中心与当前页面卡中点精确对齐",
+    "use": "\"一个主体 × 多种能力\"的枚举段（Shotcraft frames/builds/ships…）；作品集/案例流展示；产品多场景巡礼",
+    "duration": "每词期 ~1.5–2s × 3–4 词；demo 180f（6s）",
+    "energy": "中低（编辑部气质，节奏靠切词的\"咔哒\"感）",
+    "intention": "左边是证据（页面截图胶片），右边是论点（大词）：动词换一次， 胶片就步进一格给出新证据——文字与画面互为注脚。命门是**步进制**： 左列平时完全静止，只在切词瞬间滚动一格（滚动=换证据的机械动作）， 持续滚动会让左列沦为背景装饰、切词失去\"咔哒\"感。第二命门是 **对齐**：大词块垂直中心必须与当前页面卡中点精确对齐（像素级）， 歪了整个版式的\"编辑部严谨感\"就塌了。",
+    "source": "references/shots/typography/word-relay-filmstrip.md",
+    "updatedAt": "2026-10-02T21:01:48Z",
+    "styles": [
+      {
+        "key": "word-relay-filmstrip",
+        "label": "word-relay-filmstrip",
+        "description": "左列黑白相间等高页面卡步进滚动（焦点卡全亮、邻卡离焦压暗）、右侧衬线大词原位接力（名词恒定+动词轮换）——切词瞬间才滚动一格，词块垂直中心与当前页面卡中点精确对齐",
+        "media": {
+          "url": "./media/word-relay-filmstrip.mp4?v=1790980736912",
+          "type": "mp4"
+        }
+      }
+    ],
+    "sourceUrl": "./source/word-relay-filmstrip.md",
+    "category": "typography",
+    "tags": [
+      "typography",
+      "ui-entrance"
+    ],
+    "addedAt": "2026-07-19T05:45:41Z"
+  }
+]

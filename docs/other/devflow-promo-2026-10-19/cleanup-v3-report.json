@@ -1,0 +1,25 @@
+{
+  "date": "2026-10-19T17:02:30+08:00",
+  "status": "complete",
+  "removedRoot": "C:\\Code\\system-handle\\docs\\other\\devflow-promo-2026-10-19\\.tmp",
+  "files": 218,
+  "directories": 13,
+  "bytes": 192386679,
+  "mib": 183.47,
+  "reparsePoints": 0,
+  "processesReferencingTemporaryRoot": 0,
+  "independentReviewCleanup": {
+    "source": "Independent reviewer completion message; excluded from bytes above",
+    "files": 13,
+    "mib": 2.54
+  },
+  "preserved": [
+    "Two final MP4s",
+    "17 current article PNGs and 20 historical PNGs",
+    "40 UI textures",
+    "Editable project and its working dependencies",
+    "Validation and independent review reports",
+    "Installed shared skill and running editing workbench"
+  ],
+  "processInspection": "Initial sandbox CIM scan was unavailable; known task sessions had completed. Elevated post-cleanup CIM scan verified remaining process references."
+}

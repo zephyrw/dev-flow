@@ -1,0 +1,121 @@
+{
+  "viewport": {
+    "width": 1920,
+    "height": 1080
+  },
+  "deviceScaleFactor": 2,
+  "data": "fictional",
+  "source": "real DevFlow frontend, all API and WebSocket requests intercepted",
+  "pages": {
+    "08-research": {
+      "pageH": 1080,
+      "parts": {
+        "plan": {
+          "x": 336.5,
+          "y": 249.921875,
+          "w": 1559.5,
+          "h": 814.078125
+        }
+      }
+    },
+    "07-model-config": {
+      "pageH": 1080,
+      "parts": {
+        "panel": {
+          "x": 600,
+          "y": 285.65625,
+          "w": 720,
+          "h": 508.671875
+        }
+      }
+    },
+    "07-model-executor": {
+      "pageH": 1080,
+      "parts": {
+        "panel": {
+          "x": 600,
+          "y": 285.65625,
+          "w": 720,
+          "h": 508.671875
+        }
+      }
+    },
+    "09-approval": {
+      "pageH": 1080,
+      "parts": {
+        "dialog": {
+          "x": 600,
+          "y": 198.078125,
+          "w": 720,
+          "h": 683.828125
+        }
+      }
+    },
+    "10-implement": {
+      "pageH": 1080,
+      "parts": {
+        "main": {
+          "x": 336.5,
+          "y": 77.1875,
+          "w": 1163.5,
+          "h": 986.8125
+        }
+      }
+    },
+    "11-tests": {
+      "pageH": 1080,
+      "parts": {
+        "main": {
+          "x": 336.5,
+          "y": 77.1875,
+          "w": 1163.5,
+          "h": 986.8125
+        }
+      }
+    },
+    "12-pre-review": {
+      "pageH": 1080,
+      "parts": {
+        "main": {
+          "x": 361.5,
+          "y": 299.71875,
+          "w": 1505.5,
+          "h": 308.25
+        }
+      }
+    },
+    "13-acceptance": {
+      "pageH": 1080,
+      "parts": {
+        "main": {
+          "x": 336.5,
+          "y": 193.78125,
+          "w": 1559.5,
+          "h": 288.078125
+        }
+      }
+    },
+    "14-final-review": {
+      "pageH": 1080,
+      "parts": {
+        "main": {
+          "x": 361.5,
+          "y": 299.71875,
+          "w": 1505.5,
+          "h": 308.25
+        }
+      }
+    },
+    "15-commit": {
+      "pageH": 1080,
+      "parts": {
+        "main": {
+          "x": 336.5,
+          "y": 77.1875,
+          "w": 1559.5,
+          "h": 986.8125
+        }
+      }
+    }
+  }
+}

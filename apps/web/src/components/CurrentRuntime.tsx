@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import type { QuotaBucket } from "../../../../packages/contracts/src/run-observation.js";
-import { visibleRunObservation } from "../../../../packages/presentation/src/run-observation.js";
+import { runtimeToolNames, visibleRunObservation } from "../../../../packages/presentation/src/run-observation.js";
 import { projectRoleRuntime } from "../../../../packages/presentation/src/role-runtime.js";
 import { effectiveRuntimeQuotaWindows } from "../../../../packages/presentation/src/agy-accounts.js";
 import { QuotaPopover, QuotaWindowData } from "./QuotaPopover.js";
@@ -46,35 +46,27 @@ function ExecutorIcon() {
   );
 }
 
-export function CurrentRuntime({
+function RuntimeQuota({
   detail,
   connected,
-  onEdit,
+  adapterId,
+  modelId,
+  label,
+  now,
 }: {
   detail: any;
   connected: boolean;
-  onEdit?: (role?: string) => void;
+  adapterId?: string | null;
+  modelId?: string | null;
+  label: string;
+  now: number;
 }) {
-  const [now, setNow] = useState(Date.now());
-  useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 10000);
-    return () => clearInterval(timer);
-  }, []);
-
-  const runtimeView = projectRoleRuntime(detail, { connected });
-  const { plannerRow, executorRow, compactBadge, quotaTarget } = runtimeView;
-
   const observation = visibleRunObservation(detail);
-  const quota = observation && connected && runtimeView.activeRole &&
-    observation?.adapter === quotaTarget?.adapter &&
-    (observation.actual_model ?? observation.requested_model) === quotaTarget?.model
+  const quota = observation && observation.adapter === adapterId
       ? observation.quota : undefined;
-  const activeModel =
-    quotaTarget?.model ??
-    observation?.actual_model ??
-    observation?.requested_model;
+  const activeModel = modelId;
 
-  const isAgy = observation?.adapter === "agy" || quotaTarget?.adapter === "agy";
+  const isAgy = adapterId === "agy";
   const agyCategory = isAgy ? getAgyModelCategory(activeModel) : undefined;
   const categoryLabel = isAgy
     ? agyCategory === "gemini"
@@ -102,7 +94,7 @@ export function CurrentRuntime({
     }) ?? [];
 
   const sharedBuckets =
-    observation?.adapter === "codex"
+    adapterId === "codex"
       ? quota?.buckets.filter(
           (bucket) => bucket.id === "codex" && !bucket.model,
         ) ?? []
@@ -138,7 +130,7 @@ export function CurrentRuntime({
   let fiveHourData: QuotaWindowData | null = null;
 
   if (matchedBucket?.windows) {
-    for (const window of effectiveRuntimeQuotaWindows(matchedBucket, observation?.adapter ?? "", quota?.observed_at ?? "", now)) {
+    for (const window of effectiveRuntimeQuotaWindows(matchedBucket, adapterId ?? "", quota?.observed_at ?? "", now)) {
       const winMins = window.window_minutes;
       const remainingPercent =
         typeof window.used_percent === "number" &&
@@ -160,9 +152,36 @@ export function CurrentRuntime({
   }
 
   return (
+    <div className="runtime-quota-wrapper">
+      <QuotaPopover
+        triggerLabel={`查看${label}工具额度`}
+        categoryLabel={`${label} · ${adapterId ? runtimeToolNames[adapterId] ?? adapterId : "未配置工具"}${categoryLabel ? ` · ${categoryLabel}` : ""}`}
+        showUnknownWindows={isAgy}
+        weeklyData={weeklyData}
+        fiveHourData={fiveHourData}
+        isStale={Boolean(quota && stale)}
+        isShared={isBucketShared}
+      />
+    </div>
+  );
+}
+
+export function CurrentRuntime({ detail, connected, onEdit }: {
+  detail: any;
+  connected: boolean;
+  onEdit?: (role?: string) => void;
+}) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 10000);
+    return () => clearInterval(timer);
+  }, []);
+  const { plannerRow, executorRow, compactBadge, quotaTarget } = projectRoleRuntime(detail, { connected });
+  return (
     <section className="current-runtime" aria-label="当前工具与模型">
       <div className="runtime-rows-container">
         {/* 上行：固定代表规划配置 */}
+        <div className="runtime-model-row" data-role="planner">
         <button
           type="button"
           className={`runtime-row-btn ${plannerRow.isActive ? "is-active" : "is-inactive"}`}
@@ -181,8 +200,12 @@ export function CurrentRuntime({
             <span className="runtime-row-tag">{plannerRow.activeReason}</span>
           )}
         </button>
+        <RuntimeQuota detail={detail} connected={connected} now={now}
+          adapterId={plannerRow.adapterId} modelId={plannerRow.modelId} label="规划" />
+        </div>
 
         {/* 下行：固定代表执行配置 */}
+        <div className="runtime-model-row" data-role="executor">
         <button
           type="button"
           className={`runtime-row-btn ${executorRow.isActive ? "is-active" : "is-inactive"}`}
@@ -201,10 +224,14 @@ export function CurrentRuntime({
             <span className="runtime-row-tag">{executorRow.activeReason}</span>
           )}
         </button>
+        <RuntimeQuota detail={detail} connected={connected} now={now}
+          adapterId={executorRow.adapterId} modelId={executorRow.modelId} label="执行" />
+        </div>
       </div>
 
       {/* 独立复核/修复紧凑标识 */}
       {compactBadge && (
+        <div className="runtime-model-row" data-role={compactBadge.role}>
         <button
           type="button"
           className="runtime-compact-badge is-active"
@@ -215,23 +242,10 @@ export function CurrentRuntime({
           <span className="runtime-badge-label">{compactBadge.label}</span>
           <span className="runtime-badge-text">{compactBadge.displayText}</span>
         </button>
+        <RuntimeQuota detail={detail} connected={connected} now={now}
+          adapterId={quotaTarget?.adapter} modelId={quotaTarget?.model} label={compactBadge.label} />
+        </div>
       )}
-
-      {/* 额度入口 */}
-      <div
-        className="runtime-quota-wrapper"
-        title={quotaTarget?.description}
-        aria-label={quotaTarget?.description}
-      >
-        <QuotaPopover
-          categoryLabel={categoryLabel}
-          showUnknownWindows={isAgy}
-          weeklyData={weeklyData}
-          fiveHourData={fiveHourData}
-          isStale={Boolean(stale)}
-          isShared={isBucketShared}
-        />
-      </div>
     </section>
   );
 }

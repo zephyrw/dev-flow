@@ -1,0 +1,123 @@
+{
+  "viewport": {
+    "width": 1920,
+    "height": 1080
+  },
+  "deviceScaleFactor": 2,
+  "data": "fictional",
+  "source": "real DevFlow frontend, all API and WebSocket requests intercepted",
+  "pages": {
+    "01-planning": {
+      "pageH": 1080,
+      "parts": {
+        "plan": {
+          "x": 336.5,
+          "y": 249.921875,
+          "w": 1559.5,
+          "h": 814.078125
+        },
+        "models": {
+          "x": 1673.046875,
+          "y": 17.09375,
+          "w": 222.953125,
+          "h": 47
+        }
+      }
+    },
+    "02-execution": {
+      "pageH": 1080,
+      "parts": {
+        "main": {
+          "x": 336.5,
+          "y": 77.1875,
+          "w": 1163.5,
+          "h": 986.8125
+        },
+        "models": {
+          "x": 1673.046875,
+          "y": 17.09375,
+          "w": 222.953125,
+          "h": 47
+        }
+      }
+    },
+    "03-review": {
+      "pageH": 1080,
+      "parts": {
+        "review": {
+          "x": 361.5,
+          "y": 299.71875,
+          "w": 1505.5,
+          "h": 648.9375
+        }
+      }
+    },
+    "04-accounts": {
+      "pageH": 1080,
+      "parts": {
+        "panel": {
+          "x": 605,
+          "y": 116,
+          "w": 710,
+          "h": 572.5
+        },
+        "first-account": {
+          "x": 605,
+          "y": 251.5,
+          "w": 710,
+          "h": 138.5
+        },
+        "switch": {
+          "x": 605,
+          "y": 116,
+          "w": 710,
+          "h": 93.5
+        },
+        "gemini": {
+          "x": 637,
+          "y": 321.5,
+          "w": 646,
+          "h": 17.25
+        },
+        "other": {
+          "x": 637,
+          "y": 346.75,
+          "w": 646,
+          "h": 17.25
+        }
+      }
+    },
+    "05-switching": {
+      "pageH": 1080,
+      "parts": {
+        "panel": {
+          "x": 605,
+          "y": 116,
+          "w": 710,
+          "h": 648
+        },
+        "operation": {
+          "x": 605,
+          "y": 225.5,
+          "w": 710,
+          "h": 59.5
+        }
+      }
+    },
+    "06-switched": {
+      "pageH": 1080,
+      "parts": {
+        "panel": {
+          "x": 605,
+          "y": 116,
+          "w": 710,
+          "h": 572.5
+        }
+      }
+    }
+  },
+  "highResolutionAccount": {
+    "file": "04-accounts-first-account-hi.png",
+    "deviceScaleFactor": 4
+  }
+}

@@ -1,0 +1,2 @@
+import {BGM,DevFlowPromo,SFX,SHOTS,TOTAL} from './Main';
+export const WORKBENCH={name:'DevFlow · 八步工作流',revision:'3.1',fps:30,width:1920,height:1080,total:TOTAL,background:'#f8fafc',shots:SHOTS.map(s=>({...s,schema:Object.entries(s.props).map(([key,value])=>({type:key==='accent'?'color':typeof value==='number'?'number':'text',key,label:key,default:value}))})),transitions:[],captions:[],overlays:[],sfx:SFX,bgm:BGM,order:['transitions','captions','overlays'],original:DevFlowPromo};

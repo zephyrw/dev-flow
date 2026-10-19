@@ -116,8 +116,7 @@
   color: #334155;
 }
 
-.conversation-composer-plus:hover,
-.conversation-composer-send:hover:not(:disabled) {
+.conversation-composer-plus:hover {
   background: var(--bg-surface-subtle, #f1f5f9);
 }
 
@@ -303,19 +302,33 @@
 }
 
 .conversation-composer-send {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
   flex-shrink: 0;
   width: 32px;
   height: 32px;
   border-radius: 8px;
   font-size: 16px;
   color: #fff;
-  background: var(--primary, #2563eb);
+  background: #000;
+}
+
+.conversation-composer-send:hover {
+  background: #000;
+  color: #fff;
 }
 
 .conversation-composer-send:disabled {
   cursor: default;
-  background: #cbd5e1;
-  color: #f8fafc;
+  background: #000;
+  color: #fff;
+  opacity: 1;
+}
+
+.conversation-composer-send svg {
+  flex-shrink: 0;
 }
 
 .conversation-composer-hint,
