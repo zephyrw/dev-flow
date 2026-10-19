@@ -572,9 +572,15 @@ export class UserInteractionService {
       }
 
       if (nativeDecision) answerText = nativePermissionAnswer(this.store, record, nativeDecision);
-      if (record.request.title === "协助请求需要补充说明") answerText =
-        "用户尚未完成任何操作，也未授权任何工具。仅补充当前协助请求：用通俗语言说明卡点、需要用户执行的具体步骤和入口、完成标准及恢复后动作；技术细节放入 details，message 用分段或编号列表。不得重新开发、测试、操作浏览器或重试被拒绝的调用。需要授权时说明真实服务和方法，通过正式授权流程处理，不要求用户编辑权限配置。返回 need_user 和清晰的 user_interaction。" +
-        (payload.answer?.trim() ? `\n用户补充：${payload.answer.trim()}` : "");
+      // The fallback choice only requests clarification. A written correction is
+      // newer user guidance, including when the UI retained its default choice;
+      // do not turn it into another mandatory need_user round or permission grant.
+      if (!nativeDecision && record.request.title === "协助请求需要补充说明" &&
+          record.request.choices?.some(choice => choice.id === "clarify_assistance")) {
+        if (payload.answer?.trim()) answerText = payload.answer.trim();
+        else if (payload.choice_id === "clarify_assistance") answerText =
+          "用户尚未完成任何操作，也未授权任何工具。仅补充当前协助请求：用通俗语言说明卡点、需要用户执行的具体步骤和入口、完成标准及恢复后动作；技术细节放入 details，message 用分段或编号列表。不得重新开发、测试、操作浏览器或重试被拒绝的调用。需要授权时说明真实服务和方法，通过正式授权流程处理，不要求用户编辑权限配置。返回 need_user 和清晰的 user_interaction。";
+      }
       const latestAnswer = answerText;
       // Keep the old question as context, never append its resume instructions
       // after the user's newer correction.
