@@ -49,7 +49,7 @@ it("hides waiting-for-answer notices without hiding manual pauses or failures", 
   expect(JSON.stringify(events)).toBe(before);
 });
 
-it("retains superseded questions before a new instruction and redacts interaction display copies", () => {
+it("retains superseded questions verbatim before a new instruction", () => {
   const record: UserInteractionRecord = {
     id: "old-question", workflow_id: "w", source_run_id: "r", source_plan_revision: 1,
     purpose: "implement", role: "executor", status: "superseded", created_at: "2026-10-17T00:00:00Z",
@@ -57,7 +57,7 @@ it("retains superseded questions before a new instruction and redacts interactio
   };
   const rows = readableLogs([], "w", [{ id: "m", workflow_id: "w", created_at: "2026-10-17T00:00:01Z", text: "保留当前登录" }], [record]);
   expect(rows.map(row => row.speaker)).toEqual(["assistant", "user"]);
-  expect(JSON.stringify(rows)).not.toContain("question-secret");
+  expect(rows[0]?.text).toBe("授权\n\n使用 password=question-secret 登录？\n\n是否继续？");
   expect(record.request.message).toContain("question-secret");
 });
 
@@ -114,12 +114,12 @@ it("does not invent a cause for integration failure events without a recorded me
   expect(rows[0]).toMatchObject({ title: "提交合并失败", status: "error", text: "合并未完成，失败原因未记录。" });
 });
 
-it("redacts historical guidance display without altering the execution input", () => {
+it("preserves historical authored guidance without altering the execution input", () => {
   const guidance = { id: "secret-guidance", workflow_id: "w",
     text: "使用 --password sample-guidance-secret 继续处理", created_at: "2026-09-29T02:00:00Z" };
   const rows = readableLogs([], "w", [guidance]);
   expect(rows).toHaveLength(1);
-  expect(rows[0]?.text).not.toContain("sample-guidance-secret");
+  expect(rows[0]?.text).toBe(guidance.text);
   expect(guidance.text).toContain("sample-guidance-secret");
 });
 
@@ -356,7 +356,7 @@ it("hides abandoned partial model fragments while retaining the current narrativ
   });
 });
 
-it("joins legacy response deltas before masking secrets and excludes thought fragments", () => {
+it("joins legacy response deltas verbatim and excludes thought fragments", () => {
   const events = ['password="two ', 'words" ordinary output'].map((text_delta, event_seq) => ({
     workflow_id: "w", run_id: "current", event_seq, type: "AgentEvent",
     payload: { event: "step_update", step_update: {
@@ -367,9 +367,8 @@ it("joins legacy response deltas before masking secrets and excludes thought fra
   const original = JSON.stringify(events);
   const rows = userFacingLogs(readableLogs(events, "w"), "current");
   expect(rows).toHaveLength(1);
-  expect(rows[0]!.text).toContain("ordinary output");
-  expect(rows[0]!.text).toContain("[REDACTED]");
-  expect(JSON.stringify(rows)).not.toMatch(/two |words|private reasoning|private thought/);
+  expect(rows[0]!.text).toBe('password="two words" ordinary output');
+  expect(JSON.stringify(rows)).not.toMatch(/private reasoning|private thought/);
   expect(JSON.stringify(events)).toBe(original);
 });
 

@@ -321,7 +321,9 @@ it("续接会话缺失时新会话获得完整背景与原文，不要求重复�
     expect(materials.phase).toBe("before_human");
     expect(materials.run).toMatchObject({ stage: "quality_before_human", protocol: "lightweight" });
     expect(materials.continuation_handoff).toMatchObject({ source_run_id: "rev-old" });
-    expect(materials).toHaveProperty("skill_resources");
+    expect(materials.skills).toEqual(expect.arrayContaining(["devflow-review", "devflow-concise-complete-writing"]));
+    expect(materials).not.toHaveProperty("skill_resources");
+    expect(Object.values(materials.skill_paths).every(path => existsSync(path as string))).toBe(true);
     expect(materials.instructions).toContain("不重新执行已完成的开发或测试");
     expect(s.store.must<Run>("run", run.id).conversation_id).toBe("new-session");
     expect(s.store.get("quality_review", run.id)).toBeUndefined();

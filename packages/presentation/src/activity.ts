@@ -29,7 +29,7 @@ export interface LogEntry {
 const publicLogEvents = new WeakMap<object, any>();
 export const NON_LOG_EVENT_TYPES = [
   "RunObserved", "ConversationDiscovered", "ConversationUpdated",
-  "ConversationControlUpdated", "ConversationActivity", "AsideUpdated",
+  "ConversationControlUpdated", "AsideUpdated",
 ];
 function publicLogEvent(event: any) {
   if (!event || typeof event !== "object") return publicDiagnostic(event);
@@ -242,9 +242,8 @@ export function workflowProgress(
 export function readableLogs(events: any[], workflow: string, formalGuidance: Array<{
   id: string; workflow_id: string; text: string; created_at: string; feedback_id?: string;
 }> = [], interactions: UserInteractionRecord[] = []): LogEntry[] {
-  // Redact display copies without rewriting stored events or execution guidance.
-  // Legacy deltas must be joined before redaction: sanitizing individual chunks
-  // loses ordinary text and can expose credentials split across event boundaries.
+  // Preserve authored conversation text while projecting diagnostic fields.
+  // Join legacy deltas before projection so message text remains complete.
   const narratives = new Map<string, { text: string; last: any }>();
   const ordered = [...events].filter(e => e.workflow_id === workflow)
     .sort((a, b) => a.event_seq - b.event_seq)

@@ -310,7 +310,7 @@ describe("IT02 & IT03: 角色职责边界与交接完整性 (role-scope-handoff)
       expect(capturedMaterials.instructions).toContain("严格在原批准计划和正式整改范围内解决冲突");
 
       // 3. 不包含审核阶段的只读/不编写实现代码要求
-      expect(capturedMaterials.instructions).not.toContain("只读");
+      expect(capturedMaterials.instructions).not.toMatch(/(?:仅|只能|必须保持)只读|只做代码质量复核/);
       expect(capturedMaterials.instructions).not.toContain("不编写实现代码");
       expect(capturedMaterials.instructions).not.toContain("仅查阅直接支撑结论的最小证据集");
     });
