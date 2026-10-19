@@ -35,7 +35,10 @@ try {
   if (!response.ok) throw new Error("Permission host unavailable");
   const result = await response.json();
   if (!["allow", "ask"].includes(result.decision)) throw new Error("Invalid permission decision");
-  process.stdout.write(JSON.stringify({ decision: result.decision, reason: result.reason, permissionOverrides: result.permissionOverrides }));
+  // AGY "allow" delegates to its default policy, which asks (and is denied in
+  // headless mode). Only an authenticated human grant warrants auto_approve;
+  // AGY still applies explicit user-configured deny/ask rules.
+  process.stdout.write(JSON.stringify({ decision: result.decision === "allow" ? "auto_approve" : "ask", reason: result.reason, permissionOverrides: result.permissionOverrides }));
 } catch {
   process.stdout.write(JSON.stringify({ decision: "deny", reason: "DEVFLOW_PERMISSION_CHECK_FAILED" }));
 }

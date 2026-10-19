@@ -19,6 +19,10 @@
 
 ## 2. 请求字段结构与示例
 
+协助请求先用通俗语言说明“卡在哪里”，再用编号步骤写清“用户去哪里、做什么”，最后说明完成标准和继续后的动作。`message` 支持 Markdown 段落、列表和代码；技术进展、日志及内部术语放入可选的 `details`，由用户按需展开。不得把开发总结直接当作操作要求，也不得在没有具体步骤时要求用户确认“我已完成”。
+
+MCP 权限拒绝须通过正式授权流程处理，明确服务与方法；不要让用户修改权限配置或猜测授权入口。缺少可执行步骤时，先补充说明，不能把用户请求解释为已经授权。
+
 ### 2.1 数据结构
 
 ```typescript
@@ -26,6 +30,7 @@ interface UserInteractionInput {
   kind: "action_required" | "question";
   title: string;               // 1..120 字符，精炼的标题
   message: string;             // 1..4000 字符，清楚说明为什么需要用户帮助
+  details?: string;            // 最多 8000 字符，可折叠的技术说明
   action_label?: string;       // action_required 的操作按钮文案（如“我已完成，继续”，最长 40 字符）
   question?: string;           // question 类型的明确问题
   choices?: Array<{ id: string; label: string }>; // 选项列表，最多 8 项，ID 唯一

@@ -561,6 +561,7 @@ export class ProfileRuntime {
           ? this.engine.store.get("execution_completion", run.dispatch_context.source_run_id) ?? null : null,
         integration_repair: policy2 && ["planner_takeover", "planner_commit"].includes(purpose)
           ? this.engine.store.get("planner_integration_repair", w.id) ?? null : null,
+        user_interaction_instruction: "请求人工协助时，title直接说明用户要做什么；message使用通俗语言和Markdown分段，依次说明当前卡点、用户操作入口与编号步骤、完成标准及继续后的动作。技术进展、日志、内部编号和术语放在可选details字段，不堆进主说明；resume_note只保留模型续接上下文。action_required必须提供用户能执行的明确动作，不得把开发总结直接变成‘我已完成’确认。工具权限拒绝应进入正式授权流程，明确服务和方法，不得让用户修改权限配置、泛化授权或猜测操作。没有确定入口时先说明缺失信息，不声称用户可以完成。",
         completion_instruction: purpose === "planner_commit" && policy2
           ? "完成实际提交后输出 JSON {status, summary, repositories: [{repo_id, commit}], user_interaction}；无须新提交时在摘要说明。integration_repair 中的合并冲突自动解决并完成必要定向验证，随后返回新提交号。需要用户决定时返回 status: need_user，并提供 user_interaction: {kind: question, title, message, question, choices: [{id, label}], allow_free_text: true}，描述选项及影响；平台弹窗确认后继续当前提交，不能只在日志中提问。"
           : "最终输出 JSON {status, summary, notes, artifacts, user_interaction}。status 只能是 completed、need_planner 或 need_user。若需要人工操作或提问，返回 status 为 need_user 并在 user_interaction 中填入结构化请求。未知状态不会被当成完成。" +

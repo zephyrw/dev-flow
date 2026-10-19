@@ -104,6 +104,23 @@ it("preserves choices and multiline answers as one ordered user message", async 
   expect(messages[1]!.text).toBe("[选择项: 本地免密] 第一行\n第二行");
 });
 
+it("clarifies a legacy summary without claiming completion or granting permission", async () => {
+  const s = setup();
+  s.store.put("user_interaction", s.record.id, s.workflow.id, { ...s.record,
+    request: { kind: "action_required", title: "请完成操作协助", message: "Service Worker 需要 MCP 权限", action_label: "我已完成，继续" } });
+  const current = s.service.getCurrentInteraction(s.workflow.id)!;
+  expect(current.request.kind).toBe("question");
+  expect(current.request.details).toContain("Service Worker");
+  await expect(s.service.respondInteraction(s.workflow.id, s.record.id, s.payload, s.engine)).rejects.toBeDefined();
+  await s.service.respondInteraction(s.workflow.id, s.record.id, { ...s.payload, action: "answer", choice_id: "clarify_assistance" }, s.engine);
+  const continuation = s.store.must<any>("run_continuation", s.workflow.id);
+  expect(continuation.answer).toContain("Service Worker");
+  expect(continuation.answer).toContain("用户尚未完成任何操作，也未授权任何工具");
+  expect(continuation.answer).toContain("不得重新开发、测试");
+  expect(s.store.list("native_mcp_permission")).toHaveLength(0);
+  expect(s.engine.get(s.workflow.id).state).toBe("QUEUED");
+});
+
 it("does not create guidance or dispatch a cancelled interaction", async () => {
   const s = setup();
   await s.service.respondInteraction(s.workflow.id, s.record.id, { ...s.payload, action: "cancel", answer: "不继续" }, s.engine);

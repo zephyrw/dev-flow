@@ -113,7 +113,9 @@ describe("U01 — 用户交互输入合同与安全降级", () => {
     expect(normalized.intent).toBe("need_user");
     // 损坏的 user_interaction 附件会被安全降级为合法的交互请求，不抛出异常且不丢失求助
     expect(normalized.user_interaction).toBeDefined();
-    expect(normalized.user_interaction?.kind).toBe("action_required");
+    expect(normalized.user_interaction?.kind).toBe("question");
+    expect(normalized.user_interaction?.details).toBe("需要用户确认");
+    expect(normalized.user_interaction?.choices?.[0]?.id).toBe("clarify_assistance");
     expect(normalized.summary).toBe("需要用户确认");
   });
 

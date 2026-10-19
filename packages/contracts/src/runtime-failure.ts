@@ -122,7 +122,7 @@ const resolutions: Record<string, Omit<RuntimeFailureResolution, "code">> = {
     message: "已保留工作区和原会话，请查看具体调用并决定是否授权。",
     steps: [
       "点击“查看并处理授权”，核对弹窗中的工具、参数和目标。",
-      "call_mcp_tool 可永久授权整个工具，覆盖任意参数和后续所有任务；其他工具按弹窗中的授权范围处理。",
+      "MCP 可按服务或方法选择永久或一次授权；其他工具按弹窗中的授权范围处理。",
     ],
   },
   RUNTIME_ACCESS_DENIED: {

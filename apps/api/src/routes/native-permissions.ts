@@ -2,7 +2,7 @@ import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 import type { Engine } from "../../../../packages/core/src/engine.js";
 import { type Run, requireCondition } from "../../../../packages/contracts/src/index.js";
-import { consumeNativePermission, grantNativeMcpTool, hasNativeMcpToolPermission } from "../../../../packages/core/src/native-permission.js";
+import { consumeNativePermission, grantNativeMcpPermission, findNativeMcpPermission, mcpTarget } from "../../../../packages/core/src/native-permission.js";
 import { recoverNativePermission } from "../../../../packages/runtime/src/native-permission-recovery.js";
 import type { FastifyRequest } from "fastify";
 import { Id } from "../../../../packages/contracts/src/index.js";
@@ -15,8 +15,10 @@ const PermissionHookInput = z.object({
 export const nativePermissionPlugin: FastifyPluginAsync<{ engine: Engine; human: (req: FastifyRequest) => void }> = async (app, { engine, human }) => {
   app.post("/api/native-tool-permissions", async req => {
     human(req);
-    z.object({ adapter: z.literal("agy"), tool: z.literal("call_mcp_tool"), decision: z.literal("allow") }).strict().parse(req.body);
-    return { permission: grantNativeMcpTool(engine.store, "human-console") };
+    const name = z.string().min(1).max(128).regex(/^[A-Za-z0-9_.:-]+$/);
+    const input = z.object({ adapter: z.literal("agy"), server: name, method: name,
+      scope: z.enum(["service", "method"]), decision: z.literal("allow") }).strict().parse(req.body);
+    return { permission: grantNativeMcpPermission(engine.store, "human-console", input, input.scope) };
   });
   app.post("/api/workflows/:id/native-permissions/request", async req => {
     human(req);
@@ -36,13 +38,10 @@ export const nativePermissionPlugin: FastifyPluginAsync<{ engine: Engine; human:
     // The wrapper gates a second native mcp(server/tool) resource internally.
     // Forward only this authenticated call's exact resource, never a wildcard
     // native grant or a change to the user's global native permission settings.
-    const { ServerName: server, ToolName: tool } = input.toolCall.args;
-    const exactMcp = allowed && input.toolCall.name === "call_mcp_tool" &&
-      typeof server === "string" && typeof tool === "string" &&
-      /^[A-Za-z0-9_.:-]+$/.test(server) && /^[A-Za-z0-9_.:-]+$/.test(tool)
-      ? `mcp(${server}/${tool})` : undefined;
+    const target = mcpTarget({ name: input.toolCall.name, parameters: input.toolCall.args });
+    const exactMcp = allowed && target ? `mcp(${target.server}/${target.method})` : undefined;
     return { decision: allowed ? "allow" : "ask", reason: allowed
-      ? input.toolCall.name === "call_mcp_tool" && hasNativeMcpToolPermission(engine.store) ? "USER_APPROVED_TOOL_PERMANENTLY" : "USER_APPROVED_EXACT_CALL_ONCE"
+      ? target ? findNativeMcpPermission(engine.store, target) ? "USER_APPROVED_MCP_SCOPE_PERMANENTLY" : "USER_APPROVED_MCP_SCOPE_ONCE" : "USER_APPROVED_EXACT_CALL_ONCE"
       : "NO_MATCHING_USER_GRANT", ...(exactMcp ? { permissionOverrides: [exactMcp] } : {}) };
   });
 };
