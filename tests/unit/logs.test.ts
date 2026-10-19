@@ -2,6 +2,64 @@ import { it, expect } from "vitest";
 import { readableLogs, userFacingLogs, workflowProgress } from "../../apps/web/src/logs.js";
 import { toolSummary } from "../../packages/presentation/src/tool-summary.js";
 import { runtimePurposeNames } from "../../packages/presentation/src/run-observation.js";
+import type { UserInteractionRecord } from "../../packages/contracts/src/user-interaction.js";
+
+it("shows exact guidance as a user turn instead of generic dispatch notices", () => {
+  const text = "保留 **原样**\n第二行 <不要刷新>";
+  const events = [
+    { workflow_id: "w", event_seq: 1, created_at: "2026-10-17T00:00:00Z", type: "UserGuidance", payload: { text } },
+    ...["QUEUED", "EXECUTING"].map((to, i) => ({ workflow_id: "w", event_seq: i + 2,
+      created_at: "2026-10-17T00:00:01Z", type: "StateChanged", payload: { from: i ? "QUEUED" : "STOPPED", to, user_guidance: true } })),
+  ];
+  expect(userFacingLogs(readableLogs(events, "w"))).toEqual([
+    expect.objectContaining({ speaker: "user", text }),
+  ]);
+});
+
+it("keeps model question, choices and user reply after answering, without continuation instructions", () => {
+  const record: UserInteractionRecord = {
+    id: "question-1", workflow_id: "w", source_run_id: "r", source_plan_revision: 1,
+    purpose: "implement", role: "executor", status: "answered", created_at: "2026-10-17T00:00:00Z",
+    request: { kind: "question", title: "确认环境", message: "检测到两个环境。", question: "在哪个环境验证？",
+      choices: [{ id: "test", label: "测试环境" }], resume_note: "internal continuation instructions" },
+    responded_at: "2026-10-17T00:00:01Z", response: { request_id: "reply", action: "answer", choice_id: "test", answer: "只验证\n不要发布。" },
+  };
+  const before = JSON.stringify(record);
+  const rows = userFacingLogs(readableLogs([{ workflow_id: "w", event_seq: 2, created_at: record.created_at,
+    type: "StateChanged", payload: { from: "EXECUTING", to: "WAITING_INPUT" } },
+    { workflow_id: "w", event_seq: 3, created_at: record.responded_at,
+    type: "StateChanged", payload: { to: "EXECUTING", user_guidance: true } }], "w", [],
+    [record, record, { ...record, id: "foreign", workflow_id: "other" }]));
+  expect(rows.map(row => row.speaker)).toEqual(["assistant", "user"]);
+  expect(rows[0]).toMatchObject({ title: "模型提问", interactionId: record.id, text: "确认环境\n\n检测到两个环境。\n\n在哪个环境验证？\n\n测试环境" });
+  expect(rows[1]?.text).toBe("测试环境\n\n只验证\n不要发布。");
+  expect(JSON.stringify(rows)).not.toContain("internal continuation");
+  expect(JSON.stringify(record)).toBe(before);
+});
+
+it("hides waiting-for-answer notices without hiding manual pauses or failures", () => {
+  const events = ["WAITING_INPUT", "STOPPED", "BLOCKED"].map((to, index) => ({
+    workflow_id: "w", event_seq: index + 1, type: "StateChanged",
+    payload: { from: "EXECUTING", to },
+  }));
+  const before = JSON.stringify(events);
+  const projected = readableLogs(events, "w");
+  expect(projected).toHaveLength(3);
+  expect(userFacingLogs(projected).map(row => row.title)).toEqual(["执行已暂停", "执行暂停"]);
+  expect(JSON.stringify(events)).toBe(before);
+});
+
+it("retains superseded questions before a new instruction and redacts interaction display copies", () => {
+  const record: UserInteractionRecord = {
+    id: "old-question", workflow_id: "w", source_run_id: "r", source_plan_revision: 1,
+    purpose: "implement", role: "executor", status: "superseded", created_at: "2026-10-17T00:00:00Z",
+    request: { kind: "question", title: "授权", message: "使用 password=question-secret 登录？", question: "是否继续？" },
+  };
+  const rows = readableLogs([], "w", [{ id: "m", workflow_id: "w", created_at: "2026-10-17T00:00:01Z", text: "保留当前登录" }], [record]);
+  expect(rows.map(row => row.speaker)).toEqual(["assistant", "user"]);
+  expect(JSON.stringify(rows)).not.toContain("question-secret");
+  expect(record.request.message).toContain("question-secret");
+});
 
 it("reuses immutable public event copies across projections and skips hidden metadata", () => {
   let reads = 0;

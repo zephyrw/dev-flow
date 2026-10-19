@@ -303,9 +303,11 @@ export function ExecutionPanel({
           }
           return (
           <article
-            className={`activity ${e.kind}`}
+            className={`activity ${e.kind}${e.speaker ? ` conversation-turn conversation-turn-${e.speaker}` : ""}`}
             key={e.key}
             data-sequence={e.sequence}
+            data-speaker={e.speaker}
+            data-interaction-id={e.interactionId}
           >
             <div className="activity-indicator">
               <span className={`indicator-dot ${e.status || e.kind}`} />
@@ -313,7 +315,7 @@ export function ExecutionPanel({
             </div>
             <div className="activity-body">
               <div className="activity-heading">
-                <b className="activity-title">{e.title}</b>
+                <b className="activity-title">{e.speaker === "user" ? (e.interactionId ? "你的回复" : "你的指导") : e.title}</b>
                 {e.status && e.status !== "done" && (
                   <span className={`activity-status ${e.status}`}>
                     {{
@@ -325,7 +327,9 @@ export function ExecutionPanel({
                 )}
                 <time>{new Date(e.created_at).toLocaleTimeString()}</time>
               </div>
-              {e.command ? (
+              {e.speaker ? (
+                <div className="conversation-turn-text">{e.text}</div>
+              ) : e.command ? (
                 <CommandPreview command={e.command} cwd={e.cwd} />
               ) : e.kind === "message" || e.kind === "event" ? (
                 <div className="activity-markdown">

@@ -2170,6 +2170,44 @@ select:focus {
   min-width: 0;
 }
 
+.conversation-turn {
+  flex-shrink: 0;
+  padding: 0 0 20px;
+}
+
+.conversation-turn .activity-indicator {
+  display: none;
+}
+
+.conversation-turn .activity-body {
+  padding: 12px 14px;
+  border-radius: 16px;
+}
+
+.conversation-turn-user {
+  margin-left: 28px;
+}
+
+.conversation-turn-user .activity-body {
+  background: var(--bg-surface-subtle);
+  border: 1px solid var(--border-subtle);
+  border-bottom-right-radius: 4px;
+}
+
+.conversation-turn-assistant .activity-body {
+  border-left: 3px solid var(--primary);
+  border-radius: 4px;
+  background: var(--primary-light, #eff6ff);
+}
+
+.conversation-turn-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--text-main);
+}
+
 .activity-heading {
   display: flex;
   align-items: baseline;

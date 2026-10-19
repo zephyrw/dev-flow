@@ -59,6 +59,24 @@ it("reuses an unchanged snapshot and sends only new events without repeating pla
   expect(next.display_revision).not.toBe(first.display_revision);
 });
 
+it("returns persisted questions and answers in full and cached page snapshots without changing stored text", async () => {
+  const record = { id: "int-display", workflow_id: "wf_display", source_run_id: "r_display",
+    source_plan_revision: 1, purpose: "implement", role: "executor", status: "answered", created_at: now(), responded_at: now(),
+    request: { kind: "question", title: "确认范围", message: "发现两个环境", question: "是否继续测试？" },
+    response: { request_id: "reply-display", action: "answer", answer: "只测试，不发布。password=display-secret" } };
+  env.store.put("user_interaction", record.id, record.workflow_id, record);
+  for (const suffix of ["", "?view=page", "?view=page"]) {
+    const response = await app.inject({ url: url + suffix, headers });
+    expect(response.statusCode).toBe(200);
+    const records = response.json().user_interactions;
+    expect(records).toHaveLength(1);
+    expect(records[0].request.question).toBe(record.request.question);
+    expect(records[0].response.answer).toContain("只测试，不发布。");
+    expect(JSON.stringify(records)).not.toContain("display-secret");
+  }
+  expect(env.store.get<any>("user_interaction", record.id)!.response.answer).toBe(record.response.answer);
+});
+
 it("reads recent tool observations without traversing unrelated execution history", async () => {
   for (let i = 0; i < 250; i++) env.store.event("wf_display", "p1", "ConversationUpdated", {});
   env.store.event("wf_display", "p1", "AgentEvent", { step_update: { tool_name: "run_command", tool_info: { parameters: { CommandLine: "pnpm test" } } } });

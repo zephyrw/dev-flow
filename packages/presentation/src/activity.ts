@@ -5,6 +5,7 @@ import { runtimeFailureResolution } from "../../contracts/src/runtime-failure.js
 import { toolSummary, toolOutputSummary } from "./tool-summary.js";
 import { conversationActivityLogEntry, mergeConversationLogEntry, isMeaningfulLogEntry } from "./conversation-activity.js";
 import { CONVERSATION_EVENT } from "../../contracts/src/conversation.js";
+import type { UserInteractionRecord } from "../../contracts/src/user-interaction.js";
 export { isMeaningfulLogEntry, mergeConversationLogEntry } from "./conversation-activity.js";
 export interface LogEntry {
   key: string;
@@ -19,6 +20,8 @@ export interface LogEntry {
   resultText?: string;
   command?: string;
   cwd?: string;
+  speaker?: "user" | "assistant";
+  interactionId?: string;
 }
 // Immutable event objects are reused across renders and progress projections.
 // Sanitize each object once, before any of its content reaches a display row.
@@ -237,7 +240,7 @@ export function workflowProgress(
 /** The original events stay intact; this is only a readable, scoped projection. */
 export function readableLogs(events: any[], workflow: string, formalGuidance: Array<{
   id: string; workflow_id: string; text: string; created_at: string; feedback_id?: string;
-}> = []): LogEntry[] {
+}> = [], interactions: UserInteractionRecord[] = []): LogEntry[] {
   // Redact display copies without rewriting stored events or execution guidance.
   // Legacy deltas must be joined before redaction: sanitizing individual chunks
   // loses ordinary text and can expose credentials split across event boundaries.
@@ -371,6 +374,7 @@ export function readableLogs(events: any[], workflow: string, formalGuidance: Ar
                     : "")),
         raw: [e],
         kind: "message",
+        speaker: e.type === "UserGuidance" ? "user" : undefined,
       });
       continue;
     }
@@ -817,10 +821,36 @@ export function readableLogs(events: any[], workflow: string, formalGuidance: Ar
       (message.feedback_id && event.payload?.feedback_id === message.feedback_id)
     ))) continue;
     const next = [...unique.values()].sort((a, b) => a.event_seq - b.event_seq)
-      .find((event) => event.created_at > message.created_at);
+      .find((event) => event.created_at >= message.created_at);
     const sequence = next ? next.event_seq - 0.5 : Math.max(0, ...unique.keys()) + 0.5;
     rows.push({ key: `guidance:${message.id}`, sequence, created_at: message.created_at,
-      title: "收到你的指导", text: diagnosticText(message.text), kind: "message", raw: [] });
+      title: "收到你的指导", text: diagnosticText(message.text), kind: "message", speaker: "user", raw: [] });
+  }
+  // Interaction records preserve both sides after the pending dialog closes.
+  // Use response fields rather than the generated continuation prompt.
+  const sequenceAt = (at: string) => {
+    const next = [...unique.values()].find(event => event.created_at >= at);
+    return next ? next.event_seq - 0.5 : Math.max(0, ...unique.keys()) + 0.5;
+  };
+  const seenInteractions = new Set<string>();
+  for (const record of interactions) {
+    if (record.workflow_id !== workflow || seenInteractions.has(record.id)) continue;
+    seenInteractions.add(record.id);
+    const request = record.request;
+    const question = [...new Set([request.title, request.message, request.question].filter(Boolean))].join("\n\n");
+    const choices = request.choices?.map(choice => choice.label).join("\n");
+    rows.push({ key: `interaction:${record.id}:question`, sequence: sequenceAt(record.created_at),
+      created_at: record.created_at, title: request.kind === "question" ? "模型提问" : "模型请求",
+      text: diagnosticText([question, choices].filter(Boolean).join("\n\n")),
+      kind: "message", speaker: "assistant", interactionId: record.id, raw: [] });
+    if (!record.response || !record.responded_at) continue;
+    const response = record.response;
+    const choice = request.choices?.find(item => item.id === response.choice_id)?.label;
+    const text = response.action === "cancel" ? "取消本次请求"
+      : [choice, response.answer].filter(Boolean).join("\n\n") || request.action_label || "我已完成，继续";
+    rows.push({ key: `interaction:${record.id}:answer`, sequence: sequenceAt(record.responded_at),
+      created_at: record.responded_at, title: "你的回复", text: diagnosticText(text),
+      kind: "message", speaker: "user", interactionId: record.id, raw: [] });
   }
   // Old runs must not continue to look active after a stop/failure or a new run.
   const boundary =
@@ -843,8 +873,16 @@ export function readableLogs(events: any[], workflow: string, formalGuidance: Ar
 
 /** Keep diagnostics available for progress parsing without putting raw logs in the UI. */
 export function userFacingLogs(entries: LogEntry[], currentRun?: string) {
+  const firstUserSequence = Math.min(Infinity, ...entries.filter(entry => entry.speaker === "user").map(entry => entry.sequence));
   return entries.filter(
     (entry) =>
+      // Waiting for an answer is already represented by the model's question.
+      !entry.raw.some((e: any) => e.type === "StateChanged" && e.payload?.to === "WAITING_INPUT") &&
+      // The actual user turn replaces generic guidance dispatch notices.
+      !(entry.raw.some((e: any) => e.type === "StateChanged" &&
+        (e.payload?.user_guidance === true || ["functional_fix", "acceptance_guidance"].includes(e.payload?.stage)) &&
+        ["QUEUED", "EXECUTING", "REVIEWING"].includes(e.payload?.to)) &&
+        firstUserSequence <= entry.sequence) &&
       entry.kind !== "diagnostic" &&
       !entry.raw.some(
         (e: any) => e.type === "AgentDiagnostic" || isAsideRun(e.run_id),
