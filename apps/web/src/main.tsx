@@ -2849,6 +2849,7 @@ function App() {
               {sidebarOpen && (
                 <ExecutionPanel
                   key={selected}
+                  active={!!w && ["EXECUTING", "VERIFYING", "PLANNING", "PLANNER_TAKEOVER"].includes(w.state)}
                   interaction={
                     <TaskInteraction
                       key={selected}

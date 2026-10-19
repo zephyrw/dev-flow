@@ -416,25 +416,22 @@ function SlashSuggestions({
 
 function setComposerIme(
   composingRef: React.MutableRefObject<boolean>,
-  skipEnterRef: React.MutableRefObject<boolean>,
   setComposing: (value: boolean) => void,
   next: boolean,
 ) {
   composingRef.current = next;
-  skipEnterRef.current = !next;
   setComposing(next);
 }
 
 function bindComposerIme(
   el: HTMLTextAreaElement,
   composingRef: React.MutableRefObject<boolean>,
-  skipEnterRef: React.MutableRefObject<boolean>,
   setComposing: (value: boolean) => void,
 ) {
   const start = () =>
-    setComposerIme(composingRef, skipEnterRef, setComposing, true);
+    setComposerIme(composingRef, setComposing, true);
   const end = () =>
-    setComposerIme(composingRef, skipEnterRef, setComposing, false);
+    setComposerIme(composingRef, setComposing, false);
   el.addEventListener("compositionstart", start);
   el.addEventListener("compositionend", end);
   return () => {
@@ -478,7 +475,6 @@ function ComposerInput({
     referenceOpenTick,
   );
   const composingRef = useRef(false);
-  const skipEnterRef = useRef(false);
 
   useLayoutEffect(() => {
     const el = textareaRef.current;
@@ -492,12 +488,10 @@ function ComposerInput({
   useLayoutEffect(() => {
     const el = textareaRef.current;
     if (!el) return undefined;
-    return bindComposerIme(el, composingRef, skipEnterRef, setComposing);
+    return bindComposerIme(el, composingRef, setComposing);
   }, [textareaRef, setComposing]);
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    const skipEnterAfterComposition = skipEnterRef.current;
-    if (event.key === "Enter") skipEnterRef.current = false;
     const nativeComposing = event.nativeEvent.isComposing;
     const ime = composingRef.current || composing || nativeComposing;
     if (ime) {
@@ -511,7 +505,6 @@ function ComposerInput({
         shiftKey: event.shiftKey,
         composing: ime,
         keyCode: event.nativeEvent.keyCode,
-        skipEnterAfterComposition,
       })
     ) {
       event.preventDefault();
@@ -520,9 +513,9 @@ function ComposerInput({
   };
 
   const markImeStart = () =>
-    setComposerIme(composingRef, skipEnterRef, setComposing, true);
+    setComposerIme(composingRef, setComposing, true);
   const markImeEnd = () =>
-    setComposerIme(composingRef, skipEnterRef, setComposing, false);
+    setComposerIme(composingRef, setComposing, false);
 
   return (
     <div style={{ position: "relative" }}>
@@ -532,6 +525,7 @@ function ComposerInput({
         rows={COMPOSER_TEXTAREA_ROWS}
         value={text}
         placeholder="输入指导，或输入 /btw 临时提问。输入 @ 引用文件或目录"
+        title="Enter 发送，Shift+Enter 换行"
         onChange={(event) => search.handleTextChange(event)}
         onKeyDown={handleKeyDown}
         onCompositionStart={markImeStart}

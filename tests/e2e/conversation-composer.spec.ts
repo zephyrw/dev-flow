@@ -32,6 +32,8 @@ test("SA-E06 composer submits once, keeps draft on failure, and ignores Enter du
   await expect(input).toHaveValue("第一行\n第二行");
   await input.evaluate((el) => {
     el.dispatchEvent(new CompositionEvent("compositionend", { data: "测" }));
+    // Some IMEs report the confirmation Enter after compositionend as keyCode 229.
+    el.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", keyCode: 229, bubbles: true }));
   });
   const posts: string[] = [];
   await page.route("**/conversation-messages", async (route) => {
@@ -45,7 +47,8 @@ test("SA-E06 composer submits once, keeps draft on failure, and ignores Enter du
     }
     await route.continue();
   });
-  await page.getByRole("button", { name: "发送", exact: true }).click();
+  // The next deliberate Enter must send immediately, without a second Enter.
+  await input.press("Enter");
   await expect(page.getByRole("alert")).toContainText("发送失败");
   await expect(input).toHaveValue("第一行\n第二行");
   expect(posts).toHaveLength(1);

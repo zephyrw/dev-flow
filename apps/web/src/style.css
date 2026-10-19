@@ -2025,6 +2025,14 @@ select:focus {
   flex-shrink: 0;
 }
 
+.execution-stream-status {
+  margin: 0;
+  padding: 6px 16px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
 .execution-heading-left {
   display: flex;
   align-items: center;
