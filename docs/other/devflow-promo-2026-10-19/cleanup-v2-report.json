@@ -1,0 +1,36 @@
+{
+  "revision": 2,
+  "status": "complete",
+  "removedFiles": 320,
+  "removedBytes": 209277527,
+  "removedPaths": [
+    "C:\\Code\\system-handle\\docs\\other\\devflow-promo-2026-10-19\\.tmp\\bundle",
+    "C:\\Code\\system-handle\\docs\\other\\devflow-promo-2026-10-19\\.tmp\\parity",
+    "C:\\Code\\system-handle\\docs\\other\\devflow-promo-2026-10-19\\.tmp\\parity-bundle",
+    "C:\\Code\\system-handle\\docs\\other\\devflow-promo-2026-10-19\\.tmp\\styleframes",
+    "C:\\Code\\system-handle\\docs\\other\\devflow-promo-2026-10-19\\.tmp\\config-debug.png",
+    "C:\\Code\\system-handle\\docs\\other\\devflow-promo-2026-10-19\\.tmp\\config-debug.txt",
+    "C:\\Code\\system-handle\\docs\\other\\devflow-promo-2026-10-19\\.tmp\\frontend-error.log",
+    "C:\\Code\\system-handle\\docs\\other\\devflow-promo-2026-10-19\\.tmp\\frontend-process.json",
+    "C:\\Code\\system-handle\\docs\\other\\devflow-promo-2026-10-19\\.tmp\\frontend.log",
+    "C:\\Code\\system-handle\\docs\\other\\devflow-promo-2026-10-19\\.tmp\\music-probe.py",
+    "C:\\Code\\system-handle\\docs\\other\\devflow-promo-2026-10-19\\.tmp\\picture-master.mp4",
+    "C:\\Code\\system-handle\\docs\\other\\devflow-promo-2026-10-19\\.tmp\\workbench-storage.json",
+    "C:\\Code\\system-handle\\docs\\other\\devflow-promo-2026-10-19\\.tmp\\workbench.png",
+    "C:\\Code\\system-handle\\docs\\other\\devflow-promo-2026-10-19\\.tmp\\no-bgm.wav",
+    "C:\\Code\\system-handle\\docs\\other\\devflow-promo-2026-10-19\\.tmp\\music.wav",
+    "C:\\Code\\system-handle\\docs\\other\\devflow-promo-2026-10-19\\.tmp"
+  ],
+  "retained": [
+    "DevFlow-music-1080p.mp4",
+    "DevFlow-no-bgm-1080p.mp4",
+    "article-frames",
+    "project",
+    "review-evidence",
+    "review-evidence-v2"
+  ],
+  "remainingTemporaryDirectory": null,
+  "temporaryFrontend": "Recorded task PID 52520 no longer exists, verified with CIM",
+  "note": "User requested videos and screenshots are preserved; project dependencies support editing; shared tool environment preserved.",
+  "finalVerifiedAt": "2026-10-19T15:25:47.8980926+08:00"
+}

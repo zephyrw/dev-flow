@@ -1,0 +1,16 @@
+{
+  "verifiedTaskRoot": "C:\\Code\\system-handle\\docs\\other\\devflow-promo-2026-10-19",
+  "removedBytes": 141263357.0,
+  "candidateBytes": 141263357.0,
+  "fileCount": 192,
+  "directoryCount": 13,
+  "temporaryDirectory": "C:\\Code\\system-handle\\docs\\other\\devflow-promo-2026-10-19\\.tmp",
+  "explicitFiles": [
+    "C:\\Code\\system-handle\\docs\\other\\devflow-promo-2026-10-19\\project\\audio-timing.json",
+    "C:\\Code\\system-handle\\docs\\other\\devflow-promo-2026-10-19\\project\\scripts\\reference-contact.py",
+    "C:\\Code\\system-handle\\docs\\other\\devflow-promo-2026-10-19\\project\\scripts\\probe-workbench-export.mjs",
+    "C:/Users/yckj4798/.codex/skills/video-shotcraft/workbench/exports/DevFlow-export-check-2026-10-19-04-44-42.mp4"
+  ],
+  "reparsePointsFollowed": 0,
+  "completed": true
+}

@@ -1,0 +1,8 @@
+{
+  "name":"devflow-product-film",
+  "private":true,
+  "type":"module",
+  "scripts":{"render":"node scripts/render.mjs","capture":"node scripts/capture.mjs","typecheck":"tsc --noEmit"},
+  "dependencies":{"@remotion/cli":"4.0.484","react":"19.2.7","react-dom":"19.2.7","remotion":"4.0.484"},
+  "devDependencies":{"typescript":"5.9.2","@types/react":"19.2.17"}
+}

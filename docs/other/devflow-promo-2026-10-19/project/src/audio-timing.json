@@ -1,0 +1,78 @@
+{
+  "bpm": 122.0788317093445,
+  "period": 0.49148569952613097,
+  "source_start": 3.978009228958153,
+  "beat_grid_source_start": 4.014909228958153,
+  "music_lead_in_adjust_seconds": -0.0369,
+  "source_file": "House Vibez — Lily J",
+  "beat_fit_mean_abs_ms": 31.880141131503947,
+  "beat_fit_max_abs_ms": 75.22923187924846,
+  "shot_beats": [
+    0,
+    12,
+    32,
+    48,
+    136,
+    152,
+    168,
+    188,
+    204
+  ],
+  "shot_frames": [
+    0,
+    177,
+    472,
+    708,
+    2005,
+    2241,
+    2477,
+    2773,
+    3008
+  ],
+  "total_frames": 3008,
+  "sfx": {
+    "soft": {
+      "source": "transition/transition-soft.mp3",
+      "duration": 1.2747392290249433,
+      "peak_seconds": 0.4531519274376417,
+      "max_db": -1.1422861694487185
+    },
+    "sweep": {
+      "source": "transition/swoosh-quick.mp3",
+      "duration": 0.78140589569161,
+      "peak_seconds": 0.3364625850340136,
+      "max_db": -3.890294776229025
+    },
+    "whoosh": {
+      "source": "transition/whoosh-fast.mp3",
+      "duration": 1.756734693877551,
+      "peak_seconds": 0.7248526077097506,
+      "max_db": -6.34135608100319
+    },
+    "switch": {
+      "source": "ui/switch-light.mp3",
+      "duration": 0.16666666666666666,
+      "peak_seconds": 0.06689342403628118,
+      "max_db": -10.9337377046649
+    },
+    "impact": {
+      "source": "impact/impact-deep-whoosh.mp3",
+      "duration": 4.06312925170068,
+      "peak_seconds": 0.6324263038548753,
+      "max_db": -0.8670401222096069
+    },
+    "sparkle": {
+      "source": "light/shimmer-sparkle-sweep.mp3",
+      "duration": 2.998140589569161,
+      "peak_seconds": 0.9297505668934241,
+      "max_db": -1.9901770933543763
+    },
+    "riser": {
+      "source": "transition/whoosh-fast.mp3",
+      "derivation": "first 0.745 seconds, rising gain 0.2 to 1.0, 15 ms end fade",
+      "duration": 0.745,
+      "peak_seconds": 0.7250416666666667,
+      "max_db": -6.369180042746889
+    }
+  }
+}

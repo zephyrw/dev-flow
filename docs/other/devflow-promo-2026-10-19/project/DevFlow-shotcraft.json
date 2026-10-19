@@ -1,0 +1,533 @@
+{
+  "name": "DevFlow · 八步工作流",
+  "fps": 30,
+  "width": 1920,
+  "height": 1080,
+  "background": "#f8fafc",
+  "source": "DevFlow · 八步工作流@3008f#3.1",
+  "tracks": [
+    {
+      "id": "track_mvf09hae0",
+      "name": "Shots",
+      "clips": [
+        {
+          "inOffset": 0,
+          "speed": 1,
+          "opacity": 1,
+          "scale": 1,
+          "x": 0,
+          "y": 0,
+          "props": {
+            "lead": "让模型，",
+            "title": "各司其职。",
+            "subtitle": "轻量化模型调度工作流",
+            "accent": "#2563eb",
+            "fontSize": 136
+          },
+          "id": "clip_mvf09hae1",
+          "cardId": "proj:shot:brand",
+          "start": 0,
+          "duration": 177,
+          "label": "01 品牌"
+        },
+        {
+          "inOffset": 0,
+          "speed": 1,
+          "opacity": 1,
+          "scale": 1,
+          "x": 0,
+          "y": 0,
+          "props": {
+            "title": "工具与模型，由你搭配。",
+            "planner": "GPT-6 Astra",
+            "executor": "Gemini 3.8 Flash",
+            "reviewer": "GPT-6 Astra",
+            "accent": "#2563eb"
+          },
+          "id": "clip_mvf09hae2",
+          "cardId": "proj:shot:config",
+          "start": 177,
+          "duration": 295,
+          "label": "02 自定义工具与模型"
+        },
+        {
+          "inOffset": 0,
+          "speed": 1,
+          "opacity": 1,
+          "scale": 1,
+          "x": 0,
+          "y": 0,
+          "props": {
+            "title": "同一任务，三段接力。",
+            "subtitle": "八步分工明确，关键节点由你确认。",
+            "accent": "#2563eb"
+          },
+          "id": "clip_mvf09hae3",
+          "cardId": "proj:shot:overview",
+          "start": 472,
+          "duration": 236,
+          "label": "03 三段接力与八步总览"
+        },
+        {
+          "inOffset": 0,
+          "speed": 1,
+          "opacity": 1,
+          "scale": 1,
+          "x": 0,
+          "y": 0,
+          "props": {
+            "title": "模型接力，关键节点由你确认。",
+            "planner": "GPT-6 Astra",
+            "executor": "Gemini 3.8 Flash",
+            "reviewer": "GPT-6 Astra",
+            "accent": "#2563eb"
+          },
+          "id": "clip_mvf09hae4",
+          "cardId": "proj:shot:workflow",
+          "start": 708,
+          "duration": 1297,
+          "label": "04 八步职责与模型分工"
+        },
+        {
+          "inOffset": 0,
+          "speed": 1,
+          "opacity": 1,
+          "scale": 1,
+          "x": 0,
+          "y": 0,
+          "props": {
+            "title": "把账号，管起来。",
+            "subtitle": "多个账号，一处管理",
+            "accent": "#2563eb"
+          },
+          "id": "clip_mvf09hae5",
+          "cardId": "proj:shot:accounts",
+          "start": 2005,
+          "duration": 236,
+          "label": "05 Agy 账号管理"
+        },
+        {
+          "inOffset": 0,
+          "speed": 1,
+          "opacity": 1,
+          "scale": 1,
+          "x": 0,
+          "y": 0,
+          "props": {
+            "title": "双额度，一眼看清。",
+            "weekly": "62",
+            "hourly": "74",
+            "accent": "#2563eb"
+          },
+          "id": "clip_mvf09hae6",
+          "cardId": "proj:shot:quotas",
+          "start": 2241,
+          "duration": 236,
+          "label": "06 双额度查看"
+        },
+        {
+          "inOffset": 0,
+          "speed": 1,
+          "opacity": 1,
+          "scale": 1,
+          "x": 0,
+          "y": 0,
+          "props": {
+            "title": "额度耗尽，自动接力。",
+            "subtitle": "按模型需求，选择可用账号",
+            "accent": "#2563eb"
+          },
+          "id": "clip_mvf09hae7",
+          "cardId": "proj:shot:switch",
+          "start": 2477,
+          "duration": 296,
+          "label": "07 自动切换"
+        },
+        {
+          "inOffset": 0,
+          "speed": 1,
+          "opacity": 1,
+          "scale": 1,
+          "x": 0,
+          "y": 0,
+          "props": {
+            "title": "DevFlow",
+            "subtitle": "模型由你选择，DevFlow 负责衔接。",
+            "cta": "开始你的下一项任务。",
+            "url": "github.com/zephyrw/dev-flow",
+            "accent": "#2563eb"
+          },
+          "id": "clip_mvf09hae8",
+          "cardId": "proj:shot:outro",
+          "start": 2773,
+          "duration": 235,
+          "label": "08 品牌收束"
+        }
+      ]
+    },
+    {
+      "id": "track_mvf09hafa",
+      "name": "Music",
+      "clips": [
+        {
+          "inOffset": 0,
+          "speed": 1,
+          "opacity": 1,
+          "scale": 1,
+          "x": 0,
+          "y": 0,
+          "props": {
+            "file": "audio/house-vibez-edit.wav",
+            "volume": 0.22
+          },
+          "id": "clip_mvf09hae9",
+          "cardId": "audio-clip",
+          "start": 0,
+          "duration": 3008,
+          "label": "house-vibez-edit"
+        }
+      ]
+    },
+    {
+      "id": "track_mvf09hafu",
+      "name": "SFX 1",
+      "clips": [
+        {
+          "inOffset": 0,
+          "speed": 1,
+          "opacity": 1,
+          "scale": 1,
+          "x": 0,
+          "y": 0,
+          "props": {
+            "file": "audio/soft.wav",
+            "volume": 0.32
+          },
+          "id": "clip_mvf09hafb",
+          "cardId": "audio-clip",
+          "start": 28,
+          "duration": 39,
+          "label": "soft"
+        },
+        {
+          "inOffset": 0,
+          "speed": 1,
+          "opacity": 1,
+          "scale": 1,
+          "x": 0,
+          "y": 0,
+          "props": {
+            "file": "audio/sweep.wav",
+            "volume": 0.34
+          },
+          "id": "clip_mvf09hafc",
+          "cardId": "audio-clip",
+          "start": 167,
+          "duration": 24,
+          "label": "sweep"
+        },
+        {
+          "inOffset": 0,
+          "speed": 1,
+          "opacity": 1,
+          "scale": 1,
+          "x": 0,
+          "y": 0,
+          "props": {
+            "file": "audio/switch.wav",
+            "volume": 0.9
+          },
+          "id": "clip_mvf09hafd",
+          "cardId": "audio-clip",
+          "start": 352,
+          "duration": 5,
+          "label": "switch"
+        },
+        {
+          "inOffset": 0,
+          "speed": 1,
+          "opacity": 1,
+          "scale": 1,
+          "x": 0,
+          "y": 0,
+          "props": {
+            "file": "audio/soft.wav",
+            "volume": 0.28
+          },
+          "id": "clip_mvf09hafe",
+          "cardId": "audio-clip",
+          "start": 488,
+          "duration": 39,
+          "label": "soft"
+        },
+        {
+          "inOffset": 0,
+          "speed": 1,
+          "opacity": 1,
+          "scale": 1,
+          "x": 0,
+          "y": 0,
+          "props": {
+            "file": "audio/switch.wav",
+            "volume": 0.9
+          },
+          "id": "clip_mvf09haff",
+          "cardId": "audio-clip",
+          "start": 726,
+          "duration": 5,
+          "label": "switch"
+        },
+        {
+          "inOffset": 0,
+          "speed": 1,
+          "opacity": 1,
+          "scale": 1,
+          "x": 0,
+          "y": 0,
+          "props": {
+            "file": "audio/sweep.wav",
+            "volume": 0.26
+          },
+          "id": "clip_mvf09hafg",
+          "cardId": "audio-clip",
+          "start": 893,
+          "duration": 24,
+          "label": "sweep"
+        },
+        {
+          "inOffset": 0,
+          "speed": 1,
+          "opacity": 1,
+          "scale": 1,
+          "x": 0,
+          "y": 0,
+          "props": {
+            "file": "audio/soft.wav",
+            "volume": 0.24
+          },
+          "id": "clip_mvf09hafh",
+          "cardId": "audio-clip",
+          "start": 1007,
+          "duration": 39,
+          "label": "soft"
+        },
+        {
+          "inOffset": 0,
+          "speed": 1,
+          "opacity": 1,
+          "scale": 1,
+          "x": 0,
+          "y": 0,
+          "props": {
+            "file": "audio/sweep.wav",
+            "volume": 0.26
+          },
+          "id": "clip_mvf09hafi",
+          "cardId": "audio-clip",
+          "start": 1188,
+          "duration": 24,
+          "label": "sweep"
+        },
+        {
+          "inOffset": 0,
+          "speed": 1,
+          "opacity": 1,
+          "scale": 1,
+          "x": 0,
+          "y": 0,
+          "props": {
+            "file": "audio/soft.wav",
+            "volume": 0.24
+          },
+          "id": "clip_mvf09hafj",
+          "cardId": "audio-clip",
+          "start": 1361,
+          "duration": 39,
+          "label": "soft"
+        },
+        {
+          "inOffset": 0,
+          "speed": 1,
+          "opacity": 1,
+          "scale": 1,
+          "x": 0,
+          "y": 0,
+          "props": {
+            "file": "audio/sweep.wav",
+            "volume": 0.26
+          },
+          "id": "clip_mvf09hafk",
+          "cardId": "audio-clip",
+          "start": 1541,
+          "duration": 24,
+          "label": "sweep"
+        },
+        {
+          "inOffset": 0,
+          "speed": 1,
+          "opacity": 1,
+          "scale": 1,
+          "x": 0,
+          "y": 0,
+          "props": {
+            "file": "audio/soft.wav",
+            "volume": 0.24
+          },
+          "id": "clip_mvf09hafl",
+          "cardId": "audio-clip",
+          "start": 1655,
+          "duration": 39,
+          "label": "soft"
+        },
+        {
+          "inOffset": 0,
+          "speed": 1,
+          "opacity": 1,
+          "scale": 1,
+          "x": 0,
+          "y": 0,
+          "props": {
+            "file": "audio/sweep.wav",
+            "volume": 0.26
+          },
+          "id": "clip_mvf09hafm",
+          "cardId": "audio-clip",
+          "start": 1836,
+          "duration": 24,
+          "label": "sweep"
+        },
+        {
+          "inOffset": 0,
+          "speed": 1,
+          "opacity": 1,
+          "scale": 1,
+          "x": 0,
+          "y": 0,
+          "props": {
+            "file": "audio/whoosh.wav",
+            "volume": 0.4
+          },
+          "id": "clip_mvf09hafn",
+          "cardId": "audio-clip",
+          "start": 2009,
+          "duration": 53,
+          "label": "whoosh"
+        },
+        {
+          "inOffset": 0,
+          "speed": 1,
+          "opacity": 1,
+          "scale": 1,
+          "x": 0,
+          "y": 0,
+          "props": {
+            "file": "audio/soft.wav",
+            "volume": 0.32
+          },
+          "id": "clip_mvf09hafo",
+          "cardId": "audio-clip",
+          "start": 2253,
+          "duration": 39,
+          "label": "soft"
+        },
+        {
+          "inOffset": 0,
+          "speed": 1,
+          "opacity": 1,
+          "scale": 1,
+          "x": 0,
+          "y": 0,
+          "props": {
+            "file": "audio/soft.wav",
+            "volume": 0.28
+          },
+          "id": "clip_mvf09hafp",
+          "cardId": "audio-clip",
+          "start": 2486,
+          "duration": 39,
+          "label": "soft"
+        },
+        {
+          "inOffset": 0,
+          "speed": 1,
+          "opacity": 1,
+          "scale": 1,
+          "x": 0,
+          "y": 0,
+          "props": {
+            "file": "audio/switch.wav",
+            "volume": 0.9
+          },
+          "id": "clip_mvf09hafq",
+          "cardId": "audio-clip",
+          "start": 2623,
+          "duration": 5,
+          "label": "switch"
+        },
+        {
+          "inOffset": 0,
+          "speed": 1,
+          "opacity": 1,
+          "scale": 1,
+          "x": 0,
+          "y": 0,
+          "props": {
+            "file": "audio/riser.wav",
+            "volume": 0.32
+          },
+          "id": "clip_mvf09hafr",
+          "cardId": "audio-clip",
+          "start": 2808,
+          "duration": 23,
+          "label": "riser"
+        }
+      ]
+    },
+    {
+      "id": "track_mvf09hafv",
+      "name": "SFX 2",
+      "clips": [
+        {
+          "inOffset": 0,
+          "speed": 1,
+          "opacity": 1,
+          "scale": 1,
+          "x": 0,
+          "y": 0,
+          "props": {
+            "file": "audio/impact.wav",
+            "volume": 0.32
+          },
+          "id": "clip_mvf09hafs",
+          "cardId": "audio-clip",
+          "start": 2815,
+          "duration": 122,
+          "label": "impact"
+        }
+      ]
+    },
+    {
+      "id": "track_mvf09hafw",
+      "name": "SFX 3",
+      "clips": [
+        {
+          "inOffset": 0,
+          "speed": 1,
+          "opacity": 1,
+          "scale": 1,
+          "x": 0,
+          "y": 0,
+          "props": {
+            "file": "audio/sparkle.wav",
+            "volume": 0.26
+          },
+          "id": "clip_mvf09haft",
+          "cardId": "audio-clip",
+          "start": 2829,
+          "duration": 90,
+          "label": "sparkle"
+        }
+      ]
+    }
+  ]
+}

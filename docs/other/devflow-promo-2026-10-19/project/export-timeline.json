@@ -1,0 +1,216 @@
+{
+  "fps": 30,
+  "total": 3008,
+  "shots": [
+    {
+      "id": "brand",
+      "label": "01 品牌",
+      "from": 0,
+      "duration": 177
+    },
+    {
+      "id": "config",
+      "label": "02 自定义工具与模型",
+      "from": 177,
+      "duration": 295
+    },
+    {
+      "id": "overview",
+      "label": "03 三段接力与八步总览",
+      "from": 472,
+      "duration": 236
+    },
+    {
+      "id": "workflow",
+      "label": "04 八步职责与模型分工",
+      "from": 708,
+      "duration": 1297
+    },
+    {
+      "id": "accounts",
+      "label": "05 Agy 账号管理",
+      "from": 2005,
+      "duration": 236
+    },
+    {
+      "id": "quotas",
+      "label": "06 双额度查看",
+      "from": 2241,
+      "duration": 236
+    },
+    {
+      "id": "switch",
+      "label": "07 自动切换",
+      "from": 2477,
+      "duration": 296
+    },
+    {
+      "id": "outro",
+      "label": "08 品牌收束",
+      "from": 2773,
+      "duration": 235
+    }
+  ],
+  "sfx": [
+    {
+      "name": "soft",
+      "hit": 42,
+      "from": 28,
+      "duration": 39,
+      "src": "audio/soft.wav",
+      "volume": 0.32
+    },
+    {
+      "name": "sweep",
+      "hit": 177,
+      "from": 167,
+      "duration": 24,
+      "src": "audio/sweep.wav",
+      "volume": 0.34
+    },
+    {
+      "name": "switch",
+      "hit": 354,
+      "from": 352,
+      "duration": 5,
+      "src": "audio/switch.wav",
+      "volume": 0.9
+    },
+    {
+      "name": "soft",
+      "hit": 502,
+      "from": 488,
+      "duration": 39,
+      "src": "audio/soft.wav",
+      "volume": 0.28
+    },
+    {
+      "name": "switch",
+      "hit": 728,
+      "from": 726,
+      "duration": 5,
+      "src": "audio/switch.wav",
+      "volume": 0.9
+    },
+    {
+      "name": "sweep",
+      "hit": 903,
+      "from": 893,
+      "duration": 24,
+      "src": "audio/sweep.wav",
+      "volume": 0.26
+    },
+    {
+      "name": "soft",
+      "hit": 1021,
+      "from": 1007,
+      "duration": 39,
+      "src": "audio/soft.wav",
+      "volume": 0.24
+    },
+    {
+      "name": "sweep",
+      "hit": 1198,
+      "from": 1188,
+      "duration": 24,
+      "src": "audio/sweep.wav",
+      "volume": 0.26
+    },
+    {
+      "name": "soft",
+      "hit": 1375,
+      "from": 1361,
+      "duration": 39,
+      "src": "audio/soft.wav",
+      "volume": 0.24
+    },
+    {
+      "name": "sweep",
+      "hit": 1551,
+      "from": 1541,
+      "duration": 24,
+      "src": "audio/sweep.wav",
+      "volume": 0.26
+    },
+    {
+      "name": "soft",
+      "hit": 1669,
+      "from": 1655,
+      "duration": 39,
+      "src": "audio/soft.wav",
+      "volume": 0.24
+    },
+    {
+      "name": "sweep",
+      "hit": 1846,
+      "from": 1836,
+      "duration": 24,
+      "src": "audio/sweep.wav",
+      "volume": 0.26
+    },
+    {
+      "name": "whoosh",
+      "hit": 2031,
+      "from": 2009,
+      "duration": 53,
+      "src": "audio/whoosh.wav",
+      "volume": 0.4
+    },
+    {
+      "name": "soft",
+      "hit": 2267,
+      "from": 2253,
+      "duration": 39,
+      "src": "audio/soft.wav",
+      "volume": 0.32
+    },
+    {
+      "name": "soft",
+      "hit": 2500,
+      "from": 2486,
+      "duration": 39,
+      "src": "audio/soft.wav",
+      "volume": 0.28
+    },
+    {
+      "name": "switch",
+      "hit": 2625,
+      "from": 2623,
+      "duration": 5,
+      "src": "audio/switch.wav",
+      "volume": 0.9
+    },
+    {
+      "name": "riser",
+      "hit": 2830,
+      "from": 2808,
+      "duration": 23,
+      "src": "audio/riser.wav",
+      "volume": 0.32
+    },
+    {
+      "name": "impact",
+      "hit": 2834,
+      "from": 2815,
+      "duration": 122,
+      "src": "audio/impact.wav",
+      "volume": 0.32
+    },
+    {
+      "name": "sparkle",
+      "hit": 2857,
+      "from": 2829,
+      "duration": 90,
+      "src": "audio/sparkle.wav",
+      "volume": 0.26
+    }
+  ],
+  "bgm": [
+    {
+      "from": 0,
+      "duration": 3008,
+      "src": "audio/house-vibez-edit.wav",
+      "volume": 0.22
+    }
+  ]
+}

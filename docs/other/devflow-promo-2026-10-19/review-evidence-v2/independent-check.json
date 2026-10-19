@@ -1,0 +1,1101 @@
+{
+  "hashes": {
+    "DevFlow-music-1080p.mp4": "36f08989bb35c862ef28cd6597b95b92a4eac1bd494c27ccb4a317d02c30a5cd",
+    "DevFlow-no-bgm-1080p.mp4": "4d597a2d1066b89eee67c7a437a0206754d112a6e7047d731fc553e8685b20e7"
+  },
+  "metadata": {
+    "DevFlow-music-1080p.mp4": {
+      "streams": [
+        {
+          "index": 0,
+          "codec_name": "h264",
+          "codec_long_name": "unknown",
+          "profile": "100",
+          "codec_type": "video",
+          "codec_tag_string": "avc1",
+          "codec_tag": "0x31637661",
+          "width": 1920,
+          "height": 1080,
+          "coded_width": 1920,
+          "coded_height": 1080,
+          "closed_captions": 0,
+          "film_grain": 0,
+          "has_b_frames": 2,
+          "sample_aspect_ratio": "1:1",
+          "display_aspect_ratio": "16:9",
+          "pix_fmt": "yuvj420p",
+          "level": 40,
+          "color_range": "pc",
+          "color_space": "bt470bg",
+          "chroma_location": "center",
+          "field_order": "progressive",
+          "refs": 1,
+          "is_avc": "true",
+          "nal_length_size": "4",
+          "id": "0x1",
+          "r_frame_rate": "30/1",
+          "avg_frame_rate": "30/1",
+          "time_base": "1/90000",
+          "start_pts": 0,
+          "start_time": "0.000000",
+          "duration_ts": 9024000,
+          "duration": "100.266667",
+          "bit_rate": "669327",
+          "bits_per_raw_sample": "8",
+          "nb_frames": "3008",
+          "extradata_size": 51,
+          "disposition": {
+            "default": 1,
+            "dub": 0,
+            "original": 0,
+            "comment": 0,
+            "lyrics": 0,
+            "karaoke": 0,
+            "forced": 0,
+            "hearing_impaired": 0,
+            "visual_impaired": 0,
+            "clean_effects": 0,
+            "attached_pic": 0,
+            "timed_thumbnails": 0,
+            "non_diegetic": 0,
+            "captions": 0,
+            "descriptions": 0,
+            "metadata": 0,
+            "dependent": 0,
+            "still_image": 0,
+            "multilayer": 0
+          },
+          "tags": {
+            "language": "und",
+            "handler_name": "VideoHandler",
+            "vendor_id": "[0][0][0][0]",
+            "encoder": "Lavc61.19.100 libx264"
+          },
+          "side_data_list": [
+            {
+              "side_data_type": "ICC Profile"
+            }
+          ]
+        },
+        {
+          "index": 1,
+          "codec_name": "aac",
+          "codec_long_name": "unknown",
+          "profile": "1",
+          "codec_type": "audio",
+          "codec_tag_string": "mp4a",
+          "codec_tag": "0x6134706d",
+          "sample_fmt": "fltp",
+          "sample_rate": "48000",
+          "channels": 2,
+          "channel_layout": "stereo",
+          "bits_per_sample": 0,
+          "initial_padding": 0,
+          "id": "0x2",
+          "r_frame_rate": "0/0",
+          "avg_frame_rate": "0/0",
+          "time_base": "1/48000",
+          "start_pts": 0,
+          "start_time": "0.000000",
+          "duration_ts": 4812768,
+          "duration": "100.266000",
+          "bit_rate": "266261",
+          "nb_frames": "4701",
+          "extradata_size": 5,
+          "disposition": {
+            "default": 1,
+            "dub": 0,
+            "original": 0,
+            "comment": 0,
+            "lyrics": 0,
+            "karaoke": 0,
+            "forced": 0,
+            "hearing_impaired": 0,
+            "visual_impaired": 0,
+            "clean_effects": 0,
+            "attached_pic": 0,
+            "timed_thumbnails": 0,
+            "non_diegetic": 0,
+            "captions": 0,
+            "descriptions": 0,
+            "metadata": 0,
+            "dependent": 0,
+            "still_image": 0,
+            "multilayer": 0
+          },
+          "tags": {
+            "language": "und",
+            "handler_name": "SoundHandler",
+            "vendor_id": "[0][0][0][0]"
+          }
+        }
+      ],
+      "format": {
+        "filename": "C:\\Code\\system-handle\\docs\\other\\devflow-promo-2026-10-19\\DevFlow-music-1080p.mp4",
+        "nb_streams": 2,
+        "nb_programs": 0,
+        "nb_stream_groups": 0,
+        "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+        "start_time": "0.000000",
+        "duration": "100.266667",
+        "size": "11837514",
+        "bit_rate": "944482",
+        "probe_score": 100,
+        "tags": {
+          "major_brand": "isom",
+          "minor_version": "512",
+          "compatible_brands": "isomiso2avc1mp41",
+          "encoder": "Lavf61.7.100",
+          "comment": "Made with Remotion 4.0.484"
+        }
+      }
+    },
+    "DevFlow-no-bgm-1080p.mp4": {
+      "streams": [
+        {
+          "index": 0,
+          "codec_name": "h264",
+          "codec_long_name": "unknown",
+          "profile": "100",
+          "codec_type": "video",
+          "codec_tag_string": "avc1",
+          "codec_tag": "0x31637661",
+          "width": 1920,
+          "height": 1080,
+          "coded_width": 1920,
+          "coded_height": 1080,
+          "closed_captions": 0,
+          "film_grain": 0,
+          "has_b_frames": 2,
+          "sample_aspect_ratio": "1:1",
+          "display_aspect_ratio": "16:9",
+          "pix_fmt": "yuvj420p",
+          "level": 40,
+          "color_range": "pc",
+          "color_space": "bt470bg",
+          "chroma_location": "center",
+          "field_order": "progressive",
+          "refs": 1,
+          "is_avc": "true",
+          "nal_length_size": "4",
+          "id": "0x1",
+          "r_frame_rate": "30/1",
+          "avg_frame_rate": "30/1",
+          "time_base": "1/90000",
+          "start_pts": 0,
+          "start_time": "0.000000",
+          "duration_ts": 9024000,
+          "duration": "100.266667",
+          "bit_rate": "669327",
+          "bits_per_raw_sample": "8",
+          "nb_frames": "3008",
+          "extradata_size": 51,
+          "disposition": {
+            "default": 1,
+            "dub": 0,
+            "original": 0,
+            "comment": 0,
+            "lyrics": 0,
+            "karaoke": 0,
+            "forced": 0,
+            "hearing_impaired": 0,
+            "visual_impaired": 0,
+            "clean_effects": 0,
+            "attached_pic": 0,
+            "timed_thumbnails": 0,
+            "non_diegetic": 0,
+            "captions": 0,
+            "descriptions": 0,
+            "metadata": 0,
+            "dependent": 0,
+            "still_image": 0,
+            "multilayer": 0
+          },
+          "tags": {
+            "language": "und",
+            "handler_name": "VideoHandler",
+            "vendor_id": "[0][0][0][0]",
+            "encoder": "Lavc61.19.100 libx264"
+          },
+          "side_data_list": [
+            {
+              "side_data_type": "ICC Profile"
+            }
+          ]
+        },
+        {
+          "index": 1,
+          "codec_name": "aac",
+          "codec_long_name": "unknown",
+          "profile": "1",
+          "codec_type": "audio",
+          "codec_tag_string": "mp4a",
+          "codec_tag": "0x6134706d",
+          "sample_fmt": "fltp",
+          "sample_rate": "48000",
+          "channels": 2,
+          "channel_layout": "stereo",
+          "bits_per_sample": 0,
+          "initial_padding": 0,
+          "id": "0x2",
+          "r_frame_rate": "0/0",
+          "avg_frame_rate": "0/0",
+          "time_base": "1/48000",
+          "start_pts": 0,
+          "start_time": "0.000000",
+          "duration_ts": 4812768,
+          "duration": "100.266000",
+          "bit_rate": "52073",
+          "nb_frames": "4701",
+          "extradata_size": 5,
+          "disposition": {
+            "default": 1,
+            "dub": 0,
+            "original": 0,
+            "comment": 0,
+            "lyrics": 0,
+            "karaoke": 0,
+            "forced": 0,
+            "hearing_impaired": 0,
+            "visual_impaired": 0,
+            "clean_effects": 0,
+            "attached_pic": 0,
+            "timed_thumbnails": 0,
+            "non_diegetic": 0,
+            "captions": 0,
+            "descriptions": 0,
+            "metadata": 0,
+            "dependent": 0,
+            "still_image": 0,
+            "multilayer": 0
+          },
+          "tags": {
+            "language": "und",
+            "handler_name": "SoundHandler",
+            "vendor_id": "[0][0][0][0]"
+          }
+        }
+      ],
+      "format": {
+        "filename": "C:\\Code\\system-handle\\docs\\other\\devflow-promo-2026-10-19\\DevFlow-no-bgm-1080p.mp4",
+        "nb_streams": 2,
+        "nb_programs": 0,
+        "nb_stream_groups": 0,
+        "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+        "start_time": "0.000000",
+        "duration": "100.266667",
+        "size": "9152460",
+        "bit_rate": "730249",
+        "probe_score": 100,
+        "tags": {
+          "major_brand": "isom",
+          "minor_version": "512",
+          "compatible_brands": "isomiso2avc1mp41",
+          "encoder": "Lavf61.7.100",
+          "comment": "Made with Remotion 4.0.484"
+        }
+      }
+    }
+  },
+  "method": "Independent read-only inspection of the supplied final hashes; ffmpeg decoded pixels/audio. No subjective playback or listening claim.",
+  "picture_stream_hashes": {
+    "DevFlow-music-1080p.mp4": "367f36012c1d8af50ef34211570474dda81ffcd79892a64b5d03977d06490846",
+    "DevFlow-no-bgm-1080p.mp4": "367f36012c1d8af50ef34211570474dda81ffcd79892a64b5d03977d06490846"
+  },
+  "picture_streams_equal": true,
+  "extracted_frames": [
+    0,
+    15,
+    42,
+    64,
+    100,
+    176,
+    177,
+    184,
+    195,
+    207,
+    320,
+    353,
+    354,
+    361,
+    372,
+    384,
+    405,
+    471,
+    472,
+    479,
+    490,
+    502,
+    625,
+    707,
+    708,
+    715,
+    726,
+    738,
+    798,
+    884,
+    885,
+    892,
+    903,
+    915,
+    975,
+    1002,
+    1003,
+    1010,
+    1021,
+    1033,
+    1093,
+    1179,
+    1180,
+    1187,
+    1198,
+    1210,
+    1270,
+    1356,
+    1357,
+    1364,
+    1375,
+    1387,
+    1447,
+    1532,
+    1533,
+    1540,
+    1551,
+    1563,
+    1623,
+    1650,
+    1651,
+    1658,
+    1669,
+    1681,
+    1741,
+    1827,
+    1828,
+    1835,
+    1846,
+    1858,
+    1918,
+    2004,
+    2005,
+    2012,
+    2023,
+    2035,
+    2135,
+    2240,
+    2241,
+    2248,
+    2259,
+    2271,
+    2371,
+    2476,
+    2477,
+    2484,
+    2495,
+    2507,
+    2577,
+    2624,
+    2625,
+    2633,
+    2641,
+    2687,
+    2772,
+    2773,
+    2780,
+    2785,
+    2791,
+    2798,
+    2803,
+    2815,
+    2834,
+    2857,
+    2940,
+    3007
+  ],
+  "source_frame_comparison": [
+    {
+      "frame": 100,
+      "source_sha256": "eb728777f4b703027bd74a8d1331c24fad8ab90e30ba65b734ceb80a3eba4640",
+      "mean_absolute_error_0_255": 0.9117743968963623,
+      "p99_absolute_error": 6.0
+    },
+    {
+      "frame": 320,
+      "source_sha256": "e13865e4e8933bf4ce07661d18fc0f3dc59f236c93847b6ed316796fee6497c7",
+      "mean_absolute_error_0_255": 0.9672222137451172,
+      "p99_absolute_error": 8.0
+    },
+    {
+      "frame": 405,
+      "source_sha256": "020c40293d0356edcfad8f775d2bba2e18a09106e1253a201db3faf07d60d9b1",
+      "mean_absolute_error_0_255": 0.9661794304847717,
+      "p99_absolute_error": 8.0
+    },
+    {
+      "frame": 625,
+      "source_sha256": "4516cfbf2d1a200083342603bc9f7723fe49aeb3f9e6806411ca29ed602d5bc2",
+      "mean_absolute_error_0_255": 1.0154269933700562,
+      "p99_absolute_error": 10.0
+    },
+    {
+      "frame": 798,
+      "source_sha256": "2b8d8f607ed47da96533d1197bb4411cda49978b552872fd772dc23f722b7ce4",
+      "mean_absolute_error_0_255": 1.004024863243103,
+      "p99_absolute_error": 8.0
+    },
+    {
+      "frame": 975,
+      "source_sha256": "bd6541cffcc35f633d75337c23b3467fe4d112871872ee328e76d9cbff3579ca",
+      "mean_absolute_error_0_255": 0.973587155342102,
+      "p99_absolute_error": 7.0
+    },
+    {
+      "frame": 1093,
+      "source_sha256": "f2a0a5e21472e6d3a5d2d1138b2c868aedf53c859864e48bf7a6844ff02bc5b1",
+      "mean_absolute_error_0_255": 1.0151212215423584,
+      "p99_absolute_error": 8.0
+    },
+    {
+      "frame": 1270,
+      "source_sha256": "e5927684c629f7defd80b5d26fc2e9b58e775e0e95ebb84a4564d5c616015a4b",
+      "mean_absolute_error_0_255": 1.0435255765914917,
+      "p99_absolute_error": 9.0
+    },
+    {
+      "frame": 1447,
+      "source_sha256": "f7c17a14e7c0ee6948dfb21dd16235fb644b54bab508bd76c39d51cda645ec64",
+      "mean_absolute_error_0_255": 1.0876845121383667,
+      "p99_absolute_error": 10.0
+    },
+    {
+      "frame": 1623,
+      "source_sha256": "586463a2438e501cd0c93dbd84f5ff8766199a9cc60eaa17a2a0feb2ee3e5a55",
+      "mean_absolute_error_0_255": 1.001272201538086,
+      "p99_absolute_error": 8.0
+    },
+    {
+      "frame": 1741,
+      "source_sha256": "6c54b9ff42535d6809b0e77c865f372f50d1dbd01c70171739351dff15d3463e",
+      "mean_absolute_error_0_255": 1.100156545639038,
+      "p99_absolute_error": 10.0
+    },
+    {
+      "frame": 1918,
+      "source_sha256": "5beb714ec5e7457a8c105c1ecff8f8600584654c2ba7073497d7656431cf85a7",
+      "mean_absolute_error_0_255": 1.0353318452835083,
+      "p99_absolute_error": 9.0
+    },
+    {
+      "frame": 2135,
+      "source_sha256": "54f6e7c73f44298a75751cb895b72347dcd0e7b870ab856bd67f984beef9f3fc",
+      "mean_absolute_error_0_255": 1.1307132244110107,
+      "p99_absolute_error": 12.0
+    },
+    {
+      "frame": 2371,
+      "source_sha256": "a9f1b3c4460a6db031bef690b53881025f6c87c7dcd6e000056971d8a028277f",
+      "mean_absolute_error_0_255": 1.041965365409851,
+      "p99_absolute_error": 10.0
+    },
+    {
+      "frame": 2577,
+      "source_sha256": "9e880b1f6f30c300a7edee3bc0c052fc7ca733a4619abde3b35d8879ab982775",
+      "mean_absolute_error_0_255": 1.2754133939743042,
+      "p99_absolute_error": 15.0
+    },
+    {
+      "frame": 2687,
+      "source_sha256": "cbf8dadff462cd7cb2d46b0c4bc189cb9456d3af278c755baf03dd91510d9b2b",
+      "mean_absolute_error_0_255": 1.2611098289489746,
+      "p99_absolute_error": 15.0
+    },
+    {
+      "frame": 2940,
+      "source_sha256": "b10791be13230c197b23ec76c633c1dd5539e63af74d8774cc407376198d0a04",
+      "mean_absolute_error_0_255": 0.9973006844520569,
+      "p99_absolute_error": 5.0
+    }
+  ],
+  "text_measurements": [
+    {
+      "frame": 100,
+      "label": "brand subtitle",
+      "crop": [
+        120,
+        690,
+        1000,
+        790
+      ],
+      "minimum": 56,
+      "ink_row_groups": [
+        {
+          "y0": 710,
+          "y1": 767,
+          "height": 58
+        }
+      ]
+    },
+    {
+      "frame": 320,
+      "label": "config example statement",
+      "crop": [
+        110,
+        210,
+        1120,
+        310
+      ],
+      "minimum": 56,
+      "ink_row_groups": [
+        {
+          "y0": 227,
+          "y1": 284,
+          "height": 58
+        }
+      ]
+    },
+    {
+      "frame": 625,
+      "label": "overview subtitle",
+      "crop": [
+        110,
+        210,
+        1400,
+        315
+      ],
+      "minimum": 56,
+      "ink_row_groups": [
+        {
+          "y0": 226,
+          "y1": 283,
+          "height": 58
+        }
+      ]
+    },
+    {
+      "frame": 798,
+      "label": "workflow narrative line 1",
+      "crop": [
+        1010,
+        820,
+        1850,
+        900
+      ],
+      "minimum": 56,
+      "ink_row_groups": [
+        {
+          "y0": 828,
+          "y1": 885,
+          "height": 58
+        }
+      ]
+    },
+    {
+      "frame": 798,
+      "label": "workflow narrative line 2",
+      "crop": [
+        1010,
+        902,
+        1850,
+        990
+      ],
+      "minimum": 56,
+      "ink_row_groups": [
+        {
+          "y0": 908,
+          "y1": 965,
+          "height": 58
+        }
+      ]
+    },
+    {
+      "frame": 2135,
+      "label": "accounts narrative line 1",
+      "crop": [
+        120,
+        525,
+        800,
+        610
+      ],
+      "minimum": 56,
+      "ink_row_groups": [
+        {
+          "y0": 541,
+          "y1": 598,
+          "height": 58
+        }
+      ]
+    },
+    {
+      "frame": 2135,
+      "label": "accounts auxiliary",
+      "crop": [
+        120,
+        760,
+        800,
+        815
+      ],
+      "minimum": 32,
+      "ink_row_groups": [
+        {
+          "y0": 771,
+          "y1": 802,
+          "height": 32
+        }
+      ]
+    },
+    {
+      "frame": 2371,
+      "label": "quota labels",
+      "crop": [
+        140,
+        285,
+        600,
+        350
+      ],
+      "minimum": 32,
+      "ink_row_groups": [
+        {
+          "y0": 296,
+          "y1": 334,
+          "height": 39
+        }
+      ]
+    },
+    {
+      "frame": 2577,
+      "label": "switch subtitle",
+      "crop": [
+        100,
+        210,
+        1100,
+        300
+      ],
+      "minimum": 56,
+      "ink_row_groups": [
+        {
+          "y0": 223,
+          "y1": 280,
+          "height": 58
+        }
+      ]
+    },
+    {
+      "frame": 2577,
+      "label": "switch condition",
+      "crop": [
+        105,
+        950,
+        1350,
+        1005
+      ],
+      "minimum": 32,
+      "ink_row_groups": [
+        {
+          "y0": 961,
+          "y1": 992,
+          "height": 32
+        }
+      ]
+    },
+    {
+      "frame": 2940,
+      "label": "outro subtitle",
+      "crop": [
+        460,
+        650,
+        1450,
+        735
+      ],
+      "minimum": 56,
+      "ink_row_groups": [
+        {
+          "y0": 665,
+          "y1": 722,
+          "height": 58
+        }
+      ]
+    },
+    {
+      "frame": 2940,
+      "label": "outro CTA",
+      "crop": [
+        300,
+        755,
+        1600,
+        850
+      ],
+      "minimum": 56,
+      "ink_row_groups": [
+        {
+          "y0": 769,
+          "y1": 826,
+          "height": 58
+        }
+      ]
+    },
+    {
+      "frame": 2940,
+      "label": "outro URL",
+      "crop": [
+        500,
+        920,
+        1450,
+        990
+      ],
+      "minimum": 32,
+      "ink_row_groups": [
+        {
+          "y0": 933,
+          "y1": 971,
+          "height": 39
+        }
+      ]
+    }
+  ],
+  "audio_parameters": {
+    "music": {
+      "samples": 4812800,
+      "sample_rate": 48000,
+      "peak_dbfs": -8.634647421215405,
+      "rms_dbfs": -24.993078900271748,
+      "samples_at_or_above_full_scale": 0
+    },
+    "no_bgm": {
+      "samples": 4812800,
+      "sample_rate": 48000,
+      "peak_dbfs": -8.880933028564987,
+      "rms_dbfs": -38.08498293167526,
+      "samples_at_or_above_full_scale": 0
+    }
+  },
+  "sfx_sync": [
+    {
+      "cue_index": 0,
+      "name": "soft",
+      "hit_frame": 42,
+      "planned_start_frame": 28,
+      "source_peak_frame": 13.0375,
+      "output_start_offset_samples": 0,
+      "output_start_offset_frames": 0.0,
+      "peak_vs_hit_frames": -0.9624999999999986,
+      "normalized_correlation": 0.9999735355377197
+    },
+    {
+      "cue_index": 1,
+      "name": "sweep",
+      "hit_frame": 177,
+      "planned_start_frame": 167,
+      "source_peak_frame": 8.89,
+      "output_start_offset_samples": 0,
+      "output_start_offset_frames": 0.0,
+      "peak_vs_hit_frames": -1.1099999999999852,
+      "normalized_correlation": 0.9999204277992249
+    },
+    {
+      "cue_index": 2,
+      "name": "switch",
+      "hit_frame": 354,
+      "planned_start_frame": 352,
+      "source_peak_frame": 1.8975,
+      "output_start_offset_samples": 0,
+      "output_start_offset_frames": 0.0,
+      "peak_vs_hit_frames": -0.10250000000002046,
+      "normalized_correlation": 0.9998128414154053
+    },
+    {
+      "cue_index": 3,
+      "name": "soft",
+      "hit_frame": 502,
+      "planned_start_frame": 488,
+      "source_peak_frame": 13.0375,
+      "output_start_offset_samples": 0,
+      "output_start_offset_frames": 0.0,
+      "peak_vs_hit_frames": -0.9624999999999773,
+      "normalized_correlation": 0.9999666213989258
+    },
+    {
+      "cue_index": 4,
+      "name": "switch",
+      "hit_frame": 728,
+      "planned_start_frame": 726,
+      "source_peak_frame": 1.8975,
+      "output_start_offset_samples": 0,
+      "output_start_offset_frames": 0.0,
+      "peak_vs_hit_frames": -0.10249999999996362,
+      "normalized_correlation": 0.9997403025627136
+    },
+    {
+      "cue_index": 5,
+      "name": "sweep",
+      "hit_frame": 903,
+      "planned_start_frame": 893,
+      "source_peak_frame": 8.89,
+      "output_start_offset_samples": 0,
+      "output_start_offset_frames": 0.0,
+      "peak_vs_hit_frames": -1.1100000000000136,
+      "normalized_correlation": 0.9999461770057678
+    },
+    {
+      "cue_index": 6,
+      "name": "soft",
+      "hit_frame": 1021,
+      "planned_start_frame": 1007,
+      "source_peak_frame": 13.0375,
+      "output_start_offset_samples": 0,
+      "output_start_offset_frames": 0.0,
+      "peak_vs_hit_frames": -0.962500000000091,
+      "normalized_correlation": 0.9999656081199646
+    },
+    {
+      "cue_index": 7,
+      "name": "sweep",
+      "hit_frame": 1198,
+      "planned_start_frame": 1188,
+      "source_peak_frame": 8.89,
+      "output_start_offset_samples": 0,
+      "output_start_offset_frames": 0.0,
+      "peak_vs_hit_frames": -1.1100000000001273,
+      "normalized_correlation": 0.9999375343322754
+    },
+    {
+      "cue_index": 8,
+      "name": "soft",
+      "hit_frame": 1375,
+      "planned_start_frame": 1361,
+      "source_peak_frame": 13.0375,
+      "output_start_offset_samples": 0,
+      "output_start_offset_frames": 0.0,
+      "peak_vs_hit_frames": -0.9624999999998636,
+      "normalized_correlation": 0.9999657273292542
+    },
+    {
+      "cue_index": 9,
+      "name": "sweep",
+      "hit_frame": 1551,
+      "planned_start_frame": 1541,
+      "source_peak_frame": 8.89,
+      "output_start_offset_samples": 0,
+      "output_start_offset_frames": 0.0,
+      "peak_vs_hit_frames": -1.1100000000001273,
+      "normalized_correlation": 0.9999451637268066
+    },
+    {
+      "cue_index": 10,
+      "name": "soft",
+      "hit_frame": 1669,
+      "planned_start_frame": 1655,
+      "source_peak_frame": 13.0375,
+      "output_start_offset_samples": 0,
+      "output_start_offset_frames": 0.0,
+      "peak_vs_hit_frames": -0.962500000000091,
+      "normalized_correlation": 0.9999665021896362
+    },
+    {
+      "cue_index": 11,
+      "name": "sweep",
+      "hit_frame": 1846,
+      "planned_start_frame": 1836,
+      "source_peak_frame": 8.89,
+      "output_start_offset_samples": 0,
+      "output_start_offset_frames": 0.0,
+      "peak_vs_hit_frames": -1.1100000000001273,
+      "normalized_correlation": 0.9999451637268066
+    },
+    {
+      "cue_index": 12,
+      "name": "whoosh",
+      "hit_frame": 2031,
+      "planned_start_frame": 2009,
+      "source_peak_frame": 21.36375,
+      "output_start_offset_samples": 0,
+      "output_start_offset_frames": 0.0,
+      "peak_vs_hit_frames": -0.6362500000000182,
+      "normalized_correlation": 0.9975101947784424
+    },
+    {
+      "cue_index": 13,
+      "name": "soft",
+      "hit_frame": 2267,
+      "planned_start_frame": 2253,
+      "source_peak_frame": 13.0375,
+      "output_start_offset_samples": 0,
+      "output_start_offset_frames": 0.0,
+      "peak_vs_hit_frames": -0.962500000000091,
+      "normalized_correlation": 0.9999739527702332
+    },
+    {
+      "cue_index": 14,
+      "name": "soft",
+      "hit_frame": 2500,
+      "planned_start_frame": 2486,
+      "source_peak_frame": 13.0375,
+      "output_start_offset_samples": 0,
+      "output_start_offset_frames": 0.0,
+      "peak_vs_hit_frames": -0.962500000000091,
+      "normalized_correlation": 0.9999683499336243
+    },
+    {
+      "cue_index": 15,
+      "name": "switch",
+      "hit_frame": 2625,
+      "planned_start_frame": 2623,
+      "source_peak_frame": 1.8975,
+      "output_start_offset_samples": 0,
+      "output_start_offset_frames": 0.0,
+      "peak_vs_hit_frames": -0.10249999999996362,
+      "normalized_correlation": 0.9995482563972473
+    },
+    {
+      "cue_index": 16,
+      "name": "riser",
+      "hit_frame": 2830,
+      "planned_start_frame": 2808,
+      "source_peak_frame": 21.36375,
+      "output_start_offset_samples": 0,
+      "output_start_offset_frames": 0.0,
+      "peak_vs_hit_frames": -0.6362500000000182,
+      "normalized_correlation": 0.35733431577682495
+    },
+    {
+      "cue_index": 17,
+      "name": "impact",
+      "hit_frame": 2834,
+      "planned_start_frame": 2815,
+      "source_peak_frame": 16.52625,
+      "output_start_offset_samples": 0,
+      "output_start_offset_frames": 0.0,
+      "peak_vs_hit_frames": -2.473750000000109,
+      "normalized_correlation": 0.8906140327453613
+    },
+    {
+      "cue_index": 18,
+      "name": "sparkle",
+      "hit_frame": 2857,
+      "planned_start_frame": 2829,
+      "source_peak_frame": 27.7875,
+      "output_start_offset_samples": 0,
+      "output_start_offset_frames": 0.0,
+      "peak_vs_hit_frames": -0.21250000000009095,
+      "normalized_correlation": 0.4533017873764038
+    }
+  ],
+  "source_manifest_sha256": "08255e202d95e6058df09b1917fa55e4c4fb95ef013b1b95a422d1be1b3bf9d3",
+  "output_beat_check": [
+    {
+      "frame": 0,
+      "band": "bass",
+      "unresolved": "no local percussion peak inside +/-220ms"
+    },
+    {
+      "frame": 177,
+      "band": "bass",
+      "nearest_output_rms_peak_seconds": 5.9163958333333335,
+      "cut_minus_peak_frames": -0.49187499999999496,
+      "peak_level": 0.07034817198907373
+    },
+    {
+      "frame": 354,
+      "band": "bass",
+      "nearest_output_rms_peak_seconds": 11.8453125,
+      "cut_minus_peak_frames": -1.3593749999999893,
+      "peak_level": 0.07836728257834805
+    },
+    {
+      "frame": 472,
+      "band": "bass",
+      "nearest_output_rms_peak_seconds": 15.779729166666666,
+      "cut_minus_peak_frames": -1.3918750000000024,
+      "peak_level": 0.0734358697476552
+    },
+    {
+      "frame": 708,
+      "band": "bass",
+      "nearest_output_rms_peak_seconds": 23.648583333333335,
+      "cut_minus_peak_frames": -1.457499999999996,
+      "peak_level": 0.06621908744029334
+    },
+    {
+      "frame": 885,
+      "band": "bass",
+      "nearest_output_rms_peak_seconds": 29.56072916666667,
+      "cut_minus_peak_frames": -1.8218750000000483,
+      "peak_level": 0.067326387485845
+    },
+    {
+      "frame": 1003,
+      "band": "bass",
+      "nearest_output_rms_peak_seconds": 33.49514583333333,
+      "cut_minus_peak_frames": -1.8543750000000614,
+      "peak_level": 0.06362463483918825
+    },
+    {
+      "frame": 1180,
+      "band": "bass",
+      "nearest_output_rms_peak_seconds": 39.39695833333333,
+      "cut_minus_peak_frames": -1.9087499999998414,
+      "peak_level": 0.061508037086319044
+    },
+    {
+      "frame": 1357,
+      "band": "bass",
+      "nearest_output_rms_peak_seconds": 45.3144375,
+      "cut_minus_peak_frames": -2.433124999999876,
+      "peak_level": 0.03613889236351376
+    },
+    {
+      "frame": 1533,
+      "band": "bass",
+      "nearest_output_rms_peak_seconds": 51.071041666666666,
+      "cut_minus_peak_frames": 0.8687500000000625,
+      "peak_level": 0.014982608560084995
+    },
+    {
+      "frame": 1651,
+      "band": "hihat",
+      "nearest_output_rms_peak_seconds": 55.09670833333333,
+      "cut_minus_peak_frames": -1.9012500000000188,
+      "peak_level": 0.012803057107829321
+    },
+    {
+      "frame": 1828,
+      "band": "bass",
+      "nearest_output_rms_peak_seconds": 61.020291666666665,
+      "cut_minus_peak_frames": -2.6087500000000574,
+      "peak_level": 0.12191282796968311
+    },
+    {
+      "frame": 2005,
+      "band": "bass",
+      "nearest_output_rms_peak_seconds": 66.92189583333334,
+      "cut_minus_peak_frames": -2.6568750000002694,
+      "peak_level": 0.12579650803950862
+    },
+    {
+      "frame": 2241,
+      "band": "bass",
+      "nearest_output_rms_peak_seconds": 74.7906875,
+      "cut_minus_peak_frames": -2.720625000000041,
+      "peak_level": 0.11037508786263889
+    },
+    {
+      "frame": 2477,
+      "band": "bass",
+      "nearest_output_rms_peak_seconds": 82.6595625,
+      "cut_minus_peak_frames": -2.7868750000003217,
+      "peak_level": 0.10485770129204111
+    },
+    {
+      "frame": 2773,
+      "band": "bass",
+      "nearest_output_rms_peak_seconds": 92.50602083333334,
+      "cut_minus_peak_frames": -2.1806250000000205,
+      "peak_level": 0.09895711636137927
+    }
+  ],
+  "source_files": {
+    "src\\Main.tsx": "e69a6122a0b62c40416cc89206ed298eed90c7aa5f3ec656e22d05f376bc0f80",
+    "src\\workflow.tsx": "608f57d63c17997f0690cf2e9af3c972dc034e27724483b94eec1495ade74041",
+    "src\\scenes.tsx": "411c58ee0a28530197fe121fe5d825b84341d3e91ca799cf7978f60dde3d433a",
+    "src\\theme.tsx": "46f04a2739b1dfc3468c788a302aadeb3765ad377215f580feab662e2af7144b",
+    "src\\audio-timing.json": "378227bd6b08d634945b856132e1ea1724fc4fb493c848642b11e4f4e7c6050e"
+  }
+}

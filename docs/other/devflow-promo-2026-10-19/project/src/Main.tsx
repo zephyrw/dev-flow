@@ -1,0 +1,13 @@
+import React from 'react';
+import {AbsoluteFill,Audio,Sequence,staticFile} from 'remotion';
+import timing from './audio-timing.json';
+import {Accounts,ACCOUNT_DEFAULTS,Brand,BRAND_DEFAULTS,Outro,OUTRO_DEFAULTS,Quotas,QUOTA_DEFAULTS,Switch,SWITCH_DEFAULTS} from './scenes';
+import {ModelConfig,CONFIG_DEFAULTS,Overview,OVERVIEW_DEFAULTS,Workflow,WORKFLOW_DEFAULTS,STEP_STARTS} from './workflow';
+export const TOTAL=timing.total_frames;
+const entries=[['brand','01 品牌',Brand,BRAND_DEFAULTS],['config','02 自定义工具与模型',ModelConfig,CONFIG_DEFAULTS],['overview','03 三段接力与八步总览',Overview,OVERVIEW_DEFAULTS],['workflow','04 八步职责与模型分工',Workflow,WORKFLOW_DEFAULTS],['accounts','05 Agy 账号管理',Accounts,ACCOUNT_DEFAULTS],['quotas','06 双额度查看',Quotas,QUOTA_DEFAULTS],['switch','07 自动切换',Switch,SWITCH_DEFAULTS],['outro','08 品牌收束',Outro,OUTRO_DEFAULTS]] as const;
+export const SHOTS=entries.map(([id,label,component,props],i)=>({id,label,component,props,from:timing.shot_frames[i],duration:timing.shot_frames[i+1]-timing.shot_frames[i]}));
+type SfxName=keyof typeof timing.sfx;
+const cue=(name:SfxName,hit:number,volume:number)=>({name,hit,from:Math.max(0,hit-Math.round(timing.sfx[name].peak_seconds*30)),duration:Math.ceil(timing.sfx[name].duration*30),src:`audio/${name}.wav`,volume});
+export const SFX=[cue('soft',SHOTS[0].from+42,.32),cue('sweep',SHOTS[1].from,.34),cue('switch',SHOTS[1].from+177,.9),cue('soft',SHOTS[2].from+30,.28),cue('switch',SHOTS[3].from+20,.9),...STEP_STARTS.slice(1).map((s,i)=>cue(i%2===0?'sweep':'soft',SHOTS[3].from+s+18,i%2===0?.26:.24)),cue('whoosh',SHOTS[4].from+26,.4),cue('soft',SHOTS[5].from+26,.32),cue('soft',SHOTS[6].from+23,.28),cue('switch',SHOTS[6].from+148,.9),cue('riser',SHOTS[7].from+57,.32),cue('impact',SHOTS[7].from+61,.32),cue('sparkle',SHOTS[7].from+84,.26)];
+export const BGM=[{from:0,duration:TOTAL,src:'audio/house-vibez-edit.wav',volume:.22}];
+export const DevFlowPromo:React.FC<{withMusic?:boolean;timeline?:unknown}>=({withMusic=true})=><AbsoluteFill style={{background:'#f8fafc'}}>{SHOTS.map(s=><Sequence key={s.id} from={s.from} durationInFrames={s.duration}><s.component {...s.props}/></Sequence>)}{SFX.map((s,i)=><Sequence key={i} from={s.from} durationInFrames={s.duration}><Audio src={staticFile(s.src)} volume={s.volume}/></Sequence>)}{withMusic&&BGM.map((s,i)=><Sequence key={i} from={s.from} durationInFrames={s.duration}><Audio src={staticFile(s.src)} volume={s.volume}/></Sequence>)}</AbsoluteFill>;

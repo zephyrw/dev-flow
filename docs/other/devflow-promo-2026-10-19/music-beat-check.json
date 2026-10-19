@@ -1,0 +1,110 @@
+{
+  "method": "Measured percussion RMS peaks, 5 ms hop; bass for main sections, hihat during the source track bass-free breakdown at 57.2\u201361 seconds. Outro shifted 1 frame toward its measured bass transient.",
+  "cuts": [
+    {
+      "frame": 0,
+      "nearest_transient_seconds": 4.025850340136055,
+      "transient_band": "bass 40\u2013160 Hz",
+      "error_frames": -1.4352333353370472
+    },
+    {
+      "frame": 177,
+      "nearest_transient_seconds": 9.927437641723357,
+      "transient_band": "bass 40\u2013160 Hz",
+      "error_frames": -1.4828523829561213
+    },
+    {
+      "frame": 354,
+      "nearest_transient_seconds": 15.829024943310658,
+      "transient_band": "bass 40\u2013160 Hz",
+      "error_frames": -1.5304714305751155
+    },
+    {
+      "frame": 472,
+      "nearest_transient_seconds": 19.630385487528343,
+      "transient_band": "bass 40\u2013160 Hz",
+      "error_frames": 2.4287122428942354
+    },
+    {
+      "frame": 708,
+      "nearest_transient_seconds": 27.56734693877551,
+      "transient_band": "bass 40\u2013160 Hz",
+      "error_frames": 0.31986870547932256
+    },
+    {
+      "frame": 885,
+      "nearest_transient_seconds": 33.5437641723356,
+      "transient_band": "bass 40\u2013160 Hz",
+      "error_frames": -1.9726483013234741
+    },
+    {
+      "frame": 1003,
+      "nearest_transient_seconds": 37.47981859410431,
+      "transient_band": "bass 40\u2013160 Hz",
+      "error_frames": -2.0542809543848506
+    },
+    {
+      "frame": 1180,
+      "nearest_transient_seconds": 43.28163265306122,
+      "transient_band": "bass 40\u2013160 Hz",
+      "error_frames": 0.891297276907892
+    },
+    {
+      "frame": 1357,
+      "nearest_transient_seconds": 49.13832199546485,
+      "transient_band": "bass 40\u2013160 Hz",
+      "error_frames": 2.1906170047990514
+    },
+    {
+      "frame": 1533,
+      "nearest_transient_seconds": 55.039909297052155,
+      "transient_band": "bass 40\u2013160 Hz",
+      "error_frames": 1.142997957179901
+    },
+    {
+      "frame": 1651,
+      "nearest_transient_seconds": 59.070748299319725,
+      "transient_band": "hihat 4\u20139.5 kHz (bass-free breakdown)",
+      "error_frames": -1.7821721108472843
+    },
+    {
+      "frame": 1828,
+      "nearest_transient_seconds": 64.99727891156462,
+      "transient_band": "bass 40\u2013160 Hz",
+      "error_frames": -2.5780904781942127
+    },
+    {
+      "frame": 2005,
+      "nearest_transient_seconds": 70.89886621315193,
+      "transient_band": "bass 40\u2013160 Hz",
+      "error_frames": -2.62570952581342
+    },
+    {
+      "frame": 2241,
+      "nearest_transient_seconds": 78.77097505668934,
+      "transient_band": "bass 40\u2013160 Hz",
+      "error_frames": -2.7889748319353203
+    },
+    {
+      "frame": 2477,
+      "nearest_transient_seconds": 86.63809523809523,
+      "transient_band": "bass 40\u2013160 Hz",
+      "error_frames": -2.8025802741123584
+    },
+    {
+      "frame": 2773,
+      "nearest_transient_seconds": 96.4907029478458,
+      "transient_band": "bass 40\u2013160 Hz",
+      "error_frames": -2.3808115666292906
+    }
+  ],
+  "max_abs_frames": 2.8025802741123584,
+  "within_3_frames": true,
+  "non_grid_motion_events": [
+    {
+      "frame": 2625,
+      "event": "account replacement wipe",
+      "alignment": "dedicated switch SFX peak, not a major shot cut"
+    }
+  ]
+}
