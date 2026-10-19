@@ -100,6 +100,7 @@ import type { HostToolExecutionFact } from "../../evidence/src/native-run-record
 import type { ProcessManager } from "../../process/src/manager.js";
 import { classifyFailure, normalizeRuntimeFailure } from "./errors.js";
 import { CodexSessionObserver } from "./codex-session-observer.js";
+import { ApprovalFailureObserver } from "../../core/src/approval-service-retry.js";
 import { observeCodexAccountQuota } from "./codex-account-quota.js";
 import type { AgyWorkflowBridge } from "./agy-workflow-bridge.js";
 import {
@@ -1188,6 +1189,7 @@ export class ProfileRuntime {
         : profile.adapterId === "agy" && purpose !== "aside" && this.accountBridge
           ? this.accountBridge.observeAccountQuota(run.id, profile.modelId, telemetry)
           : undefined;
+    const approvalFailures = new ApprovalFailureObserver(this.engine.store, w.id, run.id);
     const sessionObserver =
       profile.adapterId === "codex"
         ? new CodexSessionObserver({
@@ -1195,6 +1197,7 @@ export class ProfileRuntime {
             cwd: invocation.cwd,
             startedAt: run.started_at,
             telemetry,
+            onTrustedRootRecord: (row, session) => approvalFailures.accept(row, session),
           })
         : undefined;
     let final: unknown,

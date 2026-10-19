@@ -72,6 +72,7 @@ export class CodexSessionObserver {
       startedAt: string;
       telemetry?: RunTelemetry;
       onConversationEvent?: (event: NativeConversationEvent) => void;
+      onTrustedRootRecord?: (row: Record<string, unknown>, nativeSessionId: string) => void;
     },
   ) {}
   bind(conversation: string) {
@@ -194,6 +195,7 @@ export class CodexSessionObserver {
       time < Date.parse(this.input.startedAt)
     )
       return;
+    if (session.id === this.rootId) this.input.onTrustedRootRecord?.(row, session.id);
     this.applyRootTelemetry(session, row, payload);
     if (!this.input.onConversationEvent) return;
     const events = decodeCodexSessionRecord(row, {

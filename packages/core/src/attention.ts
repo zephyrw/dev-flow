@@ -3,10 +3,14 @@ import { failureSummary } from "../../presentation/src/failure.js";
 import { canResolveSourceChange } from "./source-change.js";
 import { runtimeFailureResolution } from "../../contracts/src/runtime-failure.js";
 import { reviewCompletionContext } from "./review-completion.js";
+import { APPROVAL_RETRY_ENTITY, approvalRetryCurrent, type ApprovalServiceRetry } from "./approval-service-retry.js";
 
 // Present authoritative state; legacy recovery must not invent a human actor.
 export function workflowAttention(engine: Engine, key: string) {
   const w = engine.get(key);
+  const approvalRetry = engine.store.get<ApprovalServiceRetry>(APPROVAL_RETRY_ENTITY, key);
+  if (approvalRetry && approvalRetryCurrent(engine.store, approvalRetry))
+    return { category: "queue", message: w.blocker!.message, action: "查看执行过程", at: w.updated_at };
   if (
     ["REVIEW_QUEUED", "REVIEWING"].includes(w.state) &&
     reviewCompletionContext(engine, w)

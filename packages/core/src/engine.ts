@@ -23,6 +23,11 @@ import { FunctionalIssueService } from "./functional-issues.js";
 import { workflowAttention } from "./attention.js";
 import { assertSelectedSource } from "./source-change.js";
 import { scheduleModelRetry, stageModelRunRetry, type PendingModelRetry } from "./model-retry.js";
+import { readRetryBatch } from "./model-retry.js";
+import {
+  APPROVAL_BUDGET_ENTITY, APPROVAL_CONSUMED_ENTITY, APPROVAL_RETRY_DELAYS, APPROVAL_RETRY_ENTITY, APPROVAL_RETRY_INSTRUCTION,
+  approvalBudgetKey, approvalRetryCurrent, currentApprovalFailure, type ApprovalServiceRetry,
+} from "./approval-service-retry.js";
 import { currentRunObservation } from "./run-observation.js";
 import { repairFailure, prepareRepairResume } from "./repair.js";
 import { readBusinessProgress, saveBusinessProgress } from "./workflow-progress.js";
@@ -3766,6 +3771,7 @@ export class Engine {
           "HUMAN_PENDING",
         ].includes(w.state);
       const controlledPause = ownsRun ? this.confirmedConversationPause(key, runId, e) : undefined;
+      const approvalRetry = ownsRun && !controlledPause ? this.scheduleApprovalServiceRetry(key, runId, String(e)) : undefined;
       if (controlledPause) {
         const source = this.store.must<Run>("run", runId);
         const interruption = {
@@ -3777,6 +3783,11 @@ export class Engine {
         this.store.put("run_stop", runId, key, interruption);
         this.store.put("interruption", key, key, interruption);
         this.transition(key, [w.state], "STOPPED", "stopped", { blocker: undefined });
+      } else if (approvalRetry === "scheduled") {
+        // Only a trusted current-run tool failure can reach this branch.
+      } else if (approvalRetry === "exhausted") {
+        this.routeExecutionIntent(key, runId, normalizeDeliveredRound({ status: "need_user",
+          summary: "自动审批服务容量不足", notes: String(e) }));
       } else if (ownsRun && this.store.get<Run>("run", runId)?.purpose === "planner_commit" &&
           ["EXECUTING", "VERIFYING"].includes(this.get(key).state) && !readExecutionCompletion(this.store, runId)) {
         this.routeExecutionIntent(key, runId, normalizeDeliveredRound({ status: "need_user",
@@ -4758,12 +4769,92 @@ export class Engine {
       this.scheduler.release(key, run, keys, true);
     }
   }
+  private scheduleApprovalServiceRetry(key: string, runId: string, reason: string): "scheduled" | "exhausted" | undefined {
+    const w = this.get(key);
+    const run = this.store.get<Run>("run", runId);
+    const failure = currentApprovalFailure(this.store, w, run, reason);
+    if (!failure || !run) return;
+    const budgetKey = approvalBudgetKey(run);
+    const budget = this.store.get<{ count: number }>(APPROVAL_BUDGET_ENTITY, budgetKey) ?? { count: 0 };
+    if (budget.count >= APPROVAL_RETRY_DELAYS.length) return "exhausted";
+    const attempt = budget.count + 1;
+    const retryAt = Date.now() + APPROVAL_RETRY_DELAYS[budget.count]!;
+    this.store.transaction(() => {
+      this.store.put(APPROVAL_CONSUMED_ENTITY, runId, key, { tool_call_id: failure.tool_call_id });
+      this.store.put(APPROVAL_RETRY_ENTITY, key, key, {
+        id: key, ...readRetryBatch(this.store, key, runId), run_id: runId,
+        plan_revision: w.plan_revision, plan_hash: w.plan_hash, retry_at: retryAt,
+        attempt, native_session_id: failure.native_session_id,
+      } satisfies ApprovalServiceRetry);
+      saveRunContinuation(this.store, key, key, {
+        kind: "runtime_resume", purpose: "execute",
+        role: run.routing_role === "planner" || run.purpose === "planner_commit" || run.purpose === "planner_takeover"
+          ? "planner" : "executor",
+        source_run_id: run.id, conversation_id: run.conversation_id,
+      });
+      this.transition(key, [w.state], "BLOCKED", run.stage, { blocker: {
+        code: "APPROVAL_SERVICE_UNAVAILABLE",
+        message: `自动审批服务容量不足，受阻操作未执行。将在 ${APPROVAL_RETRY_DELAYS[budget.count]! / 1000} 秒后第 ${attempt}/3 次自动重试，保留原会话与审批机制；目前无需你操作。`,
+      } });
+      this.store.event(key, w.project_id, "ModelRetryScheduled", {
+        code: "APPROVAL_SERVICE_UNAVAILABLE", attempt, max_attempts: 3, retry_at: retryAt,
+        message: this.get(key).blocker!.message,
+      }, runId);
+    });
+    return "scheduled";
+  }
+
+  /** Persistent timer; startup and normal recovery ticks share the same fenced path. */
+  async resumeApprovalServiceRetries(at = Date.now()) {
+    if (this.maintenanceBlocked || readMaintenanceMarker(this.config.storage_root)?.block_new_dispatch) return;
+    for (const retry of this.store.list<ApprovalServiceRetry>(APPROVAL_RETRY_ENTITY)) {
+      if (!approvalRetryCurrent(this.store, retry)) {
+        this.store.remove(APPROVAL_RETRY_ENTITY, retry.id);
+        continue;
+      }
+      if (retry.retry_at > at) continue;
+      await this.waitForIdle(retry.id);
+      if (this.maintenanceBlocked || readMaintenanceMarker(this.config.storage_root)?.block_new_dispatch ||
+          !approvalRetryCurrent(this.store, retry)) continue;
+      const run = this.store.must<Run>("run", retry.run_id);
+      // A controller crash between result routing and process settlement needs reconciliation.
+      if (run.status === "running" || this.store.list<{ status: string; confirmed?: boolean }>("process_record", retry.id)
+          .some((p) => !["exited", "failed"].includes(p.status) || !p.confirmed)) continue;
+      this.store.transaction(() => {
+        this.store.put(APPROVAL_BUDGET_ENTITY, approvalBudgetKey(run), retry.id, { count: retry.attempt });
+        stageModelRunRetry(this.store, retry.id, retry.run_id);
+        const pending = this.store.must<PendingModelRetry>("pending_model_retry", retry.id);
+        this.store.put("pending_model_retry", retry.id, retry.id, { ...pending, input_feedback: APPROVAL_RETRY_INSTRUCTION });
+        this.restoreDispatchContext(retry.id, retry.run_id);
+        this.transition(retry.id, ["BLOCKED"], "QUEUED", run.stage, { blocker: undefined });
+        this.store.remove(APPROVAL_RETRY_ENTITY, retry.id);
+        this.scheduler.enqueue(retry.id, this.get(retry.id).project_id);
+        this.store.event(retry.id, this.get(retry.id).project_id, "ModelRetryStarted", {
+          code: "APPROVAL_SERVICE_UNAVAILABLE", attempt: retry.attempt, max_attempts: 3,
+          message: `正在进行第 ${retry.attempt}/3 次自动审批服务重试。`,
+        }, retry.run_id);
+      });
+      void this.dispatch();
+    }
+  }
+
   private routeExecutionIntent(
     key: string,
     runId: string,
     normalized: ReturnType<typeof normalizeDeliveredRound>,
   ): RoundResult {
     const run = this.store.get<Run>("run", runId);
+    if (normalized.intent === "need_user") {
+      const retry = this.scheduleApprovalServiceRetry(key, runId, [normalized.summary, normalized.notes].filter(Boolean).join("\n"));
+      if (retry === "scheduled") return { status: "need_user", summary: this.get(key).blocker?.message };
+      if (retry === "exhausted") {
+        normalized = normalizeDeliveredRound({ status: "need_user",
+          summary: "自动审批服务容量不足，已自动重试 3 次仍未恢复；受阻操作未执行，需要你稍后重试。",
+          user_interaction: { kind: "action_required", title: "自动审批服务暂不可用",
+            message: "自动审批服务容量不足，已按 15、30、60 秒间隔自动重试 3 次，仍无法完成审批。受阻操作未执行，任务修改已保留；这不是安全拒绝。请等待服务恢复后点击“重试原操作”，继续原会话并重新接受审批。自动重试次数不会因暂停或服务重启重置。",
+            action_label: "重试原操作" } });
+      }
+    }
     const conversationId = run?.conversation_id;
     const plannerRole = run?.routing_role === "planner" || run?.purpose === "planner_takeover" || run?.purpose === "planner_commit";
     if (["need_planner", "unclear"].includes(normalized.intent) && run?.purpose === "planner_commit" && usesPolicyV2(this.get(key)))

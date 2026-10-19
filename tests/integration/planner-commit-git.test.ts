@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -6,6 +6,7 @@ import { dirname, join, resolve } from "node:path";
 import { realpathSync } from "node:fs";
 import { GitDeliveryCoordinator } from "../../packages/git/src/delivery-coordinator.js";
 import { git, repositoryInfo } from "../../packages/git/src/git.js";
+import * as gitModule from "../../packages/git/src/git.js";
 
 /**
  * C01–C08（可隔离验证部分）：规划模型已提交后的本地集成必须执行真实 Git 操作。
@@ -181,6 +182,105 @@ async function fastForwardFixture(taskPath = "task.txt", ignored = false) {
 }
 
 describe("planner-commit 真实 Git 集成", () => {
+  it("任务创建后主工作区切到 dev，合入当前分支并保留创建时分支记录", async () => {
+    const { sourceRepo, taskCommit, baseline, store, integrate } = await fastForwardFixture();
+    shell(sourceRepo, ["switch", "-c", "dev"]);
+    const result = await integrate();
+    expect(result.integrations[0]).toMatchObject({ status: "success", target_branch: "dev", candidate_commit: taskCommit });
+    expect(shell(sourceRepo, ["symbolic-ref", "--short", "HEAD"])).toBe("dev");
+    expect(shell(sourceRepo, ["rev-parse", "main"])).toBe(baseline);
+    expect(shell(sourceRepo, ["rev-parse", "dev"])).toBe(taskCommit);
+    expect(store.must<{ source_branch: string }>("workspace", "ws").source_branch).toBe("main");
+  });
+
+  it("当前 dev 已推进时吸收 dev 的固定提交，恢复仍保留双方历史", async () => {
+    const { sourceRepo, taskRoot, taskCommit, baseline, store, integrate } = await fastForwardFixture();
+    shell(sourceRepo, ["switch", "-c", "dev"]);
+    writeFileSync(join(sourceRepo, "dev.txt"), "dev progress\n");
+    const devCommit = commitAll(sourceRepo, "advance dev");
+    const first = await integrate();
+    expect(first.repairTargets).toEqual([{ repo_id: "main", source_commit: devCommit, candidate_commit: taskCommit }]);
+    expect(shell(sourceRepo, ["rev-parse", "HEAD"])).toBe(devCommit);
+    store.put("planner_integration_repair", "wf", "wf", { source_run_id: "run-1", targets: first.repairTargets });
+    shell(taskRoot, ["merge", "--no-edit", devCommit]);
+    const merged = shell(taskRoot, ["rev-parse", "HEAD"]);
+    store.put("workflow", "wf", "p", { ...store.must<object>("workflow", "wf"), run_id: "run-2" });
+    const result = await coordinator(store, scratch("devflow-current-recovery-")).integrateCommittedDelivery("wf", [{ repo_id: "main", commit: merged }]);
+    expect(result.integrations[0]).toMatchObject({ status: "success", target_branch: "dev", candidate_commit: merged });
+    expect(shell(sourceRepo, ["merge-base", taskCommit, "dev"])).toBe(taskCommit);
+    expect(shell(sourceRepo, ["merge-base", devCommit, "dev"])).toBe(devCommit);
+    expect(shell(sourceRepo, ["rev-parse", "main"])).toBe(baseline);
+  });
+
+  it.each(["branch", "head"] as const)("集成期间 %s 变化不写错目标，恢复重新读取当前分支", async (change) => {
+    const { sourceRepo, taskCommit, baseline, store, integrate } = await fastForwardFixture();
+    const readInfo = gitModule.repositoryInfo;
+    let sourceReads = 0;
+    let changedHead = baseline;
+    const spy = vi.spyOn(gitModule, "repositoryInfo").mockImplementation(async (root) => {
+      if (root === realpathSync(sourceRepo) && ++sourceReads === 2) {
+        if (change === "branch") shell(sourceRepo, ["switch", "-c", "dev"]);
+        else {
+          writeFileSync(join(sourceRepo, "advance.txt"), "concurrent progress\n");
+          changedHead = commitAll(sourceRepo, "concurrent advance");
+        }
+      }
+      return readInfo(root);
+    });
+    let first;
+    try { first = await integrate(); } finally { spy.mockRestore(); }
+    expect(first.recoveryFailures?.[0]?.code).toBe("SOURCE_BUSY");
+    expect(first.repairInstructions).toContain("禁止切回");
+    expect(shell(sourceRepo, ["rev-parse", "HEAD"])).toBe(changedHead);
+    expect(existsSync(join(sourceRepo, "task.txt"))).toBe(false);
+    expect(store.must<{ commit: string }>("planner_commit_candidate", "wf:run-1:main").commit).toBe(taskCommit);
+    const retry = await integrate();
+    if (change === "branch") {
+      expect(retry.integrations[0]).toMatchObject({ status: "success", target_branch: "dev" });
+      expect(shell(sourceRepo, ["rev-parse", "main"])).toBe(baseline);
+    } else {
+      expect(retry.repairTargets).toEqual([{ repo_id: "main", source_commit: changedHead, candidate_commit: taskCommit }]);
+    }
+  });
+
+  it("同轮成功回执重放不因主工作区再次切分支而重复交付", async () => {
+    const { sourceRepo, taskCommit, baseline, store, integrate } = await fastForwardFixture();
+    shell(sourceRepo, ["switch", "-c", "dev"]);
+    const first = await integrate();
+    shell(sourceRepo, ["switch", "main"]);
+    store.put("workflow", "wf", "p", { ...store.must<object>("workflow", "wf"), state: "COMMIT_PARTIAL" });
+    const replay = await integrate();
+    expect(replay.integrations).toEqual(first.integrations);
+    expect(shell(sourceRepo, ["symbolic-ref", "--short", "HEAD"])).toBe("main");
+    expect(shell(sourceRepo, ["rev-parse", "main"])).toBe(baseline);
+    expect(shell(sourceRepo, ["rev-parse", "dev"])).toBe(taskCommit);
+  });
+
+  it("detached HEAD 给出明确恢复条件，不自行选择或切换分支", async () => {
+    const { sourceRepo, baseline, integrate } = await fastForwardFixture();
+    shell(sourceRepo, ["switch", "--detach", baseline]);
+    const result = await integrate();
+    expect(result.recoveryFailures?.[0]).toMatchObject({ code: "SOURCE_BRANCH_REQUIRED", message: expect.stringContaining("detached HEAD") });
+    expect(shell(sourceRepo, ["rev-parse", "HEAD"])).toBe(baseline);
+    expect(() => shell(sourceRepo, ["symbolic-ref", "--short", "HEAD"])).toThrow();
+    expect(existsSync(join(sourceRepo, "task.txt"))).toBe(false);
+  });
+
+  it.each(["source_root", "root"] as const)("动态目标不能绕过 %s 外部仓库绑定", async (field) => {
+    const { sourceRepo, baseline, store, integrate } = await fastForwardFixture();
+    const external = scratch("devflow-external-binding-");
+    initRepo(external);
+    writeFileSync(join(external, "external.txt"), "preserve\n");
+    const externalHead = commitAll(external, "external baseline");
+    shell(external, ["switch", "-c", "dev"]);
+    store.put("workspace", "ws", "wf", { ...store.must<object>("workspace", "ws"), [field]: external });
+    const result = await integrate();
+    expect(result.recoveryFailures?.[0]?.code).toBe("SOURCE_BINDING_INVALID");
+    expect(shell(external, ["rev-parse", "HEAD"])).toBe(externalHead);
+    expect(shell(sourceRepo, ["rev-parse", "HEAD"])).toBe(baseline);
+    expect(existsSync(join(external, "task.txt"))).toBe(false);
+  });
+
   it.skipIf(process.platform !== "win32")("Windows 长短路径别名仍识别同一源仓库并保留幂等集成", async (context) => {
     const { sourceRepo, taskRoot, taskCommit, store, integrate } = await fastForwardFixture();
     const alias = windowsShortPath(sourceRepo);

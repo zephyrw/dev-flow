@@ -220,6 +220,7 @@ const noopStopPort: StopPort = {
 
 const resuming = new WeakMap<Engine, Set<string>>();
 export async function resumeModelWaits(engine: Engine, at = Date.now()) {
+  await engine.resumeApprovalServiceRetries(at);
   let active = resuming.get(engine);
   if (!active) resuming.set(engine, (active = new Set()));
   for (const retry of engine.store.list<ModelRetry>("model_retry")) {

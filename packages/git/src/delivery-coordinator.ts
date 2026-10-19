@@ -33,10 +33,10 @@ async function assertTargetBranchContainsCandidate(
   gitRoot: string,
   targetBranch: string,
   candidateCommit: string,
+  requireCurrentBranch = true,
 ): Promise<boolean> {
   try {
-    const info = await repositoryInfo(gitRoot);
-    if (info.branch !== targetBranch) return false;
+    if (requireCurrentBranch && (await repositoryInfo(gitRoot)).branch !== targetBranch) return false;
     const targetRef = (
       await git(gitRoot, ["rev-parse", "--verify", "refs/heads/" + targetBranch])
     ).trim();
@@ -46,6 +46,17 @@ async function assertTargetBranchContainsCandidate(
     return base === candidateCommit;
   } catch {
     return false;
+  }
+}
+
+async function integrationSourceInfo(root: string) {
+  try {
+    return await repositoryInfo(root);
+  } catch (error) {
+    const failure = error as { code?: unknown; cmd?: string };
+    if (failure.code === 1 && failure.cmd?.includes("symbolic-ref"))
+      throw new FlowError("SOURCE_BRANCH_REQUIRED", "主工作区处于 detached HEAD，无法确定当前目标分支；请在主工作区选定分支后继续，平台不会自行切换分支");
+    throw error;
   }
 }
 
@@ -67,6 +78,7 @@ export interface IntegrationReceipt {
   source_root: string;
   merged_at: string;
   status: "success" | "partial" | "failed";
+  run_id?: string;
 }
 export interface CleanupReceipt {
   workflow_id: string;
@@ -245,14 +257,13 @@ export class GitDeliveryCoordinator {
     for (const ws of workspaces) {
       const managed = w.workspace_mode !== "existing_workspace";
       let sourceRoot = ws.root;
-      let targetBranch = ws.branch;
+      let targetBranch = managed ? "" : ws.branch;
       let commit = "";
       try {
         requireCondition(ownsOperation(), "RUN_REVOKED", "提交收尾已中断");
         if (managed) {
-          requireCondition(ws.owned && ws.source_branch, "WORKSPACE_OWNERSHIP_INVALID", "缺少受管工作树或目标分支绑定");
+          requireCondition(ws.owned, "WORKSPACE_OWNERSHIP_INVALID", "缺少受管工作树绑定");
           sourceRoot = this.source(w, ws);
-          targetBranch = ws.source_branch;
         }
         // Pin the reported operand before any Git read so a mid-flight failure still freezes
         // this round; retry must not silently select a later HEAD.
@@ -261,12 +272,17 @@ export class GitDeliveryCoordinator {
         const reported = commits.find((c) => c && c.repo_id === ws.repo_id && typeof c.commit === "string")?.commit;
         if (!saved && reported)
           this.store.put("planner_commit_candidate", candidateKey, workflowId, { commit: reported, repo_id: ws.repo_id, run_id: w.run_id });
-        const info = await repositoryInfo(sourceRoot);
-        requireCondition(info.branch === targetBranch, "SOURCE_BINDING_INVALID", "目标工作区分支与登记不符");
+        const info = await integrationSourceInfo(sourceRoot);
+        // source_branch records where the task started, not a permanent delivery target.
+        // Pin the current checkout for this attempt; the pre-write check rejects races.
+        if (managed) targetBranch = info.branch;
+        else requireCondition(info.branch === targetBranch, "SOURCE_BINDING_INVALID", "任务工作区执行分支与登记不符");
         if (managed) {
+          const taskInfo = await repositoryInfo(ws.root);
           requireCondition(
             !sameGitDirectory(sourceRoot, ws.root) &&
-            sameGitDirectory(info.common_dir, ws.common_dir),
+            sameGitDirectory(info.common_dir, ws.common_dir) &&
+            sameGitDirectory(taskInfo.common_dir, ws.common_dir),
             "SOURCE_BINDING_INVALID", "源仓库与受管工作树绑定不一致",
           );
         }
@@ -280,11 +296,16 @@ export class GitDeliveryCoordinator {
             requireCondition(await git(ws.root, ["merge-base", ancestor, commit]) === ancestor,
               "INTEGRATION_REPAIR_INCOMPLETE", "冲突处理后的提交未包含原任务及固定目标提交，保留现场；不能重复派发同一合并或宣布完成");
         }
-        const prior = this.store.get<IntegrationReceipt>("integration_receipt", this.key(workflowId, ws.repo_id));
+        const prior = this.store.get<IntegrationReceipt>("planner_integration_receipt", candidateKey) ??
+          this.store.get<IntegrationReceipt>("integration_receipt", this.key(workflowId, ws.repo_id));
         if (prior?.status === "success" && prior.candidate_commit === commit &&
-            prior.source_root === sourceRoot && prior.target_branch === targetBranch) {
-          const verified = await assertTargetBranchContainsCandidate(sourceRoot, targetBranch, commit);
+            sameGitDirectory(prior.source_root, sourceRoot) &&
+            (prior.run_id ? prior.run_id === w.run_id : prior.target_branch === targetBranch)) {
+          // An acknowledged merge belongs to its actual branch. Replaying the same round
+          // after a checkout switch must not deliver that candidate to a second branch.
+          const verified = await assertTargetBranchContainsCandidate(sourceRoot, prior.target_branch, commit, false);
           if (verified) {
+            this.store.put("integration_receipt", this.key(workflowId, ws.repo_id), workflowId, prior);
             integrations.push(prior);
             continue;
           }
@@ -320,8 +341,9 @@ export class GitDeliveryCoordinator {
             }
             // Project-owned plan files can be untracked in the source checkout.
             // Preserve them in place; Git rejects overlapping paths atomically.
-            const current = await repositoryInfo(sourceRoot);
-            requireCondition(current.head === info.head && current.branch === targetBranch, "SOURCE_BUSY", "目标分支发生并发变化");
+            const current = await integrationSourceInfo(sourceRoot);
+            requireCondition(current.head === info.head && current.branch === targetBranch &&
+              sameGitDirectory(current.common_dir, info.common_dir), "SOURCE_BUSY", "主工作区当前分支或 HEAD 在集成期间变化；本次未写入，重新读取当前分支后继续，禁止切回旧分支");
             requireCondition(ownsOperation(), "RUN_REVOKED", "提交收尾已中断");
             await git(sourceRoot, ["merge", "--ff-only", "--no-autostash", "--no-overwrite-ignore", commit], gitWriteEnv);
           }
@@ -331,14 +353,17 @@ export class GitDeliveryCoordinator {
         const receipt: IntegrationReceipt = {
           workflow_id: workflowId, repo_id: ws.repo_id, candidate_commit: commit,
           target_branch: targetBranch, source_root: sourceRoot, status: "success", merged_at: now(),
+          run_id: w.run_id,
         };
         this.store.put("integration_receipt", this.key(workflowId, ws.repo_id), workflowId, receipt);
+        this.store.put("planner_integration_receipt", candidateKey, workflowId, receipt);
         integrations.push(receipt);
       } catch (error) {
         const receipt: IntegrationReceipt = {
           workflow_id: workflowId, repo_id: ws.repo_id, candidate_commit: commit,
           target_branch: targetBranch, source_root: sourceRoot, status: "failed", merged_at: now(),
         };
+        // The latest receipt blocks cleanup on failure; per-round receipts retain history.
         this.store.put("integration_receipt", this.key(workflowId, ws.repo_id), workflowId, receipt);
         const failure = {
           repo_id: ws.repo_id,
@@ -349,8 +374,9 @@ export class GitDeliveryCoordinator {
         this.store.event(workflowId, w.project_id, "PlannerIntegrationFailed", { ...failure, recovery_scheduled: true }, w.run_id);
         repairs.push(
           "仓库 " + ws.repo_id + " 提交合并尚未完成，请在本地提交阶段处理以下实际问题：" + failure.code + "：" + failure.message +
-          "\n登记的任务工作树：" + ws.root + "；登记的源工作区：" + sourceRoot + "；目标分支：" + targetBranch + "；本轮候选提交：" + (commit || commits.find(item => item.repo_id === ws.repo_id)?.commit || "尚未确定，需核对") +
-          "。先检查真实 Git 状态与登记绑定，不能猜测或改写绑定。无关未提交文件不阻止合并；同文件不同位置的修改也应尝试保留双方内容。" +
+          "\n登记的任务工作树：" + ws.root + "；登记的源工作区：" + sourceRoot + "；目标分支：" + (targetBranch || "尚未确定") + "；本轮候选提交：" + (commit || commits.find(item => item.repo_id === ws.repo_id)?.commit || "尚未确定，需核对") +
+          (managed ? "。目标是登记主工作区在实际合并时的当前分支，上述目标分支仅是本次观察；恢复时重新读取当前分支，禁止切回任务创建时的分支或改写 source_branch 来固定目标。" : "。原地执行任务必须保留登记的执行分支绑定，先核对任务修改归属，不得自行切换分支。") +
+          "先检查真实 Git 状态与登记的仓库绑定，不能猜测或改写路径绑定。无关未提交文件不阻止合并；同文件不同位置的修改也应尝试保留双方内容。" +
           "允许在登记的源工作区完成必要的本地合并，但必须先保存可恢复的原始文件、未跟踪文件和 index，保留原有已暂存/未暂存边界；禁止提交他人的修改、删除锁来抢占、覆盖并发修改或用 reset --hard/clean 丢弃内容。" +
           "若需暂时移开阻挡文件，先完整备份，合并后恢复并逐项核对；恢复发生冲突时继续处理，不能删掉备份或宣称完成。" +
           "缺权限、仓库不可用、锁被其他进程占用或无法确保保留现场时，返回 need_user 和 user_interaction，说明具体原因、可选处理及用户操作步骤。" +
@@ -466,6 +492,7 @@ export class GitDeliveryCoordinator {
     }
     let needsVerification = false;
     const candidates: Candidate[] = [];
+    const completedIntegrations: IntegrationReceipt[] = [];
     for (const ws of workspaces) {
       requireCondition(
         ws.owned,
@@ -473,14 +500,23 @@ export class GitDeliveryCoordinator {
         "独立工作树未登记为当前任务所有",
       );
       const source = this.source(w, ws),
-        info = await repositoryInfo(source);
+        info = await integrationSourceInfo(source);
       requireCondition(
         sameGitDirectory(info.common_dir, ws.common_dir) &&
-          info.branch === (ws.source_branch ?? info.branch) &&
+          sameGitDirectory((await repositoryInfo(ws.root)).common_dir, ws.common_dir) &&
           !sameGitDirectory(source, ws.root),
         "SOURCE_BINDING_INVALID",
-        "主工作区、仓库或目标分支与登记不符",
+        "主工作区或仓库与登记不符",
       );
+      const candidate = committed.find((c) => c.repo_id === ws.repo_id)!;
+      const prior = this.store.get<IntegrationReceipt>("integration_receipt", this.key(workflowId, ws.repo_id));
+      if (prior?.status === "success" && prior.candidate_commit === candidate.commit &&
+          sameGitDirectory(prior.source_root, source)) {
+        requireCondition(await assertTargetBranchContainsCandidate(source, prior.target_branch, candidate.commit, false),
+          "TARGET_REF_MISMATCH", "已成功交付的目标分支不再包含冻结候选提交，保留原回执并核对现场");
+        completedIntegrations.push(prior);
+        continue;
+      }
       requireCondition(
         !(await git(source, ["status", "--porcelain"])),
         "SOURCE_BUSY",
@@ -490,7 +526,6 @@ export class GitDeliveryCoordinator {
         "integration_candidate",
         this.key(workflowId, ws.repo_id),
       );
-      const candidate = committed.find((c) => c.repo_id === ws.repo_id)!;
       let head = candidate.commit;
       let contains =
         (await git(ws.root, ["merge-base", head, info.head])) === info.head;
@@ -704,7 +739,7 @@ export class GitDeliveryCoordinator {
         "主工作区在验证后变化，需重新吸收并验证",
       );
     }
-    const integrations: IntegrationReceipt[] = [];
+    const integrations: IntegrationReceipt[] = [...completedIntegrations];
     try {
       for (const c of candidates) {
         const prior = this.store.get<IntegrationReceipt>(
@@ -713,6 +748,8 @@ export class GitDeliveryCoordinator {
         );
         if (
           prior?.candidate_commit === c.candidate_commit &&
+          prior.target_branch === c.source_branch &&
+          sameGitDirectory(prior.source_root, c.source_root) &&
           prior.status === "success"
         ) {
           const verified = await assertTargetBranchContainsCandidate(
