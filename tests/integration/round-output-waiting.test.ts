@@ -82,9 +82,12 @@ it("receives a mixed reply from a real CLI, falls through a damaged file and wai
     await s.engine.receiveRoundResult(w.id, run.id, value);
     expect(s.engine.get(w.id).state).toBe("WAITING_INPUT");
     expect(
-      new UserInteractionService(s.store).getCurrentInteraction(w.id)?.request
-        .message,
-    ).toBe("等待测试环境恢复");
+      new UserInteractionService(s.store).getCurrentInteraction(w.id)?.request,
+    ).toMatchObject({
+      kind: "question",
+      details: "等待测试环境恢复",
+      choices: [{ id: "clarify_assistance" }],
+    });
     expect(s.store.get("execution_completion", run.id)).toBeUndefined();
     expect(s.store.jobs().length).toBeLessThanOrEqual(jobs);
     const execute = vi.fn();
@@ -229,9 +232,12 @@ it("keeps an explicit review need_user when optional review material is malforme
       intent: "need_user",
     });
     expect(
-      new UserInteractionService(s.store).getCurrentInteraction(s.w.id)?.request
-        .message,
-    ).toBe("等待必要的外部条件");
+      new UserInteractionService(s.store).getCurrentInteraction(s.w.id)?.request,
+    ).toMatchObject({
+      kind: "question",
+      details: "等待必要的外部条件",
+      choices: [{ id: "clarify_assistance" }],
+    });
   } finally {
     await cleanup(s);
   }
