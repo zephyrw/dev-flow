@@ -1357,6 +1357,7 @@ export async function buildServer(
         page = {
           ...detail,
           events: detail.events.map(e => engine.store.publicEvent(e)),
+          user_interactions: publicEvent(userInteractionService.listInteractions(key)),
           formal_guidance: publicEvent(engine.store.list<ConversationMessage>(CONVERSATION_ENTITY.message, key)
             .filter(message => message.mode === "formal")
             .map(message => ({ id: message.id, workflow_id: key, text: message.text,
@@ -1383,6 +1384,7 @@ export async function buildServer(
     return {
       ...detail,
       events: detail.events.map((e) => engine.store.publicEvent(e)),
+      user_interactions: publicEvent(userInteractionService.listInteractions(key)),
       formal_guidance: publicEvent(engine.store.list<ConversationMessage>(CONVERSATION_ENTITY.message, key)
         .filter((message) => message.mode === "formal")
         .map((message) => ({ id: message.id, workflow_id: key, text: message.text,

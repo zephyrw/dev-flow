@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { AppDialog } from "./AppDialog.js";
+import { UserInteractionMessage } from "./UserInteractionMessage.js";
 import type {
   UserInteractionRecord,
   UserInteractionResponseInput,
@@ -292,7 +293,11 @@ function InteractionForm({
       <div className="user-interaction-body">
         {error && <div className="user-interaction-error">{error}</div>}
 
-        <div className="user-interaction-message">{req.message}</div>
+        <div className="user-interaction-message"><UserInteractionMessage text={req.message} /></div>
+        {req.details && <details className="user-interaction-details">
+          <summary>查看技术说明</summary>
+          <UserInteractionMessage text={req.details} />
+        </details>}
 
         {req.target && (
           <div className="user-interaction-target">
@@ -324,7 +329,7 @@ function InteractionForm({
           <div className="user-interaction-question-section">
             {req.question && (
               <div className="user-interaction-question-title">
-                {req.question}
+                <UserInteractionMessage text={req.question} />
               </div>
             )}
 
@@ -348,6 +353,11 @@ function InteractionForm({
                     <span>{choice.label}</span>
                   </label>
                 ))}
+              </div>
+            )}
+            {req.choices?.find(choice => choice.id === selectedChoiceId)?.description && (
+              <div className="user-interaction-choice-description" role="status">
+                {req.choices.find(choice => choice.id === selectedChoiceId)!.description}
               </div>
             )}
           </div>

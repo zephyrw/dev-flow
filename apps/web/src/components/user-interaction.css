@@ -12,9 +12,25 @@
   background-color: var(--bg-subtle, #f6f8fa);
   border-radius: 6px;
   border-left: 4px solid var(--border-accent, #0969da);
-  white-space: pre-wrap;
   word-break: break-word;
 }
+
+.user-interaction-markdown { overflow-wrap: anywhere; min-width: 0; }
+.user-interaction-markdown p { margin: 0 0 12px; white-space: pre-wrap; }
+.user-interaction-markdown > :last-child { margin-bottom: 0; }
+.user-interaction-markdown h1, .user-interaction-markdown h2, .user-interaction-markdown h3 {
+  font-size: 15px; line-height: 1.5; margin: 16px 0 8px;
+}
+.user-interaction-markdown > :first-child { margin-top: 0; }
+.user-interaction-markdown ul, .user-interaction-markdown ol { padding-left: 24px; margin: 8px 0 12px; }
+.user-interaction-markdown li { margin: 6px 0; white-space: pre-wrap; }
+.user-interaction-markdown pre { overflow-x: auto; padding: 10px; background: var(--bg-subtle, #f6f8fa); border-radius: 6px; }
+.user-interaction-markdown code { font-size: 0.9em; }
+.user-interaction-markdown table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; }
+.user-interaction-markdown th, .user-interaction-markdown td { border: 1px solid var(--border-color, #d0d7de); padding: 6px 10px; }
+.user-interaction-details summary { cursor: pointer; color: var(--text-secondary, #57606a); }
+.user-interaction-details[open] summary { margin-bottom: 12px; }
+.user-interaction-choice-description { color: var(--text-secondary, #57606a); padding: 0 4px; }
 
 .user-interaction-target {
   display: flex;

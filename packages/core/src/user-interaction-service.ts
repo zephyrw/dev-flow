@@ -5,7 +5,7 @@ import {
   type UserInteractionReceipt,
 } from "../../contracts/src/user-interaction.js";
 import { id, now } from "./util.js";
-import { decideNativePermission, hasNativeMcpToolPermission } from "./native-permission.js";
+import { decideNativePermission, nativePermissionAnswer, nativePermissionInteraction } from "./native-permission.js";
 import {
   FlowError,
   CONVERSATION_ENTITY,
@@ -101,6 +101,7 @@ export class UserInteractionService {
   }
 
   private safeRecord(record: UserInteractionRecord): UserInteractionRecord {
+    record = nativePermissionInteraction(this.store, record);
     return { ...record, request: normalizeInteractionInput(record.request) };
   }
 
@@ -553,7 +554,7 @@ export class UserInteractionService {
       let answerText = "";
       if (record.request.kind === "action_required") {
         answerText =
-          "用户点击了“我已完成，继续”。请根据本次说明核对当前情况并继续。" +
+          `用户点击了“${record.request.action_label || "我已完成，继续"}”。请根据本次说明核对当前情况并继续。` +
           (payload.answer?.trim()
             ? `\n用户说明: ${payload.answer.trim()}`
             : "");
@@ -570,16 +571,16 @@ export class UserInteractionService {
         answerText = `${choicePart}${freeText}`.trim() || "用户已提供确认。";
       }
 
-      if (nativeDecision) answerText = record.request.message + "\n" + (nativeDecision === "allow"
-        ? payload.choice_id === "allow_tool" || hasNativeMcpToolPermission(this.store) && record.request.message.includes("工具：call_mcp_tool")
-          ? "用户已永久授权整个 call_mcp_tool 工具，所有 MCP 服务、子工具和任意参数均已授权，当前及后续任务持续有效。请继续原任务，无需为此工具重复请求授权。"
-          : "用户已明确授权上述具体工具调用一次。请在原会话中按原参数重试本次操作；其他工具、参数或目标未获此授权。"
-        : "用户拒绝了上述工具调用。不要重试或换工具绕过该操作；继续允许范围内的工作，受阻部分如实说明。");
+      if (nativeDecision) answerText = nativePermissionAnswer(this.store, record, nativeDecision);
+      if (record.request.title === "协助请求需要补充说明") answerText =
+        "用户尚未完成任何操作，也未授权任何工具。仅补充当前协助请求：用通俗语言说明卡点、需要用户执行的具体步骤和入口、完成标准及恢复后动作；技术细节放入 details，message 用分段或编号列表。不得重新开发、测试、操作浏览器或重试被拒绝的调用。需要授权时说明真实服务和方法，通过正式授权流程处理，不要求用户编辑权限配置。返回 need_user 和清晰的 user_interaction。" +
+        (payload.answer?.trim() ? `\n用户补充：${payload.answer.trim()}` : "");
       const latestAnswer = answerText;
       // Keep the old question as context, never append its resume instructions
       // after the user's newer correction.
       answerText =
         `[历史请求背景: ${record.request.title}]\n${record.request.message}\n` +
+        (record.request.details ? `原始技术说明:\n${record.request.details}\n` : "") +
         (record.request.question ? `原问题: ${record.request.question}\n` : "") +
         (record.request.choices?.length
           ? `候选项: ${record.request.choices.map((choice) => choice.label).join("；")}\n`

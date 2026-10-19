@@ -22,7 +22,7 @@ afterEach(() => { vi.restoreAllMocks(); for (const s of stores.splice(0)) s.clos
 
 const quota = "Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 2h27m2s.";
 const tls = "API error: request failed: local error: tls: bad record MAC";
-type Scenario = "completed" | "finish_repaired" | "finish_repaired_tool_error" | "quota" | "tls" | "stderr_tls" | "stderr_disk" | "stderr_timeout" | "denied" | "terminated" | "top_error" | "reported_tool_error";
+type Scenario = "completed" | "stale_structured" | "finish_repaired" | "finish_repaired_tool_error" | "quota" | "tls" | "stderr_tls" | "stderr_disk" | "stderr_timeout" | "denied" | "terminated" | "top_error" | "reported_tool_error";
 async function invoke(scenario: Scenario, managed = true) {
   const s = setup(); stores.push(s.store);
   s.store.put("project", "p1", "p1", project(s.root));
@@ -37,7 +37,7 @@ async function invoke(scenario: Scenario, managed = true) {
     frozen_invocation: { ...frozenInvocationFromProfile(profile, "profile-native"), accountScope: "fixture-account" } };
   const w = { id: wid, project_id: "p1", title: "fixture", request: "fixture", complexity: "simple",
     workspace_mode: "existing_workspace", state: "EXECUTING", stage: "functional_fix", run_id: rid,
-    version: 1, plan_revision: 0, environment_revision: 0, created_at: new Date().toISOString(),
+    version: 1, plan_revision: 0, plan_hash: "approved-hash", environment_revision: 0, created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(), feedback: [], binding_strategy: "unified" } as Workflow;
   s.store.put("workflow", wid, "p1", w); s.store.put("run", rid, wid, run);
   const sessions = new ExecutionSessionStore(s.store);
@@ -75,7 +75,8 @@ async function invoke(scenario: Scenario, managed = true) {
   }
   const response = ["reported_tool_error", "finish_repaired_tool_error"].includes(scenario) ? "FIXTURE_TOOL_FAILURE" : JSON.stringify(output);
   events.push({ event: "result", result: { conversation_id: conversation, status: "ERROR", response,
-    error: scenario === "tls" ? tls : quota, structured_output: output,
+    error: scenario === "tls" ? tls : quota, structured_output: scenario === "stale_structured"
+      ? { status: "need_user", summary: "Prior round", plan_hash: "old-hash" } : output,
     ...(scenario === "denied" ? { denied_actions: [{ display_name: "run_command" }] } : {}) } });
   const proc = new EventEmitter() as any;
   const exit = { code: scenario === "quota" ? 3 : 0, ...(scenario === "terminated" ? { termination_reason: "manual" } : {}) };
@@ -101,6 +102,12 @@ it.each([true, false])("delivers a completed fresh response despite a historical
   const f = await invoke("completed", managed);
   await expect(f.result).resolves.toMatchObject({ status: "completed", summary: "Current guidance handled" });
   expect(f.s.store.get<Run>("run", f.rid)?.status).toBe("completed");
+  expect(f.bridge.observeFailure).not.toHaveBeenCalled();
+});
+it("uses the current reply instead of a historical structured result with stale plan ownership", async () => {
+  const f = await invoke("stale_structured");
+  await expect(f.result).resolves.toMatchObject({ status: "completed", summary: "Current guidance handled" });
+  expect(f.s.store.get("run_result_parse", f.rid)).toMatchObject({ kind: "resolved", source: "reply" });
   expect(f.bridge.observeFailure).not.toHaveBeenCalled();
 });
 it("still switches for a real unfinished quota turn with exit 3", async () => {

@@ -9,7 +9,7 @@ import { ProfileRuntime } from "../../packages/runtime/src/profile-runtime.js";
 import { ProcessManager } from "../../packages/process/src/manager.js";
 import { UserInteractionService } from "../../packages/core/src/user-interaction-service.js";
 import { readWaitingContext } from "../../packages/core/src/waiting-context.js";
-import { NATIVE_PERMISSION_ENTITY, NATIVE_TOOL_PERMISSION_ENTITY, pauseForNativePermission, bindNativePermission, consumeNativePermission, hasNativeMcpToolPermission } from "../../packages/core/src/native-permission.js";
+import { NATIVE_PERMISSION_ENTITY, NATIVE_TOOL_PERMISSION_ENTITY, NATIVE_MCP_PERMISSION_ENTITY, pauseForNativePermission, bindNativePermission, consumeNativePermission, findNativeMcpPermission } from "../../packages/core/src/native-permission.js";
 import { Store } from "../../packages/store/src/store.js";
 import { nativePermissionPlugin } from "../../apps/api/src/routes/native-permissions.js";
 import { userInteractionPlugin } from "../../apps/api/src/routes/user-interactions.js";
@@ -116,19 +116,21 @@ it("denial resumes the original model with an explicit denial and creates no usa
   expect(s.store.get<any>(NATIVE_PERMISSION_ENTITY, s.interaction.id).decision).toBe("deny");
 });
 
-it("permanently approves MCP across parameters, servers, tasks, sessions, accounts and store reopen", async () => {
+it.each(["allow_service", "allow_method"])("%s persists its exact scope across parameters, tasks and store reopen", async choice => {
   const s = await fixture(mcp as any);
-  expect(s.interaction.request.choices?.[0]).toEqual({ id: "allow_tool", label: "永久授权此工具" });
-  await answer(s, "allow_tool");
-  expect(hasNativeMcpToolPermission(s.store)).toBe(true);
-  expect(s.store.list(NATIVE_TOOL_PERMISSION_ENTITY)).toHaveLength(1);
-  expect(s.store.must<any>("run_continuation", s.workflow.id).answer).toContain("任意参数均已授权");
+  expect(s.interaction.request.choices?.map(item => item.id)).toEqual(["allow_service", "allow_method", "allow_service_once", "allow_method_once", "deny"]);
+  expect(s.interaction.request.message).not.toContain("tabId");
+  await answer(s, choice);
+  expect(s.store.list(NATIVE_MCP_PERMISSION_ENTITY)).toHaveLength(1);
+  expect(s.store.must<any>("run_continuation", s.workflow.id).answer).toContain("不限定调用参数");
   const run = resume(s);
   const allowed = (args: Record<string, unknown>) => consumeNativePermission(s.engine, run, session, { name: mcp.name, parameters: args });
   expect(allowed(mcp.parameters)).toBe(true);
-  expect(allowed({ ServerName: "other-server", ToolName: "other-tool", Arguments: { any: 2 } })).toBe(true);
-  expect(allowed({})).toBe(true);
-  expect(allowed({})).toBe(true);
+  expect(allowed({ ...mcp.parameters, Arguments: { tabId: 456 } })).toBe(true);
+  expect(allowed({ ...mcp.parameters, ToolName: "another_method" })).toBe(choice === "allow_service");
+  expect(allowed({ ServerName: "other-server", ToolName: "other-tool", Arguments: { any: 2 } })).toBe(false);
+  expect(allowed({})).toBe(false);
+  expect(allowed({ ServerName: "*", ToolName: "*" })).toBe(false);
   expect(consumeNativePermission(s.engine, run, session, call)).toBe(false);
   expect(consumeNativePermission(s.engine, run, "other-session", mcp)).toBe(false);
   expect(consumeNativePermission(s.engine, { ...run, deadline_at: Date.now() - 1 }, session, mcp)).toBe(false);
@@ -143,19 +145,90 @@ it("permanently approves MCP across parameters, servers, tasks, sessions, accoun
   expect(bindNativePermission(s.store, newRun)?.calls).toContainEqual({ name: "call_mcp_tool" });
   expect(consumeNativePermission(s.engine, newRun, newRun.conversation_id!, mcp)).toBe(true);
   const reopened = new Store(s.store.file);
-  try { expect(hasNativeMcpToolPermission(reopened)).toBe(true); } finally { reopened.close(); }
+  try { expect(findNativeMcpPermission(reopened, { server: "opentabs", method: "browser_emulate_device" })).toBeDefined(); } finally { reopened.close(); }
+});
+
+it.each(["allow_service", "allow_method"])("does not request %s again after AGY refuses an existing permanent grant", async choice => {
+  const s = await fixture(mcp as any);
+  await answer(s, choice);
+  const run = resume(s);
+  s.store.put("conversation_attempt", "cva-permission", s.workflow.id, {
+    ...s.store.must<any>("conversation_attempt", "cva-permission"), run_id: run.id, generation: 2,
+  });
+  const interaction = pauseForNativePermission(s.engine, run, [mcp], "native policy refused")!;
+  expect(interaction.request).toMatchObject({ kind: "action_required", title: "已授权，但 AGY 仍拒绝调用" });
+  expect(interaction.request.choices).toBeUndefined();
+  expect(interaction.request.message).toContain("无需重复授权");
+  expect(interaction.request.message).not.toContain("tabId");
+  const service = new UserInteractionService(s.store);
+  expect(service.getCurrentInteraction(s.workflow.id)?.request.title).toBe(interaction.request.title);
+  await service.respondInteraction(s.workflow.id, interaction.id,
+    { source_run_id: run.id, action: "confirm", request_id: "retry-existing-grant" }, s.engine);
+  expect(s.store.list(NATIVE_MCP_PERMISSION_ENTITY)).toHaveLength(1);
+  expect(s.store.must<any>(NATIVE_PERMISSION_ENTITY, interaction.id).decision).toBeUndefined();
+  expect(s.store.must<any>("run_continuation", s.workflow.id).answer).toContain("已处理，重试调用");
 });
 
 it("human-only persistent grant uses the production route and never promotes prior once-only consent", async () => {
   const s = await fixture();
   await answer(s);
-  expect(hasNativeMcpToolPermission(s.store)).toBe(false);
+  expect(s.store.list(NATIVE_MCP_PERMISSION_ENTITY)).toHaveLength(0);
   const invalid = await s.app.inject({ method: "POST", url: "/api/native-tool-permissions", payload: { adapter: "agy", tool: "run_command", decision: "allow" } });
   expect(invalid.statusCode).not.toBe(200);
-  const payload = { adapter: "agy", tool: "call_mcp_tool", decision: "allow" };
+  expect((await s.app.inject({ method: "POST", url: "/api/native-tool-permissions", payload: { adapter: "agy", tool: "call_mcp_tool", decision: "allow" } })).statusCode).not.toBe(200);
+  const payload = { adapter: "agy", server: "opentabs", method: "browser_emulate_device", scope: "method", decision: "allow" };
   expect((await s.app.inject({ method: "POST", url: "/api/native-tool-permissions", payload })).statusCode).toBe(200);
   expect((await s.app.inject({ method: "POST", url: "/api/native-tool-permissions", payload })).statusCode).toBe(200);
-  expect(s.store.list(NATIVE_TOOL_PERMISSION_ENTITY)).toHaveLength(1);
+  expect(s.store.list(NATIVE_MCP_PERMISSION_ENTITY)).toHaveLength(1);
+});
+
+it.each(["allow_service_once", "allow_method_once"])("%s matches scope without arguments and atomically allows only one concurrent call", async choice => {
+  const s = await fixture(mcp as any);
+  await answer(s, choice);
+  const run = resume(s);
+  bindNativePermission(s.store, run);
+  const token = s.engine.auth.issue({ role: "worker", workflow_id: s.workflow.id, run_id: run.id });
+  const invoke = (args: Record<string, unknown>) => s.app.inject({ method: "POST", url: "/api/worker/native-permission",
+    headers: { authorization: `Bearer ${token}` }, payload: { conversationId: session, toolCall: { name: mcp.name, args } } });
+  expect((await invoke({ ...mcp.parameters, ServerName: "other" })).json().decision).toBe("ask");
+  if (choice === "allow_method_once") expect((await invoke({ ...mcp.parameters, ToolName: "other" })).json().decision).toBe("ask");
+  const args = { ...mcp.parameters, ToolName: choice === "allow_service_once" ? "another_method" : mcp.parameters.ToolName, Arguments: { tabId: 987 } };
+  const results = await Promise.all([invoke(args), invoke(args)]);
+  expect(results.map(result => result.json().decision).sort()).toEqual(["allow", "ask"]);
+  expect((await invoke(args)).json().decision).toBe("ask");
+  const reopened = new Store(s.store.file);
+  try { expect(bindNativePermission(reopened, run)).toBeUndefined(); } finally { reopened.close(); }
+  expect(s.store.list(NATIVE_MCP_PERMISSION_ENTITY)).toHaveLength(0);
+});
+
+it("ignores legacy wrapper grants, refreshes old pending prompts, and rejects the old choice", async () => {
+  const s = await fixture(mcp as any);
+  s.store.put(NATIVE_TOOL_PERMISSION_ENTITY, "agy:call_mcp_tool", "global", { id: "agy:call_mcp_tool", adapter: "agy", tool: "call_mcp_tool" });
+  s.store.put("user_interaction", s.interaction.id, s.workflow.id, { ...s.interaction,
+    request: { ...s.interaction.request, title: "永久授权 call_mcp_tool 工具", message: "参数与目标：secret-tab-123",
+      choices: [{ id: "allow_tool", label: "永久授权此工具" }, { id: "deny", label: "拒绝本次操作" }] } });
+  const current = (await s.app.inject({ method: "GET", url: `/api/workflows/${s.workflow.id}/user-interactions/current` })).json().interaction;
+  expect(current.request.choices).toHaveLength(5);
+  expect(current.request.message).not.toContain("secret-tab");
+  await expect(answer(s, "allow_tool")).rejects.toBeDefined();
+  expect(s.store.list(NATIVE_MCP_PERMISSION_ENTITY)).toHaveLength(0);
+  await answer(s, "deny", "deny-legacy");
+  const run = resume(s);
+  expect(bindNativePermission(s.store, run)).toBeUndefined();
+  expect(consumeNativePermission(s.engine, run, session, mcp)).toBe(false);
+});
+
+it.each([{}, { ServerName: "*", ToolName: "x" }, { ServerName: "opentabs", ToolName: "x/y" }])("never grants malformed MCP metadata %j", async parameters => {
+  const s = await fixture({ name: "call_mcp_tool", parameters } as any);
+  expect(s.interaction.request.kind).toBe("action_required");
+  expect(s.store.get(NATIVE_PERMISSION_ENTITY, s.interaction.id)).toBeUndefined();
+});
+
+it("keeps sensitive MCP arguments out of both prompt and authorization record", async () => {
+  const s = await fixture({ ...mcp, parameters: { ...mcp.parameters, Arguments: { token: "private-token-value" }, toolSummary: "tabId=123" } } as any);
+  expect(s.interaction.request.choices).toHaveLength(5);
+  expect(JSON.stringify(s.interaction)).not.toMatch(/private-token-value|tabId/);
+  expect(JSON.stringify(s.store.get(NATIVE_PERMISSION_ENTITY, s.interaction.id))).not.toMatch(/private-token-value|tabId/);
 });
 
 it.each(["plan", "workspace", "session", "profile"])("rejects a stale %s before recording an approval", async changed => {
@@ -233,14 +306,14 @@ it.each(["footer", "immediate", "redacted-footer", "historical-footer", "histori
   await expect(invocation).rejects.toMatchObject({ code: "NATIVE_PERMISSION_DENIED" });
   expect(s.store.must<Run>("run", run.id).status).toBe("waiting");
   const interaction = new UserInteractionService(s.store).getCurrentInteraction(s.workflow.id)!;
-  expect(interaction.request.choices?.map(choice => choice.id)).toEqual(["allow_tool", "deny"]);
-  expect(interaction.request.message).toContain('"tabId":123');
+  expect(interaction.request.choices?.map(choice => choice.id)).toEqual(["allow_service", "allow_method", "allow_service_once", "allow_method_once", "deny"]);
+  expect(interaction.request.message).not.toContain('tabId');
   expect(s.engine.get(s.workflow.id).state).toBe("WAITING_INPUT");
 });
 
 it("the generated native hook repeatedly allows permanent MCP grants and restores pre-existing hooks", async () => {
   const s = await fixture(mcp as any);
-  await answer(s, "allow_tool");
+  await answer(s, "allow_method");
   const run = resume(s);
   const grant = bindNativePermission(s.store, run)!;
   const path = join(s.root, ".agents", "hooks.json");
@@ -262,10 +335,10 @@ it("the generated native hook repeatedly allows permanent MCP grants and restore
     // Native hooks may leave stdin open while waiting for the decision.
     child.stdin!.write(JSON.stringify({ conversationId: session, transcriptPath: 'C:\\fixture\\a "}\\file', toolCall: { name: mcp.name, args: parameters, id: "native-id" } }));
   });
-  expect(JSON.parse(await invoke())).toMatchObject({ decision: "allow", permissionOverrides: ["mcp(opentabs/browser_emulate_device)"] });
-  expect(JSON.parse(await invoke({ ServerName: "other", ToolName: "another", Arguments: { any: 3 } }))).toMatchObject({ decision: "allow", permissionOverrides: ["mcp(other/another)"] });
+  expect(JSON.parse(await invoke())).toMatchObject({ decision: "auto_approve", permissionOverrides: ["mcp(opentabs/browser_emulate_device)"] });
+  expect(JSON.parse(await invoke({ ServerName: "other", ToolName: "another", Arguments: { any: 3 } }))).toMatchObject({ decision: "ask" });
   expect(JSON.parse(await invoke({ ServerName: "*", ToolName: "*" })).permissionOverrides).toBeUndefined();
-  expect(JSON.parse(await invoke()).decision).toBe("allow");
+  expect(JSON.parse(await invoke()).decision).toBe("auto_approve");
   restore();
   expect(readFileSync(path, "utf8")).toBe(original);
 });
@@ -304,7 +377,7 @@ it("missing operation metadata asks for manual repair and cannot create a generi
   s.engine.transition(s.workflow.id, ["WAITING_INPUT"], "EXECUTING", "execute");
   const unknown = pauseForNativePermission(s.engine, s.run, [], "CallMcpTool")!;
   expect(unknown.request.kind).toBe("action_required");
-  expect(unknown.request.message).toContain("不会自动授予未知操作权限");
+  expect(unknown.request.message).toContain("不会授予未知操作权限");
   expect(s.store.get(NATIVE_PERMISSION_ENTITY, unknown.id)).toBeUndefined();
 });
 

@@ -6,6 +6,7 @@ import { TaskInteraction } from "../../apps/web/src/interactions.js";
 import { RuntimeFailureNotice } from "../../apps/web/src/components/RuntimeFailureNotice.js";
 import * as api from "../../apps/web/src/components/user-interaction-api.js";
 import type { UserInteractionRecord } from "../../packages/contracts/src/user-interaction.js";
+import { mcpPermissionInput } from "../../packages/core/src/native-permission.js";
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 const interaction: UserInteractionRecord = {
@@ -47,4 +48,18 @@ it("an older blocked task requests a popup instead of claiming the user already 
   expect(button.textContent).toBe("查看并处理授权");
   await act(async () => button.click());
   expect(send).toHaveBeenCalledExactlyOnceWith(`/workflows/${interaction.workflow_id}/native-permissions/request`, { expected_version: 9 });
+});
+
+it("shows five unselected MCP scopes and explains the selected scope without invocation arguments", async () => {
+  const request = mcpPermissionInput({ server: "opentabs", method: "browser_intercept_requests" });
+  vi.spyOn(api, "getCurrentUserInteraction").mockResolvedValue({ ...interaction, request });
+  root = createRoot(container);
+  await act(async () => root!.render(<TaskInteraction detail={{ workflow: { id: interaction.workflow_id, state: "WAITING_INPUT", project_id: "p" }, operations: [] }}
+    send={vi.fn()} refresh={vi.fn(async () => {})} />));
+  const dialog = document.querySelector('[role="dialog"]')!;
+  expect(dialog.querySelectorAll('input[type="radio"]')).toHaveLength(5);
+  expect(dialog.querySelector('input:checked')).toBeNull();
+  expect(dialog.textContent).not.toMatch(/Arguments|tabId|urlPatterns|参数与目标/);
+  await act(async () => (dialog.querySelector('input[value="allow_service_once"]') as HTMLInputElement).click());
+  expect(dialog.querySelector('[role="status"]')?.textContent).toContain("允许此服务内一次方法调用");
 });

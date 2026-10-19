@@ -14,6 +14,7 @@ export const UserInteractionChoiceSchema = z
   .object({
     id: NonEmptyTrimmedString(1, 64),
     label: NonEmptyTrimmedString(1, 120),
+    description: NonEmptyTrimmedString(1, 300).optional(),
   })
   .strict();
 export type UserInteractionChoice = z.infer<typeof UserInteractionChoiceSchema>;
@@ -46,6 +47,7 @@ export const UserInteractionInputSchema = z
     kind: UserInteractionKindSchema,
     title: NonEmptyTrimmedString(1, 120),
     message: NonEmptyTrimmedString(1, 4000),
+    details: NonEmptyTrimmedString(1, 8000).optional(),
     action_label: z
       .string()
       .transform((s) => s.trim())

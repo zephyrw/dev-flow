@@ -64,6 +64,18 @@ export interface FallbackInteractionContext {
   notes?: string;
 }
 
+function unclearAssistance(summary: string, notes?: string): UserInteractionInput {
+  return {
+    kind: "question", title: "协助请求需要补充说明",
+    message: "模型暂停了任务，但没有给出明确的操作入口和完成标准。\n\n请先让模型说明具体卡点、需要你做什么，以及完成后如何继续；暂时无需确认操作已完成。",
+    details: maskSensitiveText(summary).slice(0, 8000) || undefined,
+    question: "是否让模型先说明具体需要你做什么？",
+    choices: [{ id: "clarify_assistance", label: "让模型说明具体操作", description: "只补充协助说明，不视为操作已完成，也不授予工具权限。" }],
+    allow_free_text: true, action_label: "提交并继续",
+    resume_note: notes ? maskSensitiveText(notes).slice(0, 4000) : undefined,
+  };
+}
+
 /**
  * F04 / F05 / F06: 安全解析与归一化请求
  * 保留有用摘要、说明与提问，不因损坏附件丢弃整个求助
@@ -76,6 +88,8 @@ export function normalizeInteractionInput(
     const parsed = UserInteractionInputSchema.safeParse(rawInput);
     if (parsed.success) {
       const data = parsed.data;
+      if (data.kind === "action_required" && data.title === "请完成操作协助" && !data.target)
+        return unclearAssistance(data.message, data.resume_note);
       return {
         ...data,
         title: maskSensitiveText(data.title),
@@ -83,8 +97,10 @@ export function normalizeInteractionInput(
         choices: data.choices?.map((choice) => ({
           ...choice,
           label: maskSensitiveText(choice.label),
+          ...(choice.description ? { description: maskSensitiveText(choice.description) } : {}),
         })),
         message: maskSensitiveText(data.message),
+        details: data.details ? maskSensitiveText(data.details) : undefined,
         resume_note: data.resume_note
           ? maskSensitiveText(data.resume_note)
           : undefined,
@@ -152,13 +168,7 @@ export function normalizeInteractionInput(
     notes ||
     "执行模型需要用户在界面中完成必要操作，完成后请点击确认继续。";
 
-  return {
-    kind: "action_required",
-    title: "请完成操作协助",
-    message: maskSensitiveText(fallbackMessage).slice(0, 4000),
-    action_label: "我已完成，继续",
-    resume_note: notes ? maskSensitiveText(notes).slice(0, 4000) : undefined,
-  };
+  return unclearAssistance(fallbackMessage, notes);
 }
 
 /**

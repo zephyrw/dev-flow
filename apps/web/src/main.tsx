@@ -2082,8 +2082,8 @@ function App() {
     businessProgress: detail.business_progress,
   }) : undefined;
   const timeline = React.useMemo(() => w
-    ? userFacingLogs(readableLogs(detail.events, selected, detail.formal_guidance), w.run_id)
-    : [], [selected, detail?.events, detail?.formal_guidance, w?.run_id]);
+    ? userFacingLogs(readableLogs(detail.events, selected, detail.formal_guidance, detail.user_interactions), w.run_id)
+    : [], [selected, detail?.events, detail?.formal_guidance, detail?.user_interactions, w?.run_id]);
   const conversationTree = detail?.conversation_tree;
   const conversationView = useConversationView({
     workflowId: selected,
