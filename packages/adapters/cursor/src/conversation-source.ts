@@ -39,9 +39,10 @@ const StatePayloadSchema = z
 
 const ActivityPayloadSchema = z
   .object({
-    public_text: z.string().max(16000).optional(),
+    public_text: z.string().optional(),
     tool: z.string().max(200).optional(),
     spawn_call_id: z.string().min(1).optional(),
+    kind: z.string().min(1).optional(),
   })
   .strict();
 
@@ -288,21 +289,22 @@ export function cursorChildIdentity(
 }
 
 function publicTextFrom(value: unknown): string | undefined {
-  if (typeof value === "string") return clip(value, 16000);
+  if (typeof value === "string") return value;
   const record = asRecord(value);
   if (!record) return undefined;
-  const direct = stringField(record.text ?? record.result ?? record.public_text);
-  if (direct) return clip(direct, 16000);
+  const direct = record.text ?? record.result ?? record.public_text;
+  if (typeof direct === "string") return direct;
   const message = asRecord(record.message);
   const content = message?.content ?? record.content;
   if (!Array.isArray(content)) return undefined;
   const texts: string[] = [];
   for (const item of content) {
     const block = asRecord(item);
-    const text = stringField(block?.text);
-    if (text) texts.push(text);
+    const text = block?.text;
+    if (typeof text === "string") texts.push(text);
   }
-  return texts.length ? clip(texts.join("\n"), 16000) : undefined;
+  // Text blocks already contain their formatting; do not invent separators.
+  return texts.length ? texts.join("") : undefined;
 }
 
 function quotaFrom(usage: unknown): z.infer<typeof QuotaPayloadSchema> | undefined {
@@ -484,7 +486,7 @@ export class CursorStreamMapper {
     events.push(
       ...this.routeIdentity(record, `${sourceSeq}:activity`, occurredAt, {
         kind: "activity",
-        payload: ActivityPayloadSchema.parse({ public_text: text }),
+        payload: ActivityPayloadSchema.parse({ public_text: text, kind: "message" }),
       }),
     );
     return events;

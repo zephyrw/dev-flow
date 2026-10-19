@@ -360,4 +360,43 @@ describe("SA-U11 Codex conversation source", () => {
       }),
     ).toEqual([]);
   });
+
+  it.each(["    code\n", "\n\n```ts\n  example();\n```\n\n", " \t\r\n"])(
+    "preserves agent message formatting exactly: %j",
+    (text) => {
+      const mapper = new CodexStreamMapper("fixture:codex:whitespace");
+      const events = mapper.decodeLine(JSON.stringify({
+        type: "item.completed",
+        thread_id: ROOT,
+        item: { id: "message-format", type: "agent_message", text },
+      }));
+      const activity = events.find((event) => event.kind === "activity");
+      expect(payloadOf<{ public_text?: string; kind?: string }>(activity)).toMatchObject({
+        public_text: text,
+        kind: "message",
+      });
+    },
+  );
+
+  it("保留agent_message长文本和认证词原文并标记kind为message (R2)", () => {
+    const mapper = new CodexStreamMapper("fixture:codex:test");
+    const longTextWithAuth = "这是包含 https://example.com/login 与 OAuth 说明的长回复：" + "a".repeat(20000);
+    const line = JSON.stringify({
+      type: "item.completed",
+      thread_id: ROOT,
+      item: {
+        id: "msg_1",
+        type: "agent_message",
+        text: longTextWithAuth,
+      },
+    });
+    const events = mapper.decodeLine(line, "2026-09-20T00:00:00.000Z");
+    const activity = events.find((e) => e.kind === "activity");
+    expect(activity).toBeDefined();
+    const payload = payloadOf<{ public_text?: string; kind?: string }>(activity);
+    expect(payload.kind).toBe("message");
+    expect(payload.public_text).toBe(longTextWithAuth);
+    expect(payload.public_text?.length).toBe(longTextWithAuth.length);
+    expect(payload.public_text).not.toContain("仅保留状态");
+  });
 });

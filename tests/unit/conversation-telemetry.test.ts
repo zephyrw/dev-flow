@@ -68,6 +68,27 @@ function childActivity(
   };
 }
 
+it.each(["root-session", "child-a"])("preserves long authored text for %s through persistence and replay", (session) => {
+  const s = fixture();
+  const text = "\n    password=synthetic-secret\nOAuth setup\n" + "x".repeat(2000001) + "\nEND\n";
+  try {
+    s.telemetry.acceptConversationEvent({
+      source_id: "fixture", source_seq: "long-reply", root_native_id: "root-session",
+      session_native_id: session,
+      ...(session === "child-a" ? { parent_native_id: "root-session" } : {}),
+      kind: "activity", payload: { id: "long-reply", kind: "message", status: "done", text },
+    });
+    s.telemetry.flush();
+    const events = s.store.events("w", 0, 1000).filter((event) => event.type === "ConversationActivity");
+    expect(events).toHaveLength(1);
+    const published = s.store.publicEvent(events[0]!);
+    expect((published.payload as any).public_text).toBe(text);
+    expect(conversationActivityLogEntry({ ...published,
+      payload: ConversationActivityPayloadSchema.parse(published.payload),
+    })?.text).toBe(text);
+  } finally { s.telemetry.finish(); s.store.close(); }
+});
+
 it.each([
   { label: "below limit", make: (limit: number) => "x".repeat(limit - 1) },
   { label: "at limit", make: (limit: number) => "x".repeat(limit) },

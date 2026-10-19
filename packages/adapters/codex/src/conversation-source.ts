@@ -86,10 +86,11 @@ const StatePayloadSchema = z
 const ActivityPayloadSchema = z
   .object({
     activity_id: z.string().min(1).optional(),
-    public_text: z.string().max(16000).optional(),
+    public_text: z.string().optional(),
     title: z.string().max(200).optional(),
     command: z.string().max(32000).optional(),
     status: z.string().min(1).optional(),
+    kind: z.string().min(1).optional(),
   })
   .strict();
 
@@ -370,7 +371,8 @@ function publicActivityText(item: Record<string, unknown>): string | undefined {
   const type = itemTypeOf(item);
   if (type === "command_execution")
     return diagnosticClip(stringField(item.command), 16000);
-  if (type === "agent_message") return diagnosticClip(stringField(item.text), 16000);
+  if (type === "agent_message")
+    return typeof item.text === "string" ? item.text : undefined;
   if (type === "web_search") return diagnosticClip(stringField(item.query), 16000);
   if (type === "mcp_tool_call") {
     const summary = toolSummary(
@@ -549,6 +551,7 @@ function decodeCodexItem(
         activity_id: spawnCallId(item),
         public_text: publicActivityText(item),
         title: activityTitle(type, item),
+        kind: type === "agent_message" ? "message" : "tool",
         command:
           type === "command_execution"
             ? diagnosticClip(stringField(item.command), 32000)

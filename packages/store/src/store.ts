@@ -10,7 +10,7 @@ export class Store extends EventEmitter {
   db: Database.Database;
   private depth = 0;
   private pending: DomainEvent[] = [];
-  private publicCache = new Map<string, DomainEvent>();
+  private publicCache = new Map<string, { signature: string; event: DomainEvent }>();
   constructor(public file: string) {
     super();
     mkdirSync(dirname(file), { recursive: true });
@@ -207,13 +207,25 @@ export class Store extends EventEmitter {
   }
   publicEvent(event: DomainEvent): DomainEvent {
     const key = `${event.workflow_id}:${event.event_seq}`;
+    const signature = hash(JSON.stringify(event));
     const cached = this.publicCache.get(key);
-    if (cached) return cached;
+    if (cached?.signature === signature) return cached.event;
     const result = publicEvent(event) as DomainEvent;
-    this.publicCache.set(key, result);
+    this.publicCache.set(key, { signature, event: result });
     if (this.publicCache.size > 4000)
       this.publicCache.delete(this.publicCache.keys().next().value!);
     return result;
+  }
+  invalidatePublicEvent(workflowId: string, eventSeq?: number): void {
+    if (eventSeq !== undefined) {
+      this.publicCache.delete(`${workflowId}:${eventSeq}`);
+    } else {
+      for (const key of this.publicCache.keys()) {
+        if (key.startsWith(`${workflowId}:`)) {
+          this.publicCache.delete(key);
+        }
+      }
+    }
   }
   eventCursor(workflow: string): number {
     return (

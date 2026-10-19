@@ -1,4 +1,5 @@
 import { publicDiagnostic, diagnosticText } from "./secret-redactor.js";
+import { publicConversationEvent } from "./conversation-content.js";
 import { failureSummary } from "./failure.js";
 import { ReviewActivityStream } from "./review-activity.js";
 import { runtimeFailureResolution } from "../../contracts/src/runtime-failure.js";
@@ -28,14 +29,14 @@ export interface LogEntry {
 const publicLogEvents = new WeakMap<object, any>();
 export const NON_LOG_EVENT_TYPES = [
   "RunObserved", "ConversationDiscovered", "ConversationUpdated",
-  "ConversationControlUpdated", "AsideUpdated",
+  "ConversationControlUpdated", "ConversationActivity", "AsideUpdated",
 ];
 function publicLogEvent(event: any) {
   if (!event || typeof event !== "object") return publicDiagnostic(event);
   if (NON_LOG_EVENT_TYPES.includes(event.type) || isAsideRun(event.run_id)) return event;
   const cached = publicLogEvents.get(event);
   if (cached) return cached;
-  const projected = publicDiagnostic(event);
+  const projected = publicConversationEvent(event);
   publicLogEvents.set(event, projected);
   return projected;
 }
@@ -253,14 +254,14 @@ export function readableLogs(events: any[], workflow: string, formalGuidance: Ar
     const step = e.payload?.step_update;
     if (e.type !== "AgentEvent" || step?.step_type !== "agent_response") continue;
     const previous = narratives.get(narrativeKey(e));
-    const text = typeof step.text === "string" && step.text.trim() ? step.text
+    const text = typeof step.text === "string" ? step.text
       : (previous?.text ?? "") + (typeof step.text_delta === "string" ? step.text_delta : "");
     narratives.set(narrativeKey(e), { text, last: e });
   }
   events = ordered.map(e => {
     const narrative = narratives.get(narrativeKey(e));
     if (!narrative || narrative.last !== e) return publicLogEvent(e);
-    return publicDiagnostic({ ...e, payload: { ...e.payload,
+    return publicConversationEvent({ ...e, payload: { ...e.payload,
       step_update: { ...e.payload.step_update, text: narrative.text } } });
   });
   const rows: LogEntry[] = [],
@@ -565,9 +566,9 @@ export function readableLogs(events: any[], workflow: string, formalGuidance: Ar
           step.step_type === "agent_response"
             ? `模型输出 · ${status}`
             : `收到任务 · ${status}`;
-        // Completed telemetry now carries a sanitized full snapshot in text.
-        if (typeof step.text === "string" && step.text.trim()) row.text = diagnosticText(step.text);
-        else if (typeof step.text_delta === "string") row.text = diagnosticText(row.text + step.text_delta);
+        // Completed telemetry now carries full snapshot in text.
+        if (typeof step.text === "string") row.text = step.text;
+        else if (typeof step.text_delta === "string") row.text = row.text + step.text_delta;
       }
       continue;
     }
@@ -824,7 +825,7 @@ export function readableLogs(events: any[], workflow: string, formalGuidance: Ar
       .find((event) => event.created_at >= message.created_at);
     const sequence = next ? next.event_seq - 0.5 : Math.max(0, ...unique.keys()) + 0.5;
     rows.push({ key: `guidance:${message.id}`, sequence, created_at: message.created_at,
-      title: "收到你的指导", text: diagnosticText(message.text), kind: "message", speaker: "user", raw: [] });
+      title: "收到你的指导", text: message.text, kind: "message", speaker: "user", raw: [] });
   }
   // Interaction records preserve both sides after the pending dialog closes.
   // Use response fields rather than the generated continuation prompt.
@@ -841,7 +842,7 @@ export function readableLogs(events: any[], workflow: string, formalGuidance: Ar
     const choices = request.choices?.map(choice => choice.label).join("\n");
     rows.push({ key: `interaction:${record.id}:question`, sequence: sequenceAt(record.created_at),
       created_at: record.created_at, title: request.kind === "question" ? "模型提问" : "模型请求",
-      text: diagnosticText([question, choices].filter(Boolean).join("\n\n")),
+      text: [question, choices].filter(Boolean).join("\n\n"),
       kind: "message", speaker: "assistant", interactionId: record.id, raw: [] });
     if (!record.response || !record.responded_at) continue;
     const response = record.response;
@@ -849,7 +850,7 @@ export function readableLogs(events: any[], workflow: string, formalGuidance: Ar
     const text = response.action === "cancel" ? "取消本次请求"
       : [choice, response.answer].filter(Boolean).join("\n\n") || request.action_label || "我已完成，继续";
     rows.push({ key: `interaction:${record.id}:answer`, sequence: sequenceAt(record.responded_at),
-      created_at: record.responded_at, title: "你的回复", text: diagnosticText(text),
+      created_at: record.responded_at, title: "你的回复", text: text,
       kind: "message", speaker: "user", interactionId: record.id, raw: [] });
   }
   // Old runs must not continue to look active after a stop/failure or a new run.

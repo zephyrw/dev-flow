@@ -268,4 +268,65 @@ describe("SA-U14 cursor conversation source", () => {
     });
     expect(events.some((event) => event.kind === "model")).toBe(true);
   });
+
+  it.each(["text", "result", "public_text"])(
+    "preserves direct message formatting in %s",
+    (field) => {
+      const mapper = new CursorStreamMapper("cursor-agent:whitespace");
+      const text = "\n    code\n\t\r\n";
+      const events = mapper.decodeLine(JSON.stringify({
+        type: "assistant",
+        session_id: "chat-root-001",
+        [field]: text,
+      }));
+      const activity = events.find((event) => event.kind === "activity");
+      expect(activity?.payload).toMatchObject({ public_text: text, kind: "message" });
+    },
+  );
+
+  it("preserves text block whitespace without adding separators or non-text content", () => {
+    const mapper = new CursorStreamMapper("cursor-agent:blocks");
+    const blocks = [
+      { type: "text", text: "\n    co" },
+      { type: "text", text: "de" },
+      { type: "text", text: "\n\n" },
+      { type: "image", source: { data: "not-message-text" } },
+      { type: "text", text: "" },
+      { type: "text", text: "\ttrailing  \n" },
+    ];
+    const events = mapper.decodeLine(JSON.stringify({
+      type: "assistant",
+      session_id: "chat-root-001",
+      message: { content: blocks },
+    }));
+    const activity = events.find((event) => event.kind === "activity");
+    expect(activity?.payload).toMatchObject({
+      public_text: "\n    code\n\n\ttrailing  \n",
+      kind: "message",
+    });
+  });
+
+  it("保留cursor消息长文本和认证词原文并标记kind为message (R2)", () => {
+    const decoder = new CursorConversationDecoder("cursor-agent:stream:test");
+    const longTextWithAuth = "包含 https://example.com/login 与 OAuth 认证指引的长文本：" + "c".repeat(20000);
+    const line = JSON.stringify({
+      type: "assistant",
+      session_id: "chat-root-001",
+      message: {
+        content: [{ text: longTextWithAuth }],
+      },
+    }) + "\n";
+    const events = decoder.push({
+      timestamp: "2026-09-20T00:00:00.000Z",
+      stream: "stdout",
+      data: line,
+    });
+    const activity = events.find((e) => e.kind === "activity");
+    expect(activity).toBeDefined();
+    const payload = (activity?.payload ?? {}) as { public_text?: string; kind?: string };
+    expect(payload.kind).toBe("message");
+    expect(payload.public_text).toBe(longTextWithAuth);
+    expect(payload.public_text?.length).toBe(longTextWithAuth.length);
+    expect(payload.public_text).not.toContain("仅保留状态");
+  });
 });

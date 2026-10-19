@@ -1,4 +1,4 @@
-import { publicDiagnostic } from "./secret-redactor.js";
+import { conversationActivityContent } from "./conversation-content.js";
 import type { LogEntry } from "./activity.js";
 import {
   CONVERSATION_EVENT,
@@ -96,9 +96,9 @@ export function conversationActivityLogEntry(event: {
   created_at: string;
   payload?: ConversationActivityPayload;
 }, alreadyPublic = false): LogEntry | undefined {
-  // readableLogs supplies its cached, sanitized copy; standalone callers still
-  // sanitize untrusted native activity before building any display row.
-  if (!alreadyPublic) event = publicDiagnostic(event);
+  // Both standalone and event-list readers preserve authored message text;
+  // tool metadata still uses the diagnostic projection.
+  if (!alreadyPublic) event = { ...event, payload: conversationActivityContent(event.payload) };
   const payload = event.payload;
   if (!payload?.conversation_id || !payload.attempt_id || !payload.activity_id)
     return undefined;

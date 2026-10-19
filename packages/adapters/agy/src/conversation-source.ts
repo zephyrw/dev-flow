@@ -283,12 +283,12 @@ function decodeStep(
     if (record.step_type !== "agent_response") return [];
     const id = agyActivityId(identity);
     const previous = context.responseTexts?.get(id) ?? "";
-    const text = typeof record.text === "string" && record.text.trim() ? record.text
+    const text = typeof record.text === "string" && record.text.length > 0 ? record.text
       : previous + (typeof record.text_delta === "string" ? record.text_delta : "");
-    if (text) context.responseTexts?.set(id, text.slice(0, 65536));
+    if (text) context.responseTexts?.set(id, text);
     const events: NativeConversationEvent[] = [];
-    if (text.trim()) events.push(eventBase(context, session, `${id}:${record.state}:${text.length}`, "activity", {
-      activity_id: id, kind: "message", title: "模型回复", public_text: text.slice(0, 65536),
+    if (text.length > 0) events.push(eventBase(context, session, `${id}:${record.state}:${text.length}`, "activity", {
+      activity_id: id, kind: "message", title: "模型回复", public_text: text,
       status: record.state === "DONE" ? "completed" : record.state === "ERROR" ? "failed" : "running",
     }));
     if (record.state === "DONE" || record.state === "ERROR") context.responseTexts?.delete(id);

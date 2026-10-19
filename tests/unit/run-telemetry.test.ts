@@ -59,7 +59,37 @@ it("a corrupted legacy command output cannot hide later tools or keep a complete
   } finally { s.telemetry.finish(); s.store.close(); }
 });
 
-it("streams distinct native tools and file rows, coalesces updates, replays independently and redacts secrets", () => {
+it("retains a fast tool's details when completion omits its arguments", () => {
+  const s = fixture();
+  try {
+    s.telemetry.accept({ type: "tool_call", id: "search", name: "grep_search", args: { query: "needle" } });
+    s.telemetry.accept({ type: "tool_result", id: "search" });
+    s.telemetry.flush();
+    const event = s.store.events("w", 0, 1000).find((item) => item.type === "NativeActivity")!;
+    expect(event.payload).toMatchObject({ id: "search", text: "needle", status: "done" });
+    expect(readableLogs([s.store.publicEvent(event)], "w")[0]?.text).toBe("needle");
+  } finally { s.telemetry.finish(); s.store.close(); }
+});
+
+it("preserves long legacy reply fragments and lets the final snapshot replace them", () => {
+  const s = fixture("agy");
+  const text = "\n    OAuth password=synthetic-reply\n" + "x".repeat(70000);
+  const update = (fields: Record<string, unknown>) => s.telemetry.accept({
+    event: "step_update", step_update: { step_index: 1, step_type: "agent_response", ...fields },
+  });
+  try {
+    update({ state: "RUNNING", text_delta: text.slice(0, 100) });
+    s.telemetry.flush();
+    update({ state: "RUNNING", text_delta: text.slice(100) });
+    s.telemetry.flush();
+    update({ state: "DONE", text: text + "\nFINAL\n" });
+    s.telemetry.finish();
+    const events = s.store.events("w", 0, 1000).map((event) => s.store.publicEvent(event));
+    expect(readableLogs(events, "w").find((entry) => entry.kind === "message")?.text).toBe(text + "\nFINAL\n");
+  } finally { s.telemetry.finish(); s.store.close(); }
+});
+
+it("streams native tools and authored replies, preserving text while redacting diagnostic details", () => {
   const s = fixture();
   try {
     s.telemetry.accept({ type: "thread.started", thread_id: "session" });
@@ -131,7 +161,7 @@ it("streams distinct native tools and file rows, coalesces updates, replays inde
     expect(logs[1]!.text).toContain("first.ts");
     expect(formatPathSummary(logs[1]!.text)).toMatch(/\.\.\..*first.ts$/);
     const serialized = JSON.stringify(events);
-    expect(serialized).not.toContain("secret-value");
+    expect(logs.find((entry) => entry.kind === "message")?.text).toBe("api_key=secret-value 正在修复");
     expect(serialized).not.toContain("private reasoning");
     expect(serialized).not.toContain("private arbitrary output");
     expect(s.store.get<any>("run_observation", "r").active_tools).toBe(0);

@@ -1,12 +1,13 @@
 import { highRiskDiagnostic } from "../../presentation/src/secret-redactor.js";
 import type { Store } from "../../store/src/store.js";
-import { publicEvent, now } from "../../core/src/util.js";
+import { now } from "../../core/src/util.js";
+import { conversationAgentContent } from "../../presentation/src/conversation-content.js";
 
 /** Coalesce token/step updates, while retaining each completed step in raw JSONL. */
 export class AgentTelemetry {
   private events = new Map<string, Record<string, any>>();
   private timer?: NodeJS.Timeout;
-  // Retained independently of timed flushes; never persist an unframed delta.
+  // Retained across timed flushes so each emitted message is a complete snapshot.
   private textFragments = new Map<string, string | null>();
   private sensitiveSteps = new Set<string>();
   private sensitiveSaturated = false;
@@ -27,11 +28,12 @@ export class AgentTelemetry {
     const key = step
       ? `step:${conversation}:${this.run}:${step.step_index}`
       : `event:${conversation}:${this.run}:${event.event}`;
-    if (step && highRiskDiagnostic(`${step.tool_name ?? ""} ${JSON.stringify(step.tool_info ?? {})}`)) {
+    const isMessage = step?.step_type === "agent_response";
+    if (step && !isMessage && highRiskDiagnostic(`${step.tool_name ?? ""} ${JSON.stringify(step.tool_info ?? {})}`)) {
       if (this.sensitiveSteps.size < 128) this.sensitiveSteps.add(key);
       else this.sensitiveSaturated = true;
     }
-    if (step && (this.sensitiveSteps.has(key) || this.sensitiveSaturated)) {
+    if (step && !isMessage && (this.sensitiveSteps.has(key) || this.sensitiveSaturated)) {
       event = { event: "step_update", step_update: {
         conversation_id: conversation, step_index: step.step_index,
         step_type: step.step_type, state: step.state,
@@ -41,7 +43,11 @@ export class AgentTelemetry {
       if (!this.timer) this.timer = setTimeout(() => this.flush(), 500);
       return;
     }
-    if (step && typeof step.text_delta === "string") {
+    if (isMessage) {
+      if (typeof step.text === "string") this.textFragments.set(key, step.text);
+      else if (typeof step.text_delta === "string")
+        this.textFragments.set(key, (this.textFragments.get(key) ?? "") + step.text_delta);
+    } else if (step && typeof step.text_delta === "string") {
       const prior = this.textFragments.get(key);
       if (prior !== null && (this.textFragments.has(key) || !this.fragmentsSaturated)) {
         if (this.textFragments.size >= 128 && !this.textFragments.has(key)) this.fragmentsSaturated = true;
@@ -55,10 +61,10 @@ export class AgentTelemetry {
       const { text_delta: _delta, ...withoutDelta } = step;
       const complete = ["DONE", "ERROR"].includes(step.state);
       event = { ...event, step_update: { ...withoutDelta,
-        ...(complete && this.textFragments.has(key)
+        ...((isMessage || complete) && this.textFragments.has(key)
           ? { text: this.textFragments.get(key) ?? "[分片诊断超过安全缓冲上限，已省略]" } : {}),
       } };
-      // Keep the bounded prefix for repeated DONE deltas from the same native step.
+      // Preserve the accumulated text for repeated terminal updates of the same step.
     }
     const previous = this.events.get(key)?.step_update;
     if (step && previous)
@@ -129,7 +135,7 @@ export class AgentTelemetry {
             this.workflow,
             this.project,
             "AgentEvent",
-            publicEvent(event),
+            conversationAgentContent(event),
             this.run,
           );
       });

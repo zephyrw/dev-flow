@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { publicDiagnostic } from "../../../packages/presentation/src/secret-redactor.js";
 import type {
   ConversationAttempt,
   ConversationNode,
@@ -473,6 +474,7 @@ export function publicConversationText(entries: ConversationViewEntry[]) {
       (entry) =>
         entry.kind !== "diagnostic" && entry.presentation !== "separator",
     )
+    .map((entry) => publicDiagnostic(entry) as ConversationViewEntry)
     .map((entry) =>
       [entry.title, entry.text, entry.resultText].filter(Boolean).join("\n"),
     )

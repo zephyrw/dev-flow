@@ -82,7 +82,7 @@ describe("F11 diagnostic copies", () => {
     expect(bounded.push("secret-tail\n", true)).toBe("");
   });
 
-  it("uses the authentication whitelist across timed flushes and complete message deltas", () => {
+  it("preserves authored message deltas across flushes while protecting authentication tools", () => {
     const events: unknown[] = [];
     const store = { transaction: (f: () => void) => f(), event: (_w: unknown, _p: unknown, _t: unknown, value: unknown) => events.push(value) };
     const telemetry = new AgentTelemetry(store as any, "wf", "p", "run");
@@ -91,15 +91,14 @@ describe("F11 diagnostic copies", () => {
     telemetry.flush();
     update(1, { state: "DONE", text_delta: "words\"" });
     telemetry.flush();
-    update(2, { state: "RUNNING", tool_name: "login", tool_info: { parameters: { command: "tool login" } } });
+    update(2, { step_type: "tool", state: "RUNNING", tool_name: "login", tool_info: { parameters: { command: "tool login" } } });
     telemetry.flush();
-    update(2, { state: "DONE", tool_info: { output: "unlabelled-credential" } });
+    update(2, { step_type: "tool", state: "DONE", tool_info: { output: "unlabelled-credential" } });
     telemetry.flush();
     const serialized = JSON.stringify(events);
-    expect(serialized).not.toContain("two ");
-    expect(serialized).not.toContain("words");
+    expect((events[1] as any).step_update.text).toBe('password="two words"');
     expect(serialized).not.toContain("unlabelled-credential");
-    expect(serialized).toContain("REDACTED");
+    expect(serialized).toContain("仅保留状态");
     expect(toolSummary("run_command", { command: "tool login", cwd: "sensitive/path" }).cwd).toBeUndefined();
   });
 
@@ -167,8 +166,9 @@ describe("F11 diagnostic copies", () => {
     expect(JSON.stringify(context.project(result))).not.toContain("bare-secret-value");
     context.project({ type: "tool_use", id: "auth", name: "Bash", input: { command: "tool login" } });
     context.project({ type: "tool_use", id: "auth", name: "Bash", input: { command: "echo ok" } });
-    expect(JSON.stringify(context.project({ type: "tool_result", tool_use_id: "auth", content: "bare-secret-value" }))).not.toContain("bare-secret-value");
     expect(context.project("bare-secret-value")).not.toContain("bare-secret-value");
+    expect(JSON.stringify(context.project({ type: "tool_result", tool_use_id: "auth", content: "bare-secret-value" }))).not.toContain("bare-secret-value");
+    expect(context.project("ordinary diagnostic after completion")).toBe("ordinary diagnostic after completion");
     const partial = new DiagnosticRedactionContext();
     partial.project({ type: "content_block_start", content_block: { type: "tool_use", id: "partial", name: "Bash", input: {} } });
     partial.project({ type: "content_block_delta", delta: { type: "input_json_delta", partial_json: '{"command":"tool lo' } });
@@ -196,6 +196,91 @@ describe("F11 diagnostic copies", () => {
     const stderr = new DiagnosticStreamRedactor(65536, shared);
     stdout.push("x".repeat(33));
     expect(stderr.push("bare-secret-value\n")).not.toContain("bare-secret-value");
+  });
+
+  it("does not treat prompts, errors or a parallel safe call as authentication completion (R5)", () => {
+    const context = new DiagnosticRedactionContext();
+    context.project({ type: "tool_use", id: "auth", name: "Bash", input: { command: "gh auth login # 登录" } });
+    for (const output of ["> 123456", "$ 123456", "PS C:\\work> 123456", "ERROR: invalid one-time code 123456"]) {
+      expect(context.project(output)).not.toContain("123456");
+    }
+    context.project({ type: "tool_use", id: "build", name: "Bash", input: { command: "pnpm build" } });
+    expect(JSON.stringify(context.project({ type: "tool_result", tool_use_id: "build", content: "Build failed: missing module" }))).toContain("missing module");
+    expect(context.project("123456")).not.toContain("123456");
+    context.project({ type: "tool_result", tool_use_id: "auth", content: "123456" });
+    expect(context.project("ordinary diagnostic")).toBe("ordinary diagnostic");
+  });
+
+  it.each([
+    [
+      { type: "tool_use", id: "auth", name: "Bash", input: { command: "gh auth login # 登录" } },
+      { type: "tool_result", tool_use_id: "auth", content: "123456" },
+    ],
+    [
+      { type: "function_call", call_id: "auth", name: "shell", arguments: '{"command":"gh auth login"}' },
+      { type: "function_call_output", call_id: "auth", output: "123456" },
+    ],
+    [
+      { event: "step_update", step_update: { step_index: 1, state: "RUNNING", tool_info: { parameters: { command: "gh auth login" } } } },
+      { event: "step_update", step_update: { step_index: 1, state: "DONE", tool_info: { parameters: { command: "gh auth login" }, output: "123456" } } },
+    ],
+    [
+      { type: "item.started", item: { type: "command_execution", id: "auth", command: "gh auth login", status: "in_progress" } },
+      { type: "item.completed", item: { type: "command_execution", id: "auth", command: "gh auth login", status: "completed", aggregated_output: "123456" } },
+    ],
+  ])("ends scoped authentication once and quarantines late results without polluting later logs (R6)", (call, result) => {
+    const context = new DiagnosticRedactionContext();
+    const error = "src/main.ts(1,1): error TS2304: Cannot find name 'x'.";
+    context.project(call);
+    expect(context.project("123456")).not.toContain("123456");
+    expect(JSON.stringify(context.project(result))).not.toContain("123456");
+    expect(context.project(error)).toBe(error);
+    // Duplicate declarations and final records must retain redaction without
+    // reopening the completed call or marking unrelated output as sensitive.
+    context.project(call);
+    expect(JSON.stringify(context.project(result))).not.toContain("123456");
+    expect(context.project(error)).toBe(error);
+  });
+
+  it("keeps an authentication call active through partial results and until all concurrent calls finish", () => {
+    const context = new DiagnosticRedactionContext();
+    for (const id of ["first", "second"]) {
+      context.project({ type: "tool_use", id, input: { command: "gh auth login" } });
+    }
+    context.project({ type: "tool_result", tool_use_id: "first", status: "running", content: "123456" });
+    expect(context.project("123456")).not.toContain("123456");
+    context.project({ type: "tool_result", tool_use_id: "first", status: "completed", content: "123456" });
+    expect(context.project("123456")).not.toContain("123456");
+    context.project({ type: "tool_result", tool_use_id: "second", status: "completed", content: "123456" });
+    expect(context.project("ordinary diagnostic")).toBe("ordinary diagnostic");
+  });
+
+  it("keeps a partial credential protected when another stream completes its call", () => {
+    for (const final of [false, true]) {
+      for (let split = 1; split < 6; split++) {
+        const context = new DiagnosticRedactionContext();
+        const stdout = new DiagnosticStreamRedactor(65536, context);
+        const stderr = new DiagnosticStreamRedactor(65536, context);
+        stdout.push(JSON.stringify({ type: "tool_use", id: "auth", input: { command: "gh auth login" } }) + "\n");
+        const first = stderr.push("123456".slice(0, split));
+        stdout.push(JSON.stringify({ type: "tool_result", tool_use_id: "auth", content: "done" }) + "\n");
+        const rest = stderr.push("123456".slice(split) + (final ? "" : "\n"), final);
+        expect(first + rest).not.toContain("123456");
+        expect(first + rest).toContain("仅保留状态");
+        expect(stderr.push("ordinary diagnostic\n")).toContain("ordinary diagnostic");
+      }
+    }
+  });
+
+  it("preserves known safe calls while quarantining unassociated authentication output", () => {
+    const context = new DiagnosticRedactionContext();
+    context.project("$ gh auth login # 登录");
+    context.project("$ pnpm build");
+    expect(context.project("> 123456")).not.toContain("123456");
+    context.project({ type: "tool_use", id: "build", input: { command: "pnpm build" } });
+    const output = context.project({ type: "tool_result", tool_use_id: "build", content: "Build failed: missing module" });
+    expect(JSON.stringify(output)).toContain("missing module");
+    expect(context.project("123456")).not.toContain("123456");
   });
 
 });

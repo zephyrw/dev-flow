@@ -54,4 +54,5 @@ export function atomicWrite(file: string, content: string | Buffer) {
   }
 }
 // Compatibility entry points for server callers; rules also run in browser projections.
-export { redactSecrets as redact, publicDiagnostic as publicEvent } from "../../presentation/src/secret-redactor.js";
+export { redactSecrets as redact } from "../../presentation/src/secret-redactor.js";
+export { publicConversationEvent as publicEvent } from "../../presentation/src/conversation-content.js";

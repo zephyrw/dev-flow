@@ -79,6 +79,23 @@ function writeStepDb(
 }
 
 describe("SA-U12 agy conversation source", () => {
+  it("preserves a whitespace snapshot before deltas and a status-only completion", () => {
+    const step = {
+      conversation_id: PARENT,
+      step_index: 0,
+      step_type: "agent_response",
+    };
+    const events = decodeAgyConversationEvents([
+      { event: "step_update", step_update: { ...step, state: "RUNNING", text: "\n    " } },
+      { event: "step_update", step_update: { ...step, state: "RUNNING", text_delta: "code\n\n" } },
+      { event: "step_update", step_update: { ...step, state: "DONE" } },
+    ], { rootNativeId: PARENT });
+    const activities = events.filter((event) => event.kind === "activity");
+    expect(activities.map((event) => (event.payload as { public_text: string }).public_text))
+      .toEqual(["\n    ", "\n    code\n\n", "\n    code\n\n"]);
+    expect(activities.at(-1)?.payload).toMatchObject({ status: "completed", kind: "message" });
+  });
+
   it("reports scoped-record discovery and honest pause attribution", () => {
     const capabilities = agySubagentCapabilities("1.2.5");
     expect(capabilities).toMatchObject({
