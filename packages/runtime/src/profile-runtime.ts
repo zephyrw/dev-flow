@@ -1,6 +1,6 @@
 import { DiagnosticRedactionContext, DiagnosticStreamRedactor } from "../../presentation/src/secret-redactor.js";
 import { StringDecoder } from "node:string_decoder";
-import { mkdirSync, readFileSync, existsSync, appendFileSync } from "node:fs";
+import { mkdirSync, readFileSync, existsSync, appendFileSync, cpSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
@@ -120,9 +120,18 @@ import {
   repairRecoveryGuidance,
   reviewRecoveryGuidance,
   shouldIncludeExecutionTestingSkill,
+  getExecutionSkillFilePaths,
   type RecoveryGuidanceAttachment,
   type RecoveryGuidanceOptions,
 } from "../../core/src/execution-guidance.js";
+import {
+  isNativeSkillLoadingSupported,
+  getRequiredSkillsForRole,
+  resolveExecutionSkillsRoot,
+  getWritingSkillFilePaths,
+  getWritingSkillResources,
+  writingAndPlanSkillInstructions,
+} from "../../core/src/execution-skill-materials.js";
 import { ConversationControlService } from "../../core/src/conversation-control.js";
 import { saveRunContinuation } from "../../core/src/waiting-context.js";
 import { followupText, inputStageKey, isSessionFollowup, pendingRunMessages, runUserInputText, selectRunInputMessages, type SessionInputReceipt } from "../../core/src/session-input.js";
@@ -133,6 +142,7 @@ import {
 } from "./conversation-recovery.js";
 import {
   reviewSkillResources,
+  reviewSkillFilePaths,
   repairReviewMaterial,
   repairAssignmentForRun,
   reviewContractContext,
@@ -295,7 +305,7 @@ export class ProfileRuntime {
     const value = await this.invoke(
       w,
       run,
-      asideQuestionMaterials(this.engine, w, question, plan),
+      asideQuestionMaterials(this.engine, w, question, plan, run.adapter),
       modelOutputSchema(z.object({ answer: z.string().min(1) }), []),
     );
     return requireAsideAnswer(value);
@@ -532,15 +542,21 @@ export class ProfileRuntime {
       : executionScopeInstructions + "完成本轮开发或整改及必要测试后交代码复核，不自行提交 Git，不代替人工验收。";
 
     const includeTestingSkills = !acceptanceGuidance && shouldIncludeExecutionTestingSkill(purpose, run.routing_role);
-    const executionSkills = includeTestingSkills ? getExecutionSkillResources() : undefined;
+    const nativeLoading = isNativeSkillLoadingSupported(run.adapter);
+    const executionSkills = includeTestingSkills && !nativeLoading ? getExecutionSkillResources() : undefined;
+    const requiredSkills = nativeLoading ? getRequiredSkillsForRole(run.routing_role, purpose) : undefined;
+    const skillPaths = nativeLoading && includeTestingSkills ? getExecutionSkillFilePaths() : undefined;
     return this.continuationMaterials(
       {
         instructions: baseInstructions + extraInstructionsPrompt +
           (acceptanceGuidance ? "" : "\n可在顶层或delivery.test_results逐项回传原计划测试结果：test_id用计划测试ID，case_id必须用计划expected_case_ids，不填测试文件路径或类名；按test_result_targets中的test_id/case_id逐项填写。status为passed/failed/skipped/not_run，summary简述结果或未运行原因；只报告你明确确认的场景，need_user时也保留已完成结果，未回传项不会被当作失败或未执行。") + (sourceReview
           ? "\n本轮是代码复核整改。读取 source_review 中的问题正文及 repair_instructions，按问题编号逐项修复并说明处理结果；沿用原批准计划和已有修改，不从头开发，不以整改摘要替代问题正文。" : ""),
         ...(roleSpecific ? {} : { execution_order: batchExecutionInstructions }),
-        ...(executionSkills ? { skill_resources: executionSkills } : {}),
-        ...(purpose === "functional_fix" ? {
+        ...(nativeLoading ? {
+          skills: requiredSkills,
+          ...(skillPaths ? { skill_paths: skillPaths } : {}),
+        } : (executionSkills ? { skill_resources: executionSkills } : {})),
+        ...(purpose === "functional_fix" && !nativeLoading ? {
           skill_resources_usage: "这些材料是相关操作的参考。以当前用户指导原文确定动作：落实明确要求的测试和本轮代码修改所需回归；仅启动验收服务不触发整套开发。混合指导中的问题逐项回答，补做 OpenTabs 的要求不能被启动服务覆盖，也不能用 E2E 通过替代。",
         } : {}),
         workflow: w,
@@ -599,12 +615,18 @@ export class ProfileRuntime {
       ? `\n\n## 审批附加执行指令（只读验收依据）\n用户在批准计划时提出了以下附加执行约束，仅作为本次复核时的核验依据，不可越权修改代码：\n${extraInstructions.text}\n`
       : "";
 
+    const nativeLoading = isNativeSkillLoadingSupported(run.adapter);
     return this.continuationMaterials(
       {
         instructions: reviewInstructions + reviewExtraNotice + (afterAcceptanceGuidance
           ? "\n验收指导后以当前工作区 diff 为本轮审查依据，snapshot 仅保留历史背景。untracked_paths 中的新文件尚未进入 Git patch，须从工作区读取正文一起审查；不据旧快照遗漏本轮修改。"
           : ""),
-        skill_resources: reviewSkillResources(),
+        ...(nativeLoading ? {
+          skills: getRequiredSkillsForRole("reviewer", "quality_review"),
+          skill_paths: reviewSkillFilePaths(),
+        } : {
+          skill_resources: reviewSkillResources(),
+        }),
         review_contract: reviewContractContext(this.engine, w, run),
         workflow: w,
         run,
@@ -619,7 +641,7 @@ export class ProfileRuntime {
         ...(afterAcceptanceGuidance ? { diff_source: "current_workspaces" } : {}),
         completion: this.engine.store.list("delivery", w.id).at(-1),
         project: this.engine.project(w.project_id),
-        skill: readFileSync(this.reviewSkill(), "utf8"),
+        ...(!nativeLoading ? { skill: readFileSync(this.reviewSkill(), "utf8") } : {}),
         ...(conflict_background ? { conflict_background } : {}),
       },
       run,
@@ -1051,7 +1073,18 @@ export class ProfileRuntime {
       purpose === "aside" && profile.adapterId === "codex"
         ? join(root, "codex-home")
         : undefined;
-    if (asideCodexHome) mkdirSync(asideCodexHome, { recursive: true });
+    if (asideCodexHome) {
+      mkdirSync(asideCodexHome, { recursive: true });
+      const asideSkillsDir = join(asideCodexHome, "skills");
+      mkdirSync(asideSkillsDir, { recursive: true });
+      const skillsRoot = resolveExecutionSkillsRoot();
+      for (const skillName of ["devflow-concise-complete-writing", "devflow-human-readable-plans"]) {
+        const srcSkill = join(skillsRoot, skillName);
+        if (existsSync(srcSkill)) {
+          cpSync(srcSkill, join(asideSkillsDir, skillName), { recursive: true });
+        }
+      }
+    }
 
     // CW2-F08 / CW2-D04: 正式模型调用必须接入统一派发门面与占用管理
     const dispatchManager = new CliDispatchManager(this.engine.store, this.processes);
@@ -1690,7 +1723,7 @@ export function currentRunUserGuidance(
   return messages.length ? { messages } : undefined;
 }
 
-function asideQuestionMaterials(
+export function asideQuestionMaterials(
   engine: Engine,
   w: Workflow,
   question: {
@@ -1700,7 +1733,9 @@ function asideQuestionMaterials(
     plan_hash?: string;
   },
   plan: ReturnType<typeof readPlanMaterial> | null,
+  adapterId?: string,
 ) {
+  const nativeLoading = isNativeSkillLoadingSupported(adapterId);
   return {
     kind: "temporary_question",
     isolation:
@@ -1728,6 +1763,11 @@ function asideQuestionMaterials(
       : null,
     plan_summary: asidePlanSummary(plan),
     previous_questions: asidePreviousAnswers(engine, w, question.plan_revision),
+    skills: getRequiredSkillsForRole(undefined, "aside"),
+    skill_paths: getWritingSkillFilePaths(),
+    ...(nativeLoading ? {} : { skill_resources: getWritingSkillResources() }),
+    writing_instructions:
+      "回答遵循 devflow-concise-complete-writing 简练完整表达原则：结论先行，先给答案或判断再交代背景原因，省略无增量废话。计划与流程规则参考 devflow-human-readable-plans，但旁路问答仅供只读咨询，不得生成替代计划或修改主流程代码。",
   };
 }
 
@@ -1778,9 +1818,9 @@ function asidePreviousAnswers(
     .map((q) => ({ question: q.question, answer: q.answer }));
 }
 
-function asidePrompt(handoff: string, schemaPath: string) {
+export function asidePrompt(handoff: string, schemaPath: string) {
   return (
-    "这是独立的临时问答，不是主任务执行。主任务仍在另一进程继续，你不得接管、续写、修改代码/计划/工作流，也不得把这个问题当成新的开发任务。只阅读工作包中的问题、任务摘要和用户引用，直接回答用户问题。请读取工作包 " +
+    "这是独立的临时问答，不是主任务执行。主任务仍在另一进程继续，你不得接管、续写、修改代码/计划/工作流，也不得把这个问题当成新的开发任务。回答请遵循 devflow-concise-complete-writing 简练完整表达原则，结论先行。只阅读工作包中的问题、任务摘要和用户引用，直接回答用户问题。请读取工作包 " +
     handoff +
     "。必须按 " +
     schemaPath +

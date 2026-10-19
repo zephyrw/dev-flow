@@ -264,6 +264,16 @@
       "required": true
     },
     {
+      "path": "packages/skills/devflow-concise-complete-writing/SKILL.md",
+      "category": "skills",
+      "required": true
+    },
+    {
+      "path": "packages/skills/devflow-human-readable-plans/SKILL.md",
+      "category": "skills",
+      "required": true
+    },
+    {
       "path": "dist/packages/installer/src/entry-template.mjs",
       "category": "app",
       "required": true

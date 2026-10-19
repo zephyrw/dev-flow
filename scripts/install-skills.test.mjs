@@ -19,6 +19,7 @@ import {
   installCodexSkills,
   InstallSkillsError,
   ALLOWED_SKILLS,
+  ALL_MANAGED_SKILLS,
 } from "./install-skills.mjs";
 
 function fixture(t) {
@@ -41,7 +42,7 @@ function fixture(t) {
     mkdirSync(join(base, name), { recursive: true });
     writeFileSync(join(base, name, "SKILL.md"), text);
   };
-  for (const name of ALLOWED_SKILLS) {
+  for (const name of ALL_MANAGED_SKILLS) {
     write(source, name, `source of ${name}`);
   }
   write(source, "devflow-test", "three layers");
@@ -276,7 +277,7 @@ test("RT12: 第二目标在复制中途失败，保留第一目标结果、备�
     assert.ok(error instanceof InstallSkillsError);
     assert.equal(error.report.backupRoot, backupRoot);
     assert.equal(error.report.results[0].status, "completed");
-    assert.deepEqual(error.report.results[0].skillsInstalled, ALLOWED_SKILLS);
+    assert.deepEqual(error.report.results[0].skillsInstalled, ALL_MANAGED_SKILLS);
     const failed = error.report.results[1];
     assert.equal(failed.status, "failed");
     assert.equal(failed.partial, true);

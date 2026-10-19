@@ -128,3 +128,58 @@ export function shouldIncludeExecutionTestingSkill(
       return role === "executor";
   }
 }
+
+export { writingAndPlanSkillInstructions } from "./role-boundaries.js";
+
+/**
+ * 判断指定 adapter 是否支持工具原生技能加载（Codex 和 AGY）。
+ */
+export function isNativeSkillLoadingSupported(adapterId?: string): boolean {
+  return adapterId === "codex" || adapterId === "agy";
+}
+
+/**
+ * 阶段或用途所需加载的原生技能名称列表。
+ */
+export function getRequiredSkillsForRole(role?: string, purpose?: string): string[] {
+  const writingSkills = [
+    "devflow-concise-complete-writing",
+    "devflow-human-readable-plans",
+  ];
+  if (role === "reviewer" || purpose === "quality_review" || purpose === "review") {
+    return ["devflow", "devflow-review", ...writingSkills];
+  }
+  if (role === "planner" || purpose === "planning" || purpose === "planner_takeover" || purpose === "planner_commit") {
+    return ["devflow", "devflow-plan", ...writingSkills];
+  }
+  if (purpose === "aside") {
+    return [...writingSkills];
+  }
+  return ["devflow", "devflow-execute", "devflow-test", ...writingSkills];
+}
+
+export const WRITING_SKILL_RESOURCE_PATHS = [
+  "devflow-concise-complete-writing/SKILL.md",
+  "devflow-human-readable-plans/SKILL.md",
+] as const;
+
+export function getWritingSkillFilePaths(overrideDir?: string): Record<string, string> {
+  const root = resolveExecutionSkillsRoot(overrideDir);
+  return Object.fromEntries(
+    WRITING_SKILL_RESOURCE_PATHS.map((relPath) => [
+      relPath,
+      resolve(root, relPath),
+    ]),
+  );
+}
+
+export function getWritingSkillResources(overrideDir?: string): Record<string, string> {
+  const root = resolveExecutionSkillsRoot(overrideDir);
+  return Object.fromEntries(
+    WRITING_SKILL_RESOURCE_PATHS.map((relPath) => [
+      relPath,
+      readFileSync(resolve(root, relPath), "utf8"),
+    ]),
+  );
+}
+

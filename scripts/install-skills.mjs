@@ -99,6 +99,16 @@ export const ALLOWED_SKILLS = [
   "devflow-review",
 ];
 
+export const MANAGED_WRITING_SKILLS = [
+  "devflow-concise-complete-writing",
+  "devflow-human-readable-plans",
+];
+
+export const ALL_MANAGED_SKILLS = [
+  ...ALLOWED_SKILLS,
+  ...MANAGED_WRITING_SKILLS,
+];
+
 function statIfPresent(path) {
   try {
     return lstatSync(path);
@@ -114,9 +124,9 @@ function assertDirectory(path) {
   if (stat && !stat.isDirectory()) throw new Error("Expected skill directory: " + path);
 }
 
-function preflightSource(source) {
+function preflightSource(source, skills = ALLOWED_SKILLS) {
   assertDirectory(source);
-  for (const name of ALLOWED_SKILLS) {
+  for (const name of skills) {
     const skill = join(source, name);
     assertDirectory(skill);
     assertTreeHasNoSymlinks(skill);
@@ -140,15 +150,15 @@ function assertCompatibleTree(source, target) {
   }
 }
 
-function preflightTarget(source, target, backup) {
+function preflightTarget(source, target, backup, skills = ALLOWED_SKILLS) {
   assertDirectory(target);
   assertDirectory(backup);
   // Inspect only the DevFlow entries this installation can change.
-  for (const name of [...ALLOWED_SKILLS, "devflow-browser-accept"]) {
+  for (const name of [...skills, "devflow-browser-accept"]) {
     const installed = join(target, name);
     assertDirectory(installed);
     assertTreeHasNoSymlinks(installed);
-    if (ALLOWED_SKILLS.includes(name))
+    if (skills.includes(name))
       assertCompatibleTree(join(source, name), installed);
     assertUnusedBackup(join(backup, name));
   }
@@ -210,16 +220,21 @@ export function installCodexSkills(sourceRoot, options = {}) {
   const backupRoot = resolve(options.backupRoot ?? join(codexHome, "devflow-backups", stamp));
   const source = resolve(sourceRoot);
 
+  const shouldInstallWritingSkills =
+    options.includeWritingSkills !== false;
+
   const initialTargets = [
     {
       name: "codex",
       targetRoot: resolve(join(codexHome, "skills")),
       backupRoot: resolve(join(backupRoot, "codex-skills")),
+      skills: shouldInstallWritingSkills ? ALL_MANAGED_SKILLS : ALLOWED_SKILLS,
     },
     {
       name: "shared-agent",
       targetRoot: resolve(join(userHome, ".agents", "skills")),
       backupRoot: resolve(join(backupRoot, "shared-agent-skills")),
+      skills: ALLOWED_SKILLS,
     },
   ];
 
@@ -231,6 +246,7 @@ export function installCodexSkills(sourceRoot, options = {}) {
       aliases: ["codex", "shared-agent"],
       targetRoot: initialTargets[0].targetRoot,
       backupRoot: initialTargets[0].backupRoot,
+      skills: initialTargets[0].skills,
     });
   } else {
     targets.push(...initialTargets);
@@ -289,10 +305,11 @@ export function installCodexSkills(sourceRoot, options = {}) {
     }
 
     preflightTargetIndex = 0;
-    preflightSource(source);
+    const requiredSourceSkills = shouldInstallWritingSkills ? ALL_MANAGED_SKILLS : ALLOWED_SKILLS;
+    preflightSource(source, requiredSourceSkills);
     for (let i = 0; i < targets.length; i++) {
       preflightTargetIndex = i;
-      preflightTarget(source, targets[i].targetRoot, targets[i].backupRoot);
+      preflightTarget(source, targets[i].targetRoot, targets[i].backupRoot, targets[i].skills);
     }
   } catch (preflightError) {
     const failed = report.results[preflightTargetIndex];
@@ -321,7 +338,7 @@ export function installCodexSkills(sourceRoot, options = {}) {
       assertNoSymlinkInPath(t.backupRoot);
       mkdirSync(t.backupRoot, { recursive: true });
 
-      for (const name of ALLOWED_SKILLS) {
+      for (const name of t.skills) {
         const installed = join(t.targetRoot, name);
         activeSkill = name;
         activePath = installed;
@@ -343,6 +360,21 @@ export function installCodexSkills(sourceRoot, options = {}) {
         assertUnusedBackup(join(t.backupRoot, "devflow-browser-accept"));
         writeAttempted = true;
         renameSync(retired, join(t.backupRoot, "devflow-browser-accept"));
+      }
+
+      if (t.name === "shared-agent") {
+        for (const retiredSkill of MANAGED_WRITING_SKILLS) {
+          const retiredWriting = join(t.targetRoot, retiredSkill);
+          if (existsSync(retiredWriting)) {
+            activeSkill = retiredSkill;
+            activePath = retiredWriting;
+            stage = "retire";
+            assertTreeHasNoSymlinks(retiredWriting);
+            assertUnusedBackup(join(t.backupRoot, retiredSkill));
+            writeAttempted = true;
+            renameSync(retiredWriting, join(t.backupRoot, retiredSkill));
+          }
+        }
       }
 
       r.status = "completed";

@@ -5,6 +5,7 @@ export default defineConfig({
     include: [
       "tests/unit/**/*.test.{ts,tsx}",
       "tests/integration/**/*.test.{ts,tsx}",
+      "tests/e2e/**/*.test.{ts,tsx}",
     ],
     coverage: {
       provider: "v8",

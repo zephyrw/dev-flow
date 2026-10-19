@@ -60,6 +60,25 @@ export function reviewSkillResources() {
   );
 }
 
+export function reviewSkillFilePaths() {
+  const dir = dirname(fileURLToPath(import.meta.url));
+  const root = [
+    resolve(dir, "../../skills"),
+    resolve(dir, "../../../../packages/skills"),
+  ].find((candidate) =>
+    existsSync(resolve(candidate, "devflow-review/SKILL.md")),
+  );
+  requireCondition(root, "SKILL_MISSING", "安装缺少 devflow-review Skill");
+  return Object.fromEntries(
+    [
+      "devflow-review/SKILL.md",
+      "devflow-review/references/repair-document-contract.md",
+      "devflow-review/references/review-contract.md",
+      "devflow/references/role-and-schedule.md",
+    ].map((path) => [path, resolve(root, path)]),
+  );
+}
+
 export function projectReviewCompletion(
   raw: ReturnType<typeof reviewCompletionContext>,
 ) {

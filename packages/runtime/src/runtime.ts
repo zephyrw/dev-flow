@@ -107,9 +107,14 @@ import {
 } from "../../adapters/agy/src/conversation-source.js";
 import {
   reviewSkillResources,
+  reviewSkillFilePaths,
   reviewContractContext,
   reviewInstructions,
 } from "./review-materials.js";
+import {
+  isNativeSkillLoadingSupported,
+  getRequiredSkillsForRole,
+} from "../../core/src/execution-skill-materials.js";
 import {
   INTENT_CLARIFICATION_INSTRUCTION,
   applyContinuationMaterials,
@@ -1507,9 +1512,15 @@ export class LocalRuntime implements Runtime {
         this.engine.store.get("run_continuation", workflow.id),
       ) ??
       asRunContinuation(this.engine.store.get("run_continuation", run.id));
+    const nativeLoading = isNativeSkillLoadingSupported(run.adapter);
     const materials = followup ? undefined : applyContinuationMaterials(
       {
-        skill_resources: reviewSkillResources(),
+        ...(nativeLoading ? {
+          skills: getRequiredSkillsForRole("reviewer", "quality_review"),
+          skill_paths: reviewSkillFilePaths(),
+        } : {
+          skill_resources: reviewSkillResources(),
+        }),
         review_contract: reviewContractContext(this.engine, workflow, run),
         plan: this.engine.plan(workflow.id).plan,
         plan_record: this.engine.plan(workflow.id),
@@ -1520,10 +1531,12 @@ export class LocalRuntime implements Runtime {
             workflow.id + "-" + workflow.plan_revision,
           ) ?? null,
         project: this.engine.project(workflow.project_id),
-        skill: readFileSync(
-          resolve("packages/skills/devflow-review/SKILL.md"),
-          "utf8",
-        ),
+        ...(!nativeLoading ? {
+          skill: readFileSync(
+            resolve("packages/skills/devflow-review/SKILL.md"),
+            "utf8",
+          ),
+        } : {}),
         diff: snapshot ? await this.engine.git.diff(snapshot) : "",
         snapshot,
         workspaces: this.engine.store.list<Workspace>("workspace", workflow.id),

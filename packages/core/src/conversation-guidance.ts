@@ -6,7 +6,11 @@ import {
 } from "../../contracts/src/index.js";
 import { recoveryGuidanceText } from "../../runtime/src/conversation-recovery.js";
 import { readOnlyPurpose } from "../../adapters/sdk/src/invocation.js";
-import { planningWritingInstructions, roleBoundaryInstructionsFor } from "./role-boundaries.js";
+import {
+  planningWritingInstructions,
+  roleBoundaryInstructionsFor,
+  writingAndPlanSkillInstructions,
+} from "./role-boundaries.js";
 import {
   CURSOR_NO_CHILD_REASON,
   cursorSubagentCapabilities,
@@ -158,12 +162,12 @@ function roleWorkHint(role: RecoveryGuidanceRole): string {
   if (role === "planning")
     return "继续原规划用途：只调查和规划，不修改产品代码，不自行批准或启动执行。" + planningWritingInstructions;
   if (role === "execute")
-    return "继续原开发用途：按已批准计划实施，不另建替代计划。";
+    return "继续原开发用途：按已批准计划实施，不另建替代计划。" + writingAndPlanSkillInstructions;
   if (role === "review")
-    return "继续原复核职责与阶段，不降为 implement；审查子 Agent 均只读。";
+    return "继续原复核职责与阶段，不降为 implement；审查子 Agent 均只读。" + writingAndPlanSkillInstructions;
   if (role === "repair")
-    return "继续原整改范围，按确定修复意见执行，不得自行换方案。";
-  return "独立只读临时提问，不打断主工作树，不自动重提已取消问题。";
+    return "继续原整改范围，按确定修复意见执行，不得自行换方案。" + writingAndPlanSkillInstructions;
+  return "独立只读临时提问，不打断主工作树，不自动重提已取消问题。" + writingAndPlanSkillInstructions;
 }
 
 function readonlyBoundaryText(

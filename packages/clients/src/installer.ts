@@ -4,6 +4,7 @@ import {
   readdirSync,
   readFileSync,
   copyFileSync,
+  renameSync,
   lstatSync,
   constants,
 } from "node:fs";
@@ -33,12 +34,21 @@ export const ALLOWED_SKILLS = [
   "devflow-test",
   "devflow-review",
 ];
+export const MANAGED_WRITING_SKILLS = [
+  "devflow-concise-complete-writing",
+  "devflow-human-readable-plans",
+];
+export const ALL_MANAGED_SKILLS = [
+  ...ALLOWED_SKILLS,
+  ...MANAGED_WRITING_SKILLS,
+];
 export interface ClientInstallOptions {
   home?: string;
   node?: string;
   bridge?: string;
   config?: string;
   previousMcpSpec?: { command: string; args: string[]; env: { DEVFLOW_CONFIG: string } };
+  includeWritingSkills?: boolean;
 }
 
 function canonicalize(p: string): string {
@@ -73,6 +83,15 @@ function assertBackupAvailable(source: string, target: string, suffix: string) {
   const backup = target + suffix;
   assertNoSymlinkInAncestors(backup);
   if (statIfPresent(backup) || statIfPresent(source + suffix))
+    throw new Error("备份文件冲突：" + backup);
+}
+
+function preflightSkillRetirement(source: string, backup: string) {
+  assertDirectory(source);
+  assertTreeHasNoSymlinks(source);
+  assertDirectory(dirname(backup));
+  assertNoSymlinkInAncestors(backup);
+  if (statIfPresent(backup))
     throw new Error("备份文件冲突：" + backup);
 }
 
@@ -344,21 +363,52 @@ export class ClientInstaller {
       }
     }
     assertDirectory(source);
-    for (const name of ALLOWED_SKILLS) {
+    const shouldInstallWritingSkills =
+      (client === "codex" || client === "agy") &&
+      this.options.includeWritingSkills !== false;
+
+    const requiredSkills = shouldInstallWritingSkills
+      ? ALL_MANAGED_SKILLS
+      : ALLOWED_SKILLS;
+
+    for (const name of requiredSkills) {
       const skill = join(source, name);
       assertDirectory(skill);
       assertTreeHasNoSymlinks(skill);
       if (!statIfPresent(join(skill, "SKILL.md"))?.isFile())
         throw new Error("缺少必需 Skill：" + name);
     }
+    const primaryTarget = resolve(this.locateClientSkillDir(client));
+    const targetSkillsFor = (target: string) => {
+      if (!shouldInstallWritingSkills) return ALLOWED_SKILLS;
+      if (client === "codex" && canonicalize(target) !== canonicalize(primaryTarget)) {
+        return ALLOWED_SKILLS;
+      }
+      return ALL_MANAGED_SKILLS;
+    };
+
+    const retirements: Array<{ source: string; backup: string }> = [];
     for (const target of targets) {
       assertDirectory(target);
-      for (const skillName of ALLOWED_SKILLS)
+      for (const skillName of targetSkillsFor(target))
         preflightCopy(join(source, skillName), join(target, skillName), backupSuffix);
+      if (client === "codex" && canonicalize(target) !== canonicalize(primaryTarget)) {
+        const backupRoot = resolve(join(dirname(target), ".devflow-backups", "retired-skills"));
+        for (const skillName of MANAGED_WRITING_SKILLS) {
+          const retiredPath = join(target, skillName);
+          if (!statIfPresent(retiredPath)) continue;
+          if (overlaps(source, backupRoot) || targets.some((root) => overlaps(root, backupRoot)))
+            throw new Error("Skill 退役备份目录必须与源目录及技能搜索目录分离：" + backupRoot);
+          const backup = join(backupRoot, skillName + backupSuffix);
+          preflightSkillRetirement(retiredPath, backup);
+          retirements.push({ source: retiredPath, backup });
+        }
+      }
     }
 
     for (const target of targets) {
-      for (const skillName of ALLOWED_SKILLS) {
+      const installList = targetSkillsFor(target);
+      for (const skillName of installList) {
         const dest = join(target, skillName);
         try {
           copyVerified(join(source, skillName), dest, backupSuffix);
@@ -378,6 +428,13 @@ export class ClientInstaller {
           });
         }
       }
+    }
+    // 所有退役项先预检；实际移动前复检，避免跟随安装期间被替换的链接或覆盖备份。
+    for (const retirement of retirements) {
+      preflightSkillRetirement(retirement.source, retirement.backup);
+      mkdirSync(dirname(retirement.backup), { recursive: true });
+      preflightSkillRetirement(retirement.source, retirement.backup);
+      renameSync(retirement.source, retirement.backup);
     }
     try {
       this.configure(client);

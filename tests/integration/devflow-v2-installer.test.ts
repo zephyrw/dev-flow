@@ -3,7 +3,7 @@ import {
   createIsolatedTestEnv,
   type IsolatedTestEnv,
 } from "../fixtures/isolation.js";
-import { ClientInstaller } from "../../packages/clients/src/installer.js";
+import { ClientInstaller, ALL_MANAGED_SKILLS } from "../../packages/clients/src/installer.js";
 import { UpgradeManager } from "../../packages/installer/src/upgrade.js";
 import {
   applyInstallerModelDefaults,
@@ -72,16 +72,7 @@ describe("IT-INSTALLER: 六核心 Skill/MCP 完整分发、选定闭包与配置
     fakeSkillsSrc = join(env.root, "source_skills");
     mkdirSync(fakeSkillsSrc, { recursive: true });
 
-    const skills = [
-      "devflow",
-      "devflow-project-onboard",
-      "devflow-plan",
-      "devflow-execute",
-      "devflow-test",
-      "devflow-review",
-    ];
-
-    for (const sk of skills) {
+    for (const sk of ALL_MANAGED_SKILLS) {
       const skDir = join(fakeSkillsSrc, sk);
       mkdirSync(join(skDir, "references"), { recursive: true });
       writeFileSync(join(skDir, "SKILL.md"), `# ${sk}\nDescription of ${sk}`);
@@ -108,7 +99,7 @@ describe("IT-INSTALLER: 六核心 Skill/MCP 完整分发、选定闭包与配置
     const report = installer.installSkillsForClient("codex");
 
     expect(report.clientId).toBe("codex");
-    expect(report.skillsInstalled.length).toBe(12);
+    expect(report.skillsInstalled.length).toBe(14);
     expect(report.skillsInstalled.every((s) => s.status === "installed")).toBe(
       true,
     );
@@ -211,7 +202,7 @@ describe("IT-INSTALLER: 六核心 Skill/MCP 完整分发、选定闭包与配置
       expect(dirs.length).toBe(1);
 
       const report = dedupInstaller.installSkillsForClient("codex");
-      expect(report.skillsInstalled.length).toBe(6);
+      expect(report.skillsInstalled.length).toBe(8);
       expect(report.skillsInstalled.every((s) => s.status === "installed")).toBe(true);
       expect(existsSync(join(dirs[0]!, "devflow", "SKILL.md"))).toBe(true);
     } finally {
@@ -257,7 +248,7 @@ describe("IT-INSTALLER: 六核心 Skill/MCP 完整分发、选定闭包与配置
     const link = join(primary, "personal-link");
     symlinkSync(personal, link, process.platform === "win32" ? "junction" : "dir");
     const report = installer.installSkillsForClient("codex");
-    expect(report.skillsInstalled).toHaveLength(12);
+    expect(report.skillsInstalled).toHaveLength(14);
     expect(report.skillsInstalled.every((skill) => skill.status === "installed")).toBe(true);
     expect(lstatSync(link).isSymbolicLink()).toBe(true);
     expect(readFileSync(join(link, "SKILL.md"), "utf8")).toBe("personal original");
