@@ -1124,7 +1124,8 @@ export class AgyAccountService {
 
     if (
       realm.service_state === "running" &&
-      this.authHost.isDomainLockHeld(input.realmId)
+      this.authHost.isDomainLockHeld(input.realmId) &&
+      !(realm.phase === "blocked" && realm.last_error === "domain_lock_lost" && !realm.pending_operation_id)
     ) {
       this.ownedRealms.add(input.realmId);
       return {
@@ -1161,6 +1162,7 @@ export class AgyAccountService {
     this.ownedRealms.add(input.realmId);
 
     // 2. 回读本地活动项并智能对齐
+    const previousAccountId = realm.active_account_id;
     const inspection = await this.authHost.inspectActive(input.realmId);
     let matchedAccount: AgyAccount | undefined;
     for (const account of this.repository.listAccounts(input.realmId)) {
@@ -1176,6 +1178,16 @@ export class AgyAccountService {
     } else if (!inspection.exists) {
       realm.active_account_id = null;
       realm.active_secret_ref = undefined;
+    }
+
+    // A recovered OS lease does not clear the durable blocker by itself.
+    // Resume only after rereading the same account, without an unfinished switch.
+    if (realm.phase === "blocked" && realm.last_error === "domain_lock_lost" &&
+        !realm.pending_operation_id && matchedAccount?.id === previousAccountId) {
+      if (!this.authHost.isDomainLockHeld(input.realmId))
+        throw new AccountServiceError("domain_lock_lost");
+      realm.phase = "idle";
+      realm.last_error = undefined;
     }
 
     const resumeIntent = realm.desired_enabled;

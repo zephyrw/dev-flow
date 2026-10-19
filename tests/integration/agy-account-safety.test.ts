@@ -57,6 +57,40 @@ async function fixture() {
 }
 
 describe("AGY durable safety boundary", () => {
+  it.each([false, true])("restores admission after lease loss with the lock already held: %s", async (held) => {
+    const f = await fixture();
+    await f.service.start({ realmId, requestId: "start" });
+    f.repo.saveRealm({ ...f.repo.getRealm(realmId)!, phase: "blocked", service_state: held ? "running" : "blocked", last_error: "domain_lock_lost" });
+    f.state.held = held;
+    await f.service.reconcileStartup();
+    expect(f.repo.getRealm(realmId)).toMatchObject({ phase: "idle", service_state: "running", active_account_id: "A", auth_epoch: 1 });
+    expect(f.repo.getRealm(realmId)?.last_error).toBeUndefined();
+    const permit = await f.service.acquireUsagePermit({ realm_id: realmId, consumer_id: "recovered-run", usage_kind: "execution", required_pool_ids: [pool], required_model_ids: [model] });
+    expect(permit.account_id).toBe("A");
+    expect(f.state.writes).toEqual([]);
+    await f.service.releaseUsagePermit(permit.permit_id, { permit_id: permit.permit_id, success: false });
+  });
+
+  it.each(["pending", "identity_changed", "identity_missing", "other_blocker", "lock_unavailable", "lock_lost_during_read"])("retains a recovery blocker when %s", async (reason) => {
+    const f = await fixture();
+    await f.service.start({ realmId, requestId: "start" });
+    f.repo.saveRealm({ ...f.repo.getRealm(realmId)!, phase: "blocked", service_state: "blocked",
+      last_error: reason === "other_blocker" ? "external_change" : "domain_lock_lost",
+      pending_operation_id: reason === "pending" ? "unresolved-switch" : null });
+    f.state.held = false;
+    if (reason === "identity_changed") f.state.active = "saved_B";
+    if (reason === "identity_missing") f.state.active = "absent";
+    if (reason === "lock_unavailable") f.state.acquire = false;
+    if (reason === "lock_lost_during_read") f.auth.compareActive = async (_realm, ref) => { f.state.held = false; return ref === "saved_A"; };
+    const result = f.service.start({ realmId, requestId: "restart" });
+    if (reason === "lock_unavailable" || reason === "lock_lost_during_read")
+      await expect(result).rejects.toThrow(reason === "lock_unavailable" ? "domain_owned_elsewhere" : "domain_lock_lost");
+    else await result;
+    expect(f.repo.getRealm(realmId)?.phase).toBe("blocked");
+    await expect(f.service.acquireUsagePermit({ realm_id: realmId, consumer_id: "blocked-run", usage_kind: "execution", required_pool_ids: [pool], required_model_ids: [model] })).rejects.toThrow();
+    expect(f.state.writes).toEqual([]);
+  });
+
   it("refuses admission when the OS owner cannot be acquired", async () => {
     const f = await fixture(); f.state.acquire = false;
     await expect(f.service.start({ realmId, requestId: "start" })).rejects.toThrow("domain_owned_elsewhere");
