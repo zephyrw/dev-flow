@@ -7,12 +7,15 @@ import { ProcessManager } from "../../packages/process/src/manager.js";
 import type { AgyWorkflowBridge } from "../../packages/runtime/src/agy-workflow-bridge.js";
 import { FlowError, type Run } from "../../packages/contracts/src/index.js";
 import { workflowAttention } from "../../packages/core/src/attention.js";
+import { fixture as nativeFixture, runtime as fixtureRuntime, until, cleanup } from "../fixtures/native-flow.js";
+import { beginRunConversation, retainRunConversation } from "../../packages/core/src/conversation-lineage.js";
 
 const quota = "Individual quota reached. Resets in 2h27m12s.";
 const stalled = "error: the connection to the agent was interrupted before the response finished: subscriber fell behind updates, stalled for 10s";
 const internal = "API error (attempt 1): INTERNAL (code 500): Internal error encountered.";
+const interrupted = "The stream was interrupted. Please continue the task you were working on.";
 
-it.each(["stalled", "internal", "unconfirmed", "disabled", "quota", "denied"] as const)(
+it.each(["stalled", "internal", "stream_interrupted", "unconfirmed", "disabled", "quota", "denied"] as const)(
   "real profile AGY process preserves current failure and account decision: %s",
   async mode => {
     const s = setup();
@@ -42,8 +45,14 @@ it.each(["stalled", "internal", "unconfirmed", "disabled", "quota", "denied"] as
         { event: "step_update", step_update: { conversation_id: session, step_index: 12, step_type: "agent_response", state: "DONE" } },
         { event: "step_update", step_update: { conversation_id: session, step_index: 13, step_type: "finish", state: "DONE" } },
       ] : []),
-      { event: "result", result: { conversation_id: session, status: "ERROR", error: mode === "internal" ? internal : quota,
-        response: mode === "internal" ? "本轮仍有输出" : "",
+      ...(mode === "stream_interrupted" ? [
+        { event: "step_update", step_update: { conversation_id: session, step_index: 11, step_type: "error_message", state: "DONE" } },
+        { event: "step_update", step_update: { conversation_id: session, step_index: 12, step_type: "agent_response", state: "DONE" } },
+      ] : []),
+      { event: "result", result: { conversation_id: session, status: "ERROR",
+        error: mode === "stream_interrupted" ? JSON.stringify({ error: interrupted }) : mode === "internal" ? internal : quota,
+        response: mode === "stream_interrupted" ? JSON.stringify({ status: "completed", summary: "完成", notes: "", artifacts: [] })
+          : mode === "internal" ? "本轮仍有输出" : "",
         ...(mode === "denied" ? { denied_actions: [{ display_name: "run_command" }] } : {}) } },
     ];
     writeFileSync(cli, `if(process.argv.includes('--version') || process.argv.includes('--help')) {
@@ -51,7 +60,7 @@ it.each(["stalled", "internal", "unconfirmed", "disabled", "quota", "denied"] as
     } else {
       for(const event of ${JSON.stringify(events)}) console.log(JSON.stringify(event));
       ${mode === "stalled" || mode === "denied" ? `console.error(${JSON.stringify(stalled)});` : ""}
-      process.exitCode = ${mode === "internal" ? 0 : mode === "quota" ? 3 : 1};
+      process.exitCode = ${mode === "internal" || mode === "stream_interrupted" ? 0 : mode === "quota" ? 3 : 1};
     }`);
     const run: Run = {
       id: "agy-current-run", workflow_id: workflow.id, plan_revision: 1, adapter: "agy", purpose: "executor_test",
@@ -76,11 +85,16 @@ it.each(["stalled", "internal", "unconfirmed", "disabled", "quota", "denied"] as
       const code = mode === "quota" ? "AGY_ACCOUNT_WAIT" : mode === "denied" ? "NATIVE_PERMISSION_DENIED" :
         mode === "unconfirmed" || mode === "disabled" ? "NATIVE_RUN_FAILED" : "MODEL_CONNECTION_FAILED";
       expect(error.code).toBe(code);
-      if (mode !== "denied") expect(error.details.exit_code).toBe(mode === "internal" ? 0 : mode === "quota" ? 3 : 1);
-      if (mode === "stalled" || mode === "internal" || mode === "denied")
+      if (mode !== "denied") expect(error.details.exit_code).toBe(mode === "internal" || mode === "stream_interrupted" ? 0 : mode === "quota" ? 3 : 1);
+      if (mode === "stalled" || mode === "internal" || mode === "stream_interrupted" || mode === "denied")
         expect(bridge.observeFailure).not.toHaveBeenCalled();
       else expect(bridge.observeFailure).toHaveBeenCalledOnce();
       if (mode === "stalled") expect(error.details.diagnostic).toContain(stalled);
+      if (mode === "stream_interrupted") {
+        expect(error.details.diagnostic).toContain(interrupted);
+        expect(s.store.must<Run>("run", run.id).status).not.toBe("completed");
+        expect(s.store.list("delivery", w.id)).toHaveLength(0);
+      }
       if (mode === "unconfirmed" || mode === "disabled") {
         expect(error.details.diagnostic).not.toContain("Individual quota reached");
         expect(error.details.diagnostic).toContain("未获当前运行确认");
@@ -97,3 +111,34 @@ it.each(["stalled", "internal", "unconfirmed", "disabled", "quota", "denied"] as
     }
   },
 );
+
+it.each([0, 10])("stream interruptions keep the original session and bounded retry budget: %s previous retries", async count => {
+  const s = await nativeFixture();
+  const seen: Run[] = [];
+  const resumed: Array<{ id: string } | undefined> = [];
+  try {
+    if (count) s.store.put("transient_network_retry", s.w.id, s.w.id, { count, last_at: Date.now() });
+    s.engine.runtime = fixtureRuntime(s, async run => {
+      seen.push(run);
+      resumed.push(beginRunConversation(s.store, run));
+      if (seen.length === 1) {
+        retainRunConversation(s.store, run, "interrupted-session");
+        throw new FlowError("NATIVE_RUN_FAILED", `CLI 返回错误：${JSON.stringify({ error: interrupted })}`, 422, { exit_code: 0 });
+      }
+      await s.engine.receiveRoundResult(s.w.id, run.id, { status: "need_user", summary: "恢复后等待真实用户决定" });
+    });
+    await until(s, [count ? "BLOCKED" : "WAITING_INPUT"], 30000);
+    const retries = s.store.events(s.w.id).filter(event => event.type === "ModelRetryScheduled");
+    expect(seen).toHaveLength(count ? 1 : 2);
+    expect(retries).toHaveLength(count ? 0 : 1);
+    expect(s.store.list("delivery", s.w.id)).toHaveLength(0);
+    if (count) {
+      expect(s.engine.get(s.w.id).blocker?.code).toBe("MODEL_CONNECTION_FAILED");
+      expect(s.store.get("pending_model_retry", s.w.id)).toBeUndefined();
+    } else {
+      expect(retries[0]?.payload).toMatchObject({ attempt: 1, max_attempts: 10 });
+      expect(resumed).toEqual([undefined, { id: "interrupted-session" }]);
+      expect(seen[1]?.profile).toEqual(seen[0]?.profile);
+    }
+  } finally { await cleanup(s); }
+});

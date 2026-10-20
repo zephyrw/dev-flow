@@ -227,7 +227,7 @@ const resolutions: Record<string, Omit<RuntimeFailureResolution, "code">> = {
 
 /** Only pass current process/provider diagnostics, never model or tool output. */
 export function isRetryableModelTransportFailure(detail: string): boolean {
-  return /bad record mac|local error:\s*tls:|streamGenerateContent.*(?:request failed|bad record mac|wsasend:.*forcibly closed by the remote host)|the connection to the agent was interrupted before the response finished|subscriber fell behind updates, stalled for \d+(?:\.\d+)?s|API error \(attempt \d+\):\s*INTERNAL \(code 500\):\s*Internal error encountered\./i.test(detail);
+  return /bad record mac|local error:\s*tls:|streamGenerateContent.*(?:request failed|bad record mac|wsasend:.*forcibly closed by the remote host)|the connection to the agent was interrupted before the response finished|the stream was interrupted\.\s+please continue the task you were working on\.|subscriber fell behind updates, stalled for \d+(?:\.\d+)?s|API error \(attempt \d+\):\s*INTERNAL \(code 500\):\s*Internal error encountered\./i.test(detail);
 }
 
 /** Only classify actual runtime failures, never quoted errors in a delivery/review. */
