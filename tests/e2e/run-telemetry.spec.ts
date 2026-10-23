@@ -194,14 +194,14 @@ async function screen(page: Page) {
 
 test("Codex and AGY use identical one-line command and middle-ellipsis path rendering; runtime remains when the sidebar closes", async ({
   page,
-}) => {
+}, testInfo) => {
   await screen(page);
   const card = page.getByRole("region", { name: "当前工具与模型" });
   await expect(card).toContainText(/Codex/i);
   await expect(card).toContainText(/GPT-6 Astra|gpt-6-astra/i);
   await expect(card.getByRole("button", { name: /规划模型/ })).toHaveClass(/is-active/);
   await expect(card.getByRole("button", { name: /执行模型/ })).toHaveClass(/is-inactive/);
-  await page.getByRole("button", { name: "查看额度" }).click();
+  await page.getByRole("button", { name: "查看规划工具额度" }).click();
   const popover = page.getByRole("tooltip");
   await expect(popover).toContainText("27%");
   await expect(popover).not.toContainText("Other model");
@@ -247,7 +247,7 @@ test("Codex and AGY use identical one-line command and middle-ellipsis path rend
   await expect(logs.locator(".command-full")).toHaveText(longCommand);
   await logs.getByRole("button", { name: "收起命令" }).click();
   await page.screenshot({
-    path: ".cache/runtime-observability/desktop.png",
+    path: testInfo.outputPath("desktop.png"),
     fullPage: true,
   });
   await page.getByRole("button", { name: "收起执行过程" }).click();
@@ -282,7 +282,7 @@ test("live updates reconcile completed commands, survive reload, and reject old-
   );
   await expect(page.locator(".logs .command-first-line")).toHaveCount(2);
   await page.reload();
-  await page.getByRole("button", { name: "查看额度" }).click();
+  await page.getByRole("button", { name: "查看规划工具额度" }).click();
   await expect(page.getByRole("tooltip")).toContainText("27%");
   await page.keyboard.press("Escape");
   await expect(page.locator(".logs .command-first-line")).toHaveCount(2);
@@ -364,7 +364,7 @@ test("stale quota is labeled and a failed run cannot continue showing a running 
   };
   await page.reload();
   const card = page.getByRole("region", { name: "当前工具与模型" });
-  await page.getByRole("button", { name: "查看额度" }).click();
+  await page.getByRole("button", { name: "查看规划工具额度" }).click();
   const popover = page.getByRole("tooltip");
   await expect(popover).toContainText("待更新");
   await expect(card).not.toContainText("stale-active-command");

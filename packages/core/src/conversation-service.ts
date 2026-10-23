@@ -86,7 +86,7 @@ export interface ConversationActivityPage {
 
 const TITLE_MAX = 200;
 const SUMMARY_MAX = 500;
-const PUBLIC_TEXT_MAX = 16000;
+const PUBLIC_TEXT_MAX = 2000000;
 const COMMAND_MAX = 32000;
 const DIAGNOSTIC_LIMIT = 200;
 const LEGACY_REASON = "历史未记录子会话";
@@ -436,8 +436,13 @@ function readString(payload: PayloadRecord, key: string): string | undefined {
   return trimmed ? trimmed : undefined;
 }
 
+function readRawString(payload: PayloadRecord, key: string): string | undefined {
+  const value = payload[key];
+  return typeof value === "string" ? value : undefined;
+}
+
 function clip(value: string, max: number): string {
-  return diagnosticText(value).slice(0, max);
+  return value.slice(0, max);
 }
 
 function nativeIds(
@@ -1185,7 +1190,7 @@ function redactAndClip(
   max: number,
 ): string | undefined {
   if (value === undefined) return undefined;
-  return clip(value, max);
+  return diagnosticText(value).slice(0, max);
 }
 
 export function createActivityPayload(
@@ -1204,10 +1209,16 @@ export function createActivityPayload(
     readString(payload, "source_event_id") ??
     `${event.source_id}:${event.source_seq}`;
   const kind = payload.kind;
-  const sensitive = ["command", "title", "tool", "name"].some((key) => highRiskDiagnostic(readString(payload, key) ?? ""));
-  const text = (key: string, max: number) => sensitive
-    ? (key === "title" ? "敏感认证操作" : undefined)
-    : redactAndClip(readString(payload, key), max);
+  const isMessage = kind === "message";
+  const sensitive = !isMessage && ["command", "title", "tool", "name"].some((key) => highRiskDiagnostic(readString(payload, key) ?? ""));
+  const text = (key: string, max: number) => {
+    if (key === "public_text" && isMessage) {
+      return readRawString(payload, key);
+    }
+    return sensitive
+      ? (key === "title" ? "敏感认证操作" : undefined)
+      : redactAndClip(readString(payload, key), max);
+  };
   const parsed = ConversationActivityPayloadSchema.safeParse({
     conversation_id: node.id,
     attempt_id: attempt.id,

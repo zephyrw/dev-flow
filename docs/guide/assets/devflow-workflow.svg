@@ -1,63 +1,67 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="744" height="338" viewBox="0 0 744 338" role="img" aria-labelledby="title description">
-  <title id="title">DevFlow 从需求到本地交付</title>
-  <desc id="description">依次完成需求与计划、你批准计划、AI 开发与测试、代码质量复核、你验收功能，以及最终复核与本地交付。蓝色代表 AI 执行，橙色代表人工确认，绿色代表本地交付。</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="556" viewBox="0 0 1120 556" role="img" aria-labelledby="title description">
+  <title id="title">DevFlow 模型接力工作流</title>
+  <desc id="description">依次经过规划与审批、开发与检查、验收与提交三段。八步为：调研计划、人工审批、开发实施、自动测试、验收前质量审查、人工验收、验收后代码复核、本地提交。人工审批和人工验收由你确认；其余步骤按规划、执行和复核职责分工。各角色的工具与模型均可自定义。</desc>
   <defs>
-    <marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto" markerUnits="userSpaceOnUse">
-      <path d="M1 1 L6 4 L1 7" fill="none" stroke="#94a3b8" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
-    </marker>
+    <linearGradient id="surface" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#f8fafc"/><stop offset="1" stop-color="#f3f6fb"/></linearGradient>
+    <linearGradient id="human" x1="0" y1="0" x2="1" y2="0"><stop stop-color="#e4f5ee"/><stop offset="1" stop-color="#edf8f3" stop-opacity="0.4"/></linearGradient>
   </defs>
-  <rect width="744" height="338" rx="16" fill="#f8fafc"/>
-  <g fill="none" stroke="#94a3b8" stroke-width="2" marker-end="url(#arrow)">
-    <path d="M230 80 H266"/>
-    <path d="M478 80 H514"/>
-    <path d="M620 136 V184"/>
-    <path d="M514 242 H478"/>
-    <path d="M266 242 H230"/>
-  </g>
+  <rect width="1120" height="556" rx="20" fill="url(#surface)"/>
   <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', sans-serif">
-    <g transform="translate(18 24)">
-      <rect width="212" height="112" rx="12" fill="#eff6ff" stroke="#93c5fd"/>
-      <text x="16" y="28" fill="#2563eb" font-size="15" font-weight="700">01</text>
-      <text x="106" y="60" fill="#1e3a8a" font-size="23" font-weight="600" text-anchor="middle">需求与计划</text>
-      <text x="106" y="89" fill="#475569" font-size="16" text-anchor="middle">规划模型</text>
-    </g>
-    <g transform="translate(266 24)">
-      <rect width="212" height="112" rx="12" fill="#fff7ed" stroke="#fdba74"/>
-      <text x="16" y="28" fill="#c2410c" font-size="15" font-weight="700">02</text>
-      <text x="106" y="60" fill="#7c2d12" font-size="23" font-weight="600" text-anchor="middle">你批准计划</text>
-      <text x="106" y="89" fill="#475569" font-size="16" text-anchor="middle">确认目标与范围</text>
-    </g>
-    <g transform="translate(514 24)">
-      <rect width="212" height="112" rx="12" fill="#eff6ff" stroke="#93c5fd"/>
-      <text x="16" y="28" fill="#2563eb" font-size="15" font-weight="700">03</text>
-      <text x="106" y="60" fill="#1e3a8a" font-size="23" font-weight="600" text-anchor="middle">AI 开发与测试</text>
-      <text x="106" y="89" fill="#475569" font-size="16" text-anchor="middle">执行模型</text>
-    </g>
-    <g transform="translate(514 186)">
-      <rect width="212" height="112" rx="12" fill="#eff6ff" stroke="#93c5fd"/>
-      <text x="16" y="28" fill="#2563eb" font-size="15" font-weight="700">04</text>
-      <text x="106" y="60" fill="#1e3a8a" font-size="23" font-weight="600" text-anchor="middle">代码质量复核</text>
-      <text x="106" y="89" fill="#475569" font-size="16" text-anchor="middle">复核模型</text>
-    </g>
-    <g transform="translate(266 186)">
-      <rect width="212" height="112" rx="12" fill="#fff7ed" stroke="#fdba74"/>
-      <text x="16" y="28" fill="#c2410c" font-size="15" font-weight="700">05</text>
-      <text x="106" y="60" fill="#7c2d12" font-size="23" font-weight="600" text-anchor="middle">你验收功能</text>
-      <text x="106" y="89" fill="#475569" font-size="16" text-anchor="middle">确认实际使用效果</text>
-    </g>
-    <g transform="translate(18 186)">
-      <rect width="212" height="112" rx="12" fill="#ecfdf5" stroke="#6ee7b7"/>
-      <text x="16" y="28" fill="#047857" font-size="15" font-weight="700">06</text>
-      <text x="106" y="60" fill="#065f46" font-size="23" font-weight="600" text-anchor="middle">最终复核</text>
-      <text x="106" y="89" fill="#475569" font-size="16" text-anchor="middle">本地交付</text>
-    </g>
-    <g font-size="13" fill="#64748b">
-      <circle cx="258" cy="321" r="4" fill="#3b82f6"/>
-      <text x="269" y="326">AI 执行</text>
-      <circle cx="355" cy="321" r="4" fill="#f59e0b"/>
-      <text x="366" y="326">人工确认</text>
-      <circle cx="465" cy="321" r="4" fill="#10b981"/>
-      <text x="476" y="326">本地交付</text>
-    </g>
-  </g>
+<g data-chapter="01"><text x="44" y="43" font-size="13" fill="#73829a" font-weight="650" letter-spacing="1.5">01</text><text x="73" y="43" font-size="14" fill="#687890" font-weight="400" >先明确要做什么</text><text x="44" y="89" font-size="29" fill="#16243b" font-weight="700" >规划与审批</text><g transform="translate(347 80)" fill="none" stroke="#94a4bc" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M0 0H27m-6-6 6 6-6 6"/></g><path d="M44 114H348" stroke="#d6deea"/><path d="M45 183V302" stroke="#cdd7e6" stroke-width="2"/><g data-step="01" transform="translate(0 0)">
+
+    <circle cx="45" cy="167" r="16" fill="#3159d9"/>
+    <text x="45" y="171.5" font-size="12" fill="#fff" font-weight="700" text-anchor="middle">01</text>
+    <text x="93" y="174" font-size="23" fill="#16243b" font-weight="650" >调研计划</text>
+    <text x="93" y="200" font-size="14" fill="#3159d9" font-weight="600" >规划模型</text>
+    <text x="93" y="225" font-size="15" fill="#58677e" font-weight="400" >明确范围、实施步骤与验收标准</text>
+  </g><g data-step="02" transform="translate(0 0)">
+    <rect x="28" y="295" width="320" height="100" rx="12" fill="url(#human)"/>
+    <circle cx="45" cy="318" r="16" fill="#087a58"/>
+    <text x="45" y="322.5" font-size="12" fill="#fff" font-weight="700" text-anchor="middle">02</text>
+    <text x="93" y="325" font-size="23" fill="#16243b" font-weight="650" >人工审批</text>
+    <text x="93" y="351" font-size="14" fill="#087a58" font-weight="600" >由你确认</text>
+    <text x="93" y="376" font-size="15" fill="#58677e" font-weight="400" >确认计划，授权开始实施</text>
+  </g></g><g data-chapter="02"><text x="408" y="43" font-size="13" fill="#73829a" font-weight="650" letter-spacing="1.5">02</text><text x="437" y="43" font-size="14" fill="#687890" font-weight="400" >把计划变成可验收的实现</text><text x="408" y="89" font-size="29" fill="#16243b" font-weight="700" >开发与检查</text><g transform="translate(711 80)" fill="none" stroke="#94a4bc" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M0 0H27m-6-6 6 6-6 6"/></g><path d="M408 114H712" stroke="#d6deea"/><path d="M409 183V393" stroke="#cdd7e6" stroke-width="2"/><g data-step="03" transform="translate(0 0)">
+
+    <circle cx="409" cy="167" r="16" fill="#087e95"/>
+    <text x="409" y="171.5" font-size="12" fill="#fff" font-weight="700" text-anchor="middle">03</text>
+    <text x="457" y="174" font-size="23" fill="#16243b" font-weight="650" >开发实施</text>
+    <text x="457" y="200" font-size="14" fill="#087e95" font-weight="600" >执行模型</text>
+    <text x="457" y="225" font-size="15" fill="#58677e" font-weight="400" >按已批准的计划开发</text>
+  </g><g data-step="04" transform="translate(0 0)">
+
+    <circle cx="409" cy="288" r="16" fill="#087e95"/>
+    <text x="409" y="292.5" font-size="12" fill="#fff" font-weight="700" text-anchor="middle">04</text>
+    <text x="457" y="295" font-size="23" fill="#16243b" font-weight="650" >自动测试</text>
+    <text x="457" y="321" font-size="14" fill="#087e95" font-weight="600" >执行模型</text>
+    <text x="457" y="346" font-size="15" fill="#58677e" font-weight="400" >完成类型检查、构建与测试</text>
+  </g><g data-step="05" transform="translate(0 0)">
+
+    <circle cx="409" cy="409" r="16" fill="#7550bd"/>
+    <text x="409" y="413.5" font-size="12" fill="#fff" font-weight="700" text-anchor="middle">05</text>
+    <text x="457" y="416" font-size="23" fill="#16243b" font-weight="650" >验收前质量审查</text>
+    <text x="457" y="442" font-size="14" fill="#7550bd" font-weight="600" >复核模型</text>
+    <text x="457" y="467" font-size="15" fill="#58677e" font-weight="400" >检查代码质量与实现遗漏</text>
+  </g></g><g data-chapter="03"><text x="772" y="43" font-size="13" fill="#73829a" font-weight="650" letter-spacing="1.5">03</text><text x="801" y="43" font-size="14" fill="#687890" font-weight="400" >由你验收，再完成交付</text><text x="772" y="89" font-size="29" fill="#16243b" font-weight="700" >验收与提交</text><path d="M772 114H1076" stroke="#d6deea"/><path d="M773 183V393" stroke="#cdd7e6" stroke-width="2"/><g data-step="06" transform="translate(0 0)">
+    <rect x="756" y="144" width="320" height="100" rx="12" fill="url(#human)"/>
+    <circle cx="773" cy="167" r="16" fill="#087a58"/>
+    <text x="773" y="171.5" font-size="12" fill="#fff" font-weight="700" text-anchor="middle">06</text>
+    <text x="821" y="174" font-size="23" fill="#16243b" font-weight="650" >人工验收</text>
+    <text x="821" y="200" font-size="14" fill="#087a58" font-weight="600" >由你确认</text>
+    <text x="821" y="225" font-size="15" fill="#58677e" font-weight="400" >实际操作，确认功能符合预期</text>
+  </g><g data-step="07" transform="translate(0 0)">
+
+    <circle cx="773" cy="288" r="16" fill="#7550bd"/>
+    <text x="773" y="292.5" font-size="12" fill="#fff" font-weight="700" text-anchor="middle">07</text>
+    <text x="821" y="295" font-size="23" fill="#16243b" font-weight="650" >验收后代码复核</text>
+    <text x="821" y="321" font-size="14" fill="#7550bd" font-weight="600" >复核模型</text>
+    <text x="821" y="346" font-size="15" fill="#58677e" font-weight="400" >复核验收后的最终代码</text>
+  </g><g data-step="08" transform="translate(0 0)">
+
+    <circle cx="773" cy="409" r="16" fill="#3159d9"/>
+    <text x="773" y="413.5" font-size="12" fill="#fff" font-weight="700" text-anchor="middle">08</text>
+    <text x="821" y="416" font-size="23" fill="#16243b" font-weight="650" >本地提交</text>
+    <text x="821" y="442" font-size="14" fill="#3159d9" font-weight="600" >规划模型</text>
+    <text x="821" y="467" font-size="15" fill="#58677e" font-weight="400" >仅提交本任务相关改动</text>
+  </g></g><path d="M44 497H1076" stroke="#d6deea"/><text x="44" y="532" font-size="16" fill="#3159d9" font-weight="600" >工具与模型可自定义</text><text x="1076" y="532" font-size="15" fill="#687890" font-weight="400" text-anchor="end">DevFlow 负责阶段衔接与进度展示</text></g>
 </svg>

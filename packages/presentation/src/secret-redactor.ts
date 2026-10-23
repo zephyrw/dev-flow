@@ -16,7 +16,14 @@ const looksLikeJsonRecord = (text: string) =>
 
 export function highRiskDiagnostic(text: string): boolean {
   text = plainTerminalText(text);
-  return /Get-ChildItem\s+Env:|(?:^|\s)(?:env|set)\s*(?:$|[;&|])|(?:^|[;\n])\s*export\s+(?:-p(?:\s|$)|[A-Za-z_]\w*=)|敏感认证操作|(?:^|[^\p{L}\p{N}])(?:login|signin|sign-in|enroll|enrollment|authorization_code|oauth|2fa|mfa|totp|otp|credential-store)(?:$|[^\p{L}\p{N}])/iu.test(text);
+  if (/Get-ChildItem\s+Env:|(?:^|\s)(?:env|set)\s*(?:$|[;&|])|(?:^|[;\n])\s*export\s+(?:-p(?:\s|$)|[A-Za-z_]\w*=)/iu.test(text)) {
+    return true;
+  }
+  if (/敏感认证操作/.test(text)) {
+    return true;
+  }
+  const textWithoutUrls = text.replace(/https?:\/\/[^\s"'<>]+/gi, "");
+  return /(?:^|[\s"';\\/])(?:tool\s+)?(?:login|signin|sign-in|enroll|enrollment|authorization_code|oauth|2fa|mfa|totp|otp|credential-store)(?:$|[\s"';\\/])/iu.test(textWithoutUrls);
 }
 
 export function redactSecrets(text: string): string {
@@ -87,9 +94,10 @@ export function publicDiagnostic(input: unknown): any {
   }
   return Object.fromEntries(entries
     .filter(([key, item]) => !/^(?:text_delta|delta)$/.test(key) && (!/thought|reasoning/i.test(key) || (key === "reasoning_tokens" && typeof item === "number")))
-    .map(([key, item]) => [key,
-      sensitiveKey.test(key) && !(typeof item === "number" && tokenCount.test(key))
-        ? MASK : publicDiagnostic(item)]));
+    .map(([key, item]) => {
+      return [key, sensitiveKey.test(key) && !(typeof item === "number" && tokenCount.test(key))
+        ? MASK : publicDiagnostic(item)];
+    }));
 }
 
 /** One instance per Run, shared by stdout/stderr. No execution payload is mutated.
@@ -97,45 +105,52 @@ export function publicDiagnostic(input: unknown): any {
  * downgraded by repeated DONE/call records. Exhaustion fails closed for the Run.
  */
 export class DiagnosticRedactionContext {
-  private calls = new Map<string, boolean>();
-  private authenticationSeen = false;
+  private calls = new Map<string, { sensitive: boolean; completed: boolean }>();
+  private activeSensitiveCalls = new Set<string>();
+  private unassociatedAuthPending = false;
   private saturated = false;
   constructor(private readonly maxCalls = 1024) {}
 
   suppress(): void { this.saturated = true; }
+
+  hasActiveAuthentication(): boolean {
+    return this.unassociatedAuthPending || this.activeSensitiveCalls.size > 0;
+  }
 
   private remember(id: string, sensitive: boolean): void {
     if (!this.calls.has(id) && this.calls.size >= this.maxCalls) {
       this.saturated = true;
       return;
     }
-    this.calls.set(id, sensitive || this.calls.get(id) === true);
+    const previous = this.calls.get(id);
+    const isSensitive = sensitive || previous?.sensitive === true;
+    const completed = previous?.completed ?? false;
+    this.calls.set(id, { sensitive: isSensitive, completed });
+    if (isSensitive && !completed) {
+      this.activeSensitiveCalls.add(id);
+    }
   }
 
-  project(input: unknown): any {
+  private completeCall(id: string): void {
+    const call = this.calls.get(id);
+    if (call) call.completed = true;
+    this.activeSensitiveCalls.delete(id);
+  }
+
+  project(input: unknown, startedDuringAuthentication = false): any {
+    const authenticationAtStart = startedDuringAuthentication || this.hasActiveAuthentication();
     if (typeof input === "string") {
       const text = plainTerminalText(input);
-      try { return JSON.stringify(this.project(JSON.parse(text))); }
+      try { return JSON.stringify(this.project(JSON.parse(text), startedDuringAuthentication)); }
       catch { /* Plain text has no trustworthy call association. */ }
-      if (highRiskDiagnostic(text)) this.authenticationSeen = true;
-      return this.saturated || this.authenticationSeen
-        ? "[敏感认证操作：仅保留状态]" : publicDiagnostic(text);
+      // A prompt or an error prefix is output, never proof that a call ended.
+      if (authenticationAtStart) return "[敏感认证操作：仅保留状态]";
+      if (highRiskDiagnostic(text)) {
+        this.unassociatedAuthPending = true;
+        return "[敏感认证操作：仅保留状态]";
+      }
+      return this.saturated ? "[敏感认证操作：仅保留状态]" : publicDiagnostic(text);
     }
-    const nodes: Array<{ value: Record<string, any>; scope: string }> = [];
-    let seen = 0;
-    const visit = (value: unknown, scope: string, depth: number): void => {
-      if (!value || typeof value !== "object") return;
-      if (++seen > 4096 || depth > 32) { this.saturated = true; return; }
-      if (Array.isArray(value)) { for (const child of value) visit(child, scope, depth + 1); return; }
-      const record = value as Record<string, any>;
-      const localScope = String(record.conversation_id ?? record.session_id ?? scope);
-      if (localScope.length > 256) { this.saturated = true; return; }
-      nodes.push({ value: record, scope: localScope });
-      for (const child of Object.values(record)) visit(child, localScope, depth + 1);
-    };
-    visit(input, "root", 0);
-    let sensitiveRecord = false;
-    let associatedSafe = false;
     const idFor = (record: Record<string, any>, scope: string): string | undefined => {
       const type = String(record.type ?? record.event ?? "");
       const id = record.tool_use_id ?? record.tool_call_id ?? record.call_id ?? record.CommandId ??
@@ -146,13 +161,29 @@ export class DiagnosticRedactionContext {
         return JSON.stringify(["step", scope, record.step_index]);
       return undefined;
     };
+    const nodes: Array<{ value: Record<string, any>; id?: string; ownsCall: boolean }> = [];
+    let seen = 0;
+    const visit = (value: unknown, scope: string, depth: number, parentId?: string): void => {
+      if (!value || typeof value !== "object") return;
+      if (++seen > 4096 || depth > 32) { this.saturated = true; return; }
+      if (Array.isArray(value)) { for (const child of value) visit(child, scope, depth + 1, parentId); return; }
+      const record = value as Record<string, any>;
+      const localScope = String(record.conversation_id ?? record.session_id ?? scope);
+      if (localScope.length > 256) { this.saturated = true; return; }
+      const ownId = idFor(record, localScope);
+      const id = ownId ?? (localScope === scope ? parentId : undefined);
+      nodes.push({ value: record, id, ownsCall: ownId !== undefined });
+      for (const child of Object.values(record)) visit(child, localScope, depth + 1, id);
+    };
+    visit(input, "root", 0);
+    let sensitiveRecord = false;
+    let associatedSafe = false;
     // Register all declarations before handling results nested in the same frame.
-    for (const { value: record, scope } of nodes) {
+    for (const { value: record, id } of nodes) {
       const type = String(record.type ?? record.event ?? "");
       const declared = /^(?:tool_use|tool_call|function_call|command_execution)$/.test(type) ||
         (record.step_index !== undefined && record.tool_info?.parameters !== undefined);
       if (!declared) continue;
-      const id = idFor(record, scope);
       const argumentsValue = record.input ?? record.arguments ?? record.command ?? record.tool_info?.parameters;
       // Streaming tool declarations often start with an empty input object.
       // They must not authorize a later result before arguments are complete.
@@ -162,34 +193,52 @@ export class DiagnosticRedactionContext {
         try { JSON.parse(argumentsValue); } catch { complete = false; }
       }
       const risky = highRiskDiagnostic(JSON.stringify(record));
-      if (risky || !complete) this.authenticationSeen = true;
-      if (id) this.remember(id, risky || !complete);
-      else sensitiveRecord = true;
+      if (risky || !complete) {
+        if (id) this.remember(id, true);
+        else {
+          this.unassociatedAuthPending = true;
+          sensitiveRecord = true;
+        }
+      } else if (id) {
+        this.remember(id, false);
+      }
     }
-    for (const { value: record, scope } of nodes) {
+    const completedCalls = new Set<string>();
+    for (const { value: record, id, ownsCall } of nodes) {
       const type = String(record.type ?? record.event ?? "");
-      const id = idFor(record, scope);
       const result = /^(?:tool_result|function_call_output|tool_output|command_execution)$/.test(type) ||
         record.role === "tool" || record.tool_use_id !== undefined ||
         (record.step_index !== undefined && record.tool_info?.output !== undefined) ||
-        (id !== undefined && (record.output !== undefined || record.result !== undefined || record.content !== undefined));
+        (ownsCall && (record.output !== undefined || record.result !== undefined || record.content !== undefined));
       if (result && (!id || !this.calls.has(id))) {
-        this.authenticationSeen = true;
         sensitiveRecord = true;
         if (id) this.remember(id, true);
+        else this.unassociatedAuthPending = true;
       }
-      if (id && this.calls.has(id)) {
-        if (this.calls.get(id)) sensitiveRecord = true;
-        else associatedSafe = true;
+      if (id && ownsCall) {
+        const status = record.status ?? record.state;
+        // A streaming output is not a terminal event. These two result types
+        // are terminal by protocol only when no explicit state contradicts it.
+        if (/^(?:DONE|ERROR|completed|done|failed|error|stopped|interrupted|cancelled)$/.test(String(status)) ||
+            (status === undefined && /^(?:tool_result|function_call_output)$/.test(type))) {
+          completedCalls.add(id);
+        }
       }
       // Commands can also occur in provider envelopes without a typed call node.
       if (Object.entries(record).some(([key, value]) =>
         /^(?:command|cmd|CommandLine|name|tool_name|tool|title|type|event)$/.test(key) &&
         typeof value === "string" && highRiskDiagnostic(value))) {
-        this.authenticationSeen = true;
         sensitiveRecord = true;
         if (id) this.remember(id, true);
+        else this.unassociatedAuthPending = true;
       }
+    }
+    // Nested parameters may have classified their owning call as sensitive.
+    // Read classifications only after the entire frame has been inspected.
+    for (const { id } of nodes) {
+      const call = id ? this.calls.get(id) : undefined;
+      if (call?.sensitive) sensitiveRecord = true;
+      else if (call) associatedSafe = true;
     }
     // A safe tool nested in an envelope must not authorize sibling unassociated text.
     const unassociatedText = (value: unknown, scope: string, safe: boolean, depth = 0): boolean => {
@@ -199,20 +248,27 @@ export class DiagnosticRedactionContext {
       const record = value as Record<string, any>;
       const localScope = String(record.conversation_id ?? record.session_id ?? scope);
       const id = idFor(record, localScope);
-      const localSafe = safe || (id !== undefined && this.calls.get(id) === false);
+      const localSafe = localScope === scope && id === undefined ? safe :
+        (id !== undefined && this.calls.get(id)?.sensitive === false);
       return Object.entries(record).some(([key, child]) => {
         if (child && typeof child === "object") return unassociatedText(child, localScope, localSafe, depth + 1);
         return /^(?:text|content|output|result|response|data|part|message|aggregated_output)$/.test(key) &&
           typeof child === "string" && !localSafe;
       });
     };
-    if (this.saturated || sensitiveRecord || (this.authenticationSeen &&
+    const inAuthLifecycle = authenticationAtStart || this.hasActiveAuthentication();
+    // Complete only after classification. Retain the sensitive tombstone so
+    // duplicate declarations and late results cannot reactivate or declassify it.
+    for (const id of completedCalls) this.completeCall(id);
+    if (this.saturated || sensitiveRecord || (inAuthLifecycle &&
         (!associatedSafe || unassociatedText(input, "root", false)))) {
       // Preserve only fixed status values and safe routing identity, never output.
       const status = nodes.map(({ value }) => value.status ?? value.state)
         .find(value => typeof value === "string" && /^(?:RUNNING|DONE|ERROR|active|running|done|completed|failed|error|waiting|stopped|pending|starting|cancelled|unknown)$/.test(value));
       const identity = input && typeof input === "object" && !Array.isArray(input)
-        ? publicDiagnostic({ ...input, command: "login" }) : {};
+        ? Object.fromEntries(Object.entries(input).filter(([key, value]) =>
+          /^(?:id|workflow_id|run_id|conversation_id|attempt_id|root_id|activity_id|source_event_id|command_id|CommandId|tool_call_id|tool_use_id|call_id)$/.test(key) &&
+          typeof value === "string" && /^[A-Za-z0-9_.:-]{1,256}$/.test(value))) : {};
       return { ...identity, ...(status ? { status } : {}), diagnostic: "敏感认证操作：仅保留状态" };
     }
     return publicDiagnostic(input);
@@ -224,6 +280,7 @@ export class DiagnosticRedactionContext {
  */
 export class DiagnosticStreamRedactor {
   private pending = "";
+  private pendingStartedDuringAuthentication = false;
   private suppressed = false;
   constructor(
     private readonly limit = 64 * 1024,
@@ -232,6 +289,10 @@ export class DiagnosticStreamRedactor {
 
   push(chunk: string, final = false): string {
     if (this.suppressed) return "";
+    // A partial record can outlive a completion received on the other stream.
+    // Its original authentication boundary must survive until it is emitted.
+    this.pendingStartedDuringAuthentication = this.context.hasActiveAuthentication() ||
+      (this.pending.length > 0 && this.pendingStartedDuringAuthentication);
     this.pending += chunk;
     if (this.pending.length > this.limit) {
       this.pending = "";
@@ -253,18 +314,20 @@ export class DiagnosticStreamRedactor {
         break;
       }
       const record = this.pending.slice(0, end);
-      const safe = String(this.context.project(record));
+      const safe = String(this.context.project(record, this.pendingStartedDuringAuthentication));
       output += safe + (record.endsWith("\n") && !safe.endsWith("\n") ? "\n" : "");
       this.pending = this.pending.slice(end);
+      this.pendingStartedDuringAuthentication = this.context.hasActiveAuthentication();
     }
     if (final && this.pending) {
       // Invalid JSON or a multiline unfinished value cannot be projected safely.
       const rest = this.pending;
       this.pending = "";
       if (looksLikeJsonRecord(rest)) {
-        try { output += JSON.stringify(this.context.project(JSON.parse(rest))); }
+        try { output += JSON.stringify(this.context.project(JSON.parse(rest), this.pendingStartedDuringAuthentication)); }
         catch { this.context.suppress(); output += "[不完整诊断记录已省略]"; }
-      } else output += String(this.context.project(rest));
+      } else output += String(this.context.project(rest, this.pendingStartedDuringAuthentication));
+      this.pendingStartedDuringAuthentication = false;
     }
     return output;
   }

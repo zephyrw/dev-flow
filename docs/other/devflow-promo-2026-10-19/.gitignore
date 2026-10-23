@@ -1,0 +1,12 @@
+.tmp/
+project/node_modules/
+project/build/
+project/.cache/
+project/.render-public/
+
+# Local delivery exports and visual review captures; keep editable sources above.
+/*.mp4
+/article-frames/
+/review-evidence/*.png
+/review-evidence-v2/*.png
+/review-evidence-v2/*.jpg

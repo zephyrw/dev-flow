@@ -10,6 +10,34 @@ import { readableLogs } from "../../packages/presentation/src/activity.js";
 
 const versionError =
   "The 'gpt-6-astra' model requires a newer version of Codex. Please upgrade to the latest app or CLI and try again.";
+const interruptedStream = "The stream was interrupted. Please continue the task you were working on.";
+
+it.each([
+  interruptedStream,
+  `CLI 返回错误：${JSON.stringify({ error: interruptedStream })}`,
+  JSON.stringify({ message: JSON.stringify({ error: interruptedStream }) }),
+])("classifies the current Codex stream interruption as retryable without losing its diagnostic: %s", diagnostic => {
+  expect(classifyFailure(diagnostic)).toMatchObject({ code: "MODEL_CONNECTION_FAILED", retry: "auto" });
+  const error = normalizeRuntimeFailure(new FlowError("NATIVE_RUN_FAILED", diagnostic, 422,
+    { exit_code: 0, diagnostic })) as FlowError;
+  expect(error.code).toBe("MODEL_CONNECTION_FAILED");
+  expect(error.details).toMatchObject({ exit_code: 0, diagnostic });
+  expect(classifyFailure(JSON.stringify({ error: diagnostic, denied_actions: [{ display_name: "run_command" }] })))
+    .toMatchObject({ code: "NATIVE_PERMISSION_DENIED", retry: "manual" });
+});
+
+it.each(["NATIVE_PERMISSION_DENIED", "RUN_REVOKED", "DELIVERY_REJECTED", "MODEL_AUTH"])(
+  "does not replace an explicit %s decision with stream recovery", code => {
+    const error = normalizeRuntimeFailure(new FlowError(code, interruptedStream)) as FlowError;
+    expect(error.code).toBe(code);
+  },
+);
+
+it.each(["The stream was interrupted.", "业务视频 stream interrupted", "Please continue the task you were working on."])(
+  "does not make a generic interrupted stream or continuation request retryable: %s", diagnostic => {
+    expect(classifyFailure(diagnostic)).toMatchObject({ code: "EXECUTION_FAILED", retry: "manual" });
+  },
+);
 
 it("keeps a model verification environment failure distinct from a test service failure", () => {
   const error = normalizeRuntimeFailure(new FlowError(

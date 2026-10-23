@@ -75,17 +75,20 @@ it("retains the provider cause through a fresh shared diagnostic context without
   expect(classifyFailure(diagnostic).code).toBe("MODEL_CONNECTION_FAILED");
 });
 
-it("shares authentication correlation between raw streams and provider failure diagnostics", () => {
+it("shares active authentication correlation without masking later unrelated provider failures", () => {
   const context = new DiagnosticRedactionContext();
   const stdout = new DiagnosticStreamRedactor(64 * 1024, context);
   const stderr = new DiagnosticStreamRedactor(64 * 1024, context);
   stdout.push(JSON.stringify({ type: "tool_use", id: "auth-call", name: "Bash",
     input: { command: "provider login" } }) + "\n");
   const bareSecret = "opaque-credential-from-provider";
+  const diagnostic = nativeFailureDiagnostic({ event: "result", result: { error: bareSecret } }, context);
   const resultOutput = stderr.push(JSON.stringify({ type: "tool_result", tool_use_id: "auth-call",
     content: bareSecret }) + "\n");
-  const diagnostic = nativeFailureDiagnostic({ event: "result", result: { error: bareSecret } }, context);
   expect(resultOutput).not.toContain(bareSecret);
   expect(diagnostic).not.toContain(bareSecret);
   expect(diagnostic).toContain("敏感认证操作");
+  const laterDiagnostic = nativeFailureDiagnostic({ event: "result", result: { error: tls } }, context);
+  expect(laterDiagnostic).toContain("bad record MAC");
+  expect(classifyFailure(laterDiagnostic).code).toBe("MODEL_CONNECTION_FAILED");
 });

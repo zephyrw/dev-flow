@@ -271,7 +271,7 @@ export const ConversationActivityPayloadSchema = z
     root_id: Id,
     activity_id: z.string().min(1),
     source_event_id: z.string().min(1),
-    public_text: z.string().max(16000).optional(),
+    public_text: z.string().optional(),
     title: z.string().max(200).optional(),
     status: ConversationStatusSchema.optional(),
     kind: z.enum(["tool", "message", "event", "separator"]).optional(),

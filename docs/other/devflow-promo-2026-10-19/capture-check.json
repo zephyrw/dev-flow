@@ -1,0 +1,11 @@
+{
+  "data": "fictional",
+  "source": "real DevFlow frontend",
+  "pages": 6,
+  "fullPageRequests": 36,
+  "highResolutionRequests": 4,
+  "allBusinessRequestsIntercepted": true,
+  "errors": [],
+  "fullPagePixels": "3840x2160",
+  "accountCutoutScale": 4
+}

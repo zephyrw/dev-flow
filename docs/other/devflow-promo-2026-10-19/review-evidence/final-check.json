@@ -1,0 +1,591 @@
+{
+  "DevFlow-music-1080p.mp4": {
+    "sha256": "1ff31ae7f422638301390fe2f3dc202a28f2a42e31dbc3a5f53ad5201d2f5215",
+    "bytes": 8681355,
+    "video_sha256": "d08469c25c3bcfa9d886a0268b2451c5d65d2d8fab27ebb2553721c9381e0425",
+    "adts_audio_sha256": "4aa3edb80e2796923296df3c311cd4b17f8b469c17b9429205474e60a46f5254",
+    "audio_unchanged_since_independent_measurement": true,
+    "probe": {
+      "streams": [
+        {
+          "index": 0,
+          "codec_name": "h264",
+          "codec_long_name": "unknown",
+          "profile": "100",
+          "codec_type": "video",
+          "codec_tag_string": "avc1",
+          "codec_tag": "0x31637661",
+          "width": 1920,
+          "height": 1080,
+          "coded_width": 1920,
+          "coded_height": 1080,
+          "closed_captions": 0,
+          "film_grain": 0,
+          "has_b_frames": 2,
+          "sample_aspect_ratio": "1:1",
+          "display_aspect_ratio": "16:9",
+          "pix_fmt": "yuvj420p",
+          "level": 40,
+          "color_range": "pc",
+          "color_space": "bt470bg",
+          "chroma_location": "center",
+          "field_order": "progressive",
+          "refs": 1,
+          "is_avc": "true",
+          "nal_length_size": "4",
+          "id": "0x1",
+          "r_frame_rate": "30/1",
+          "avg_frame_rate": "30/1",
+          "time_base": "1/90000",
+          "start_pts": 0,
+          "start_time": "0.000000",
+          "duration_ts": 6369000,
+          "duration": "70.766667",
+          "bit_rate": "707244",
+          "bits_per_raw_sample": "8",
+          "nb_frames": "2123",
+          "extradata_size": 51,
+          "disposition": {
+            "default": 1,
+            "dub": 0,
+            "original": 0,
+            "comment": 0,
+            "lyrics": 0,
+            "karaoke": 0,
+            "forced": 0,
+            "hearing_impaired": 0,
+            "visual_impaired": 0,
+            "clean_effects": 0,
+            "attached_pic": 0,
+            "timed_thumbnails": 0,
+            "non_diegetic": 0,
+            "captions": 0,
+            "descriptions": 0,
+            "metadata": 0,
+            "dependent": 0,
+            "still_image": 0,
+            "multilayer": 0
+          },
+          "tags": {
+            "language": "und",
+            "handler_name": "VideoHandler",
+            "vendor_id": "[0][0][0][0]",
+            "encoder": "Lavc61.19.100 libx264"
+          },
+          "side_data_list": [
+            {
+              "side_data_type": "ICC Profile"
+            }
+          ]
+        },
+        {
+          "index": 1,
+          "codec_name": "aac",
+          "codec_long_name": "unknown",
+          "profile": "1",
+          "codec_type": "audio",
+          "codec_tag_string": "mp4a",
+          "codec_tag": "0x6134706d",
+          "sample_fmt": "fltp",
+          "sample_rate": "48000",
+          "channels": 2,
+          "channel_layout": "stereo",
+          "bits_per_sample": 0,
+          "initial_padding": 0,
+          "id": "0x2",
+          "r_frame_rate": "0/0",
+          "avg_frame_rate": "0/0",
+          "time_base": "1/48000",
+          "start_pts": 0,
+          "start_time": "0.000000",
+          "duration_ts": 3396768,
+          "duration": "70.766000",
+          "bit_rate": "265120",
+          "nb_frames": "3319",
+          "extradata_size": 5,
+          "disposition": {
+            "default": 1,
+            "dub": 0,
+            "original": 0,
+            "comment": 0,
+            "lyrics": 0,
+            "karaoke": 0,
+            "forced": 0,
+            "hearing_impaired": 0,
+            "visual_impaired": 0,
+            "clean_effects": 0,
+            "attached_pic": 0,
+            "timed_thumbnails": 0,
+            "non_diegetic": 0,
+            "captions": 0,
+            "descriptions": 0,
+            "metadata": 0,
+            "dependent": 0,
+            "still_image": 0,
+            "multilayer": 0
+          },
+          "tags": {
+            "language": "und",
+            "handler_name": "SoundHandler",
+            "vendor_id": "[0][0][0][0]"
+          }
+        }
+      ],
+      "format": {
+        "filename": "C:\\Code\\system-handle\\docs\\other\\devflow-promo-2026-10-19\\DevFlow-music-1080p.mp4",
+        "nb_streams": 2,
+        "nb_programs": 0,
+        "nb_stream_groups": 0,
+        "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+        "start_time": "0.000000",
+        "duration": "70.766667",
+        "size": "8681355",
+        "bit_rate": "981406",
+        "probe_score": 100,
+        "tags": {
+          "major_brand": "isom",
+          "minor_version": "512",
+          "compatible_brands": "isomiso2avc1mp41",
+          "encoder": "Lavf61.7.100",
+          "comment": "Made with Remotion 4.0.484"
+        }
+      }
+    }
+  },
+  "DevFlow-no-bgm-1080p.mp4": {
+    "sha256": "f3b479a071cb8d8859eceb2c21e3439187393fe494c6d4367f67e2878f2c7db4",
+    "bytes": 6754129,
+    "video_sha256": "d08469c25c3bcfa9d886a0268b2451c5d65d2d8fab27ebb2553721c9381e0425",
+    "adts_audio_sha256": "e29dd70a23b23f03170021a3248ff2a1ecf338dd5b8a5959e09473a40ad7f1d0",
+    "audio_unchanged_since_independent_measurement": true,
+    "probe": {
+      "streams": [
+        {
+          "index": 0,
+          "codec_name": "h264",
+          "codec_long_name": "unknown",
+          "profile": "100",
+          "codec_type": "video",
+          "codec_tag_string": "avc1",
+          "codec_tag": "0x31637661",
+          "width": 1920,
+          "height": 1080,
+          "coded_width": 1920,
+          "coded_height": 1080,
+          "closed_captions": 0,
+          "film_grain": 0,
+          "has_b_frames": 2,
+          "sample_aspect_ratio": "1:1",
+          "display_aspect_ratio": "16:9",
+          "pix_fmt": "yuvj420p",
+          "level": 40,
+          "color_range": "pc",
+          "color_space": "bt470bg",
+          "chroma_location": "center",
+          "field_order": "progressive",
+          "refs": 1,
+          "is_avc": "true",
+          "nal_length_size": "4",
+          "id": "0x1",
+          "r_frame_rate": "30/1",
+          "avg_frame_rate": "30/1",
+          "time_base": "1/90000",
+          "start_pts": 0,
+          "start_time": "0.000000",
+          "duration_ts": 6369000,
+          "duration": "70.766667",
+          "bit_rate": "707244",
+          "bits_per_raw_sample": "8",
+          "nb_frames": "2123",
+          "extradata_size": 51,
+          "disposition": {
+            "default": 1,
+            "dub": 0,
+            "original": 0,
+            "comment": 0,
+            "lyrics": 0,
+            "karaoke": 0,
+            "forced": 0,
+            "hearing_impaired": 0,
+            "visual_impaired": 0,
+            "clean_effects": 0,
+            "attached_pic": 0,
+            "timed_thumbnails": 0,
+            "non_diegetic": 0,
+            "captions": 0,
+            "descriptions": 0,
+            "metadata": 0,
+            "dependent": 0,
+            "still_image": 0,
+            "multilayer": 0
+          },
+          "tags": {
+            "language": "und",
+            "handler_name": "VideoHandler",
+            "vendor_id": "[0][0][0][0]",
+            "encoder": "Lavc61.19.100 libx264"
+          },
+          "side_data_list": [
+            {
+              "side_data_type": "ICC Profile"
+            }
+          ]
+        },
+        {
+          "index": 1,
+          "codec_name": "aac",
+          "codec_long_name": "unknown",
+          "profile": "1",
+          "codec_type": "audio",
+          "codec_tag_string": "mp4a",
+          "codec_tag": "0x6134706d",
+          "sample_fmt": "fltp",
+          "sample_rate": "48000",
+          "channels": 2,
+          "channel_layout": "stereo",
+          "bits_per_sample": 0,
+          "initial_padding": 0,
+          "id": "0x2",
+          "r_frame_rate": "0/0",
+          "avg_frame_rate": "0/0",
+          "time_base": "1/48000",
+          "start_pts": 0,
+          "start_time": "0.000000",
+          "duration_ts": 3396768,
+          "duration": "70.766000",
+          "bit_rate": "47317",
+          "nb_frames": "3319",
+          "extradata_size": 5,
+          "disposition": {
+            "default": 1,
+            "dub": 0,
+            "original": 0,
+            "comment": 0,
+            "lyrics": 0,
+            "karaoke": 0,
+            "forced": 0,
+            "hearing_impaired": 0,
+            "visual_impaired": 0,
+            "clean_effects": 0,
+            "attached_pic": 0,
+            "timed_thumbnails": 0,
+            "non_diegetic": 0,
+            "captions": 0,
+            "descriptions": 0,
+            "metadata": 0,
+            "dependent": 0,
+            "still_image": 0,
+            "multilayer": 0
+          },
+          "tags": {
+            "language": "und",
+            "handler_name": "SoundHandler",
+            "vendor_id": "[0][0][0][0]"
+          }
+        }
+      ],
+      "format": {
+        "filename": "C:\\Code\\system-handle\\docs\\other\\devflow-promo-2026-10-19\\DevFlow-no-bgm-1080p.mp4",
+        "nb_streams": 2,
+        "nb_programs": 0,
+        "nb_stream_groups": 0,
+        "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+        "start_time": "0.000000",
+        "duration": "70.766667",
+        "size": "6754129",
+        "bit_rate": "763537",
+        "probe_score": 100,
+        "tags": {
+          "major_brand": "isom",
+          "minor_version": "512",
+          "compatible_brands": "isomiso2avc1mp41",
+          "encoder": "Lavf61.7.100",
+          "comment": "Made with Remotion 4.0.484"
+        }
+      }
+    }
+  },
+  "sampled_frames": [
+    0,
+    10,
+    20,
+    30,
+    48,
+    60,
+    100,
+    176,
+    177,
+    178,
+    185,
+    206,
+    236,
+    285,
+    320,
+    412,
+    413,
+    414,
+    420,
+    437,
+    535,
+    639,
+    648,
+    649,
+    650,
+    654,
+    658,
+    667,
+    675,
+    770,
+    874,
+    884,
+    885,
+    886,
+    890,
+    894,
+    903,
+    911,
+    1005,
+    1120,
+    1121,
+    1122,
+    1129,
+    1147,
+    1160,
+    1255,
+    1356,
+    1357,
+    1358,
+    1383,
+    1415,
+    1460,
+    1591,
+    1592,
+    1593,
+    1615,
+    1670,
+    1739,
+    1740,
+    1748,
+    1756,
+    1762,
+    1810,
+    1886,
+    1887,
+    1888,
+    1891,
+    1897,
+    1904,
+    1912,
+    1925,
+    1937,
+    1942,
+    1944,
+    1948,
+    1950,
+    1955,
+    1971,
+    1995,
+    2050,
+    2122
+  ],
+  "texture_dimensions": {
+    "01-planning-models.png": [
+      446,
+      96
+    ],
+    "01-planning-plan.png": [
+      3120,
+      1630
+    ],
+    "01-planning.png": [
+      3840,
+      2160
+    ],
+    "02-execution-main.png": [
+      2328,
+      1974
+    ],
+    "02-execution-models.png": [
+      446,
+      96
+    ],
+    "02-execution.png": [
+      3840,
+      2160
+    ],
+    "03-review-review.png": [
+      3012,
+      1300
+    ],
+    "03-review.png": [
+      3840,
+      2160
+    ],
+    "04-accounts-first-account-hi.png": [
+      2840,
+      556
+    ],
+    "04-accounts-first-account.png": [
+      1420,
+      278
+    ],
+    "04-accounts-gemini.png": [
+      1292,
+      36
+    ],
+    "04-accounts-other.png": [
+      1292,
+      36
+    ],
+    "04-accounts-panel.png": [
+      1420,
+      1146
+    ],
+    "04-accounts-switch.png": [
+      1420,
+      188
+    ],
+    "04-accounts.png": [
+      3840,
+      2160
+    ],
+    "05-switching-operation.png": [
+      1420,
+      120
+    ],
+    "05-switching-panel.png": [
+      1420,
+      1296
+    ],
+    "05-switching.png": [
+      3840,
+      2160
+    ],
+    "06-switched-panel.png": [
+      1420,
+      1146
+    ],
+    "06-switched.png": [
+      3840,
+      2160
+    ]
+  },
+  "article_frames": {
+    "f0100.png": [
+      1920,
+      1080
+    ],
+    "f0320.png": [
+      1920,
+      1080
+    ],
+    "f0535.png": [
+      1920,
+      1080
+    ],
+    "f0770.png": [
+      1920,
+      1080
+    ],
+    "f1005.png": [
+      1920,
+      1080
+    ],
+    "f1255.png": [
+      1920,
+      1080
+    ],
+    "f1460.png": [
+      1920,
+      1080
+    ],
+    "f1670.png": [
+      1920,
+      1080
+    ],
+    "f1810.png": [
+      1920,
+      1080
+    ],
+    "f2050.png": [
+      1920,
+      1080
+    ]
+  },
+  "article_to_actual_frame_difference": {
+    "f0100.png": {
+      "mean_absolute_channel_difference": 0.9014409722222222,
+      "p99_absolute_channel_difference": 6.0,
+      "note": "Compressed MP4 versus uncompressed article frame; exact equality is not expected."
+    },
+    "f0320.png": {
+      "mean_absolute_channel_difference": 0.8609556648662552,
+      "p99_absolute_channel_difference": 7.0,
+      "note": "Compressed MP4 versus uncompressed article frame; exact equality is not expected."
+    },
+    "f0535.png": {
+      "mean_absolute_channel_difference": 0.8853623328189301,
+      "p99_absolute_channel_difference": 7.0,
+      "note": "Compressed MP4 versus uncompressed article frame; exact equality is not expected."
+    },
+    "f0770.png": {
+      "mean_absolute_channel_difference": 0.895259291409465,
+      "p99_absolute_channel_difference": 7.0,
+      "note": "Compressed MP4 versus uncompressed article frame; exact equality is not expected."
+    },
+    "f1005.png": {
+      "mean_absolute_channel_difference": 0.9258881494341564,
+      "p99_absolute_channel_difference": 7.0,
+      "note": "Compressed MP4 versus uncompressed article frame; exact equality is not expected."
+    },
+    "f1255.png": {
+      "mean_absolute_channel_difference": 1.1191435185185186,
+      "p99_absolute_channel_difference": 12.0,
+      "note": "Compressed MP4 versus uncompressed article frame; exact equality is not expected."
+    },
+    "f1460.png": {
+      "mean_absolute_channel_difference": 1.0403253600823046,
+      "p99_absolute_channel_difference": 11.0,
+      "note": "Compressed MP4 versus uncompressed article frame; exact equality is not expected."
+    },
+    "f1670.png": {
+      "mean_absolute_channel_difference": 1.2251019161522634,
+      "p99_absolute_channel_difference": 14.0,
+      "note": "Compressed MP4 versus uncompressed article frame; exact equality is not expected."
+    },
+    "f1810.png": {
+      "mean_absolute_channel_difference": 1.2592573302469137,
+      "p99_absolute_channel_difference": 15.0,
+      "note": "Compressed MP4 versus uncompressed article frame; exact equality is not expected."
+    },
+    "f2050.png": {
+      "mean_absolute_channel_difference": 0.9891468942901235,
+      "p99_absolute_channel_difference": 5.0,
+      "note": "Compressed MP4 versus uncompressed article frame; exact equality is not expected."
+    }
+  },
+  "all_frame_decode_check": {
+    "decoded_frame_count": 2123,
+    "method": "Every decoded frame streamed as 480x270 PNG; sampled at 64x36 grayscale for uniform-frame checks. Black candidate if max<20, single-color candidate if std<0.5. This does not assess subjective motion.",
+    "black_candidate_frames": [],
+    "single_color_candidate_frames": [],
+    "minimum_frame_std": 5.704162592040545,
+    "minimum_std_frame": 1888
+  },
+  "full_resolution_measurement_frames": [
+    100,
+    320,
+    535,
+    770,
+    1005,
+    1255,
+    1460,
+    1670,
+    1810,
+    1887,
+    1944,
+    1948,
+    2050
+  ],
+  "full_resolution_evidence_note": "Measured directly from final MP4. Full-size extraction duplicates are temporary; use the final MP4 at the numbered frame and the retained article frames to reproduce. Contact sheets and measured values are retained here."
+}

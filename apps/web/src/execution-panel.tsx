@@ -15,6 +15,34 @@ const ActivityMarkdown = React.memo(function ActivityMarkdown({ text }: { text: 
   return <Markdown remarkPlugins={[remarkGfm]}>{text}</Markdown>;
 });
 
+const COLLAPSE_CHAR_THRESHOLD = 800;
+const COLLAPSE_LINE_THRESHOLD = 12;
+
+export function ExpandableActivityMarkdown({ text }: { text: string }) {
+  const isLong = text.length > COLLAPSE_CHAR_THRESHOLD || (text.match(/\n/g) || []).length > COLLAPSE_LINE_THRESHOLD;
+  const [expanded, setExpanded] = useState(!isLong);
+
+  return (
+    <div className={`activity-markdown-container ${isLong && !expanded ? "collapsed" : "expanded"}`}>
+      <div className={`activity-markdown ${isLong && !expanded ? "activity-markdown-clamped" : ""}`}>
+        <ActivityMarkdown text={text} />
+      </div>
+      {isLong && (
+        <div className="activity-markdown-expand-bar">
+          <button
+            type="button"
+            className="btn-expand-markdown"
+            onClick={() => setExpanded((prev) => !prev)}
+            aria-expanded={expanded}
+          >
+            {expanded ? "收起全文" : "展开全文"}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** 智能中间截断路径：优先完整显示文件名，有余量时尽量多显示前缀，极窄空间截取文件名后半段 */
 export function formatPathSummary(
   text: string,
@@ -87,6 +115,7 @@ function isSeparatorEntry(entry: ConversationViewEntry) {
 export function ExecutionPanel({
   entries,
   connected,
+  active = false,
   close,
   width,
   resize,
@@ -106,6 +135,7 @@ export function ExecutionPanel({
 }: {
   entries: LogEntry[];
   connected: boolean;
+  active?: boolean;
   close: () => void;
   width: number;
   resize: (width: number) => void;
@@ -127,6 +157,18 @@ export function ExecutionPanel({
   const [follow, setFollow] = useState(true);
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [clock, setClock] = useState(Date.now);
+  useEffect(() => {
+    if (!active) return;
+    setClock(Date.now());
+    const timer = window.setInterval(() => setClock(Date.now()), 15000);
+    return () => window.clearInterval(timer);
+  }, [active]);
+  const latestActivityAt = Math.max(0, ...entries.map((entry) => Date.parse(entry.created_at) || 0));
+  const streamStatus = !connected ? "连接已断开，正在重连…"
+    : active && latestActivityAt > 0 && clock - latestActivityAt >= 60000
+      ? `最近活动 ${new Date(latestActivityAt).toLocaleTimeString()}，暂无新进展`
+      : undefined;
   const followRef = useRef(follow);
   const conversationRef = useRef(conversationId);
   followRef.current = follow;
@@ -260,6 +302,7 @@ export function ExecutionPanel({
         </p>
       )}
       {breadcrumb}
+      {streamStatus && <p className="execution-stream-status" role="status">{streamStatus}</p>}
       <div
         className="logs timeline-stream"
         ref={scroll}
@@ -332,9 +375,7 @@ export function ExecutionPanel({
               ) : e.command ? (
                 <CommandPreview command={e.command} cwd={e.cwd} />
               ) : e.kind === "message" || e.kind === "event" ? (
-                <div className="activity-markdown">
-                  <ActivityMarkdown text={e.text} />
-                </div>
+                <ExpandableActivityMarkdown text={e.text} />
               ) : e.kind !== "diagnostic" && e.text ? (
                 <p className="activity-summary" title={e.text}>
                   <PathSummary text={e.text} />

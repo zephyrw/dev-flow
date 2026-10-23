@@ -1,0 +1,11 @@
+import React from 'react';
+import {AbsoluteFill,Easing,interpolate,useCurrentFrame} from 'remotion';
+export const C={bg:'#f8fafc',paper:'#ffffff',ink:'#0f172a',muted:'#475569',light:'#94a3b8',blue:'#2563eb',pale:'#eff6ff',line:'#e2e8f0',green:'#10b981'};
+export const FONT='"Segoe UI","Microsoft YaHei",sans-serif';
+export const ease={out:Easing.bezier(.22,1,.36,1),snappy:Easing.bezier(.16,1,.3,1),swift:Easing.bezier(.4,0,.2,1),exit:Easing.bezier(.7,0,.84,0),back:Easing.bezier(.34,1.4,.44,1)};
+export const p=(f:number,start:number,dur:number,e=ease.out)=>interpolate(f,[start,start+dur],[0,1],{extrapolateLeft:'clamp',extrapolateRight:'clamp',easing:e});
+export const stage:React.CSSProperties={background:C.bg,color:C.ink,fontFamily:FONT,overflow:'hidden'};
+export const Logo:React.FC<{size?:number;word?:boolean}>=({size=64,word=true})=><div style={{display:'flex',alignItems:'center',gap:size*.25,fontSize:size*.72,fontWeight:750,letterSpacing:'-.035em'}}><div style={{width:size,height:size,borderRadius:size*.27,background:C.blue,color:'white',display:'grid',placeItems:'center',fontSize:size*.58,boxShadow:'0 8px 20px #2563eb18',fontWeight:800}}>D</div>{word&&<span>DevFlow</span>}</div>;
+export const Label:React.FC<{children:React.ReactNode;style?:React.CSSProperties}>=({children,style})=><div style={{fontSize:34,letterSpacing:'.04em',fontWeight:600,color:C.muted,...style}}>{children}</div>;
+export const Shell:React.FC<{children:React.ReactNode;demo?:boolean}>=({children,demo=true})=><AbsoluteFill style={stage}>{children}{demo&&<div style={{position:'absolute',right:96,bottom:22,padding:'3px 10px',fontSize:34,color:'#64748b',background:'#f8fafcf2'}}>真实界面 · 虚构演示数据</div>}</AbsoluteFill>;
+export const Rise:React.FC<{children:React.ReactNode;start?:number;style?:React.CSSProperties}>=({children,start=0,style})=>{const f=useCurrentFrame();const v=p(f,start,24);return <div style={{opacity:v,transform:`translateY(${(1-v)*28}px)`,...style}}>{children}</div>;};

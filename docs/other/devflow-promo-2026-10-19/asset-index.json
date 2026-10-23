@@ -1,0 +1,618 @@
+[
+  {
+    "file": "article-frames/f0100.png",
+    "title": "轻量化模型调度工作流",
+    "width": 1920,
+    "height": 1080,
+    "bytes": 113307,
+    "kind": "历史配图"
+  },
+  {
+    "file": "article-frames/f0320.png",
+    "title": "案例：客户列表增加负责人筛选",
+    "width": 1920,
+    "height": 1080,
+    "bytes": 335912,
+    "kind": "历史配图"
+  },
+  {
+    "file": "article-frames/f0535.png",
+    "title": "GPT-6 Astra 规划",
+    "width": 1920,
+    "height": 1080,
+    "bytes": 256182,
+    "kind": "历史配图"
+  },
+  {
+    "file": "article-frames/f0770.png",
+    "title": "Gemini 3.8 Flash 执行",
+    "width": 1920,
+    "height": 1080,
+    "bytes": 205794,
+    "kind": "历史配图"
+  },
+  {
+    "file": "article-frames/f1005.png",
+    "title": "GPT-6 Astra 代码复核",
+    "width": 1920,
+    "height": 1080,
+    "bytes": 222920,
+    "kind": "历史配图"
+  },
+  {
+    "file": "article-frames/f1255.png",
+    "title": "Agy 账号管理",
+    "width": 1920,
+    "height": 1080,
+    "bytes": 280389,
+    "kind": "历史配图"
+  },
+  {
+    "file": "article-frames/f1460.png",
+    "title": "周额度与 5 小时额度",
+    "width": 1920,
+    "height": 1080,
+    "bytes": 201568,
+    "kind": "历史配图"
+  },
+  {
+    "file": "article-frames/f1670.png",
+    "title": "额度耗尽，选择可用账号",
+    "width": 1920,
+    "height": 1080,
+    "bytes": 325190,
+    "kind": "历史配图"
+  },
+  {
+    "file": "article-frames/f1810.png",
+    "title": "切换完成，账号继续接力",
+    "width": 1920,
+    "height": 1080,
+    "bytes": 310632,
+    "kind": "历史配图"
+  },
+  {
+    "file": "article-frames/f2050.png",
+    "title": "DevFlow 品牌与项目入口",
+    "width": 1920,
+    "height": 1080,
+    "bytes": 923943,
+    "kind": "历史配图"
+  },
+  {
+    "file": "article-frames/v2-f0100.png",
+    "title": "轻量化模型调度工作流",
+    "width": 1920,
+    "height": 1080,
+    "bytes": 114484,
+    "kind": "文章配图"
+  },
+  {
+    "file": "article-frames/v2-f0320.png",
+    "title": "工具与模型可自定义 · 规划配置",
+    "width": 1920,
+    "height": 1080,
+    "bytes": 190686,
+    "kind": "文章配图"
+  },
+  {
+    "file": "article-frames/v2-f0405.png",
+    "title": "工具与模型可自定义 · 执行配置",
+    "width": 1920,
+    "height": 1080,
+    "bytes": 190945,
+    "kind": "文章配图"
+  },
+  {
+    "file": "article-frames/v2-f0625.png",
+    "title": "第二版八步方框总览",
+    "width": 1920,
+    "height": 1080,
+    "bytes": 214975,
+    "kind": "历史配图"
+  },
+  {
+    "file": "article-frames/v2-f0798.png",
+    "title": "01 调研计划 · GPT-6 Astra",
+    "width": 1920,
+    "height": 1080,
+    "bytes": 260838,
+    "kind": "历史配图"
+  },
+  {
+    "file": "article-frames/v2-f0975.png",
+    "title": "02 人工审批 · 由你确认",
+    "width": 1920,
+    "height": 1080,
+    "bytes": 246926,
+    "kind": "历史配图"
+  },
+  {
+    "file": "article-frames/v2-f1093.png",
+    "title": "03 开发实施 · Gemini 3.8 Flash",
+    "width": 1920,
+    "height": 1080,
+    "bytes": 229091,
+    "kind": "历史配图"
+  },
+  {
+    "file": "article-frames/v2-f1270.png",
+    "title": "04 自动测试 · Gemini 3.8 Flash",
+    "width": 1920,
+    "height": 1080,
+    "bytes": 242294,
+    "kind": "历史配图"
+  },
+  {
+    "file": "article-frames/v2-f1447.png",
+    "title": "05 验收前质量审查 · GPT-6 Astra",
+    "width": 1920,
+    "height": 1080,
+    "bytes": 229206,
+    "kind": "历史配图"
+  },
+  {
+    "file": "article-frames/v2-f1623.png",
+    "title": "06 人工验收 · 由你确认",
+    "width": 1920,
+    "height": 1080,
+    "bytes": 229960,
+    "kind": "历史配图"
+  },
+  {
+    "file": "article-frames/v2-f1741.png",
+    "title": "07 验收后代码复核 · GPT-6 Astra",
+    "width": 1920,
+    "height": 1080,
+    "bytes": 247578,
+    "kind": "历史配图"
+  },
+  {
+    "file": "article-frames/v2-f1918.png",
+    "title": "08 本地提交 · GPT-6 Astra",
+    "width": 1920,
+    "height": 1080,
+    "bytes": 218789,
+    "kind": "历史配图"
+  },
+  {
+    "file": "article-frames/v2-f2135.png",
+    "title": "Agy 账号管理",
+    "width": 1920,
+    "height": 1080,
+    "bytes": 280389,
+    "kind": "文章配图"
+  },
+  {
+    "file": "article-frames/v2-f2371.png",
+    "title": "周额度与 5 小时额度",
+    "width": 1920,
+    "height": 1080,
+    "bytes": 201568,
+    "kind": "历史配图"
+  },
+  {
+    "file": "article-frames/v2-f2577.png",
+    "title": "额度耗尽，自动选择可用账号",
+    "width": 1920,
+    "height": 1080,
+    "bytes": 325818,
+    "kind": "文章配图"
+  },
+  {
+    "file": "article-frames/v2-f2687.png",
+    "title": "账号切换后继续任务",
+    "width": 1920,
+    "height": 1080,
+    "bytes": 310632,
+    "kind": "文章配图"
+  },
+  {
+    "file": "article-frames/v2-f2940.png",
+    "title": "模型由你选择，DevFlow 负责衔接",
+    "width": 1920,
+    "height": 1080,
+    "bytes": 913651,
+    "kind": "文章配图"
+  },
+  {
+    "file": "article-frames/v3-f0625.png",
+    "title": "三段接力 · 完整八步工作流",
+    "width": 1920,
+    "height": 1080,
+    "bytes": 354032,
+    "kind": "文章配图"
+  },
+  {
+    "file": "article-frames/v3-f0798.png",
+    "title": "01 调研计划 · GPT-6 Astra",
+    "width": 1920,
+    "height": 1080,
+    "bytes": 277784,
+    "kind": "文章配图"
+  },
+  {
+    "file": "article-frames/v3-f0975.png",
+    "title": "02 人工审批 · 由你确认",
+    "width": 1920,
+    "height": 1080,
+    "bytes": 264398,
+    "kind": "文章配图"
+  },
+  {
+    "file": "article-frames/v3-f1093.png",
+    "title": "03 开发实施 · Gemini 3.8 Flash",
+    "width": 1920,
+    "height": 1080,
+    "bytes": 246257,
+    "kind": "文章配图"
+  },
+  {
+    "file": "article-frames/v3-f1270.png",
+    "title": "04 自动测试 · Gemini 3.8 Flash",
+    "width": 1920,
+    "height": 1080,
+    "bytes": 259141,
+    "kind": "文章配图"
+  },
+  {
+    "file": "article-frames/v3-f1447.png",
+    "title": "05 验收前质量审查 · GPT-6 Astra",
+    "width": 1920,
+    "height": 1080,
+    "bytes": 246236,
+    "kind": "文章配图"
+  },
+  {
+    "file": "article-frames/v3-f1623.png",
+    "title": "06 人工验收 · 由你确认",
+    "width": 1920,
+    "height": 1080,
+    "bytes": 246936,
+    "kind": "文章配图"
+  },
+  {
+    "file": "article-frames/v3-f1741.png",
+    "title": "07 验收后代码复核 · GPT-6 Astra",
+    "width": 1920,
+    "height": 1080,
+    "bytes": 264267,
+    "kind": "文章配图"
+  },
+  {
+    "file": "article-frames/v3-f1918.png",
+    "title": "08 本地提交 · GPT-6 Astra",
+    "width": 1920,
+    "height": 1080,
+    "bytes": 235893,
+    "kind": "文章配图"
+  },
+  {
+    "file": "article-frames/v3-f2371.png",
+    "title": "周额度与 5 小时额度",
+    "width": 1920,
+    "height": 1080,
+    "bytes": 205304,
+    "kind": "文章配图"
+  },
+  {
+    "file": "project/public/textures/01-planning-models.png",
+    "title": "规划与执行模型配置",
+    "width": 446,
+    "height": 96,
+    "bytes": 12942,
+    "kind": "界面局部"
+  },
+  {
+    "file": "project/public/textures/01-planning-plan.png",
+    "title": "开发计划详情",
+    "width": 3120,
+    "height": 1630,
+    "bytes": 326581,
+    "kind": "界面局部"
+  },
+  {
+    "file": "project/public/textures/01-planning.png",
+    "title": "规划",
+    "width": 3840,
+    "height": 2160,
+    "bytes": 509582,
+    "kind": "完整界面"
+  },
+  {
+    "file": "project/public/textures/02-execution-main.png",
+    "title": "任务执行进度",
+    "width": 2328,
+    "height": 1974,
+    "bytes": 148850,
+    "kind": "界面局部"
+  },
+  {
+    "file": "project/public/textures/02-execution-models.png",
+    "title": "当前任务模型配置",
+    "width": 446,
+    "height": 96,
+    "bytes": 12942,
+    "kind": "界面局部"
+  },
+  {
+    "file": "project/public/textures/02-execution.png",
+    "title": "执行",
+    "width": 3840,
+    "height": 2160,
+    "bytes": 287720,
+    "kind": "完整界面"
+  },
+  {
+    "file": "project/public/textures/03-review-review.png",
+    "title": "代码复核结论",
+    "width": 3012,
+    "height": 1300,
+    "bytes": 183403,
+    "kind": "界面局部"
+  },
+  {
+    "file": "project/public/textures/03-review.png",
+    "title": "代码复核",
+    "width": 3840,
+    "height": 2160,
+    "bytes": 369196,
+    "kind": "完整界面"
+  },
+  {
+    "file": "project/public/textures/04-accounts-first-account-hi.png",
+    "title": "单账号双额度 · 高清",
+    "width": 2840,
+    "height": 556,
+    "bytes": 91630,
+    "kind": "界面局部"
+  },
+  {
+    "file": "project/public/textures/04-accounts-first-account.png",
+    "title": "单账号双额度",
+    "width": 1420,
+    "height": 278,
+    "bytes": 42382,
+    "kind": "界面局部"
+  },
+  {
+    "file": "project/public/textures/04-accounts-gemini.png",
+    "title": "Gemini 额度池",
+    "width": 1292,
+    "height": 36,
+    "bytes": 12384,
+    "kind": "界面局部"
+  },
+  {
+    "file": "project/public/textures/04-accounts-other.png",
+    "title": "Claude / GPT 额度池",
+    "width": 1292,
+    "height": 36,
+    "bytes": 13656,
+    "kind": "界面局部"
+  },
+  {
+    "file": "project/public/textures/04-accounts-panel.png",
+    "title": "Agy 账号管理面板",
+    "width": 1420,
+    "height": 1146,
+    "bytes": 170139,
+    "kind": "界面局部"
+  },
+  {
+    "file": "project/public/textures/04-accounts-switch.png",
+    "title": "自动切换开关与导入入口",
+    "width": 1420,
+    "height": 188,
+    "bytes": 36615,
+    "kind": "界面局部"
+  },
+  {
+    "file": "project/public/textures/04-accounts.png",
+    "title": "Agy 账号与双额度",
+    "width": 3840,
+    "height": 2160,
+    "bytes": 223582,
+    "kind": "完整界面"
+  },
+  {
+    "file": "project/public/textures/05-switching-operation.png",
+    "title": "自动切换处理状态",
+    "width": 1420,
+    "height": 120,
+    "bytes": 30841,
+    "kind": "界面局部"
+  },
+  {
+    "file": "project/public/textures/05-switching-panel.png",
+    "title": "额度耗尽与选择账号",
+    "width": 1420,
+    "height": 1296,
+    "bytes": 202291,
+    "kind": "界面局部"
+  },
+  {
+    "file": "project/public/textures/05-switching.png",
+    "title": "自动切换进行中",
+    "width": 3840,
+    "height": 2160,
+    "bytes": 257575,
+    "kind": "完整界面"
+  },
+  {
+    "file": "project/public/textures/06-switched-panel.png",
+    "title": "切换后的活动账号",
+    "width": 1420,
+    "height": 1146,
+    "bytes": 172894,
+    "kind": "界面局部"
+  },
+  {
+    "file": "project/public/textures/06-switched.png",
+    "title": "切换后的账号状态",
+    "width": 3840,
+    "height": 2160,
+    "bytes": 226279,
+    "kind": "完整界面"
+  },
+  {
+    "file": "project/public/textures/07-model-config-panel.png",
+    "title": "规划配置弹窗",
+    "width": 1440,
+    "height": 1020,
+    "bytes": 50945,
+    "kind": "界面局部"
+  },
+  {
+    "file": "project/public/textures/07-model-config.png",
+    "title": "可自定义的规划工具与模型",
+    "width": 3840,
+    "height": 2160,
+    "bytes": 508472,
+    "kind": "完整界面"
+  },
+  {
+    "file": "project/public/textures/07-model-executor-panel.png",
+    "title": "执行配置弹窗",
+    "width": 1440,
+    "height": 1020,
+    "bytes": 50824,
+    "kind": "界面局部"
+  },
+  {
+    "file": "project/public/textures/07-model-executor.png",
+    "title": "可自定义的执行工具与模型",
+    "width": 3840,
+    "height": 2160,
+    "bytes": 508267,
+    "kind": "完整界面"
+  },
+  {
+    "file": "project/public/textures/08-research-plan.png",
+    "title": "调研计划正文",
+    "width": 3120,
+    "height": 1630,
+    "bytes": 286884,
+    "kind": "界面局部"
+  },
+  {
+    "file": "project/public/textures/08-research.png",
+    "title": "调研计划",
+    "width": 3840,
+    "height": 2160,
+    "bytes": 450716,
+    "kind": "完整界面"
+  },
+  {
+    "file": "project/public/textures/09-approval-dialog.png",
+    "title": "人工审批弹窗",
+    "width": 1440,
+    "height": 1368,
+    "bytes": 168254,
+    "kind": "界面局部"
+  },
+  {
+    "file": "project/public/textures/09-approval.png",
+    "title": "人工审批",
+    "width": 3840,
+    "height": 2160,
+    "bytes": 590080,
+    "kind": "完整界面"
+  },
+  {
+    "file": "project/public/textures/10-implement-main.png",
+    "title": "开发实施进度",
+    "width": 2328,
+    "height": 1974,
+    "bytes": 153495,
+    "kind": "界面局部"
+  },
+  {
+    "file": "project/public/textures/10-implement.png",
+    "title": "开发实施",
+    "width": 3840,
+    "height": 2160,
+    "bytes": 288254,
+    "kind": "完整界面"
+  },
+  {
+    "file": "project/public/textures/11-tests-main.png",
+    "title": "执行模型的测试清单",
+    "width": 2328,
+    "height": 1974,
+    "bytes": 186401,
+    "kind": "界面局部"
+  },
+  {
+    "file": "project/public/textures/11-tests.png",
+    "title": "自动测试",
+    "width": 3840,
+    "height": 2160,
+    "bytes": 323717,
+    "kind": "完整界面"
+  },
+  {
+    "file": "project/public/textures/12-pre-review-main.png",
+    "title": "验收前质量审查结果",
+    "width": 3012,
+    "height": 618,
+    "bytes": 76328,
+    "kind": "界面局部"
+  },
+  {
+    "file": "project/public/textures/12-pre-review.png",
+    "title": "验收前质量审查",
+    "width": 3840,
+    "height": 2160,
+    "bytes": 263989,
+    "kind": "完整界面"
+  },
+  {
+    "file": "project/public/textures/13-acceptance-main.png",
+    "title": "人工验收交接",
+    "width": 3120,
+    "height": 578,
+    "bytes": 80378,
+    "kind": "界面局部"
+  },
+  {
+    "file": "project/public/textures/13-acceptance.png",
+    "title": "人工验收",
+    "width": 3840,
+    "height": 2160,
+    "bytes": 310759,
+    "kind": "完整界面"
+  },
+  {
+    "file": "project/public/textures/14-final-review-main.png",
+    "title": "验收后代码复核结果",
+    "width": 3012,
+    "height": 618,
+    "bytes": 77673,
+    "kind": "界面局部"
+  },
+  {
+    "file": "project/public/textures/14-final-review.png",
+    "title": "验收后代码复核",
+    "width": 3840,
+    "height": 2160,
+    "bytes": 264465,
+    "kind": "完整界面"
+  },
+  {
+    "file": "project/public/textures/15-commit-main.png",
+    "title": "本地提交进度",
+    "width": 3120,
+    "height": 1974,
+    "bytes": 165318,
+    "kind": "界面局部"
+  },
+  {
+    "file": "project/public/textures/15-commit.png",
+    "title": "本地提交",
+    "width": 3840,
+    "height": 2160,
+    "bytes": 254323,
+    "kind": "完整界面"
+  }
+]

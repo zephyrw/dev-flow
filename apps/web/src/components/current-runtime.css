@@ -46,6 +46,22 @@
   text-align: left;
 }
 
+.runtime-model-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  min-width: 0;
+}
+
+.runtime-model-row > .runtime-row-btn {
+  min-width: 0;
+}
+
+.runtime-model-row > .runtime-quota-wrapper {
+  flex-shrink: 0;
+}
+
 .runtime-row-btn.is-active {
   color: #1e293b;
   font-weight: 600;
@@ -116,4 +132,10 @@
 .runtime-quota-wrapper {
   display: inline-flex;
   align-items: center;
+}
+
+/* Keep an open quota panel clear of the next row's trigger. */
+.current-runtime .quota-popover-content {
+  top: 0;
+  right: calc(100% + 8px);
 }

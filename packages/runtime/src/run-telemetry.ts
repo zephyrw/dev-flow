@@ -1,4 +1,5 @@
 import { highRiskDiagnostic } from "../../presentation/src/secret-redactor.js";
+import { conversationActivityContent } from "../../presentation/src/conversation-content.js";
 /**
  * D02 整合点：decode → adapter 会话分流 → 根身份校验 → ConversationObserver → 根/子 telemetry。
  * D02 的 ConversationService 通过 bindConversationObserver 接入；未接入时本文件 route 纯函数仍按原生身份分流。
@@ -323,14 +324,20 @@ export class RunTelemetry {
       ...previous,
       ...Object.fromEntries(
         Object.entries(normalizedItem).filter(
-          ([, v]) => v !== undefined && (typeof v !== "string" || v.trim()),
+          ([k, v]) => v !== undefined && (typeof v !== "string" ||
+            (k === "text" && item.kind === "message" ? v.length > 0 : v.trim().length > 0)),
         ),
       ),
     } as RunActivity;
-    const sensitive = highRiskDiagnostic(
+    const isMessage = full.kind === "message";
+    const sensitive = !isMessage && highRiskDiagnostic(
       `${previous?.title ?? ""} ${full.title ?? ""} ${full.command ?? ""}`,
     );
-    full.text = sensitive ? "敏感认证操作：仅保留状态" : boundedPublicText(full.text ?? "", 16000);
+    full.text = sensitive
+      ? "敏感认证操作：仅保留状态"
+      : isMessage
+        ? (full.text ?? "")
+        : boundedPublicText(full.text ?? "", 16000);
     full.title = sensitive ? "敏感认证操作" : boundedPublicText(full.title ?? "会话活动", 200);
     full.command = sensitive ? undefined : full.command ? boundedPublicText(full.command, 32000) : undefined;
     full.cwd = sensitive ? undefined : full.cwd ? boundedPublicText(full.cwd, 4000) : undefined;
@@ -338,7 +345,7 @@ export class RunTelemetry {
     if (full.status === "active" && full.kind === "tool")
       this.active.set(full.id, full);
     else this.active.delete(full.id);
-    if (publish) this.pending.set(full.id, publicEvent(full));
+    if (publish) this.pending.set(full.id, conversationActivityContent(full));
     this.observation.current_activity = [...this.active.values()].at(-1);
     this.observation.active_tools = this.active.size;
     this.observation.activity_at = now();
@@ -413,7 +420,8 @@ export class RunTelemetry {
       root_id: route.rootId,
       activity_id: item.id,
       source_event_id: sourceEventId,
-      public_text: nonblank(item.text) ?? previous?.public_text ?? "",
+      public_text: (item.kind === "message" && item.text.length > 0
+        ? item.text : nonblank(item.text)) ?? previous?.public_text ?? "",
       title: nonblank(item.title) ?? previous?.title,
       status: conversationStatusFromActivity(item.status),
       kind: item.kind,
@@ -421,13 +429,14 @@ export class RunTelemetry {
       cwd: nonblank(item.cwd) ?? previous?.cwd,
       result_text: incomingResult ?? previous?.result_text,
     } satisfies ConversationActivityPayload;
-    merged.public_text = boundedPublicText(merged.public_text, 16000);
+    const isMessage = merged.kind === "message";
+    if (!isMessage) merged.public_text = boundedPublicText(merged.public_text, 16000);
     if (merged.title) merged.title = boundedPublicText(merged.title, 200);
     if (merged.command) merged.command = boundedPublicText(merged.command, 32000);
     if (merged.cwd) merged.cwd = boundedPublicText(merged.cwd, 4000);
     if (merged.result_text)
       merged.result_text = boundedPublicText(merged.result_text, 16000);
-    if (highRiskDiagnostic(`${previous?.title ?? ""} ${merged.title ?? ""} ${item.command ?? previous?.command ?? ""}`)) {
+    if (!isMessage && highRiskDiagnostic(`${previous?.title ?? ""} ${merged.title ?? ""} ${item.command ?? previous?.command ?? ""}`)) {
       merged.title = "敏感认证操作";
       merged.public_text = "仅保留操作状态";
       merged.command = undefined;
@@ -437,7 +446,7 @@ export class RunTelemetry {
     if (item.status === "active" && item.kind === "tool")
       this.childActive.set(key, merged);
     else this.childActive.delete(key);
-    this.childPending.set(key, publicEvent(merged));
+    this.childPending.set(key, conversationActivityContent(merged));
     this.schedule();
   }
   private applyRootModel(raw: any) {
@@ -537,9 +546,12 @@ export class RunTelemetry {
       this.quota(payload, event.occurred_at ?? now(), "native_event");
     if (event.kind !== "activity") return;
     const sourceId = `${event.source_id}:${event.source_seq}`;
+    // Adapter activities already persisted by the conversation observer only
+    // update the runtime snapshot here; publishing again duplicates the log.
+    const alreadyProjected = !!this.observer && typeof payload?.activity_id === "string";
     for (const activity of conversationEventActivities(event)) {
-      this.activity(activity, true);
-      this.queueConversationActivity(route, activity, sourceId);
+      this.activity(activity, !alreadyProjected);
+      if (!alreadyProjected) this.queueConversationActivity(route, activity, sourceId);
     }
   }
   private applyChildConversation(

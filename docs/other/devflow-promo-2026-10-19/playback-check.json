@@ -1,0 +1,21 @@
+{
+  "errors": [],
+  "brokenImages": [],
+  "images": 77,
+  "fileSha256": "3f8a1c9ad755aa213d7f8bac2ebcc32c244054bd68f291317f8eb9e6224b73de",
+  "start": {
+    "duration": 100.266667,
+    "width": 1920,
+    "height": 1080,
+    "playbackRate": 1
+  },
+  "finish": {
+    "ended": true,
+    "time": 100.266667,
+    "quality": {
+      "totalVideoFrames": 3008,
+      "droppedVideoFrames": 3
+    },
+    "error": null
+  }
+}

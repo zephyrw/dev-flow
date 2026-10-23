@@ -129,6 +129,45 @@ it("does not create guidance or dispatch a cancelled interaction", async () => {
   expect(s.engine.get(s.workflow.id).state).toBe("WAITING_INPUT");
 });
 
+it("does not treat a normal question with the fallback title as a clarification request", async () => {
+  const s = setup("question");
+  s.store.put("user_interaction", s.record.id, s.workflow.id, { ...s.record,
+    request: { ...s.record.request, title: "协助请求需要补充说明" } });
+  await s.service.respondInteraction(s.workflow.id, s.record.id,
+    { ...s.payload, action: "answer", choice_id: "local", answer: "继续" }, s.engine);
+  expect(s.store.list<FeedbackMessage>("feedback_message", s.workflow.id)[0]!.text).toBe("[选择项: 本地免密] 继续");
+});
+
+it.each([undefined, "clarify_assistance"])("preserves written fallback corrections through resume even with choice %s", async (choice_id) => {
+  const s = setup("question");
+  s.store.put("user_interaction", s.record.id, s.workflow.id, { ...s.record,
+    request: { kind: "action_required", title: "请完成操作协助", message: "后续测试需要真人审批，等待用户测试" } });
+  s.service.getCurrentInteraction(s.workflow.id);
+  const answer = "继续原计划。\n先准备隔离测试和真实审批入口，到实际需要我决定时再提问；不要代批。";
+  const payload = { ...s.payload, action: "answer" as const, choice_id, answer };
+  await s.service.respondInteraction(s.workflow.id, s.record.id, payload, s.engine);
+  const continuation = s.store.must<any>("run_continuation", s.workflow.id);
+  expect(continuation).toMatchObject({ kind: "user_answer", source_run_id: "source-run", conversation_id: "original-session" });
+  expect(continuation.answer.endsWith(answer)).toBe(true);
+  expect(continuation.answer).not.toContain("不得重新开发、测试");
+  const messages = s.store.list<FeedbackMessage>("feedback_message", s.workflow.id);
+  expect(messages).toHaveLength(1);
+  expect(messages[0]!.text).toBe(answer);
+  const run = { id: "resumed-run", purpose: "executor_test", workflow_id: s.workflow.id,
+    plan_revision: 1, adapter: "codex", stage: "executor_test", status: "running",
+    started_at: new Date().toISOString(), package_hash: "fixture" } satisfies Run;
+  s.store.put("run", run.id, s.workflow.id, run);
+  s.store.put("workflow", s.workflow.id, s.workflow.project_id, { ...s.engine.get(s.workflow.id), run_id: run.id });
+  new FeedbackService(s.store).acknowledgeMessage(s.workflow.id, messages[0]!.message_id);
+  expect(invokePrompt(run.purpose, "HANDOFF.json", "schema.json", continuation, undefined,
+    currentRunUserGuidance(s.store, s.workflow.id, run))).toBe(answer);
+  expect(s.store.list("native_mcp_permission")).toHaveLength(0);
+  const jobs = s.store.jobs().length;
+  await s.service.respondInteraction(s.workflow.id, s.record.id, payload, s.engine);
+  expect(s.store.jobs()).toHaveLength(jobs);
+  expect(s.store.list("feedback_message", s.workflow.id)).toHaveLength(1);
+});
+
 it("rolls back guidance and the receipt if resuming the original role fails", async () => {
   const s = setup();
   vi.spyOn(s.engine, "resumeFromWaiting").mockImplementation(() => { throw new Error("resume failed"); });

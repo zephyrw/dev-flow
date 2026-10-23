@@ -183,7 +183,9 @@ it("hands the exact instruction to the same session and allows setup completion 
   expect(handoff.completion_instruction).toContain("不要求重新完成整份计划");
   expect(handoff.completion_instruction).not.toContain("必要测试未完成不得声明completed");
   expect(handoff.execution_order).toBeUndefined();
-  expect(handoff.skill_resources_usage).toContain("仅启动验收服务不触发整套开发");
+  expect(handoff.skills).toEqual(expect.arrayContaining(["devflow-execute", "devflow-test"]));
+  expect(handoff).not.toHaveProperty("skill_resources");
+  expect(handoff.instructions).toContain("不自行推进测试、代码复核、验收或提交");
 });
 
 it("returns a completed setup request to human acceptance without approving or launching a review", async () => {
@@ -208,7 +210,8 @@ it("preserves mixed questions and browser testing requests instead of reducing t
   expect(guidance).not.toHaveProperty("instruction");
   expect(invokePrompt("functional_fix", "HANDOFF.json", "schema.json", undefined, undefined, guidance)).toBe(mixed);
   expect(handoff.instructions).toContain("不能用 E2E 结果替代");
-  expect(handoff.skill_resources_usage).toContain("落实明确要求的测试");
+  expect(handoff.skills).toContain("devflow-test");
+  expect(handoff.instructions).toContain("实际修复代码时完成受影响的必要测试");
   expect(handoff.completion_instruction).toContain("不能用启动成功代替问题回答");
 });
 

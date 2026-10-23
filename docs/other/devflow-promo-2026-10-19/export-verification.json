@@ -1,0 +1,171 @@
+{
+  "date": "2026-10-19",
+  "pipeline": {
+    "renderer": "Remotion 4.0.484",
+    "fps": 30,
+    "mix": "48 kHz stereo PCM, SFX source-peak compensated",
+    "mux": "FFmpeg bundled with Remotion; H.264 picture copied + AAC 256k"
+  },
+  "files": {
+    "music": {
+      "bytes": 12054807,
+      "duration": "100.266667",
+      "width": 1920,
+      "height": 1080,
+      "frame_rate": "30/1",
+      "frames": "3008",
+      "video_codec": "h264",
+      "audio_codec": "aac",
+      "video_stream_sha256": "08462c5c547e4d8e13774f52a2a6f11ddb152ff2cb3c8ba8d172e3f64117382d",
+      "decoded_peak_dbfs": -8.634647421215405
+    },
+    "no-bgm": {
+      "bytes": 9369753,
+      "duration": "100.266667",
+      "width": 1920,
+      "height": 1080,
+      "frame_rate": "30/1",
+      "frames": "3008",
+      "video_codec": "h264",
+      "audio_codec": "aac",
+      "video_stream_sha256": "08462c5c547e4d8e13774f52a2a6f11ddb152ff2cb3c8ba8d172e3f64117382d",
+      "decoded_peak_dbfs": -8.880933028564987
+    }
+  },
+  "sfx_output_sync": [
+    {
+      "name": "soft",
+      "hit_frame": 42,
+      "output_offset_samples": 0,
+      "output_offset_ms": 0.0,
+      "frame_offset": 0.0
+    },
+    {
+      "name": "sweep",
+      "hit_frame": 177,
+      "output_offset_samples": 0,
+      "output_offset_ms": 0.0,
+      "frame_offset": 0.0
+    },
+    {
+      "name": "switch",
+      "hit_frame": 354,
+      "output_offset_samples": 0,
+      "output_offset_ms": 0.0,
+      "frame_offset": 0.0
+    },
+    {
+      "name": "soft",
+      "hit_frame": 502,
+      "output_offset_samples": 0,
+      "output_offset_ms": 0.0,
+      "frame_offset": 0.0
+    },
+    {
+      "name": "switch",
+      "hit_frame": 728,
+      "output_offset_samples": 0,
+      "output_offset_ms": 0.0,
+      "frame_offset": 0.0
+    },
+    {
+      "name": "sweep",
+      "hit_frame": 903,
+      "output_offset_samples": 0,
+      "output_offset_ms": 0.0,
+      "frame_offset": 0.0
+    },
+    {
+      "name": "soft",
+      "hit_frame": 1021,
+      "output_offset_samples": 0,
+      "output_offset_ms": 0.0,
+      "frame_offset": 0.0
+    },
+    {
+      "name": "sweep",
+      "hit_frame": 1198,
+      "output_offset_samples": 0,
+      "output_offset_ms": 0.0,
+      "frame_offset": 0.0
+    },
+    {
+      "name": "soft",
+      "hit_frame": 1375,
+      "output_offset_samples": 0,
+      "output_offset_ms": 0.0,
+      "frame_offset": 0.0
+    },
+    {
+      "name": "sweep",
+      "hit_frame": 1551,
+      "output_offset_samples": 0,
+      "output_offset_ms": 0.0,
+      "frame_offset": 0.0
+    },
+    {
+      "name": "soft",
+      "hit_frame": 1669,
+      "output_offset_samples": 0,
+      "output_offset_ms": 0.0,
+      "frame_offset": 0.0
+    },
+    {
+      "name": "sweep",
+      "hit_frame": 1846,
+      "output_offset_samples": 0,
+      "output_offset_ms": 0.0,
+      "frame_offset": 0.0
+    },
+    {
+      "name": "whoosh",
+      "hit_frame": 2031,
+      "output_offset_samples": 0,
+      "output_offset_ms": 0.0,
+      "frame_offset": 0.0
+    },
+    {
+      "name": "soft",
+      "hit_frame": 2267,
+      "output_offset_samples": 0,
+      "output_offset_ms": 0.0,
+      "frame_offset": 0.0
+    },
+    {
+      "name": "soft",
+      "hit_frame": 2500,
+      "output_offset_samples": 0,
+      "output_offset_ms": 0.0,
+      "frame_offset": 0.0
+    },
+    {
+      "name": "switch",
+      "hit_frame": 2625,
+      "output_offset_samples": 0,
+      "output_offset_ms": 0.0,
+      "frame_offset": 0.0
+    },
+    {
+      "name": "riser",
+      "hit_frame": 2830,
+      "output_offset_samples": 0,
+      "output_offset_ms": 0.0,
+      "frame_offset": 0.0
+    },
+    {
+      "name": "impact",
+      "hit_frame": 2834,
+      "output_offset_samples": -1,
+      "output_offset_ms": -0.020833333333333332,
+      "frame_offset": -0.000625
+    },
+    {
+      "name": "sparkle",
+      "hit_frame": 2857,
+      "output_offset_samples": 0,
+      "output_offset_ms": 0.0,
+      "frame_offset": 0.0
+    }
+  ],
+  "same_picture_stream": true
+}

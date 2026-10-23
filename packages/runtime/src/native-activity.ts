@@ -75,7 +75,7 @@ export function nativeActivities(raw: any): RunActivity[] {
             ...base,
             kind: "message",
             title: "模型输出",
-            text: str(item.text) ?? "",
+            text: typeof item.text === "string" ? item.text : "",
           },
         ];
       case "web_search":
@@ -318,14 +318,14 @@ export function conversationEventActivities(
   if (
     payload &&
     typeof payload === "object" &&
-    str(payload.id) &&
+    str(payload.activity_id ?? payload.id) &&
     (payload.kind === "tool" ||
       payload.kind === "message" ||
       payload.kind === "event")
   )
     return [
       {
-        id: payload.id,
+        id: payload.activity_id ?? payload.id,
         kind: payload.kind,
         title:
           str(payload.title) ??
@@ -336,7 +336,8 @@ export function conversationEventActivities(
               : payload.status === "error" || payload.status === "failed"
                 ? "执行失败"
                 : "会话活动"),
-        text: str(payload.public_text ?? payload.text) ?? "",
+        text: payload.kind === "message" && typeof (payload.public_text ?? payload.text) === "string"
+          ? (payload.public_text ?? payload.text) : str(payload.public_text ?? payload.text) ?? "",
         status: activityStatusFromPayload(payload.status),
         command: str(payload.command),
         cwd: str(payload.cwd),
