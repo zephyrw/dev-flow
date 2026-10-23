@@ -212,6 +212,14 @@ function mergeAgentsArg(
 }
 
 function insertBeforePrompt(args: string[], extras: string[]): string[] {
+  const dashDashIndex = args.indexOf("--");
+  if (dashDashIndex >= 0) {
+    return [
+      ...args.slice(0, dashDashIndex),
+      ...extras,
+      ...args.slice(dashDashIndex),
+    ];
+  }
   const last = args.at(-1);
   if (last && !last.startsWith("-"))
     return [...args.slice(0, -1), ...extras, last];

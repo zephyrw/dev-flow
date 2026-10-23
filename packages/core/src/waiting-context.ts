@@ -226,9 +226,12 @@ export function isCurrentPlanningSource(input: {
   run?: { purpose?: string; stage?: string };
 }) {
   const open = isOpenPlanningHandoff(input.handoff);
-  if (!open && !(input.waiting && isPlanningWaiting(input.waiting)))
+  if (!open && !(input.waiting && isPlanningWaiting(input.waiting))) {
+    if (isPlanningRun(input.run) || input.blockerCode === "PLAN_DOCUMENT_MISSING")
+      return true;
     return false;
-  if (input.state === "PLANNING" || input.blockerCode === "NEED_PLANNER")
+  }
+  if (input.state === "PLANNING" || input.blockerCode === "NEED_PLANNER" || input.blockerCode === "PLAN_DOCUMENT_MISSING")
     return true;
   if (isPlanningRun(input.run)) return true;
   if (open && input.handoff?.target_run_id === input.runId) return true;

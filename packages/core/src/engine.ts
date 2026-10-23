@@ -2411,15 +2411,15 @@ export class Engine {
       }
       return;
     }
+    // 策略 2：规划提交完成后直接本地集成，不走质量复核。
+    if (active?.purpose === "planner_commit" && usesPolicyV2(w)) {
+      await this.completePlannerCommit(key, runId, completion);
+      return;
+    }
     if (this.store.get<SessionInputReceipt>("session_input", runId)?.user_input === true) {
       // A reply to user guidance is not completion of the scheduled test/repair
       // stage. Continue that stage in a separate automatic turn.
       this.continueAfterUserGuidance(active);
-      return;
-    }
-    // 策略 2：规划提交完成后直接本地集成，不走质量复核。
-    if (active?.purpose === "planner_commit" && usesPolicyV2(w)) {
-      await this.completePlannerCommit(key, runId, completion);
       return;
     }
     let rev = this.store
@@ -5042,6 +5042,7 @@ export class Engine {
         feedback: this.resumeFeedback(w, reason),
         blocker: undefined,
       });
+      this.scheduler.enqueue(key, w.project_id);
       this.store.enqueue(key, "dispatch_run", { purpose: "planning" });
       return next;
     }
@@ -5066,7 +5067,7 @@ export class Engine {
         : waiting.intent === "unclear" || waiting.continuation
           ? "intent_clarification"
           : "runtime_resume",
-      ...(userAnswer ? { answer: text } : {}),
+      ...(userAnswer || (text && text !== "用户恢复执行") ? { answer: text } : {}),
     });
     requireCondition(!!currentContinuation(this.store, key, continuation),
       "STALE_CONTINUATION", "待答续接不属于当前运行链");

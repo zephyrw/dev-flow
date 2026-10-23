@@ -19,6 +19,7 @@ import {
   getWorktreeRoot,
   reservePorts,
   releasePorts,
+  readInstanceConfig,
   type WorktreeInstanceConfig,
 } from "./worktree-env.js";
 
@@ -100,7 +101,7 @@ async function waitForHealth(
   instance: WorktreeInstanceConfig,
   signal: AbortSignal,
 ) {
-  const deadline = Date.now() + 20000;
+  const deadline = Date.now() + 60000;
   while (Date.now() < deadline) {
     signal.throwIfAborted();
     if (await health(url, instance)) return;
@@ -177,12 +178,18 @@ async function run(mode: "dev" | "test", args: string[]) {
       attempt++
     ) {
       signalController.signal.throwIfAborted();
-      // Every invocation owns fresh resources; never adopt current-dev.json.
-      const instance = await reservePorts({
-        instanceType: mode,
-        worktreeRoot: root,
-        reservedPorts: excluded,
-      });
+      // Every invocation owns fresh resources; never adopt current-dev.json unless requested.
+      const existing =
+        process.env.DEVFLOW_RESUME_DEV === "1"
+          ? readInstanceConfig(root) ?? undefined
+          : undefined;
+      const instance =
+        existing ??
+        (await reservePorts({
+          instanceType: mode,
+          worktreeRoot: root,
+          reservedPorts: excluded,
+        }));
       const manager = new ProcessManager();
       const children: ManagedProcess[] = [];
       let outputTail = "";

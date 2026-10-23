@@ -24,6 +24,7 @@ import {
   type ApiError,
   verifyModelAccess,
 } from "./model-api.js";
+import { findProfileModelChoice, normalizeProfileEffort } from "./model-profile-effort.js";
 
 export interface ModelProfileEditorProps {
   profile: ToolProfile;
@@ -56,6 +57,12 @@ export function ModelProfileEditor({
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [catalogState, setCatalogState] = useState<{
+    adapter: string;
+    reloadToken: number;
+    status: "loading" | "ready" | "failed";
+    complete?: boolean;
+  }>({ adapter: "", reloadToken, status: "loading" });
   const [access, setAccess] = useState<AccessState | null>(null);
   const [verifying, setVerifying] = useState(false);
   const generation = useRef(0);
@@ -81,22 +88,24 @@ export function ModelProfileEditor({
 
   // 严格校验 entries 所属工具，彻底杜绝切换工具时残留上一工具模型（如 Claude Code 显示 Gemini）
   const entries = entriesData.adapter === adapter ? entriesData.items : [];
+  const catalogReady =
+    catalogState.adapter === adapter &&
+    catalogState.reloadToken === reloadToken &&
+    catalogState.status === "ready";
+  const catalogComplete = catalogReady && catalogState.complete === true;
 
   const choices = useMemo(() => buildModelChoices(entries), [entries]);
 
   // 当前选中的 ModelChoice
-  const currentChoice = useMemo(() => {
-    if (!profile.modelId) return null;
-    return (
-      choices.find(
-        (c) =>
-          c.choiceId === profile.modelId ||
-          c.nativeId === profile.modelId ||
-          c.entryIds.some((id) => id.endsWith(`/${profile.modelId}`)) ||
-          Object.values(c.variantByEffort).includes(profile.modelId!),
-      ) ?? null
-    );
-  }, [choices, profile.modelId]);
+  const currentChoice = useMemo(
+    () => findProfileModelChoice(profile, choices),
+    [choices, profile],
+  );
+
+  const effectiveProfile = useMemo(
+    () => catalogComplete ? normalizeProfileEffort(profile, currentChoice) : profile,
+    [catalogComplete, profile, currentChoice],
+  );
 
   // 过滤后的模型列表（匹配显示名、choiceId、nativeId 与全部变体 ID）
   const visibleChoices = useMemo(() => {
@@ -117,12 +126,21 @@ export function ModelProfileEditor({
     abortRef.current = controller;
     generation.current += 1;
     const token = generation.current;
+    const isCurrent = () => token === generation.current && !controller.signal.aborted;
+    setCatalogState({ adapter: nextAdapter, reloadToken, status: "loading" });
+    if (verifyTimer.current) window.clearTimeout(verifyTimer.current);
+    verifyGen.current += 1;
+    verifyAbort.current?.abort();
+    setAccess(null);
+    setVerifying(false);
+    onAccessChange?.(null);
     setLoading(true);
     setLoadError(null);
 
     const run = async () => {
       let result = await getAdapterModels(nextAdapter, controller.signal);
-      if (token === generation.current && result.entries.length > 0) {
+      if (!isCurrent()) return;
+      if (result.entries.length > 0) {
         // 先展示缓存或种子条目，loading 只兜住空目录首载
         setEntriesData({ adapter: nextAdapter, items: result.entries });
         setLoading(false);
@@ -141,41 +159,39 @@ export function ModelProfileEditor({
           allManual);
       if (doRefresh || needsRefresh) {
         setRefreshing(true);
-        try {
-          await refreshAdapterModels(nextAdapter, controller.signal);
-          const refreshed = await getAdapterModels(nextAdapter, controller.signal);
-          if (refreshed.entries.length > 0) {
-            result = refreshed;
-          }
-        } catch (refreshErr) {
-          // 若已有可用条目（如内置种子或本地配置），刷新失败不清空已有条目
-          if (result.entries.length === 0) {
-            throw refreshErr;
-          }
-          if (token === generation.current && !controller.signal.aborted) {
-            setLoadError(formatApiError(refreshErr));
-          }
-        }
+        await refreshAdapterModels(nextAdapter, controller.signal);
+        if (!isCurrent()) return;
+        result = await getAdapterModels(nextAdapter, controller.signal);
+        if (!isCurrent()) return;
+      }
+      if (result.status !== "fresh" || result.discoveryStatus === "missing") {
+        throw new Error(result.catalog?.errorMessage || "模型目录尚未完整加载，已保留当前配置，请刷新后重试。");
       }
       return result;
     };
 
     run()
       .then((result) => {
-        if (token !== generation.current) return;
+        if (!isCurrent() || !result) return;
         setEntriesData({ adapter: nextAdapter, items: result.entries });
+        setCatalogState({
+          adapter: nextAdapter, reloadToken, status: "ready",
+          // 截断目录仍允许验证自定义模型，但不能据此清除已有强度。
+          complete: result.discoveryStatus !== "partial",
+        });
       })
       .catch((error) => {
-        if (controller.signal.aborted || token !== generation.current) return;
+        if (!isCurrent()) return;
         setEntriesData((prev) =>
           prev.adapter === nextAdapter && prev.items.length > 0
             ? prev
             : { adapter: nextAdapter, items: [] },
         );
         setLoadError(formatApiError(error));
+        setCatalogState({ adapter: nextAdapter, reloadToken, status: "failed" });
       })
       .finally(() => {
-        if (token === generation.current) {
+        if (isCurrent()) {
           setLoading(false);
           setRefreshing(false);
         }
@@ -189,25 +205,29 @@ export function ModelProfileEditor({
   }, [adapter, reloadToken]);
 
   const runVerify = (candidate: ToolProfile, force = false) => {
-    if (disabled || !autoVerify || !candidate.modelId || !toolVisible) {
+    verifyGen.current += 1;
+    verifyAbort.current?.abort();
+    if (disabled || !autoVerify || !candidate.modelId || !toolVisible || !catalogReady) {
       setAccess(null);
       setVerifying(false);
       onAccessChange?.(null);
       return;
     }
-    verifyAbort.current?.abort();
     const controller = new AbortController();
     verifyAbort.current = controller;
-    verifyGen.current += 1;
     const token = verifyGen.current;
 
     setVerifying(true);
     const checkingState: AccessState = { status: "checking", message: "正在验证" };
     setAccess(checkingState);
     onAccessChange?.(checkingState);
-    verifyModelAccess(candidate, controller.signal, force)
+    const effectiveCandidate = catalogComplete
+      ? normalizeProfileEffort(candidate, currentChoice)
+      : candidate;
+
+    verifyModelAccess(effectiveCandidate, controller.signal, force)
       .then((state) => {
-        if (token !== verifyGen.current) return;
+        if (controller.signal.aborted || token !== verifyGen.current) return;
         setAccess(state);
         onAccessChange?.(state);
       })
@@ -223,7 +243,7 @@ export function ModelProfileEditor({
         onAccessChange?.(failState);
       })
       .finally(() => {
-        if (token === verifyGen.current) {
+        if (!controller.signal.aborted && token === verifyGen.current) {
           setVerifying(false);
         }
       });
@@ -232,11 +252,19 @@ export function ModelProfileEditor({
   // 访问探测去抖（约 200ms）
   useEffect(() => {
     if (verifyTimer.current) window.clearTimeout(verifyTimer.current);
-    verifyTimer.current = window.setTimeout(() => {
-      runVerify(profile, false);
-    }, 200);
+    verifyGen.current += 1;
+    verifyAbort.current?.abort();
+    setAccess(null);
+    setVerifying(false);
+    onAccessChange?.(null);
+    if (catalogReady && effectiveProfile === profile) {
+      verifyTimer.current = window.setTimeout(() => {
+        runVerify(profile, false);
+      }, 200);
+    }
     return () => {
       if (verifyTimer.current) window.clearTimeout(verifyTimer.current);
+      verifyGen.current += 1;
       verifyAbort.current?.abort();
     };
   }, [
@@ -247,6 +275,10 @@ export function ModelProfileEditor({
     profile.nativeConfigProfile,
     profile.executableRef,
     disabled,
+    autoVerify,
+    catalogReady,
+    catalogComplete,
+    currentChoice,
   ]);
 
   // portal 浮层锚点：跟随输入框矩形，下方空间不足时上翻
@@ -310,15 +342,16 @@ export function ModelProfileEditor({
   };
 
   const selectChoice = (choice: ModelChoice) => {
-
-    // 判断思考强度
+    // 只有在模型明确支持思考强度且包含有效档位时才保留或设置显式思考强度
+    const isSupported = choice.effortStatus === "supported" && choice.effortValues.length > 0;
     let nextEffort =
       profile.reasoning && "value" in profile.reasoning
         ? profile.reasoning.value
         : undefined;
-    if (nextEffort && !choice.effortValues.includes(nextEffort)) {
-      nextEffort = choice.defaultEffort;
-    } else if (!nextEffort && choice.defaultEffort) {
+
+    if (!isSupported || (nextEffort && !choice.effortValues.includes(nextEffort))) {
+      nextEffort = isSupported ? choice.defaultEffort : undefined;
+    } else if (!nextEffort && isSupported && choice.defaultEffort) {
       nextEffort = choice.defaultEffort;
     }
 
@@ -327,13 +360,12 @@ export function ModelProfileEditor({
       targetModelId = choice.variantByEffort[nextEffort]!;
     }
 
-    const reasoning = choice.effortStatus === "unknown" && choice.nativeId === profile.modelId
-      ? profile.reasoning?.mode === "explicit" ? profile.reasoning : undefined
-      : nextEffort
+    const reasoning =
+      isSupported && nextEffort
         ? { mode: "explicit" as const, value: nextEffort }
         : choice.effortStatus === "unsupported"
           ? { mode: "not-applicable" as const }
-          : undefined;
+          : { mode: "native-default" as const };
 
     setOpenList(false);
     setQuery("");
@@ -360,17 +392,21 @@ export function ModelProfileEditor({
 
   // 当模型列表加载完成且未选中模型（或残留了跨工具的旧模型）时，自动选中排在首位的模型（优先本地配置或最新模型）
   useEffect(() => {
-    if (disabled || choices.length === 0) return;
+    if (disabled || !catalogReady) return;
     const isResidual =
+      catalogComplete &&
       Boolean(profile.modelId) &&
       !currentChoice &&
       profile.modelSelection !== "explicit" &&
       ((adapter !== "agy" && /^gemini-/i.test(profile.modelId!)) ||
         (adapter !== "codex" && adapter !== "opencode" && /^gpt-6-astra$/i.test(profile.modelId!)));
-    if (!profile.modelId || isResidual) {
+    if (choices.length > 0 && (!profile.modelId || isResidual)) {
       selectChoice(choices[0]!);
+      return;
     }
-  }, [choices, profile.modelId, currentChoice, profile.modelSelection, adapter, disabled]);
+    // 目录成功完成后，草稿和访问探测共用同一份强度归一化规则。
+    if (effectiveProfile !== profile) update({ reasoning: effectiveProfile.reasoning });
+  }, [choices, currentChoice, profile, effectiveProfile, adapter, disabled, catalogReady, catalogComplete]);
 
   const changeEffort = (effortValue: string) => {
     if (!effortValue || effortValue === "default") {
@@ -443,7 +479,8 @@ export function ModelProfileEditor({
     return base;
   })();
 
-  const availableEfforts = currentChoice?.effortValues ?? [];
+  const availableEfforts =
+    currentChoice?.effortStatus === "supported" ? (currentChoice.effortValues ?? []) : [];
   const currentEffort =
     profile.reasoning?.mode === "explicit"
       ? profile.reasoning.value
@@ -664,6 +701,14 @@ export function ModelProfileEditor({
           )}
         </div>
       )}
+      {catalogComplete && !disabled && profile.reasoning?.mode === "explicit" &&
+        (!currentChoice ||
+          currentChoice.effortStatus !== "supported" ||
+          !currentChoice.effortValues.includes(profile.reasoning.value)) && (
+          <p className="ms-muted" role="note">
+            当前配置中的思考强度（{profile.reasoning.value}）未获此模型明确支持，将使用原生默认行为。
+          </p>
+        )}
 
       <div className="ms-access" role="status">
         <span>
@@ -675,7 +720,7 @@ export function ModelProfileEditor({
           <button
             type="button"
             className="ms-link"
-            disabled={disabled || verifying}
+            disabled={disabled || verifying || !catalogReady}
             onClick={() => runVerify(profile, true)}
           >
             {verifying ? "正在验证…" : "重新验证"}

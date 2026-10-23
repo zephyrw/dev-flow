@@ -13,13 +13,16 @@ import {
   blankProfile,
   cloneProfile,
   formatApiError,
+  getAdapterModels,
   getModelDefaults,
   newRequestId,
   putModelDefaults,
+  refreshAdapterModels,
   verifyModelAccess,
   type ApiError,
   type DefaultsSnapshot,
 } from "./model-api.js";
+import { normalizeDefaultsEffort, type EffortCatalog, type ModelDefaultsDraft } from "./model-profile-effort.js";
 import "./model-settings.css";
 
 export interface DefaultModelsPanelProps {
@@ -122,21 +125,44 @@ export function DefaultModelsPanel({
     };
   }, []);
 
-  const verifyDraft = async () => {
-    const profilesToVerify: ToolProfile[] = [planner, executor];
+  const verifyDraft = async (): Promise<ModelDefaultsDraft> => {
+    const draft: ModelDefaultsDraft = {
+      plannerProfile: planner, executorProfile: executor, reviewerBinding,
+    };
+    const profiles: ToolProfile[] = [draft.plannerProfile, draft.executorProfile];
     if (
-      reviewerBinding.mode === "explicit" &&
-      reviewerBinding.profile &&
-      reviewerBinding.profile.modelId
+      draft.reviewerBinding?.mode === "explicit" &&
+      draft.reviewerBinding.profile
     ) {
-      profilesToVerify.push(reviewerBinding.profile);
+      profiles.push(draft.reviewerBinding.profile);
+    }
+    // Inactive tabs are unmounted. Resolve every editable role before probing
+    // access, then persist exactly the snapshot that was verified.
+    const signal = panelAbort.current?.signal;
+    const catalogs = new Map<string, EffortCatalog>();
+    for (const adapter of new Set(profiles.filter(profile => profile.modelId).map(profile => profile.adapterId))) {
+      let catalog = await getAdapterModels(adapter, signal);
+      const allManual = catalog.entries.length > 0 && catalog.entries.every(entry => entry.source === "manual");
+      if (catalog.status !== "fresh" || catalog.discoveryStatus === "missing" || allManual) {
+        await refreshAdapterModels(adapter, signal);
+        catalog = await getAdapterModels(adapter, signal);
+      }
+      if (catalog.status !== "fresh" || catalog.discoveryStatus === "missing") {
+        throw new Error(catalog.catalog?.errorMessage || "模型目录尚未完整加载，已保留当前配置，请刷新后重试。");
+      }
+      catalogs.set(adapter, catalog);
+    }
+    const normalized = normalizeDefaultsEffort(draft, catalogs);
+    const profilesToVerify = [normalized.plannerProfile, normalized.executorProfile];
+    if (normalized.reviewerBinding?.mode === "explicit" && normalized.reviewerBinding.profile) {
+      profilesToVerify.push(normalized.reviewerBinding.profile);
     }
 
     for (const profile of profilesToVerify) {
       if (!profile.modelId) continue;
       const access = await verifyModelAccess(
         profile,
-        panelAbort.current?.signal,
+        signal,
       );
       if (access.status !== "verified") {
         throw {
@@ -146,19 +172,20 @@ export function DefaultModelsPanel({
         } satisfies ApiError;
       }
     }
+    return normalized;
   };
 
   const handleSave = async () => {
     setSaving(true);
     setError(null);
     try {
-      await verifyDraft();
+      const verified = await verifyDraft();
       await putModelDefaults({
         request_id: requestId.current,
         expected_defaults_revision: revision,
-        planner_profile: planner,
-        executor_profile: executor,
-        reviewer_binding: reviewerBinding,
+        planner_profile: verified.plannerProfile,
+        executor_profile: verified.executorProfile,
+        reviewer_binding: verified.reviewerBinding,
       });
       onDirtyChange?.(false);
       onDefaultsUpdated?.();

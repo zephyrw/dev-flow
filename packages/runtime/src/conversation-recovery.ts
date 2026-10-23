@@ -192,6 +192,7 @@ export function buildManifest(input: BuildManifestInput): RecoveryManifest {
     input.tree,
     input.root_conversation_id,
     input.profile_changed === true,
+    input.source_run_id,
   );
   if (pending.blocked.length) {
     throw new FlowError(
@@ -665,6 +666,7 @@ function collectPendingChildren(
   tree: ConversationTreeSnapshot,
   rootId: string,
   profileChanged: boolean,
+  sourceRunId?: string,
 ): { children: RecoveryPendingChild[]; blocked: ConversationNode[] } {
   const children: RecoveryPendingChild[] = [];
   const blocked: ConversationNode[] = [];

@@ -13,7 +13,7 @@ export function failureSummary(code = "", detail = "") {
   if (code === "BASELINE_CHANGED")
     return "项目代码已更新，与制定计划时不同。请查看变化后选择继续方式。";
   if (code === "NATIVE_PERMISSION_DENIED")
-    return detail || "AGY 拒绝了原生工具操作，已暂停等待处理，不会自动重试。";
+    return detail || "原生工具拒绝了操作，已暂停等待处理，不会自动重试。";
   if (code === "TEST_PLACEHOLDER")
     return "测试仍是恒真占位断言，执行模型需要补齐真实业务检查。";
   if (/MODEL_QUOTA/.test(code))

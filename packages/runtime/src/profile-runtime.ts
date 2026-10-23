@@ -9,6 +9,9 @@ import { extractRoundOutput } from "./round-output.js";
 import type { Engine } from "../../core/src/engine.js";
 import { pauseForNativePermission, bindNativePermission } from "../../core/src/native-permission.js";
 import { installAgyPermissionHook } from "../../adapters/agy/src/permission-hook.js";
+import { prepareClaudePermissionBridge } from "../../adapters/claude/src/permission-hook.js";
+import { prepareOpenCodePermissionBridge } from "../../adapters/opencode/src/permission-driver.js";
+import { NativeDeniedCalls } from "./native-permission-events.js";
 import { AgyDeniedCalls } from "../../adapters/agy/src/permission-calls.js";
 import { profileForRun, bindProfile, invocationFingerprintFromProfile, permissionCategoryForPurpose } from "../../core/src/run-profile.js";
 import { imagePathsInArguments, localImageProblem } from "./image-input.js";
@@ -51,6 +54,7 @@ import {
   ExecutorRoundResultSchema,
   requireCondition,
   FlowError,
+  ScopeSchema,
   MergeConflictReceiptSchema,
   type MergeConflictRequest,
   type MergeConflictReceipt,
@@ -224,16 +228,77 @@ export class ProfileRuntime {
       "PLAN_DOCUMENT_MISSING",
       "缺少完整规划正文",
     );
+    const rawPlan = value.plan ?? {};
+    const workItems = Array.isArray(rawPlan.work_items)
+      ? rawPlan.work_items
+      : (Array.isArray(rawPlan.workItems) ? rawPlan.workItems : []);
+    const acceptance = Array.isArray(rawPlan.acceptance_items)
+      ? rawPlan.acceptance_items
+      : (Array.isArray(rawPlan.acceptance) ? rawPlan.acceptance : []);
+    const primaryRepo = workspaces[0]?.repo_id ?? "main";
+
+    requireCondition(
+      workItems.length > 0,
+      "PLAN_INVALID",
+      "规划结果缺少工作项 work_items",
+    );
+    requireCondition(
+      acceptance.length > 0,
+      "PLAN_INVALID",
+      "规划结果缺少验收场景 acceptance_items",
+    );
+
     value.plan = {
-      ...value.plan,
+      task_model: "native-v2",
       revision: w.plan_revision + 1,
+      design_ref: {
+        summary: rawPlan.design_ref?.summary || rawPlan.title || rawPlan.context || w.title || "系统实现计划",
+        file_ref: rawPlan.design_ref?.file_ref,
+      },
+      modules: Array.isArray(rawPlan.modules) && rawPlan.modules.length > 0
+        ? rawPlan.modules
+        : [
+            {
+              id: "main",
+              title: "核心功能模块",
+              description: "项目核心业务与工具链",
+              paths: [],
+            },
+          ],
+      work_items: workItems.map((wi: any, idx: number) => ({
+        id: wi.id || `W${idx + 1}`,
+        module_id: wi.module_id || "main",
+        repo_id: wi.repo_id || primaryRepo,
+        title: wi.title || wi.id,
+        description: wi.description || wi.deliverable || wi.behavior || wi.title || "工作项",
+        paths: Array.isArray(wi.paths) ? wi.paths : [],
+        depends_on: Array.isArray(wi.depends_on) ? wi.depends_on : (idx > 0 ? [workItems[idx - 1].id || `W${idx}`] : []),
+        acceptance_ids: Array.isArray(wi.acceptance_ids) ? wi.acceptance_ids : (Array.isArray(wi.acceptance) ? wi.acceptance : []),
+      })),
+      acceptance_items: acceptance.map((ai: any, idx: number) => {
+        const id = ai.id || `A${idx + 1}`;
+        const crit = ai.criterion || ai.description || ai.scenario || id;
+        const layer = (ai.layer && ["unit", "integration", "e2e", "opentabs"].includes(ai.layer))
+          ? ai.layer
+          : (/e2e|cli/i.test(crit) ? "e2e" : (/integration/i.test(crit) ? "integration" : "unit"));
+        return {
+          id,
+          work_item_ids: Array.isArray(ai.work_item_ids) && ai.work_item_ids.length > 0
+            ? ai.work_item_ids
+            : [ai.covers || (workItems[idx]?.id || "W1")],
+          module_id: ai.module_id || "main",
+          layer,
+          scenario: crit,
+          expected_outcome: ai.expected_outcome || crit,
+          timeout_seconds: ai.timeout_seconds || 300,
+        };
+      }),
+      scope: rawPlan.scope ? ScopeSchema.parse(rawPlan.scope) : ScopeSchema.parse({}),
       baselines: Object.fromEntries(
         workspaces.map((ws) => [ws.repo_id, ws.baseline]),
       ),
       project_config_hash: objectHash(this.engine.project(w.project_id)),
-      design_ref: {
-        ...value.plan?.design_ref,
-      },
+      feedback_cursor: typeof rawPlan.feedback_cursor === "number" ? rawPlan.feedback_cursor : 0,
     };
     return schema.parse(value);
   }
@@ -1026,7 +1091,7 @@ export class ProfileRuntime {
           previousConversationId: previous.id,
         })
       : await adapter.prepare(context);
-    const invocation: PreparedInvocation & {
+    let invocation: PreparedInvocation & {
       attachments: typeof inputFiles.attachments;
     } = {
       ...prepared,
@@ -1103,12 +1168,23 @@ export class ProfileRuntime {
       });
     }
 
-    const permissionGrant = profile.adapterId === "agy"
+    const permissionGrant = ["agy", "claude-code", "opencode"].includes(profile.adapterId)
       ? bindNativePermission(this.engine.store, { ...run, conversation_id: previous?.id ?? run.conversation_id }) : undefined;
-    const restorePermissionHook = permissionGrant
-      ? installAgyPermissionHook(invocation.cwd, root, permissionGrant) : undefined;
+    let restorePermissionHook: (() => void) | undefined;
     let proc: ReturnType<ProcessManager["start"]>;
     try {
+      if (permissionGrant) {
+        const nativeSession = previous?.id ?? run.conversation_id;
+        if (profile.adapterId === "agy") {
+          restorePermissionHook = installAgyPermissionHook(invocation.cwd, root, permissionGrant);
+        } else if (nativeSession && (profile.adapterId === "claude-code" || profile.adapterId === "opencode")) {
+          const bridge = profile.adapterId === "claude-code"
+            ? prepareClaudePermissionBridge(invocation, root, permissionGrant, readOnlyPurpose(purpose), nativeSession)
+            : prepareOpenCodePermissionBridge(invocation, root, permissionGrant, readOnlyPurpose(purpose), nativeSession);
+          invocation = { ...invocation, ...bridge.invocation };
+          restorePermissionHook = bridge.cleanup;
+        }
+      }
       if (dispatchRecord) dispatchManager.claimStarting(dispatchId);
       proc = this.processes.start({
         ...invocation,
@@ -1133,7 +1209,9 @@ export class ProfileRuntime {
         }
       });
     } catch (err: any) {
-      restorePermissionHook?.();
+      try { restorePermissionHook?.(); } catch (cleanupError) {
+        err = new AggregateError([err, cleanupError], "原生进程启动及权限桥接清理失败");
+      }
       if (accountBinding) await this.accountBridge?.releaseRun(run.id, false, "spawn_failed");
       if (dispatchRecord) {
         dispatchManager.finishDispatch(dispatchId, { exitCode: 1, error: err.message });
@@ -1220,6 +1298,8 @@ export class ProfileRuntime {
     };
     let permissionFailure: FlowError | undefined;
     const permissionCalls = new AgyDeniedCalls((session, index) => agyRecords.read(session, index));
+    const nativePermissionCalls = profile.adapterId === "claude-code" || profile.adapterId === "opencode"
+      ? new NativeDeniedCalls(profile.adapterId) : undefined;
     let lastImagePaths: string[] = [];
     let agyResult: Record<string, any> | undefined;
     const retainConversation = (session?: string) => {
@@ -1320,6 +1400,13 @@ export class ProfileRuntime {
           }
           if (v.event === "step_update" && v.step_update?.step_type === "tool" && v.step_update?.state === "DONE")
             lastImagePaths = imagePathsInArguments(v.step_update?.tool_info?.parameters);
+        } else if (nativePermissionCalls) {
+          nativePermissionCalls.accept(v, conversation);
+          if (nativePermissionCalls.immediate !== undefined && !permissionFailure && purpose !== "aside") {
+            permissionFailure = new FlowError("NATIVE_PERMISSION_DENIED", nativePermissionCalls.description, 422);
+            const interaction = pauseForNativePermission(this.engine, run, nativePermissionCalls.immediate, permissionFailure.message);
+            if (interaction) void proc.stop();
+          }
         }
         const attributedResult = profile.adapterId === "agy" && v.event === "result"
           ? permissionCalls.currentResult(v.result) : v.result;
@@ -1491,7 +1578,9 @@ export class ProfileRuntime {
         if (!historical) failure ??= nativeFailureDiagnostic({ event: "result", result: agyResult });
       }
     } finally {
-      restorePermissionHook?.();
+      try { restorePermissionHook?.(); } catch (cleanupError) {
+        failure ??= String(diagnosticContext.project(`权限桥接文件清理失败：${String(cleanupError)}`));
+      }
       stopQuota?.();
       await sessionObserver?.close();
       telemetry.finish(
@@ -1558,7 +1647,7 @@ export class ProfileRuntime {
     if (permissionFailure) {
       retainConversation(conversation);
       if (!exit.termination_reason && purpose !== "aside")
-        pauseForNativePermission(this.engine, run, permissionCalls.denied, permissionFailure.message);
+        pauseForNativePermission(this.engine, run, nativePermissionCalls?.denied ?? permissionCalls.denied, permissionFailure.message);
       throw permissionFailure;
     }
     if (
@@ -1666,6 +1755,35 @@ export class ProfileRuntime {
         } else {
           final = { summary: text };
         }
+      }
+    }
+    const finalObj = final as Record<string, unknown> | undefined;
+    if (purpose === "planning" && (!finalObj?.markdown || typeof finalObj.markdown !== "string" || !finalObj.plan)) {
+      const textToExtract = typeof finalObj?.summary === "string" ? finalObj.summary : (typeof text === "string" ? text : "");
+      const codeBlockRegex = /```(?:json)?\s*([\s\S]*?)\s*```/g;
+      let blockMatch: RegExpExecArray | null;
+      while ((blockMatch = codeBlockRegex.exec(textToExtract)) !== null) {
+        try {
+          const parsed = JSON.parse(blockMatch[1]!);
+          if (parsed && typeof parsed === "object") {
+            if (typeof parsed.markdown === "string" && parsed.plan) {
+              final = parsed;
+              break;
+            } else if (parsed.plan || (parsed.workItems && parsed.acceptance)) {
+              const planObj = parsed.plan ?? parsed;
+              const textBefore = textToExtract.slice(0, blockMatch.index).trim();
+              const textAfter = textToExtract.slice(blockMatch.index + blockMatch[0].length).trim();
+              const markdown = textBefore || textAfter ? [textBefore, textAfter].filter(Boolean).join("\n\n") : textToExtract.trim();
+              if (markdown.length > 0) {
+                final = {
+                  markdown,
+                  plan: planObj,
+                };
+                break;
+              }
+            }
+          }
+        } catch {}
       }
     }
     if (purpose === "aside") {

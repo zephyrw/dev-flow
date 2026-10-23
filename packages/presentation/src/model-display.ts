@@ -67,6 +67,8 @@ const KNOWN_MODEL_LABELS: Record<string, string> = {
   "qwen-3.8-max": "Qwen 3.8 Max",
   "deepseek-v4-pro": "DeepSeek V4 Pro",
   "deepseek-v4-flash": "DeepSeek V4 Flash",
+  "deepseek-v4.1-flash": "DeepSeek V4.1 Flash",
+  "cloudwalk/deepseek-v4.1-flash": "DeepSeek V4.1 Flash",
   "kimi-k3": "Kimi K3",
   "kimi-k2.7-code": "Kimi K2.7 Code",
   "kimi-k2.5": "Kimi K2.5",

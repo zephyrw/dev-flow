@@ -5,6 +5,7 @@ import { objectHash, redact, now } from "./util.js";
 import { UserInteractionService, interactionConversationContext } from "./user-interaction-service.js";
 import { saveWaitingContext, waitingPurposeFromRun } from "./waiting-context.js";
 import { highRiskDiagnostic } from "../../presentation/src/secret-redactor.js";
+import { permissionCategoryForPurpose } from "./run-profile.js";
 
 export const NATIVE_PERMISSION_ENTITY = "native_permission";
 export const NATIVE_TOOL_PERMISSION_ENTITY = "native_tool_permission";
@@ -13,7 +14,7 @@ export interface NativeMcpTarget { server: string; method: string }
 export type NativeMcpScope = "service" | "method";
 interface NativeMcpPermission {
   id: string;
-  adapter: "agy";
+  adapter: "agy" | "claude-code" | "opencode";
   server: string;
   method?: string;
   scope: NativeMcpScope;
@@ -22,10 +23,11 @@ interface NativeMcpPermission {
 }
 
 /** Only the human console may create this persistent, instance-wide grant. */
-export function grantNativeMcpPermission(store: Store, source: string, target: NativeMcpTarget, scope: NativeMcpScope) {
+export function grantNativeMcpPermission(store: Store, source: string, target: NativeMcpTarget & { adapter?: "agy" | "claude-code" | "opencode" }, scope: NativeMcpScope) {
   if (!mcpTarget({ name: "call_mcp_tool", parameters: { ServerName: target.server, ToolName: target.method } }) ||
       !["service", "method"].includes(scope)) throw new FlowError("INVALID_PERMISSION", "MCP 服务或方法无效", 400);
-  const identity = { adapter: "agy" as const, server: target.server, scope, ...(scope === "method" ? { method: target.method } : {}) };
+  const adapter = target.adapter ?? "agy";
+  const identity = { adapter, server: target.server, scope, ...(scope === "method" ? { method: target.method } : {}) };
   const id = objectHash(identity);
   const existing = store.get<NativeMcpPermission>(NATIVE_MCP_PERMISSION_ENTITY, id);
   if (existing) return existing;
@@ -34,9 +36,9 @@ export function grantNativeMcpPermission(store: Store, source: string, target: N
   return grant;
 }
 
-export function findNativeMcpPermission(store: Store, target: NativeMcpTarget) {
-  return store.list<NativeMcpPermission>(NATIVE_MCP_PERMISSION_ENTITY).find(grant => grant.adapter === "agy" &&
-    grant.server === target.server && (grant.scope === "service" || grant.scope === "method" && grant.method === target.method));
+export function findNativeMcpPermission(store: Store, target: NativeMcpTarget, adapter = "agy") {
+  return store.list<NativeMcpPermission>(NATIVE_MCP_PERMISSION_ENTITY).find(grant => grant.adapter === adapter &&
+    grant.server === target.server && (grant.scope === "service" || (grant.scope === "method" && grant.method === target.method)));
 }
 export function mcpTarget(call: NativePermissionCall): NativeMcpTarget | undefined {
   const { ServerName: server, ToolName: method } = call.parameters;
@@ -63,26 +65,50 @@ export function mcpPermissionInput(target: NativeMcpTarget): UserInteractionInpu
 }
 const unknownPermissionInput: UserInteractionInput = {
   kind: "action_required", title: "工具权限需要处理",
-  message: "无法确认完整的服务和方法，或具体操作不能安全展示。请在 AGY 中核对权限后继续；此按钮不会授予未知操作权限。",
+  message: "无法确认完整的服务和方法，或具体操作不能安全展示。请在对应原生工具中核对权限后继续；此按钮不会授予未知操作权限。",
   action_label: "已处理权限，继续",
 };
-function ineffectivePermissionInput(target: NativeMcpTarget): UserInteractionInput {
+function ineffectivePermissionInput(target: NativeMcpTarget, adapter: string): UserInteractionInput {
+  const label = adapter === "claude-code" ? "Claude Code" : adapter === "opencode" ? "OpenCode" : "AGY";
   return {
-    kind: "action_required", title: "已授权，但 AGY 仍拒绝调用",
-    message: `MCP 服务：${target.server}\n方法：${target.method}\n\n你的永久授权已保存，无需重复授权。AGY 仍拒绝了这次调用，任务已暂停。\n\n请先修复授权连接，或在 AGY 的 /permissions 中核对该方法是否被明确设为拒绝或询问；处理后再继续。`,
+    kind: "action_required", title: `已授权，但 ${label} 仍拒绝调用`,
+    message: `MCP 服务：${target.server}\n方法：${target.method}\n\n你的永久授权已保存，无需重复授权。${label} 仍拒绝了这次调用，任务已暂停。\n\n请先修复授权连接，或在对应原生工具中核对该方法是否被明确设为拒绝或询问；处理后再继续。`,
     action_label: "已处理，重试调用",
   };
 }
-function mcpRequestInput(store: Store, target: NativeMcpTarget) {
-  return findNativeMcpPermission(store, target) ? ineffectivePermissionInput(target) : mcpPermissionInput(target);
+function mcpRequestInput(store: Store, target: NativeMcpTarget, adapter: string) {
+  return findNativeMcpPermission(store, target, adapter) ? ineffectivePermissionInput(target, adapter) : mcpPermissionInput(target);
+}
+function supportsNativeGrant(run: Run, call: NativePermissionCall): boolean {
+  if (run.adapter === "claude-code" && ["AskUserQuestion", "ExitPlanMode"].includes(call.name)) return false;
+  if (permissionCategoryForPurpose(run.purpose ?? run.stage) !== "read-only") return true;
+  if (run.adapter === "claude-code") return ["Read", "Glob", "Grep"].includes(call.name);
+  if (run.adapter === "opencode") return ["read", "glob", "grep", "list"].includes(call.name);
+  return true; // AGY keeps its existing native policy checks.
+}
+function unsupportedPermissionInput(run: Run, calls: NativePermissionCall[]): UserInteractionInput | undefined {
+  if (calls.every(call => supportsNativeGrant(run, call))) return;
+  const interactive = run.adapter === "claude-code" && calls.some(call => ["AskUserQuestion", "ExitPlanMode"].includes(call.name));
+  return {
+    kind: "action_required", title: interactive ? "请完成 Claude Code 原生交互" : "当前角色不能执行此操作",
+    message: interactive
+      ? `此操作需要问题答案或原生计划确认，工具授权不能代替。请在 Claude Code 中打开会话 ${run.conversation_id}，完成对应交互后继续。此按钮不会授予工具权限。`
+      : "当前规划或复核角色只允许读取，不能通过工具授权执行此操作。请在任务对话中说明允许的处理方式后继续；此按钮不会扩大角色权限。",
+    action_label: interactive ? "已完成原生交互，继续" : "已补充处理方式，继续",
+  };
 }
 /** Project old pending prompts into the new scope; old allow_tool submissions are rejected. */
 export function nativePermissionInteraction(store: Store, record: UserInteractionRecord): UserInteractionRecord {
   if (record.status !== "pending") return record;
   const request = store.get<NativePermissionRequest>(NATIVE_PERMISSION_ENTITY, record.id);
-  if (!request?.calls.some(call => call.name === "call_mcp_tool")) return record;
+  if (!request) return record;
+  const source = store.get<Run>("run", request.source_run_id);
+  const unsupported = source && unsupportedPermissionInput(source, request.calls);
+  if (unsupported) return { ...record, request: unsupported };
+  if (!request.calls.some(call => call.name === "call_mcp_tool")) return record;
   const target = requestTarget(request.calls);
-  return { ...record, request: target ? mcpRequestInput(store, target) : unknownPermissionInput };
+  const adapter = source?.adapter ?? "agy";
+  return { ...record, request: target ? mcpRequestInput(store, target, adapter) : unknownPermissionInput };
 }
 export interface NativePermissionCall {
   name: string;
@@ -99,12 +125,13 @@ export interface NativePermissionRequest {
   profile_hash: string;
   account_scope?: string;
   workspace_hash: string;
-  calls: Array<NativePermissionCall & { fingerprint: string; consumed_by?: string }>;
+  calls: Array<NativePermissionCall & { fingerprint: string; consumed_by?: string; consumed_native_call_id?: string }>;
   decision?: "allow" | "deny";
   decided_at?: string;
   bound_run_id?: string;
   mcp_grant?: NativeMcpTarget & { scope: NativeMcpScope; lifetime: "permanent" | "once" };
   consumed_by?: string;
+  consumed_native_call_id?: string;
 }
 
 export function pauseForNativePermission(engine: Engine, run: Run, calls: NativePermissionCall[], description: string, recoverBlocked = false) {
@@ -120,19 +147,20 @@ export function pauseForNativePermission(engine: Engine, run: Run, calls: Native
   return engine.store.transaction(() => {
     const rawDetail = calls.map(call => `工具：${call.name}\n参数与目标：${JSON.stringify(call.parameters)}`).join("\n\n");
     const detail = redact(rawDetail);
-    const target = source.adapter === "agy" ? requestTarget(calls) : undefined;
+    const unsupported = unsupportedPermissionInput(source, calls);
+    const target = !unsupported && ["agy", "claude-code", "opencode"].includes(source.adapter) ? requestTarget(calls) : undefined;
     const hasMcp = calls.some(call => call.name === "call_mcp_tool");
     const safeDetail = detail.length <= 3500 && detail === rawDetail && !highRiskDiagnostic(rawDetail);
-    const known = !!target || !hasMcp && calls.length > 0 && safeDetail;
+    const known = !unsupported && (!!target || !hasMcp && calls.length > 0 && safeDetail);
     const interaction = new UserInteractionService(engine.store).createInteraction({
       workflowId: w.id, sourceRunId: run.id, sourcePlanRevision: source.plan_revision,
       ...context, purpose: owner.purpose, role: owner.role,
-      rawInput: target ? mcpRequestInput(engine.store, target) : known ? {
+      rawInput: unsupported ?? (target ? mcpRequestInput(engine.store, target, source.adapter) : known ? {
         kind: "question", title: "授权本次工具操作",
         message: detail + "\n仅对原会话中上述具体调用授权一次。改变工具、参数、目标或会话需要重新授权。",
         question: "是否允许执行上述操作？", allow_free_text: false, action_label: "提交授权决定",
         choices: [{ id: "allow_once", label: "允许本次操作" }, { id: "deny", label: "拒绝本次操作" }],
-      } : unknownPermissionInput,
+      } : unknownPermissionInput),
     });
     if (known) engine.store.put(NATIVE_PERMISSION_ENTITY, interaction.id, w.id, {
       id: interaction.id, workflow_id: w.id, source_run_id: run.id,
@@ -150,8 +178,8 @@ export function pauseForNativePermission(engine: Engine, run: Run, calls: Native
     });
     engine.store.put("run", run.id, w.id, { ...source, status: "waiting", ended_at: now() });
     engine.transition(w.id, [w.state], "WAITING_INPUT", run.stage, {
-      blocker: { code: "NEED_USER", message: target && findNativeMcpPermission(engine.store, target)
-        ? "永久授权已保存，等待处理 AGY 权限拒绝" : known ? "等待你授权本次工具操作" : "等待处理工具权限" },
+      blocker: { code: "NEED_USER", message: target && findNativeMcpPermission(engine.store, target, source.adapter)
+        ? "永久授权已保存，等待处理权限拒绝" : known ? "等待你授权本次工具操作" : "等待处理工具权限" },
     });
     engine.store.event(w.id, w.project_id, "NativePermissionRequested", { interaction_id: interaction.id, source_run_id: run.id }, run.id);
     return interaction;
@@ -164,9 +192,13 @@ export function decideNativePermission(store: Store, record: UserInteractionReco
   if (!request) return;
   const w = store.must<{ plan_hash?: string }>("workflow", record.workflow_id);
   const run = store.must<Run>("run", record.source_run_id);
-  const target = run.adapter === "agy" ? requestTarget(request.calls) : undefined;
-  if (target && findNativeMcpPermission(store, target)) {
-    if (choice !== undefined) throw new FlowError("INTERACTION_STALE", "永久授权已保存，请刷新查看 AGY 权限问题", 409);
+  if (unsupportedPermissionInput(run, request.calls)) {
+    if (choice !== undefined) throw new FlowError("INTERACTION_STALE", "此操作需要原生交互或受角色限制，请刷新查看处理方式", 409);
+    return;
+  }
+  const target = ["agy", "claude-code", "opencode"].includes(run.adapter) ? requestTarget(request.calls) : undefined;
+  if (target && findNativeMcpPermission(store, target, run.adapter)) {
+    if (choice !== undefined) throw new FlowError("INTERACTION_STALE", "永久授权已保存，请刷新查看权限问题", 409);
     // Acknowledging a native policy failure neither creates nor expands a grant.
     return;
   }
@@ -182,7 +214,8 @@ export function decideNativePermission(store: Store, record: UserInteractionReco
   const mcpGrant = target && decision === "allow" ? { ...target,
     scope: choice!.startsWith("allow_service") ? "service" as const : "method" as const,
     lifetime: choice!.endsWith("_once") ? "once" as const : "permanent" as const } : undefined;
-  if (mcpGrant?.lifetime === "permanent") grantNativeMcpPermission(store, record.id, mcpGrant, mcpGrant.scope);
+  if (mcpGrant?.lifetime === "permanent") grantNativeMcpPermission(store, record.id,
+    { ...mcpGrant, adapter: run.adapter as "agy" | "claude-code" | "opencode" }, mcpGrant.scope);
   store.put(NATIVE_PERMISSION_ENTITY, request.id, request.workflow_id, {
     ...request, decision, mcp_grant: mcpGrant, decided_at: now(),
   });
@@ -198,17 +231,18 @@ export function nativePermissionAnswer(store: Store, record: UserInteractionReco
     (grant.lifetime === "once" ? "仅可放行一次调用，失败重试需重新授权。" : "当前及后续任务有效。") + "其他范围未获此授权。请继续原任务。";
 }
 
-export function nativePermissionForRun(store: Store, run: Run): NativePermissionRequest | undefined {
+export function nativePermissionForRun(store: Store, run: Run, nativeCallId?: string): NativePermissionRequest | undefined {
   const w = store.must<{ plan_hash?: string; plan_revision: number }>("workflow", run.workflow_id);
   return store.list<NativePermissionRequest>(NATIVE_PERMISSION_ENTITY, run.workflow_id).find(request =>
     request.decision === "allow" && request.source_run_id === run.continuation?.source_run_id &&
-    (!request.calls.some(call => call.name === "call_mcp_tool") || request.mcp_grant?.lifetime === "once") && !request.consumed_by &&
+    (!request.calls.some(call => call.name === "call_mcp_tool") || request.mcp_grant?.lifetime === "once") &&
+    (!request.consumed_by || !!nativeCallId && request.consumed_by === run.id && request.consumed_native_call_id === nativeCallId) &&
     request.plan_revision === run.plan_revision && request.plan_revision === w.plan_revision && request.plan_hash === w.plan_hash &&
     request.purpose === run.purpose && request.conversation_id === run.conversation_id &&
     request.profile_hash === objectHash(run.profile) && request.account_scope === accountScope(run) &&
     request.workspace_hash === workspaceHash(store, run.workflow_id) &&
     (!request.bound_run_id || request.bound_run_id === run.id) &&
-    request.calls.some(call => !call.consumed_by));
+    request.calls.some(call => !call.consumed_by || !!nativeCallId && call.consumed_by === run.id && call.consumed_native_call_id === nativeCallId));
 }
 
 function workspaceHash(store: Store, workflowId: string) {
@@ -222,38 +256,53 @@ function accountScope(run: Run) {
 
 export function bindNativePermission(store: Store, run: Run) {
   const request = nativePermissionForRun(store, run);
-  const permanent = run.adapter === "agy" && store.list<NativeMcpPermission>(NATIVE_MCP_PERMISSION_ENTITY).some(grant => grant.adapter === "agy");
-  if (!request && !permanent) return;
-  const bound = request ? { ...request, bound_run_id: run.id } : undefined;
+  const calls = request?.calls.filter(call => supportsNativeGrant(run, call)) ?? [];
+  const permanent = ["agy", "claude-code", "opencode"].includes(run.adapter) &&
+    supportsNativeGrant(run, { name: "call_mcp_tool", parameters: {} }) &&
+    store.list<NativeMcpPermission>(NATIVE_MCP_PERMISSION_ENTITY).some(grant => grant.adapter === run.adapter);
+  if (!calls.length && !permanent) return;
+  const bound = request && calls.length ? { ...request, bound_run_id: run.id } : undefined;
   if (bound) store.put(NATIVE_PERMISSION_ENTITY, bound.id, run.workflow_id, bound);
-  return { ...bound, bound_run_id: run.id, calls: [...(bound?.calls ?? []), ...(permanent ? [{ name: "call_mcp_tool" }] : [])] };
+  return { ...bound, bound_run_id: run.id, calls: [...calls, ...(permanent ? [{ name: "call_mcp_tool" }] : [])] };
 }
 
-export function consumeNativePermission(engine: Engine, run: Run, conversation: string, call: NativePermissionCall) {
+export function consumeNativePermission(engine: Engine, run: Run, conversation: string, call: NativePermissionCall, nativeCallId?: string) {
   return engine.store.transaction(() => {
     const w = engine.get(run.workflow_id);
     if (w.run_id !== run.id || !["EXECUTING", "VERIFYING", "REVIEWING", "PLANNING", "COMMITTING"].includes(w.state) ||
         engine.store.get("run_stop", run.id) || conversation !== run.conversation_id ||
         (run.deadline_at !== undefined && Date.now() >= run.deadline_at)) return false;
-    const target = run.adapter === "agy" ? mcpTarget(call) : undefined;
+    // A native hook must not turn a one-use human grant into a role escalation.
+    // The two new bridges can approve only the same read tools exposed by their
+    // read-only agents. AGY retains its existing native policy checks.
+    if (!supportsNativeGrant(run, call)) return false;
+    const target = ["agy", "claude-code", "opencode"].includes(run.adapter) ? mcpTarget(call) : undefined;
     if (call.name === "call_mcp_tool" && !target) return false;
-    const permanent = target && findNativeMcpPermission(engine.store, target);
+    const permanent = target && findNativeMcpPermission(engine.store, target, run.adapter);
     if (permanent) {
       engine.store.event(w.id, w.project_id, "NativeToolPermissionUsed", { ...target, scope: permanent.scope, lifetime: "permanent" }, run.id);
       return true;
     }
-    const request = nativePermissionForRun(engine.store, run);
+    const request = nativePermissionForRun(engine.store, run, nativeCallId);
     if (!request || request.bound_run_id !== run.id) return false;
     if (request.mcp_grant) {
       const grant = request.mcp_grant;
       if (!target || grant.server !== target.server || grant.scope === "method" && grant.method !== target.method) return false;
-      engine.store.put(NATIVE_PERMISSION_ENTITY, request.id, request.workflow_id, { ...request, consumed_by: run.id });
+      if (request.consumed_by) return request.consumed_by === run.id && !!nativeCallId && request.consumed_native_call_id === nativeCallId;
+      engine.store.put(NATIVE_PERMISSION_ENTITY, request.id, request.workflow_id, {
+        ...request, consumed_by: run.id, ...(nativeCallId ? { consumed_native_call_id: nativeCallId } : {}),
+      });
       engine.store.event(w.id, w.project_id, "NativePermissionConsumed", { interaction_id: request.id, ...target, scope: grant.scope, lifetime: "once" }, run.id);
       return true;
     }
-    const approved = request?.calls.find(item => !item.consumed_by && item.fingerprint === objectHash(call));
+    const approved = request.calls.find(item => item.fingerprint === objectHash(call) &&
+      (!item.consumed_by || !!nativeCallId && item.consumed_by === run.id && item.consumed_native_call_id === nativeCallId));
     if (!request || request.bound_run_id !== run.id || !approved) return false;
+    // One native tool call may ask separately for its directory and its tool.
+    // Re-check the live ownership above, but consume only once for that call ID.
+    if (approved.consumed_by) return true;
     approved.consumed_by = run.id;
+    if (nativeCallId) approved.consumed_native_call_id = nativeCallId;
     engine.store.put(NATIVE_PERMISSION_ENTITY, request.id, request.workflow_id, request);
     engine.store.event(w.id, w.project_id, "NativePermissionConsumed", { interaction_id: request.id, fingerprint: approved.fingerprint }, run.id);
     return true;

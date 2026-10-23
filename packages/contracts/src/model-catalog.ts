@@ -167,6 +167,8 @@ export const TOOL_DISPLAY_ORDER: Array<{
 }> = [
   { adapterId: "codex", label: "Codex" },
   { adapterId: "agy", label: "Antigravity CLI" },
+  { adapterId: "claude-code", label: "Claude Code" },
+  { adapterId: "opencode", label: "OpenCode" },
 ];
 
 export const CATALOG_FRESH_MS = 24 * 60 * 60 * 1000;

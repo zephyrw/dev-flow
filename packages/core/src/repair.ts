@@ -10,8 +10,9 @@ import { openRepairBatch } from "./repair-model-service.js";
 import { usesQualityPolicyV2 } from "./quality-flow.js";
 
 export function prepareRepairResume(engine: Engine, key: string) {
-  if (resolveTaskModel(engine.plan(key).plan) !== "native-v2") return;
   const w = engine.get(key);
+  if (!w.plan_revision) return;
+  if (resolveTaskModel(engine.plan(key).plan) !== "native-v2") return;
   if (w.state === "BLOCKED" && w.blocker?.code === "REPAIR_EXHAUSTED")
     engine.store.remove("repair_state", key);
   const assignment = engine.store.get<any>("repair_assignment", key);

@@ -1,3 +1,4 @@
+import { dirname } from "node:path";
 import type {
   ModelSelectionCapability,
   PreparedInvocation,
@@ -133,6 +134,11 @@ export function clientInvocation(
         "--permission-mode",
         readonly ? "plan" : "acceptEdits",
       );
+      for (const root of Object.values(input.workspaceRoots))
+        args.push("--add-dir", root);
+      if (input.outputPath) {
+        args.push("--add-dir", dirname(input.outputPath));
+      }
       if (readonly)
         args.push(
           "--tools",
@@ -336,6 +342,16 @@ export function clientInvocation(
                 bash: "deny",
                 patch: "deny",
               },
+            },
+          },
+        });
+      } else {
+        args.push("--agent", "devflow-executor");
+        env.OPENCODE_CONFIG_CONTENT = JSON.stringify({
+          agent: {
+            "devflow-executor": {
+              mode: "primary",
+              description: "DevFlow executor",
             },
           },
         });

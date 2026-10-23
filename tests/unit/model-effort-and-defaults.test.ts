@@ -36,9 +36,9 @@ describe("UI/API 工具一致性护栏", () => {
     }
   });
 
-  it("工作台只开放 Codex 与 AGY，其他适配器保留兼容能力", () => {
+  it("工作台开放 Codex、AGY、Claude Code 与 OpenCode，其他适配器保留兼容能力", () => {
     const ids = TOOL_DISPLAY_ORDER.map((item) => item.adapterId);
-    expect(ids).toEqual(["codex", "agy"]);
+    expect(ids).toEqual(["codex", "agy", "claude-code", "opencode"]);
     expect(SupportedAdapters).toContain("mimo-code");
   });
 

@@ -9,7 +9,7 @@ import { ProfileRuntime } from "../../packages/runtime/src/profile-runtime.js";
 import { ProcessManager } from "../../packages/process/src/manager.js";
 import { UserInteractionService } from "../../packages/core/src/user-interaction-service.js";
 import { readWaitingContext } from "../../packages/core/src/waiting-context.js";
-import { NATIVE_PERMISSION_ENTITY, NATIVE_TOOL_PERMISSION_ENTITY, NATIVE_MCP_PERMISSION_ENTITY, pauseForNativePermission, bindNativePermission, consumeNativePermission, findNativeMcpPermission } from "../../packages/core/src/native-permission.js";
+import { NATIVE_PERMISSION_ENTITY, NATIVE_TOOL_PERMISSION_ENTITY, NATIVE_MCP_PERMISSION_ENTITY, pauseForNativePermission, bindNativePermission, consumeNativePermission, findNativeMcpPermission, type NativePermissionCall } from "../../packages/core/src/native-permission.js";
 import { Store } from "../../packages/store/src/store.js";
 import { nativePermissionPlugin } from "../../apps/api/src/routes/native-permissions.js";
 import { userInteractionPlugin } from "../../apps/api/src/routes/user-interactions.js";
@@ -36,13 +36,13 @@ function isolated() {
   return { ...s, workflow, principal: { run_id: workflow.run_id! } };
 }
 
-async function fixture(operation = call) {
+async function fixture(operation: NativePermissionCall = call, adapter: Run["adapter"] = "agy", purpose: Run["purpose"] = "implement") {
   const s = isolated();
   const run: Run = {
-    id: s.principal.run_id, workflow_id: s.workflow.id, adapter: "agy", stage: "execute", purpose: "implement",
+    id: s.principal.run_id, workflow_id: s.workflow.id, adapter, stage: "execute", purpose,
     plan_revision: s.workflow.plan_revision, status: "running", started_at: new Date().toISOString(), package_hash: "native-permission",
     conversation_id: session,
-    profile: { id: "executor", adapterId: "agy", revision: 1, modelSelection: "explicit", modelId: "fixture-only", options: {} },
+    profile: { id: "executor", adapterId: adapter, revision: 1, modelSelection: "explicit", modelId: "fixture-only", options: {} },
   };
   s.store.put("run", run.id, s.workflow.id, run);
   const rootId = "cnv-permission";
@@ -69,7 +69,14 @@ async function answer(s: Awaited<ReturnType<typeof fixture>>, choice_id = "allow
 function resume(s: Awaited<ReturnType<typeof fixture>>) {
   const continuation = s.store.must<NonNullable<Run["continuation"]>>("run_continuation", s.workflow.id);
   const run: Run = { ...s.run, id: "run-permission-resume", continuation, status: "running" };
-  s.engine.transition(s.workflow.id, ["QUEUED"], "EXECUTING", "execute", { run_id: run.id });
+  const current = s.engine.get(s.workflow.id);
+  if (current.state === "PLANNING") {
+    s.engine.transition(s.workflow.id, ["PLANNING"], "PLANNING", "planning", { run_id: run.id });
+  } else if (current.state === "REVIEW_QUEUED") {
+    s.engine.transition(s.workflow.id, ["REVIEW_QUEUED"], "REVIEWING", "review", { run_id: run.id });
+  } else {
+    s.engine.transition(s.workflow.id, [current.state], "EXECUTING", "execute", { run_id: run.id });
+  }
   s.store.put("run", run.id, s.workflow.id, run);
   return run;
 }
@@ -114,6 +121,90 @@ it("denial resumes the original model with an explicit denial and creates no usa
   expect(s.store.get<any>("run_continuation", s.workflow.id).answer).toContain("用户拒绝");
   expect(bindNativePermission(s.store, resume(s))).toBeUndefined();
   expect(s.store.get<any>(NATIVE_PERMISSION_ENTITY, s.interaction.id).decision).toBe("deny");
+});
+
+it.each(["claude-code", "opencode"] as const)("%s consumes only the approved arguments once", async adapter => {
+  const operation = { name: adapter === "claude-code" ? "Read" : "read", parameters: { file_path: "approved.txt" } };
+  const s = await fixture(operation, adapter);
+  await answer(s);
+  const run = resume(s);
+  expect(bindNativePermission(s.store, run)?.bound_run_id).toBe(run.id);
+  expect(consumeNativePermission(s.engine, run, "other-session", operation)).toBe(false);
+  expect(consumeNativePermission(s.engine, run, session, { ...operation, parameters: { file_path: "different.txt" } })).toBe(false);
+  expect(consumeNativePermission(s.engine, run, session, operation)).toBe(true);
+  expect(consumeNativePermission(s.engine, run, session, operation)).toBe(false);
+});
+
+it.each(["claude-code", "opencode"] as const)("%s persistent MCP consent stays with its adapter", async adapter => {
+  const s = await fixture(mcp as any, adapter);
+  await answer(s, "allow_method");
+  const target = { server: "opentabs", method: "browser_emulate_device" };
+  expect(findNativeMcpPermission(s.store, target, adapter)).toBeDefined();
+  expect(findNativeMcpPermission(s.store, target, "agy")).toBeUndefined();
+  const run = resume(s);
+  expect(bindNativePermission(s.store, run)?.calls).toContainEqual({ name: "call_mcp_tool" });
+  expect(consumeNativePermission(s.engine, run, session, mcp)).toBe(true);
+  // An approval cannot promote a read-only role to a writable MCP operation.
+  expect(consumeNativePermission(s.engine, { ...run, purpose: "quality_review" }, session, mcp)).toBe(false);
+});
+
+it.each([
+  { adapter: "opencode", purpose: "planning", name: "read" },
+  { adapter: "opencode", purpose: "quality_review", name: "read" },
+  { adapter: "claude-code", purpose: "planning", name: "Read" },
+  { adapter: "claude-code", purpose: "quality_review", name: "Read" },
+] as const)("$adapter $purpose binds only the approved read despite permanent MCP consent", async ({ adapter, purpose, name }) => {
+  const operation = { name, parameters: { filePath: "approved.txt", file_path: "approved.txt" } };
+  const s = await fixture(operation, adapter, purpose);
+  const response = await s.app.inject({ method: "POST", url: "/api/native-tool-permissions", payload: {
+    adapter, server: "opentabs", method: "browser_emulate_device", scope: "method", decision: "allow",
+  } });
+  expect(response.statusCode).toBe(200);
+  await answer(s);
+  const run = resume(s);
+  const bound = bindNativePermission(s.store, run)!;
+  expect(bound.calls).toHaveLength(1);
+  expect(bound.calls[0]).toMatchObject(operation);
+  expect(consumeNativePermission(s.engine, run, session, mcp)).toBe(false);
+  expect(consumeNativePermission(s.engine, run, session, operation)).toBe(true);
+  // Once the read is consumed, the remaining permanent grant must not install
+  // a bridge for this read-only role, nor be deleted for later writable runs.
+  expect(bindNativePermission(s.store, run)).toBeUndefined();
+  expect(s.store.list(NATIVE_MCP_PERMISSION_ENTITY)).toHaveLength(1);
+});
+
+it("permits repeated native checks only for the same live OpenCode call", async () => {
+  const operation = { name: "read", parameters: { filePath: "approved.txt" } };
+  const s = await fixture(operation, "opencode");
+  await answer(s);
+  const run = resume(s);
+  bindNativePermission(s.store, run);
+  const token = s.engine.auth.issue({ role: "worker", workflow_id: s.workflow.id, run_id: run.id });
+  const request = (nativeCallId: string, args = operation.parameters) => s.app.inject({
+    method: "POST", url: "/api/worker/native-permission", headers: { authorization: `Bearer ${token}` },
+    payload: { conversationId: session, nativeCallId, toolCall: { name: operation.name, args } },
+  });
+  expect((await request("message:call")).json().decision).toBe("allow");
+  expect((await request("message:call")).json().decision).toBe("allow");
+  expect((await request("message:another-call")).json().decision).toBe("ask");
+  expect((await request("message:call", { filePath: "different.txt" })).json().decision).toBe("ask");
+  s.store.put("run_stop", run.id, s.workflow.id, {});
+  expect((await request("message:call")).json().decision).toBe("ask");
+});
+
+it.each(["AskUserQuestion", "ExitPlanMode"])("does not turn Claude %s into a tool grant", async name => {
+  const s = await fixture({ name, parameters: {} }, "claude-code");
+  expect(s.interaction.request.kind).toBe("action_required");
+  expect(s.interaction.request.choices).toBeUndefined();
+  expect(s.store.get(NATIVE_PERMISSION_ENTITY, s.interaction.id)).toBeUndefined();
+});
+
+it.each(["claude-code", "opencode"] as const)("does not offer writable permission to a %s review role", async adapter => {
+  const operation = { name: adapter === "claude-code" ? "Write" : "write", parameters: { filePath: "output.txt", content: "blocked" } };
+  const s = await fixture(operation, adapter, "quality_review");
+  expect(s.interaction.request.kind).toBe("action_required");
+  expect(s.interaction.request.choices).toBeUndefined();
+  expect(s.store.get(NATIVE_PERMISSION_ENTITY, s.interaction.id)).toBeUndefined();
 });
 
 it.each(["allow_service", "allow_method"])("%s persists its exact scope across parameters, tasks and store reopen", async choice => {
