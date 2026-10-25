@@ -11,7 +11,8 @@ export async function spawnWindowsBackground(executable: string, args: string[],
   const commandLine = [executable, "--import", new URL("./background-stdio.mjs", import.meta.url).href, ...args].map(quote).join(" ");
   const script = `
 $ErrorActionPreference = 'Stop'
-$request = [Console]::In.ReadToEnd() | ConvertFrom-Json
+[Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)
+$request = [Console]::In.ReadLine() | ConvertFrom-Json
 $startup = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{
   ShowWindow = [uint16]0
   CreateFlags = [uint32]0x09000400
@@ -41,8 +42,10 @@ if ($result.ReturnValue -ne 0) { throw ('CONTROLLER_JOB_ISOLATION_FAILED: WMI ' 
       else reject(new Error("CONTROLLER_JOB_ISOLATION_FAILED: " + (failed.match(/WMI \d+/)?.[0] ?? `broker exit ${code}`)));
     });
     broker.stdin.on("error", error => { clearTimeout(timer); reject(error); });
+    // JSON escapes embedded newlines; one trailing newline frames the request
+    // without depending on EOF propagation through inherited Windows pipes.
     broker.stdin.end(JSON.stringify({ commandLine, cwd, environment: Object.entries({ ...env,
       DEVFLOW_CONTROLLER_STDOUT: stdoutPath, DEVFLOW_CONTROLLER_STDERR: stderrPath,
-    }).map(([key, value]) => `${key}=${value}`) }));
+    }).map(([key, value]) => `${key}=${value}`) }) + "\n");
   });
 }
