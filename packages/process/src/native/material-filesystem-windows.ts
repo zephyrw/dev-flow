@@ -26,11 +26,11 @@ export function openWindowsMaterialRoot(root: string) {
     if (data.readUInt32LE(0) & 0x400) throw new Error("MATERIAL_FS_REPARSE_POINT");
     return { identity: `${data.readUInt32LE(28)}:${data.readUInt32LE(44)}:${data.readUInt32LE(48)}`, directory: Boolean(data.readUInt32LE(0) & 0x10), size: data.readUInt32LE(36) + data.readUInt32LE(32) * 0x100000000 };
   }
-  function child(parent: bigint, name: string, directory: boolean, disposition = 1, writable = false): bigint {
+  function child(parent: bigint, name: string, directory: boolean, disposition = 1, writable = false, shareDelete = false): bigint {
     const text = Buffer.from(name, "utf16le"), out = Buffer.alloc(8), io = Buffer.alloc(16);
     const status = create(out, writable ? 0xc0110000 : 0x80100000,
       { Length: koffi.sizeof(attributes), RootDirectory: parent, ObjectName: { Length: text.length, MaximumLength: text.length, Buffer: text }, Attributes: 0x40, SecurityDescriptor: null, SecurityQualityOfService: null },
-      io, null, directory ? 0x10 : 0x80, 1 | (directory ? 2 : 0), disposition,
+      io, null, directory ? 0x10 : 0x80, 1 | (directory ? 2 : 0) | (shareDelete ? 4 : 0), disposition,
       0x00200000 | 0x20 | (directory ? 1 : 0x40), null, 0);
     if (status < 0) throw fail(status);
     const h = out.readBigUInt64LE();
@@ -101,6 +101,40 @@ export function openWindowsMaterialRoot(root: string) {
           if (deleted < 0) throw fail(deleted);
           return status >= 0 ? "created" : "exists";
         } finally { if (file !== undefined) close(file); p.opened.reverse().forEach((fd) => close(fd)); }
+      },
+      replace(path: string, expected: Buffer, data: Buffer | undefined, operationId: string) {
+        if (!/^[a-zA-Z0-9_-]+$/.test(operationId)) throw new Error("MATERIAL_FS_BINDING_CONFLICT");
+        const p = parent(path, false);
+        let original: bigint | undefined, file: bigint | undefined, renamed = false;
+        try {
+          original = child(p.handle, p.leaf, false, 1, data === undefined, data !== undefined);
+          const originalIdentity = details(original).identity;
+          if (!bytes(original).equals(expected)) throw new Error("MATERIAL_FS_CONTENT_CONFLICT");
+          if (data === undefined) {
+            const status = set(original, Buffer.alloc(16), Buffer.from([1]), 1, 13);
+            if (status < 0) throw fail(status);
+            return;
+          }
+          file = child(p.handle, `.material-${operationId}.tmp`, false, 2, true);
+          const count = Buffer.alloc(4);
+          if (!write(file, data, data.length, count, null) || count.readUInt32LE() !== data.length || !flush(file)) throw fail();
+          const current = child(p.handle, p.leaf, false, 1, false, true);
+          try { if (details(current).identity !== originalIdentity || !bytes(current).equals(expected)) throw new Error("MATERIAL_FS_CONTENT_CONFLICT"); }
+          finally { close(current); }
+          // FILE_RENAME_INFORMATION atomically replaces the directory entry, never follows its target.
+          const name = Buffer.from(p.leaf, "utf16le"), rename = Buffer.alloc(20 + name.length);
+          rename[0] = 1; rename.writeBigUInt64LE(p.handle, 8); rename.writeUInt32LE(name.length, 16); name.copy(rename, 20);
+          close(original); original = undefined;
+          const status = set(file, Buffer.alloc(16), rename, rename.length, 10);
+          if (status < 0) throw fail(status);
+          renamed = true;
+        } finally {
+          if (original !== undefined) close(original);
+          if (file !== undefined) {
+            if (!renamed) set(file, Buffer.alloc(16), Buffer.from([1]), 1, 13);
+            close(file);
+          }
+        }
       },
       close() { held.splice(0).reverse().forEach((fd) => close(fd)); },
     };

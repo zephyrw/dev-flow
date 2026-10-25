@@ -1,3 +1,4 @@
+import { lifecycleLogger } from "../../../packages/service/src/lifecycle.js";
 import { readMaintenanceMarker } from "../../../packages/installer/src/transaction.js";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,12 +12,7 @@ import { resumeModelWaits, reconcileInactiveRuns } from "../../../packages/runti
 import { buildServer } from "./server.js";
 import { archiveLogs } from "../../../packages/runtime/src/maintenance.js";
 import { acquireControllerLock } from "../../../packages/process/src/controller-lock.js";
-process.on("uncaughtException", (err) => {
-  console.error("[CRITICAL] Uncaught exception:", err);
-});
-process.on("unhandledRejection", (reason) => {
-  console.error("[CRITICAL] Unhandled rejection:", reason);
-});
+const lifecycle = lifecycleLogger("full");
 const config = loadConfig(process.env.DEVFLOW_CONFIG);
 const unlock = await acquireControllerLock(config.storage_root);
 import { bootstrapAccountService } from "./account-service-bootstrap.js";
@@ -69,18 +65,28 @@ const app = await buildServer(engine, {
   developmentFrontendOrigin,
   onMaintenancePrepare,
   onMaintenanceQuiesce,
-  onMaintenanceShutdown: () => close(),
+  onMaintenanceShutdown: () => close("maintenance"),
 });
 let workspaceObserver: WorkspaceObserver | undefined;
 let tick: ReturnType<typeof setInterval> | undefined;
 let maintenance: ReturnType<typeof setInterval> | undefined;
 let closing: Promise<void> | undefined;
-function close(): Promise<void> {
+let dispatchWake: ReturnType<typeof setTimeout> | undefined;
+const wakeDispatch = (change: { kind: string }) => {
+  if (closing || dispatchWake || !["queue", "lease"].includes(change.kind)) return;
+  dispatchWake = setTimeout(() => {
+    dispatchWake = undefined;
+    if (!closing) void engine.dispatch().catch(error => console.error("调度失败", String(error)));
+  }, 25);
+};
+function close(reason = "startup_failure"): Promise<void> {
   return closing ??= (async () => {
+    lifecycle("shutdown_requested", { reason });
     accountService.beginShutdown();
     workspaceObserver?.close();
     clearInterval(tick);
     clearInterval(maintenance);
+      clearTimeout(dispatchWake); store.off("change", wakeDispatch);
     await engine.runtime!.close();
     bridge.dispose();
     for (const socket of app.websocketServer.clients) socket.terminate();
@@ -91,18 +97,21 @@ function close(): Promise<void> {
     await unlock();
   })();
 }
-process.once("SIGINT", () => void close().catch(console.error));
-process.once("SIGTERM", () => void close().catch(console.error));
+process.once("SIGINT", () => void close("SIGINT").catch(console.error));
+process.once("SIGTERM", () => void close("SIGTERM").catch(console.error));
 try {
   // Persist ownership and initialize shutdown before health can report success.
   recordController(config.storage_root, fileURLToPath(import.meta.url), "full");
   await app.listen({ host: config.server.host, port: config.server.port });
+  lifecycle("listening");
   await accountService.reconcileStartup();
   if (!closing) {
     // Bind first: a duplicate controller must fail before mutating persisted runs.
     reconcileInactiveRuns(engine);
     engine.recover();
     workspaceObserver = new WorkspaceObserver(engine);
+      store.on("change", wakeDispatch);
+      wakeDispatch({ kind: "queue" });
     console.log(`DevFlow ${config.server.human_origin}`);
     tick = setInterval(() => {
       maintenanceBlocked = !!readMaintenanceMarker(config.storage_root)?.block_new_dispatch;

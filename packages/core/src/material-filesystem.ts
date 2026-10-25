@@ -38,3 +38,14 @@ export function publishMaterialFile(root: string, path: string, data: Buffer, op
     if (withMaterialRoot(root, (current) => current.identity) !== port.identity) throw new FlowError("MATERIAL_BINDING_CONFLICT", "材料根目录已迁移", 409);
   });
 }
+
+/** Compare the current original before atomically replacing its directory entry. */
+export function replaceMaterialFile(root: string, path: string, expected: Buffer, data: Buffer | undefined, operationId: string): void {
+  const rel = materialRelativePath(path);
+  withMaterialRoot(root, (port) => {
+    port.replace(rel, expected, data, operationId);
+    port.validate();
+    if (withMaterialRoot(root, current => current.identity) !== port.identity)
+      throw new FlowError("MATERIAL_BINDING_CONFLICT", "材料根目录已迁移", 409);
+  });
+}

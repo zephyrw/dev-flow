@@ -155,6 +155,11 @@ export class ExecutionSessionStore {
 
   /** A confirmed missing native root is archived; its history is never overwritten. */
   reserveAfterMissingRoot(key: SessionBindingKey, nativeId: string): SessionBinding {
+    return this.reserveAfterUnavailableRoot(key, nativeId);
+  }
+
+  /** Explicitly confirmed unusable roots retain their original binding and ownership history. */
+  reserveAfterUnavailableRoot(key: SessionBindingKey, nativeId: string): SessionBinding {
     return this.store.transaction(() => {
       const context = this.getBinding(key) ?? this.listBindings(key.workflow_id).find(b =>
         b.adapter_id === key.adapter_id && b.conversation_id === nativeId);

@@ -1,3 +1,4 @@
+import { parsePlanInput } from "../../contracts/src/plan-input.js";
 import { DiagnosticRedactionContext, DiagnosticStreamRedactor } from "../../presentation/src/secret-redactor.js";
 import { StringDecoder } from "node:string_decoder";
 import { mkdirSync, readFileSync, existsSync, appendFileSync, cpSync } from "node:fs";
@@ -300,7 +301,7 @@ export class ProfileRuntime {
       project_config_hash: objectHash(this.engine.project(w.project_id)),
       feedback_cursor: typeof rawPlan.feedback_cursor === "number" ? rawPlan.feedback_cursor : 0,
     };
-    return schema.parse(value);
+    return parsePlanInput(schema, value);
   }
   async diagnose(w: Workflow, error: string) {
     const binding = bindProfile(

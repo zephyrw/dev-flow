@@ -13,7 +13,7 @@ export const RelativePath = z
       !p.startsWith("/") &&
       p.split("/").every((s) => s && s !== "." && s !== ".."),
     "必须是无穿越的相对路径",
-  );
+  ).describe("仓库相对路径，使用 / 分隔；目录不带末尾 /；禁止绝对路径、盘符、反斜杠、空段、. 和 ..");
 
 export const Layer = z.enum(["unit", "integration", "e2e", "opentabs"]);
 

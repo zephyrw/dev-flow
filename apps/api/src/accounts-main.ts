@@ -1,3 +1,4 @@
+import { lifecycleLogger } from "../../../packages/service/src/lifecycle.js";
 import { readMaintenanceMarker } from "../../../packages/installer/src/transaction.js";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,6 +8,7 @@ import { acquireControllerLock } from "../../../packages/process/src/controller-
 import { recordController } from "./controller-descriptor.js";
 import { bootstrapAccountService } from "./account-service-bootstrap.js";
 import { buildAccountsServer } from "./accounts-server.js";
+const lifecycle = lifecycleLogger("accounts");
 const config = loadConfig(process.env.DEVFLOW_CONFIG);
 const unlock = await acquireControllerLock(config.storage_root);
 const store = new Store(join(config.storage_root, "devflow.sqlite"));
@@ -18,12 +20,13 @@ const app = buildAccountsServer(accountService, {
   port: config.server.port,
   humanOrigin: config.server.human_origin,
   storageInstance: config.storage_root,
-  onMaintenanceShutdown: close,
+  onMaintenanceShutdown: () => close("maintenance"),
 });
 let timer: ReturnType<typeof setInterval> | undefined;
 let closing: Promise<void> | undefined;
-function close(): Promise<void> {
+function close(reason = "startup_failure"): Promise<void> {
   return closing ??= (async () => {
+    lifecycle("shutdown_requested", { reason });
     clearInterval(timer);
     // Retain ownership if safe credential/process shutdown fails.
     await accountService.close();
@@ -32,11 +35,12 @@ function close(): Promise<void> {
     await unlock();
   })();
 }
-process.once("SIGINT", () => void close().catch(console.error));
-process.once("SIGTERM", () => void close().catch(console.error));
+process.once("SIGINT", () => void close("SIGINT").catch(console.error));
+process.once("SIGTERM", () => void close("SIGTERM").catch(console.error));
 try {
   recordController(config.storage_root, fileURLToPath(import.meta.url), "accounts");
   await app.listen({ port: config.server.port, host: config.server.host });
+  lifecycle("listening");
   await accountService.reconcileStartup();
   if (!closing) {
     console.log(`DevFlow AGY Accounts ${config.server.human_origin}/accounts`);

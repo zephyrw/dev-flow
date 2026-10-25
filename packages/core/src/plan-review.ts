@@ -4,7 +4,7 @@ import { WorkspaceReferenceSchema } from "../../contracts/src/feedback.js";
 import { AsideSessionService } from "../../asides/src/service.js";
 import type { Store } from "../../store/src/store.js";
 import type { Engine, PlanRecord } from "./engine.js";
-import type { ProjectDocument } from "./document-service.js";
+import { documentLocation, type ProjectDocument } from "./document-service.js";
 import { FeedbackService } from "./feedback-service.js";
 import { hash } from "./util.js";
 
@@ -22,7 +22,7 @@ export const PlanQuestionSchema = PlanFeedbackSchema.strict();
 
 import { originalPlanPath, resolveMaterialLocator, readVerifiedProjectMaterial } from "./project-materials.js";
 import { readMaterialFile } from "./material-filesystem.js";
-import { dirname, isAbsolute, relative, resolve } from "node:path";
+import { resolve } from "node:path";
 import type { ProjectMaterial, Project, Workspace, Run } from "../../contracts/src/index.js";
 
 // Current documents are references; older material records retain their publication fences.
@@ -61,23 +61,8 @@ export function readPlanMaterial(
       "计划原件注册尚未就绪", 409);
     const path = originalPlanPath(store, workflowId, revision);
     requireCondition(path && resolve(path) === resolve(registered.path), "PLAN_MATERIAL_CONFLICT", "计划原件引用与登记路径不一致", 409);
-    const workflow = store.get<{ project_id: string }>("workflow", workflowId);
-    const project = workflow && store.get<Project>("project", workflow.project_id);
-    const approval = store.get<{ plan_hash: string }>("approval", `${workflowId}-${revision}`);
-    const explicitPath = record.plan.design_ref?.file_ref;
-    // Older multi-repository tasks can reference an approved original in the
-    // parent project docs directory rather than inside either repository.
-    const approvedOriginal = approval?.plan_hash === record.hash && explicitPath &&
-      isAbsolute(explicitPath) && resolve(explicitPath) === resolve(path);
-    const roots = [...store.list<Workspace>("workspace", workflowId).map(w => w.root),
-      ...(project?.repositories ?? []).map(r => r.path),
-      ...(approvedOriginal ? [dirname(path)] : [])];
-    const root = roots.find(candidate => {
-      const rel = relative(resolve(candidate), resolve(path));
-      return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
-    });
-    requireCondition(root, "PATH_ESCAPE", "计划原件必须属于项目或任务工作区", 400);
-    const body = readMaterialFile(root, relative(root, path).replaceAll("\\", "/"));
+    const location = documentLocation(store, workflowId, path, registered);
+    const body = readMaterialFile(location.root, location.relative);
     requireCondition(body, "PLAN_MATERIAL_LOST", "已登记的项目计划原件已丢失", 409);
     const markdown = body.toString("utf8");
     requireCondition(markdown.trim(), "PLAN_DOCUMENT_MISSING", "计划原件正文为空", 409);

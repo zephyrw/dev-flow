@@ -39,7 +39,7 @@ export function safePath(root: string, input: string, write = false): string {
     "受保护或特殊路径",
     403,
   );
-  const base = realpathSync(root);
+  const base = realpathSync.native(root);
   let current = base;
   for (const part of parts) {
     current = join(current, part);
@@ -52,7 +52,7 @@ export function safePath(root: string, input: string, write = false): string {
         "不能通过链接访问或写入",
         403,
       );
-      const actual = realpathSync(current);
+      const actual = realpathSync.native(current);
       const rel = relative(base, actual);
       requireCondition(
         rel !== "" &&
@@ -63,6 +63,9 @@ export function safePath(root: string, input: string, write = false): string {
         "实际路径越界",
         403,
       );
+      requireCondition(!rel.split(sep).some(s => protectedParts.has(s.toLowerCase())),
+        "PATH_DENIED", "受保护或特殊路径", 403);
+      current = actual;
     }
   }
   return current;
@@ -170,20 +173,27 @@ export class FileBroker {
       content: string | null;
     }[],
   ) {
+    const base = realpathSync.native(root);
+    const policyKey = (path: string) => {
+      const canonical = relative(base, safePath(root, path, true)).replaceAll("\\", "/");
+      return process.platform === "win32" ? canonical.toLowerCase() : canonical;
+    };
     requireCondition(
       changes.length > 0 && changes.length <= 50,
       "PATCH_SIZE",
       "补丁文件数量无效",
     );
+    const targets = changes.map(c => ({ ...c, target: safePath(root, c.path, true), key: policyKey(c.path) }));
+    const protectedPaths = scope.protected_paths.filter(p => !p.split("/").some(s => protectedParts.has(s.toLowerCase()))).map(policyKey);
     requireCondition(
-      new Set(changes.map((c) => c.path)).size === changes.length,
+      new Set(targets.map(c => c.key)).size === changes.length,
       "DUPLICATE_PATH",
       "重复补丁路径",
     );
-    const prepared = changes.map((c) => {
+    const prepared = targets.map((c) => {
       requireCondition(
-        !scope.protected_paths.some(
-            (p) => c.path === p || c.path.startsWith(p + "/"),
+        !protectedPaths.some(
+            (p) => c.key === p || c.key.startsWith(p + "/"),
           ),
         "PROTECTED_PATH",
         `不能修改受保护路径 ${c.path}`,
@@ -192,13 +202,13 @@ export class FileBroker {
       if (!scope.allow_dependency_changes)
         requireCondition(
           !/(^|\/)(package(?:-lock)?\.json|pnpm-lock\.yaml|yarn\.lock|pom\.xml|requirements.*\.txt)$/.test(
-            c.path,
+            c.key,
           ),
           "DEPENDENCY_DENIED",
           "依赖更改未获批准",
           403,
         );
-      const target = safePath(root, c.path, true);
+      const target = c.target;
       let actual: null | string = null;
       if (existsSync(target)) {
         const fd = openSync(target, "r");

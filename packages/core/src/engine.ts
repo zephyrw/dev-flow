@@ -14,7 +14,7 @@ import type { DispatchContext } from "../../contracts/src/model-routing.js";
 import { bindRepairAssignment, closeOpenRepairBatches } from "./repair-model-service.js";
 import { readMaintenanceMarker } from "../../installer/src/transaction.js";
 import { QualityCoordinator } from "./quality-coordinator.js";
-import { DocumentService, type ProjectDocument } from "./document-service.js";
+import { DocumentService, type ProjectDocument, type DocumentVersion } from "./document-service.js";
 import {
   AsideSessionService,
   ASIDE_TIMEOUT_MS,
@@ -628,20 +628,29 @@ export class Engine {
     input: unknown,
     expectedVersion: number,
     idempotency: string,
+    publication?: { runId: string; original: DocumentVersion },
   ) {
-    return this.submitPlan(key, input, expectedVersion, idempotency);
+    return this.submitPlan(key, input, expectedVersion, idempotency, publication);
   }
   submitPlan(
     key: string,
     input: unknown,
     expectedVersion: number,
     idempotency: string,
+    publication?: { runId: string; original: DocumentVersion },
   ) {
     return this.store.deduplicate(
       "plan:" + key + ":" + idempotency,
       input,
       () => {
         const w = this.get(key);
+        if (publication) {
+          const run = this.store.get<Run>("run", publication.runId);
+          requireCondition(w.state === "PLANNING" && w.run_id === publication.runId &&
+            run?.workflow_id === key && run.plan_revision === w.plan_revision &&
+            (run.status === "running" || (run.status === "completed" && run.exit_code === 0)) &&
+            !this.store.get("run_stop", publication.runId), "RUN_REVOKED", "规划已停止，不能发布旧结果", 409);
+        }
         requireCondition(
           w.version === expectedVersion,
           "VERSION_CONFLICT",
@@ -714,6 +723,7 @@ export class Engine {
         const document = validated.plan.markdown?.trim()
           ? new DocumentService(this.store, this.config.storage_root).publishDocument(
               key, "plan", validated.plan.markdown, revision, validated.plan.design_ref?.file_ref,
+              Boolean(publication), publication?.original,
             )
           : undefined;
         this.supersedePendingContinuation(key, w.state !== "PLANNING");
@@ -723,12 +733,14 @@ export class Engine {
         }
         const existingDoc = !document ? this.store.get<ProjectDocument>("project_document", `doc_${key}_plan`) : undefined;
         const materialPath = document?.path ?? (existingDoc?.path ? existingDoc.path : undefined);
+        const designRef = materialPath ? { summary: validated.plan.design_ref?.summary ?? "项目计划原件", ...validated.plan.design_ref, file_ref: materialPath } : validated.plan.design_ref;
         const record: PlanRecord = {
           id: `${key}-${revision}`,
           workflow_id: key,
           revision,
-          hash: validated.hash,
-          plan: { ...validated.plan, markdown: undefined },
+          hash: materialPath ? validatePlan({ ...validated.plan, design_ref: designRef }).hash : validated.hash,
+          plan: { ...validated.plan, markdown: undefined,
+            ...(materialPath ? { design_ref: designRef } : {}) },
           ...(materialPath ? { material_id: undefined, material_path: materialPath } : {}),
           created_at: now(),
         };
@@ -1618,9 +1630,17 @@ export class Engine {
       "请自行检查相关输入和保存格式后继续原任务；不要重复已经完成的开发和测试。无法自行解决时，通过 need_user 和 user_interaction 说明具体问题并请求协助。",
     ].join("\n");
     if (this.store.get("model_input_feedback", runId)) {
-      this.routeExecutionIntent(key, runId, normalizeDeliveredRound({ status: "need_user", summary: message,
+      const run = this.store.must<Run>("run", runId);
+      if ((run.profile?.adapterId ?? run.adapter) === "agy" && run.conversation_id && !details?.input_problems?.length) {
+        this.block(key, new FlowError("MODEL_SESSION_REQUEST_REJECTED",
+          "原 AGY 会话在续接后仍拒绝请求，修复提示未能送达模型；原历史、计划和工作区已保留。", 409,
+          { diagnostic: redact(details?.diagnostic ?? error.message) }));
+        return;
+      }
+      const assistance = "模型请求再次被拒绝，当前任务尚未完成。请检查输入格式及模型配置，处理后继续原任务；已有进度已保留。";
+      this.routeExecutionIntent(key, runId, normalizeDeliveredRound({ status: "need_user", summary: assistance,
         user_interaction: { kind: "action_required", title: "模型请求仍被拒绝，需要协助",
-          message: message.slice(0, 3900), action_label: "已处理，继续原任务" } }));
+          message: assistance, action_label: "已处理，继续原任务" } }));
       return;
     }
     this.stageExecuteContinuation(key);
@@ -3235,6 +3255,8 @@ export class Engine {
       });
       const bound = this.assignPlanningRun(w, run);
       this.bindAccountRecoveryRun(bound, pendingRetry);
+      if (pendingRetry?.input_feedback)
+        this.store.put("model_input_feedback", runId, w.id, { message: pendingRetry.input_feedback });
       this.store.remove("pending_model_retry", w.id);
       this.store.remove("pending_dispatch_purpose", w.id);
       this.store.remove("queue_wait", w.id);
@@ -3249,6 +3271,7 @@ export class Engine {
         ack_run: runId,
       });
     try {
+      const original = new DocumentService(this.store, this.config.storage_root).captureOriginal(w.id);
       const result = await this.runtime.plan(w, bound);
       requireCondition(
         this.get(w.id).state === "PLANNING" &&
@@ -3265,17 +3288,14 @@ export class Engine {
       );
       const normalized = result.markdown.replace(/\r\n/g, "\n");
       const plan = result.plan as any;
-      const doc = new DocumentService(
-        this.store,
-        this.config.storage_root,
-      ).publishDocument(w.id, "plan", normalized, w.plan_revision + 1, plan.design_ref?.file_ref, true);
-
       await this.submitValidatedPlan(
         w.id,
-        plan,
+        { ...plan, markdown: normalized },
         this.get(w.id).version,
         "planning-" + runId,
+        { runId, original },
       );
+      const doc = this.store.must<ProjectDocument>("project_document", `doc_${w.id}_plan`);
       const planRev = this.get(w.id).plan_revision;
       const currentPlan = this.store.get<PlanRecord>("plan", `${w.id}-${planRev}`);
       if (currentPlan) {
@@ -3309,8 +3329,23 @@ export class Engine {
       if (
         this.get(w.id).state === "PLANNING" &&
         this.get(w.id).run_id === runId
-      )
-        this.block(w.id, error);
+      ) {
+        const failedRun = this.store.must<Run>("run", runId);
+        if (error instanceof FlowError && error.code === "PLAN_VALIDATION_FAILED" &&
+            failedRun.conversation_id && !this.store.get("run_stop", runId) &&
+            !this.store.get("model_input_feedback", runId)) {
+          stageModelRunRetry(this.store, w.id, runId);
+          const retry = this.store.must<PendingModelRetry>("pending_model_retry", w.id);
+          this.store.put("pending_model_retry", w.id, w.id, { ...retry, input_feedback:
+            "只修正刚才规划结果的格式，保留原方案、工作区和会话，不执行开发，不批准计划。返回完整规划正文与结构。\n" +
+            error.message + "\n" + JSON.stringify(error.details) });
+          this.restoreDispatchContext(w.id, runId);
+          this.store.event(w.id, w.project_id, "PlanFormatCorrectionScheduled", {
+            message: "规划格式错误已返回原会话修正（最多一次）", code: error.code,
+          }, runId);
+          this.scheduler.enqueue(w.id, w.project_id);
+        } else this.block(w.id, error);
+      }
     }
   }
 
@@ -3322,11 +3357,13 @@ export class Engine {
       this.wakeArchiveDrain();
       let last: string | undefined;
       const attempted = new Set(this.running);
-      for (let n = 0; n < this.list().length; n++) {
+      const candidates = this.scheduler.candidates(this.config.scheduler.aging_minutes);
+      for (let n = 0; n < candidates.length; n++) {
         const item = this.scheduler.next(
           last,
           this.config.scheduler.aging_minutes,
           attempted,
+          candidates,
         );
         if (!item) break;
         attempted.add(item.id);

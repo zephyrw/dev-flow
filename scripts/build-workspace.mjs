@@ -36,6 +36,7 @@ if (fingerprint() !== sourceHash) throw new Error("Source changed during build; 
 const target = join(output, "packages/installer/src/entry-template.mjs");
 mkdirSync(dirname(target), { recursive: true });
 cpSync(resolve("packages/installer/src/entry-template.mjs"), target);
+cpSync(resolve("packages/service/src/background-stdio.mjs"), join(output, "packages/service/src/background-stdio.mjs"));
 writeFileSync(join(output, "build-info.json"), JSON.stringify({
   application_version: JSON.parse(readFileSync("package.json", "utf8")).version,
   build_revision: revision, service_protocol_version: "1", source_hash: sourceHash, built_at: new Date().toISOString(),

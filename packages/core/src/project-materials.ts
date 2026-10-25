@@ -126,6 +126,8 @@ export function resolveMaterialLocator(options: {
   preferredWorkspaceId?: string;
   customRelPath?: string;
   expectedHash?: string;
+  /** Reference documents can live outside the material directories, but still inside a project root. */
+  projectOriginal?: boolean;
 }): MaterialLocator {
   const { store, workflowId, kind, preferredWorkspaceId, customRelPath, run_id, round, expectedHash } = options;
   const revision = options.revision ?? 1;
@@ -241,7 +243,7 @@ export function resolveMaterialLocator(options: {
 
   relPath = sanitizeRelativePath(targetWs.root, relPath);
   const permitted = [matPaths?.plan_dir ?? "docs/plan", matPaths?.review_dir ?? "docs/plan", matPaths?.repair_dir ?? "docs/plan", matPaths?.process_dir ?? "docs/process", matPaths?.evidence_dir ?? "docs/test/evidence"].map(materialRelativePath);
-  requireCondition(permitted.some((dir) => relPath.startsWith(`${dir}/`)), "INVALID_PATH", "材料路径不在允许的材料目录中", 400);
+  requireCondition(options.projectOriginal || permitted.some((dir) => relPath.startsWith(`${dir}/`)), "INVALID_PATH", "材料路径不在允许的材料目录中", 400);
   const absPath = normalize(resolve(targetWs.root, relPath));
   const materialId = `mat_${workflowId}_${kind}_r${revision}${round !== undefined ? `_round_${round}` : ""}${run_id ? `_run_${run_id}` : ""}`;
 

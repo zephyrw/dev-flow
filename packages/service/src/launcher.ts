@@ -248,31 +248,23 @@ export async function ensureService(mode: "full" | "accounts" = "full") {
       throw new Error('安装尚未完成，请双击"安装或更新 DevFlow.cmd"。');
     if ((process.platform === "win32" || process.platform === "darwin") && !existsSync(credentialWorker))
       throw new Error("凭据 Worker 不存在，请重新安装。");
-    const output = openSync(
-      join(configuration.storage_root, "controller.stdout.log"),
-      "a",
-    );
-    const errors = openSync(
-      join(configuration.storage_root, "controller.stderr.log"),
-      "a",
-    );
-    try {
-      assertNotUpdating();
-      const child = spawn(process.execPath, [entry], {
-        cwd: versionRoot,
-        detached: true,
-        windowsHide: true,
-        stdio: ["ignore", output, errors],
-        env: cleanProcessEnvironment({ DEVFLOW_CONFIG: configurationFile }),
-      });
-      await new Promise<void>((yes, no) => {
-        child.once("spawn", yes);
-        child.once("error", no);
-      });
-      child.unref();
-    } finally {
-      closeSync(output);
-      closeSync(errors);
+    assertNotUpdating();
+    const env = cleanProcessEnvironment({ DEVFLOW_CONFIG: configurationFile });
+    const stdoutPath = join(configuration.storage_root, "controller.stdout.log");
+    const stderrPath = join(configuration.storage_root, "controller.stderr.log");
+    if (process.platform === "win32") {
+      const { spawnWindowsBackground } = await import("./windows-background.js");
+      await spawnWindowsBackground(process.execPath, [entry], versionRoot, env, stdoutPath, stderrPath);
+    } else {
+      const output = openSync(stdoutPath, "a"), errors = openSync(stderrPath, "a");
+      try {
+        const child = spawn(process.execPath, [entry], {
+          cwd: versionRoot, detached: true, windowsHide: true,
+          stdio: ["ignore", output, errors], env,
+        });
+        await new Promise<void>((yes, no) => { child.once("spawn", yes); child.once("error", no); });
+        child.unref();
+      } finally { closeSync(output); closeSync(errors); }
     }
     for (let i = 0; i < 90; i++) {
       if (await running(mode))

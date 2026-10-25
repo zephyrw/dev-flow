@@ -7,6 +7,21 @@ export interface RuntimeFailureResolution {
 }
 
 const resolutions: Record<string, Omit<RuntimeFailureResolution, "code">> = {
+  AGY_MODEL_SELECTION_REQUIRED: {
+    title: "当前账号需要选择可用模型",
+    message: "没有支持原模型且额度可用的账号，已切换到额度最高的候选账号。原任务、计划和修改已保留。",
+    steps: ["从当前账号的真实模型目录选择模型，确认后继续原任务。若所有额度均已耗尽，需等待额度恢复。"],
+  },
+  MODEL_SESSION_REQUEST_REJECTED: {
+    title: "原会话请求持续被拒绝",
+    message: "原会话续接仍返回参数错误，模型未能接收修复提示。账号登录失效尚未被证实。",
+    steps: ["确认同账号、同模型的新会话能正常调用后，可重建会话接续。", "重建会保留旧历史、原模型、批准计划、工作区和执行记录，交给新会话继续原阶段。"],
+  },
+  PLAN_VALIDATION_FAILED: {
+    title: "规划格式需要修正",
+    message: "规划输出含有无法安全转换的字段，原正文、会话和工作区已保留。",
+    steps: ["查看具体字段、原值和原因；继续原规划会话修正格式后重新提交，仍需人工批准计划。"],
+  },
   VERIFICATION_ENVIRONMENT_UNAVAILABLE: {
     title: "模型访问验证环境不可用",
     message: "本机环境无法完成模型访问验证，执行尚未开始；原计划、模型和工作区已保留。",
@@ -85,6 +100,11 @@ const resolutions: Record<string, Omit<RuntimeFailureResolution, "code">> = {
     title: "模型需要重新登录",
     message: "当前模型账号的登录状态已失效，已保留任务现场。",
     steps: ["使用当前系统用户在对应工具中重新登录。", "重新验证该账号的模型访问后继续原任务。"],
+  },
+  AGY_ACCOUNT_IDENTITY_UNRESOLVED: {
+    title: "AGY 账号身份待同步",
+    message: "平台尚未确认当前活动账号，未确认登录失效；原任务和模型已保留。",
+    steps: ["打开“AGY 账号管理”刷新并确认活动账号。", "账号识别成功后继续原任务；只有 CLI 明确报告登录失效时才重新登录。"],
   },
   MODEL_ACCESS_REQUIRED: {
     title: "当前账号的模型尚未验证",

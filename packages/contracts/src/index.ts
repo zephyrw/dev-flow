@@ -4,18 +4,8 @@ import { NativePlanSchema } from "./native-plan.js";
 import { QualityReviewResultSchema } from "./quality.js";
 import { ReviewFindingSchema } from "./review-findings.js";
 export const Id = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,95}$/);
-export const RelativePath = z
-  .string()
-  .min(1)
-  .max(1024)
-  .refine(
-    (p) =>
-      !p.includes("\\") &&
-      !p.includes(":") &&
-      !p.startsWith("/") &&
-      p.split("/").every((s) => s && s !== "." && s !== ".."),
-    "必须是无穿越的相对路径",
-  );
+import { RelativePath } from "./base.js";
+export { RelativePath } from "./base.js";
 export const Layer = z.enum(["unit", "integration", "e2e", "opentabs"]);
 export const States = [
   "RESEARCHING",

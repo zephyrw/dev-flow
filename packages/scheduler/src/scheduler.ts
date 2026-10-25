@@ -9,6 +9,7 @@ export interface Lease {
   status: "active" | "suspect";
   heartbeat: number;
 }
+export interface QueueEntry { id: string; project: string; priority: number; created_at: string }
 export class Scheduler {
   constructor(private store: Store) {}
   async waitForResources(
@@ -55,9 +56,10 @@ export class Scheduler {
   acquire(owner: string, run: string, keys: string[]): Lease[] | null {
     return this.store.transaction(() => {
       const sorted = [...new Set(keys)].sort();
+      const leases = this.store.list<Lease>("lease");
       if (
         sorted.some((k) => {
-          return this.store.list<Lease>("lease").some(l => this.conflicts(k, l.id) &&
+          return leases.some(l => this.conflicts(k, l.id) &&
             !(l.owner === owner && l.run_id === run && l.status === "active")
           );
         })
@@ -132,13 +134,13 @@ export class Scheduler {
       created_at: now(),
     });
   }
-  next(lastProject?: string, aging = 10, running?: Set<string> | string[]) {
-    const entries = this.store.list<{
-      id: string;
-      project: string;
-      priority: number;
-      created_at: string;
-    }>("queue");
+  candidates(aging = 10): QueueEntry[] {
+    const entries = this.store.list<QueueEntry>("queue"), at = Date.now();
+    const projects = [...new Set(entries.map(entry => entry.project))];
+    const score = (entry: QueueEntry) => entry.priority + Math.floor((at - Date.parse(entry.created_at)) / (Math.max(1, aging) * 60000));
+    return entries.sort((a, b) => projects.indexOf(a.project) - projects.indexOf(b.project) || score(b) - score(a) || a.created_at.localeCompare(b.created_at));
+  }
+  next(lastProject?: string, aging = 10, running?: Set<string> | string[], entries = this.candidates(aging)) {
     const runningSet =
       running instanceof Set
         ? running
@@ -150,20 +152,8 @@ export class Scheduler {
       ...projects.slice(0, index + 1),
     ];
     for (const project of ordered) {
-      const candidates = entries
-        .filter((e) => e.project === project && !runningSet.has(e.id))
-        .sort(
-          (a, b) =>
-            b.priority +
-              Math.floor(
-                (Date.now() - Date.parse(b.created_at)) / (aging * 60000),
-              ) -
-              (a.priority +
-                Math.floor(
-                  (Date.now() - Date.parse(a.created_at)) / (aging * 60000),
-                )) || a.created_at.localeCompare(b.created_at),
-        );
-      if (candidates[0]) return candidates[0];
+      const candidate = entries.find(e => e.project === project && !runningSet.has(e.id));
+      if (candidate) return candidate;
     }
     return undefined;
   }

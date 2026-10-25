@@ -10,7 +10,31 @@ export class Store extends EventEmitter {
   db: Database.Database;
   private depth = 0;
   private pending: DomainEvent[] = [];
+  private rollbackActions: Array<() => void> = [];
+  onRollback(action: () => void): void {
+    if (!this.depth) throw new Error("Rollback action requires a transaction");
+    this.rollbackActions.push(action);
+  }
   private publicCache = new Map<string, { signature: string; event: DomainEvent }>();
+  private changes = new Map<string, { kind: string; id: string; owner: string }>();
+  private revisions = new Map<string, number>();
+  revision(...owners: string[]): string {
+    return [this.db.pragma("data_version", { simple: true }), ...owners.map(owner => this.revisions.get(owner) ?? 0)].join(":");
+  }
+  private changed(kind: string, id: string, owner: string) {
+    this.changes.set(`${kind}:${id}`, { kind, id, owner });
+    if (!this.depth) this.flushChanges();
+  }
+  private flushChanges() {
+    const changes = [...this.changes.values()]; this.changes.clear();
+    for (const change of changes) {
+      for (const key of new Set([change.owner, ...(change.kind === "workflow" ? [change.id] : [])]))
+        this.revisions.set(key, (this.revisions.get(key) ?? 0) + 1);
+      for (const listener of this.listeners("change")) {
+        try { listener(change); } catch (error) { console.error("Change subscriber failed", error); }
+      }
+    }
+  }
   constructor(public file: string) {
     super();
     mkdirSync(dirname(file), { recursive: true });
@@ -27,14 +51,22 @@ export class Store extends EventEmitter {
       if (result && typeof (result as any).then === "function")
         throw new FlowError("ASYNC_TRANSACTION", "事务中禁止等待异步操作");
       this.db.exec("COMMIT");
+      this.rollbackActions = [];
     } catch (e) {
       this.db.exec("ROLLBACK");
       this.pending = [];
+      this.changes.clear();
+      const failures: unknown[] = [];
+      for (const rollback of this.rollbackActions.splice(0).reverse()) {
+        try { rollback(); } catch (error) { failures.push(error); }
+      }
+      if (failures.length) throw new AggregateError([e, ...failures], "数据库登记失败；原件恢复发生冲突，已保留当前文件");
       throw e;
     } finally {
       this.depth--;
     }
     const events = this.pending.splice(0);
+    this.flushChanges();
     for (const event of events) {
       for (const listener of this.listeners("event")) {
         try {
@@ -92,6 +124,7 @@ export class Store extends EventEmitter {
             "INSERT INTO entities(kind,id,owner,data,version) VALUES(?,?,?,?,1)",
           )
           .run(kind, key, owner, canonical(data));
+        this.changed(kind, key, owner);
         return { data, version: 1 };
       } else {
         const nextVersion = expectedVersion + 1;
@@ -107,6 +140,7 @@ export class Store extends EventEmitter {
             409,
           );
         }
+        this.changed(kind, key, owner);
         return { data, version: nextVersion };
       }
     });
@@ -123,6 +157,12 @@ export class Store extends EventEmitter {
             )
             .all(kind, owner);
     return (rows as { data: string }[]).map((r) => JSON.parse(r.data) as T);
+  }
+  listRecent<T>(kind: string, owner: string, field: "created_at" | "observed_at", limit = 100, offset = 0): T[] {
+    const rows = this.db.prepare(`SELECT data FROM entities WHERE kind=? AND owner=?
+      ORDER BY json_extract(data,'$.${field}') DESC, rowid DESC LIMIT ? OFFSET ?`)
+      .all(kind, owner, Math.max(1, Math.min(1000, Math.floor(limit))), Math.max(0, Math.floor(offset))) as { data: string }[];
+    return rows.map(row => JSON.parse(row.data) as T);
   }
   /** Read only identity/model/status facts; historical execution inputs stay in SQLite. */
   runSummaries(workflow: string): Run[] {
@@ -146,6 +186,7 @@ export class Store extends EventEmitter {
         "INSERT INTO entities(kind,id,owner,data) VALUES(?,?,?,?) ON CONFLICT(kind,id) DO UPDATE SET data=excluded.data,owner=excluded.owner,version=entities.version+1",
       )
       .run(kind, key, owner, canonical(data));
+    this.changed(kind, key, owner);
   }
   entries<T>(kind: string, owner: string): { id: string; value: T }[] {
     return (
@@ -155,9 +196,8 @@ export class Store extends EventEmitter {
     ).map((row) => ({ id: row.id, value: JSON.parse(row.data) as T }));
   }
   remove(kind: string, key: string) {
-    this.db
-      .prepare("DELETE FROM entities WHERE kind=? AND id=?")
-      .run(kind, key);
+    const removed = this.db.prepare("DELETE FROM entities WHERE kind=? AND id=? RETURNING owner").get(kind, key) as { owner: string } | undefined;
+    if (removed) this.changed(kind, key, removed.owner);
   }
   event(
     workflow_id: string,
@@ -185,6 +225,7 @@ export class Store extends EventEmitter {
         .prepare("INSERT INTO events VALUES(?,?,?)")
         .run(workflow_id, r.seq, canonical(e));
       this.pending.push(e);
+      this.changed("event", `${workflow_id}:${r.seq}`, workflow_id);
       return e;
     });
   }

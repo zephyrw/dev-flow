@@ -69,6 +69,7 @@ import { bootstrapAccountService } from "./account-service-bootstrap.js";
 import type { AgyAccountService } from "../../../packages/agy-accounts/src/service.js";
 import { ExecutionSessionStore } from "../../../packages/core/src/execution-session-store.js";
 import { SessionBindingRepairService } from "../../../packages/core/src/session-binding-repair.js";
+import { prepareRejectedSessionRecovery } from "../../../packages/core/src/session-context-recovery.js";
 import { CliDispatchManager } from "../../../packages/runtime/src/cli-dispatch.js";
 import {
   generateResumeInstructions,
@@ -1345,8 +1346,7 @@ export async function buildServer(
       };
     }
     if (query.view === "page") {
-      const changes = (engine.store.db.prepare("SELECT total_changes() n").get() as { n: number }).n;
-      const revision = `${changes}:${engine.store.db.pragma("data_version", { simple: true })}`;
+      const revision = engine.store.revision(key, engine.get(key).project_id, "global", "system");
       const cached = displayPages.get(key);
       const fresh = cached?.revision === revision && Date.now() - cached.at < 5000;
       // A bounded lifetime also refreshes authoritative plan files changed outside SQLite.
@@ -1876,6 +1876,13 @@ export async function buildServer(
     await (engine.runtime as LocalRuntime)?.browser?.reconcile(key);
     await (engine.runtime as LocalRuntime)?.environments?.stop(key).catch(() => {});
     await reconcileRestartedConversations(engine, key);
+    if (body.recreate_rejected_session === true) {
+      const repair = z.object({ request_id: z.string().min(1), expected_version: z.number().int(), expected_run_id: Id }).parse(body);
+      const tree = conversations.getTree(key);
+      requireCondition(!tree.attempts.some(attempt => ["starting", "running", "pausing"].includes(attempt.status)),
+        "SESSION_RECOVERY_BUSY", "仍有会话可能执行，不能重建会话", 409);
+      prepareRejectedSessionRecovery(engine.store, key, repair);
+    }
     await resumeActiveTree(
       conversationControls,
       conversationRecovery,

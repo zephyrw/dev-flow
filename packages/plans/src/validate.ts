@@ -6,12 +6,13 @@ import {
 } from "../../contracts/src/index.js";
 import { objectHash } from "../../core/src/util.js";
 import { NativePlanSchema } from "../../contracts/src/native-plan.js";
+import { parsePlanInput } from "../../contracts/src/plan-input.js";
 export function validatePlan(input: unknown): {
   plan: Plan;
   hash: string;
   diagrams: string[];
 } {
-  const plan = PlanSchema.parse(input);
+  const plan = parsePlanInput(PlanSchema, input);
   if (plan.task_model === "native-v2" && "work_items" in plan) {
     const native = NativePlanSchema.parse(
       Object.fromEntries(

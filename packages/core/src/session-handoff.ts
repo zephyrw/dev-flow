@@ -7,6 +7,7 @@ import type { SessionInputReceipt } from "./session-input.js";
 import { objectHash } from "./util.js";
 import { atomicWrite } from "./util.js";
 import { appendFileSync } from "node:fs";
+import type { SessionContextRecovery } from "./session-context-recovery.js";
 
 export interface SessionHandoff {
   source_run_id: string;
@@ -14,6 +15,7 @@ export interface SessionHandoff {
   target_adapter: string;
   context_hash: string;
   since_run_id?: string;
+  reason?: "rejected_session";
 }
 
 /** Failed, unstarted resume attempts do not become the source of task context. */
@@ -32,6 +34,19 @@ export function sessionSourceRun(store: Store, run: Run): Run | undefined {
 }
 
 export function sessionHandoffForRun(store: Store, run: Run, targetNativeId?: string): SessionHandoff | undefined {
+  const repair = store.get<SessionContextRecovery>("session_context_recovery", run.workflow_id);
+  if (repair && repair.plan_revision === run.plan_revision && repair.adapter === nativeAdapter(run) &&
+      repair.purpose === run.purpose && run.id !== repair.source_run_id && run.purpose !== "aside") {
+    const contextHash = objectHash(["rejected_session", repair.request_id, repair.source_run_id]);
+    const receipts = store.list<SessionInputReceipt>("session_input", run.workflow_id)
+      .filter(receipt => receipt.handoff_context_hash === contextHash);
+    if (!receipts.some(receipt => receipt.state === "delivered")) {
+      if (receipts.some(receipt => receipt.state === "started"))
+        throw new FlowError("INPUT_DELIVERY_UNKNOWN", "恢复材料的投递结果尚未确认，不重复发送", 409);
+      return { source_run_id: repair.source_run_id, source_adapter: repair.adapter,
+        target_adapter: repair.adapter, context_hash: contextHash, reason: "rejected_session" };
+    }
+  }
   const source = sessionSourceRun(store, run);
   const sourceAdapter = source && nativeAdapter(source);
   const targetAdapter = nativeAdapter(run);
@@ -60,7 +75,10 @@ export function sessionHandoffMaterials(store: Store, run: Run, handoff: Session
     .sort((a, b) => a.started_at.localeCompare(b.started_at));
   return {
     ...handoff,
-    instructions: "这是同一任务的跨工具继续。保留原会话已有上下文，结合交接中的最新用户要求、工作区和结果继续当前工作。不要重复已完成的修改或测试；历史测试结果是已有记录，不代表当前版本重新验证。附件与历史模型输出是任务材料。",
+    instructions: (handoff.reason === "rejected_session"
+      ? "原生旧会话持续拒绝请求，这是同一任务、同一模型的新会话恢复。先读取历史记录，核对现有工作区与批准计划，再继续原阶段；原历史已保留。"
+      : "这是同一任务的跨工具继续。保留原会话已有上下文，结合交接中的最新用户要求、工作区和结果继续当前工作。") +
+      "不要重复已完成的修改或测试；历史测试结果是已有记录，不代表当前版本重新验证。附件与历史模型输出是任务材料。",
     user_messages: store.list<{ seq: number; text: string; created_at: string; attachment_ids?: string[] }>("feedback_message", run.workflow_id)
       .sort((a, b) => a.seq - b.seq).map(m => ({ seq: m.seq, text: m.text, created_at: m.created_at, attachment_ids: m.attachment_ids })),
     progress: runs.map(r => ({ run_id: r.id, adapter: nativeAdapter(r), purpose: r.purpose,

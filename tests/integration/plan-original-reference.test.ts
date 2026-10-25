@@ -8,6 +8,7 @@ import { assertPlanMaterialReady, readPlanMaterial } from "../../packages/core/s
 import { ProfileRuntime } from "../../packages/runtime/src/profile-runtime.js";
 import { buildServer } from "../../apps/api/src/server.js";
 import { validatePlan } from "../../packages/plans/src/validate.js";
+import { DocumentService } from "../../packages/core/src/document-service.js";
 
 const stores: ReturnType<typeof setup>[] = [];
 afterEach(() => { for (const s of stores.splice(0)) s.store.close(); });
@@ -20,6 +21,32 @@ function fixture() {
   s.engine.submitPlan(w.id, input, w.version, "plan");
   return { ...s, w: s.engine.get(w.id) };
 }
+
+it.each(["running", "completed"] as const)("validates a %s planning run and contract before publishing an identical candidate", async (status) => {
+  const s = setup(); stores.push(s);
+  const p = project(s.root); s.store.put("project", p.id, "global", p);
+  const created = s.engine.create({ project_id: p.id, title: "边界", request: "制定计划", complexity: "simple", workspace_mode: "existing_workspace" }, "new");
+  const w = s.engine.transition(created.id, ["RESEARCHING"], "PLANNING", "planning", { run_id: "planning-run" });
+  const run = { id: "planning-run", workflow_id: w.id, plan_revision: 0, status, ...(status === "completed" ? { exit_code: 0 } : {}) };
+  s.store.put("run", "planning-run", w.id, run);
+  const path = join(s.root, "existing-plan.md"), body = "# 已有计划\n人工进度保留。";
+  writeFileSync(path, body);
+  const input = { ...plan(objectHash(p), "a".repeat(40)), markdown: body, design_ref: { summary: "已有计划", file_ref: path } };
+  const publication = { runId: "planning-run", original: new DocumentService(s.store).captureOriginal(w.id) };
+  await expect(s.engine.submitValidatedPlan(w.id, { ...input, project_config_hash: "wrong" }, w.version, "bad-contract", publication)).rejects.toThrow();
+  expect(readFileSync(path, "utf8")).toBe(body); expect(s.store.list("project_document", w.id)).toEqual([]);
+  s.store.put("run_stop", "planning-run", w.id, {});
+  await expect(s.engine.submitValidatedPlan(w.id, input, w.version, "stale", publication)).rejects.toThrow("规划已停止");
+  expect(readFileSync(path, "utf8")).toBe(body); expect(s.store.list("project_document", w.id)).toEqual([]);
+  s.store.remove("run_stop", "planning-run");
+  s.store.put("run", "planning-run", w.id, { ...run, status: "failed", exit_code: 1 });
+  await expect(s.engine.submitValidatedPlan(w.id, input, w.version, "failed", publication)).rejects.toThrow("规划已停止");
+  expect(readFileSync(path, "utf8")).toBe(body);
+  s.store.put("run", "planning-run", w.id, run);
+  await s.engine.submitValidatedPlan(w.id, input, w.version, "valid", publication);
+  expect(s.engine.plan(w.id).hash).toBe(validatePlan({ ...input, design_ref: { ...input.design_ref, file_ref: path } }).hash);
+  expect(assertPlanMaterialReady(s.store, w.id).path).toBe(path);
+});
 it("stores one original and hands models its path and current text after appended progress", () => {
   const s = fixture();
   const material = readPlanMaterial(s.store, s.w.id, s.w.plan_revision);

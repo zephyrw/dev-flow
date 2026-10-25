@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { runtimeFailureResolution } from "../../../../packages/contracts/src/runtime-failure.js";
 import "./runtime-failure.css";
 
@@ -25,7 +25,7 @@ async function resumeFromNotice(
   setError: (value: string) => void,
   send: (path: string, body: unknown) => Promise<unknown>,
   refresh: () => Promise<void>,
-  workflow: { id: string; version: number },
+  workflow: { id: string; version: number; run_id?: string },
   resolution: { code: string; title: string },
 ) {
   setPending(true);
@@ -33,6 +33,11 @@ async function resumeFromNotice(
   try {
     if (resolution.code === "NATIVE_PERMISSION_DENIED") {
       await send(`/workflows/${workflow.id}/native-permissions/request`, { expected_version: workflow.version });
+    } else if (resolution.code === "MODEL_SESSION_REQUEST_REJECTED") {
+      await send(`/workflows/${workflow.id}/recover`, {
+        request_id: crypto.randomUUID(), expected_version: workflow.version,
+        expected_run_id: workflow.run_id, recreate_rejected_session: true,
+      });
     } else if (resolution.code === "MODEL_QUOTA") {
       await send(`/workflows/${workflow.id}/browser/reconcile`, {});
       await send(`/workflows/${workflow.id}/environment/stop`, {}).catch(
@@ -60,16 +65,27 @@ export function RuntimeFailureNotice({
   detail,
   send,
   refresh,
+  onSelectModel,
 }: {
   detail: any;
   send: (path: string, body: unknown) => Promise<any>;
   refresh: () => Promise<void>;
+  onSelectModel?: () => void;
 }) {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
   const w = detail.workflow;
   const repair = detail.repair;
   const resolution = runtimeFailureForTask(detail);
+  const opened = useRef<string | undefined>(undefined);
+  const modelChoice = resolution?.code === "AGY_MODEL_SELECTION_REQUIRED";
+  useEffect(() => {
+    const key = `${w.id}:${w.version}`;
+    if (modelChoice && opened.current !== key && onSelectModel) {
+      opened.current = key;
+      onSelectModel();
+    }
+  }, [modelChoice, w.id, w.version, onSelectModel]);
   if (!resolution) return null;
   const context = detail.attention?.runtime_context;
   const profile =
@@ -124,7 +140,9 @@ export function RuntimeFailureNotice({
           {diagnostic && <pre>{diagnostic}</pre>}
         </details>
       )}
-      {authorizationPending ? (
+      {modelChoice ? (
+        <button onClick={onSelectModel}>选择当前账号可用模型</button>
+      ) : authorizationPending ? (
         <p>请先在执行侧栏处理待授权操作。</p>
       ) : (
         <button
@@ -140,7 +158,7 @@ export function RuntimeFailureNotice({
             )
           }
         >
-          {pending ? "正在处理…" : resolution.code === "NATIVE_PERMISSION_DENIED" ? "查看并处理授权" : "已处理，继续原任务"}
+          {pending ? "正在处理…" : resolution.code === "NATIVE_PERMISSION_DENIED" ? "查看并处理授权" : resolution.code === "MODEL_SESSION_REQUEST_REJECTED" ? "保留历史，重建会话继续" : "已处理，继续原任务"}
         </button>
       )}
       {error && (

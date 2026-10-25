@@ -1,5 +1,5 @@
-import { afterEach, beforeEach, expect, it } from "vitest";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, unlinkSync, rmSync, realpathSync } from "node:fs";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, unlinkSync, rmSync, realpathSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Store } from "../../packages/store/src/store.js";
@@ -130,4 +130,71 @@ it("authority materials carry only a current path and structural plan, not copie
   expect(authority.plan.markdown).toBeUndefined();
   writeFileSync(doc.path!, "# Current\nProgress", "utf8");
   expect(new PlanSelfCheckCoordinator(store).authorities(store.must<any>("workflow", wid))).toEqual([authority]);
+});
+
+it("rejects an external candidate without modifying its file or registering a document", () => {
+  const outside = mkdtempSync(join(realpathSync(tmpdir()), "devflow-document-outside-"));
+  try {
+    const path = join(outside, "protected.md"); writeFileSync(path, "private original");
+    expect(() => docs.publishDocument(wid, "plan", "replacement", 1, path, true)).toThrow();
+    expect(readFileSync(path, "utf8")).toBe("private original");
+    expect(store.list("project_document", wid)).toEqual([]);
+    expect(() => docs.publishDocument(wid, "plan", "replacement", 1, "../escaped.md", true)).toThrow();
+    expect(() => docs.publishDocument(wid, "plan", "replacement", 1, ".git/hooks/new-hook", true)).toThrow();
+  } finally { rmSync(outside, { recursive: true, force: true }); }
+});
+
+it("rejects a directory link to an external document for publication and reading", () => {
+  const outside = mkdtempSync(join(realpathSync(tmpdir()), "devflow-document-link-"));
+  try {
+    writeFileSync(join(outside, "original.md"), "external");
+    symlinkSync(outside, join(root, "linked"), process.platform === "win32" ? "junction" : "dir");
+    const path = join(root, "linked", "original.md");
+    expect(() => docs.publishDocument(wid, "plan", "replacement", 1, path, true)).toThrow();
+    store.put("project_document", `doc_${wid}_plan`, wid, { id: `doc_${wid}_plan`, workflow_id: wid,
+      document_type: "plan", revision: 1, path });
+    expect(() => docs.getDocument(wid, "plan")).toThrow();
+    expect(readFileSync(join(outside, "original.md"), "utf8")).toBe("external");
+  } finally {
+    if (existsSync(join(root, "linked"))) rmSync(join(root, "linked"));
+    rmSync(outside, { recursive: true, force: true });
+  }
+});
+
+it("preserves edits made while the model was planning", () => {
+  const doc = docs.publishDocument(wid, "plan", "# Initial", 1);
+  const expected = docs.captureOriginal(wid);
+  writeFileSync(doc.path!, "# User progress");
+  expect(() => docs.publishDocument(wid, "plan", "# Late response", 2, doc.path, true, expected)).toThrow("规划期间已变化");
+  expect(readFileSync(doc.path!, "utf8")).toBe("# User progress");
+  expect(store.must<any>("project_document", doc.id).revision).toBe(1);
+});
+
+it("registers an identical existing candidate on first planning without changing the original bytes", () => {
+  const path = join(root, "existing-candidate.md");
+  writeFileSync(path, "# Existing\r\nUser progress\r\n");
+  const expected = docs.captureOriginal(wid);
+  expect(expected).toEqual({});
+  const document = docs.publishDocument(wid, "plan", "# Existing\nUser progress\n", 1, path, true, expected);
+  expect(document.path).toBe(path);
+  expect(readFileSync(path, "utf8")).toBe("# Existing\r\nUser progress\r\n");
+});
+
+it("restores an original if registration fails without overwriting a subsequent edit", () => {
+  const doc = docs.publishDocument(wid, "plan", "# Initial", 1);
+  const put = store.put.bind(store);
+  const spy = vi.spyOn(store, "put").mockImplementation((kind, ...args) => {
+    if (kind === "project_document") throw new Error("registration failed");
+    return put(kind, ...args);
+  });
+  try {
+    expect(() => docs.publishDocument(wid, "plan", "# Revised", 2, doc.path, true)).toThrow("registration failed");
+    expect(readFileSync(doc.path!, "utf8")).toBe("# Initial");
+    spy.mockImplementation((kind, ...args) => {
+      if (kind === "project_document") { writeFileSync(doc.path!, "# Concurrent edit"); throw new Error("registration failed"); }
+      return put(kind, ...args);
+    });
+    expect(() => docs.publishDocument(wid, "plan", "# Revised", 2, doc.path, true)).toThrow("保留当前文件");
+    expect(readFileSync(doc.path!, "utf8")).toBe("# Concurrent edit");
+  } finally { spy.mockRestore(); }
 });

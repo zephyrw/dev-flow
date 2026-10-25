@@ -12,6 +12,7 @@ export function openPosixMaterialRoot(root: string) {
   const mkdirat = libc.func("mkdirat", "int", ["int", "str", process.platform === "darwin" ? "uint16" : "uint32"]);
   const linkat = libc.func("linkat", "int", ["int", "str", "int", "str", "int"]);
   const unlinkat = libc.func("unlinkat", "int", ["int", "str", "int"]);
+  const renameat = libc.func("renameat", "int", ["int", "str", "int", "str"]);
   const directoryFlags = constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW;
   if (!constants.O_DIRECTORY || !constants.O_NOFOLLOW) throw new Error("MATERIAL_FS_UNSUPPORTED");
   const held: number[] = [];
@@ -83,6 +84,35 @@ export function openPosixMaterialRoot(root: string) {
           if (unlinkat(p.fd, temp, 0) !== 0) throw failure();
           return rc === 0 ? "created" : "exists";
         } finally { if (file >= 0) closeSync(file); p.opened.reverse().forEach(closeSync); }
+      },
+      replace(path: string, expected: Buffer, data: Buffer | undefined, operationId: string) {
+        if (!/^[a-zA-Z0-9_-]+$/.test(operationId)) throw new Error("MATERIAL_FS_BINDING_CONFLICT");
+        const p = parent(path, false), temp = `.material-${operationId}.tmp`;
+        let staged = false;
+        try {
+          const original = child(p.fd, p.leaf, false);
+          let originalIdentity: string, mode: number;
+          try {
+            if (!readFileSync(original).equals(expected)) throw new Error("MATERIAL_FS_CONTENT_CONFLICT");
+            originalIdentity = identity(original); mode = fstatSync(original).mode & 0o777;
+          } finally { closeSync(original); }
+          if (data !== undefined) {
+            const file = openat(p.fd, temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, "int", mode);
+            if (file < 0) throw failure();
+            staged = true;
+            try { writeFileSync(file, data); fsyncSync(file); } finally { closeSync(file); }
+          }
+          const current = child(p.fd, p.leaf, false);
+          try {
+            if (identity(current) !== originalIdentity || !readFileSync(current).equals(expected)) throw new Error("MATERIAL_FS_CONTENT_CONFLICT");
+          } finally { closeSync(current); }
+          check(path, p.identity);
+          if ((data === undefined ? unlinkat(p.fd, p.leaf, 0) : renameat(p.fd, temp, p.fd, p.leaf)) !== 0) throw failure();
+          staged = false; fsyncSync(p.fd); check(path, p.identity);
+        } finally {
+          if (staged) unlinkat(p.fd, temp, 0);
+          p.opened.reverse().forEach(closeSync);
+        }
       },
       close() { held.splice(0).reverse().forEach(closeSync); },
     };

@@ -1,6 +1,6 @@
 import { afterEach, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { readFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { join, basename } from "node:path";
 import { setup, project, plan, repository, proof } from "../helpers.js";
 import { validatePlan } from "../../packages/plans/src/validate.js";
 import { FileBroker } from "../../packages/workspace/src/files.js";
@@ -76,4 +76,41 @@ it("does not count a pre-model plan read failure as an executor repair attempt",
     new FlowError("PLAN_MATERIAL_CONFLICT", "计划原件引用与登记路径不一致"), s.workflow.run_id!);
   expect(result).toBeNull();
   expect(s.store.get("repair_state", s.workflow.id)).toBeUndefined();
+});
+
+it("applies protected paths, dependency policy and duplicate detection using platform filename semantics", () => {
+  const s = setup(); stores.push(s.store);
+  const broker = new FileBroker();
+  const scope = ScopeSchema.parse({ protected_paths: ["Protected"], allow_dependency_changes: false });
+  const patch = (path: string) => ({ path, expected_hash: null, content: "new" });
+  if (process.platform === "win32") {
+    expect(() => broker.apply(s.root, scope, [patch("protected/file.txt")])).toThrow("受保护路径");
+    expect(() => broker.apply(s.root, scope, [patch("PACKAGE.JSON")])).toThrow("依赖更改");
+    expect(() => broker.apply(s.root, scope, [patch("a.txt"), patch("A.TXT")])).toThrow("重复补丁路径");
+  } else {
+    expect(() => broker.apply(s.root, scope, [patch("protected/file.txt"), patch("PACKAGE.JSON"), patch("a.txt"), patch("A.TXT")])).not.toThrow();
+  }
+});
+
+it.runIf(process.platform === "win32")("rejects Windows short aliases for protected, dependency and duplicate targets", async context => {
+  const s = setup(); stores.push(s.store);
+  const koffi = (await import("koffi")).default;
+  const shortPath = koffi.load("kernel32.dll").func("uint32 __stdcall GetShortPathNameW(str16, void *, uint32)");
+  const alias = (path: string) => {
+    const output = Buffer.alloc(65536);
+    const count = shortPath(path, output, output.length / 2);
+    expect(count).toBeGreaterThan(0);
+    return basename(output.toString("utf16le", 0, count * 2));
+  };
+  mkdirSync(join(s.root, "ProtectedLongDirectory"));
+  mkdirSync(join(s.root, "OrdinaryLongDirectory"));
+  writeFileSync(join(s.root, "package.json"), "{}");
+  const protectedAlias = alias(join(s.root, "ProtectedLongDirectory"));
+  if (protectedAlias === "ProtectedLongDirectory") context.skip(); // 8.3 names may be disabled by the volume owner.
+  const broker = new FileBroker(), scope = ScopeSchema.parse({ protected_paths: ["ProtectedLongDirectory"] });
+  const patch = (path: string) => ({ path, expected_hash: null, content: "new" });
+  expect(() => broker.apply(s.root, scope, [patch(`${protectedAlias}/new.txt`)])).toThrow("受保护路径");
+  expect(() => broker.apply(s.root, scope, [{ ...patch(alias(join(s.root, "package.json"))), expected_hash: hash("{}") }])).toThrow("依赖更改");
+  expect(() => broker.apply(s.root, scope, [patch("OrdinaryLongDirectory/new.txt"), patch(`${alias(join(s.root, "OrdinaryLongDirectory"))}/new.txt`)])).toThrow("重复补丁路径");
+  expect(readFileSync(join(s.root, "package.json"), "utf8")).toBe("{}");
 });
