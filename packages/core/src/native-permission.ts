@@ -224,8 +224,10 @@ export function decideNativePermission(store: Store, record: UserInteractionReco
 
 export function nativePermissionAnswer(store: Store, record: UserInteractionRecord, decision: "allow" | "deny") {
   if (decision === "deny") return "用户拒绝了上述工具调用。不要重试或换工具绕过该操作；继续允许范围内的工作，受阻部分如实说明。";
-  const grant = store.get<NativePermissionRequest>(NATIVE_PERMISSION_ENTITY, record.id)?.mcp_grant;
-  if (!grant) return "用户已明确授权上述具体工具调用一次。请在原会话中按原参数重试本次操作；其他工具、参数或目标未获此授权。";
+  const request = store.get<NativePermissionRequest>(NATIVE_PERMISSION_ENTITY, record.id);
+  const grant = request?.mcp_grant;
+  if (!grant) return "用户已明确授权以下具体工具调用一次。请逐字保持工具名称和全部参数（包括描述），不要改写命令；其他工具、参数或目标未获此授权。\n" +
+    JSON.stringify(request?.calls.map(({ name, parameters }) => ({ name, parameters })) ?? []);
   const scope = grant.scope === "service" ? `MCP 服务 ${grant.server} 的所有方法` : `MCP 方法 ${grant.server}/${grant.method}`;
   return `用户已${grant.lifetime === "permanent" ? "永久" : "仅本次"}授权${scope}，不限定调用参数。` +
     (grant.lifetime === "once" ? "仅可放行一次调用，失败重试需重新授权。" : "当前及后续任务有效。") + "其他范围未获此授权。请继续原任务。";

@@ -1029,7 +1029,9 @@ export class ProfileRuntime {
       }
       atomicWrite(handoff, JSON.stringify(withHandoffAttachments(initialMaterials, inputFiles.attachments), null, 2));
     }
-    atomicWrite(schemaPath, JSON.stringify(schema));
+    // Native file readers truncate long individual lines. Keep the full
+    // contract readable without repeated searches over a minified JSON line.
+    atomicWrite(schemaPath, JSON.stringify(schema, null, 2));
     const basePrompt = followup
       ? followupText(this.engine.store, run, messages)
       : invokePrompt(purpose, handoff, schemaPath);
@@ -1172,6 +1174,7 @@ export class ProfileRuntime {
     const permissionGrant = ["agy", "claude-code", "opencode"].includes(profile.adapterId)
       ? bindNativePermission(this.engine.store, { ...run, conversation_id: previous?.id ?? run.conversation_id }) : undefined;
     let restorePermissionHook: (() => void) | undefined;
+    let permissionToken: string | undefined;
     let proc: ReturnType<ProcessManager["start"]>;
     try {
       if (permissionGrant) {
@@ -1186,6 +1189,11 @@ export class ProfileRuntime {
           restorePermissionHook = bridge.cleanup;
         }
       }
+      // Planning/review have no worker token. Their hook can only consume the
+      // bound native grant, never use worker or planner MCP operations.
+      if (permissionGrant && !token) permissionToken = this.engine.auth.issue({
+        role: "planner", workflow_id: w.id, run_id: run.id, scope: "native-permission",
+      });
       if (dispatchRecord) dispatchManager.claimStarting(dispatchId);
       proc = this.processes.start({
         ...invocation,
@@ -1196,7 +1204,7 @@ export class ProfileRuntime {
         ...(accountBinding ? { agy_account: accountBinding } : {}),
         env: {
           ...invocation.env,
-          ...(token ? { DEVFLOW_RUN_TOKEN: token } : {}),
+          ...(token || permissionToken ? { DEVFLOW_RUN_TOKEN: token ?? permissionToken! } : {}),
           DEVFLOW_BASE_URL: "http://127.0.0.1:" + this.engine.config.server.port,
           ...(asideCodexHome ? { CODEX_HOME: asideCodexHome } : {}),
         },
@@ -1210,6 +1218,7 @@ export class ProfileRuntime {
         }
       });
     } catch (err: any) {
+      if (permissionToken) this.engine.auth.revoke(permissionToken);
       try { restorePermissionHook?.(); } catch (cleanupError) {
         err = new AggregateError([err, cleanupError], "原生进程启动及权限桥接清理失败");
       }
@@ -1384,7 +1393,9 @@ export class ProfileRuntime {
         // input by starting the current turn or producing its assistant output.
         const delivered = profile.adapterId === "agy"
           ? v.event === "step_update" && v.step_update?.step_type === "user_input" && v.step_update?.state === "DONE"
-          : v.type === "turn.started" || v.type === "assistant" || v.type === "item.started" ||
+          : (profile.adapterId === "opencode" && v.type === "step_start" && v.part?.type === "step-start" &&
+              typeof v.sessionID === "string" && v.sessionID === conversation) ||
+            v.type === "turn.started" || v.type === "assistant" || v.type === "item.started" ||
             v.type === "item.completed" || v.type === "text" || v.type === "message";
         if (delivered && inputReceipt.state !== "delivered") {
           inputReceipt.state = "delivered";
@@ -1579,6 +1590,7 @@ export class ProfileRuntime {
         if (!historical) failure ??= nativeFailureDiagnostic({ event: "result", result: agyResult });
       }
     } finally {
+      if (permissionToken) this.engine.auth.revoke(permissionToken);
       try { restorePermissionHook?.(); } catch (cleanupError) {
         failure ??= String(diagnosticContext.project(`权限桥接文件清理失败：${String(cleanupError)}`));
       }

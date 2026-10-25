@@ -1,5 +1,5 @@
 import { expect, it, vi } from "vitest";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { setup, repository, project, plan } from "../helpers.js";
 import { ProfileRuntime } from "../../packages/runtime/src/profile-runtime.js";
@@ -84,6 +84,45 @@ it("passes exact follow-up bytes to a real CLI process in the same session witho
     s.store.close();
   }
 }, 60000);
+
+it("records OpenCode step_start before a tool failure so the next turn does not resend stage input", async () => {
+  const s = setup(), repo = await repository(s.root), p = project(repo.repo);
+  s.store.put("project", p.id, p.id, p);
+  const created = s.engine.create({ project_id: p.id, title: "OpenCode receipt", request: "initial task",
+    complexity: "simple", workspace_mode: "existing_workspace" }, "opencode-receipt");
+  await s.engine.git.prepare(p, created.id, "existing_workspace", { main: repo.baseline });
+  const script = join(s.root, "opencode-receipt.mjs"), marker = join(s.root, "started");
+  writeFileSync(script, `import fs from 'node:fs';
+    const args=process.argv.slice(2),sessionID='ses_receipt_fixture';
+    if(args.includes('--help')) {console.log('opencode run --session --agent');process.exit(0)}
+    if(args.includes('--version')) {console.log('1.19.0');process.exit(0)}
+    const emit=x=>console.log(JSON.stringify(x));
+    emit({type:'step_start',sessionID,part:{type:'step-start',sessionID,id:'part-1',messageID:'message-1'}});
+    if(!fs.existsSync(${JSON.stringify(marker)})){fs.writeFileSync(${JSON.stringify(marker)},'started');process.exit(1)}
+    emit({type:'text',sessionID,part:{type:'text',sessionID,text:JSON.stringify({status:'completed',summary:'continued',captured_args:args})}});
+    emit({type:'step_finish',sessionID,part:{type:'step-finish',reason:'stop'}});`);
+  const processes = new ProcessManager(), runtime = new ProfileRuntime(s.engine, processes);
+  const w = { ...created, plan_revision: 1, plan_hash: "plan", binding_strategy: "unified" as const };
+  s.store.put("plan", `${w.id}-1`, w.id, { revision: 1, hash: "plan", plan: plan("project", repo.baseline) });
+  const run: Run = { id: "opencode-first", workflow_id: w.id, plan_revision: 1, adapter: "opencode",
+    purpose: "implement", stage: "execute", protocol: "lightweight", status: "running",
+    started_at: new Date().toISOString(), package_hash: "fixture", profile: { id: "opencode-receipt", revision: 1,
+      adapterId: "opencode", executableRef: process.execPath, modelSelection: "explicit", modelId: "fixture/model",
+      options: { prefixArgs: [script] } } };
+  const invoke = (current: Run, materials: () => unknown) => {
+    s.store.put("run", current.id, w.id, current);
+    s.store.put("workflow", w.id, p.id, { ...w, state: "EXECUTING", run_id: current.id });
+    return (runtime as any).invoke(s.engine.get(w.id), current, materials, {});
+  };
+  try {
+    await expect(invoke(run, () => ({ instructions: "Initial stage requirements" }))).rejects.toBeDefined();
+    expect(s.store.get("session_input", run.id)).toMatchObject({ state: "delivered", kind: "stage_start" });
+    const materials = vi.fn(() => { throw new Error("Must not resend the stage handoff"); });
+    const result = await invoke({ ...run, id: "opencode-next" }, materials);
+    expect(result.captured_args).toContain("继续");
+    expect(materials).not.toHaveBeenCalled();
+  } finally { await processes.close(); s.store.close(); }
+}, 30000);
 
 it("records definitely unstarted user input before account admission can reject a run with an old session ID", async () => {
   const s = setup();

@@ -115,6 +115,51 @@ it("lets the same session execute only the exact approved call once through the 
   expect((await request()).statusCode).not.toBe(200);
 });
 
+it.each(["planning", "quality_review"] as const)("%s permission tokens cannot authorize general APIs", async purpose => {
+  const operation = { name: "read", parameters: { filePath: "app.txt" } };
+  const s = await fixture(operation, "opencode", purpose);
+  await answer(s);
+  const run = resume(s);
+  bindNativePermission(s.store, run);
+  const token = s.engine.auth.issue({ role: "planner", workflow_id: s.workflow.id, run_id: run.id, scope: "native-permission" });
+  expect(() => s.engine.auth.verify(token)).toThrow("凭证仅供原生工具权限核对");
+  expect(() => s.engine.auth.verify(token, "planner")).toThrow("凭证仅供原生工具权限核对");
+  const response = await s.app.inject({ method: "POST", url: "/api/worker/native-permission",
+    headers: { authorization: `Bearer ${token}` }, payload: { conversationId: session, nativeCallId: "scoped-read", toolCall: { name: operation.name, args: operation.parameters } } });
+  expect(response.json()).toMatchObject({ decision: "allow" });
+  s.engine.auth.revoke(token);
+  expect(() => s.engine.auth.verify(token, undefined, undefined, "native-permission")).toThrow("凭证过期或失效");
+});
+
+it("binds the latest planning answer after a second permission request instead of replaying the original handoff", async () => {
+  const first = { name: "read", parameters: { filePath: "HANDOFF.json" } };
+  const second = { name: "read", parameters: { filePath: "schema.json" } };
+  const s = await fixture(first, "opencode", "planning");
+  const assign = (id: string) => {
+    const run: Run = { ...s.run, id, continuation: undefined, status: "running", stage: "planning" };
+    const pending = (s.engine as any).consumeContinuation(s.workflow.id, "planning", "planner", run);
+    expect(pending?.kind).toBe("user_answer");
+    const workflow = s.engine.transition(s.workflow.id, ["PLANNING"], "PLANNING", "planning", { run_id: id });
+    const bound = (s.engine as any).assignPlanningRun(workflow, run, pending) as Run;
+    const attempt = s.store.must<Record<string, unknown>>("conversation_attempt", "cva-permission");
+    s.store.put("conversation_attempt", "cva-permission", s.workflow.id, { ...attempt, run_id: id });
+    return bound;
+  };
+  await answer(s);
+  const one = assign("planning-one");
+  bindNativePermission(s.store, one);
+  expect(consumeNativePermission(s.engine, one, session, first, "read-first")).toBe(true);
+  const next = pauseForNativePermission(s.engine, one, [second], "denied")!;
+  await new UserInteractionService(s.store).respondInteraction(s.workflow.id, next.id,
+    { source_run_id: one.id, action: "answer", choice_id: "allow_once", request_id: "second-planning-answer" }, s.engine);
+  const two = assign("planning-two");
+  expect(two.continuation).toMatchObject({ source_run_id: one.id, conversation_id: session });
+  expect(two.continuation?.answer).toContain('schema.json');
+  expect(bindNativePermission(s.store, two)?.source_run_id).toBe(one.id);
+  expect(consumeNativePermission(s.engine, two, session, first, "read-second")).toBe(false);
+  expect(consumeNativePermission(s.engine, two, session, second, "read-second")).toBe(true);
+});
+
 it("denial resumes the original model with an explicit denial and creates no usable grant", async () => {
   const s = await fixture();
   await answer(s, "deny");

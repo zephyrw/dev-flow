@@ -1637,7 +1637,10 @@ export class Engine {
           { diagnostic: redact(details?.diagnostic ?? error.message) }));
         return;
       }
-      const assistance = "模型请求再次被拒绝，当前任务尚未完成。请检查输入格式及模型配置，处理后继续原任务；已有进度已保留。";
+      const assistance = [
+        "模型请求再次被拒绝，当前任务尚未完成。请检查输入格式及模型配置，处理后继续原任务；已有进度已保留。",
+        ...(details?.input_problems ?? []).map(problem => redact(problem)),
+      ].join("\n");
       this.routeExecutionIntent(key, runId, normalizeDeliveredRound({ status: "need_user", summary: assistance,
         user_interaction: { kind: "action_required", title: "模型请求仍被拒绝，需要协助",
           message: assistance, action_label: "已处理，继续原任务" } }));
@@ -3168,7 +3171,7 @@ export class Engine {
         (settled && request.status === "blocked" && w.state === "BLOCKED"));
   }
 
-  private assignPlanningRun(w: Workflow, run: Run) {
+  private assignPlanningRun(w: Workflow, run: Run, pendingContinuation?: RunContinuation) {
     const existing = readPlanningHandoff(this.store, w.id);
     const waiting = readWaitingContext(this.store, w.id);
     let handoff = existing;
@@ -3192,8 +3195,12 @@ export class Engine {
           status: "assigned",
           target_run_id: run.id,
         });
-        const continuation = continuationFromHandoff(handoff);
+        // A later question belongs to the latest planning Run. The original
+        // executor handoff must not replace its answer or one-use permission.
+        const continuation = pendingContinuation ?? continuationFromHandoff(handoff);
         this.persistBoundContinuation(w.id, run.id, run, continuation);
+      } else if (pendingContinuation) {
+        this.persistBoundContinuation(w.id, run.id, run, pendingContinuation);
       } else {
         this.store.put("run", run.id, w.id, run);
       }
@@ -3249,11 +3256,12 @@ export class Engine {
       protocol: "lightweight",
     };
     const bound = this.store.transaction(() => {
+      const pendingContinuation = this.consumeContinuation(w.id, "planning", "planner", run);
       w = this.transition(w.id, ["PLANNING"], "PLANNING", "planning", {
         run_id: runId,
         blocker: undefined,
       });
-      const bound = this.assignPlanningRun(w, run);
+      const bound = this.assignPlanningRun(w, run, pendingContinuation);
       this.bindAccountRecoveryRun(bound, pendingRetry);
       if (pendingRetry?.input_feedback)
         this.store.put("model_input_feedback", runId, w.id, { message: pendingRetry.input_feedback });
@@ -5135,7 +5143,7 @@ export class Engine {
     if (isPlanningWaiting(waiting)) {
       this.ensurePlanningHandoffFromWaiting(key, waiting);
       const next = this.transition(key, [w.state], "PLANNING", "planning", {
-        run_id: undefined,
+        run_id: waiting.run_id ?? w.run_id,
         feedback,
         blocker: undefined,
       });

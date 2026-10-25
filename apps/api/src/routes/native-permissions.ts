@@ -28,7 +28,7 @@ export const nativePermissionPlugin: FastifyPluginAsync<{ engine: Engine; human:
     return { interaction: recoverNativePermission(engine, id, expected_version) };
   });
   app.post("/api/worker/native-permission", async req => {
-    const principal = engine.auth.verify(req.headers.authorization?.replace(/^Bearer /, ""));
+    const principal = engine.auth.verify(req.headers.authorization?.replace(/^Bearer /, ""), undefined, undefined, "native-permission");
     requireCondition(principal.role !== "human" && principal.run_id && principal.workflow_id,
       "FORBIDDEN", "权限决定仅供对应的执行进程读取", 403);
     const run = engine.store.must<Run>("run", principal.run_id);

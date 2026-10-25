@@ -5,6 +5,7 @@ export interface Principal {
   role: "planner" | "worker" | "human";
   workflow_id?: string;
   run_id?: string;
+  scope?: "native-permission";
   expires: number;
   revoked?: boolean;
 }
@@ -24,6 +25,7 @@ export class Auth {
     token: string | undefined,
     role?: Principal["role"],
     workflow?: string,
+    scope?: Principal["scope"],
   ): Principal {
     if (!token) throw new FlowError("UNAUTHORIZED", "缺少凭证", 401);
     const row = this.store.db
@@ -39,6 +41,7 @@ export class Auth {
       "凭证过期或失效",
       401,
     );
+    requireCondition(!p.scope || p.scope === scope, "FORBIDDEN", "凭证仅供原生工具权限核对", 403);
     if (role)
       requireCondition(p.role === role, "FORBIDDEN", "角色无权执行", 403);
     if (workflow && p.role === "worker")
