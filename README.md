@@ -89,7 +89,7 @@ pnpm start
 
 ## 客户端与平台
 
-目前已完整适配 **Codex、Antigravity CLI**。
+支持 **Codex、Antigravity CLI、Claude Code、OpenCode**。不同客户端和模型的实测范围见下方兼容性说明。
 
 安装包构建目标为 **Windows x64、macOS Intel / Apple Silicon、Linux x64**。各平台与客户端的实测范围见 [客户端兼容性](docs/guide/客户端兼容性.md)；macOS Apple Silicon 的完整包安装与 AGY 任务记录见 [验收记录](docs/test/macos-install-20261008/验收记录.md)。
 
