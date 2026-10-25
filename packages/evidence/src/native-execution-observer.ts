@@ -1,5 +1,5 @@
 import type { AgyNativeStep } from "../../adapters/agy/src/native-record-source.js";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { createHash } from "node:crypto";
 import type { Workspace } from "../../contracts/src/index.js";
@@ -77,6 +77,8 @@ export function captureReports(
 ) {
   const results: Record<string, { hash: string; version: string }> = {};
   for (const ws of workspaces) {
+    // safePath expands Windows short names; relative paths need the same base.
+    const root = realpathSync.native(ws.root);
     const paths = new Set<string>();
     let entries = 0;
     const walk = (dir: string, depth = 0) => {
@@ -90,19 +92,19 @@ export function captureReports(
           throw new Error("Report links are not allowed");
         if (ent.isDirectory()) walk(full, depth + 1);
         else if (ent.isFile())
-          paths.add(relative(ws.root, full).replaceAll("\\", "/"));
+          paths.add(relative(root, full).replaceAll("\\", "/"));
       }
     };
     // Executor chooses report names within these artifact directories.
     for (const dir of [".reports", "reports"]) {
-      const full = safePath(ws.root, dir);
+      const full = safePath(root, dir);
       if (existsSync(full)) walk(full);
     }
     for (const c of configured)
       if (c.report_path && (c.repo_id ?? workspaces[0]?.repo_id) === ws.repo_id)
         paths.add(c.report_path);
     for (const path of paths) {
-      const full = safePath(ws.root, path);
+      const full = safePath(root, path);
       if (!existsSync(full)) continue;
       const before = statSync(full, { bigint: true });
       if (!before.isFile() || before.size > 32n * 1024n * 1024n)

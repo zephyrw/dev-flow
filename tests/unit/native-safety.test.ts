@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { mkdtempSync, writeFileSync, mkdirSync, readFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -7,6 +7,7 @@ import { BufferedEventSink } from "../../packages/core/src/buffered-sink.js";
 import {
   NativeExecutionObserver,
   captureInputs,
+  captureReports,
   reportSourceKey,
 } from "../../packages/evidence/src/native-execution-observer.js";
 import {
@@ -22,6 +23,31 @@ const tick = () => new Promise<void>((r) => setImmediate(r));
 const delay = (n: number) => new Promise<void>((r) => setTimeout(r, n));
 
 describe("native evidence boundaries and bounded telemetry", () => {
+  it.runIf(process.platform === "win32")("captures identical reports through a Windows short root without accepting traversal or protected paths", async context => {
+    const root = mkdtempSync(join(tmpdir(), "native-report-short-root-"));
+    try {
+      const koffi = (await import("koffi")).default;
+      const shortPath = koffi.load("kernel32.dll").func("uint32 __stdcall GetShortPathNameW(str16, void *, uint32)");
+      const output = Buffer.alloc(65536), count = shortPath(root, output, output.length / 2);
+      expect(count).toBeGreaterThan(0);
+      const alias = output.toString("utf16le", 0, count * 2);
+      if (alias.toLowerCase() === realpathSync.native(root).toLowerCase()) context.skip();
+      mkdirSync(join(root, ".reports", "nested"), { recursive: true });
+      mkdirSync(join(root, "reports"));
+      writeFileSync(join(root, ".reports", "nested", "unit.json"), "unit result");
+      writeFileSync(join(root, "reports", "browser.json"), "browser result");
+      writeFileSync(join(root, "custom.json"), "configured result");
+      const workspaces = [{ repo_id: "main", root: alias } as Workspace];
+      const configured = [{ repo_id: "main", report_path: "custom.json" }];
+      const reports = captureReports(workspaces, configured);
+      expect(reports).toEqual(captureReports([{ ...workspaces[0]!, root: realpathSync.native(root) }], configured));
+      expect(Object.keys(reports).sort()).toEqual([
+        ".reports/nested/unit.json", "reports/browser.json", "custom.json",
+      ].map(path => reportSourceKey("main", path)).sort());
+      expect(() => captureReports(workspaces, [{ report_path: "../external.json" }])).toThrow();
+      expect(() => captureReports(workspaces, [{ report_path: ".git/config" }])).toThrow("受保护或特殊路径");
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
   it("backpressure waits without overlapping writes or calling external callbacks", async () => {
     let release!: () => void;
     let active = 0,
