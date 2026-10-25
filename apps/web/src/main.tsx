@@ -59,7 +59,6 @@ import { ConversationHistoryCache, type ConversationHistorySnapshot } from "./co
 import { createRoot } from "react-dom/client";
 import type { Components } from "react-markdown";
 import { compilePlanDocument, type CompiledPlanDocument } from "./plan-document.js";
-import mermaid from "mermaid";
 import "./style.css";
 import "./components/model-settings.css";
 import {
@@ -149,17 +148,17 @@ async function pollConversationControl(
 }
 const mermaidSvgCache = new Map<string, string>();
 
-let mermaidInitialized = false;
+let mermaidModule: Promise<typeof import("mermaid")["default"]> | undefined;
 function ensureMermaidInitialized() {
-  if (!mermaidInitialized) {
+  return mermaidModule ??= import("mermaid").then(({ default: mermaid }) => {
     mermaid.initialize({
       startOnLoad: false,
       securityLevel: "strict",
       theme: "neutral",
       fontFamily: "Microsoft YaHei, sans-serif",
     });
-    mermaidInitialized = true;
-  }
+    return mermaid;
+  }).catch(error => { mermaidModule = undefined; throw error; });
 }
 
 function downloadSvgAsPng(
@@ -254,13 +253,13 @@ const Diagram = React.memo(function Diagram({ source }: { source: string }) {
       setError("");
       return;
     }
-    ensureMermaidInitialized();
     setError("");
     const id = "diagram" + crypto.randomUUID().replaceAll("-", "");
-    mermaid
-      .render(id, source)
+    ensureMermaidInitialized()
+      .then(mermaid => mermaid.render(id, source))
       .then(({ svg: renderedSvg }) => {
         mermaidSvgCache.set(source, renderedSvg);
+        while (mermaidSvgCache.size > 32) mermaidSvgCache.delete(mermaidSvgCache.keys().next().value!);
         if (alive) {
           setSvg(renderedSvg);
           setError("");
@@ -1957,8 +1956,9 @@ function App() {
     setNotice(
       action === "approve"
         ? "计划已批准，进入执行队列。"
-        : "验收已记录，将启动独立复核。",
+        : "验收已记录。",
     );
+    setTimeout(() => setNotice(""), 4000);
   };
   const stopSelected = () => {
     setStopping(true);
@@ -2820,6 +2820,7 @@ function App() {
                   detail={detail}
                   send={api}
                   refresh={refresh}
+                  onSelectModel={() => { setToolDrawerFocus(detail?.runs?.find((r: any) => r.id === w.run_id)?.routing_role ?? "executor"); setIsToolDrawerOpen(true); }}
                 />
                 <div className="workspace-columns">
                   {detail.loading ? (
@@ -3167,6 +3168,7 @@ function App() {
         workflowId={selected}
         workflowState={detail?.workflow?.state}
         focusRole={toolDrawerFocus}
+        accountModelChoice={detail?.workflow?.blocker?.code === "AGY_MODEL_SELECTION_REQUIRED"}
         onSpecUpdated={() => void refresh()}
       >
         {isToolDrawerOpen && detail?.workflow && (

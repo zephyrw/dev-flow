@@ -1,4 +1,5 @@
 import { conversationActivityContent } from "./conversation-content.js";
+import { displayResultEnvelope } from "./result-display.js";
 import type { LogEntry } from "./activity.js";
 import {
   CONVERSATION_EVENT,
@@ -150,7 +151,7 @@ export function conversationActivityLogEntry(event: {
     sequence: event.event_seq,
     created_at: event.created_at,
     title,
-    text,
+    text: kind === "message" && payload.status === "completed" ? displayResultEnvelope(text) : text,
     raw: [event],
     kind,
     status: conversationActivityStatus(payload.status),

@@ -50,6 +50,18 @@ it("an older blocked task requests a popup instead of claiming the user already 
   expect(send).toHaveBeenCalledExactlyOnceWith(`/workflows/${interaction.workflow_id}/native-permissions/request`, { expected_version: 9 });
 });
 
+it("opens the account model picker once and never resumes or changes a model before a user choice", async () => {
+  const send = vi.fn(), choose = vi.fn(); root = createRoot(container);
+  const detail = { workflow: { id: "wf-model-choice", version: 5, state: "BLOCKED", blocker: { code: "AGY_MODEL_SELECTION_REQUIRED" } } };
+  await act(async () => root!.render(<RuntimeFailureNotice detail={detail} send={send} refresh={vi.fn()} onSelectModel={choose} />));
+  expect(choose).toHaveBeenCalledOnce(); expect(send).not.toHaveBeenCalled();
+  expect(container.textContent).toContain("当前账号需要选择可用模型");
+  await act(async () => root!.render(<RuntimeFailureNotice detail={detail} send={send} refresh={vi.fn()} onSelectModel={choose} />));
+  expect(choose).toHaveBeenCalledOnce();
+  await act(async () => container.querySelector("button")!.click());
+  expect(choose).toHaveBeenCalledTimes(2); expect(send).not.toHaveBeenCalled();
+});
+
 it("shows five unselected MCP scopes and explains the selected scope without invocation arguments", async () => {
   const request = mcpPermissionInput({ server: "opentabs", method: "browser_intercept_requests" });
   vi.spyOn(api, "getCurrentUserInteraction").mockResolvedValue({ ...interaction, request });

@@ -7,6 +7,8 @@ import { toolSummary, toolOutputSummary } from "./tool-summary.js";
 import { conversationActivityLogEntry, mergeConversationLogEntry, isMeaningfulLogEntry } from "./conversation-activity.js";
 import { CONVERSATION_EVENT } from "../../contracts/src/conversation.js";
 import type { UserInteractionRecord } from "../../contracts/src/user-interaction.js";
+import { displayResultEnvelope } from "./result-display.js";
+import { displayInteractionRequest } from "./interaction-display.js";
 export { isMeaningfulLogEntry, mergeConversationLogEntry } from "./conversation-activity.js";
 export interface LogEntry {
   key: string;
@@ -30,6 +32,7 @@ const publicLogEvents = new WeakMap<object, any>();
 export const NON_LOG_EVENT_TYPES = [
   "RunObserved", "ConversationDiscovered", "ConversationUpdated",
   "ConversationControlUpdated", "AsideUpdated",
+  "PreparationStarted", "SourceVersionSelected", "ModelInputRecoveryScheduled", "ReviewCompletionQueued",
 ];
 function publicLogEvent(event: any) {
   if (!event || typeof event !== "object") return publicDiagnostic(event);
@@ -276,7 +279,7 @@ export function readableLogs(events: any[], workflow: string, formalGuidance: Ar
   )) {
     const p = e.payload ?? {},
       step = p.step_update;
-    if (e.type === "RunObserved") continue;
+    if (NON_LOG_EVENT_TYPES.includes(e.type)) continue;
     if (isAsideRun(e.run_id)) continue;
     if (e.type === "NativeActivity") {
       if (!p.id || !["tool", "message", "event"].includes(p.kind)) continue;
@@ -364,7 +367,6 @@ export function readableLogs(events: any[], workflow: string, formalGuidance: Ar
               ? "已获得故障原因和修复步骤，执行模型将继续处理。"
               : (p.message ??
                 p.text ??
-                p.instructions ??
                 p.operation?.reason ??
                 p.diagnosis ??
                 (p.approved === true
@@ -584,6 +586,7 @@ export function readableLogs(events: any[], workflow: string, formalGuidance: Ar
       text = `执行模型：${p.init?.model ?? p.model ?? "实际模型未确认"}`;
     }
     if (e.type === "StateChanged") {
+      if (p.from === p.to || ["QUEUED", "REVIEW_QUEUED", "VERIFYING", "COMMITTING"].includes(p.to)) continue;
       if (p.to === "WAITING_INPUT" && ["EXECUTION_INTENT_UNCLEAR", "REVIEW_INTENT_UNCLEAR"].includes(p.blocker?.code)) {
         title = "等待确认本轮结果";
         text = "已有进度和模型原文已保留。由你决定是否让模型仅补充结果说明，关闭弹窗或稍后处理会保持等待。";
@@ -836,7 +839,7 @@ export function readableLogs(events: any[], workflow: string, formalGuidance: Ar
   for (const record of interactions) {
     if (record.workflow_id !== workflow || seenInteractions.has(record.id)) continue;
     seenInteractions.add(record.id);
-    const request = record.request;
+    const request = displayInteractionRequest(record.request);
     const question = [...new Set([request.title, request.message, request.question].filter(Boolean))].join("\n\n");
     const choices = request.choices?.map(choice => choice.label).join("\n");
     rows.push({ key: `interaction:${record.id}:question`, sequence: sequenceAt(record.created_at),
@@ -867,6 +870,8 @@ export function readableLogs(events: any[], workflow: string, formalGuidance: Ar
     if (row.status === "active" && row.sequence < boundary)
       row.status = "interrupted";
   return rows
+    .map(row => row.speaker !== "user" && row.status !== "active" && row.kind === "message"
+      ? { ...row, text: displayResultEnvelope(row.text) } : row)
     .filter(isMeaningfulLogEntry)
     .sort((a, b) => a.sequence - b.sequence || a.created_at.localeCompare(b.created_at));
 }

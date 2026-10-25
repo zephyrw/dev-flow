@@ -7,6 +7,7 @@ import {
 } from "../../../../packages/contracts/src/index.js";
 import type { UserInteractionService } from "../../../../packages/core/src/user-interaction-service.js";
 import type { Engine } from "../../../../packages/core/src/engine.js";
+import { displayInteractionRequest } from "../../../../packages/presentation/src/interaction-display.js";
 
 export interface UserInteractionPluginOptions {
   interactionService: UserInteractionService;
@@ -41,7 +42,7 @@ export const userInteractionPlugin: FastifyPluginAsync<
       if (!current) {
         return reply.code(200).send({ interaction: null });
       }
-      return reply.code(200).send({ interaction: current });
+      return reply.code(200).send({ interaction: { ...current, request: displayInteractionRequest(current.request) } });
     },
   );
 

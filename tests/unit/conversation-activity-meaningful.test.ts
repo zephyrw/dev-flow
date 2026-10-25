@@ -8,6 +8,36 @@ import {
 } from "../../packages/presentation/src/conversation-activity.js";
 
 describe("conversation-activity-meaningful (U3 & U4: 执行活动有效投影与增量合并)", () => {
+  it("hides platform preparation and recovery instructions while preserving authored text and actionable failures", () => {
+    const events = [
+      { type: "PreparationStarted", payload: { message: "internal prep" } },
+      { type: "SourceVersionSelected", payload: { message: "internal source" } },
+      { type: "ModelInputRecoveryScheduled", payload: { instructions: "need_user/user_interaction" } },
+      { type: "ReviewCompletionQueued", payload: { message: "internal queue" } },
+      { type: "StateChanged", payload: { from: "HUMAN_PENDING", to: "QUEUED", stage: "planner_commit" } },
+      { type: "StateChanged", payload: { from: "QUEUED", to: "EXECUTING", stage: "planner_commit" } },
+      { type: "UserGuidance", payload: { text: "Read HANDOFF.md\nKeep this JSON: {\"status\":\"completed\"}" } },
+      { type: "StateChanged", payload: { from: "EXECUTING", to: "BLOCKED", blocker: { message: "Permission denied: choose a writable directory" } } },
+    ].map((event, i) => ({ ...event, workflow_id: "wf", event_seq: i + 1, created_at: String(i) }));
+    const rows = userFacingLogs(readableLogs(events, "wf"));
+    expect(rows.map(row => row.title)).not.toContain("本地提交已排队");
+    expect(rows.map(row => row.text).join("\n")).not.toMatch(/internal|need_user/);
+    expect(rows.find(row => row.speaker === "user")?.text).toBe(events[6]!.payload.text);
+    expect(rows.some(row => row.status === "error")).toBe(true);
+  });
+
+  it("projects a complete delivery contract identically for main and child history without rewriting normal JSON", () => {
+    const text = JSON.stringify({ status: "completed", summary: "Change complete", notes: "",
+      delivery: { implementations: [], test_executions: [{ tool_call_id: "t", command: "pnpm build", exit_code: 0 }], acceptance_mappings: [] } });
+    const payload = { conversation_id: "c", root_id: "c", attempt_id: "a", activity_id: "result", source_event_id: "s", kind: "message", status: "completed", public_text: text };
+    const event = { event_seq: 1, workflow_id: "wf", created_at: "now", type: "ConversationActivity", payload };
+    const main = userFacingLogs(readableLogs([event], "wf"));
+    const child = conversationLogs([event], "c");
+    expect(main[0]?.text).toBe("Change complete\n\npnpm build：通过");
+    expect(child[0]?.text).toBe(main[0]?.text);
+    const ordinary = '{"status":"completed","summary":"example application data"}';
+    expect(conversationLogs([{ ...event, payload: { ...payload, public_text: ordinary } }], "c")[0]?.text).toBe(ordinary);
+  });
   it("merged log filtering retains cwd-only and failed tools while removing empty cards", () => {
     const rows = readableLogs([
       { id: "empty", kind: "tool", title: "执行命令", text: "", status: "done" },
