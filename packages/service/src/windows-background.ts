@@ -11,6 +11,9 @@ export async function spawnWindowsBackground(executable: string, args: string[],
   const commandLine = [executable, "--import", new URL("./background-stdio.mjs", import.meta.url).href, ...args].map(quote).join(" ");
   const script = `
 $ErrorActionPreference = 'Stop'
+$PSModuleAutoLoadingPreference = 'None'
+Import-Module "$PSHOME/Modules/Microsoft.PowerShell.Utility/Microsoft.PowerShell.Utility.psd1" -ErrorAction Stop
+Import-Module "$PSHOME/Modules/CimCmdlets/CimCmdlets.psd1" -ErrorAction Stop
 [Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)
 $request = [Console]::In.ReadLine() | ConvertFrom-Json
 $startup = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{

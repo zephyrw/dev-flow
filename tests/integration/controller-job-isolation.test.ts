@@ -1,6 +1,6 @@
 import { expect, it, vi } from "vitest";
 import { spawn } from "node:child_process";
-import { mkdtempSync, readFileSync, existsSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { getWindowsNative } from "../../packages/process/src/native/index.js";
@@ -20,12 +20,23 @@ vi.mock("node:child_process", async importOriginal => {
   } };
 });
 
-it.skipIf(process.platform !== "win32")("starts from a framed UTF8 request while the broker input pipe remains open", async () => {
+it.skipIf(process.platform !== "win32").each([
+  { name: "an open input pipe", keepOpen: true, foreignModules: false },
+  { name: "foreign PowerShell modules", keepOpen: false, foreignModules: true },
+])("starts from a framed UTF8 request with $name", async ({ keepOpen, foreignModules }) => {
   const root = mkdtempSync(join(tmpdir(), "devflow-broker-input-"));
   const value = "中文路径与引号 \"quoted\"\n第二行 & $value";
   let pid: number | undefined;
   try {
-    brokerInput.keepOpen = true;
+    brokerInput.keepOpen = keepOpen;
+    if (foreignModules) {
+      const modules = join(root, "modules");
+      const utility = join(modules, "Microsoft.PowerShell.Utility");
+      mkdirSync(utility, { recursive: true });
+      writeFileSync(join(utility, "Microsoft.PowerShell.Utility.psd1"), "@{ RootModule = 'fake.psm1'; ModuleVersion = '1.0.0'; FunctionsToExport = @('ConvertFrom-Json') }");
+      writeFileSync(join(utility, "fake.psm1"), "function ConvertFrom-Json { throw 'UNTRUSTED_MODULE_LOADED' }; Export-ModuleMember -Function ConvertFrom-Json");
+      vi.stubEnv("PSModulePath", modules);
+    }
     const env = Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined));
     pid = await spawnWindowsBackground(process.execPath, ["-e", "process.stdout.write(process.env.DEVFLOW_INPUT_PROBE)"], root,
       { ...env, DEVFLOW_INPUT_PROBE: value }, join(root, "stdout.log"), join(root, "stderr.log"));
@@ -33,6 +44,7 @@ it.skipIf(process.platform !== "win32")("starts from a framed UTF8 request while
     await expect.poll(() => existsSync(join(root, "stdout.log")) ? readFileSync(join(root, "stdout.log"), "utf8") : "").toBe(value);
   } finally {
     brokerInput.keepOpen = false;
+    if (foreignModules) vi.unstubAllEnvs();
     if (pid) await expect.poll(() => { try { process.kill(pid!, 0); return true; } catch { return false; } }).toBe(false);
     rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
   }
