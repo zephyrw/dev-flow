@@ -1,4 +1,5 @@
 import { installMockWorkflowConfiguration, mockProject } from "./mock-workflow.js";
+import { openExecutionSidebar } from "./native-helper.js";
 import { test, expect } from "@playwright/test";
 
 test("acceptance composer sends questions as original formal guidance and keeps its bottom clear", async ({ page }) => {
@@ -30,7 +31,7 @@ test("acceptance composer sends questions as original formal guidance and keeps 
   await page.routeWebSocket("**/api/events?*", () => {});
   await installMockWorkflowConfiguration(page, workflow.version);
   await page.goto(`/?workflow=${workflow.id}`);
-  if (!(await page.locator(".execution-sidebar").isVisible())) await page.getByRole("button", { name: "执行过程", exact: true }).click();
+  await openExecutionSidebar(page);
   const input = page.locator(".task-interaction textarea");
   const message = "启动前后端，并回答：做过 OpenTabs 真实浏览器测试吗？没做就补做。";
   await input.fill(message);

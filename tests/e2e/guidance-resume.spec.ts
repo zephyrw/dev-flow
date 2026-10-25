@@ -1,4 +1,5 @@
 import { mockProject } from "./mock-workflow.js";
+import { openExecutionSidebar } from "./native-helper.js";
 import { test, expect } from "@playwright/test";
 
 test("persisted guidance remains visible after reload and continuation is not shown as initial development", async ({ page }) => {
@@ -18,11 +19,13 @@ test("persisted guidance remains visible after reload and continuation is not sh
   };
   const errors: Error[] = [];
   page.on("pageerror", (error) => errors.push(error));
-  await page.route("**/api/**", (route) => {
+  await page.route("**/api/**", async (route) => {
     const path = new URL(route.request().url()).pathname;
     if (path.endsWith("/functional-issues") || path.endsWith("/asides")) return route.fulfill({ json: [] });
     if (path.endsWith("/projects")) return route.fulfill({ json: [detail.project] });
     if (path.endsWith("/workflows")) return route.fulfill({ json: [workflow] });
+    // Keep startup genuinely asynchronous so opening the sidebar waits for detail.
+    if (path === `/api/workflows/${workflow.id}`) await new Promise(resolve => setTimeout(resolve, 200));
     return route.fulfill({ json: detail });
   });
   await page.routeWebSocket("**/api/notifications", () => {});
@@ -30,8 +33,7 @@ test("persisted guidance remains visible after reload and continuation is not sh
   await page.goto(`/?workflow=${workflow.id}`);
   for (let visit = 0; visit < 2; visit++) {
     if (visit) await page.reload();
-    const sidebar = page.locator(".execution-sidebar");
-    if (!(await sidebar.isVisible())) await page.getByRole("button", { name: "执行过程", exact: true }).click();
+    await openExecutionSidebar(page);
     const logs = page.locator(".logs");
     await expect(logs.getByText("你的指导", { exact: true })).toHaveCount(1);
     await expect(logs.locator('[data-speaker="user"] .conversation-turn-text')).toHaveText(detail.formal_guidance[0]!.text);
@@ -83,7 +85,7 @@ test("question and exact reply remain styled conversation turns after submission
   for (const width of [1440, 390]) {
     await page.setViewportSize({ width, height: 1000 });
     await page.reload();
-    if (!(await page.locator(".execution-sidebar").isVisible())) await page.getByRole("button", { name: "执行过程", exact: true }).click();
+    await openExecutionSidebar(page);
     const logs = page.locator(".logs");
     await expect(logs.locator('[data-speaker="assistant"]')).toContainText(record.request.question);
     const reply = logs.locator('[data-speaker="user"]');
