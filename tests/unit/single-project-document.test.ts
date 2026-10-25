@@ -52,6 +52,26 @@ it("updates the same original only for explicit current-Run publication", () => 
   expect(store.list("project_document", wid)).toHaveLength(1);
 });
 
+it.runIf(process.platform === "win32")("keeps a registered Windows short-root path usable through publication, edits and a missing original", async context => {
+  const koffi = (await import("koffi")).default;
+  const getShortPath = koffi.load("kernel32.dll").func("uint32 __stdcall GetShortPathNameW(str16, void *, uint32)");
+  const buffer = Buffer.alloc(65536), count = getShortPath(root, buffer, buffer.length / 2);
+  expect(count).toBeGreaterThan(0);
+  const alias = buffer.toString("utf16le", 0, count * 2);
+  if (alias.toLowerCase() === realpathSync.native(root).toLowerCase()) context.skip();
+  store.put("project", "project", "project", { id: "project", primary_repo_id: "main", repositories: [{ id: "main", path: alias }] });
+  const document = docs.publishDocument(wid, "plan", "# Initial", 1);
+  expect(document.path).toBe(join(alias, "docs", "plan", wid, "plan.md"));
+  expect(readPlanMaterial(store, wid, 1).markdown).toBe("# Initial");
+  const expected = docs.captureOriginal(wid);
+  docs.publishDocument(wid, "plan", "# Updated", 1, document.path, true, expected);
+  expect(docs.getDocument(wid, "plan").content).toBe("# Updated");
+  writeFileSync(document.path!, "# User progress");
+  expect(() => docs.publishDocument(wid, "plan", "# Stale", 1, document.path, true, expected)).toThrow("规划期间已变化");
+  unlinkSync(document.path!);
+  expect(() => readPlanMaterial(store, wid, 1)).toThrow("已登记的项目计划原件已丢失");
+});
+
 it("reads external progress edits live and does not approve against stale prose hashes", () => {
   const doc = docs.publishDocument(wid, "plan", "# Plan", 1);
   writeFileSync(doc.path!, "# Plan\n\n## Issue\nInvestigating", "utf8");

@@ -41,7 +41,9 @@ export function documentLocation(store: Store, workflowId: string, path: string,
   try {
     const locator = resolveMaterialLocator({ store, workflowId, kind: "plan", customRelPath: path, projectOriginal: true });
     const canonical = safePath(locator.workspace_root, locator.relative_path, true);
-    return { root: locator.workspace_root, relative: relative(realpathSync.native(locator.workspace_root), canonical).replaceAll("\\", "/"), path: canonical };
+    // Keep the registered spelling (including Windows short directory names).
+    // Only filesystem access uses the validated canonical relative path.
+    return { root: locator.workspace_root, relative: relative(realpathSync.native(locator.workspace_root), canonical).replaceAll("\\", "/"), path: resolve(path) };
   } catch (error) {
     if (!(error && typeof error === "object" && "code" in error && error.code === "PATH_ESCAPE")) throw error;
     const wf = store.get<any>("workflow", workflowId);
