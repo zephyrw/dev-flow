@@ -113,6 +113,8 @@ export function CreateWorkflowModal({
     return () => controller.abort();
   };
 
+  // A background project refresh must not reset the user's open draft.
+  // Capture the latest default when opening a new draft only.
   useEffect(() => {
     if (!isOpen) return;
     setWorkspaceRoot(defaultWorkspaceRoot);
@@ -128,7 +130,7 @@ export function CreateWorkflowModal({
       cleanup();
       controller.abort();
     };
-  }, [isOpen, defaultWorkspaceRoot]);
+  }, [isOpen]);
 
   useEffect(() => {
     if (!isOpen) return;
