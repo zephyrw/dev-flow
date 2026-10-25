@@ -156,7 +156,7 @@ test("native tool actions show concrete targets and output while repair transiti
   await expect(logs).toContainText("C:/work/UserService.java");
   await expect(logs).not.toContainText("unknown_empty_tool");
   await expect(logs).not.toContainText("进入开发实施");
-  await expect(logs).toContainText("修复已排队");
+  await expect(logs).not.toContainText("修复已排队");
   await expect(logs).toContainText("继续开发与自测");
   await expect(logs.getByText("查看操作输出", { exact: true })).toHaveCount(0);
   await expect(logs.getByText("查看操作详情", { exact: true })).toHaveCount(0);

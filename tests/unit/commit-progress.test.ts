@@ -14,9 +14,13 @@ it.each(["QUEUED", "EXECUTING", "VERIFYING"])("keeps %s final commit in the last
   expect(progress.next).toContain("提交与合并");
   expect(workflowProgress(workflow, events).index).toBe(6);
   expect(formatWorkflowState(state, workflow.stage)).toBe(state === "QUEUED" ? "等待提交" : "提交中");
-  const log = readableLogs(events, "wf")[0];
-  expect(log?.title).toContain("本地提交");
-  expect(log?.text).not.toContain("开发与自测");
+  const logs = readableLogs(events, "wf");
+  if (state === "EXECUTING") {
+    expect(logs[0]?.title).toContain("本地提交");
+    expect(logs[0]?.text).not.toContain("开发与自测");
+  } else {
+    expect(logs).toEqual([]);
+  }
 });
 
 it("does not turn ordinary development or paused commit into active submission", () => {

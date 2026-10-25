@@ -2,6 +2,7 @@ import { expect, it, vi } from "vitest";
 import { setup, repository, project, plan, proof, testConsoleHeaders } from "../helpers.js";
 import { objectHash } from "../../packages/core/src/util.js";
 import { buildServer } from "../../apps/api/src/server.js";
+import { AgyAccountRepository } from "../../packages/agy-accounts/src/repository.js";
 import { ProcessManager } from "../../packages/process/src/manager.js";
 import { ConversationService } from "../../packages/core/src/conversation-service.js";
 import { CONVERSATION_ENTITY, type Run } from "../../packages/contracts/src/index.js";
@@ -33,7 +34,7 @@ async function fixture() {
   const dispatch = vi.spyOn(s.engine, "dispatch").mockResolvedValue(undefined);
   s.engine.recover();
   const app = await buildServer(s.engine, { accountService: {
-    getRepository: () => ({}), syncActiveAccountFromHost: async () => {},
+    getRepository: () => new AgyAccountRepository(s.store), syncActiveAccountFromHost: async () => {},
   } as any });
   const recover = () => app.inject({ method: "POST", url: `/api/workflows/${w.id}/recover`,
     headers: { host: testConsoleHeaders().host, origin: testConsoleHeaders().origin }, payload: {} });

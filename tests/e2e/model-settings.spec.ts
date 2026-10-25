@@ -171,7 +171,7 @@ test("E2E-U12 快速切换工具会清掉旧模型并选中新工具默认模型
   await waitAccessStatus(dialog.locator(".ms-editor"), "已验证可访问");
   expect(verifiedProfiles.at(-1)).toMatchObject({ adapterId: "codex", modelId: expectedModelId,
     reasoning: { mode: "explicit", value: expectedEffort } });
-  await expect(planner.locator("option")).toHaveCount(2);
+  await expect(planner.locator("option")).toHaveCount(4);
   const unchangedDefaults = await page.request.get("/api/settings/model-defaults");
   expect(unchangedDefaults.ok(), await unchangedDefaults.text()).toBe(true);
   expect((await unchangedDefaults.json()).defaults).toEqual(savedDefaults);

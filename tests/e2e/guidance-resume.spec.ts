@@ -37,7 +37,7 @@ test("persisted guidance remains visible after reload and continuation is not sh
     await expect(logs.locator('[data-speaker="user"] .conversation-turn-text')).toHaveText(detail.formal_guidance[0]!.text);
     await expect(logs).toContainText(detail.formal_guidance[0]!.text);
     await expect(logs).toContainText("继续开发与自测");
-    await expect(logs).toContainText("检查并复用已有工作区");
+    await expect(logs).not.toContainText("检查并复用已有工作区");
     await expect(logs).not.toContainText("开始开发与自测");
   }
   expect(errors).toEqual([]);

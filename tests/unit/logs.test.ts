@@ -129,26 +129,26 @@ it("projects an acceptance conversation as guidance processing without a new tes
     { from: "QUEUED", to: "EXECUTING", stage: "acceptance_guidance" },
     { from: "EXECUTING", to: "HUMAN_PENDING", stage: "accept", guidance_mode: "human_acceptance" },
   ].map((payload, i) => ({ workflow_id: "w", event_seq: i + 1, created_at: "2026-09-29T02:00:00Z", type: "StateChanged", payload }));
-  expect(readableLogs(events, "w").map(row => row.title)).toEqual(["验收指导已排队", "处理验收指导", "指导处理完成"]);
+  expect(readableLogs(events, "w").map(row => row.title)).toEqual(["处理验收指导", "指导处理完成"]);
 });
 
 it.each([true, false])("labels functional guidance neutrally without declaring a new development cycle (resumed=%s)", resumed => {
   const events = ["QUEUED", "EXECUTING"].map((to, i) => ({ workflow_id: "w", event_seq: i + 1, created_at: "2026-09-29T02:00:00Z",
     type: "StateChanged", payload: { from: i === 0 ? "HUMAN_PENDING" : "QUEUED", to, stage: "functional_fix", resumed } }));
   const rows = readableLogs(events, "w");
-  expect(rows.map(row => row.title)).toEqual(["验收指导已排队", "处理验收指导"]);
-  expect(rows[1]?.text).toContain("指导原文");
-  expect(rows[1]?.text).not.toContain("本轮开发与自测");
+  expect(rows.map(row => row.title)).toEqual(["处理验收指导"]);
+  expect(rows[0]?.text).toContain("指导原文");
+  expect(rows[0]?.text).not.toContain("本轮开发与自测");
   expect(runtimePurposeNames.functional_fix).toBe("执行模型 · 验收指导处理");
 });
 
 it.each(["executor_test", "planner_takeover", "execute"])("labels %s user guidance without inventing a repair or testing request", stage => {
   const rows = readableLogs(["QUEUED", "EXECUTING"].map((to, i) => ({workflow_id: "guided-w", event_seq: i + 1,
     type: "StateChanged", payload: {from: i ? "QUEUED" : "STOPPED", to, stage, user_guidance: true, resumed: true}})), "guided-w");
-  expect(rows.map(row => row.title)).toEqual(["指导已排队", "执行你的指导"]);
-  expect(rows[1]?.text).toContain("指导原文");
-  expect(rows[1]?.text).not.toContain("修复");
-  expect(rows[1]?.text).not.toContain("测试");
+  expect(rows.map(row => row.title)).toEqual(["执行你的指导"]);
+  expect(rows[0]?.text).toContain("指导原文");
+  expect(rows[0]?.text).not.toContain("修复");
+  expect(rows[0]?.text).not.toContain("测试");
 });
 
 it("describes planner code repairs and executor test repairs with their own responsibilities", () => {
@@ -414,7 +414,6 @@ it("distinguishes repair queuing and resume from entering the development stage 
   );
   expect(rows.map((r) => r.title)).toEqual([
     "执行模型自动修复",
-    "修复已排队",
     "继续开发与自测",
     "开始开发与自测",
   ]);

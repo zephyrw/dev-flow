@@ -117,11 +117,11 @@ describe("model selector directory refresh", () => {
     expect(container.textContent).toContain("目录加载失败");
     expect(onChange).not.toHaveBeenCalled();
   });
-  it("only offers Codex and AGY without changing the current profile", async () => {
+  it("offers the four supported tools without changing the current profile", async () => {
     api.get.mockResolvedValue({ entries: oldEntries, status: "fresh", discoveryStatus: "complete" });
     await render();
     const select = container.querySelector<HTMLSelectElement>('select[aria-label="工具"]')!;
-    expect(Array.from(select.options, (option) => option.value)).toEqual(["codex", "agy"]);
+    expect(Array.from(select.options, (option) => option.value)).toEqual(["codex", "agy", "claude-code", "opencode"]);
     expect(onChange).not.toHaveBeenCalled();
   });
   it("preserves a historical tool without probing it or displaying it as Codex", async () => {

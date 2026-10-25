@@ -317,10 +317,8 @@ test("大积压历史补拉会把连续事件分段展示到执行过程", async
   });
   await page.goto("/?workflow=" + workflow.id);
   await page.getByRole("button", { name: "执行过程", exact: true }).click();
-  await expect(page.locator(".execution-sidebar")).toContainText(
-    "等待规划模型审查",
-    { timeout: 15000 },
-  );
+  await expect(page.locator(".execution-sidebar").getByText("规划模型开始审查", { exact: true })).toHaveCount(3, { timeout: 15000 });
+  await expect(page.locator(".execution-sidebar")).not.toContainText("等待规划模型审查");
 });
 
 function reviewDetail(
@@ -394,6 +392,7 @@ async function mockWorkbench(
         },
       });
     }
+    if (path.endsWith("/user-interactions/current")) return route.fulfill({ json: { interaction: null } });
     return route.fulfill({
       json:
         path === "/api/projects"

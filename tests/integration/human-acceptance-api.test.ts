@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { buildServer } from "../../apps/api/src/server.js";
+import { AgyAccountRepository } from "../../packages/agy-accounts/src/repository.js";
 import { setup, plan, project, testConsoleHeaders } from "../helpers.js";
 import { objectHash } from "../../packages/core/src/util.js";
 
@@ -18,7 +19,7 @@ async function fixture() {
   const pending = s.engine.get(initial.id);
   s.engine.transition(initial.id, [pending.state], "HUMAN_PENDING", "accept");
   // No runtime or real account service is installed: HTTP injection cannot launch a CLI.
-  const app = await buildServer(s.engine, { accountService: { getRepository: () => ({}) } as any });
+  const app = await buildServer(s.engine, { accountService: { getRepository: () => new AgyAccountRepository(s.store) } as any });
   open.push({ app, store: s.store });
   const binding = s.engine.binding(initial.id, "accept");
   return { ...s, app, id: initial.id, binding };

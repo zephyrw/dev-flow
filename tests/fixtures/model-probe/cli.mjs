@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { createInterface } from "node:readline";
 
 const logDir = process.env.MODEL_PROBE_LOG_DIR;
 if (!logDir) {
@@ -58,6 +59,18 @@ if (kind === "catalog") {
   if (control.catalogBehavior === "fail") {
     console.error("catalog timeout");
     process.exit(1);
+  }
+  // Browser fixtures use the real Codex model/list transport when refreshing.
+  if (argv.includes("app-server") && Array.isArray(control.codexModels)) {
+    const lines = createInterface({ input: process.stdin });
+    for await (const line of lines) {
+      const request = JSON.parse(line);
+      if (request.method === "initialize") console.log(JSON.stringify({ id: request.id, result: {} }));
+      if (request.method === "model/list") console.log(JSON.stringify({
+        id: request.id, result: { data: control.codexModels, nextCursor: null },
+      }));
+    }
+    process.exit(0);
   }
   process.stdout.write(control.catalogStdout ?? "");
   process.exit(control.catalogExit ?? 0);

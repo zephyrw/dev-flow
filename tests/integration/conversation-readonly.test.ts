@@ -219,7 +219,11 @@ describe("SA-I04 readonly purposes and write refusal", () => {
       } else if (item.id === "opencode") {
         expect(readonlyText).toContain('"write":"deny"');
         expect(readonlyText).toContain('"edit":"deny"');
-        expect(writeInv.env.OPENCODE_CONFIG_CONTENT).toBeUndefined();
+        expect(writeInv.env.OPENCODE_CONFIG_CONTENT).toBeDefined();
+        const writeConfig = JSON.parse(writeInv.env.OPENCODE_CONFIG_CONTENT!);
+        expect(writeConfig.agent["devflow-executor"]).toMatchObject({ mode: "primary" });
+        expect(writeConfig.permission).toBeUndefined();
+        expect(writeConfig.agent["devflow-executor"].permission).toBeUndefined();
       } else {
         expect(readonlyText).toMatch(/write|deny|disallowed|plan|ask/);
         expect(readonlyText).toMatch(/write/);

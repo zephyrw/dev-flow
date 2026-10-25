@@ -117,8 +117,11 @@ describe("AGY 分类并发与端到端场景覆盖测试 (E01, E02, E03, E04)", 
     } catch {}
   });
 
-  it("E01: 真实页面模型保存和双组额度与运行模型弹层", async () => {
-    // 1. 验证 4.6 模型候选项在目录中被 enrich 补齐且不臆造思考强度
+  it("E01: 显式模型保存和双组额度独立呈现", async () => {
+    // 未读取原生目录时不再注入固定模型；旧模型仍可由用户显式登记。
+    expect(catalog.loadForSelector(agyScope).entries.map(entry => entry.nativeId)).toEqual(["gemini-3.8-flash-high"]);
+    catalog.ensureManualCandidate(agyScope, "claude-sonnet-4-6");
+    catalog.ensureManualCandidate(agyScope, "claude-opus-4-6-thinking");
     const catalogData = catalog.loadForSelector(agyScope);
     const sonnet = catalogData.entries.find((m) => m.nativeId === "claude-sonnet-4-6");
     const opus = catalogData.entries.find((m) => m.nativeId === "claude-opus-4-6-thinking");

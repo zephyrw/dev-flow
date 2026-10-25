@@ -4,6 +4,7 @@ import { CreateWorkflowService } from "../../packages/core/src/create-workflow.j
 import { seedVerifiedAccess } from "../../packages/core/src/access-guard.js";
 import { LocalRuntime } from "../../packages/runtime/src/runtime.js";
 import { buildServer } from "../../apps/api/src/server.js";
+import { AgyAccountRepository } from "../../packages/agy-accounts/src/repository.js";
 import { join, resolve } from "node:path";
 import { readFileSync } from "node:fs";
 import { git } from "../../packages/git/src/git.js";
@@ -39,7 +40,7 @@ describe("新任务真实 API/原生 CLI 进程/SQLite/Git", { timeout: 300000 }
     const runtime = new LocalRuntime(s.engine);
     s.engine.runtime = runtime;
     const app = await buildServer(s.engine, { accountService: {
-      getRepository: () => ({}), syncActiveAccountFromHost: async () => {},
+      getRepository: () => new AgyAccountRepository(s.store), syncActiveAccountFromHost: async () => {},
     } as any });
     let id: string | undefined;
     const wait = async (state: string) => {

@@ -62,7 +62,7 @@ test.describe("H02 Activity & Guidance Resilience", () => {
     await page.getByRole("button", { name: /^规划模型：/ }).click();
 
     // 验证局部错误展示
-    const alert = page.getByRole("alert");
+    const alert = page.getByRole("alert").filter({ hasText: "任务反馈响应格式无效" });
     await expect(alert).toBeVisible();
     await expect(alert).toContainText("任务反馈响应格式无效");
     const modelDialog = page.getByRole("dialog", { name: "工具与模型", exact: true });
@@ -430,7 +430,7 @@ test.describe("H02 Activity & Guidance Resilience", () => {
                   event_seq: 9001,
                   type: "StateChanged",
                   created_at: new Date().toISOString(),
-                  payload: { to: "REVIEW_QUEUED", stage: "quality_before_human" },
+                  payload: { to: "REVIEWING", stage: "quality_before_human" },
                 },
               ],
               next_before: 9001,
@@ -470,7 +470,7 @@ test.describe("H02 Activity & Guidance Resilience", () => {
     await page.goto("/?workflow=wf-catchup-first");
     await openExecutionSidebar(page);
     const sidebar = page.getByRole("region", { name: "执行过程侧栏" });
-    await expect(sidebar.getByText("等待规划模型审查")).toBeVisible();
+    await expect(sidebar.getByText("规划模型开始审查")).toBeVisible();
     await expect(sidebar.getByText("等待可用执行资源。")).toHaveCount(0);
     olderRequest.release?.();
   });

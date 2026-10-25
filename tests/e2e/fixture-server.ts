@@ -164,6 +164,8 @@ const CATALOG_MODELS: Array<{
         fixedValue: "medium",
         transport: "none",
       },
+      { id: "claude-opus-5-5-thinking", label: "Claude Opus 5.5 Thinking", values: [], transport: "none" },
+      { id: "claude-sonnet-5-5", label: "Claude Sonnet 5.5", values: [], transport: "none" },
     ],
   },
   {
@@ -200,7 +202,12 @@ function writeProbeControl(logDir: string, patch: Record<string, unknown>) {
   const current = existsSync(path)
     ? (JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>)
     : {};
-  writeFileSync(path, JSON.stringify({ ...current, ...patch }));
+  const codexModels = CATALOG_MODELS.find(group => group.adapterId === "codex")!.models.map(model => ({
+    id: model.id, model: model.id, displayName: model.label, hidden: false,
+    defaultReasoningEffort: model.defaultValue,
+    supportedReasoningEfforts: model.values.map(reasoningEffort => ({ reasoningEffort })),
+  }));
+  writeFileSync(path, JSON.stringify({ ...current, ...patch, codexModels }));
 }
 
 function probeCount(logDir: string): number {
@@ -225,7 +232,7 @@ function catalogEntry(
     label: model.label,
     selectionKind: "fixed",
     effort: {
-      status: "supported",
+      status: model.values.length ? "supported" : "unsupported",
       transport: model.transport ?? "config",
       values: model.values,
       defaultValue: model.defaultValue,
@@ -293,7 +300,7 @@ function seedCatalogs(store: ReturnType<typeof setup>["store"]) {
 function verifyProfile(
   adapterId: SupportedAdapterId,
   modelId: string,
-  effort: string,
+  effort?: string,
 ): ToolProfile {
   return {
     id: "probe-" + adapterId,
@@ -302,7 +309,7 @@ function verifyProfile(
     executableRef: PROBE_CLI,
     modelSelection: "explicit",
     modelId,
-    reasoning: { mode: "explicit", value: effort },
+    reasoning: effort ? { mode: "explicit", value: effort } : { mode: "not-applicable" },
     selectionKind: "fixed",
     options: {},
   };
@@ -361,7 +368,7 @@ async function preVerifyCatalogs(store: ReturnType<typeof setup>["store"]) {
     });
     for (const model of group.models) {
       if (SKIP_VERIFY.has(model.id)) continue;
-      const effort = model.defaultValue ?? model.values[0] ?? "high";
+      const effort = model.defaultValue ?? model.values[0];
       const catalog = catalogs.loadForSelector(
         fixtureCatalogScope(store, group.adapterId),
       );
@@ -401,6 +408,9 @@ process.env.MODEL_PROBE_LOG_DIR = probeLogDir;
 writeProbeControl(probeLogDir, { adapterId: "codex", behavior: "ok" });
 seedCatalogs(s.store);
 await preVerifyCatalogs(s.store);
+// Pre-verification changes this shared fixture control for each adapter.
+// Restore the default tool identity before browser-triggered catalog refreshes.
+writeProbeControl(probeLogDir, { adapterId: "codex", behavior: "ok", delayMs: 0 });
 const engine = new Engine(s.store, s.config);
 const repo = await repository(s.root);
 writeFileSync(

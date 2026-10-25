@@ -12,17 +12,17 @@ test("Gemini occupancy permits selecting and saving Claude, and Claude occupancy
   await dialog.getByRole("tab", { name: "执行", exact: true }).click();
   await exactLabel(dialog, "工具").selectOption("agy");
   await exactLabel(dialog, "工具模型搜索").click();
-  await expect(page.getByRole("option", { name: /Claude Opus 4\.6 Thinking/ })).toBeVisible();
-  await expect(page.getByRole("option", { name: /Claude Sonnet 4\.6/ })).toBeVisible();
-  await expect(page.getByRole("option", { name: /Claude (Opus|Sonnet) 5\.5/ })).toHaveCount(0);
-  await exactLabel(dialog, "工具模型搜索").fill("claude-sonnet-4-6");
-  await page.getByRole("option", { name: /Claude Sonnet 4\.6/ }).click();
+  await expect(page.getByRole("option", { name: /Claude Opus 5\.5 Thinking/ })).toBeVisible();
+  await expect(page.getByRole("option", { name: /Claude Sonnet 5\.5/ })).toBeVisible();
+  await expect(page.getByRole("option", { name: /Claude (Opus|Sonnet) 4\.6/ })).toHaveCount(0);
+  await exactLabel(dialog, "工具模型搜索").fill("claude-sonnet-5-5");
+  await page.getByRole("option", { name: /Claude Sonnet 5\.5/ }).click();
   await expect(dialog).not.toContainText("类别冲突");
   await waitAccessStatus(dialog.locator(".ms-editor"), "已验证可访问");
   await dialog.getByRole("button", { name: "保存配置" }).click();
   await expect(dialog).not.toBeVisible({ timeout: 20000 });
   const saved = await page.request.get("/api/settings/model-defaults");
-  expect((await saved.json()).defaults.executorProfile.modelId).toBe("claude-sonnet-4-6");
+  expect((await saved.json()).defaults.executorProfile.modelId).toBe("claude-sonnet-5-5");
 
   category = "other";
   await page.getByRole("button", { name: "设置", exact: true }).click();

@@ -25,12 +25,12 @@ const account = AgyAccountSchema.parse({
 });
 
 describe("five-hour quota reset", () => {
-  it.each([reset, reset + 1, reset + 9 * 86400_000])("projects an elapsed reset at %s consistently without changing observations", now => {
+  it.each([reset, reset + 1, reset + 9 * 86400_000])("keeps the displayed observation at %s separate from scheduling estimates", now => {
     const snap = snapshot();
     const original = structuredClone(snap);
     expect(resolveEffectiveQuotaWindows(snap.windows, now)[1]).toMatchObject({ remaining_fraction: 1, reset_at: null });
-    expect(formatSnapshotQuotaWindow(snap, "five_hour", now)).toMatchObject({ percentageText: "100%", fraction: 1, shortResetText: "", isZero: false });
-    expect(resolveEffectiveAccountState(account, [snap], now)).toBe("ready");
+    expect(formatSnapshotQuotaWindow(snap, "five_hour", now)).toMatchObject({ percentageText: "0%", fraction: 0, isZero: true });
+    expect(resolveEffectiveAccountState(account, [snap], now)).toBe("pending_quota");
     expect(snap).toEqual(original);
   });
 
@@ -84,12 +84,12 @@ describe("five-hour quota reset", () => {
     expect(computeEffectiveFiveHourQuota(weekly, reset).isValid).toBe(false);
   });
 
-  it("projects runtime five-hour quota while leaving other adapters unchanged", () => {
+  it("preserves runtime observations for AGY and other adapters", () => {
     const bucket = { id: "gemini", windows: [
       { window_minutes: 10080, used_percent: 0 },
       { window_minutes: 300, used_percent: 100, resets_at: reset / 1000 },
     ] };
-    expect(effectiveRuntimeQuotaWindows(bucket, "agy", observed, reset)[1]).toMatchObject({ used_percent: 0, resets_at: undefined });
+    expect(effectiveRuntimeQuotaWindows(bucket, "agy", observed, reset)).toEqual(bucket.windows);
     expect(effectiveRuntimeQuotaWindows(bucket, "codex", observed, reset)).toEqual(bucket.windows);
   });
 });

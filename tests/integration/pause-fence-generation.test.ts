@@ -1,6 +1,7 @@
 import { expect, it, vi } from "vitest";
 import { setup } from "../helpers.js";
 import { buildServer } from "../../apps/api/src/server.js";
+import { AgyAccountRepository } from "../../packages/agy-accounts/src/repository.js";
 import { conversationServiceOf } from "../../packages/runtime/src/profile-runtime.js";
 import { CONVERSATION_ENTITY } from "../../packages/contracts/src/conversation.js";
 import { CONVERSATION_CONTROL_FENCE } from "../../packages/core/src/conversation-control.js";
@@ -9,7 +10,7 @@ it("pauses the current generation instead of reusing an older completed fence, t
   const s = setup();
   const stopConversation = vi.fn(async (_target: unknown) => ({ accepted: true, confirmation: "exited" as const }));
   s.engine.runtime = { stopConversation } as any;
-  const app = await buildServer(s.engine, { accountService: { getRepository: () => ({}) } as any });
+  const app = await buildServer(s.engine, { accountService: { getRepository: () => new AgyAccountRepository(s.store) } as any });
   const conversations = conversationServiceOf(s.store);
   const workflow = { id: "wf", project_id: "project", title: "fixture", request: "fixture", complexity: "simple",
     workspace_mode: "existing_workspace", state: "EXECUTING", stage: "execute", version: 1,
