@@ -22,3 +22,16 @@ it("keeps authored JSON while presenting validated implementations and actual te
   expect(result).toContain("src/index.ts：修复读取"); expect(result).toContain("pnpm typecheck：通过");
   expect(result).toContain("T01：失败，仍需修复"); expect(result).not.toContain("acceptance_mappings");
 });
+
+it("renders the known review envelope without protocol fields and retains meaningful findings", () => {
+  const review = { verdict: "passed", summary: "代码复核通过", findings: [], unresolved_questions: [], repair_document: null,
+    notes: "本轮未重新执行测试。", quality: { function_impact: "changed", summary: "修复读取行为", notes: "仍需人工确认体验" } };
+  const output = displayResultEnvelope(JSON.stringify(review));
+  expect(output).toContain("结论：通过"); expect(output).toContain("本轮未重新执行测试。");
+  expect(output).toContain("仍需人工确认体验"); expect(output).not.toContain("repair_document");
+  expect(output).not.toContain("待确认问题");
+  const authored = JSON.stringify({ summary: "业务数据", verdict: "passed" });
+  expect(displayResultEnvelope(authored)).toBe(authored);
+  const future = JSON.stringify({ ...review, quality: { new_evidence: "不能丢失" } });
+  expect(displayResultEnvelope(future)).toBe(future);
+});
