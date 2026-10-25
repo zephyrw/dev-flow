@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, createReadStream } from "node:fs";
+import { realpath, stat } from "node:fs/promises";
 import { resolve } from "node:path";
 import {
   defaultAdapterFallbackDirs,
@@ -11,6 +12,48 @@ export interface AgyExecutableResolution {
   source: "explicit_file" | "env_var" | "path_lookup" | "fallback_dir" | "none";
   error?: string;
   fingerprint?: string;
+  fileIdentity?: string;
+}
+
+const fingerprints = new Map<string, { identity: string; value: Promise<string> }>();
+const fileIdentity = async (path: string) => {
+  const file = await stat(path, { bigint: true });
+  if (!file.isFile()) throw new Error("AGY executable is not a regular file");
+  return [file.dev, file.ino, file.size, file.mtimeNs, file.ctimeNs].join(":");
+};
+
+/** Share bounded, asynchronous fingerprint work; never hash the executable on a UI read. */
+export async function resolveFingerprintedAgyExecutable(customInput?: string): Promise<AgyExecutableResolution> {
+  const resolved = resolveAgyExecutable(customInput);
+  if (!resolved.resolvedPath) return resolved;
+  try {
+    const path = await realpath(resolved.resolvedPath);
+    const identity = await fileIdentity(path);
+    let entry = fingerprints.get(path);
+    if (!entry || entry.identity !== identity) {
+      const value = (async () => {
+        const hash = createHash("sha256");
+        for await (const chunk of createReadStream(path)) hash.update(chunk);
+        if (await fileIdentity(path) !== identity) throw new Error("AGY executable changed during verification");
+        return hash.digest("hex");
+      })();
+      entry = { identity, value };
+      fingerprints.delete(path);
+      fingerprints.set(path, entry);
+      while (fingerprints.size > 16) fingerprints.delete(fingerprints.keys().next().value!);
+      const saved = entry;
+      void value.catch(() => { if (fingerprints.get(path) === saved) fingerprints.delete(path); });
+    }
+    return { ...resolved, resolvedPath: path, fileIdentity: identity, fingerprint: await entry.value };
+  } catch (error) {
+    return { source: resolved.source, error: `读取 AGY 可执行文件失败: ${(error as Error).message}` };
+  }
+}
+
+export async function assertAgyExecutableUnchanged(executable: AgyExecutableResolution): Promise<void> {
+  if (!executable.resolvedPath || !executable.fingerprint) throw new Error("agy_cli_not_configured");
+  if (executable.fileIdentity && await fileIdentity(executable.resolvedPath) !== executable.fileIdentity)
+    throw new Error("agy_executable_changed");
 }
 
 /**
@@ -28,8 +71,7 @@ export function resolveAgyExecutable(
     const abs = resolve(customInput);
     if (existsSync(abs)) {
       try {
-        const fp = createHash("sha256").update(readFileSync(abs)).digest("hex");
-        return { resolvedPath: abs, source: "explicit_file", fingerprint: fp };
+        return { resolvedPath: abs, source: "explicit_file" };
       } catch (err: any) {
         return {
           source: "explicit_file",
@@ -49,8 +91,7 @@ export function resolveAgyExecutable(
     const abs = resolve(envPath);
     if (existsSync(abs)) {
       try {
-        const fp = createHash("sha256").update(readFileSync(abs)).digest("hex");
-        return { resolvedPath: abs, source: "env_var", fingerprint: fp };
+        return { resolvedPath: abs, source: "env_var" };
       } catch (err: any) {
         return {
           source: "env_var",
@@ -72,14 +113,12 @@ export function resolveAgyExecutable(
   const found = resolveAdapterExecutable("agy", commandName);
   if (found && existsSync(found)) {
     try {
-      const fp = createHash("sha256").update(readFileSync(found)).digest("hex");
       const isFallback = defaultAdapterFallbackDirs().some((dir) =>
         found.startsWith(dir),
       );
       return {
         resolvedPath: found,
         source: isFallback ? "fallback_dir" : "path_lookup",
-        fingerprint: fp,
       };
     } catch (err: any) {
       return {

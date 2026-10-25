@@ -36,6 +36,7 @@ export async function agyApi<T>(
   const isMutation = Boolean(options.method && options.method.toUpperCase() !== "GET");
   const response = await fetch(`/api/agy-accounts${path}`, {
     ...options,
+    signal: options.signal ? AbortSignal.any([options.signal, AbortSignal.timeout(15000)]) : AbortSignal.timeout(15000),
     headers: {
       ...(isMutation || options.body ? { "Content-Type": "application/json" } : {}),
       ...options.headers,
@@ -48,7 +49,7 @@ export async function agyApi<T>(
       typeof data.error === "string"
         ? data.error
         : (data.error?.message ?? data.message);
-    throw new Error(message ?? `请求失败 (${response.status})`);
+    throw Object.assign(new Error(message ?? `请求失败 (${response.status})`), { status: response.status });
   }
   return data as T;
 }
@@ -66,7 +67,7 @@ export const operationLabels: Record<string, string> = {
   pending: "正在启动",
   queued: "正在启动",
   started: "正在准备",
-  quiescing: "等待旧身份退出",
+  quiescing: "正在准备账号变更",
   capturing: "正在读取本地凭据",
   prepared: "正在核验身份与额度",
   login_intent: "正在准备官方登录环境",

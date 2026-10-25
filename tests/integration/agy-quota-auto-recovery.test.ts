@@ -1,3 +1,4 @@
+import { rmSync } from "node:fs";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { setup, project } from "../helpers.js";
 import { accountFixture } from "../fixtures/agy-accounts/service-fixture.js";
@@ -78,6 +79,7 @@ afterEach(async () => {
   await accounts.service.close();
   vi.restoreAllMocks();
   s.store.close();
+  rmSync(s.root, { recursive: true, force: true });
 });
 
 function source(id: string, purpose: Run["purpose"] = "implement", selected = profile) {
@@ -197,7 +199,7 @@ it("automatically switches and resumes after a confirmed quota exit without stop
   expect(restore).toHaveBeenCalledTimes(1);
 });
 
-it("detects an official zero during background monitoring and checkpoints both running tasks", async () => {
+it("detects an official zero and switches the default without stopping either running task", async () => {
   const one = source("monitor-one"), two = source("monitor-two");
   await started(one); await started(two);
   exhausted = true;
@@ -205,8 +207,12 @@ it("detects an official zero during background monitoring and checkpoints both r
   expect(switches()).toHaveLength(1);
   expect(switches()[0]!.quota_trigger).toMatchObject({ window: "five_hour", source: "official_cli_usage" });
   expect(accounts.active()).toBe("b");
-  expect(stop).toHaveBeenCalledTimes(2);
-  expect(restore, JSON.stringify(recoveryErrors)).toHaveBeenCalledTimes(2);
+  expect(stop).not.toHaveBeenCalled();
+  expect(restore).not.toHaveBeenCalled();
+  for (const run of [one, two]) {
+    expect(live.has(run.id)).toBe(true);
+    expect(s.store.get("agy_recovery_checkpoint", `${switches()[0]!.operation_id}:${run.id}`)).toBeUndefined();
+  }
 });
 
 it("does not bypass another running task's disabled automatic switch policy", async () => {
@@ -220,6 +226,39 @@ it("does not bypass another running task's disabled automatic switch policy", as
   expect(switches()[0]).toMatchObject({ phase: "waiting", error: "automatic_switch_policy_conflict" });
   expect(accounts.active()).toBe("a");
   expect(stop).not.toHaveBeenCalled();
+});
+
+it.each(["Claude and GPT models", "Gemini 4 Argon"])("ignores unrelated %s exhaustion and still detects later Gemini exhaustion", async unrelated => {
+  const selected = { ...profile, modelId: "gemini-3.8-flash-high" };
+  const base = accounts.repository.listQuotaSnapshots(realmId)[0]!;
+  let zeroGemini = false;
+  const pools = (account: string) => [
+    { pool_id: "Gemini Models", model_ids: [selected.modelId], windows: base.windows.map(w => ({ ...w,
+      remaining_fraction: zeroGemini && account === "a" ? 0 : .8 })) },
+    { pool_id: unrelated, model_ids: unrelated === "Gemini 4 Argon" ? ["gemini-4-argon-*"] : ["claude-*", "gpt-oss-*"],
+      windows: base.windows.filter(w => unrelated !== "Gemini 4 Argon" || w.kind === "weekly")
+        .map(w => ({ ...w, remaining_fraction: 0 })) },
+  ];
+  for (const account of ["a", "b", "c"]) {
+    accounts.repository.retainQuotaPools(realmId, account, []);
+    for (const pool of pools(account)) accounts.repository.saveQuotaSnapshot({ ...base, ...pool,
+      account_id: account, id: crypto.randomUUID() });
+  }
+  vi.spyOn(accounts.probe, "probeUsage").mockImplementation(async () => ({
+    email: `${accounts.active()}@example.com`, cli_version: "fixture", raw_output: "", capability_verified: true,
+    executable_fingerprint: "fixture", pools: pools(accounts.active()), windows: pools(accounts.active())[0]!.windows,
+  }));
+  const run = source("unrelated-zero", "implement", selected);
+  await started(run);
+  await accounts.service.tick(Date.now());
+  expect(switches()).toHaveLength(0);
+  expect(stop).not.toHaveBeenCalled(); expect(installs).not.toHaveBeenCalled();
+  zeroGemini = true;
+  await accounts.service.tick(Date.now() + 61_000);
+  expect(switches()).toHaveLength(1);
+  expect(switches()[0]!.quota_trigger?.pool_id).toBe("Gemini Models");
+  expect(accounts.active()).toBe("b");
+  expect(live.has(run.id)).toBe(true); expect(stop).not.toHaveBeenCalled();
 });
 
 it("routes a fresh admission quota probe into the same switch and skips a quota-exhausted candidate", async () => {
@@ -275,7 +314,7 @@ it("verifies quota across same-account token refresh and records why unconfirmed
   expect(installs).not.toHaveBeenCalled();
 });
 
-it("switches once for two running consumers plus an exhausted prelaunch run and preserves all three recovery bindings", async () => {
+it("switches once, preserves two live commands and recovers only the rejected prelaunch command", async () => {
   const runs = [source("running-executor"), source("running-reviewer", "quality_review"), source("admission-planner", "planning")];
   await started(runs[0]!); await started(runs[1]!);
   await verifyZero();
@@ -289,10 +328,15 @@ it("switches once for two running consumers plus an exhausted prelaunch run and 
   expect(switches()).toHaveLength(1);
   expect(accounts.active()).toBe("b");
   expect(installs).toHaveBeenCalledTimes(1);
-  expect(stop.mock.calls.map((call) => call[0]).sort()).toEqual([runs[0]!.id, runs[1]!.id].sort());
-  expect(confirm).toHaveBeenCalledWith([runs[0]!.id, runs[1]!.id]);
-  expect(restore, JSON.stringify({ recoveryErrors, operations: switches().map(op => ({ phase: op.phase, error: op.error })) })).toHaveBeenCalledTimes(3);
-  for (const run of runs) {
+  expect(stop).not.toHaveBeenCalled();
+  expect(confirm).not.toHaveBeenCalled();
+  expect(restore, JSON.stringify(recoveryErrors)).toHaveBeenCalledTimes(1);
+  for (const run of runs.slice(0, 2)) {
+    expect(live.has(run.id)).toBe(true);
+    expect(s.store.get("pending_model_retry", run.workflow_id)).toBeUndefined();
+    expect(s.store.must<Run>("run", run.id)).toMatchObject({ status: "running", conversation_id: run.conversation_id });
+  }
+  for (const run of runs.slice(2)) {
     expect(s.store.get<any>("agy_recovery_checkpoint", `${wait.operation_id}:${run.id}`))
       .toMatchObject({ source_run_id: run.id, root_purpose: run.purpose, root_conversation_id: run.conversation_id });
     const retry = bindProfile(s.store, s.config, run.workflow_id, run.purpose!, buildDispatchContext(s.store, run.workflow_id, run.purpose!));
@@ -349,17 +393,25 @@ it.each(["failure", "background"])("switches mixed tasks after %s without replac
   const operation = switches()[0]!;
   expect(accounts.active()).toBe("b");
   expect(switches()).toHaveLength(1);
-  expect(restore, JSON.stringify(recoveryErrors)).toHaveBeenCalledTimes(2);
+  expect(restore, JSON.stringify(recoveryErrors)).toHaveBeenCalledTimes(mode === "failure" ? 1 : 0);
+  expect(stop).not.toHaveBeenCalled();
   for (const run of runs) {
-    expect(s.store.get<any>("agy_recovery_checkpoint", `${operation.operation_id}:${run.id}`))
+    const failed = mode === "failure" && run.id === runs[1]!.id;
+    if (failed) expect(s.store.get<any>("agy_recovery_checkpoint", `${operation.operation_id}:${run.id}`))
       .toMatchObject({ source_run_id: run.id, root_conversation_id: run.conversation_id, root_purpose: "implement" });
+    else {
+      expect(s.store.get("agy_recovery_checkpoint", `${operation.operation_id}:${run.id}`)).toBeUndefined();
+      expect(live.has(run.id)).toBe(true);
+    }
     const original = s.store.must<Run>("run", run.id);
     expect(original.profile).toMatchObject({ modelId: run.profile!.modelId });
     expect(original.conversation_id).toBe(run.conversation_id);
     expect(s.engine.get(run.workflow_id).plan_hash).toBe("same-plan");
-    const retry = bindProfile(s.store, s.config, run.workflow_id, run.purpose!, buildDispatchContext(s.store, run.workflow_id, run.purpose!));
-    expect(retry.frozen_invocation.modelToken).toBe(run.profile!.modelId);
-    expect(retry.profile.modelId).toBe(run.profile!.modelId);
+    if (failed) {
+      const retry = bindProfile(s.store, s.config, run.workflow_id, run.purpose!, buildDispatchContext(s.store, run.workflow_id, run.purpose!));
+      expect(retry.frozen_invocation.modelToken).toBe(run.profile!.modelId);
+      expect(retry.profile.modelId).toBe(run.profile!.modelId);
+    } else expect(s.store.get("pending_model_retry", run.workflow_id)).toBeUndefined();
   }
 });
 

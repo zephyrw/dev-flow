@@ -6,7 +6,7 @@ import type {
 } from "../../contracts/src/agy-account.js";
 import type { AgyAccountRepository } from "./repository.js";
 import type { AuthHostPort, AccountProbePort, AccountProbeResult } from "./ports.js";
-import { isQuotaPoolVerified, modelCovered } from "./quota.js";
+import { isQuotaPoolVerified, quotaPoolCoversModel } from "./quota.js";
 import { AgyLoginLauncher } from "./login.js";
 export interface EnrollmentResult {
   success: boolean;
@@ -173,7 +173,7 @@ export class AgyEnrollmentService {
       return { success: false, error: "quota_capability_unavailable" };
     }
     const pools = verified ? observation!.pools : [];
-    const targetPools = pools.filter(pool => !context.model_id || modelCovered(pool.model_ids, context.model_id));
+    const targetPools = pools.filter(pool => !context.model_id || quotaPoolCoversModel(pool, context.model_id));
     const validPools = pools.filter(pool => isQuotaPoolVerified(observation!, pool));
     const complete = context.model_id
       ? targetPools.length > 0 && targetPools.every(pool => isQuotaPoolVerified(observation!, pool))

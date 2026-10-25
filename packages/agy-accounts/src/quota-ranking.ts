@@ -1,6 +1,6 @@
 import type { AgyQuotaTrigger, QuotaWindow, WindowKind } from "../../contracts/src/agy-account.js";
 
-export const AGY_MODEL_POOL_IDS = ["Gemini Models", "Claude and GPT models"];
+export const AGY_MODEL_POOL_IDS = ["Gemini Models", "Claude and GPT models", "Gemini 4 Argon"];
 
 export interface QuotaRank {
   account_id: string;
@@ -19,7 +19,8 @@ export function quotaRankingWindows(
   const selected = trigger ? exact ? [exact] : pools.filter(pool =>
     pool.pool_id.toLowerCase() === "global" && pool.model_ids?.includes("*")) : pools;
   const fraction = (kind: WindowKind) => selected.length ? Math.min(...selected.map(pool =>
-    pool.windows.find(window => window.kind === kind)?.remaining_fraction ?? 0)) : 0;
+    pool.windows.find(window => window.kind === kind)?.remaining_fraction ??
+      (pool.pool_id === "Gemini 4 Argon" && kind === "five_hour" ? 1 : 0))) : 0;
   return { weekly: fraction("weekly"), five_hour: fraction("five_hour") };
 }
 

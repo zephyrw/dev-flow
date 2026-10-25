@@ -94,6 +94,12 @@ export const AgyAccountSchema = z.object({
   disabled_reason: z.string().optional(),
   state_before_disabled: AccountStateSchema.optional(),
   auth: AgyAccountAuthSchema,
+  models: z.object({
+    native_ids: z.array(z.string().min(1)),
+    observed_at: z.string().min(1),
+    executable_fingerprint: z.string().min(1),
+    cli_version: z.string(),
+  }).optional(),
 });
 export type AgyAccount = z.infer<typeof AgyAccountSchema>;
 
@@ -331,6 +337,7 @@ export const AgyAccountOperationSchema = z.object({
         verified_at: z.string(),
         verified_model_ids: z.array(z.string()).default([]),
         credential_revision: z.number().int().nonnegative().optional(),
+        model_selection_required: z.boolean().optional(),
       }),
     )
     .default([]),
@@ -532,6 +539,7 @@ export const FinalAccountCommitSchema = z.object({
   control_generation: z.number().int().nonnegative(),
   committed_at: z.string().min(1),
   selected_batch_id: Id.optional(),
+  model_selection_required: z.boolean().optional(),
   stopped_job_ids: z.array(z.string()).default([]),
 });
 export type FinalAccountCommit = z.infer<typeof FinalAccountCommitSchema>;

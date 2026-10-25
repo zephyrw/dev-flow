@@ -290,11 +290,11 @@ describe("AGY-WEEKLY-03 snapshot presentation", () => {
       windows: [weekly, short],
       capability_verified: verified,
     };
-    expect(formatSnapshotQuotaWindow(snapshot, "weekly", nowMs).fraction).toBe(1);
+    expect(formatSnapshotQuotaWindow(snapshot, "weekly", nowMs).fraction).toBe(0.6);
     const resetMs = nowMs + 3600_000;
     snapshot.windows = [{ ...weekly, reset_at: new Date(resetMs).toISOString() }, short];
     expect(formatSnapshotQuotaWindow(snapshot, "weekly", resetMs - 1).fraction).toBe(0.6);
-    expect(formatSnapshotQuotaWindow(snapshot, "weekly", resetMs).fraction).toBe(1);
+    expect(formatSnapshotQuotaWindow(snapshot, "weekly", resetMs).fraction).toBe(0.6);
     expect(formatSnapshotQuotaWindow(snapshot, "weekly", resetMs + 1).shortResetText).toBe("");
     expect(formatSnapshotQuotaWindow(snapshot, "five_hour", nowMs)).toEqual(formatQuotaWindow(short, nowMs));
     expect(snapshot.windows[0]!.remaining_fraction).toBe(0.6);

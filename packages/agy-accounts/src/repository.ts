@@ -28,12 +28,17 @@ import {
   AgyQuotaTriggerSchema,
   type AgyQuotaTrigger,
 } from "../../contracts/src/agy-account.js";
-import { hasDualQuotaWindows } from "./quota.js";
+import { hasRequiredQuotaWindows } from "./quota.js";
 import type { Store } from "../../store/src/store.js";
 import type { z } from "zod";
 
 export class AgyAccountRepository {
   constructor(private store: Store) {}
+  onChange(listener: () => void): () => void {
+    const changed = (change: { kind: string }) => { if (change.kind.startsWith("agy_")) listener(); };
+    this.store.on("change", changed);
+    return () => this.store.off("change", changed);
+  }
 
   transaction<T>(fn: () => T): T {
     return this.store.transaction(fn);
@@ -157,12 +162,16 @@ export class AgyAccountRepository {
           realm.auth_epoch === validated.auth_epoch && !realm.pending_operation_id &&
           validated.capability_verified === true && validated.executable_fingerprint &&
           Number.isFinite(Date.parse(validated.observed_at)) && Date.parse(validated.observed_at) <= Date.now() &&
-          hasDualQuotaWindows(validated.windows)) {
-        const prior = this.getQuotaTrigger(validated.realm_id, validated.account_id, validated.auth_epoch);
+          hasRequiredQuotaWindows(validated.pool_id, validated.windows)) {
+        const prior = this.getQuotaTrigger(validated.realm_id, validated.account_id, validated.auth_epoch, [validated.pool_id]);
         if (prior?.source === "official_cli_usage" && prior.pool_id === validated.pool_id &&
             validated.windows.some(window => window.kind === prior.window && (window.remaining_fraction ?? 0) > 0))
-          this.putRecord("agy_quota_trigger", `${validated.realm_id}:${validated.account_id}:${validated.auth_epoch}`,
-            validated.realm_id, { ...prior, resolved_at: validated.observed_at });
+          for (const key of [`${validated.realm_id}:${validated.account_id}:${validated.auth_epoch}`,
+            `${validated.realm_id}:${validated.account_id}:${validated.auth_epoch}:${validated.pool_id}`]) {
+            const stored = this.getRecord<AgyQuotaTrigger>("agy_quota_trigger", key);
+            if (stored?.pool_id === validated.pool_id)
+              this.putRecord("agy_quota_trigger", key, validated.realm_id, { ...prior, resolved_at: validated.observed_at });
+          }
         for (const window of [...validated.windows].sort((a, b) => a.kind.localeCompare(b.kind))) {
           if (window.remaining_fraction === 0) this.recordQuotaTrigger(validated.realm_id, {
             account_id: validated.account_id, auth_epoch: validated.auth_epoch,
@@ -181,20 +190,25 @@ export class AgyAccountRepository {
     this.pruneHistory(validated.account_id, validated.pool_id);
   }
 
-  getQuotaTrigger(realmId: string, accountId: string, epoch: number): AgyQuotaTrigger | undefined {
-    const raw = this.getRecord<AgyQuotaTrigger & { resolved_at?: string }>("agy_quota_trigger", `${realmId}:${accountId}:${epoch}`);
-    return raw && !raw.resolved_at ? AgyQuotaTriggerSchema.parse(raw) : undefined;
+  getQuotaTrigger(realmId: string, accountId: string, epoch: number, poolIds?: string[]): AgyQuotaTrigger | undefined {
+    // Include the legacy account-wide key, but keep each pool's exhaustion
+    // independent: an unrelated zero must neither trigger nor hide this model.
+    const raw = this.store.list<AgyQuotaTrigger & { resolved_at?: string }>("agy_quota_trigger", realmId)
+      .filter(item => item.account_id === accountId && item.auth_epoch === epoch && !item.resolved_at &&
+        (!poolIds || poolIds.includes(item.pool_id)))
+      .sort((a, b) => b.event_seq - a.event_seq)[0];
+    return raw ? AgyQuotaTriggerSchema.parse(raw) : undefined;
   }
 
   recordQuotaTrigger(realmId: string, trigger: Omit<AgyQuotaTrigger, "event_seq">): AgyQuotaTrigger {
     return this.transaction(() => {
-      const existing = this.getQuotaTrigger(realmId, trigger.account_id, trigger.auth_epoch);
+      const existing = this.getQuotaTrigger(realmId, trigger.account_id, trigger.auth_epoch, [trigger.pool_id]);
       if (existing) return existing;
       const sequence = (this.getRecord<{ value: number }>("agy_quota_sequence", realmId)?.value ?? 0) + 1;
       const validated = AgyQuotaTriggerSchema.parse({ ...trigger, event_seq: sequence });
       this.putRecord("agy_quota_sequence", realmId, realmId, { value: sequence });
       this.putRecord("agy_quota_trigger_event", `${realmId}:${sequence}`, realmId, validated);
-      this.putRecord("agy_quota_trigger", `${realmId}:${trigger.account_id}:${trigger.auth_epoch}`, realmId, validated);
+      this.putRecord("agy_quota_trigger", `${realmId}:${trigger.account_id}:${trigger.auth_epoch}:${trigger.pool_id}`, realmId, validated);
       return validated;
     });
   }
@@ -225,16 +239,7 @@ export class AgyAccountRepository {
   }
 
   listQuotaHistory(accountId: string, limit = 100): AgyQuotaSnapshot[] {
-    const all = this.store.list<AgyQuotaSnapshot>(
-      "agy_quota_history",
-      accountId,
-    );
-    return all
-      .sort(
-        (a, b) =>
-          new Date(b.observed_at).getTime() - new Date(a.observed_at).getTime(),
-      )
-      .slice(0, limit);
+    return this.store.listRecent<AgyQuotaSnapshot>("agy_quota_history", accountId, "observed_at", limit);
   }
 
   getOperation(operationId: string): AgyAccountOperation | undefined {
@@ -243,8 +248,9 @@ export class AgyAccountRepository {
     return AgyAccountOperationSchema.parse(raw);
   }
 
-  listOperations(realmId: string): AgyAccountOperation[] {
-    const rows = this.store.list<unknown>("agy_account_operation", realmId);
+  listOperations(realmId: string, limit?: number, offset = 0): AgyAccountOperation[] {
+    const rows = limit === undefined ? this.store.list<unknown>("agy_account_operation", realmId)
+      : this.store.listRecent<unknown>("agy_account_operation", realmId, "created_at", limit, offset);
     return rows.map((r) => AgyAccountOperationSchema.parse(r));
   }
 

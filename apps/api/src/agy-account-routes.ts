@@ -76,13 +76,59 @@ export function registerAgyAccountRoutes(
   human: (req: any) => void,
 ) {
   const repo = service.getRepository();
+  const serviceView = (view: ReturnType<AgyAccountService["getPresentation"]>, limit: number) => {
+    const settings = view.settings;
+    const realm = view.realm && "realm_id" in view.realm ? view.realm : null;
+    const operations = repo.listOperations(realmId, limit);
+    const active = realm?.pending_operation_id ? repo.getOperation(realm.pending_operation_id) : undefined;
+    if (active && !operations.some(op => op.operation_id === active.operation_id)) operations.unshift(active);
+    return { realm_id: realmId, service_state: "stopped", desired_enabled: false, auth_epoch: 0,
+      revision: 0, control_generation: 0, ...view.realm,
+      automation: { enabled: Boolean(realm?.desired_enabled && settings?.workflow_auto_switch),
+        service_state: realm?.service_state ?? "stopped", can_toggle: true, actions_available: { enroll: true, switch: true } },
+      operations: operations.map(publicAccountOperation) };
+  };
+  let snapshot: { at: number; value: unknown } | undefined;
+  const invalidate = repo.onChange(() => { snapshot = undefined; });
+  app.addHook("onClose", async () => invalidate());
+  app.get("/api/agy-accounts/snapshot", async req => {
+    human(req);
+    if (snapshot && Date.now() - snapshot.at < 5000) return snapshot.value;
+    const view = service.getPresentation(realmId);
+    const value = {
+      accounts: view.accounts.map(({ id, revision, identity, state }) => ({ id, revision, identity, state })),
+      snapshots: view.snapshots.map(({ account_id, pool_id, windows, observed_at, capability_verified }) =>
+        ({ account_id, pool_id, windows, observed_at, capability_verified })),
+      realm: view.realm, settings: { revision: view.settings.revision },
+      selection_context: view.selection_context,
+      capability: { supported: view.capability.supported, reason: view.capability.reason },
+      service: serviceView(view, 4), refresh: service.getQuotaRefresh(realmId),
+    };
+    snapshot = { at: Date.now(), value };
+    return value;
+  });
+  app.post("/api/agy-accounts/refresh", async (req, reply) => {
+    human(req);
+    const body = z.object({ request_id: requestId.optional(), force: z.boolean().default(false) }).strict().parse(req.body ?? {});
+    return reply.code(202).send(service.requestQuotaRefresh(realmId, body.force));
+  });
+  app.get("/api/agy-accounts/notifications", { websocket: true }, (socket, req) => {
+    human(req);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const unsubscribe = repo.onChange(() => {
+      if (timer) return;
+      timer = setTimeout(() => {
+        timer = undefined;
+        if (socket.readyState !== 1) return;
+        if (socket.bufferedAmount > 65536) { socket.close(1013, "Reconnect"); return; }
+        socket.send(JSON.stringify({ type: "AgyAccountsChanged" }));
+      }, 50);
+    });
+    socket.on("close", () => { unsubscribe(); clearTimeout(timer); });
+  });
   app.get("/api/agy-accounts", async (req) => {
     human(req);
-    let view = service.getPresentation(realmId);
-    if (!view.realm || !("active_account_id" in view.realm) || !view.realm.active_account_id) {
-      await service.syncActiveAccountFromHost(realmId).catch(() => {});
-      view = service.getPresentation(realmId);
-    }
+    const view = service.getPresentation(realmId);
     return {
       ...view,
       accounts: view.accounts.map((a) => AgyAccountDtoSchema.parse(a)),
@@ -111,36 +157,10 @@ export function registerAgyAccountRoutes(
   app.get("/api/agy-accounts/service", async (req) => {
     human(req);
     const view = service.getPresentation(realmId);
-    const settings = repo.getSettings(realmId);
-    const realm = view.realm && "realm_id" in view.realm ? view.realm : null;
-    const serviceState = realm?.service_state ?? "stopped";
-    const isAutomationEnabled = Boolean(
-      realm?.desired_enabled && settings?.workflow_auto_switch,
-    );
     return {
-      realm_id: realmId,
-      service_state: "stopped",
-      desired_enabled: false,
-      auth_epoch: 0,
-      revision: 0,
-      control_generation: 0,
-      ...view.realm,
-      automation: {
-        enabled: isAutomationEnabled,
-        service_state: serviceState,
-        can_toggle: true,
-        actions_available: {
-          enroll: true,
-          switch: true,
-        },
-      },
+      ...serviceView(view, 100),
       settings: publicSettings(view.settings),
       capability: view.capability,
-      operations: repo
-        .listOperations(realmId)
-        .sort((a: any, b: any) => b.created_at.localeCompare(a.created_at))
-        .slice(0, 100)
-        .map(publicAccountOperation),
     };
   });
   app.put("/api/agy-accounts/automation", async (req, reply) => {
@@ -273,6 +293,13 @@ export function registerAgyAccountRoutes(
           ...rest,
         }),
       );
+  });
+  app.get("/api/agy-accounts/operations", async req => {
+    human(req);
+    const query = z.object({ limit: z.coerce.number().int().min(1).max(100).default(20), offset: z.coerce.number().int().min(0).default(0) }).strict().parse(req.query);
+    const operations = repo.listOperations(realmId, query.limit + 1, query.offset);
+    return { operations: operations.slice(0, query.limit).map(publicAccountOperation),
+      next_offset: operations.length > query.limit ? query.offset + query.limit : null };
   });
   app.get("/api/agy-accounts/operations/:id", async (req) => {
     human(req);

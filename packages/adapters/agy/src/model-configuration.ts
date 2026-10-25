@@ -34,6 +34,22 @@ const HEADER_TOKENS = new Set([
 // must not acquire an effort capability just because their name ends in -high.
 // 注意：思考强度严格按家族对齐（例如 Gemini 3.8 Flash 包含 high/medium/low，不存在 xhigh/max/ultra）。
 export const AGY_VARIANTS: Record<string, Record<string, string>> = {
+  "gemini-4-argon": {
+    high: "gemini-4-argon-high",
+    medium: "gemini-4-argon-medium",
+    low: "gemini-4-argon-low",
+  },
+  "claude-opus-5-5": {
+    high: "claude-opus-5-5-high",
+    medium: "claude-opus-5-5-medium",
+    low: "claude-opus-5-5-low",
+  },
+  "claude-sonnet-5-5": {
+    high: "claude-sonnet-5-5-high",
+    medium: "claude-sonnet-5-5-medium",
+    low: "claude-sonnet-5-5-low",
+  },
+  "gpt-oss-120b": { medium: "gpt-oss-120b-medium" },
   "gemini-3.8-flash": {
     high: "gemini-3.8-flash-high",
     medium: "gemini-3.8-flash-medium",
@@ -223,6 +239,7 @@ function parseAgyNativeIds(input: CatalogParseInput): string[] {
   const seen = new Set<string>();
   const ids: string[] = [];
   for (const line of prepared.lines) {
+    if (/\b(?:unavailable|not available|disabled|unsupported)\b|不可用|不支持/i.test(line)) continue;
     const nativeId = firstCallableToken(line);
     if (!nativeId || seen.has(nativeId)) continue;
     seen.add(nativeId);

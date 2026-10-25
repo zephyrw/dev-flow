@@ -207,7 +207,8 @@ export function registerModelRoutes(
     : undefined;
   const specs = new ExecutionSpecService(engine.store, engine.config, getActiveCategory);
   const defaults = new ModelDefaultsService(engine.store);
-  const catalog = new ModelCatalogService(engine.store);
+  const catalog = new ModelCatalogService(engine.store, accountService
+    ? { readAgyModels: () => accountService.readActiveModelIds() } : {});
   const access = modelAccess ?? new ModelAccessService(engine.store, {
     catalog,
     ...(accountService ? {
@@ -243,7 +244,9 @@ export function registerModelRoutes(
       .string()
       .parse((req.params as { adapter: string }).adapter);
     const scopeId = (req.query as { scope_id?: string }).scope_id;
-    return catalog.getModels(adapter, scopeId);
+    if (adapter === "agy" && accountService) await accountService.syncActiveAccountFromHost();
+    const result = catalog.getModels(adapter, scopeId);
+    return adapter === "agy" ? { ...result, entries: result.entries.filter(entry => entry.availability === "listed") } : result;
   });
 
   app.post("/api/model-tools/:adapter/models/refresh", async (req, reply) => {
@@ -252,6 +255,7 @@ export function registerModelRoutes(
       .string()
       .parse((req.params as { adapter: string }).adapter);
     const body = (req.body || {}) as Record<string, unknown>;
+    if (adapter === "agy" && accountService) await accountService.syncActiveAccountFromHost();
     const result = catalog.refreshModels({
       adapter,
       request_id: parseUuid(body.request_id),

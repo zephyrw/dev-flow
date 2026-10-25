@@ -117,6 +117,25 @@ it("runs the exact caller probe without adding an account model probe", async ()
   expect(fixture.probeCalls()).toBe(count);
 });
 
+it.each([undefined, "other-subject"])("refreshes the catalog with missing subject but rejects a contradictory subject: %s", async subject => {
+  const account = fixture.repository.getAccount(realmId, "a")!;
+  fixture.repository.saveAccount({ ...account, identity: { ...account.identity, subject: "original-subject" } });
+  vi.spyOn(fixture.authHost, "inspectActive").mockResolvedValue({ exists: true,
+    auth: { email: account.identity.email, ...(subject ? { subject } : {}) } });
+  fixture.probe.probeModels = vi.fn(async () => ({ native_ids: ["gemini-4-argon-high"],
+    observed_at: new Date().toISOString(), executable_fingerprint: "fixture", cli_version: "1.2.12" }));
+  const before = fixture.repository.getRealm(realmId)!;
+  const result = fixture.service.readActiveModelIds(realmId);
+  if (subject) {
+    await expect(result).rejects.toMatchObject({ code: "account_identity_changed" });
+    expect(fixture.repository.getAccount(realmId, "a")?.models).toBeUndefined();
+  } else {
+    await expect(result).resolves.toEqual(["gemini-4-argon-high"]);
+    expect(fixture.repository.getRealm(realmId)?.auth_epoch).toBe(before.auth_epoch);
+    expect(fixture.repository.getAccount(realmId, "a")?.identity.subject).toBe("original-subject");
+  }
+});
+
 it("rejects a queued request for another account before starting its probe", async () => {
   const verify = vi.fn(async () => true);
   await expect(

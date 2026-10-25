@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import websocket from "@fastify/websocket";
 import type { AgyAccountService } from "../../../packages/agy-accounts/src/service.js";
 import { createBaseServer } from "./base-server.js";
 import { registerAgyAccountRoutes } from "./agy-account-routes.js";
@@ -28,7 +29,10 @@ export function buildAccountsServer(
     onMaintenanceShutdown: options.onMaintenanceShutdown,
   });
 
-  registerAgyAccountRoutes(app, accountService, humanCheck);
+  app.register(async scoped => {
+    await scoped.register(websocket, { options: { maxPayload: 65536 } });
+    registerAgyAccountRoutes(scoped, accountService, humanCheck);
+  });
 
   return app;
 }

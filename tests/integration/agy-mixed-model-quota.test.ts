@@ -94,7 +94,7 @@ it("does not let a second zero replace the first trigger, including after reposi
   expect(new AgyAccountRepository(store).getOperation(first.operation_id)!.quota_trigger).toEqual(frozen);
   await f.service.tick(Date.now());
   expect(f.active()).toBe("b");
-  expect(consumer.quiesce).toHaveBeenCalledTimes(1);
+  expect(consumer.quiesce).not.toHaveBeenCalled();
 });
 
 it.each(["zero", "missing"])("skips the highest Claude account when its Gemini quota is %s", async state => {

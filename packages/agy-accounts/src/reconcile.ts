@@ -160,6 +160,7 @@ export class AgyReconciler {
 
     if (!realm.pending_operation_id) return;
     const op = this.repository.getOperation(realm.pending_operation_id);
+    if (op?.before_secret_ref && op.phase === "blocked") return;
     if (!op || ["completed", "cancelled", "failed", "blocked"].includes(op.phase) ||
         (!["committed", "recovering"].includes(op.phase) &&
           op.deadline_at && new Date(op.deadline_at).getTime() < Date.now())) {

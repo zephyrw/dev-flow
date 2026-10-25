@@ -3,7 +3,8 @@ import { AgyAccountProbe, createVerifiedUsageAdapter } from "../../packages/adap
 
 const executable = vi.hoisted(() => ({ fingerprint: "cli-v1", resolvedPath: "C:/fixture/agy.exe" }));
 vi.mock("../../packages/adapters/agy/src/executable-resolver.js", () => ({
-  resolveAgyExecutable: () => executable,
+  resolveFingerprintedAgyExecutable: async () => ({ ...executable }),
+  assertAgyExecutableUnchanged: async () => {},
 }));
 
 const model = "gemini-3.8-flash-high";

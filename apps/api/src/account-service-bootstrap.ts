@@ -1,6 +1,6 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import type { Store } from "../../../packages/store/src/store.js";
 import { AgyAccountRepository } from "../../../packages/agy-accounts/src/repository.js";
 import { DevFlowAuthHost } from "../../../packages/agy-accounts/src/auth-host.js";
@@ -11,7 +11,7 @@ import {
 import {
   evaluateCapabilitySnapshot,
 } from "../../../packages/adapters/agy/src/account-capability-registry.js";
-import { resolveAgyExecutable } from "../../../packages/adapters/agy/src/executable-resolver.js";
+import { resolveFingerprintedAgyExecutable } from "../../../packages/adapters/agy/src/executable-resolver.js";
 import { parseAgyUsageOutput } from "../../../packages/adapters/agy/src/quota-parser.js";
 import {
   AgyAccountService,
@@ -41,7 +41,7 @@ export async function bootstrapAccountService(
 
   let adapter: VerifiedUsageAdapter | undefined;
   let loginLauncher: AgyLoginLauncher | undefined;
-  const resolution = resolveAgyExecutable(options.agyCliPath);
+  const resolution = await resolveFingerprintedAgyExecutable(options.agyCliPath);
   let cliPath = resolution.resolvedPath;
 
   const auxiliaryProcesses = new ProcessManager((spec, event) => {
@@ -57,8 +57,7 @@ export async function bootstrapAccountService(
 
   if (cliPath && existsSync(cliPath)) {
     try {
-      const bytes = readFileSync(cliPath);
-      const fingerprint = createHash("sha256").update(bytes).digest("hex");
+      const fingerprint = resolution.fingerprint!;
       let cliVersion = "unknown";
       try {
         const versionProcess = auxiliaryProcesses.start({

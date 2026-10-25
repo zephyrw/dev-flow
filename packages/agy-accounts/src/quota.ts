@@ -12,6 +12,25 @@ export function modelCovered(patterns: string[], model: string): boolean {
     (pattern.endsWith("*") && model.startsWith(pattern.slice(0, -1))));
 }
 
+export const ARGON_QUOTA_POOL = "Gemini 4 Argon";
+export function isArgonModel(model: string): boolean {
+  return /^gemini-4-argon(?:-|$)/i.test(model);
+}
+
+/** Older snapshots used gemini-* before Argon gained its separate weekly pool. */
+export function quotaPoolCoversModel(pool: { pool_id: string; model_ids: string[] }, model: string): boolean {
+  return !(pool.pool_id.toLowerCase() === "gemini models" && isArgonModel(model)) &&
+    modelCovered(pool.model_ids, model);
+}
+
+export function hasRequiredQuotaWindows(poolId: string | undefined, windows: QuotaWindow[]): boolean {
+  if (poolId?.toLowerCase() !== ARGON_QUOTA_POOL.toLowerCase()) return hasDualQuotaWindows(windows);
+  const w = windows[0];
+  return windows.length === 1 && w?.kind === "weekly" && w.status === "observed" &&
+    typeof w.remaining_fraction === "number" && Number.isFinite(w.remaining_fraction) &&
+    w.remaining_fraction >= 0 && w.remaining_fraction <= 1 && Number.isFinite(Date.parse(w.observed_at));
+}
+
 export function hasDualQuotaWindows(windows: QuotaWindow[]): boolean {
   if (windows.length !== 2) return false;
   return (["weekly", "five_hour"] as const).every((kind) => {
@@ -28,10 +47,10 @@ export function hasDualQuotaWindows(windows: QuotaWindow[]): boolean {
 /** An overall probe success never vouches for an unrelated or malformed pool. */
 export function isQuotaPoolVerified(
   observation: { capability_verified: boolean; executable_fingerprint: string },
-  pool: { model_ids: string[]; windows: QuotaWindow[]; capability_verified?: boolean },
+  pool: { pool_id?: string; model_ids: string[]; windows: QuotaWindow[]; capability_verified?: boolean },
 ): boolean {
   return observation.capability_verified && Boolean(observation.executable_fingerprint) &&
-    pool.capability_verified !== false && pool.model_ids.length > 0 && hasDualQuotaWindows(pool.windows);
+    pool.capability_verified !== false && pool.model_ids.length > 0 && hasRequiredQuotaWindows(pool.pool_id, pool.windows);
 }
 
 export function requiredQuotaPools<T extends { pool_id: string; model_ids: string[] }>(
@@ -49,7 +68,7 @@ export function requiredQuotaPools<T extends { pool_id: string; model_ids: strin
       exact = pools.find((p) => p.pool_id.toLowerCase() === "global");
     }
     // AGY-06: 兼容 global 池 (model_ids 包含 "*")，若请求的类别池不在 pools 中，但存在覆盖该模型的 global 池，匹配 global 池
-    if (!exact && (id === "Gemini Models" || id === "Claude and GPT models")) {
+    if (!exact && (id === "Gemini Models" || id === "Claude and GPT models" || id === ARGON_QUOTA_POOL)) {
       const globalPool = pools.find((p) => p.pool_id.toLowerCase() === "global" && p.model_ids.includes("*"));
       if (globalPool) {
         exact = globalPool;
@@ -61,14 +80,14 @@ export function requiredQuotaPools<T extends { pool_id: string; model_ids: strin
         // A switch monitoring both categories must prove both pools. Keep the
         // legacy exact-model mapping for single-pool demands and older CLI IDs.
         if (poolIds.includes("Gemini Models") && poolIds.includes("Claude and GPT models")) return null;
-        const covered = models.length > 0 && models.some((m) => pools.some((p) => modelCovered(p.model_ids, m)));
+        const covered = models.length > 0 && models.some((m) => pools.some((p) => quotaPoolCoversModel(p, m)));
         if (!covered) return null;
       }
       continue;
     }
     // 真实 global 与模型专属池可以同时约束同一次请求。
     for (const model of models) {
-      const matches = pools.filter((pool) => modelCovered(pool.model_ids, model));
+      const matches = pools.filter((pool) => quotaPoolCoversModel(pool, model));
       if (!matches.length) return null;
       for (const pool of matches) selected.set(pool.pool_id, pool);
     }
@@ -77,7 +96,7 @@ export function requiredQuotaPools<T extends { pool_id: string; model_ids: strin
   if (global) selected.set(global.pool_id, global);
   if (models.length > 0) {
     for (const model of models) {
-      const matches = pools.filter((pool) => modelCovered(pool.model_ids, model));
+      const matches = pools.filter((pool) => quotaPoolCoversModel(pool, model));
       if (!matches.length) return null;
       for (const pool of matches) selected.set(pool.pool_id, pool);
     }
@@ -85,7 +104,7 @@ export function requiredQuotaPools<T extends { pool_id: string; model_ids: strin
       poolIds.length === 0 || poolIds.every(id => id.toLowerCase() === "global") || selected.size === 0) {
     // AGY-08: 无明确模型的独立管理分支，必须结合活跃类别上下文解析，不能默选 Gemini 或列表首池
     if (categoryContext === "gemini") {
-      const match = pools.find((p) => p.pool_id.toLowerCase().includes("gemini")) ??
+      const match = pools.find((p) => p.pool_id.toLowerCase() === "gemini models") ??
         pools.find((p) => p.pool_id.toLowerCase() === "global" && p.model_ids.includes("*"));
       if (match) selected.set(match.pool_id, match);
       else return null;
@@ -95,7 +114,7 @@ export function requiredQuotaPools<T extends { pool_id: string; model_ids: strin
       if (match) selected.set(match.pool_id, match);
       else return null;
     } else if (categoryContext === "mixed") {
-      const gemini = pools.find(pool => pool.pool_id.toLowerCase().includes("gemini"));
+      const gemini = pools.find(pool => pool.pool_id.toLowerCase() === "gemini models");
       const other = pools.find(pool => /claude|gpt/i.test(pool.pool_id));
       if (!gemini || !other) return null;
       selected.set(gemini.pool_id, gemini);
@@ -105,7 +124,7 @@ export function requiredQuotaPools<T extends { pool_id: string; model_ids: strin
       return null;
     }
   }
-  if (!models.every((model) => [...selected.values()].some((pool) => modelCovered(pool.model_ids, model)))) return null;
+  if (!models.every((model) => [...selected.values()].some((pool) => quotaPoolCoversModel(pool, model)))) return null;
   return [...selected.values()];
 }
 
@@ -204,7 +223,7 @@ export function computeEffectiveFiveHourQuota(
 /** Derive quota badges without rewriting provider observations or granting execution permits. */
 export function resolveEffectiveAccountState(
   account: Pick<AgyAccount, "id" | "state">,
-  snapshots: Pick<AgyQuotaSnapshot, "account_id" | "windows" | "capability_verified">[],
+  snapshots: (Pick<AgyQuotaSnapshot, "account_id" | "windows" | "capability_verified"> & { pool_id?: string })[],
   nowMs: number = Date.now(),
 ): AgyAccount["state"] {
   if (!["ready", "waiting_quota", "pending_quota"].includes(account.state)) return account.state;
@@ -213,11 +232,11 @@ export function resolveEffectiveAccountState(
   let needsVerification = false;
   let waiting = false;
   for (const pool of pools) {
-    if (pool.capability_verified === false || !hasDualQuotaWindows(pool.windows)) {
+    if (pool.capability_verified === false || !hasRequiredQuotaWindows(pool.pool_id, pool.windows)) {
       needsVerification = true;
       continue;
     }
-    for (const window of resolveEffectiveQuotaWindows(pool.windows, nowMs)) {
+    for (const window of pool.windows) {
       if (window.remaining_fraction !== null && window.remaining_fraction <= 0) {
         const resetMs = window.reset_at ? Date.parse(window.reset_at) : NaN;
         if (Number.isFinite(resetMs) && resetMs > nowMs) waiting = true;
@@ -231,9 +250,10 @@ export function resolveEffectiveAccountState(
 export function resolveEffectiveQuotaWindows(
   windows: QuotaWindow[],
   nowMs: number = Date.now(),
+  poolId?: string,
 ): QuotaWindow[] {
   // 不完整窗口集合不得投影满额，保留原始观测及 pending_quota 状态
-  if (!hasDualQuotaWindows(windows)) {
+  if (!hasRequiredQuotaWindows(poolId, windows)) {
     return windows;
   }
   return windows.map((w) => {

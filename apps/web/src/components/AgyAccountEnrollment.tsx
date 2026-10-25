@@ -30,6 +30,8 @@ const FRIENDLY_ERRORS: Record<string, string> = {
   account_identity_unverified: "未能识别当前登录账号的邮箱身份，请确认本机已登录 Antigravity",
   active_credential_missing: "未检测到本机已登录的 Antigravity 账号凭据，请先在客户端完成登录",
   account_identity_mismatch: "当前登录的账号与目标账号邮箱不一致",
+  identity_mismatch: "切换期间检测到账号身份变化，请同步当前账号后重试；已有任务保持运行",
+  identity_unverified: "当前账号身份暂未核对成功，不能据此判定登录失效；请刷新账号后重试",
   operation_in_progress: "当前已有另一项账号操作正在进行中，请稍候",
   no_eligible_account: "暂无满足全部模型和配额要求的账号，任务进度已保留",
   quota_trigger_unconfirmed: "尚未确认耗尽的模型池或配额窗口，任务已保留，等待额度核验",

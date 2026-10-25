@@ -92,6 +92,11 @@ export function extractSafeAuthMetadata(
     if (claims.email) email = claims.email;
     if (claims.subject && !subject) subject = claims.subject;
   }
+  // AGY 1.2.12 keeps this email after a refresh drops the original ID token.
+  // It is local identity metadata, not proof that an inference request succeeds.
+  if (!email && typeof parsed.id_token_email === "string" && parsed.id_token_email.includes("@")) {
+    email = parsed.id_token_email.trim();
+  }
   if (email) result.email = email;
   if (subject) result.subject = subject;
 

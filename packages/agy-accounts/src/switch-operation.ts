@@ -23,6 +23,7 @@ import {
 } from "./selector.js";
 import { computeDomainWait } from "./wait-policy.js";
 import { AGY_MODEL_POOL_IDS, compareQuotaRanks, quotaRankingWindows } from "./quota-ranking.js";
+import { rankModelFallbackAccounts } from "./model-fallback.js";
 
 export interface SwitchExecutionOptions {
   operationId: string;
@@ -48,6 +49,7 @@ export interface SwitchResult {
   new_auth_epoch?: number;
   message?: string;
   next_eligible_at?: string | null;
+  model_selection_required?: boolean;
 }
 
 export class SwitchOperationExecutor {
@@ -159,7 +161,6 @@ export class SwitchOperationExecutor {
     const occupancy = (
       await Promise.all(this.consumers.map((c) => c.listOccupancy()))
     ).flat();
-    const occupiedModels = [...new Set(occupancy.flatMap(item => item.required_model_ids ?? []))];
     if (options.trigger.startsWith("workflow")) {
       for (const consumer of this.consumers) {
         if (consumer.allowsAutoSwitch && !await consumer.allowsAutoSwitch())
@@ -168,54 +169,31 @@ export class SwitchOperationExecutor {
     }
     if (options.trigger === "workflow_quota") {
       operation.quota_trigger ??= operation.before_account_id && operation.before_auth_epoch
-        ? this.repository.getQuotaTrigger(options.realmId, operation.before_account_id, operation.before_auth_epoch) : undefined;
+        ? this.repository.getQuotaTrigger(options.realmId, operation.before_account_id, operation.before_auth_epoch, operation.required_pool_ids) : undefined;
       if (!operation.quota_trigger) throw new Error("quota_trigger_unconfirmed");
     }
-    if (
-      occupancy.some((o) => !o.can_pause) ||
-      (options.trigger.startsWith("manual") &&
-        !settings.pause_managed_for_manual_switch &&
-        occupancy.length)
-    )
-      throw new Error("managed_busy");
-    if (options.trigger.startsWith("manual") && occupancy.length) {
-      if (!occupiedModels.length) throw new Error("agy_model_unknown");
-      // Actual consumers supersede the standalone management demand. A manual
-      // account switch resumes these frozen models, not the future default.
-      operation.required_model_ids = occupiedModels;
-      operation.model_id = occupiedModels[0];
-      options.modelId = operation.model_id;
-      options.requiredPoolIds = [...new Set(["global", ...occupancy.flatMap(item => item.required_pool_ids ?? [])])];
-    } else {
-      options.requiredPoolIds = [...new Set([
-        ...(options.requiredPoolIds.length ? options.requiredPoolIds : ["global"]),
-        ...occupancy.flatMap((item) => item.required_pool_ids ?? []),
-      ])];
+    // A manual default change never depends on the ability to pause commands.
+    options.requiredPoolIds = [...new Set(options.requiredPoolIds.length ? options.requiredPoolIds : ["global"])];
+    if (!options.trigger.startsWith("manual")) {
+      // Automatic selection keeps the active domain's model/access constraints;
+      // preserving commands does not authorize using disallowed future accounts.
+      const waitingOccupancy = occupancy.filter(item => !item.permit_ids.some(id => this.repository.getPermit(id)?.status === "started"));
+      options.requiredPoolIds = [...new Set([...options.requiredPoolIds, ...waitingOccupancy.flatMap(item => item.required_pool_ids)])];
+      operation.required_model_ids = [...new Set([...operation.required_model_ids, ...waitingOccupancy.flatMap(item => item.required_model_ids ?? [])])];
+      for (const item of waitingOccupancy) if (item.allowed_account_ids !== null)
+        operation.allowed_account_ids = operation.allowed_account_ids === null ? item.allowed_account_ids :
+          operation.allowed_account_ids.filter(id => item.allowed_account_ids!.includes(id));
     }
-    for (const item of occupancy)
-      if (item.allowed_account_ids !== null)
-        operation.allowed_account_ids =
-          operation.allowed_account_ids === null
-            ? item.allowed_account_ids
-            : operation.allowed_account_ids.filter((id) =>
-                item.allowed_account_ids!.includes(id),
-              );
     operation.required_pool_ids = options.requiredPoolIds;
     if (operation.quota_trigger && AGY_MODEL_POOL_IDS.includes(operation.quota_trigger.pool_id)) {
-      options.requiredPoolIds = [...new Set([...options.requiredPoolIds, ...AGY_MODEL_POOL_IDS])];
+      options.requiredPoolIds = [...new Set([...options.requiredPoolIds, operation.quota_trigger.pool_id])];
       operation.required_pool_ids = options.requiredPoolIds;
     }
-    operation.required_model_ids = [
-      ...new Set([
-        ...operation.required_model_ids,
-        ...occupancy.flatMap((o) => o.required_model_ids ?? []),
-      ]),
-    ];
-    // Choosing an identity without consumers does not authorize inference.
+    operation.required_model_ids = [...new Set(operation.required_model_ids)];
+    // Choosing a default identity does not authorize inference.
     // Quota/model gates still apply to automatic selection and managed runs.
     const identityOnly = options.trigger === "manual_explicit" &&
-      options.selection.mode === "explicit" && occupancy.length === 0 &&
-      operation.required_model_ids.length === 0;
+      options.selection.mode === "explicit";
     this.repository.saveOperation(operation);
     const selectionPolicy = {
       quota_trigger: operation.quota_trigger,
@@ -240,6 +218,8 @@ export class SwitchOperationExecutor {
       this.clock.now(),
       selectionPolicy,
     );
+    const fallbackRanks = this.probe.probeModels && options.selection.mode === "auto" && options.trigger === "workflow_quota"
+      ? rankModelFallbackAccounts(accounts, this.repository.listQuotaSnapshots(options.realmId), this.clock.now(), selectionPolicy) : [];
     if (options.selection.mode === "explicit") {
       const explicitId = (options.selection as { account_id: string }).account_id;
       const isRanked = initialSelection.ranked_candidates.some(
@@ -286,7 +266,7 @@ export class SwitchOperationExecutor {
     // 4. 通知所有消费者 quiesce 并确认停止
     for (const consumer of this.consumers) {
       guard();
-      const prepared = await consumer.prepareSwitch(options.operationId);
+      const prepared = await consumer.prepareSwitch(options.operationId, { preserveRunning: true });
       operation.consumer_refs.push({
         consumer_id: this.consumerIds.get(consumer) ?? "workflow",
         saved_ref: prepared.savedRef,
@@ -295,30 +275,8 @@ export class SwitchOperationExecutor {
       operation.phase = "quiescing";
       operation.revision++;
       this.repository.saveOperation(operation);
-      await consumer.quiesce(options.operationId);
-      const stopped = await consumer.confirmStopped(options.operationId);
-      if (!stopped) {
-        realm.phase = "idle";
-        realm.pending_operation_id = null;
-        this.repository.saveRealm(realm);
-        return {
-          success: false,
-          status: "error",
-          message: "Failed to confirm all managed processes stopped",
-        };
-      }
     }
-    const processes = await this.processHost.listManagedProcesses(
-      options.realmId,
-    );
-    if (
-      processes.length &&
-      !(await this.processHost.confirmProcessesStopped(
-        processes.map((p) => p.pid),
-        settings.probe_timeout_seconds * 1000,
-      ))
-    )
-      throw new Error("managed_processes_not_stopped");
+    // Admission is closed, but healthy commands and their permits stay alive.
     guard();
 
     // 5. 如果原先有活动账号，捕获最新活动凭据保存到 Vault
@@ -428,7 +386,7 @@ export class SwitchOperationExecutor {
         },
       );
 
-      if (selResult.ranked_candidates.length === 0) {
+      if (selResult.ranked_candidates.length === 0 && fallbackRanks.length === 0) {
         this.finishRealmPhase(realm);
         const waitEval = computeDomainWait(
           accounts,
@@ -460,7 +418,7 @@ export class SwitchOperationExecutor {
         };
       }
 
-      const best = selResult.ranked_candidates[0]!;
+      const best = selResult.ranked_candidates[0] ?? fallbackRanks[0]!;
       if (
         options.trigger.startsWith("manual") &&
         best.account_id === beforeAccountId &&
@@ -487,6 +445,9 @@ export class SwitchOperationExecutor {
             .map((c) => c.account_id)
             .slice(0, settings.max_candidates_per_operation);
     const initialCandidateCount = candidateIds.length;
+    candidateIds.push(...fallbackRanks.slice(0, settings.max_candidates_per_operation).map(candidate => candidate.account_id));
+    const candidateModes = candidateIds.map((_, index) => index >= initialCandidateCount);
+    const totalCandidateCount = candidateIds.length;
     operation.candidate_ids = candidateIds;
     this.repository.saveOperation(operation);
     for (
@@ -495,6 +456,7 @@ export class SwitchOperationExecutor {
       candidateIndex++
     ) {
       guard();
+      const modelFallback = candidateModes[candidateIndex] === true;
       targetAccountId = candidateIds[candidateIndex]!;
       operation.attempted_account_ids.push(targetAccountId);
       // 7. 安装新身份并核验
@@ -534,9 +496,7 @@ export class SwitchOperationExecutor {
         operation.phase = "installed_unverified";
         operation.revision++;
         this.repository.saveOperation(operation);
-        realm.auth_epoch = operation.install_epoch;
-        realm.active_secret_ref = targetAcc.secret_ref;
-        this.repository.saveRealm(realm);
+        // Publish account and epoch together only after verification.
       } catch (err: any) {
         // The service owns verified rollback; never swallow a failed restore here.
         throw new Error(
@@ -559,7 +519,16 @@ export class SwitchOperationExecutor {
         | Awaited<ReturnType<AccountProbePort["probeUsage"]>>
         | undefined;
       let authFailed = false;
-      for (let retry = 0; retry < 3; retry++) {
+      // Selecting a saved default is local. Inference and quota admission are
+      // separate operations; do not run two /usage CLIs just to install a token.
+      const localIdentity = identityOnly ? await this.authHost.inspectActive(options.realmId) : undefined;
+      const localDefault = identityOnly && localIdentity?.exists === true &&
+        localIdentity.auth?.has_refresh_credential === true &&
+        localIdentity.auth.email?.trim().toLowerCase() === targetAcc.identity.email.trim().toLowerCase() &&
+        (!targetAcc.identity.subject || !localIdentity.auth.subject || localIdentity.auth.subject === targetAcc.identity.subject);
+      if (localDefault) probeRes = { email: localIdentity!.auth!.email, cli_version: "local-credential",
+        windows: [], pools: [], raw_output: "", capability_verified: false, executable_fingerprint: "" };
+      for (let retry = 0; !localDefault && retry < 3; retry++) {
         try {
           probeRes = await this.probe.probeUsage({
             signal: options.signal,
@@ -602,10 +571,18 @@ export class SwitchOperationExecutor {
           await this.pause(settings.switch_gap_seconds * 1000, options.signal);
           continue;
         }
+        const verifiedFallback = modelFallback && candidateIndex < totalCandidateCount
+          ? operation.candidate_results.filter(result => result.model_selection_required && result.account_id !== targetAcc.id)
+            .sort((a, b) => compareQuotaRanks(a, b))[0] : undefined;
+        if (verifiedFallback) { candidateIds.push(verifiedFallback.account_id); candidateModes.push(true); continue; }
         throw new Error("no_eligible_account");
       }
       if (!probeRes) throw new Error("probe_failed");
       let verifiedEmail = probeRes.email?.toLowerCase();
+      if (!verifiedEmail && probeRes.pools.some(pool => isQuotaPoolVerified(probeRes!, pool))) {
+        const activeAuth = (await this.authHost.inspectActive(options.realmId)).auth;
+        verifiedEmail = activeAuth?.email?.toLowerCase();
+      }
       if (!verifiedEmail) {
         try {
           const probed = await this.probe.probeIdentity({ signal: options.signal });
@@ -622,7 +599,8 @@ export class SwitchOperationExecutor {
       }
       const expectedEmail = targetAcc.identity.email.toLowerCase();
 
-      if (!verifiedEmail || verifiedEmail !== expectedEmail) {
+      if (!verifiedEmail) throw new Error("identity_unverified");
+      if (verifiedEmail !== expectedEmail) {
         // 身份不符！必须立刻回滚并冻结
         realm.phase = "blocked";
         this.repository.saveRealm(realm);
@@ -634,22 +612,36 @@ export class SwitchOperationExecutor {
         options.realmId,
         targetAcc.id,
       );
+      if (refreshed.auth?.email && refreshed.auth.email.trim().toLowerCase() !== expectedEmail ||
+          targetAcc.identity.subject && refreshed.auth?.subject && refreshed.auth.subject !== targetAcc.identity.subject ||
+          !(await this.authHost.compareActive(options.realmId, refreshed.secret_ref)))
+        throw new Error("identity_mismatch");
       targetAcc.secret_ref = refreshed.secret_ref;
       targetAcc.credential_revision = refreshed.credential_revision;
       targetAcc.auth = { ...targetAcc.auth, ...refreshed.auth };
       operation.installed_secret_ref = refreshed.secret_ref;
       operation.revision++;
       this.repository.saveOperation(operation);
+      if (!identityOnly && this.probe.probeModels) {
+        const models = await this.probe.probeModels({ signal: options.signal, account_id: targetAcc.id,
+          credential_revision: targetAcc.credential_revision, timeoutMs: settings.probe_timeout_seconds * 1000 });
+        guard();
+        const observedIdentity = (await this.authHost.inspectActive(options.realmId)).auth;
+        if (observedIdentity?.email?.trim().toLowerCase() !== expectedEmail) throw new Error("identity_unverified");
+        targetAcc.models = models;
+        targetAcc.revision++;
+        this.repository.saveAccount(targetAcc);
+      }
       const targetPools = requiredQuotaPools(probeRes.pools, options.requiredPoolIds, operation.required_model_ids);
       const complete = probeRes.capability_verified && !!probeRes.executable_fingerprint &&
         !!targetPools?.length && targetPools.every((pool) => isQuotaPoolVerified(probeRes, pool));
-      this.repository.retainQuotaPools(options.realmId, targetAcc.id, probeRes.pools.map((pool) => pool.pool_id));
+      if (!localDefault) this.repository.retainQuotaPools(options.realmId, targetAcc.id, probeRes.pools.map((pool) => pool.pool_id));
       for (const pool of probeRes.pools) {
         this.repository.saveQuotaSnapshot({
           id: randomUUID(),
           realm_id: options.realmId,
           account_id: targetAcc.id,
-          auth_epoch: realm.auth_epoch,
+          auth_epoch: operation.install_epoch!,
           pool_id: pool.pool_id,
           model_ids: pool.model_ids,
           source: "official_cli_usage",
@@ -662,24 +654,25 @@ export class SwitchOperationExecutor {
         });
 
       }
-      if (!complete && !identityOnly) {
+      if (!complete && !identityOnly && !modelFallback) {
         targetAcc.state = probeRes.pools.some(pool => isQuotaPoolVerified(probeRes, pool)) ? "ready" : "pending_quota";
         targetAcc.revision++;
         this.repository.saveAccount(targetAcc);
         if (options.selection.mode === "explicit") throw new Error("quota_capability_unavailable");
       }
-      const poolsToCheck = identityOnly ? probeRes.pools.filter(pool => isQuotaPoolVerified(probeRes!, pool)) : targetPools ?? [];
+      const poolsToCheck = identityOnly || modelFallback ? probeRes.pools.filter(pool => isQuotaPoolVerified(probeRes!, pool)) : targetPools ?? [];
       const zero = poolsToCheck.some((p) =>
         p.windows.some(
           (w) => w.remaining_fraction === null || w.remaining_fraction <= 0,
         ),
       );
-      targetAcc.state = !complete && !identityOnly || !poolsToCheck.length ? "pending_quota" : zero ? "waiting_quota" : "ready";
+      if (!localDefault) targetAcc.state = !complete && !identityOnly || !poolsToCheck.length ? "pending_quota" : zero ? "waiting_quota" : "ready";
       targetAcc.revision++;
       this.repository.saveAccount(targetAcc);
-      let accessible = identityOnly || (complete && !zero);
+      let accessible = modelFallback ? !!targetAcc.models?.native_ids.length && poolsToCheck.length > 0 :
+        identityOnly || (complete && !zero && (!targetAcc.models || operation.required_model_ids.every(id => targetAcc.models!.native_ids.includes(id))));
       const verifiedModelIds: string[] = [];
-      if (accessible)
+      if (accessible && !modelFallback && !identityOnly)
         for (const modelId of operation.required_model_ids) {
           guard();
           if (
@@ -705,7 +698,7 @@ export class SwitchOperationExecutor {
       if (!(await this.authHost.compareActive(options.realmId, targetAcc.secret_ref))) {
         const matchesIdentity = (auth: Partial<AgyAccount["auth"]> | undefined) =>
           auth?.email?.trim().toLowerCase() === expectedEmail &&
-          (!targetAcc.identity.subject || auth?.subject === targetAcc.identity.subject);
+          (!targetAcc.identity.subject || !auth?.subject || auth.subject === targetAcc.identity.subject);
         const active = await this.authHost.inspectActive(options.realmId);
         if (!active.exists || !matchesIdentity(active.auth)) {
           realm.phase = "blocked";
@@ -729,12 +722,17 @@ export class SwitchOperationExecutor {
         operation.revision++;
         this.repository.saveOperation(operation);
       }
-      if ((!identityOnly && zero) || !accessible) {
+      if ((!identityOnly && !modelFallback && zero) || !accessible) {
         if (options.selection.mode === "explicit")
           throw new Error("target_unavailable");
         if (candidateIndex + 1 < candidateIds.length) {
           await this.pause(settings.switch_gap_seconds * 1000, options.signal);
           continue;
+        }
+        const fallbackBest = modelFallback && candidateIndex < totalCandidateCount
+          ? operation.candidate_results.filter(result => result.model_selection_required).sort((a, b) => compareQuotaRanks(a, b))[0] : undefined;
+        if (fallbackBest && fallbackBest.account_id !== targetAcc.id) {
+          candidateIds.push(fallbackBest.account_id); candidateModes.push(true); continue;
         }
         const prior = operation.candidate_results.sort((a, b) => compareQuotaRanks(a, b, operation.quota_trigger?.window))[0];
         if (
@@ -743,12 +741,15 @@ export class SwitchOperationExecutor {
           this.clock.now() - Date.parse(prior.verified_at) <= 120_000
         ) {
           candidateIds.push(prior.account_id);
+          candidateModes.push(false);
           await this.pause(settings.switch_gap_seconds * 1000, options.signal);
           continue;
         }
         throw new Error("no_eligible_account");
       }
-      const score = quotaRankingWindows(poolsToCheck, operation.quota_trigger);
+      const fallbackScore = modelFallback ? rankModelFallbackAccounts([targetAcc], this.repository.listQuotaSnapshots(options.realmId), this.clock.now(), selectionPolicy)[0] : undefined;
+      const score = modelFallback ? { weekly: fallbackScore?.weekly ?? 0, five_hour: fallbackScore?.five_hour ?? 0 }
+        : quotaRankingWindows(poolsToCheck, operation.quota_trigger);
       operation.candidate_results = operation.candidate_results.filter(
         (r) => r.account_id !== targetAcc.id,
       );
@@ -760,9 +761,15 @@ export class SwitchOperationExecutor {
         verified_at: this.clock.toISOString(),
         verified_model_ids: verifiedModelIds,
         credential_revision: targetAcc.credential_revision,
+        model_selection_required: modelFallback,
       });
       operation.revision++;
       this.repository.saveOperation(operation);
+      if (modelFallback && candidateIndex < totalCandidateCount) {
+        if (candidateIndex + 1 < totalCandidateCount) continue;
+        const best = operation.candidate_results.filter(result => result.model_selection_required).sort((a, b) => compareQuotaRanks(a, b))[0]!;
+        if (best.account_id !== targetAcc.id) { candidateIds.push(best.account_id); candidateModes.push(true); continue; }
+      }
       if (
         options.selection.mode === "auto" &&
         candidateIndex < initialCandidateCount
@@ -787,6 +794,7 @@ export class SwitchOperationExecutor {
             candidateIds.length,
             best.account_id,
           );
+          candidateModes.splice(candidateIndex + 1, candidateModes.length, false);
           await this.pause(settings.switch_gap_seconds * 1000, options.signal);
           continue;
         }
@@ -794,7 +802,7 @@ export class SwitchOperationExecutor {
       guard();
 
       // 9. 提交新代次与状态
-      const newAuthEpoch = realm.auth_epoch;
+      const newAuthEpoch = operation.install_epoch!;
       realm.active_account_id = targetAcc.id;
       realm.auth_epoch = newAuthEpoch;
       realm.phase = "committed";
@@ -822,6 +830,7 @@ export class SwitchOperationExecutor {
         control_generation: operation.control_generation,
         committed_at: this.clock.toISOString(),
         stopped_job_ids: [],
+        model_selection_required: modelFallback,
       });
 
       operation.phase = "committed";
@@ -830,6 +839,7 @@ export class SwitchOperationExecutor {
         outcome: "switched",
         active_account_id: targetAcc.id,
         auth_epoch: newAuthEpoch,
+        model_selection_required: modelFallback,
       };
       operation.revision++;
       this.repository.saveOperation(operation);
@@ -839,6 +849,7 @@ export class SwitchOperationExecutor {
         status: "switched",
         active_account_id: targetAcc.id,
         new_auth_epoch: newAuthEpoch,
+        model_selection_required: modelFallback,
         message: `Successfully switched active account to ${targetAcc.alias}`,
       };
     }

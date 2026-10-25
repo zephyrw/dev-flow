@@ -126,8 +126,8 @@ describe("AGY Account Switch Concurrency & CAS Integrity (AC-I04 & AC-I25)", () 
     { model: null, quota: "available", expected: "completed", accountState: "ready" },
     { model: null, quota: "zero", expected: "completed", accountState: "waiting_quota" },
     { model: null, quota: "unknown", expected: "completed", accountState: "pending_quota" },
-    { model: "fixture-model", quota: "unknown", expected: "failed", accountState: "pending_quota" },
-    { model: null, quota: "unknown", expected: "failed", accountState: "pending_quota", managed: true },
+    { model: "fixture-model", quota: "unknown", expected: "completed", accountState: "pending_quota" },
+    { model: null, quota: "unknown", expected: "completed", accountState: "pending_quota", managed: true },
     { model: null, quota: "unknown", expected: "failed", accountState: "ready", identityUnverified: true },
     { model: null, quota: "available", expected: "completed", accountState: "ready", identityUnverified: true },
   ])("manual identity selection with model=$model and quota=$quota, managed=$managed, identityUnverified=$identityUnverified", async ({ model, quota, expected, accountState, managed, identityUnverified }) => {
@@ -250,8 +250,8 @@ describe("AGY Account Switch Concurrency & CAS Integrity (AC-I04 & AC-I25)", () 
 
     // Verify consumer lifecycle sequence was called in order
     expect(eventsLog.some(e => e.startsWith("prepare:"))).toBe(true);
-    expect(eventsLog.some(e => e.startsWith("quiesce:"))).toBe(true);
-    expect(eventsLog.some(e => e.startsWith("confirm:"))).toBe(true);
+    expect(eventsLog.some(e => e.startsWith("quiesce:"))).toBe(false);
+    expect(eventsLog.some(e => e.startsWith("confirm:"))).toBe(false);
     expect(eventsLog).toContain("committed:acc-2:2");
   });
 

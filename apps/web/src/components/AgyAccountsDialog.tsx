@@ -13,15 +13,12 @@ export function AgyAccountsDialog({ isOpen, onClose }: AgyAccountsDialogProps) {
 
   const handleSyncRefresh = async () => {
     if (syncing) return;
-    setSyncing(true);
     try {
       if (panelRef.current) {
         await panelRef.current.syncAndRefresh();
       }
     } catch (err) {
       console.error("同步刷新账号与额度失败:", err);
-    } finally {
-      setSyncing(false);
     }
   };
 
@@ -30,8 +27,8 @@ export function AgyAccountsDialog({ isOpen, onClose }: AgyAccountsDialogProps) {
       type="button"
       className={`agy-header-refresh-btn ${syncing ? "is-spinning" : ""}`}
       onClick={handleSyncRefresh}
-      title="刷新没有额度的账号及当前活动账号"
-      aria-label="刷新没有额度的账号及当前活动账号"
+      title="刷新当前账号额度"
+      aria-label="刷新当前账号额度"
       disabled={syncing}
     >
       <svg
@@ -59,7 +56,7 @@ export function AgyAccountsDialog({ isOpen, onClose }: AgyAccountsDialogProps) {
       subtitle="管理 Antigravity 账号及自动切换设置"
       width="680px"
     >
-      <AgyAccountsPanel ref={panelRef} onDismiss={onClose} />
+      <AgyAccountsPanel ref={panelRef} onDismiss={onClose} onRefreshingChange={setSyncing} />
     </AppDialog>
   );
 }

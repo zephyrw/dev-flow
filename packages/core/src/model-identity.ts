@@ -47,7 +47,7 @@ export function readManagedAgyModelIdentity(store: Store): ManagedAgyModelIdenti
   const account = realm.active_account_id
     ? repository.getAccount(realm.realm_id, realm.active_account_id)
     : undefined;
-  if (!account) throw new FlowError("MODEL_LOGIN_REQUIRED", "受管 AGY 尚未选择可识别账号", 422);
+  if (!account) throw new FlowError("AGY_ACCOUNT_IDENTITY_UNRESOLVED", "尚未确认当前 AGY 账号身份，不能据此判定登录失效；请同步账号后继续原任务", 409);
   return {
     realmId: realm.realm_id,
     accountId: account.id,

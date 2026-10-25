@@ -74,9 +74,11 @@ export interface AccountProbeResult {
   }>;
   executable_fingerprint: string;
   capability_verified: boolean;
+  timings?: { prepare_ms: number; cli_ms: number; parse_ms: number };
 }
 
 export interface AccountProbeOptions {
+  force?: boolean;
   cwd?: string;
   timeoutMs?: number;
   signal?: AbortSignal;
@@ -99,6 +101,7 @@ export interface AccountIdentityResult {
 }
 
 export interface AccountProbePort {
+  probeModels?(options?: AccountProbeOptions): Promise<NonNullable<import("../../contracts/src/agy-account.js").AgyAccount["models"]>>;
   probeIdentity(options?: AccountProbeOptions): Promise<AccountIdentityResult>;
   probeUsage(options?: AccountProbeOptions): Promise<AccountProbeResult>;
   probeModelAccess(
@@ -161,13 +164,14 @@ export interface AccountCommittedEvent {
   outcome?: "switched" | "restored";
   original_operation_id?: string;
   workflow_id?: string;
+  model_selection_required?: boolean;
 }
 
 export interface AccountConsumerPort {
   allowsAutoSwitch?(): Promise<boolean>;
   onQuotaExhausted?(trigger: AgyQuotaTrigger): Promise<void>;
   listOccupancy(): Promise<ConsumerOccupancy[]>;
-  prepareSwitch(operationId: string): Promise<{ savedRef: unknown }>;
+  prepareSwitch(operationId: string, options?: { preserveRunning: boolean }): Promise<{ savedRef: unknown }>;
   quiesce(operationId: string): Promise<void>;
   confirmStopped(operationId: string): Promise<boolean>;
   onAccountCommitted(event: AccountCommittedEvent): Promise<void>;

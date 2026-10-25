@@ -1,4 +1,4 @@
-import { hasAccountIdentityMismatch, hasDualQuotaWindows, requiredQuotaPools, computeEffectiveWeeklyQuota, computeEffectiveFiveHourQuota } from "./quota.js";
+import { hasAccountIdentityMismatch, hasRequiredQuotaWindows, requiredQuotaPools, computeEffectiveWeeklyQuota, computeEffectiveFiveHourQuota } from "./quota.js";
 import type {
   AgyAccount,
   AgyQuotaSnapshot,
@@ -86,6 +86,9 @@ export function evaluateAccountForDemand(
   if (account.state === "incompatible") excluded_reasons.push("account_incompatible");
   if (account.state === "reauth_required") excluded_reasons.push("reauth_required");
   if (hasAccountIdentityMismatch(account)) excluded_reasons.push("account_identity_mismatch");
+  if (account.models && evaluationTime - Date.parse(account.models.observed_at) <= 15 * 60_000 &&
+      policy.required_model_ids?.some(id => !account.models!.native_ids.includes(id)))
+    excluded_reasons.push("model_not_supported");
   // Quota readiness is checked against the demanded pools below. A legacy
   // pending_quota state may have been caused solely by the other category.
 
@@ -145,7 +148,7 @@ export function evaluateAccountForDemand(
   }
 
   let minWeeklyFraction = 1;
-  let minFiveHourFraction: number | null = 1;
+  let minFiveHourFraction: number | null = null;
   let isProjectedResetAny = false;
   let hasZeroWindowUnreset = false;
   let hasZeroWindowProjected = false;
@@ -164,7 +167,7 @@ export function evaluateAccountForDemand(
     if (policy.snapshot_max_age_ms !== undefined &&
         evaluationTime - Date.parse(snap.observed_at) > policy.snapshot_max_age_ms) needsFreshProbe = true;
     if (!snap || snap.capability_verified === false ||
-        !hasDualQuotaWindows(snap.windows) || !Number.isFinite(Date.parse(snap.observed_at)) ||
+        !hasRequiredQuotaWindows(snap.pool_id, snap.windows) || !Number.isFinite(Date.parse(snap.observed_at)) ||
         Date.parse(snap.observed_at) > evaluationTime + clockSkewMs) {
       excluded_reasons.push("missing_required_quota_pools");
       break;
@@ -180,19 +183,16 @@ export function evaluateAccountForDemand(
     if (
       !weeklyWindow ||
       weeklyWindow.status !== "observed" ||
-      weeklyWindow.remaining_fraction === null ||
-      !fiveHourWindow ||
-      fiveHourWindow.status !== "observed" ||
-      fiveHourWindow.remaining_fraction === null
+      weeklyWindow.remaining_fraction === null
     ) {
       excluded_reasons.push("missing_required_quota_pools");
       break;
     }
 
     // 5小时窗口
-    const fhRemain = fiveHourWindow.remaining_fraction;
+    const fhRemain = fiveHourWindow?.remaining_fraction ?? null;
     if (fhRemain !== null && fhRemain <= 0) {
-      const fhReset = parseTimeMs(fiveHourWindow.reset_at);
+      const fhReset = parseTimeMs(fiveHourWindow?.reset_at);
       if (!fhReset) {
         excluded_reasons.push("five_hour_exhausted_unknown_reset");
       } else if (evaluationTime < fhReset + clockSkewMs) {
@@ -270,7 +270,7 @@ export function evaluateAccountForDemand(
       // 实测为 0 或到期重置：不能直接发业务许可，但允许作为候选进入串行核验
       eligible_for_permit = false;
       eligible_for_candidate = true;
-    } else if (minWeeklyFraction > 0 && (minFiveHourFraction ?? 0) > 0) {
+    } else if (minWeeklyFraction > 0 && (minFiveHourFraction === null || minFiveHourFraction > 0)) {
       eligible_for_permit = true;
       eligible_for_candidate = true;
     }

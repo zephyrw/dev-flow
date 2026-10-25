@@ -28,6 +28,7 @@ import {
 import "./model-settings.css";
 
 export interface ToolModelDialogProps {
+  accountModelChoice?: boolean;
   isOpen: boolean;
   onClose: () => void;
   workflowId: string;
@@ -96,6 +97,7 @@ function configurationTabs(data: ExecutionSpecPayload | null): ConfigTabItem[] {
 }
 
 export function ToolModelDialog({
+  accountModelChoice,
   isOpen,
   onClose,
   workflowId,
@@ -375,9 +377,9 @@ export function ToolModelDialog({
         {readonly ? "关闭" : "取消"}
       </button>
 
-      {!readonly && (pendingSwitch || isEditingActiveRole) ? (
+      {!readonly && (pendingSwitch || isEditingActiveRole || accountModelChoice) ? (
         <>
-          {!pendingSwitch && <button
+          {!pendingSwitch && !accountModelChoice && <button
             type="button"
             className="btn btn-secondary"
             disabled={saving || loading}
@@ -388,7 +390,7 @@ export function ToolModelDialog({
           <button
             type="button"
             className="btn btn-primary"
-            disabled={saving || loading}
+            disabled={saving || loading || (accountModelChoice && !isDirty && !pendingSwitch)}
             onClick={() => handleSave(true)}
           >
             {saving ? "正在切换…" : pendingSwitch ? "重试继续" : "切换并继续"}
@@ -411,7 +413,7 @@ export function ToolModelDialog({
     <AppDialog
       isOpen={isOpen}
       onClose={onClose}
-      title="工具与模型"
+      title={accountModelChoice ? "当前账号需要选择可用模型" : "工具与模型"}
       width={720}
       isDirty={isDirty}
       footer={footer}
@@ -422,6 +424,7 @@ export function ToolModelDialog({
         </div>
       )}
 
+      {accountModelChoice && <p role="status" className="ms-hint">没有支持原模型且额度可用的账号，已切换到额度最高的候选账号。请在当前账号的模型列表中选择并确认，原任务的计划和修改会保留。</p>}
       {loading ? (
         <div className="ms-dialog-loading">正在读取配置…</div>
       ) : (

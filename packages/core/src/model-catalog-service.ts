@@ -45,8 +45,6 @@ import {
 import {
   parseAgyModelCatalog,
   knownAgyEffortFor,
-  AGY_CLAUDE_CANDIDATE_IDS,
-  buildAgyCandidateEntry,
 } from "../../adapters/agy/src/model-configuration.js";
 import { parseCursorModelCatalog } from "../../adapters/cursor/src/model-configuration.js";
 import {
@@ -142,6 +140,7 @@ export type LimitedCliHandle = {
 };
 
 export type ModelCatalogServiceOptions = {
+  readAgyModels?: () => Promise<string[]>;
   extraEnv?: Record<string, string>;
   versionHelpTimeoutMs?: number;
   catalogTimeoutMs?: number;
@@ -815,6 +814,7 @@ function mergeManualEntries(
 }
 
 type CatalogWork = {
+  readAgyModels?: () => Promise<string[]>;
   scanLimit: Semaphore;
   queryLimit: Semaphore;
   inflight: Map<string, Promise<ModelCatalog>>;
@@ -846,12 +846,13 @@ export class ModelCatalogService {
     this.extraEnv = options.extraEnv;
     this.resolveExecutableFn = options.resolveExecutable;
     const active = catalogWorkByStore.get(store);
-    const work = active ?? {
+    const work: CatalogWork = active ?? {
       scanLimit: new Semaphore(TOOL_SCAN_CONCURRENCY),
       queryLimit: new Semaphore(CATALOG_QUERY_CONCURRENCY),
       inflight: new Map<string, Promise<ModelCatalog>>(),
       operations: new Map<string, Promise<void>>(),
     };
+    if (options.readAgyModels) work.readAgyModels = options.readAgyModels;
     this.scanLimit = work.scanLimit;
     this.queryLimit = work.queryLimit;
     this.inflight = work.inflight;
@@ -916,7 +917,7 @@ export class ModelCatalogService {
         // account/provider scope. discover() shares work across service instances.
         void this.discover(scope).catch(() => {});
       }
-      return this.enrichAgyCandidates(freshCached);
+      return freshCached;
     }
     try {
       const rawInput = adapterId === "claude-code" ? claudeCatalogStdout() : "";
@@ -934,7 +935,7 @@ export class ModelCatalogService {
         if (scope) {
           this.persistCatalog(scope, "seed", seedCatalog);
         }
-        return this.enrichAgyCandidates(withFreshness(seedCatalog));
+        return withFreshness(seedCatalog);
       }
     } catch {
       // ignore
@@ -1073,22 +1074,10 @@ export class ModelCatalogService {
     });
   }
 
-  private enrichAgyCandidates(catalog: ModelCatalog): ModelCatalog {
-    if (catalog.adapterId !== "agy") return catalog;
-    const existingIds = new Set(catalog.entries.map((e) => e.nativeId));
-    const missingCandidates = AGY_CLAUDE_CANDIDATE_IDS.filter((id) => !existingIds.has(id));
-    if (missingCandidates.length === 0) return catalog;
-    const additional = missingCandidates.map((id) => buildAgyCandidateEntry(id, catalog.discoveredAt));
-    return ModelCatalogSchema.parse({
-      ...catalog,
-      entries: [...catalog.entries, ...additional],
-    });
-  }
-
   loadForSelector(scope: CatalogScopeInput): ModelCatalog {
     const cached = this.readCached(scope);
     if (!cached) return missingCatalog(scope.adapterId, "missing");
-    return this.enrichAgyCandidates(cached);
+    return cached;
   }
 
   async scanTools(scopes: CatalogScopeInput[]): Promise<ToolSummary[]> {
@@ -1466,6 +1455,9 @@ export class ModelCatalogService {
       );
     }
     const capability = await this.readInvocationCapability(scope);
+    if (scope.adapterId === "agy" &&
+        this.resolveScope("agy", scope.executablePath, scope.nativeConfigProfile).accountFingerprint !== scope.accountFingerprint)
+      throw new FlowError("ACCOUNT_CHANGED_DURING_DISCOVERY", "账号在模型目录读取期间发生变化，请重试", 409);
     return this.persistCatalog(scope, cliVersion, {
       ...parsed,
       ...(capability ? { invocationCapability: capability } : {}),
@@ -1587,6 +1579,11 @@ export class ModelCatalogService {
   }
 
   private async queryCatalog(scope: CatalogScopeInput): Promise<LimitedCliResult> {
+    const reader = scope.adapterId === "agy" ? catalogWorkByStore.get(this.store)?.readAgyModels : undefined;
+    if (reader) {
+      const ids = await reader();
+      return { stdout: ids.join("\n"), stderr: "", exitCode: 0, timedOut: false, cancelled: false, truncated: false };
+    }
     if (scope.adapterId === "claude-code") {
       return {
         stdout: claudeCatalogStdout(),

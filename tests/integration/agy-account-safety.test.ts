@@ -131,14 +131,15 @@ describe("AGY durable safety boundary", () => {
     expect(f.repo.getOperation(receipt.operation_id)?.phase).toBe("completed"); expect(f.state.writes).toEqual(["B"]);
   });
 
-  it("rolls back an explicit exhausted target even with an external CLI, without probing another account", async () => {
+  it("allows explicit default selection of an exhausted account without switching another account", async () => {
     const f = await fixture(); await f.service.start({ realmId, requestId: "start" }); f.state.actual.B = 0;
     f.state.external = true;
     const receipt = await f.service.requestOperation({ realm_id: realmId, request_id: "switch", kind: "switch", selection: { mode: "explicit", account_id: "B" } });
     await f.service.tick(now);
-    expect(f.state.probes).toEqual(["B"]); expect(f.state.active).toBe("saved_A");
-    expect(f.repo.getRealm(realmId)?.auth_epoch).toBeGreaterThan(2);
-    expect(f.repo.getOperation(receipt.operation_id)?.phase).toBe("failed");
+    expect(f.state.probes).toEqual(["B"]); expect(f.state.active).toBe("saved_B");
+    expect(f.repo.getRealm(realmId)?.auth_epoch).toBe(2);
+    expect(f.repo.getOperation(receipt.operation_id)?.phase).toBe("completed");
+    expect(f.repo.getAccount(realmId, "B")?.state).toBe("waiting_quota");
   });
 
   it("does not reclassify an unknown CLI failure as a network retry", async () => {
@@ -325,7 +326,9 @@ describe("AGY durable safety boundary", () => {
     const entered = new Promise<void>((resolve) => { enter = resolve; });
     const finished = new Promise<void>((resolve) => { finish = resolve; });
     const capture = f.auth.captureActive;
-    f.auth.captureActive = async (...args) => { enter(); await finished; expect(f.state.held).toBe(true); return capture(...args); };
+    f.auth.compareActive = async () => false;
+    f.auth.inspectActive = async () => ({ exists: true, auth: { email: "A@example.test" } });
+    f.auth.captureActive = async (...args) => { enter(); await finished; expect(f.state.held).toBe(true); return { ...await capture(...args), auth: { email: "A@example.test" } }; };
     const release = f.service.releaseUsagePermit(permit.permit_id, { permit_id: permit.permit_id, success: true });
     await entered;
     await f.service.stop({ realmId, requestId: "stop" }); await f.service.tick(now);
@@ -413,13 +416,13 @@ describe("AGY durable safety boundary", () => {
     expect(f.repo.getAccount(realmId, "A")?.secret_ref).toBe("saved_A");
   });
 
-  it("does not overwrite another account's credential or quota with an incorrectly labelled saved blob", async () => {
+  it("does not activate or inspect an inactive credential during a page refresh", async () => {
     const f = await quotaOnlyFixture();
     const originalQuota = f.repo.getQuotaSnapshot(realmId, "B", pool);
     const activate = f.auth.activateSaved;
     f.auth.activateSaved = async (realm, account, ref) => activate(realm, account, account === "B" ? "saved_A" : ref);
     await f.service.syncAndRefreshQuotas(realmId);
-    expect(f.repo.getAccount(realmId, "B")).toMatchObject({ secret_ref: "saved_B", state: "reauth_required" });
+    expect(f.repo.getAccount(realmId, "B")).toMatchObject({ secret_ref: "saved_B", state: "ready" });
     expect(f.repo.getQuotaSnapshot(realmId, "B", pool)).toEqual(originalQuota);
     expect(f.state.active).toBe("saved_A");
   });
@@ -434,7 +437,7 @@ describe("AGY durable safety boundary", () => {
     await f.service.syncAndRefreshQuotas(realmId);
     expect(f.repo.getAccount(realmId, "A")?.secret_ref).toBe(original?.secret_ref);
     expect(f.repo.getAccount(realmId, "A")?.auth.email).not.toBe("B@example.test");
-    expect(f.repo.getAccount(realmId, "A")?.state).toBe("reauth_required");
+    expect(f.repo.getAccount(realmId, "A")?.state).toBe("ready");
   });
 
   it("keeps the credential cache key across releases when native credentials have not changed", async () => {
@@ -462,17 +465,17 @@ describe("AGY durable safety boundary", () => {
     expect(f.state.writes).toEqual([]);
   });
 
-  it.each([false, true])("refreshes all accounts and restores the original account with external CLI=%s", async external => {
+  it.each([false, true])("refreshes only the active account without credential rotation with external CLI=%s", async external => {
     const f = await quotaOnlyFixture();
     f.state.external = external;
     const view = await f.service.syncAndRefreshQuotas(realmId);
-    expect(view.refresh_scope).toBe("all");
-    expect(f.state.probes).toEqual(["A", "B", "C"]);
-    expect(f.state.writes).toEqual(["B", "C", "A"]);
+    expect(view.refresh_scope).toBe("active_only");
+    expect(f.state.probes).toEqual(["A"]);
+    expect(f.state.writes).toEqual([]);
     expect(f.state.active).toBe("saved_A");
   });
 
-  it.each(["A", "B"])("preserves a switch accepted during the %s quota refresh", async (probingAccount) => {
+  it.each(["A"])("preserves a switch accepted during the %s quota refresh", async (probingAccount) => {
     const f = await fixture(); await f.service.start({ realmId, requestId: "start" });
     let entered!: () => void, finish!: () => void;
     const ready = new Promise<void>(resolve => { entered = resolve; });

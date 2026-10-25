@@ -1,13 +1,12 @@
-import { hasDualQuotaWindows } from "../../../agy-accounts/src/quota.js";
-import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { hasDualQuotaWindows, hasRequiredQuotaWindows } from "../../../agy-accounts/src/quota.js";
 import { resolve } from "node:path";
 import type {
   AccountProbePort,
   AccountProbeResult,
 } from "../../../agy-accounts/src/ports.js";
 import { parseAgyUsageOutput, type ParsedQuotaResult } from "./quota-parser.js";
-import { resolveAgyExecutable } from "./executable-resolver.js";
+import { resolveFingerprintedAgyExecutable, assertAgyExecutableUnchanged, type AgyExecutableResolution } from "./executable-resolver.js";
+import { parseAgyModelCatalog } from "./model-configuration.js";
 import { hasAgyPrintTimeout, hasConflictingAgyFailureDiagnostic, isAgyIndividualQuotaError } from "./failure-fact.js";
 
 export interface VerifiedUsageAdapter {
@@ -114,6 +113,7 @@ export function parseModelAccessOutput(
 }
 
 type ProbeOptions = {
+  force?: boolean;
   cwd?: string;
   timeoutMs?: number;
   signal?: AbortSignal;
@@ -145,32 +145,19 @@ export class AgyAccountProbe implements AccountProbePort {
     this.activeAdapter = adapter;
     this.runner = runner;
   }
-  private async fingerprint(): Promise<string> {
-    const res = resolveAgyExecutable(this.cliPath);
-    if (res.fingerprint) return res.fingerprint;
-    const executable = res.resolvedPath ?? this.cliPath ?? process.env.AGY_CLI_PATH;
-    if (!executable) return "";
-    try {
-      return createHash("sha256")
-        .update(await readFile(resolve(executable)))
-        .digest("hex");
-    } catch {
-      return "";
-    }
-  }
-  private async getAdapter(fingerprint: string): Promise<VerifiedUsageAdapter | undefined> {
+  private async getAdapter(fingerprint: string, executable: AgyExecutableResolution): Promise<VerifiedUsageAdapter | undefined> {
     if (!fingerprint || !this.activeAdapter) return undefined;
     if (this.activeAdapter.executable_fingerprint === fingerprint) return this.activeAdapter;
     // A CLI update invalidates cached evidence, not permission to query the CLI.
     // Share metadata refresh; actual identity, quota and model checks still run.
     if (this.adapterRefresh) {
       await this.adapterRefresh;
-      return this.getAdapter(fingerprint);
+      return this.getAdapter(fingerprint, executable);
     }
     const refresh = (async () => {
       let cliVersion = "unknown";
       try {
-        const result = await this.execute(["--version"], { timeoutMs: 3000 });
+        const result = await this.execute(["--version"], { timeoutMs: 3000 }, executable);
         if (result.code === 0) cliVersion = /\b(\d+\.\d+\.\d+)\b/.exec(result.stdout)?.[1] ?? "unknown";
       } catch (error) {
         if ((error as { code?: string })?.code === "PROCESS_STOP_UNCONFIRMED") throw error;
@@ -205,8 +192,9 @@ export class AgyAccountProbe implements AccountProbePort {
     raw_output: string;
   }> {
     options.signal?.throwIfAborted();
-    const fingerprint = await this.fingerprint();
-    const adapter = await this.getAdapter(fingerprint);
+    const executable = await resolveFingerprintedAgyExecutable(this.cliPath);
+    const fingerprint = executable.fingerprint ?? "";
+    const adapter = await this.getAdapter(fingerprint, executable);
     if (!fingerprint || !adapter) {
       throw new Error("identity_unverified: cli_adapter_or_fingerprint_unverified");
     }
@@ -217,6 +205,7 @@ export class AgyAccountProbe implements AccountProbePort {
       const result = await this.execute(
         ["-p", "/usage", "--output-format", "text", "--print-timeout", "15s"],
         options,
+        executable,
       );
       if (result.code !== 0) {
         throw new Error(`identity_unverified: official cli exited with code ${result.code}`);
@@ -238,8 +227,10 @@ export class AgyAccountProbe implements AccountProbePort {
 
   async probeUsage(options: ProbeOptions = {}): Promise<AccountProbeResult> {
     options.signal?.throwIfAborted();
-    const fingerprint = await this.fingerprint();
-    const adapter = await this.getAdapter(fingerprint);
+    const started = Date.now();
+    const executable = await resolveFingerprintedAgyExecutable(this.cliPath);
+    const fingerprint = executable.fingerprint ?? "";
+    const adapter = await this.getAdapter(fingerprint, executable);
     if (!fingerprint || !adapter) return this.unknown(fingerprint);
     if (this.identityInFlight || this.modelAccessFlight)
       throw new Error("probe_identity_busy");
@@ -254,17 +245,22 @@ export class AgyAccountProbe implements AccountProbePort {
       if (options.signal?.aborted) options.signal.throwIfAborted();
       return this.inFlight.promise;
     }
-    const timeoutMs = Math.max(options.timeoutMs ?? 0, 35000);
+    const budget = Math.max(1000, options.timeoutMs ?? 35000);
+    const timeoutMs = Math.min(budget, budget + 5000 - (Date.now() - started));
+    if (timeoutMs < 1000) throw Object.assign(new Error("agy_usage_prepare_timeout"), { code: "agy_usage_prepare_timeout" });
+    const prepared = Date.now();
     const promise = this.execute(
-      ["-p", "/usage", "--output-format", "text", "--print-timeout", "30s"],
+      ["-p", "/usage", "--output-format", "text", "--print-timeout", `${Math.max(1, Math.floor((timeoutMs - 1000) / 1000))}s`],
       { ...options, timeoutMs },
+      executable,
     )
       .then((result) => {
+        const received = Date.now();
         if (result.code !== 0) throw new Error("official_usage_probe_failed");
         const parsed = adapter.parse(result.stdout);
         const pools = parsed.pools.length > 0
           ? parsed.pools.map((pool) => {
-              const poolValid = pool.models.length > 0 && hasDualQuotaWindows(pool.windows);
+              const poolValid = pool.models.length > 0 && hasRequiredQuotaWindows(pool.pool_id, pool.windows);
               return {
                 pool_id: pool.pool_id,
                 model_ids: pool.models,
@@ -290,6 +286,7 @@ export class AgyAccountProbe implements AccountProbePort {
           executable_fingerprint: fingerprint,
           capability_verified: valid,
           raw_output: "",
+          timings: { prepare_ms: prepared - started, cli_ms: received - prepared, parse_ms: Date.now() - received },
         };
       })
       .finally(() => {
@@ -298,13 +295,27 @@ export class AgyAccountProbe implements AccountProbePort {
     this.inFlight = { key, promise };
     return promise;
   }
+  async probeModels(options: ProbeOptions = {}) {
+    options.signal?.throwIfAborted();
+    const executable = await resolveFingerprintedAgyExecutable(this.cliPath);
+    const fingerprint = executable.fingerprint ?? "";
+    const adapter = await this.getAdapter(fingerprint, executable);
+    if (!fingerprint || !adapter) throw new Error("model_catalog_unverified");
+    const result = await this.execute(["models"], { ...options, timeoutMs: options.timeoutMs ?? 15000 }, executable);
+    if (result.code !== 0) throw new Error("model_catalog_unavailable");
+    const catalog = parseAgyModelCatalog({ stdout: result.stdout, cliVersion: adapter.cli_version });
+    if (catalog.status !== "fresh" || !catalog.entries.length) throw new Error("model_catalog_unavailable");
+    return { native_ids: catalog.entries.filter(entry => entry.availability === "listed" && !entry.hidden).map(entry => entry.nativeId),
+      observed_at: new Date().toISOString(), executable_fingerprint: fingerprint, cli_version: adapter.cli_version };
+  }
   async probeModelAccess(
     modelId: string,
     options: ProbeOptions = {},
   ): Promise<boolean> {
     options.signal?.throwIfAborted();
-    const fingerprint = await this.fingerprint();
-    const adapter = await this.getAdapter(fingerprint);
+    const executable = await resolveFingerprintedAgyExecutable(this.cliPath);
+    const fingerprint = executable.fingerprint ?? "";
+    const adapter = await this.getAdapter(fingerprint, executable);
     if (
       !adapter ||
       !options.account_id ||
@@ -319,8 +330,9 @@ export class AgyAccountProbe implements AccountProbePort {
       modelId,
       fingerprint,
     ]);
+    if (options.force) this.modelAccessCache.delete(key);
     const lastSuccess = this.modelAccessCache.get(key);
-    if (lastSuccess !== undefined && Date.now() - lastSuccess < 86400000)
+    if (!options.force && lastSuccess !== undefined && Date.now() - lastSuccess < 86400000)
       return true;
     if (this.inFlight || this.identityInFlight) throw new Error("probe_identity_busy");
     if (this.modelAccessFlight) {
@@ -352,6 +364,7 @@ export class AgyAccountProbe implements AccountProbePort {
         // The native print timeout starts after CLI initialization. Account/model
         // discovery and the first inference can both be slow after a restart.
         { ...options, timeoutMs: Math.max(options.timeoutMs ?? 0, 180000), signal: flight.controller.signal },
+        executable,
       );
       flight.controller.signal.throwIfAborted();
       if (result.termination_reason === "timeout" || hasAgyPrintTimeout(result.stderr))
@@ -406,10 +419,11 @@ export class AgyAccountProbe implements AccountProbePort {
   private async execute(
     args: string[],
     options: ProbeOptions,
+    executable: AgyExecutableResolution,
   ): Promise<{ code: number | null; stdout: string; stderr: string; termination_reason?: string }> {
-    const resPath = resolveAgyExecutable(this.cliPath);
-    const executable = resPath.resolvedPath ?? this.cliPath ?? process.env.AGY_CLI_PATH;
-    if (!executable) throw new Error("agy_cli_not_configured");
+    options.signal?.throwIfAborted();
+    await assertAgyExecutableUnchanged(executable);
+    options.signal?.throwIfAborted();
 
     if (!this.runner) {
       throw new Error("auxiliary_runner_required: all auxiliary probe executions must be managed by Process Host runner");
@@ -425,10 +439,7 @@ export class AgyAccountProbe implements AccountProbePort {
         cliTimeoutMs = unit === "m" ? num * 60000 : num * 1000;
       }
     }
-    const hostTimeoutMs = Math.max(
-      options.timeoutMs ?? (cliTimeoutMs > 0 ? cliTimeoutMs + 5000 : 35000),
-      cliTimeoutMs > 0 ? cliTimeoutMs + 5000 : 0,
-    );
+    const hostTimeoutMs = Math.max(1000, options.timeoutMs ?? (cliTimeoutMs > 0 ? cliTimeoutMs + 5000 : 35000));
 
     const lease = {
       lease_id: `aux_${Date.now()}`,
@@ -439,7 +450,7 @@ export class AgyAccountProbe implements AccountProbePort {
       expires_at: Date.now() + hostTimeoutMs,
     };
     const res = await this.runner.runAuxiliaryProbe({
-      executable: resolve(executable),
+      executable: resolve(executable.resolvedPath!),
       args,
       lease,
       timeoutMs: hostTimeoutMs,

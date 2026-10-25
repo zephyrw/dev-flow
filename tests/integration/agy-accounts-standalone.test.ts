@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -41,6 +41,34 @@ describe("independent account server", () => {
     await app.close();
     store.close();
     rmSync(root, { recursive: true, force: true });
+  });
+  it("serves a small read-only snapshot, respects quota freshness and coalesces asynchronous refreshes", async () => {
+    fixture.seedAccounts(); await fixture.service.start({ realmId: "default-agy-realm", requestId: "snapshot-start" });
+    const before = store.revision("default-agy-realm");
+    const snapshot = await app.inject({ method: "GET", url: "/api/agy-accounts/snapshot", headers });
+    expect(snapshot.statusCode).toBe(200); expect(snapshot.json().accounts).toHaveLength(3);
+    expect(snapshot.body).not.toContain("secret_ref"); expect(Buffer.byteLength(snapshot.body)).toBeLessThan(15000);
+    expect(store.revision("default-agy-realm")).toBe(before); expect(fixture.probeCalls()).toBe(0);
+    expect((await app.inject({ method: "POST", url: "/api/agy-accounts/refresh", headers, payload: { force: false } })).json().status).toBe("fresh");
+    expect(fixture.probeCalls()).toBe(0);
+    let release!: () => void, entered!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const probe = fixture.probe.probeUsage;
+    const spy = vi.spyOn(fixture.probe, "probeUsage").mockImplementationOnce(async options => { entered(); await gate; return probe(options); });
+    try {
+      const first = await app.inject({ method: "POST", url: "/api/agy-accounts/refresh", headers, payload: { force: true } });
+      expect(first.statusCode).toBe(202); await started;
+      const second = await app.inject({ method: "POST", url: "/api/agy-accounts/refresh", headers, payload: { force: true } });
+      expect(second.statusCode).toBe(202); expect(second.json().id).toBe(first.json().id); expect(spy).toHaveBeenCalledOnce();
+      expect((await app.inject({ method: "GET", url: "/api/agy-accounts/snapshot", headers })).json().refresh.status).toBe("running");
+    } finally { release(); await fixture.service.syncAndRefreshQuotas(); }
+    expect((await app.inject({ method: "GET", url: "/api/agy-accounts/snapshot", headers })).json().refresh.status).toBe("succeeded");
+  });
+  it("does not display an orphaned pre-restart refresh as still running", async () => {
+    fixture.repository.putRecord("agy_quota_refresh", "default-agy-realm", "default-agy-realm", { id: "old", status: "running", started_at: "2026-01-01" });
+    const response = await app.inject({ method: "GET", url: "/api/agy-accounts/snapshot", headers });
+    expect(response.json().refresh).toMatchObject({ status: "failed", error: "refresh_interrupted" });
   });
   it("shares the launcher identity contract, hosts the account page and has no workflow endpoints", async () => {
     const health = await app.inject({
@@ -180,6 +208,14 @@ describe("independent account server", () => {
       },
     });
     expect(start.statusCode).toBe(202);
+    let release!: () => void, entered!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const probe = fixture.probe.probeUsage;
+    vi.spyOn(fixture.probe, "probeUsage").mockImplementationOnce(async options => { entered(); await gate; return probe(options); });
+    const refreshing = fixture.service.syncAndRefreshQuotas();
+    await started;
+    try {
     const realm = fixture.repository.getRealm("default-agy-realm")!;
     const payload = {
       request_id: "switch-once",
@@ -235,6 +271,7 @@ describe("independent account server", () => {
     });
     expect(cancel.statusCode).toBe(202);
     expect(fixture.probeCalls()).toBe(0);
+    } finally { release(); await refreshing; }
   });
   it("does not accept trusted workflow triggers or arbitrary account selection fields over HTTP", async () => {
     for (const extra of [
@@ -286,6 +323,11 @@ describe("independent account server", () => {
   });
 
   it("场景7：首个账号在无账号域且 expected_realm_revision=0 时成功添加，有操作进行中时拒绝开启开关", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const capture = fixture.authHost.captureActive;
+    vi.spyOn(fixture.authHost, "captureActive").mockImplementationOnce(async (...args) => { await gate; return capture(...args); });
+    try {
     // 首次无账号域时，直接添加首个账号，expected_realm_revision=0 成功返回 202
     const addFirst = await app.inject({
       method: "POST",
@@ -313,21 +355,8 @@ describe("independent account server", () => {
     });
     expect(autoWhileBusy.statusCode).toBe(409);
 
-    // 取消该操作收尾
-    const op = await app.inject({
-      method: "GET",
-      url: `/api/agy-accounts/operations/${opId}`,
-      headers,
-    });
-    await app.inject({
-      method: "POST",
-      url: `/api/agy-accounts/operations/${opId}/cancel`,
-      headers,
-      payload: {
-        request_id: crypto.randomUUID(),
-        expected_revision: op.json().revision,
-      },
-    });
+    expect(fixture.repository.getOperation(opId)?.phase).not.toBe("completed");
+    } finally { release(); }
   });
 
   it("场景6：无进行中操作时自动化开关开启与关闭正常执行", async () => {
@@ -448,8 +477,8 @@ describe("independent account server", () => {
     const snapInView = view.snapshots.find((s: any) => s.id === "snap-old-b");
     const weeklyInView = snapInView?.windows.find((w: any) => w.kind === "weekly");
 
-    // 公开视图应呈现为 100%，无倒计时
-    expect(weeklyInView?.remaining_fraction).toBe(1);
+    // 重置时间缺失不能覆盖实际观测值。
+    expect(weeklyInView?.remaining_fraction).toBe(0.6);
     expect(weeklyInView?.reset_at).toBeNull();
     // 原始元数据不伪造
     expect(snapInView?.source).toBe("official_cli_usage");
@@ -518,8 +547,8 @@ describe("independent account server", () => {
     const snapC = view.snapshots.find((s: any) => s.id === "snap-c-unprobed");
     const weeklyC = snapC?.windows.find((w: any) => w.kind === "weekly");
 
-    // 非活动账号 c 在未被重新探测的情况下，依然即时在公开视图恢复 100%
-    expect(weeklyC?.remaining_fraction).toBe(1);
+    // 非活动账号保留各自最后一次实测值。
+    expect(weeklyC?.remaining_fraction).toBe(0.69);
     expect(weeklyC?.reset_at).toBeNull();
 
     // 探测次数未因查询而增加，活动账号未改变
@@ -662,8 +691,8 @@ describe("independent account server", () => {
     const geminiSnap = view.snapshots.find((s: any) => s.id === "snap-gemini-pool");
     const claudeSnap = view.snapshots.find((s: any) => s.id === "snap-claude-pool");
 
-    // 仅无重置时间的 Gemini Models 池恢复为 100%
-    expect(geminiSnap?.windows.find((w: any) => w.kind === "weekly")?.remaining_fraction).toBe(1);
+    // 各池保留各自实测值，不推算满额。
+    expect(geminiSnap?.windows.find((w: any) => w.kind === "weekly")?.remaining_fraction).toBe(0.6);
     expect(geminiSnap?.windows.find((w: any) => w.kind === "weekly")?.reset_at).toBeNull();
 
     // 拥有未来重置时间的 Claude and GPT models 池仍为 40%

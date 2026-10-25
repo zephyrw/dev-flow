@@ -1,4 +1,4 @@
-import { hasDualQuotaWindows } from "../../../agy-accounts/src/quota.js";
+import { hasRequiredQuotaWindows, ARGON_QUOTA_POOL } from "../../../agy-accounts/src/quota.js";
 import type {
   QuotaWindow,
   WindowKind,
@@ -104,10 +104,10 @@ function shouldDropUnstartedReset(
 
   for (const line of lines) {
     const tableMatch =
-      /^([^\t]+?)\t+(Weekly Limit Remaining|Five Hour Limit Remaining)\t+(\S+)(?:\t+(.*))?$/.exec(
+      /^([^\t]+?)\t+(Weekly Limit Remaining|Five Hour Limit Remaining|Gemini 4 Argon Weekly Limit)\t+(\S+)(?:\t+(.*))?$/.exec(
         line,
       ) ??
-      /^([A-Za-z0-9 ]+?)\s{2,}(Weekly Limit Remaining|Five Hour Limit Remaining)\s{2,}(\S+)(?:\s{2,}(.*))?$/.exec(
+      /^([A-Za-z0-9 ]+?)\s{2,}(Weekly Limit Remaining|Five Hour Limit Remaining|Gemini 4 Argon Weekly Limit)\s{2,}(\S+)(?:\s{2,}(.*))?$/.exec(
         line,
       );
     if (tableMatch) {
@@ -116,7 +116,7 @@ function shouldDropUnstartedReset(
       const pctStr = tableMatch[3]!;
       const rawResetStr = tableMatch[4]?.trim();
       const kind: WindowKind =
-        kindStr === "Weekly Limit Remaining" ? "weekly" : "five_hour";
+        kindStr.includes("Weekly") ? "weekly" : "five_hour";
       const pctNumStr = pctStr.endsWith("%") ? pctStr.slice(0, -1).trim() : null;
       const isValidPctFormat = pctNumStr !== null && pctNumStr.length > 0 && /^\d+(?:\.\d+)?$/.test(pctNumStr);
       const remaining = isValidPctFormat ? Number(pctNumStr) / 100 : NaN;
@@ -180,13 +180,15 @@ function shouldDropUnstartedReset(
     }
 
     for (const [poolName, pWindows] of poolMap.entries()) {
-      if (!hasDualQuotaWindows(pWindows)) {
+      if (!hasRequiredQuotaWindows(poolName, pWindows)) {
         for (const window of pWindows) { window.status = "missing"; window.remaining_fraction = null; }
       }
       const lower = poolName.toLowerCase();
       let models: string[];
       if (lower === "gemini models") {
         models = ["gemini-*"];
+      } else if (lower === ARGON_QUOTA_POOL.toLowerCase()) {
+        models = ["gemini-4-argon", "gemini-4-argon-*"];
       } else if (lower === "claude and gpt models") {
         models = ["claude-*", "gpt-*"];
       } else if (lower === "global") {

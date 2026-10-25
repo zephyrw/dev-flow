@@ -3,30 +3,14 @@ import type {
   AgyQuotaSnapshot,
   QuotaWindow,
 } from "../../contracts/src/agy-account.js";
-import { hasDualQuotaWindows, computeEffectiveWeeklyQuota, computeEffectiveFiveHourQuota, resolveEffectiveQuotaWindows } from "../../agy-accounts/src/quota.js";
+import { hasDualQuotaWindows, hasRequiredQuotaWindows, computeEffectiveWeeklyQuota, computeEffectiveFiveHourQuota, resolveEffectiveQuotaWindows } from "../../agy-accounts/src/quota.js";
 import type { QuotaBucket } from "../../contracts/src/run-observation.js";
 
-/** Convert only a complete AGY model bucket; other adapters retain their own window semantics. */
+/** Keep provider observations; scheduling estimates do not become displayed balances. */
 export function effectiveRuntimeQuotaWindows(
-  bucket: QuotaBucket, adapter: string, observedAt: string, nowMs = Date.now(),
+  bucket: QuotaBucket, _adapter: string, _observedAt: string, _nowMs = Date.now(),
 ): QuotaBucket["windows"] {
-  if (adapter !== "agy") return bucket.windows;
-  const windows: QuotaWindow[] = bucket.windows.map(window => ({
-    kind: window.window_minutes === 10080 ? "weekly" : "five_hour",
-    duration_minutes: window.window_minutes === 10080 ? 10080 : 300,
-    remaining_fraction: Number.isFinite(window.used_percent) && window.used_percent >= 0 && window.used_percent <= 100
-      ? (100 - window.used_percent) / 100 : null,
-    reset_at: window.resets_at === undefined ? null
-      : Number.isFinite(window.resets_at) && Math.abs(window.resets_at * 1000) <= 8640000000000000
-        ? new Date(window.resets_at * 1000).toISOString() : "invalid",
-    observed_at: observedAt,
-    status: Number.isFinite(window.used_percent) ? "observed" : "missing",
-  }));
-  if (!hasDualQuotaWindows(windows) || !bucket.windows.every(w => [300, 10080].includes(w.window_minutes))) return bucket.windows;
-  const effective = resolveEffectiveQuotaWindows(windows, nowMs);
-  return bucket.windows.map((window, index) => effective[index]?.remaining_fraction === 1
-    ? { ...window, used_percent: 0, resets_at: effective[index]?.reset_at === null ? undefined : window.resets_at }
-    : window);
+  return bucket.windows;
 }
 
 export interface QuotaWindowDisplay {
@@ -259,15 +243,13 @@ export function formatQuotaWindow(
 }
 
 export function formatSnapshotQuotaWindow(
-  snapshot: Pick<AgyQuotaSnapshot, "windows" | "capability_verified"> | undefined,
+  snapshot: (Pick<AgyQuotaSnapshot, "windows" | "capability_verified"> & { pool_id?: string }) | undefined,
   kind: QuotaWindow["kind"],
   nowMs: number = Date.now(),
 ): QuotaWindowDisplay {
   const window = snapshot?.windows.find((w) => w.kind === kind);
   // 与服务公开视图采用同一完整性边界，防止原始窗口在页面再次投影满额。
-  const allowWeeklyResetProjection = !!snapshot &&
-    snapshot.capability_verified !== false && hasDualQuotaWindows(snapshot.windows);
-  return formatQuotaWindow(window, nowMs, allowWeeklyResetProjection);
+  return formatQuotaWindow(window, nowMs, false);
 }
 
 export function formatAccountStateLabel(state: string): string {

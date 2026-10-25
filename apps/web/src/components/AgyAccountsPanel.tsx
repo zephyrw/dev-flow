@@ -4,6 +4,7 @@ import React, {
   useEffect,
   useImperativeHandle,
   useState,
+  useRef,
 } from "react";
 import "./agy-accounts.css";
 import {
@@ -45,8 +46,8 @@ interface AccountView {
   model_id?: string | null;
   active_category?: "gemini" | "other" | "mixed" | "unknown" | null;
   selection_context?: AgyManagementSelectionContext;
-  accounts: AgyAccountDto[];
-  snapshots: AgyQuotaSnapshot[];
+  accounts: Array<Pick<AgyAccountDto, "id" | "revision" | "identity" | "state">>;
+  snapshots: Array<Pick<AgyQuotaSnapshot, "account_id" | "pool_id" | "windows" | "observed_at" | "capability_verified">>;
   realm: Realm | null;
   settings?: { revision: number };
   automation?: {
@@ -59,6 +60,10 @@ interface AccountView {
     reason?: string;
   };
 }
+interface ManagementSnapshot extends AccountView {
+  service: ServiceView;
+  refresh: { status: "running" | "succeeded" | "failed" | "cancelled"; account_id?: string } | null;
+}
 
 interface ServiceView extends Realm {
   operations: AccountOperationView[];
@@ -69,22 +74,17 @@ interface ServiceView extends Realm {
   };
 }
 
-function quotaRefreshNotice(view: AccountView): string {
-  const failedIds = new Set(view.refresh_errors?.map(error => error.account_id));
-  const failed = view.accounts.filter(account => failedIds.has(account.id));
-  const messages = [];
-  if (view.refresh_scope === "active_only") messages.push("AGY 正在运行，已仅刷新当前账号；其他账号保留上次额度结果");
-  if (failed.length) messages.push(
-    "额度查询失败，已保留上次结果（可能已过期）：" + failed.map(account => account.identity.email).join("、"),
-  );
-  return messages.join("；") || "已刷新账号额度";
-}
+// Keep only public snapshots across dialog mounts; never replace known data with
+// an empty list because a request failed.
+let accountSnapshot: { value: AccountView; observedAt: number } | null = null;
+let serviceSnapshot: ServiceView | null = null;
+let switchIntent: { accountId: string; body: string } | null = null;
 
 function CompactQuotaBar({
   snapshot,
   kind,
 }: {
-  snapshot: AgyQuotaSnapshot | undefined;
+  snapshot: AccountView["snapshots"][number] | undefined;
   kind: AgyQuotaSnapshot["windows"][number]["kind"];
 }) {
   const window = snapshot?.windows.find(
@@ -101,12 +101,12 @@ function CompactQuotaBar({
   }
   const value = formatSnapshotQuotaWindow(snapshot, kind);
   const percent = value.fraction !== null ? Math.round(value.fraction * 100) : null;
-  const tooltip = value.resetText !== "—"
+  const quotaTooltip = value.resetText !== "—"
     ? `${value.label}：${value.percentageText}，${value.resetText}`
     : `${value.label}：${value.percentageText}`;
 
   return (
-    <div className="agy-compact-quota" title={tooltip}>
+    <div className="agy-compact-quota" title={`${quotaTooltip}；查询于 ${snapshot?.observed_at ? new Date(snapshot.observed_at).toLocaleString() : "未知"}`}>
       <span className="agy-quota-lbl">{value.label}</span>
       <div className="agy-quota-track">
         <div
@@ -129,10 +129,10 @@ function CompactQuotaBar({
 
 export const AgyAccountsPanel = forwardRef<
   AgyAccountsPanelHandle,
-  { onDismiss?: () => void }
->(function AgyAccountsPanel({ onDismiss }, ref) {
-  const [view, setView] = useState<AccountView | null>(null);
-  const [service, setService] = useState<ServiceView | null>(null);
+  { onDismiss?: () => void; onRefreshingChange?: (value: boolean) => void }
+>(function AgyAccountsPanel({ onDismiss, onRefreshingChange }, ref) {
+  const [view, setView] = useState<AccountView | null>(accountSnapshot?.value ?? null);
+  const [service, setService] = useState<ServiceView | null>(serviceSnapshot);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
@@ -142,84 +142,118 @@ export const AgyAccountsPanel = forwardRef<
   const [togglingAutomation, setTogglingAutomation] = useState(false);
   const [activeOperation, setActiveOperation] = useState<AccountOperationView | null>(null);
 
-  const refresh = useCallback(async () => {
-    try {
-      const [accountsData, serviceData] = await Promise.all([
-        agyApi<AccountView>(""),
-        agyApi<ServiceView>("/service"),
-      ]);
-      setView(accountsData);
-      setService(serviceData);
+  const [readErrors, setReadErrors] = useState({ accounts: "", service: "" });
+  const [quotaWarning, setQuotaWarning] = useState("");
+  const [observedAt, setObservedAt] = useState(accountSnapshot?.observedAt ?? 0);
+  const [serviceFresh, setServiceFresh] = useState(Boolean(serviceSnapshot));
+  const [submittingAccount, setSubmittingAccount] = useState<string | null>(null);
+  const lifecycle = useRef<AbortController | null>(null);
+  const reading = useRef<Promise<void> | null>(null);
+  const submitting = useRef(false);
+  const revision = useRef(0);
+  const quotaRequest = useRef<Promise<void> | null>(null);
+  const readAbort = useRef<AbortController | null>(null);
+  const busy = useRef(false);
+  const readFailed = useRef(false);
+  const scheduleFallback = useRef<() => void>(() => {});
+  useEffect(() => onRefreshingChange?.(refreshing), [refreshing, onRefreshingChange]);
 
-      const runningOp = serviceData.operations.find(
-        (op) => !terminalOperation(op.phase),
-      );
-      setActiveOperation(runningOp ?? null);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setLoading(false);
-    }
+  const refresh = useCallback((invalidate = false): Promise<void> => {
+    if (invalidate) { revision.current++; readAbort.current?.abort(); reading.current = null; }
+    if (reading.current) return reading.current;
+    const controller = lifecycle.current;
+    if (!controller || controller.signal.aborted) return Promise.resolve();
+    const version = revision.current;
+    const request = new AbortController(); readAbort.current = request;
+    const pending = (async () => {
+      try {
+        const next = await agyApi<ManagementSnapshot>("/snapshot", { signal: AbortSignal.any([controller.signal, request.signal]) });
+        if (controller.signal.aborted || version !== revision.current) return;
+        accountSnapshot = { value: next, observedAt: Date.now() };
+        serviceSnapshot = next.service;
+        setView(next); setService(next.service);
+        setObservedAt(accountSnapshot.observedAt);
+        const operation = next.service.operations.find(op => !terminalOperation(op.phase)) ?? null;
+        setActiveOperation(operation);
+        const running = next.refresh?.status === "running";
+        busy.current = running || !!operation;
+        readFailed.current = false;
+        scheduleFallback.current();
+        setRefreshing(running);
+        setQuotaWarning(next.refresh?.status === "failed" ? "额度更新失败，已保留上次结果（可能已过期）" : "");
+        setServiceFresh(true); setReadErrors({ accounts: "", service: "" });
+      } catch {
+        if (controller.signal.aborted || request.signal.aborted || version !== revision.current) return;
+        setServiceFresh(false);
+        setReadErrors({ accounts: "账号状态暂时读取失败，已保留上次结果", service: "" });
+        readFailed.current = true;
+        scheduleFallback.current();
+      } finally {
+        if (!controller.signal.aborted && version === revision.current) setLoading(false);
+      }
+    })().finally(() => { if (reading.current === pending) reading.current = null; });
+    reading.current = pending;
+    return pending;
   }, []);
 
-  const syncAndRefresh = useCallback(async () => {
-    setError("");
+  const syncAndRefresh = useCallback((force = true): Promise<void> => {
+    if (quotaRequest.current) return quotaRequest.current;
+    const controller = lifecycle.current;
+    if (!controller || controller.signal.aborted) return Promise.resolve();
     setRefreshing(true);
-    try {
-      const [updatedView, serviceData] = await Promise.all([
-        agyApi<AccountView>("/sync-refresh", {
-          method: "POST",
-          body: requestBody({}),
-        }),
-        agyApi<ServiceView>("/service"),
-      ]);
-      setView(updatedView);
-      setService(serviceData);
+    const pending = (async () => {
+      try {
+        await agyApi("/refresh", {
+          method: "POST", body: requestBody({ force }), signal: controller.signal,
+        });
+        if (controller.signal.aborted) return;
+        await refresh(true);
+      } catch {
+        if (!controller.signal.aborted) setQuotaWarning("额度查询暂时失败，已保留上次结果（可能已过期）");
+        if (!controller.signal.aborted) setRefreshing(false);
+      }
+    })().finally(() => { if (quotaRequest.current === pending) quotaRequest.current = null; });
+    quotaRequest.current = pending;
+    return pending;
+  }, [refresh]);
 
-      const runningOp = serviceData.operations.find(
-        (op) => !terminalOperation(op.phase),
-      );
-      setActiveOperation(runningOp ?? null);
-      setNotice(quotaRefreshNotice(updatedView));
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : "刷新账号与额度失败";
-      setError(msg);
-      throw e;
-    } finally {
-      setRefreshing(false);
-      setLoading(false);
-    }
-  }, []);
-
-  useImperativeHandle(
-    ref,
-    () => ({
-      refresh,
-      syncAndRefresh,
-    }),
-    [refresh, syncAndRefresh],
-  );
+  useImperativeHandle(ref, () => ({ refresh, syncAndRefresh }), [refresh, syncAndRefresh]);
 
   useEffect(() => {
-    void agyApi("/sync-active", { method: "POST", body: requestBody({}) })
-      .catch(() => {})
-      .finally(() => {
-        void refresh();
-        // 打开面板后在后台静默对齐一次当前账号最新实测额度，防止额度因近期会话消耗后界面仍停留于旧快照
-        void agyApi<AccountView>("/sync-refresh", {
-          method: "POST",
-          body: requestBody({}),
-        })
-          .then((updatedView) => {
-            setView(updatedView);
-            if (updatedView.refresh_scope === "active_only" || updatedView.refresh_errors?.length)
-              setNotice(quotaRefreshNotice(updatedView));
-          })
-          .catch(() => setNotice("额度查询失败，当前显示上次结果（可能已过期）"));
-      });
-    const timer = setInterval(() => void refresh(), 3000);
-    return () => clearInterval(timer);
-  }, [refresh]);
+    const controller = new AbortController();
+    lifecycle.current = controller;
+    reading.current = null;
+    quotaRequest.current = null;
+    let connected = false, socket: WebSocket | undefined;
+    let retry: ReturnType<typeof setTimeout> | undefined, notification: ReturnType<typeof setTimeout> | undefined;
+    let fallback: ReturnType<typeof setTimeout> | undefined;
+    const visible = () => document.visibilityState !== "hidden";
+    const schedule = () => {
+      clearTimeout(fallback);
+      if (controller.signal.aborted || !visible() || (connected && !readFailed.current)) return;
+      fallback = setTimeout(() => { void refresh().finally(schedule); }, busy.current || readFailed.current ? 1000 : 30000);
+    };
+    scheduleFallback.current = schedule;
+    const connect = () => {
+      if (controller.signal.aborted) return;
+      socket = new WebSocket(`${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/api/agy-accounts/notifications`);
+      socket.onopen = () => { connected = true; clearTimeout(fallback); if (visible()) void refresh(true); };
+      socket.onmessage = () => {
+        if (!visible() || notification) return;
+        notification = setTimeout(() => { notification = undefined; void refresh(true); }, 50);
+      };
+      socket.onclose = () => { connected = false; schedule(); if (!controller.signal.aborted) retry = setTimeout(connect, 5000); };
+    };
+    const visibility = () => { if (visible()) void refresh(true); schedule(); };
+    document.addEventListener("visibilitychange", visibility);
+    void refresh().then(() => { if (!controller.signal.aborted && visible()) void syncAndRefresh(false); });
+    connect(); schedule();
+    return () => {
+      controller.abort(); readAbort.current?.abort(); socket?.close();
+      clearTimeout(retry); clearTimeout(notification); clearTimeout(fallback);
+      document.removeEventListener("visibilitychange", visibility);
+    };
+  }, [refresh, syncAndRefresh]);
 
   const handleToggleAutomation = async () => {
     if (togglingAutomation || !service) return;
@@ -245,34 +279,46 @@ export const AgyAccountsPanel = forwardRef<
       operation_in_progress: "当前已有另一项账号操作正在进行中，请先等待其完成或点击取消",
       account_in_use: "该账号当前正在使用中，无法移除，请先切换至其他账号",
       external_change: "检测到外部 AGY 正在修改凭据，请稍后重试",
+      identity_mismatch: "切换期间检测到账号身份变化，请刷新账号后重试",
+      identity_unverified: "当前账号身份暂未核对成功，请刷新账号后重试；无需因此重新登录",
       domain_lock_acquire_failed: "未能获取系统账号锁，可能有其他进程正在使用",
     };
     return friendlyMap[raw] || (raw ? `${fallback}: ${raw}` : fallback);
   };
 
   const handleSwitchTo = async (accountId: string) => {
+    if (submitting.current || activeOperation || !serviceFresh) return;
+    submitting.current = true;
+    setSubmittingAccount(accountId);
     setError("");
+    setNotice("");
+    revision.current++;
+    if (switchIntent?.accountId !== accountId) switchIntent = {
+      accountId, body: requestBody({ selection: { mode: "explicit", account_id: accountId }, expected_epoch: service?.auth_epoch }),
+    };
+    const controller = lifecycle.current!;
     try {
-      await agyApi("/sync-active", { method: "POST", body: requestBody({}) });
-      const current = await agyApi<ServiceView>("/service");
-      setService(current);
       const op = await agyApi<AccountOperationView>("/switch", {
-        method: "POST",
-        body: requestBody({
-          selection: { mode: "explicit", account_id: accountId },
-          expected_epoch: current.auth_epoch,
-        }),
+        method: "POST", body: switchIntent.body, signal: controller.signal,
       });
-      setActiveOperation(op);
-      setNotice("已发起切换账号操作");
-      setTimeout(() => setNotice(""), 3000);
-      await refresh();
+      if (controller.signal.aborted) return;
+      switchIntent = null;
+      revision.current++;
+      setActiveOperation(terminalOperation(op.phase) ? null : op);
+      setNotice("");
     } catch (e) {
-      setError(formatErrorMsg(e, "切换账号失败"));
+      if (typeof (e as { status?: number })?.status === "number" && (e as { status: number }).status < 500) switchIntent = null;
+      if (!controller.signal.aborted) setError(formatErrorMsg(e, "切换账号失败"));
+    } finally {
+      submitting.current = false;
+      if (!controller.signal.aborted) {
+        setSubmittingAccount(null);
+        await refresh(true);
+      }
     }
   };
 
-  const handleReauth = async (account: AgyAccountDto) => {
+  const handleReauth = async (account: AccountView["accounts"][number]) => {
     setError("");
     try {
       const op = await agyApi<AccountOperationView>(`/${encodeURIComponent(account.id)}/reauth`, {
@@ -289,7 +335,7 @@ export const AgyAccountsPanel = forwardRef<
     }
   };
 
-  const handleDeleteAccount = async (account: AgyAccountDto) => {
+  const handleDeleteAccount = async (account: AccountView["accounts"][number]) => {
     if (!window.confirm(`确定要移除账号 ${account.identity.email} 吗？`)) {
       return;
     }
@@ -336,7 +382,7 @@ export const AgyAccountsPanel = forwardRef<
     ["failed", "blocked", "cancelled"].includes(latestOperation.phase) && latestOperation.error &&
     latestOperation.error !== "operation_cancelled"
     ? formatFriendlyError(latestOperation.error) : "";
-  const activeAccountId = service?.active_account_id;
+  const activeAccountId = serviceFresh ? service?.active_account_id : view?.realm?.active_account_id;
 
   return (
     <div className="agy-minimal-panel">
@@ -348,14 +394,14 @@ export const AgyAccountsPanel = forwardRef<
               type="checkbox"
               className="agy-switch-input"
               checked={isAutomationOn}
-              disabled={togglingAutomation}
+              disabled={togglingAutomation || !serviceFresh}
               onChange={handleToggleAutomation}
             />
             <span className="agy-switch-slider" />
             <span className="agy-switch-text">自动切换账号</span>
           </label>
           <span className="agy-switch-desc">
-            {isAutomationOn ? "额度耗尽时自动选择最佳账号" : "已停用自动切换，当前仅执行手动切换"}
+            {!serviceFresh ? "自动切换状态待确认" : isAutomationOn ? "额度耗尽时自动选择最佳账号" : "已停用自动切换，当前仅执行手动切换"}
           </span>
           {isAutomationOn && (
             <span
@@ -450,6 +496,13 @@ export const AgyAccountsPanel = forwardRef<
         </div>
       )}
 
+      {(readErrors.accounts || readErrors.service || quotaWarning) && (
+        <div className="agy-alert-error" role="alert">
+          {[readErrors.accounts, readErrors.service, quotaWarning].filter(Boolean).join("；")}
+          {view && readErrors.accounts && observedAt ? `；显示 ${new Date(observedAt).toLocaleTimeString()} 的账号快照` : ""}
+        </div>
+      )}
+      {submittingAccount && <div role="status">正在提交切换：{accounts.find(a => a.id === submittingAccount)?.identity.email ?? submittingAccount}</div>}
       {/* 成功反馈 */}
       {notice && (
         <div className="agy-alert-success" role="status">
@@ -460,7 +513,7 @@ export const AgyAccountsPanel = forwardRef<
       {/* 账号列表 */}
       <div className="agy-accounts-list-wrap">
         <div className="agy-list-header">
-          <span>已管理账号 {loading && !view ? "" : `(${accounts.length})`}</span>
+          <span>已管理账号 {!view ? "（待读取）" : `(${accounts.length})`}</span>
           {refreshing && (
             <span style={{ marginLeft: "8px", fontSize: "12px", color: "#2563eb", fontWeight: "normal" }}>
               正在刷新额度...
@@ -473,6 +526,8 @@ export const AgyAccountsPanel = forwardRef<
             <span className="agy-loading-spinner" />
             <p>正在加载账号及额度信息...</p>
           </div>
+        ) : !view ? (
+          <div className="agy-empty-state"><p>暂时无法读取账号，连接恢复后会自动重试</p><button type="button" onClick={() => void refresh()}>重试</button></div>
         ) : accounts.length === 0 ? (
           <div className="agy-empty-state">
             <span className="agy-empty-icon">👥</span>
@@ -492,9 +547,9 @@ export const AgyAccountsPanel = forwardRef<
               const accountSnapshots =
                 view?.snapshots.filter((s) => s.account_id === account.id) ?? [];
               
-              // 严格独立提取两组快照，严禁互借补位
+              // Each pool is independent; Argon must never fill the Gemini row.
               const geminiSnapshot = accountSnapshots.find(
-                (s) => s.pool_id === "Gemini Models" || s.pool_id.toLowerCase().includes("gemini"),
+                (s) => s.pool_id.toLowerCase() === "gemini models",
               );
               const otherSnapshot = accountSnapshots.find(
                 (s) =>
@@ -502,6 +557,7 @@ export const AgyAccountsPanel = forwardRef<
                   s.pool_id.toLowerCase().includes("claude") ||
                   s.pool_id.toLowerCase().includes("gpt"),
               );
+              const argonSnapshot = accountSnapshots.find(s => s.pool_id.toLowerCase() === "gemini 4 argon");
 
               return (
                 <div
@@ -520,7 +576,8 @@ export const AgyAccountsPanel = forwardRef<
                       )}
                     </div>
 
-                    {/* 双组额度分别展示，不按当前模型隐藏另一组 */}
+                    <span style={{ fontSize: "12px", color: "#64748b" }}>额度查询时间：{accountSnapshots[0]?.observed_at ? new Date(accountSnapshots[0].observed_at).toLocaleString() : "尚未查询"}</span>
+                    {/* Show the provider's actual quota groups. Argon has no five-hour window. */}
                     <div className="agy-account-quotas-dual">
                       {/* 上方：Gemini 额度 */}
                       <div className="agy-quota-group" data-category="gemini">
@@ -555,6 +612,12 @@ export const AgyAccountsPanel = forwardRef<
                           )}
                         </div>
                       </div>
+                      {argonSnapshot && <div className="agy-quota-group" data-category="argon">
+                        <span className="agy-quota-group-label gemini">Gemini 4 Argon</span>
+                        <div className="agy-quota-bars">
+                          <CompactQuotaBar snapshot={argonSnapshot} kind="weekly" />
+                        </div>
+                      </div>}
                     </div>
                   </div>
 
@@ -573,8 +636,9 @@ export const AgyAccountsPanel = forwardRef<
                         <button
                           type="button"
                           className="agy-secondary-btn"
+                          disabled={!!submittingAccount || !!activeOperation || !serviceFresh}
                           onClick={() => handleSwitchTo(account.id)}
-                          title="切换为当前活动账号"
+                          title="切换后新命令使用此账号，已启动的命令继续运行"
                         >
                           设为活动
                         </button>

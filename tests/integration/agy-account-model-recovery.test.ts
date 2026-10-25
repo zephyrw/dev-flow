@@ -99,6 +99,20 @@ describe("managed account recovery retains frozen model routing", () => {
       account_id: realm.active_account_id!, auth_epoch: realm.auth_epoch });
   }
 
+  it("keeps the original task blocked for an explicit model choice after fallback, without dispatch or model replacement", async () => {
+    const run = source(); seedAccess(); await stageSwitch(run);
+    const before = s.engine.get(workflowId);
+    const realm = accounts.repository.getRealm(realmId)!;
+    const restored = vi.spyOn(s.engine, "restoreFailedRole");
+    await bridge.onAccountCommitted({ realm_id: realmId, operation_id: "operation-model",
+      account_id: realm.active_account_id!, auth_epoch: realm.auth_epoch, model_selection_required: true });
+    expect(s.engine.get(workflowId)).toMatchObject({ state: "BLOCKED", plan_revision: before.plan_revision,
+      plan_hash: before.plan_hash, blocker: { code: "AGY_MODEL_SELECTION_REQUIRED" } });
+    expect(s.store.must<Run>("run", run.id).frozen_invocation).toEqual(run.frozen_invocation);
+    expect(s.store.get("agy_account_wait", run.id)).toBeUndefined();
+    expect(restored).not.toHaveBeenCalled(); expect(s.engine.dispatch).not.toHaveBeenCalled();
+  });
+
   it.each([
     { purpose: "quality_review" as const, role: "reviewer" as const },
     { purpose: "implement" as const, role: "review_fixer" as const },
@@ -228,7 +242,6 @@ describe("managed account recovery retains frozen model routing", () => {
   });
 
   it.each([
-    { status: "login_required" as const, code: "MODEL_LOGIN_REQUIRED" },
     { status: "model_forbidden" as const, code: "MODEL_FORBIDDEN" },
     { status: "unavailable" as const, code: "MODEL_UNAVAILABLE" },
   ])("does not overwrite an existing $status failure as verified during admission", async ({ status, code }) => {
@@ -242,6 +255,41 @@ describe("managed account recovery retains frozen model routing", () => {
     expect(probe).not.toHaveBeenCalled();
     expect(access.getAccess(original.key)).toEqual(original);
     expect(accounts.repository.listPermits(realmId)).toEqual([]);
+  });
+
+  it.each([true, false])("rechecks historical login failure with a fresh native model probe: success=%s", async success => {
+    const run = source();
+    const original = { ...seedAccess(), status: "login_required" as const, error_code: "MODEL_LOGIN_REQUIRED" };
+    access.putAccess(original);
+    const probe = vi.spyOn(accounts.probe, "probeModelAccess").mockResolvedValue(success);
+    const preparing = bridge.prepareProfileRun(workflowId, run, "gemini-fixture");
+    if (success) {
+      expect((await preparing)?.account_id).toBe("a");
+      expect(access.getAccess(original.key)?.status).toBe("verified");
+    } else {
+      await expect(preparing).rejects.toMatchObject({ code: "AGY_ACCOUNT_UNAVAILABLE" });
+      expect(access.getAccess(original.key)).toEqual(original);
+      expect(accounts.repository.listPermits(realmId)).toEqual([]);
+    }
+    expect(probe).toHaveBeenCalledWith("gemini-fixture", expect.objectContaining({ force: true }));
+  });
+
+  it("does not overwrite a newer auth failure while rechecking historical login failure", async () => {
+    const run = source();
+    const original = { ...seedAccess(), status: "login_required" as const,
+      error_code: "MODEL_LOGIN_REQUIRED", checked_at: "2026-10-01T00:00:00.000Z" };
+    access.putAccess(original);
+    const acquire = accounts.service.acquireUsagePermit.bind(accounts.service);
+    vi.spyOn(accounts.service, "acquireUsagePermit").mockImplementation(async request => {
+      const permit = await acquire(request);
+      access.invalidate(run.frozen_invocation!, "MODEL_LOGIN_REQUIRED");
+      return permit;
+    });
+    await expect(bridge.prepareProfileRun(workflowId, run, "gemini-fixture")).rejects.toMatchObject({ code: "MODEL_LOGIN_REQUIRED" });
+    expect(access.getAccess(original.key)?.status).toBe("login_required");
+    expect(accounts.repository.listPermits(realmId).every(permit => permit.status === "released")).toBe(true);
+    expect(await bridge.listOccupancy()).toEqual([]);
+    expect(s.store.must<Run>("run", run.id).agy_account).toBeUndefined();
   });
 
   it("attaches a same-identity permit without changing the frozen command", async () => {

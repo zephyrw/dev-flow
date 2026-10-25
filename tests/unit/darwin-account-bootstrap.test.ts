@@ -18,7 +18,7 @@ vi.mock("../../packages/agy-accounts/src/auth-host.js", () => ({
   },
 }));
 vi.mock("../../packages/adapters/agy/src/executable-resolver.js", () => ({
-  resolveAgyExecutable: () => ({ resolvedPath: undefined }),
+  resolveFingerprintedAgyExecutable: async () => ({ resolvedPath: undefined }),
 }));
 import { bootstrapAccountService } from "../../apps/api/src/account-service-bootstrap.js";
 afterEach(() => vi.restoreAllMocks());

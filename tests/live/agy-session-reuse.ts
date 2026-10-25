@@ -16,7 +16,7 @@ import { seedVerifiedAccess } from "../../packages/core/src/access-guard.js";
 import { LocalRuntime } from "../../packages/runtime/src/runtime.js";
 import { AgyAccountJobRunner } from "../../packages/process/src/agy-account-job-runner.js";
 import { AgyAccountProbe, createVerifiedUsageAdapter } from "../../packages/adapters/agy/src/account-probe.js";
-import { resolveAgyExecutable } from "../../packages/adapters/agy/src/executable-resolver.js";
+import { resolveFingerprintedAgyExecutable } from "../../packages/adapters/agy/src/executable-resolver.js";
 import Database from "better-sqlite3";
 import { repository, proof } from "../helpers.js";
 
@@ -28,7 +28,7 @@ console.log(JSON.stringify({ evidence: root }));
 const historyDir = join(homedir(), ".gemini", "antigravity-cli", "conversations");
 const history = () => existsSync(historyDir) ? readdirSync(historyDir).filter(n => n.endsWith(".db")) : [];
 const beforeHistory = new Set(history());
-const executable = resolveAgyExecutable();
+const executable = await resolveFingerprintedAgyExecutable();
 assert(executable.resolvedPath && executable.fingerprint, "Real AGY executable required");
 const runner = new AgyAccountJobRunner(executable.resolvedPath);
 let modelCalls = 0;

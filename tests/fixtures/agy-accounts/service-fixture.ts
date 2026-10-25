@@ -58,6 +58,7 @@ export function accountFixture(store: Store, modelId = "fixture-model") {
         secret_ref: ref,
         credential_revision: credentialRevision,
         auth: {
+          email: `${active}@example.com`,
           has_refresh_credential: true,
           refresh_expiry_source: "not_provided",
         },

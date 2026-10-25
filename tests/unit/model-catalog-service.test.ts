@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -84,14 +84,50 @@ function openCatalog(control: Record<string, unknown> = {}, executable = FIXTURE
   closeEnv = async () => {
     await catalog.close();
     store.close();
+    rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
   };
   return { root, store, catalog, logDir };
 }
 
 describe("model catalog operations", { timeout: 30000 }, () => {
-  it("only lists Codex and AGY in workbench discovery", () => {
+  it("keeps old and new AGY catalogs isolated by account and rejects an identity change during discovery", async () => {
     const env = openCatalog();
-    expect(env.catalog.listTools().map((tool) => tool.adapterId)).toEqual(["codex", "agy"]);
+    const native = modelIdentity.resolveModelIdentity(env.store, { adapterId: "agy", executableRef: FIXTURE });
+    let account = "old-account", ids = ["gemini-3.8-flash-high", "claude-opus-4-6-thinking"];
+    vi.spyOn(modelIdentity, "resolveModelIdentity").mockImplementation(() => ({ ...native, accountFingerprint: account }));
+    new ModelCatalogService(env.store, { readAgyModels: async () => ids });
+    const scope = () => ({ adapterId: "agy" as const, executablePath: FIXTURE, nativeConfigScope: "default",
+      accountFingerprint: account, providerFingerprint: native.providerEndpointFingerprint });
+    await env.catalog.discover(scope());
+    account = "new-account"; ids = ["gemini-4-argon-high", "claude-opus-5-5-high"];
+    await env.catalog.discover(scope());
+    expect(env.catalog.getModels("agy").entries.map(e => e.nativeId)).toEqual(ids);
+    account = "old-account";
+    expect(env.catalog.getModels("agy").entries.map(e => e.nativeId)).toEqual(["gemini-3.8-flash-high", "claude-opus-4-6-thinking"]);
+    new ModelCatalogService(env.store, { readAgyModels: async () => { account = "new-account"; return ids; } });
+    await expect(env.catalog.discover(scope())).rejects.toMatchObject({ code: "ACCOUNT_CHANGED_DURING_DISCOVERY" });
+  });
+  it("replaces retired AGY native models with the current CLI catalog without injecting old suggestions", async () => {
+    const env = openCatalog();
+    const scope = { adapterId: "agy" as const, executablePath: FIXTURE, nativeConfigScope: "default",
+      accountFingerprint: "test-account", providerFingerprint: "test-endpoint" };
+    await env.catalog.discover(scope);
+    writeControl(env.logDir, { catalogStdout: readFileSync(join(CATALOG_ROOT, "agy", "models-20261023.txt"), "utf8") });
+    const next = await env.catalog.discover(scope);
+    expect(next.entries).toHaveLength(13);
+    for (const catalog of [env.catalog.getModels("agy"), env.catalog.loadForSelector(scope)]) {
+      expect(catalog.entries.some(entry => /gemini-3\.[67]|claude-(opus|sonnet)-4-6/.test(entry.nativeId))).toBe(false);
+      for (const family of ["gemini-4-argon", "claude-opus-5-5", "claude-sonnet-5-5"]) {
+        const entry = catalog.entries.find(entry => entry.nativeId === family + "-high")!;
+        expect(entry.familyId).toBe(family);
+        expect(entry.effort.values).toEqual(expect.arrayContaining(["low", "medium", "high"]));
+        expect(entry.effort.variants?.medium).toBe(family + "-medium");
+      }
+    }
+  });
+  it("lists the four enabled workbench tools without launching discovery", () => {
+    const env = openCatalog();
+    expect(env.catalog.listTools().map((tool) => tool.adapterId)).toEqual(["codex", "agy", "claude-code", "opencode"]);
     expect(existsSync(join(env.logDir, "calls.jsonl"))).toBe(false);
   });
   it("does not make an expired Codex native cache fresh after a failed live query", async () => {
@@ -182,7 +218,8 @@ describe("model catalog operations", { timeout: 30000 }, () => {
     expect(env.catalog.listTools().find((tool) => tool.adapterId === "agy")?.probeStatus).toBe("detected");
     const models = env.catalog.getModels("agy");
     expect(models.status).toBe("fresh");
-    expect(models.entries.map((entry) => entry.nativeId)).toEqual(expect.arrayContaining(["claude-opus-4-6-thinking", "claude-sonnet-4-6"]));
+    expect(models.entries.map((entry) => entry.nativeId)).toContain("claude-sonnet-4-6");
+    expect(models.entries.map((entry) => entry.nativeId)).not.toContain("claude-opus-4-6-thinking");
     expect(models.entries.some((entry) => /claude-(opus|sonnet)-5-5/.test(entry.nativeId))).toBe(false);
     expect(models.entries.find((entry) => entry.nativeId === "claude-sonnet-4-6")?.availability).toBe("listed");
   });
@@ -199,7 +236,7 @@ describe("model catalog operations", { timeout: 30000 }, () => {
     env.store.put("model_catalog", catalogId, "agy", saved);
     for (const catalog of [env.catalog.getModels("agy"), env.catalog.loadForSelector(scope)]) {
       expect(catalog.entries.map(entry => entry.nativeId)).toEqual(expect.arrayContaining([
-        "claude-opus-4-6-thinking", "claude-sonnet-4-6", "custom-model",
+        "claude-sonnet-4-6", "custom-model",
       ]));
       expect(catalog.entries.some(entry => /claude-(opus|sonnet)-5-5/.test(entry.nativeId))).toBe(false);
     }

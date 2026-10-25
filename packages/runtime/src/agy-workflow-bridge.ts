@@ -38,9 +38,10 @@ import { AsideSessionService } from "../../asides/src/service.js";
 import type { RunTelemetry } from "./run-telemetry.js";
 import type { QuotaBucket } from "../../contracts/src/run-observation.js";
 import { getAgyModelCategory } from "../../adapters/agy/src/model-configuration.js";
-import { computeEffectiveWeeklyQuota, modelCovered, resolveEffectiveQuotaWindows } from "../../agy-accounts/src/quota.js";
+import { computeEffectiveWeeklyQuota, quotaPoolCoversModel, resolveEffectiveQuotaWindows } from "../../agy-accounts/src/quota.js";
 
 export interface FrozenAgyRunRequest {
+  force_model_probe?: boolean;
   allowed_account_ids?: string[] | null;
   workflow_id: string;
   run_id: string;
@@ -296,13 +297,19 @@ export class AgyWorkflowBridge implements AccountConsumerPort {
       this.engine.store.put("run", run.id, workflowId, run);
     }
     let needsAccessRecord = false;
+    let forceModelProbe = false;
+    const accessKey = accessRecordId({ adapterId: frozen.adapterId, nativeConfigScope: syncedNative.nativeConfigScope,
+      accountFingerprint: frozen.accountScope, providerEndpointFingerprint: frozen.providerScope,
+      accessModelKey: frozen.accessModelKey });
+    const priorAccess = access.getAccess(accessKey);
     try {
       access.assertFrozenAccess(run.profile, frozen);
     } catch (err: any) {
-      if (err?.code === "MODEL_ACCESS_REQUIRED" || err?.code === "MODEL_VERIFICATION_REQUIRED" || err?.code === "MODEL_IDENTITY_CHANGED") {
+      if (["MODEL_ACCESS_REQUIRED", "MODEL_VERIFICATION_REQUIRED", "MODEL_IDENTITY_CHANGED", "MODEL_LOGIN_REQUIRED"].includes(err?.code)) {
         // Syncing credentials is not model verification. The managed permit
         // below probes this model; save success only after its identity check.
         needsAccessRecord = true;
+        forceModelProbe = err?.code === "MODEL_LOGIN_REQUIRED";
       } else {
         throw err;
       }
@@ -328,6 +335,7 @@ export class AgyWorkflowBridge implements AccountConsumerPort {
         run_id: run.id,
         profile_id: profileId,
         effective_model_id: modelId,
+        force_model_probe: forceModelProbe,
         account_policy_revision: policy.revision,
         required_pool_ids: this.accountService.resolveModelPools(modelId),
         allowed_account_ids: policy.allowed_account_ids,
@@ -369,6 +377,9 @@ export class AgyWorkflowBridge implements AccountConsumerPort {
           native.providerEndpointFingerprint !== frozen.providerScope)
         throw new FlowError("AGY_ACCOUNT_BINDING_STALE", "账号身份在取得执行许可期间已变化，请重新继续任务", 409);
       if (needsAccessRecord) {
+        const latest = access.getAccess(accessKey);
+        if (latest && latest.status !== "verified" && JSON.stringify(latest) !== JSON.stringify(priorAccess))
+          access.assertFrozenAccess(run.profile, frozen);
         const checked = new Date().toISOString();
         access.putAccess(ModelAccessRecordSchema.parse({
           key: accessRecordId({ adapterId: frozen.adapterId, nativeConfigScope: native.nativeConfigScope,
@@ -425,7 +436,7 @@ export class AgyWorkflowBridge implements AccountConsumerPort {
             Number.isFinite(Date.parse(s.observed_at)) && Date.parse(s.observed_at) <= Date.now());
 
         const targetSnapshots = allSnapshots.filter((s) => {
-          if (!modelCovered(s.model_ids, targetModel)) return false;
+          if (!quotaPoolCoversModel(s, targetModel)) return false;
           if (s.pool_id.toLowerCase() === "global") return true;
           if (category === "gemini") {
             return s.pool_id === "Gemini Models" || s.pool_id.toLowerCase().includes("gemini");
@@ -448,7 +459,7 @@ export class AgyWorkflowBridge implements AccountConsumerPort {
           id: s.pool_id,
           model: targetModel,
           windows: s.capability_verified !== true ? [] :
-            resolveEffectiveQuotaWindows(s.windows, nowMs).flatMap((w) => {
+            resolveEffectiveQuotaWindows(s.windows, nowMs, s.pool_id).flatMap((w) => {
               if (w.status !== "observed" || typeof w.remaining_fraction !== "number" ||
                   !Number.isFinite(w.remaining_fraction) || w.remaining_fraction < 0 || w.remaining_fraction > 1 ||
                   !Number.isFinite(Date.parse(w.observed_at)) || Date.parse(w.observed_at) > nowMs ||
@@ -503,6 +514,7 @@ export class AgyWorkflowBridge implements AccountConsumerPort {
       usage_kind: "execution",
       required_pool_ids: req.required_pool_ids,
       required_model_ids: [req.effective_model_id],
+      force_model_probe: req.force_model_probe,
       policy_revision: req.account_policy_revision,
       allowed_account_ids: req.allowed_account_ids,
     }); } catch (error) {
@@ -747,7 +759,7 @@ export class AgyWorkflowBridge implements AccountConsumerPort {
     }
 
     if (fact.category === "quota_exhausted" && (!fact.window || fact.window === "unknown") &&
-        !repository.getQuotaTrigger(binding.realm_id, binding.account_id, binding.auth_epoch) &&
+        !repository.getQuotaTrigger(binding.realm_id, binding.account_id, binding.auth_epoch, runInfo.required_pool_ids) &&
         !repository.getRealm(binding.realm_id)?.pending_operation_id) {
       await this.accountService.verifyActiveQuotaExhausted({
         realm_id: binding.realm_id, account_id: binding.account_id, auth_epoch: binding.auth_epoch,
@@ -814,7 +826,11 @@ export class AgyWorkflowBridge implements AccountConsumerPort {
     if (realm?.active_account_id !== trigger.account_id || realm.auth_epoch !== trigger.auth_epoch || realm.pending_operation_id) return;
     const runs = this.liveActiveRuns().filter(run => run.account_id === trigger.account_id && run.auth_epoch === trigger.auth_epoch &&
       !this.engine!.store.get("run_stop", run.run_id));
-    const source = runs.find(run => run.required_pool_ids.includes(trigger.pool_id)) ?? runs[0];
+    const pool = repository.listQuotaSnapshots(realm.realm_id, trigger.account_id)
+      .find(snapshot => snapshot.pool_id === trigger.pool_id);
+    const source = runs.find(run => pool && run.effective_model_id
+      ? quotaPoolCoversModel(pool, run.effective_model_id)
+      : run.required_pool_ids.includes(trigger.pool_id));
     if (!source) return;
     const w = this.engine.get(source.workflow_id);
     const run = this.engine.store.must<Run>("run", source.run_id);
@@ -861,8 +877,10 @@ export class AgyWorkflowBridge implements AccountConsumerPort {
     return occs;
   }
 
-  async prepareSwitch(operationId: string): Promise<{ savedRef: unknown }> {
-    const runs = this.liveActiveRuns();
+  async prepareSwitch(operationId: string, options?: { preserveRunning: boolean }): Promise<{ savedRef: unknown }> {
+    // Switching the default identity must never checkpoint, stop or replay a
+    // healthy command. Only commands already waiting for an account need recovery.
+    const runs = options?.preserveRunning ? [] : this.liveActiveRuns();
     if (this.engine) {
       const operation = this.accountService.getRepository().getOperation(operationId);
       const originalId = operation?.original_operation_id;
@@ -1055,6 +1073,15 @@ export class AgyWorkflowBridge implements AccountConsumerPort {
         const committed = repository.getRealm(event.realm_id);
         if (committed?.active_account_id !== event.account_id || committed.auth_epoch !== event.auth_epoch)
           throw new FlowError("AGY_ACCOUNT_RECOVERY_STALE", "账号已变化，不能恢复旧账号操作", 409);
+        if (event.model_selection_required) {
+          if (aside) new AsideSessionService(engine.store).failSession(w.id, aside.id, "当前账号需要重新选择可用模型");
+          else engine.block(w.id, new FlowError("AGY_MODEL_SELECTION_REQUIRED",
+            "没有支持原模型且额度可用的账号，已选择额度最高的候选账号。请从当前账号的真实模型目录选择模型后继续原任务。", 409,
+            { account_id: event.account_id, original_model: affectedRun.effective_model_id,
+              available_models: repository.getAccount(event.realm_id, event.account_id)?.models?.native_ids ?? [] }));
+          this.removeWait(saved);
+          continue;
+        }
         try {
           const coordinator = new AgyWorkflowRecoveryCoordinator();
           const plans = await coordinator.planRecovery(
