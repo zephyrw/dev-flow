@@ -99,7 +99,9 @@ it("records OpenCode step_start before a tool failure so the next turn does not 
     const emit=x=>console.log(JSON.stringify(x));
     emit({type:'step_start',sessionID,part:{type:'step-start',sessionID,id:'part-1',messageID:'message-1'}});
     if(!fs.existsSync(${JSON.stringify(marker)})){fs.writeFileSync(${JSON.stringify(marker)},'started');process.exit(1)}
-    emit({type:'text',sessionID,part:{type:'text',sessionID,text:JSON.stringify({status:'completed',summary:'continued',captured_args:args})}});
+    emit({type:'text',sessionID,part:{type:'text',sessionID,text:'验证通过，返回执行结果：'}});
+    const fence=String.fromCharCode(96).repeat(3);
+    emit({type:'text',sessionID,part:{type:'text',sessionID,text:fence+'json\\n'+JSON.stringify({status:'completed',summary:'continued',captured_args:args})+'\\n'+fence}});
     emit({type:'step_finish',sessionID,part:{type:'step-finish',reason:'stop'}});`);
   const processes = new ProcessManager(), runtime = new ProfileRuntime(s.engine, processes);
   const w = { ...created, plan_revision: 1, plan_hash: "plan", binding_strategy: "unified" as const };

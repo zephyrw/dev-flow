@@ -1477,7 +1477,9 @@ export class ProfileRuntime {
         if (v.type === "item.completed" && v.item?.type === "agent_message")
           text = terminalText = v.item.text;
         if (v.type === "text" && typeof v.part?.text === "string")
-          text += v.part.text;
+          // OpenCode emits complete text parts, not token deltas. Preserve the
+          // boundary so a following fenced result still starts on its own line.
+          text += (profile.adapterId === "opencode" && text && !text.endsWith("\n") ? "\n" : "") + v.part.text;
         if (v.type === "assistant" && Array.isArray(v.message?.content)) {
           const content = v.message.content
             .filter((b: any) => b.type === "text")
