@@ -34,6 +34,8 @@ const port = server.address().port; await new Promise(yes => server.close(yes));
 // Child-only homes prevent installer probes from modifying a real user's clients.
 const env = { ...process.env, HOME: home, USERPROFILE: home, CODEX_HOME: join(home,'.codex'), APPDATA: join(home,'roaming'), LOCALAPPDATA: join(home,'local'), XDG_CONFIG_HOME: join(home,'.config'), XDG_DATA_HOME: join(home,'.local/share') };
 delete env.GITHUB_TOKEN; delete env.GH_TOKEN;
+// Windows PowerShell must discover its own built-in modules, not inherit a PowerShell 7 module path.
+if (process.platform === 'win32') delete env.PSModulePath;
 const runtimeRoot = join(install, 'versions', manifest.version);
 const node = join(runtimeRoot, 'runtime', process.platform === 'win32' ? 'node.exe' : 'node');
 let stopped = false;
