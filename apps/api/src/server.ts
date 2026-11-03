@@ -1,3 +1,4 @@
+import { readToolQuota } from "../../../packages/runtime/src/tool-quota.js";
 import { TaskNameSchema } from "../../../packages/contracts/src/task-name.js";
 import { createBaseServer } from "./base-server.js";
 import websocket from "@fastify/websocket";
@@ -1367,6 +1368,19 @@ export async function buildServer(
     handleConfirmIssue,
   );
   app.post("/api/workflows/:id/issues/:issueId/confirm", handleConfirmIssue);
+
+  app.get("/api/workflows/:id/quota", async (req) => {
+    human(req);
+    const key = Id.parse((req.params as any).id);
+    const { role } = z.object({ role: z.enum(["planner", "executor"]) }).parse(req.query);
+    const workflow = engine.get(key);
+    const spec = readEffectiveSpec(engine.store, engine.config, key).spec;
+    const profile = role === "planner" ? spec.plannerProfile : spec.executorProfile;
+    const project = engine.store.must<Project>("project", workflow.project_id);
+    const cwd = (project.repositories.find(repo => repo.id === project.primary_repo_id) ?? project.repositories[0])!.path;
+    const quota = await readToolQuota(profile, cwd, accountService).catch(() => null);
+    return { adapter: profile.adapterId, model: profile.modelId, quota };
+  });
 
   // Cache read projections only; no scheduler, validation or workflow mutation.
   const displayPages = new Map<string, { revision: string; at: number; value: any }>();

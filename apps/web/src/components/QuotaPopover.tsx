@@ -9,6 +9,8 @@ export interface QuotaWindowData {
 }
 
 export interface QuotaPopoverProps {
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
   triggerLabel?: string;
   categoryLabel?: string;
   showUnknownWindows?: boolean;
@@ -135,6 +137,8 @@ function UnknownQuotaRow({ title }: { title: string }) {
 }
 
 export function QuotaPopover({
+  open,
+  onOpenChange,
   triggerLabel = "查看额度",
   categoryLabel,
   showUnknownWindows = false,
@@ -143,11 +147,18 @@ export function QuotaPopover({
   isStale = false,
   isShared = false,
 }: QuotaPopoverProps) {
-  const [isOpen, setIsOpen] = useState(false);
+  const [localOpen, setLocalOpen] = useState(false);
+  const isOpen = open ?? localOpen;
+  const setIsOpen = (value: boolean) => { setLocalOpen(value); onOpenChange?.(value); };
   const [isPinned, setIsPinned] = useState(false);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const popoverRef = useRef<HTMLDivElement | null>(null);
   const hoverTimer = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (!isOpen) setIsPinned(false);
+  }, [isOpen]);
+  useEffect(() => () => { if (hoverTimer.current) clearTimeout(hoverTimer.current); }, []);
 
   const handleMouseEnter = () => {
     if (hoverTimer.current) clearTimeout(hoverTimer.current);
@@ -163,11 +174,10 @@ export function QuotaPopover({
 
   const handleClick = (e: React.MouseEvent) => {
     e.stopPropagation();
-    setIsPinned((prev) => {
-      const next = !prev;
-      setIsOpen(next);
-      return next;
-    });
+    if (hoverTimer.current) clearTimeout(hoverTimer.current);
+    const next = !isPinned;
+    setIsPinned(next);
+    setIsOpen(next);
   };
 
   useEffect(() => {

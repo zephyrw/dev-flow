@@ -13,7 +13,7 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
-async function screen(page: Page) {
+async function screen(page: Page, independentQuota = false) {
   const workflow = {
     id: "wf-telemetry",
     title: "规划修复过程展示",
@@ -155,9 +155,22 @@ async function screen(page: Page) {
     ],
     history_cursor: null,
   };
+  if (independentQuota) {
+    detail.workflow.stage = "execute";
+    detail.execution_spec.spec.executorProfile = { adapterId: "agy", modelId: "gemini-3.8-flash-high" };
+    detail.runtime = { ...runtime, adapter: "agy", purpose: "implement", requested_model: "gemini-3.8-flash-high", actual_model: "gemini-3.8-flash-high", quota: undefined };
+    detail.runs[0].purpose = "implement";
+    detail.runs[0].profile = detail.execution_spec.spec.executorProfile;
+  }
   let socket: any;
   await page.route("**/api/**", (route) => {
     const path = new URL(route.request().url()).pathname;
+    if (independentQuota && path.endsWith("/quota")) {
+      const planner = new URL(route.request().url()).searchParams.get("role") === "planner";
+      return route.fulfill({ json: { adapter: planner ? "codex" : "agy", model: planner ? "gpt-6-astra" : "gemini-3.8-flash-high",
+        quota: { source: "account_api", observed_at: new Date().toISOString(), buckets: [{ id: planner ? "codex" : "Gemini Models",
+          windows: [{ used_percent: planner ? 30 : 20, window_minutes: 10080 }] }] } } });
+    }
     return route.fulfill({
       json:
         path === "/api/workflows"
@@ -384,4 +397,45 @@ test("an older controller catches up real observer events without a websocket no
   await expect(page.locator(".execution-sidebar .command-first-line").filter({ hasText: "pnpm run verify-live" })).toBeVisible({ timeout: 12000 });
   await expect(page.locator(".latest-activity")).toContainText("pnpm run verify-live");
   await expect(header).not.toContainText("verify-live");
+});
+
+
+test("inactive tool quota survives reload and quota popovers are mutually exclusive on hover and click", async ({ page }) => {
+  const fixture = await screen(page, true);
+  const planner = page.getByRole("button", { name: "查看规划工具额度" });
+  const executor = page.getByRole("button", { name: "查看执行工具额度" });
+  await planner.click();
+  await expect(page.getByRole("tooltip")).toContainText("70%");
+  await expect(page.getByRole("tooltip")).not.toContainText("可能已过期");
+  await executor.hover();
+  await expect(page.getByRole("tooltip")).toHaveCount(1);
+  await expect(planner).toHaveAttribute("aria-expanded", "false");
+  await expect(page.getByRole("tooltip")).toContainText("80%");
+  await executor.click();
+  await planner.hover();
+  await expect(page.getByRole("tooltip")).toHaveCount(1);
+  await expect(executor).toHaveAttribute("aria-expanded", "false");
+  await expect(page.getByRole("tooltip")).toContainText("70%");
+  await planner.click();
+  await planner.click();
+  await expect(page.getByRole("tooltip")).toHaveCount(0);
+  await executor.click();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("tooltip")).toHaveCount(0);
+  await page.reload();
+  await planner.click();
+  await expect(page.getByRole("tooltip")).toContainText("70%");
+  await executor.click();
+  await expect(page.getByRole("tooltip")).toHaveCount(1);
+  await expect(page.getByRole("tooltip")).toContainText("80%");
+  await page.getByRole("heading").first().click();
+  await expect(page.getByRole("tooltip")).toHaveCount(0);
+  fixture.detail.workflow.stage = "planner_takeover";
+  fixture.detail.runtime = { ...fixture.detail.runtime, adapter: "codex", purpose: "planner_takeover", requested_model: "gpt-6-astra", actual_model: "gpt-6-astra" };
+  fixture.detail.runs[0].purpose = "planner_takeover";
+  fixture.detail.runs[0].profile = fixture.detail.execution_spec.spec.plannerProfile;
+  await page.reload();
+  await executor.click();
+  await expect(page.getByRole("tooltip")).toContainText("80%");
+  await expect(page.getByRole("tooltip")).not.toContainText("可能已过期");
 });

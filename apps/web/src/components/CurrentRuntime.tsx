@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import type { QuotaBucket } from "../../../../packages/contracts/src/run-observation.js";
+import type { QuotaBucket, RunObservation } from "../../../../packages/contracts/src/run-observation.js";
 import { runtimeToolNames, visibleRunObservation } from "../../../../packages/presentation/src/run-observation.js";
 import { projectRoleRuntime } from "../../../../packages/presentation/src/role-runtime.js";
 import { effectiveRuntimeQuotaWindows } from "../../../../packages/presentation/src/agy-accounts.js";
@@ -53,6 +53,9 @@ function RuntimeQuota({
   modelId,
   label,
   now,
+  role,
+  open,
+  onOpenChange,
 }: {
   detail: any;
   connected: boolean;
@@ -60,9 +63,35 @@ function RuntimeQuota({
   modelId?: string | null;
   label: string;
   now: number;
+  role?: "planner" | "executor";
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
 }) {
   const observation = visibleRunObservation(detail);
-  const quota = observation && observation.adapter === adapterId
+  const workflowId = detail?.workflow?.id;
+  const profile = detail?.execution_spec?.spec?.[role === "planner" ? "plannerProfile" : "executorProfile"];
+  const identity = JSON.stringify([workflowId, role, adapterId, modelId, profile]);
+  const [account, setAccount] = useState<{ identity: string; quota: RunObservation["quota"] | null }>();
+  useEffect(() => {
+    if (!workflowId || !role || !["codex", "agy"].includes(adapterId ?? "")) return;
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout>;
+    const refresh = async () => {
+      try {
+        const response = await fetch(`/api/workflows/${encodeURIComponent(workflowId)}/quota?role=${role}`, { signal: controller.signal });
+        if (response.ok) {
+          const result = await response.json();
+          if (!controller.signal.aborted && result.adapter === adapterId && result.model === modelId)
+            setAccount({ identity, quota: result.quota });
+        }
+      } catch { /* Keep the last observation and its original freshness timestamp. */ }
+      if (!controller.signal.aborted) timer = setTimeout(refresh, 15000);
+    };
+    void refresh();
+    return () => { controller.abort(); clearTimeout(timer); };
+  }, [identity, workflowId, role, adapterId, modelId]);
+  const accountQuota = account?.identity === identity ? account.quota : undefined;
+  const quota = accountQuota !== undefined ? accountQuota : observation && observation.adapter === adapterId
       ? observation.quota : undefined;
   const activeModel = modelId;
 
@@ -114,7 +143,7 @@ function RuntimeQuota({
     !quota ||
     !Number.isFinite(Date.parse(quota.observed_at)) ||
     now - Date.parse(quota.observed_at) > 120000 ||
-    !connected ||
+    (!accountQuota && (!connected ||
     ["exited", "error"].includes(observation?.status ?? "") ||
     ![
       "PLANNING",
@@ -123,7 +152,7 @@ function RuntimeQuota({
       "INTEGRATING",
       "QUEUED",
       "QUALITY_REVIEW",
-    ].includes(detail?.workflow?.state);
+    ].includes(detail?.workflow?.state)));
 
   // 解析周额度与 5 小时额度
   let weeklyData: QuotaWindowData | null = null;
@@ -154,6 +183,8 @@ function RuntimeQuota({
   return (
     <div className="runtime-quota-wrapper">
       <QuotaPopover
+        open={open}
+        onOpenChange={onOpenChange}
         triggerLabel={`查看${label}工具额度`}
         categoryLabel={`${label} · ${adapterId ? runtimeToolNames[adapterId] ?? adapterId : "未配置工具"}${categoryLabel ? ` · ${categoryLabel}` : ""}`}
         showUnknownWindows={isAgy}
@@ -171,6 +202,7 @@ export function CurrentRuntime({ detail, connected, onEdit }: {
   connected: boolean;
   onEdit?: (role?: string) => void;
 }) {
+  const [openQuota, setOpenQuota] = useState<string | null>(null);
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 10000);
@@ -201,7 +233,8 @@ export function CurrentRuntime({ detail, connected, onEdit }: {
           )}
         </button>
         <RuntimeQuota detail={detail} connected={connected} now={now}
-          adapterId={plannerRow.adapterId} modelId={plannerRow.modelId} label="规划" />
+          adapterId={plannerRow.adapterId} modelId={plannerRow.modelId} label="规划" role="planner" open={openQuota === "planner"}
+          onOpenChange={open => setOpenQuota(current => open ? "planner" : current === "planner" ? null : current)} />
         </div>
 
         {/* 下行：固定代表执行配置 */}
@@ -225,7 +258,8 @@ export function CurrentRuntime({ detail, connected, onEdit }: {
           )}
         </button>
         <RuntimeQuota detail={detail} connected={connected} now={now}
-          adapterId={executorRow.adapterId} modelId={executorRow.modelId} label="执行" />
+          adapterId={executorRow.adapterId} modelId={executorRow.modelId} label="执行" role="executor" open={openQuota === "executor"}
+          onOpenChange={open => setOpenQuota(current => open ? "executor" : current === "executor" ? null : current)} />
         </div>
       </div>
 
@@ -243,7 +277,8 @@ export function CurrentRuntime({ detail, connected, onEdit }: {
           <span className="runtime-badge-text">{compactBadge.displayText}</span>
         </button>
         <RuntimeQuota detail={detail} connected={connected} now={now}
-          adapterId={quotaTarget?.adapter} modelId={quotaTarget?.model} label={compactBadge.label} />
+          adapterId={quotaTarget?.adapter} modelId={quotaTarget?.model} label={compactBadge.label} open={openQuota === "compact"}
+          onOpenChange={open => setOpenQuota(current => open ? "compact" : current === "compact" ? null : current)} />
         </div>
       )}
     </section>
