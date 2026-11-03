@@ -956,7 +956,7 @@ header h1 {
 
 .flow-card-open:hover { background: transparent; }
 
-.flow-card > div {
+.flow-card > .project-name-editor {
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -4295,11 +4295,34 @@ select:focus {
 .required-marker { color: #dc2626; }
 .project-name-editor { display: flex; align-items: center; gap: 4px; min-width: 0; }
 .project-name-editor .project-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.project-name-edit { opacity: 0; flex-shrink: 0; padding: 2px 6px; background: transparent; color: inherit; border: 0; }
+.project-name-edit, .project-name-delete {
+  opacity: 0; pointer-events: none; flex-shrink: 0; padding: 2px 6px;
+  background: transparent; color: inherit; border: 0; box-shadow: none;
+}
 .project-name-editor:hover .project-name-edit,
-.project-name-editor:focus-within .project-name-edit { opacity: 1; }
-.project-name-form { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; width: 100%; }
-.project-name-form label { width: 100%; }
-.project-name-form input { width: 100%; min-width: 0; }
+.project-name-editor:hover .project-name-delete,
+.project-name-editor:focus-within .project-name-edit,
+.project-name-editor:focus-within .project-name-delete { opacity: 1; pointer-events: auto; }
+.project-name-delete:hover { color: #dc2626; }
+.name-edit-form label, .name-edit-form input { display: block; width: 100%; }
+.name-edit-form input { margin-top: 8px; }
+.name-edit-hint { color: var(--text-muted); font-size: 12px; margin-top: 6px; }
+.name-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 24px; }
 .flow-card .project-name-editor { justify-content: flex-start; color: var(--primary); font-size: 12px; }
-@media (hover: none) { .project-name-edit { opacity: 1; } }
+.flow-card-body { position: relative; display: flex; flex: 1; min-width: 0; }
+.flow-card-body h3 { padding-right: 28px; }
+.task-name-edit {
+  position: absolute; top: 0; right: 0; opacity: 0; pointer-events: none;
+  padding: 2px 6px; color: var(--text-muted); background: var(--bg-surface); border: 0; box-shadow: none;
+}
+.flow-nav-item > .task-name-edit {
+  right: 30px; bottom: 0; z-index: 2; padding: 6px 10px 6px 24px;
+  color: var(--sidebar-text); background: linear-gradient(to right, transparent, var(--archive-background) 55%);
+}
+.flow-nav-item:hover > .task-name-edit,
+.flow-nav-item:focus-within > .task-name-edit,
+.flow-card-body:hover > .task-name-edit,
+.flow-card-body:focus-within > .task-name-edit { opacity: 1; pointer-events: auto; }
+@media (hover: none), (pointer: coarse) {
+  .project-name-edit, .project-name-delete, .task-name-edit { opacity: 1; pointer-events: auto; }
+}

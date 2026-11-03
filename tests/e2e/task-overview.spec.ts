@@ -4,16 +4,31 @@ import { fixtureState } from "./native-helper.js";
 
 test("长任务卡片不溢出，底部状态和北京时间正确，项目可悬停编辑", async ({ page }) => {
   let name = "workspace-directory";
+  let title = navigationFlows[0]!.title;
+  let detached = false;
+  let deleteRequests = 0;
+  let rejectRename = true;
   const project = () => ({ id: "nav-a", name, repositories: [{ id: "main", path: "/work/workspace-directory" }] });
   await page.route("**/api/**", async (route) => {
     const path = new URL(route.request().url()).pathname;
+    if (path === "/api/projects/nav-a" && route.request().method() === "DELETE") {
+      deleteRequests += 1;
+      expect(route.request().postDataJSON()).toEqual({ confirmed: true });
+      detached = true;
+      return route.fulfill({ json: { detached: true } });
+    }
+    if (path === "/api/workflows/nav-a-0/name") {
+      if (rejectRename) { rejectRename = false; return route.fulfill({ status: 500, json: { error: { message: "名称保存失败" } } }); }
+      title = route.request().postDataJSON().title;
+      return route.fulfill({ json: { title } });
+    }
     if (path === "/api/projects/nav-a/name") {
       name = route.request().postDataJSON().name;
       return route.fulfill({ json: { name } });
     }
-    return route.fulfill({ json: path === "/api/projects" ? [project()] : path === "/api/workflows" ? [{
-      ...navigationFlows[0], request: "不换行的超长内容".repeat(100) + "x".repeat(500), updated_at: "2026-11-03T08:20:27Z",
-    }] : navigationResponse(path) });
+    return route.fulfill({ json: path === "/api/projects" ? (detached ? [] : [project()]) : path === "/api/workflows" ? (detached ? [] : [{
+      ...navigationFlows[0], title, request: "不换行的超长内容".repeat(100) + "x".repeat(500), updated_at: "2026-11-03T08:20:27Z",
+    }]) : navigationResponse(path) });
   });
   await page.routeWebSocket("**/api/notifications", () => {});
   await page.routeWebSocket("**/api/events?*", () => {});
@@ -40,22 +55,76 @@ test("长任务卡片不溢出，底部状态和北京时间正确，项目可�
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.getByRole("button", { name: "展开", exact: true }).click();
   const label = card.locator(".project-name");
-  await expect(label).toHaveAttribute("title", "/work/workspace-directory");
+  await expect(label).not.toHaveAttribute("title");
+  await label.hover();
+  await expect(page.getByRole("tooltip")).toHaveText("/work/workspace-directory", { timeout: 400 });
+  await expect(page.getByRole("tooltip")).toHaveCount(1);
   const edit = card.getByRole("button", { name: "编辑项目名称：workspace-directory" });
   await label.hover();
   await expect(edit).toHaveCSS("opacity", "1");
   await edit.click();
-  await card.getByLabel("项目名称", { exact: true }).fill("重新命名");
-  await card.getByRole("button", { name: "保存", exact: true }).click();
+  const projectDialog = page.getByRole("dialog", { name: "修改项目名称", exact: true });
+  await expect(projectDialog).toBeVisible();
+  const dialogBox = (await projectDialog.boundingBox())!;
+  expect(dialogBox.x + dialogBox.width / 2).toBeCloseTo(720, 0);
+  expect(dialogBox.y + dialogBox.height / 2).toBeCloseTo(500, 0);
+  await expect(card.locator("input")).toHaveCount(0);
+  await projectDialog.getByLabel("项目名称", { exact: true }).fill("重新命名");
+  await projectDialog.getByRole("button", { name: "保存", exact: true }).click();
   await expect(page.locator(".project-nav .project-name")).toContainText("重新命名");
   await page.reload();
   await expect(card.locator(".project-name")).toContainText("重新命名");
-  await expect(card.locator(".project-name")).toHaveAttribute("title", "/work/workspace-directory");
+  await card.locator(".project-name").hover();
+  await expect(page.getByRole("tooltip")).toHaveText("/work/workspace-directory", { timeout: 400 });
   await card.getByRole("button", { name: "编辑项目名称：重新命名" }).click();
-  await card.getByLabel("项目名称", { exact: true }).fill("未保存");
-  await card.getByRole("button", { name: "取消", exact: true }).click();
+  await projectDialog.getByLabel("项目名称", { exact: true }).fill("未保存");
+  await projectDialog.getByRole("button", { name: "取消", exact: true }).click();
   await expect(card.locator(".project-name")).toContainText("重新命名");
-  await page.screenshot({ path: "output/playwright/task-overview.png", fullPage: true });
+  const taskTitle = card.locator("h3");
+  await taskTitle.hover();
+  await expect(page.getByRole("tooltip")).toHaveText(title, { timeout: 400 });
+  await expect(page.getByRole("tooltip")).toHaveCount(1);
+  expect(await taskTitle.evaluate((element) => element.closest("[title]"))).toBeNull();
+  const taskEdit = card.getByRole("button", { name: `编辑任务名称：${title}`, exact: true });
+  await expect(taskEdit).toHaveCSS("opacity", "1");
+  await taskEdit.click();
+  const taskDialog = page.getByRole("dialog", { name: "修改任务名称", exact: true });
+  await taskDialog.getByLabel("任务名称", { exact: true }).fill(" ");
+  await expect(taskDialog.getByRole("button", { name: "保存", exact: true })).toBeDisabled();
+  await taskDialog.getByLabel("任务名称", { exact: true }).fill("更新后的任务名");
+  await taskDialog.getByRole("button", { name: "保存", exact: true }).click();
+  await expect(taskDialog.getByRole("alert")).toHaveText("名称保存失败");
+  await expect(taskDialog.getByLabel("任务名称", { exact: true })).toHaveValue("更新后的任务名");
+  await taskDialog.getByRole("button", { name: "保存", exact: true }).click();
+  await expect(taskDialog).toBeHidden();
+  await expect(taskTitle).toHaveText("更新后的任务名");
+  await expect(page.locator(".flow-nav-item .flow-title-text")).toHaveText("更新后的任务名");
+  await page.reload();
+  await expect(taskTitle).toHaveText("更新后的任务名");
+  await page.locator(".flow-nav-item").hover();
+  await page.locator(".flow-nav-item").getByRole("button", { name: "编辑任务名称：更新后的任务名", exact: true }).click();
+  await expect(taskDialog).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(taskDialog).toBeHidden();
+  await page.getByRole("heading", { name: "全部任务", exact: true }).hover();
+  await page.screenshot({ path: "output/playwright/task-name-actions.png", fullPage: true });
+  await card.locator(".project-name").hover();
+  const remove = card.getByRole("button", { name: "删除项目：重新命名", exact: true });
+  await expect(remove).toHaveCSS("opacity", "1");
+  await remove.click();
+  const confirmation = page.getByRole("dialog", { name: "删除项目", exact: true });
+  await expect(confirmation).toContainText("只删除这个工作台的项目关联，不会删除项目文件");
+  expect(deleteRequests).toBe(0);
+  await confirmation.getByRole("button", { name: "取消", exact: true }).click();
+  await expect(card).toBeVisible();
+  expect(deleteRequests).toBe(0);
+  await remove.click();
+  await confirmation.getByRole("button", { name: "确认删除", exact: true }).click();
+  await expect(card).toHaveCount(0);
+  expect(deleteRequests).toBe(1);
+  await page.reload();
+  await expect(page.locator(".project-nav")).toHaveCount(0);
+  await expect(card).toHaveCount(0);
 });
 
 test("手动创建必须填写最多 20 字的名称，校验失败保留需求", async ({ page }) => {

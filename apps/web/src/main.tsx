@@ -1,3 +1,4 @@
+import { TaskNameEditAction } from "./components/TaskNameEditAction.js";
 import { ProjectName } from "./components/ProjectName.js";
 import { ExecutionPanel, formatPathSummary } from "./execution-panel.js";
 import { TaskInteraction } from "./interactions.js";
@@ -1694,6 +1695,22 @@ function App() {
   const detailCache = useRef(new Map<string, any>());
   const savedCursors = useRef(new Map<string, number>());
   const refreshFlights = useRef(new Map<string, { promise: Promise<void>; again: boolean }>());
+  const onTaskRenamed = (id: string, title: string) => {
+    setFlows((current) => current.map((flow) => flow.id === id ? { ...flow, title } : flow));
+    detailCache.current.delete(id);
+    setDetail((current: any) => current?.workflow.id === id
+      ? { ...current, workflow: { ...current.workflow, title } } : current);
+  };
+  const onProjectDeleted = (id: string) => {
+    if (flows.some((flow) => flow.project_id === id && flow.id === selection.current)) {
+      setSelected("");
+      setDetail(null);
+    }
+    for (const flow of flows.filter((flow) => flow.project_id === id)) detailCache.current.delete(flow.id);
+    setProjects((current) => current.filter((project) => project.id !== id));
+    setFlows((current) => current.filter((flow) => flow.project_id !== id));
+    setNotice("项目关联已删除，项目文件和任务记录均保留。");
+  };
   const fetchVisibleFlows = () => api("/workflows?visibility=visible");
   const readPage = (key: string, signal?: AbortSignal) => {
     const cached = detailCache.current.get(key);
@@ -2276,7 +2293,7 @@ function App() {
               const expanded = expandedProjects[p.id] ?? false;
               return (
               <div key={p.id} className="project-nav">
-                <ProjectName project={p} onRenamed={(id, name) => setProjects((current) => current.map((project) => project.id === id ? { ...project, name } : project))} />
+                <ProjectName project={p} onDeleted={onProjectDeleted} onRenamed={(id, name) => setProjects((current) => current.map((project) => project.id === id ? { ...project, name } : project))} />
                 <div id={`project-tasks-${p.id}`}>
                 {projectFlows
                   .slice(0, expanded ? undefined : 5)
@@ -2306,6 +2323,7 @@ function App() {
                         <i className={`dot workflow-tone-${getWorkflowTone(f)}`} />
                         <TaskTitle className="flow-title-text" title={f.title} />
                       </button>
+                      <TaskNameEditAction workflowId={f.id} title={f.title} onRenamed={onTaskRenamed} />
                       <WorkflowArchiveAction
                         workflowId={f.id}
                         workflowTitle={f.title}
@@ -2538,8 +2556,9 @@ function App() {
                   {flows.map((f) => (
                     <article className="flow-card" key={f.id}>
                       {projects.filter((p) => p.id === f.project_id).map((p) => (
-                        <ProjectName key={p.id} project={p} onRenamed={(id, name) => setProjects((current) => current.map((project) => project.id === id ? { ...project, name } : project))} />
+                        <ProjectName key={p.id} project={p} onDeleted={onProjectDeleted} onRenamed={(id, name) => setProjects((current) => current.map((project) => project.id === id ? { ...project, name } : project))} />
                       ))}
+                    <div className="flow-card-body">
                     <button
                       type="button"
                       className="flow-card-open"
@@ -2564,6 +2583,8 @@ function App() {
                         <time dateTime={f.updated_at}>{formatTaskTime(f.updated_at)}</time>
                       </footer>
                     </button>
+                    <TaskNameEditAction workflowId={f.id} title={f.title} onRenamed={onTaskRenamed} />
+                    </div>
                     </article>
                   ))}
                 </div>

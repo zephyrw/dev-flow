@@ -150,7 +150,9 @@ export async function buildServer(
   await app.register(nativePermissionPlugin, { engine, human });
   app.get("/api/projects", async (req) => {
     human(req);
-    return engine.store.list<Project>("project").map((project) => ({
+    return engine.store.list<Project>("project")
+      .filter((project) => !engine.store.get<{ detached?: boolean }>("project_display", project.id)?.detached)
+      .map((project) => ({
       ...project,
       name: engine.store.get<{ name: string }>("project_display", project.id)?.name
         ?? basename((project.repositories.find((repo) => repo.id === project.primary_repo_id)
@@ -167,8 +169,31 @@ export async function buildServer(
     engine.store.must<Project>("project", projectId);
     const { name } = z.object({ name: z.string().trim().min(1).max(100) }).strict().parse(req.body);
     // Display names must not change execution configuration or its approval hash.
-    engine.store.put("project_display", projectId, projectId, { name });
+    engine.store.put("project_display", projectId, projectId, {
+      ...engine.store.get<{ name?: string; detached?: boolean }>("project_display", projectId), name,
+    });
+    engine.store.emit("event", { type: "ProjectDisplayChanged", project_id: projectId });
     return { name };
+  });
+  app.delete("/api/projects/:projectId", async (req) => {
+    human(req);
+    z.object({ confirmed: z.literal(true) }).strict().parse(req.body);
+    const projectId = Id.parse((req.params as { projectId: string }).projectId);
+    engine.store.must<Project>("project", projectId);
+    // Remove only the workbench association; execution records and files stay intact.
+    engine.store.put("project_display", projectId, projectId, {
+      ...engine.store.get<{ name?: string; detached?: boolean }>("project_display", projectId), detached: true,
+    });
+    engine.store.emit("event", { type: "ProjectDisplayChanged", project_id: projectId });
+    return { project_id: projectId, detached: true };
+  });
+  app.patch("/api/workflows/:id/name", async (req) => {
+    human(req);
+    const workflow = engine.get(Id.parse((req.params as { id: string }).id));
+    const { title } = z.object({ title: TaskNameSchema }).strict().parse(req.body);
+    engine.store.put("workflow_display", workflow.id, workflow.id, { title });
+    engine.store.emit("event", { type: "WorkflowNameChanged", workflow_id: workflow.id, project_id: workflow.project_id });
+    return { workflow_id: workflow.id, title };
   });
   const accountService =
     options.accountService ||
@@ -2051,6 +2076,8 @@ export async function buildServer(
           "CheckCompleted",
           "PlanSubmitted",
           "WorkflowVisibilityChanged",
+          "WorkflowNameChanged",
+          "ProjectDisplayChanged",
         ].includes(event.type)
       ) {
         if (socket.bufferedAmount > 1024 * 1024) {

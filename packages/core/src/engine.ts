@@ -1,3 +1,4 @@
+import { withWorkflowDisplayName } from "./workflow-display.js";
 import { TaskNameSchema } from "../../contracts/src/task-name.js";
 import { readPlanMaterial } from "./plan-review.js";
 import {
@@ -306,10 +307,10 @@ export class Engine {
     this.planSelfCheck = new PlanSelfCheckCoordinator(store);
   }
   list() {
-    return this.store.list<Workflow>("workflow").reverse();
+    return this.store.list<Workflow>("workflow").reverse().map((workflow) => withWorkflowDisplayName(this.store, workflow));
   }
   get(key: string) {
-    return this.store.must<Workflow>("workflow", key);
+    return withWorkflowDisplayName(this.store, this.store.must<Workflow>("workflow", key));
   }
   project(key: string) {
     return this.store.must<Project>("project", key);
@@ -572,6 +573,8 @@ export class Engine {
         updated_at: now(),
         feedback: [],
       };
+      const display = this.store.get<{ name?: string; detached?: boolean }>("project_display", w.project_id);
+      if (display?.detached) this.store.put("project_display", w.project_id, w.project_id, { ...display, detached: false });
       this.store.put("workflow", w.id, w.project_id, w);
       const spec = createWorkflowSpec(this.store, w.id, {}, this.config);
       this.store.put("execution_spec", spec.id, w.id, spec);

@@ -1,3 +1,4 @@
+import { withWorkflowDisplayName } from "./workflow-display.js";
 import { Store } from "../../store/src/store.js";
 import { FlowError, type Workflow } from "../../contracts/src/index.js";
 import {
@@ -168,6 +169,7 @@ export class WorkflowVisibilityService {
   ): Workflow[] {
     if (filter === "all") return workflows;
     return workflows.filter((w) => {
+      if (this.store.get<{ detached?: boolean }>("project_display", w.project_id)?.detached) return false;
       const vis = this.read(w.id);
       if (filter === "archived") return vis.archived;
       return !vis.archived;
@@ -196,8 +198,9 @@ export class WorkflowVisibilityService {
     const items: ArchivedWorkflowSummary[] = [];
 
     for (const v of archivedVis) {
-      const w = this.store.get<any>("workflow", v.workflow_id);
-      if (!w) continue;
+      const stored = this.store.get<Workflow>("workflow", v.workflow_id);
+      if (!stored || this.store.get<{ detached?: boolean }>("project_display", stored.project_id)?.detached) continue;
+      const w = withWorkflowDisplayName(this.store, stored);
 
       if (options.projectId && w.project_id !== options.projectId) {
         continue;

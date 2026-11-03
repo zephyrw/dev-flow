@@ -150,4 +150,16 @@ describe("W05: 任务归档与可见性管理单元测试", () => {
     const allList = service.filterWorkflows(all, "all");
     expect(allList.map((w) => w.id)).toEqual(["w1", "w2", "w3"]);
   });
+  it("删除项目关联隐藏列表与归档记录，保留原记录；归档查询使用编辑后的名称", () => {
+    store.put("workflow", "wf-named", "project-named", { id: "wf-named", project_id: "project-named", title: "旧名称", state: "PLANNING" });
+    store.put("workflow_display", "wf-named", "wf-named", { title: "新名称" });
+    service.setArchived("wf-named", { request_id: "archive-named", expected_visibility_revision: 0, archived: true });
+    expect(service.listArchived({ query: "新名称" }).items[0]?.title).toBe("新名称");
+    store.put("project_display", "project-named", "project-named", { detached: true });
+    expect(service.listArchived().items).toEqual([]);
+    expect(service.filterWorkflows(store.list("workflow"), "archived")).toEqual([]);
+    expect(service.filterWorkflows(store.list("workflow"), "all")).toHaveLength(1);
+    expect(store.get("workflow", "wf-named")).toBeDefined();
+  });
+
 });

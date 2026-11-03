@@ -369,6 +369,8 @@ export class CreateWorkflowService {
     }
     return this.store.transaction(() => {
       if (!existing) this.store.put("project", project.id, "global", project);
+      const display = this.store.get<{ name?: string; detached?: boolean }>("project_display", project.id);
+      if (display?.detached) this.store.put("project_display", project.id, project.id, { ...display, detached: false });
       this.store.put("workflow", workflowId, project.id, workflow);
       this.store.put("workspace", workspace.id, workflowId, workspace);
       this.store.put("execution_spec", spec.id, workflowId, spec);
