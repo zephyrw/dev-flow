@@ -81,11 +81,14 @@ it("网络自动重试保留已绑定的执行补问上下文", async () => {
     s.engine.runtime = runtime(s, async (run) => {
       seen.push(run);
       if (seen.length === 1) throw new FlowError("MODEL_CONNECTION_FAILED", "connection reset");
-      await s.engine.receiveRoundResult(s.w.id, run.id, { status: "need_user", summary: "等待确认" });
+      await s.engine.receiveRoundResult(s.w.id, run.id, { status: "need_user", summary: "等待确认",
+        user_interaction: { kind: "question", title: "确认配置名称", message: "连接已恢复，仍需用户确认配置名称。",
+          question: "是否使用 API_BASE 作为配置名称？" } });
     });
     await until(s, ["WAITING_INPUT"], 180000);
     expect(seen).toHaveLength(2);
     expect(seen[1]?.continuation).toEqual(continuation);
+    expect(s.store.list("execution_auto_continuation", s.w.id)).toHaveLength(0);
   } finally { await cleanup(s); }
 });
 

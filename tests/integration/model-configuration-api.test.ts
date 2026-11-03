@@ -412,6 +412,7 @@ it("IT-C16：创建前访问验证失败不留下 workflow 或工作树", async 
     payload: {
       request_id: "create-c16",
       workspace_root: repo.repo,
+      title: "验证模型访问失败",
       request_text: "完整需求用于验证失败",
       workspace_mode: "new_worktree",
       planner_profile: planner(),

@@ -125,12 +125,15 @@ it.each([0, 10])("stream interruptions keep the original session and bounded ret
         retainRunConversation(s.store, run, "interrupted-session");
         throw new FlowError("NATIVE_RUN_FAILED", `CLI 返回错误：${JSON.stringify({ error: interrupted })}`, 422, { exit_code: 0 });
       }
-      await s.engine.receiveRoundResult(s.w.id, run.id, { status: "need_user", summary: "恢复后等待真实用户决定" });
+      await s.engine.receiveRoundResult(s.w.id, run.id, { status: "need_user", summary: "恢复后等待真实用户决定",
+        user_interaction: { kind: "question", title: "确认恢复后的处理方式", message: "连接已恢复，需要用户选择后续处理方式。",
+          question: "恢复后应继续哪项任务？" } });
     });
     await until(s, [count ? "BLOCKED" : "WAITING_INPUT"], 30000);
     const retries = s.store.events(s.w.id).filter(event => event.type === "ModelRetryScheduled");
     expect(seen).toHaveLength(count ? 1 : 2);
     expect(retries).toHaveLength(count ? 0 : 1);
+    expect(s.store.list("execution_auto_continuation", s.w.id)).toHaveLength(0);
     expect(s.store.list("delivery", s.w.id)).toHaveLength(0);
     if (count) {
       expect(s.engine.get(s.w.id).blocker?.code).toBe("MODEL_CONNECTION_FAILED");

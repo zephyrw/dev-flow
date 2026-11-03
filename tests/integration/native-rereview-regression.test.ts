@@ -90,7 +90,7 @@ describe("DevFlow 原生执行改造第二轮复核缺陷回归套件 (S01~S14)"
     const w = s.engine.create(
       {
         project_id: p.id,
-        title: "Second review fixture",
+        title: "Second review",
         request: "Isolated verification",
         complexity: "simple",
         workspace_mode: "existing_workspace",

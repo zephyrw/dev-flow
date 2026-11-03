@@ -78,7 +78,7 @@ async function fixture(
   const w = s.engine.create(
     {
       project_id: p.id,
-      title: "Third round review fixture",
+      title: "Third round review",
       request: "Isolated verification",
       complexity: "simple",
       workspace_mode: "existing_workspace",
