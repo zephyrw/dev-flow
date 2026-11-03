@@ -22,8 +22,9 @@ afterEach(() => { vi.restoreAllMocks(); for (const s of stores.splice(0)) s.clos
 
 const quota = "Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 2h27m2s.";
 const tls = "API error: request failed: local error: tls: bad record MAC";
-type Scenario = "completed" | "stale_structured" | "finish_repaired" | "finish_repaired_tool_error" | "quota" | "tls" | "stderr_tls" | "stderr_disk" | "stderr_timeout" | "denied" | "terminated" | "top_error" | "reported_tool_error";
-async function invoke(scenario: Scenario, managed = true) {
+type Scenario = "completed" | "stale_structured" | "finish_repaired" | "finish_repaired_tool_error" | "quota" | "tls" | "stderr_tls" | "stderr_disk" | "stderr_timeout" | "denied" | "terminated" | "top_error" | "reported_tool_error"
+  | "error_without_message" | "error_empty_message" | "cancelled_without_message" | "missing_status" | "missing_terminal" | "success";
+async function invoke(scenario: Scenario, managed = true, status: "completed" | "incomplete" = "completed") {
   const s = setup(); stores.push(s.store);
   s.store.put("project", "p1", "p1", project(s.root));
   const wid = "wf-footer", rid = "run-footer", conversation = "fixture-existing-root";
@@ -51,7 +52,7 @@ async function invoke(scenario: Scenario, managed = true) {
   vi.spyOn(sdk.adapter, "probe").mockResolvedValue({ available: true } as any);
   const step = (index: number, type: string, state = "DONE", extra = {}) => ({ event: "step_update",
     step_update: { conversation_id: conversation, step_index: index, step_type: type, state, ...extra } });
-  const output = { status: "completed", summary: "Current guidance handled", test_results: [] };
+  const output = { status, summary: "Current guidance handled", test_results: [] };
   // Sanitized live order: new user 751 -> last real tool 813 -> final response 815.
   const events: any[] = [step(751, "user_input"), step(813, "tool", "ACTIVE", { tool_name: "run_command" }),
     step(813, "tool", "DONE", { tool_name: "run_command" })];
@@ -74,10 +75,16 @@ async function invoke(scenario: Scenario, managed = true) {
       step(728, "agent_response"), step(729, "tool", "ACTIVE", { tool_name: "finish" }), step(729, "finish"));
   }
   const response = ["reported_tool_error", "finish_repaired_tool_error"].includes(scenario) ? "FIXTURE_TOOL_FAILURE" : JSON.stringify(output);
-  events.push({ event: "result", result: { conversation_id: conversation, status: "ERROR", response,
-    error: scenario === "tls" ? tls : quota, structured_output: scenario === "stale_structured"
+  const withoutError = ["error_without_message", "cancelled_without_message", "missing_status", "success"].includes(scenario);
+  events.push({ event: "result", result: { conversation_id: conversation,
+    status: scenario === "success" ? "SUCCESS" : scenario === "cancelled_without_message" ? "CANCELLED" : scenario === "missing_status" ? undefined : "ERROR", response,
+    error: withoutError ? undefined : scenario === "error_empty_message" ? "" : scenario === "tls" ? tls : quota, structured_output: scenario === "stale_structured"
       ? { status: "need_user", summary: "Prior round", plan_hash: "old-hash" } : output,
     ...(scenario === "denied" ? { denied_actions: [{ display_name: "run_command" }] } : {}) } });
+  if (scenario === "missing_terminal") {
+    events.pop();
+    events.push({ structured_output: output });
+  }
   const proc = new EventEmitter() as any;
   const exit = { code: scenario === "quota" ? 3 : 0, ...(scenario === "terminated" ? { termination_reason: "manual" } : {}) };
   const start = vi.fn(() => {
@@ -97,6 +104,29 @@ async function invoke(scenario: Scenario, managed = true) {
   const runtime = new ProfileRuntime(s.engine, { start } as any, managed ? bridge as any : undefined) as any;
   return { result: runtime.invoke(w, run, {}, {}, undefined, [{ id: "ws", workflow_id: wid, ...context, root: s.root }]), bridge, s, rid };
 }
+
+it.each(["error_without_message", "error_empty_message", "cancelled_without_message", "missing_status"] as const)(
+  "rejects a non-success AGY terminal even when exit is zero and the payload claims completion: %s", async scenario => {
+    const f = await invoke(scenario, false);
+    await expect(f.result).rejects.toMatchObject({ code: "NATIVE_RUN_FAILED" });
+    expect(f.s.store.get<Run>("run", f.rid)?.status).toBe("failed");
+  },
+);
+
+it("does not return incomplete work for automatic continuation after an error terminal without a message", async () => {
+  const f = await invoke("error_without_message", false, "incomplete");
+  await expect(f.result).rejects.toMatchObject({ code: "NATIVE_RUN_FAILED" });
+});
+
+it("rejects a truncated AGY stream even when another event carries a completion claim", async () => {
+  const f = await invoke("missing_terminal", false);
+  await expect(f.result).rejects.toMatchObject({ code: "NATIVE_RUN_FAILED" });
+});
+
+it.each(["completed", "incomplete"] as const)("accepts a successful AGY terminal with a %s business result", async status => {
+  const f = await invoke("success", false, status);
+  await expect(f.result).resolves.toMatchObject({ status });
+});
 
 it.each([true, false])("delivers a completed fresh response despite a historical quota footer (managed=%s)", async managed => {
   const f = await invoke("completed", managed);

@@ -9,7 +9,7 @@ import { PlanApprovalService } from "./plan-approval-service.js";
 import { projectWorkflowOverview } from "./workflow-overview.js";
 import { recordExecutionTestReport, reportedTestProgress } from "./execution-test-progress.js";
 import {
-  executionContinuationDecision, executionProgressItems, hasExecutionUserRequest,
+  executionContinuationDecision, executionProgressItems, hasExecutionUserRequest, hasUnfinishedExecutionItems,
   EXECUTION_CONTINUE_INSTRUCTION, EXECUTION_CLARIFY_INSTRUCTION,
 } from "./execution-continuation-policy.js";
 import type { RunApprovalRef } from "../../contracts/src/plan-approval.js";
@@ -1848,7 +1848,9 @@ export class Engine {
     const canContinue = !userInput && executionRun.routing_role !== "planner" &&
       ["implement", "execute", "executor_test"].includes(executionRun.purpose ?? "") &&
       executionRun.dispatch_context?.guidance_mode !== "human_acceptance";
-    if (normalized.intent === "incomplete" && hasExecutionUserRequest(normalized.payload)) {
+    if ((normalized.intent === "incomplete" ||
+        normalized.intent === "completed" && hasUnfinishedExecutionItems(normalized.payload)) &&
+        hasExecutionUserRequest(normalized.payload)) {
       const nested = normalized.payload.delivery as Record<string, unknown> | undefined;
       normalized = normalizeDeliveredRound({ ...normalized.payload, status: "need_user", verdict: undefined,
         ...(nested ? { delivery: { ...nested, status: "need_user", verdict: undefined } } : {}) });
@@ -1856,6 +1858,22 @@ export class Engine {
     if (canContinue) {
       const mode = executionContinuationDecision(normalized, this.store.get("run_result_parse", runId));
       if (mode) {
+        // Direct worker submissions do not pass through extractRoundOutput.
+        // Check ownership before a partial/unclear result can enqueue another
+        // invocation, including a completed claim that still lists remaining work.
+        const nested = normalized.payload.delivery;
+        const owners = [normalized.payload, ...(nested && typeof nested === "object" && !Array.isArray(nested)
+          ? [nested as Record<string, unknown>] : [])];
+        for (const owner of owners) {
+          const declaredRun = typeof owner.run_id === "string" ? this.store.get<Run>("run", owner.run_id) : undefined;
+          const sameSessionRun = declaredRun?.workflow_id === key && executionRun.conversation_id &&
+            declaredRun.conversation_id === executionRun.conversation_id;
+          requireCondition(
+            (!owner.workflow_id || owner.workflow_id === key) &&
+            (!owner.run_id || owner.run_id === runId || sameSessionRun),
+            "ROUND_RESULT_IDENTITY_MISMATCH", "本轮结果与当前任务或运行不匹配",
+          );
+        }
         if (this.queuePendingRunInput(executionRun)) return { status: "queued" };
         const continued = this.scheduleExecutionContinuation(key, executionRun, normalized, mode);
         if (continued) return continued;

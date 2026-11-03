@@ -45,6 +45,13 @@ describe("execution continuation policy", () => {
     expect(decide({ status: "need_user", unresolved_questions: [null, " "] })).toBe("clarify");
   });
 
+  it("preserves a concrete request when a completion claim explicitly leaves work unfinished", () => {
+    const user_interaction = { kind: "question", title: "确认操作", message: "需要用户决定", question: "是否允许该操作？" };
+    expect(decide({ status: "completed", unfinished_items: ["T02"], user_interaction })).toBeUndefined();
+    expect(decide({ status: "completed", delivery: { unfinished_items: ["T02"], user_interaction } })).toBeUndefined();
+    expect(decide({ status: "completed", unfinished_items: ["T02"], unresolved_questions: ["是否继续？"] })).toBeUndefined();
+  });
+
   it("keeps normal completion and planner handoff, but checks unfinished completion claims", () => {
     expect(decide({ status: "completed", unfinished_items: [] })).toBeUndefined();
     expect(decide({ status: "need_planner", summary: "需要调整接口设计" })).toBeUndefined();
