@@ -2,6 +2,7 @@ import { withWorkflowDisplayName } from "./workflow-display.js";
 import { Store } from "../../store/src/store.js";
 import { FlowError, type Workflow } from "../../contracts/src/index.js";
 import {
+  isWorkflowRunning,
   WorkflowVisibility,
   WorkflowVisibilityUpdateRequest,
   WorkflowVisibilityResponse,
@@ -71,17 +72,12 @@ export class WorkflowVisibilityService {
       }
 
       // 2. 确保 workflow 存在
-      if (this.engine) {
-        this.engine.get(workflowId);
-      } else {
-        const w = this.store.get<any>("workflow", workflowId);
-        if (!w) {
-          throw new FlowError(
-            "WORKFLOW_NOT_FOUND",
-            `任务 ${workflowId} 不存在`,
-            404,
-          );
-        }
+      const workflow = this.engine ? this.engine.get(workflowId) : this.store.get<Workflow>("workflow", workflowId);
+      if (!workflow) {
+        throw new FlowError("WORKFLOW_NOT_FOUND", `任务 ${workflowId} 不存在`, 404);
+      }
+      if (archived && isWorkflowRunning(workflow)) {
+        throw new FlowError("WORKFLOW_RUNNING", "任务正在运行，请先暂停或等待任务结束后再归档", 409);
       }
 
       // 3. 读取当前可见性元数据

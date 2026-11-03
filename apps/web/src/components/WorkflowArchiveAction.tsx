@@ -19,8 +19,8 @@ export function WorkflowArchiveAction({
   const handleArchive = async () => {
     if (archiving) return;
     const confirmMsg = workflowTitle
-      ? `确认归档任务“${workflowTitle}”吗？归档后任务将从菜单和总览隐藏，文件、状态和记录均保留。正在运行的任务会继续执行，可在设置中恢复。`
-      : "归档后任务将从菜单和总览隐藏，文件、状态和记录均保留。正在运行的任务会继续执行，可在设置中恢复。";
+      ? `确认归档任务“${workflowTitle}”吗？归档后任务将从菜单和总览隐藏，文件、状态和记录均保留。可在设置中恢复。`
+      : "归档后任务将从菜单和总览隐藏，文件、状态和记录均保留。可在设置中恢复。";
     if (!window.confirm(confirmMsg)) return;
     setArchiving(true);
     try {
@@ -40,7 +40,7 @@ export function WorkflowArchiveAction({
       if (!putRes.ok) {
         if (putRes.status === 409) pendingRequest.current = null;
         const err = await putRes.json().catch(() => ({}));
-        throw new Error(err.message || "归档失败: " + putRes.status);
+        throw new Error(err.error?.message || err.message || "归档失败: " + putRes.status);
       }
       pendingRequest.current = null;
       onArchived?.(workflowId);

@@ -151,3 +151,37 @@ test("手动创建必须填写最多 20 字的名称，校验失败保留需求"
   expect((await created).postDataJSON()).toMatchObject({ title: "字".repeat(20), request_text: requirement });
   await expect(modal.locator("textarea")).toHaveValue(requirement);
 });
+
+
+test("运行任务隐藏归档和项目删除入口，包括已有归档任务仍在运行的项目", async ({ page }) => {
+  let running = true;
+  let archivedRunning = false;
+  await page.route("**/api/**", (route) => {
+    const path = new URL(route.request().url()).pathname;
+    return route.fulfill({ json: path === "/api/projects"
+      ? [{ id: "nav-a", name: "运行限制项目", has_running_tasks: archivedRunning }]
+      : path === "/api/workflows"
+        ? [{ ...navigationFlows[0], state: running ? "EXECUTING" : "STOPPED" }]
+        : navigationResponse(path) });
+  });
+  await page.routeWebSocket("**/api/notifications", () => {});
+  await page.routeWebSocket("**/api/events?*", () => {});
+  await page.goto("/");
+  await page.locator(".project-nav .project-name").hover();
+  await expect(page.locator(".project-name-delete")).toHaveCount(0);
+  await expect(page.locator(".project-name-edit")).toHaveCount(2);
+  await page.locator(".flow-nav-item").hover();
+  await expect(page.getByRole("button", { name: "归档", exact: true })).toHaveCount(0);
+  running = false;
+  archivedRunning = true;
+  await page.reload();
+  await expect(page.locator(".flow-card")).toBeVisible();
+  await expect(page.locator(".project-name-delete")).toHaveCount(0);
+  archivedRunning = false;
+  await page.reload();
+  await page.locator(".project-nav .project-name").hover();
+  await expect(page.locator(".project-nav .project-name-delete")).toBeVisible();
+  await expect(page.locator(".project-name-delete")).toHaveCount(2);
+  await page.locator(".flow-nav-item").hover();
+  await expect(page.getByRole("button", { name: "归档", exact: true })).toBeVisible();
+});

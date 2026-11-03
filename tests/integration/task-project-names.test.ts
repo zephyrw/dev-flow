@@ -54,6 +54,17 @@ it("项目默认目录名、重命名持久化且不改变配置；任务名称�
       expect((await app.inject({ method: "DELETE", url: `/api/projects/${p.id}`, headers, payload })).statusCode).toBe(422);
     }
     expect((await list()).json()).toHaveLength(1);
+    // Even an archived running task must block removing its project association.
+    s.store.put("workflow_visibility", workflow.id, workflow.id, { archived: true });
+    for (const state of ["RESEARCHING", "PLANNING", "QUEUED", "EXECUTING", "VERIFYING", "DELIVERY_VERIFYING", "QUALITY_REVIEW", "PLANNER_TAKEOVER", "REVIEW_QUEUED", "REVIEWING", "INTEGRATING", "COMMITTING", "STOPPING"]) {
+      s.store.put("workflow", workflow.id, p.id, { ...workflow, state });
+      expect((await list()).json()[0].has_running_tasks).toBe(true);
+      const rejected = await app.inject({ method: "DELETE", url: `/api/projects/${p.id}`, headers, payload: { confirmed: true } });
+      expect(rejected.statusCode, rejected.body).toBe(409);
+      expect(s.store.get<{ detached?: boolean }>("project_display", p.id)?.detached).not.toBe(true);
+    }
+    s.store.put("workflow", workflow.id, p.id, { ...workflow, state: "STOPPED" });
+    expect((await list()).json()[0].has_running_tasks).toBe(false);
     const removed = await app.inject({ method: "DELETE", url: `/api/projects/${p.id}`, headers, payload: { confirmed: true } });
     expect(removed.statusCode).toBe(200);
     expect((await list()).json()).toEqual([]);
@@ -61,7 +72,7 @@ it("项目默认目录名、重命名持久化且不改变配置；任务名称�
     expect((await app.inject({ method: "GET", url: "/api/workflows?visibility=all", headers })).json()).toHaveLength(1);
     expect(s.store.must("project", p.id)).toEqual(p);
     expect(s.store.list("workspace", workflow.id)).toEqual(workspace);
-    expect(s.engine.get(workflow.id)).toMatchObject({ state: workflow.state, stage: workflow.stage, request: workflow.request });
+    expect(s.engine.get(workflow.id)).toMatchObject({ state: "STOPPED", stage: workflow.stage, request: workflow.request });
     expect(readFileSync(join(repo.repo, "app.txt"), "utf8")).toBe(fileBefore);
     expect((await app.inject({ method: "DELETE", url: `/api/projects/${p.id}`, headers, payload: { confirmed: true } })).statusCode).toBe(200);
     const newTask = await app.inject({ method: "POST", url: "/api/workflows", headers, payload: { ...payload, request_id: "reattach-project", title: "重新关联项目", workspace_mode: "new_worktree" } });

@@ -4,7 +4,7 @@ import { NameEditDialog } from "./NameEditDialog.js";
 import { TaskTitle } from "./TaskTitle.js";
 
 export function ProjectName({ project, onRenamed, onDeleted }: {
-  project: { id: string; name: string; primary_repo_id?: string; repositories?: { id: string; path: string }[] };
+  project: { id: string; name: string; has_running_tasks?: boolean; primary_repo_id?: string; repositories?: { id: string; path: string }[] };
   onRenamed: (id: string, name: string) => void;
   onDeleted: (id: string) => void;
 }) {
@@ -24,7 +24,7 @@ export function ProjectName({ project, onRenamed, onDeleted }: {
     onRenamed(project.id, result.name);
   };
   const remove = async () => {
-    if (busy) return;
+    if (busy || project.has_running_tasks) return;
     setBusy(true);
     setError("");
     try {
@@ -43,19 +43,20 @@ export function ProjectName({ project, onRenamed, onDeleted }: {
     <TaskTitle className="project-name" title={`▱ ${project.name}`} tooltip={path} />
     <button type="button" className="project-name-edit" aria-label={`编辑项目名称：${project.name}`}
       onClick={() => setEditing(true)}>✎</button>
-    <button type="button" className="project-name-delete" aria-label={`删除项目：${project.name}`}
+    {!project.has_running_tasks && <button type="button" className="project-name-delete" aria-label={`删除项目：${project.name}`}
       onClick={() => { setError(""); setDeleting(true); }}>
       <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" aria-hidden="true">
         <path d="M2 4h12M6 4V2h4v2M4 4l1 10h6l1-10M6.5 6v6M9.5 6v6" />
       </svg>
-    </button>
+    </button>}
     {editing && <NameEditDialog label="项目名称" initialName={project.name} maxLength={100} onSave={save} onClose={() => setEditing(false)} />}
     <AppDialog isOpen={deleting} title="删除项目" width={460} busy={busy} onClose={() => setDeleting(false)}
       footer={<><button type="button" disabled={busy} onClick={() => setDeleting(false)}>取消</button>
-        <button type="button" className="danger" disabled={busy} onClick={() => void remove()}>{busy ? "删除中…" : "确认删除"}</button></>}>
+        <button type="button" className="danger" disabled={busy || project.has_running_tasks} onClick={() => void remove()}>{busy ? "删除中…" : "确认删除"}</button></>}>
       <p>确定删除项目“{project.name}”吗？</p>
       <p>只删除这个工作台的项目关联，不会删除项目文件。</p>
-      <p>项目及其任务将从工作台列表移除。任务记录保留，正在运行的任务继续执行。</p>
+      <p>项目及其任务将从工作台列表移除，任务记录保留。</p>
+      {project.has_running_tasks && <p role="alert">项目中有任务正在运行，请先暂停或等待任务结束后再删除项目关联。</p>}
       {error && <p role="alert">{error}</p>}
     </AppDialog>
   </div>;

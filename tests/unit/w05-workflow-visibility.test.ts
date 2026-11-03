@@ -39,7 +39,7 @@ describe("W05: 任务归档与可见性管理单元测试", () => {
       id: wfId,
       project_id: "p1",
       title: "任务1",
-      state: "PLANNING",
+      state: "STOPPED",
       version: 1,
     });
 
@@ -74,13 +74,13 @@ describe("W05: 任务归档与可见性管理单元测试", () => {
 
     // 验证原 workflow 实体毫发无伤
     const originalWf = store.get<any>("workflow", wfId)!;
-    expect(originalWf.state).toBe("PLANNING");
+    expect(originalWf.state).toBe("STOPPED");
     expect(originalWf.version).toBe(1);
   });
 
   it("3. 幂等性控制：同 request_id 同参数返回相同回执；同 request_id 换参数抛出 409", () => {
     const wfId = "wf-idempotent-1";
-    store.put("workflow", wfId, wfId, { id: wfId, state: "EXECUTING", version: 2 });
+    store.put("workflow", wfId, wfId, { id: wfId, state: "COMPLETED", version: 2 });
 
     const req1 = {
       request_id: "req-idem-1",
@@ -107,7 +107,7 @@ describe("W05: 任务归档与可见性管理单元测试", () => {
 
   it("4. CAS 并发防护：expected_visibility_revision 不匹配抛出 409", () => {
     const wfId = "wf-cas-1";
-    store.put("workflow", wfId, wfId, { id: wfId, state: "QUEUED", version: 1 });
+    store.put("workflow", wfId, wfId, { id: wfId, state: "PLAN_PENDING", version: 1 });
 
     service.setArchived(wfId, {
       request_id: "req-cas-1",
@@ -151,7 +151,7 @@ describe("W05: 任务归档与可见性管理单元测试", () => {
     expect(allList.map((w) => w.id)).toEqual(["w1", "w2", "w3"]);
   });
   it("删除项目关联隐藏列表与归档记录，保留原记录；归档查询使用编辑后的名称", () => {
-    store.put("workflow", "wf-named", "project-named", { id: "wf-named", project_id: "project-named", title: "旧名称", state: "PLANNING" });
+    store.put("workflow", "wf-named", "project-named", { id: "wf-named", project_id: "project-named", title: "旧名称", state: "STOPPED" });
     store.put("workflow_display", "wf-named", "wf-named", { title: "新名称" });
     service.setArchived("wf-named", { request_id: "archive-named", expected_visibility_revision: 0, archived: true });
     expect(service.listArchived({ query: "新名称" }).items[0]?.title).toBe("新名称");
@@ -160,6 +160,21 @@ describe("W05: 任务归档与可见性管理单元测试", () => {
     expect(service.filterWorkflows(store.list("workflow"), "archived")).toEqual([]);
     expect(service.filterWorkflows(store.list("workflow"), "all")).toHaveLength(1);
     expect(store.get("workflow", "wf-named")).toBeDefined();
+  });
+
+  it("运行及排队任务拒绝归档，不写入回执；暂停后可重试，运行时仍可恢复归档", () => {
+    const request = { request_id: "running-archive", expected_visibility_revision: 0, archived: true };
+    for (const state of ["RESEARCHING", "PLANNING", "QUEUED", "EXECUTING", "VERIFYING", "DELIVERY_VERIFYING", "QUALITY_REVIEW", "PLANNER_TAKEOVER", "REVIEW_QUEUED", "REVIEWING", "INTEGRATING", "COMMITTING", "STOPPING"]) {
+      store.put("workflow", "running", "running", { id: "running", state });
+      expect(() => service.setArchived("running", request)).toThrow("任务正在运行");
+      expect(service.read("running").revision).toBe(0);
+      expect(store.get("workflow_visibility_receipt", request.request_id)).toBeUndefined();
+    }
+    store.put("workflow", "running", "running", { id: "running", state: "STOPPED" });
+    expect(service.setArchived("running", request).changed).toBe(true);
+    store.put("workflow", "running", "running", { id: "running", state: "EXECUTING" });
+    expect(service.setArchived("running", request).visibility.archived).toBe(true);
+    expect(service.setArchived("running", { request_id: "restore-running", expected_visibility_revision: 1, archived: false }).visibility.archived).toBe(false);
   });
 
 });

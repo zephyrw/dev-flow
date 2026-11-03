@@ -53,3 +53,13 @@ export interface ArchivedWorkflowSummary {
   plan_revision?: number;
   is_running: boolean;
 }
+
+/** Active and queued work must remain accessible until it has stopped. */
+export function isWorkflowRunning(workflow: { state: string }): boolean {
+  return [
+    "RESEARCHING", "PLANNING", "QUEUED", "EXECUTING", "VERIFYING",
+    "DELIVERY_VERIFYING", "QUALITY_REVIEW", "PLANNER_TAKEOVER",
+    "REVIEW_QUEUED", "REVIEWING", "REPAIR_REVIEWING", "INTEGRATING",
+    "COMMITTING", "STOPPING",
+  ].includes(workflow.state);
+}

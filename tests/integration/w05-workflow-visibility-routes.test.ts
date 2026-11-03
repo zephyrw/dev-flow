@@ -73,6 +73,15 @@ describe("W05: 任务归档与可见性 HTTP 接口集成测试", () => {
     expect(visData.visibility.archived).toBe(false);
     expect(visData.visibility.revision).toBe(0);
 
+    // A stale page must not be able to archive a task that has started running.
+    s.store.put("workflow", w2.id, p.id, { ...w2, state: "EXECUTING" });
+    const rejected = await app.inject({ method: "PUT", url: `/api/workflows/${w2.id}/visibility`, headers,
+      payload: { request_id: "req-running", expected_visibility_revision: 0, archived: true } });
+    expect(rejected.statusCode).toBe(409);
+    expect(rejected.body).toContain("任务正在运行");
+    expect(s.store.get("workflow_visibility", w2.id)).toBeUndefined();
+    s.store.put("workflow", w2.id, p.id, { ...w2, state: "STOPPED" });
+
     // 3. 将 w2 归档
     const resArchive = await app.inject({
       method: "PUT",

@@ -1,3 +1,4 @@
+import { isWorkflowRunning } from "../../../packages/contracts/src/workflow-visibility.js";
 import { TaskNameEditAction } from "./components/TaskNameEditAction.js";
 import { ProjectName } from "./components/ProjectName.js";
 import { ExecutionPanel, formatPathSummary } from "./execution-panel.js";
@@ -2293,7 +2294,7 @@ function App() {
               const expanded = expandedProjects[p.id] ?? false;
               return (
               <div key={p.id} className="project-nav">
-                <ProjectName project={p} onDeleted={onProjectDeleted} onRenamed={(id, name) => setProjects((current) => current.map((project) => project.id === id ? { ...project, name } : project))} />
+                <ProjectName project={{ ...p, has_running_tasks: p.has_running_tasks || flows.some((flow) => flow.project_id === p.id && isWorkflowRunning(flow)) }} onDeleted={onProjectDeleted} onRenamed={(id, name) => setProjects((current) => current.map((project) => project.id === id ? { ...project, name } : project))} />
                 <div id={`project-tasks-${p.id}`}>
                 {projectFlows
                   .slice(0, expanded ? undefined : 5)
@@ -2324,7 +2325,7 @@ function App() {
                         <TaskTitle className="flow-title-text" title={f.title} />
                       </button>
                       <TaskNameEditAction workflowId={f.id} title={f.title} onRenamed={onTaskRenamed} />
-                      <WorkflowArchiveAction
+                      {!isWorkflowRunning(f) && <WorkflowArchiveAction
                         workflowId={f.id}
                         workflowTitle={f.title}
                         variant="icon"
@@ -2338,7 +2339,7 @@ function App() {
                             "任务已移入归档，可在“设置 -> 归档”中随时查看或恢复。",
                           );
                         }}
-                      />
+                      />}
                     </div>
                   ))}
                 </div>
@@ -2556,7 +2557,7 @@ function App() {
                   {flows.map((f) => (
                     <article className="flow-card" key={f.id}>
                       {projects.filter((p) => p.id === f.project_id).map((p) => (
-                        <ProjectName key={p.id} project={p} onDeleted={onProjectDeleted} onRenamed={(id, name) => setProjects((current) => current.map((project) => project.id === id ? { ...project, name } : project))} />
+                        <ProjectName key={p.id} project={{ ...p, has_running_tasks: p.has_running_tasks || flows.some((flow) => flow.project_id === p.id && isWorkflowRunning(flow)) }} onDeleted={onProjectDeleted} onRenamed={(id, name) => setProjects((current) => current.map((project) => project.id === id ? { ...project, name } : project))} />
                       ))}
                     <div className="flow-card-body">
                     <button

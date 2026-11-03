@@ -49,7 +49,7 @@ import { PlanApprovalService } from "../../../packages/core/src/plan-approval-se
 import { normalizeInstructionsText, PlanApprovalRequestV2Schema } from "../../../packages/contracts/src/plan-approval.js";
 import { WorkflowVisibilityService } from "../../../packages/core/src/workflow-visibility-service.js";
 import { workflowVisibilityPlugin } from "./routes/workflow-visibility.js";
-import { WorkflowVisibilityFilterSchema } from "../../../packages/contracts/src/workflow-visibility.js";
+import { isWorkflowRunning, WorkflowVisibilityFilterSchema } from "../../../packages/contracts/src/workflow-visibility.js";
 import { FeedbackService } from "../../../packages/core/src/feedback-service.js";
 import { ModelAccessService } from "../../../packages/core/src/model-access-service.js";
 import { ModelCatalogService } from "../../../packages/core/src/model-catalog-service.js";
@@ -154,6 +154,7 @@ export async function buildServer(
       .filter((project) => !engine.store.get<{ detached?: boolean }>("project_display", project.id)?.detached)
       .map((project) => ({
       ...project,
+      has_running_tasks: engine.list().some((workflow) => workflow.project_id === project.id && isWorkflowRunning(workflow)),
       name: engine.store.get<{ name: string }>("project_display", project.id)?.name
         ?? basename((project.repositories.find((repo) => repo.id === project.primary_repo_id)
           ?? project.repositories[0])!.path),
@@ -180,6 +181,8 @@ export async function buildServer(
     z.object({ confirmed: z.literal(true) }).strict().parse(req.body);
     const projectId = Id.parse((req.params as { projectId: string }).projectId);
     engine.store.must<Project>("project", projectId);
+    requireCondition(!engine.list().some((workflow) => workflow.project_id === projectId && isWorkflowRunning(workflow)),
+      "PROJECT_HAS_RUNNING_TASKS", "项目中有任务正在运行，请先暂停或等待任务结束后再删除项目关联", 409);
     // Remove only the workbench association; execution records and files stay intact.
     engine.store.put("project_display", projectId, projectId, {
       ...engine.store.get<{ name?: string; detached?: boolean }>("project_display", projectId), detached: true,
