@@ -46,6 +46,7 @@ for (const width of [1366, 1440, 1920])
     await page.getByRole("button", { name: "+ 新建", exact: true }).click();
     const modal = page.locator(".modal-backdrop").last();
     await modal.getByLabel("工作区真实路径").fill(fixtureState().root);
+    await modal.getByLabel("任务名称", { exact: true }).fill("创建失败保留草稿");
     const text = "无 Git 根目录必须拒绝，保留用户完整需求";
     await modal.locator("textarea").fill(text);
     await modal.getByRole("button", { name: "创建并开始规划" }).click();

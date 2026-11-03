@@ -78,6 +78,7 @@ describe("新任务真实 API/原生 CLI 进程/SQLite/Git", { timeout: 300000 }
       const payload = {
         request_id: "req-real",
         workspace_root: repo.repo,
+        title: "修改文本",
         request_text: "按唯一原计划修改 app.txt",
         workspace_mode: "existing_workspace",
         planner_profile_id: "profile-codex",
@@ -203,6 +204,7 @@ describe("新任务真实 API/原生 CLI 进程/SQLite/Git", { timeout: 300000 }
         service.execute({
           request_id: "bad",
           workspace_root: s.root,
+          title: "创建任务",
           request_text: "需求",
           planner_profile_id: "codegemma",
         }),
@@ -211,6 +213,7 @@ describe("新任务真实 API/原生 CLI 进程/SQLite/Git", { timeout: 300000 }
         service.execute({
           request_id: "bad2",
           workspace_root: s.root,
+          title: "创建任务",
           request_text: "需求",
         }),
       ).toThrow();
@@ -232,6 +235,7 @@ describe("新任务真实 API/原生 CLI 进程/SQLite/Git", { timeout: 300000 }
         payload: {
           request_id: "req-unverified",
           workspace_root: s.root,
+          title: "创建任务",
           request_text: "需求",
         },
       });

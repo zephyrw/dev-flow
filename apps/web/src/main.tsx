@@ -1,3 +1,4 @@
+import { ProjectName } from "./components/ProjectName.js";
 import { ExecutionPanel, formatPathSummary } from "./execution-panel.js";
 import { TaskInteraction } from "./interactions.js";
 import { WorkflowActivity } from "./components/WorkflowActivity.js";
@@ -110,6 +111,13 @@ async function api(path: string, body?: unknown, signal?: AbortSignal) {
   const result = await r.json();
   if (!r.ok) throw Error(result.error?.message ?? "请求失败");
   return result;
+}
+function formatTaskTime(value?: string) {
+  if (!value || Number.isNaN(Date.parse(value))) return "";
+  return new Intl.DateTimeFormat("sv-SE", {
+    timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23",
+  }).format(new Date(value));
 }
 const PAUSE_CONTROL_POLL_MS = 1000;
 const PAUSE_CONTROL_POLL_LIMIT = 12;
@@ -2268,7 +2276,7 @@ function App() {
               const expanded = expandedProjects[p.id] ?? false;
               return (
               <div key={p.id} className="project-nav">
-                <span className="project-name">▱ {p.name}</span>
+                <ProjectName project={p} onRenamed={(id, name) => setProjects((current) => current.map((project) => project.id === id ? { ...project, name } : project))} />
                 <div id={`project-tasks-${p.id}`}>
                 {projectFlows
                   .slice(0, expanded ? undefined : 5)
@@ -2505,8 +2513,8 @@ function App() {
             </section>
             <section className="panel">
               <div className="section-title">
-                <h2>全部工作流</h2>
-                <span>{flows.length} 个工作流</span>
+                <h2>全部任务</h2>
+                <span>{flows.length} 个任务</span>
               </div>
               {!flows.length ? (
                 <div className="empty">
@@ -2528,9 +2536,13 @@ function App() {
               ) : (
                 <div className="flow-grid">
                   {flows.map((f) => (
+                    <article className="flow-card" key={f.id}>
+                      {projects.filter((p) => p.id === f.project_id).map((p) => (
+                        <ProjectName key={p.id} project={p} onRenamed={(id, name) => setProjects((current) => current.map((project) => project.id === id ? { ...project, name } : project))} />
+                      ))}
                     <button
-                      className="flow-card"
-                      key={f.id}
+                      type="button"
+                      className="flow-card-open"
                       onClick={() => {
                         setShowGuide(false);
                         setSelected(f.id);
@@ -2543,22 +2555,16 @@ function App() {
                         setLocate(undefined);
                       }}
                     >
-                      <div>
-                        <span className="project-label">
-                          {projects.find((p) => p.id === f.project_id)?.name}
-                        </span>
-                        <span className={`badge workflow-tone-${getWorkflowTone(f)}`}>
-                          {formatWorkflowState(f.state, f.stage)}
-                        </span>
-                      </div>
                       <TaskTitle as="h3" title={f.title} />
                       <p>{f.request}</p>
                       <footer>
-                        <span>
-                          {new Date(f.updated_at).toLocaleString("zh-CN")}
+                        <span className={`badge workflow-tone-${getWorkflowTone(f)}`}>
+                          {formatWorkflowState(f.state, f.stage)}
                         </span>
+                        <time dateTime={f.updated_at}>{formatTaskTime(f.updated_at)}</time>
                       </footer>
                     </button>
+                    </article>
                   ))}
                 </div>
               )}

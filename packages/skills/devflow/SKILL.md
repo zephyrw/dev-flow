@@ -19,7 +19,7 @@ description: 用户说“用 DevFlow”“通过 DevFlow”“DevFlow 帮我”�
 1. 使用当前任务的真实工作目录；读取项目规则。获取真实会话 ID（环境 `CODEX_THREAD_ID` 可用时）；没有则省略，不编造。
 2. 用户明确要求新 worktree 时设 `new_worktree`；明确使用当前目录时设 `existing_workspace`；未指定默认新 worktree，在计划里说明。**【Worktree 规范约束】严禁在主工作区同级或任意外部路径创建 worktree；所有独立 worktree 必须且仅能在主工作区根目录下的 `.worktrees/` 目录内创建（如 `<source_root>/.worktrees/<workflow_id>/<repo_id>` 或 `<source_root>/.worktrees/<branch_or_id>`）；严禁在主工作区直接执行切换分支等影响已有未提交工作的操作；主工作区必须确保 `.gitignore` 配置忽略 `.worktrees/`。**
 3. 问题排查、复杂任务标记 `complex`；普通局部修改为 `simple`。使用新的幂等键，网络重试复用同一个键。
-4. 对用户明确提出且尚无正式计划的新任务，先读取 `devflow_list_tool_profiles`，复用用户配置的规划/执行 Profile，调用 `devflow_create_native_task` 传入真实仓库根目录、完整需求、引用、工作区模式及幂等键；规划由程序调度，返回控制台链接。配置不明确先澄清，不硬编码模型。已有工作流或已有指定计划需要接入时调用 `devflow_start`，传入需求原文、简短标题和以上上下文。用户明确新需求用 `intent=new`，明确继续用 `continue`，其余 `auto`。同一轮已获得工作流 ID 时后续调用携带它；不要重新建任务。
+4. 对用户明确提出且尚无正式计划的新任务，先读取 `devflow_list_tool_profiles`，复用用户配置的规划/执行 Profile，调用 `devflow_create_native_task` 传入由模型概括的约 10 字任务名称 `title`（必填，最多 20 字，不得截取需求正文）、真实仓库根目录、完整需求、引用、工作区模式及幂等键；规划由程序调度，返回控制台链接。配置不明确先澄清，不硬编码模型。已有工作流或已有指定计划需要接入时调用 `devflow_start`，传入需求原文、由模型概括的约 10 字标题（最多 20 字）和以上上下文。用户明确新需求用 `intent=new`，明确继续用 `continue`，其余 `auto`。同一轮已获得工作流 ID 时后续调用携带它；不要重新建任务。
 
 ## 按返回结果继续，不让用户手动串工具
 

@@ -62,6 +62,7 @@ export function CreateWorkflowModal({
   const [dirty, setDirty] = useState(false);
   const [stale, setStale] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [title, setTitle] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<ConfigTabId>("planner");
   const [moreOpen, setMoreOpen] = useState(false);
@@ -117,6 +118,7 @@ export function CreateWorkflowModal({
   // Capture the latest default when opening a new draft only.
   useEffect(() => {
     if (!isOpen) return;
+    setTitle("");
     setWorkspaceRoot(defaultWorkspaceRoot);
     setWorkspaceMode("new_worktree");
     setError(null);
@@ -213,6 +215,11 @@ export function CreateWorkflowModal({
   };
 
   const handleSubmit = async (text: string, refs: ReferenceItem[]) => {
+    if (!title.trim() || Array.from(title.trim()).length > 20 || !workspaceRoot.trim()) {
+      const message = !workspaceRoot.trim() ? "工作区真实路径必填" : "请填写任务名称，最多 20 字";
+      setError(message);
+      throw new Error(message);
+    }
     setSubmitting(true);
     setError(null);
     try {
@@ -229,6 +236,7 @@ export function CreateWorkflowModal({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           request_id: requestId.current,
+          title: title.trim(),
           workspace_root: workspaceRoot,
           request_text: text,
           refs,
@@ -288,9 +296,15 @@ export function CreateWorkflowModal({
         )}
         <p className="ms-muted">来自系统默认</p>
         <div className="ms-field">
-          <label htmlFor="create-workspace-root">工作区真实路径</label>
+          <label htmlFor="create-task-title">任务名称 <span className="required-marker" aria-hidden="true">*</span></label>
+          <input id="create-task-title" aria-label="任务名称" required maxLength={20}
+            value={title} onChange={(event) => setTitle(event.target.value)} placeholder="请输入任务名称，最多 20 字" />
+        </div>
+        <div className="ms-field">
+          <label htmlFor="create-workspace-root">工作区真实路径 <span className="required-marker" aria-hidden="true">*</span></label>
           <input
             id="create-workspace-root"
+            required
             type="text"
             aria-label="工作区真实路径"
             value={workspaceRoot}
@@ -328,7 +342,7 @@ export function CreateWorkflowModal({
               marginBottom: "4px",
             }}
           >
-            工作区方式
+            工作区方式 <span className="required-marker" aria-hidden="true">*</span>
           </label>
           <div style={{ display: "flex", flexDirection: "column", gap: "8px", fontSize: "13px" }}>
             <label
@@ -381,7 +395,7 @@ export function CreateWorkflowModal({
           </div>
         </div>
         <div>
-          <label>完整需求与 @ 引用</label>
+          <label>完整需求与 @ 引用 <span className="required-marker" aria-hidden="true">*</span></label>
           <RequirementComposer
             placeholder="输入完整业务需求... 输入 @ 引用文件或目录"
             onSubmit={handleSubmit}

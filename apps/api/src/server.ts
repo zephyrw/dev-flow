@@ -1,3 +1,4 @@
+import { TaskNameSchema } from "../../../packages/contracts/src/task-name.js";
 import { createBaseServer } from "./base-server.js";
 import websocket from "@fastify/websocket";
 import staticPlugin from "@fastify/static";
@@ -149,11 +150,25 @@ export async function buildServer(
   await app.register(nativePermissionPlugin, { engine, human });
   app.get("/api/projects", async (req) => {
     human(req);
-    return engine.store.list("project");
+    return engine.store.list<Project>("project").map((project) => ({
+      ...project,
+      name: engine.store.get<{ name: string }>("project_display", project.id)?.name
+        ?? basename((project.repositories.find((repo) => repo.id === project.primary_repo_id)
+          ?? project.repositories[0])!.path),
+    }));
   });
   app.post("/api/projects", async (req) => {
     human(req);
     return engine.registerProject(req.body);
+  });
+  app.patch("/api/projects/:projectId/name", async (req) => {
+    human(req);
+    const { projectId } = req.params as { projectId: string };
+    engine.store.must<Project>("project", projectId);
+    const { name } = z.object({ name: z.string().trim().min(1).max(100) }).strict().parse(req.body);
+    // Display names must not change execution configuration or its approval hash.
+    engine.store.put("project_display", projectId, projectId, { name });
+    return { name };
   });
   const accountService =
     options.accountService ||
@@ -338,6 +353,7 @@ export async function buildServer(
           body.request_id || body.idempotency_key || `req_${Date.now()}`,
         workspace_root: body.workspace_root,
         request_text: body.request_text || body.request || "",
+        title: TaskNameSchema.parse(body.title),
         refs: body.refs,
         workspace_mode: body.workspace_mode,
         worktree_path: body.worktree_path || body.explicit_path,
@@ -357,7 +373,7 @@ export async function buildServer(
     const b = z
       .object({
         project_id: Id,
-        title: z.string().min(1),
+        title: TaskNameSchema,
         request: z.string().min(1),
         complexity: z.enum(["simple", "complex"]),
         workspace_mode: z.enum(["existing_workspace", "new_worktree"]),

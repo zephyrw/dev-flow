@@ -1,3 +1,4 @@
+import { TaskNameSchema } from "../../contracts/src/task-name.js";
 import { readPlanMaterial } from "./plan-review.js";
 import {
   PlanSelfCheckCoordinator,
@@ -554,10 +555,12 @@ export class Engine {
     },
     key: string,
   ) {
+    const title = TaskNameSchema.parse(input.title);
     this.project(input.project_id);
     return this.store.deduplicate("create:" + key, input, () => {
       const w: Workflow = {
         ...input,
+        title,
         id: id("wf"),
         state: "RESEARCHING",
         stage: "research",

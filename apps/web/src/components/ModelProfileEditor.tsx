@@ -492,7 +492,7 @@ export function ModelProfileEditor({
     <div className="ms-editor">
       {/* 工具选择 */}
       <div className="ms-field">
-        <label htmlFor={`ms-tool-${profile.id}`}>{toolLabel}</label>
+        <label htmlFor={`ms-tool-${profile.id}`}>{toolLabel} <span className="required-marker" aria-hidden="true">*</span></label>
         <select
           id={`ms-tool-${profile.id}`}
           aria-label={toolLabel}
@@ -512,7 +512,7 @@ export function ModelProfileEditor({
       {/* 模型选择（可搜索 combobox） */}
       <div className="ms-field" ref={comboboxRef}>
         <div className="ms-field-header">
-          <label htmlFor={`ms-model-${profile.id}`}>模型</label>
+          <label htmlFor={`ms-model-${profile.id}`}>模型 <span className="required-marker" aria-hidden="true">*</span></label>
           <button
             type="button"
             className={`ms-icon-button ${refreshing ? "is-refreshing" : ""}`}

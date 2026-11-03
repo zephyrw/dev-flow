@@ -28,6 +28,7 @@ it("规划工具通过真实 MCP 入口创建原生任务并拒绝未知配置",
   const args = {
     request_id: "mcp-native-create",
     workspace_root: repo.repo,
+    title: "修改文本",
     request_text: "完整需求：修改文本",
     workspace_mode: "new_worktree",
     planner_profile_id: "profile-codex",
@@ -64,6 +65,10 @@ it("规划工具通过真实 MCP 入口创建原生任务并拒绝未知配置",
     const w = s.store.list<any>("workflow")[0];
     expect(w.state).toBe("PLANNING");
     expect(w.request).toBe(args.request_text);
+    expect(w.title).toBe(args.title);
+    for (const title of [undefined, " ", "长".repeat(21)]) {
+      expect((await call({ ...args, title, request_id: "invalid-name" })).isError).toBe(true);
+    }
     expect(s.store.list("workspace", w.id)).toHaveLength(1);
     expect(s.store.list("run", w.id)).toHaveLength(0);
     await call(args);

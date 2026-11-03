@@ -1,3 +1,4 @@
+import { TaskNameSchema } from "../../contracts/src/task-name.js";
 import { captureInitialState } from "../../git/src/initial-state.js";
 import { resolveWorktreePath, ensureWorktreeGitExcluded, sameWorkspacePath } from "../../git/src/workspace-paths.js";
 import { canonicalGitPath, sameGitDirectory } from "../../git/src/git.js";
@@ -46,6 +47,7 @@ export interface CreateWorkflowRequest {
   request_id: string;
   workspace_root: string;
   request_text: string;
+  title?: string;
   refs?: WorkspaceReference[];
   workspace_mode?: "new_worktree" | "existing_workspace";
   worktree_path?: string;
@@ -164,6 +166,8 @@ export class CreateWorkflowService {
       "需求正文不能为空",
       422,
     );
+    // Older internal callers may omit a name; public creation entries require one.
+    const title = TaskNameSchema.parse(input.title ?? Array.from(input.request_text.replace(/[#*`\r\n]+/g, " ").trim()).slice(0, 10).join(""));
     const refs = (input.refs ?? []).map((r) =>
       WorkspaceReferenceSchema.parse(r),
     );
@@ -306,7 +310,7 @@ export class CreateWorkflowService {
       : {
           id: workflowId,
           project_id: project.id,
-          title: input.request_text.slice(0, 60).replace(/[\r\n]+/g, " "),
+          title,
           request: input.request_text,
           complexity: "simple",
           workspace_mode: mode,

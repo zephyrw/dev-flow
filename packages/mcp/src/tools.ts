@@ -1,3 +1,4 @@
+import { GeneratedTaskNameSchema } from "../../contracts/src/task-name.js";
 import { resolveProfile } from "../../core/src/run-profile.js";
 import {
   RoleOverridesSchema,
@@ -154,6 +155,7 @@ export function makeMcp(engine: Engine, principal: Principal, modelAccess?: Mode
         request_id: Id,
         workspace_root: z.string().min(1),
         request_text: z.string().min(1),
+        title: GeneratedTaskNameSchema,
         refs: z.array(WorkspaceReferenceSchema).default([]),
         workspace_mode: z
           .enum(["existing_workspace", "new_worktree"])
@@ -274,7 +276,7 @@ export function makeMcp(engine: Engine, principal: Principal, modelAccess?: Mode
       "为具体项目创建独立工作流；不启动执行。",
       z.object({
         project_id: Id,
-        title: z.string().min(1),
+        title: GeneratedTaskNameSchema,
         request: z.string().min(1),
         complexity: z.enum(["simple", "complex"]),
         workspace_mode: z.enum(["existing_workspace", "new_worktree"]),

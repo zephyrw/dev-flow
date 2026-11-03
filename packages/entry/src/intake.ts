@@ -1,3 +1,4 @@
+import { GeneratedTaskNameSchema } from "../../contracts/src/task-name.js";
 import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { z } from "zod";
@@ -10,7 +11,7 @@ import { BrowserRecipeSchema } from "../../runtime/src/recipe.js";
 export const IntakeSchema = z.object({
   working_directory: z.string().min(1),
   request: z.string().min(1),
-  title: z.string().min(1).max(160),
+  title: GeneratedTaskNameSchema,
   conversation_id: z.string().min(1).max(256).optional(),
   workflow_id: Id.optional(),
   project_id: Id.optional(),
