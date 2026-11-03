@@ -3,6 +3,29 @@ import { z } from "zod";
 export const UserInteractionKindSchema = z.enum(["action_required", "question"]);
 export type UserInteractionKind = z.infer<typeof UserInteractionKindSchema>;
 
+// Provider generation schemas must be serializable; normalization and semantic
+// checks remain in UserInteractionInputSchema when the result is received.
+export const UserInteractionOutputSchema = z.object({
+  kind: UserInteractionKindSchema,
+  title: z.string().min(1).max(120),
+  message: z.string().min(1).max(4000),
+  details: z.string().min(1).max(8000).optional(),
+  action_label: z.string().max(40).optional(),
+  question: z.string().max(1000).optional().describe("提问类交互必须提供非空问题；操作类交互可省略"),
+  choices: z.array(z.object({
+    id: z.string().min(1).max(64),
+    label: z.string().min(1).max(120),
+    description: z.string().min(1).max(300).optional(),
+  }).strict()).max(8).optional(),
+  allow_free_text: z.boolean().optional(),
+  target: z.object({
+    url: z.string().max(2048).optional().describe("仅提供安全的 http 或 https 操作入口"),
+    tab_id: z.number().int().positive().optional(),
+    connection_hint: z.string().max(256).optional(),
+  }).strict().optional(),
+  resume_note: z.string().max(4000).optional(),
+}).strict();
+
 const NonEmptyTrimmedString = (min = 1, max = 4000) =>
   z
     .string()

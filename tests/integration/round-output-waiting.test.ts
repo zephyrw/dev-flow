@@ -84,9 +84,9 @@ it("receives a mixed reply from a real CLI, falls through a damaged file and wai
     expect(
       new UserInteractionService(s.store).getCurrentInteraction(w.id)?.request,
     ).toMatchObject({
-      kind: "question",
-      details: "等待测试环境恢复",
-      choices: [{ id: "clarify_assistance" }],
+      kind: "action_required",
+      title: "请恢复测试环境",
+      message: "请启动已指定的测试数据库，确认可连接后继续剩余集成和浏览器测试。",
     });
     expect(s.store.get("execution_completion", run.id)).toBeUndefined();
     expect(s.store.jobs().length).toBeLessThanOrEqual(jobs);
@@ -114,6 +114,8 @@ it("persists ambiguous results across controller reload; clarification requires 
       replyText: '说明\n{"status":"completed"}\n{"status":"need_user"}',
     });
     expect(parsed.kind).toBe("ambiguous");
+    s.store.put("run_result_parse", run.id, s.w.id, { kind: parsed.kind,
+      reason: parsed.kind === "resolved" ? undefined : parsed.reason });
     await s.engine.receiveRoundResult(s.w.id, run.id, {
       status: "unclear",
       summary: parsed.kind === "resolved" ? "" : parsed.rawText,

@@ -647,7 +647,9 @@ export class ProfileRuntime {
         user_interaction_instruction: "请求人工协助时，title直接说明用户要做什么；message使用通俗语言和Markdown分段，依次说明当前卡点、用户操作入口与编号步骤、完成标准及继续后的动作。技术进展、日志、内部编号和术语放在可选details字段，不堆进主说明；resume_note只保留模型续接上下文。action_required必须提供用户能执行的明确动作，不得把开发总结直接变成‘我已完成’确认。工具权限拒绝应进入正式授权流程，明确服务和方法，不得让用户修改权限配置、泛化授权或猜测操作。没有确定入口时先说明缺失信息，不声称用户可以完成。",
         completion_instruction: purpose === "planner_commit" && policy2
           ? "完成实际提交后输出 JSON {status, summary, repositories: [{repo_id, commit}], user_interaction}；无须新提交时在摘要说明。integration_repair 中的合并冲突自动解决并完成必要定向验证，随后返回新提交号。需要用户决定时返回 status: need_user，并提供 user_interaction: {kind: question, title, message, question, choices: [{id, label}], allow_free_text: true}，描述选项及影响；平台弹窗确认后继续当前提交，不能只在日志中提问。"
-          : "最终输出 JSON {status, summary, notes, artifacts, user_interaction}。status 只能是 completed、need_planner 或 need_user。若需要人工操作或提问，返回 status 为 need_user 并在 user_interaction 中填入结构化请求。未知状态不会被当成完成。" +
+          : "最终输出 JSON {status, summary, notes, artifacts, user_interaction}。当前阶段全部完成才返回 completed；需要规划澄清返回 need_planner；确需人工操作或提问才返回 need_user，并在 user_interaction 中说明实际卡点、具体操作或问题。未知状态不会被当成完成。" +
+            (["implement", "execute", "executor_test"].includes(purpose)
+              ? "仍有可执行的剩余任务时返回 incomplete，并用 completed_items 列出已完成的原计划编号、unfinished_items 列出剩余项的 id 和 reason，平台会续接原会话。阶段总结不代表任务完成。" : "") +
             (purpose === "functional_fix"
               ? "完成指本轮用户指导已落实，不要求重新完成整份计划。summary/notes逐项回答原文中的问题并说明实际操作与结果，未做或无法确认的历史测试如实说明；不能用启动成功代替问题回答或用户要求的浏览器测试。启动服务时返回真实访问URL和端口，保留服务供用户验收；实际修复代码时说明修改及必要测试。历史测试结果不因本轮未运行而改写为失败或未执行。"
               : (includeTestingSkills ? "在summary/notes中逐项说明原计划测试场景的实际结果和未完成项；使用delivery时保留test_executions、acceptance_mappings和unfinished_items，关联必须对应实际测试场景，不能把编译或单测当作真实接口、集成或浏览器验证。必要测试未完成不得声明completed；继续可执行的测试，确需外部协助则报告need_user。" : "")) +
@@ -761,9 +763,9 @@ export class ProfileRuntime {
         original_text: continuation.original_text,
         questions: continuation.questions,
         answer: continuation.answer,
-        ...(continuation.kind === "intent_clarification" ? {
+        ...(continuation.kind === "intent_clarification" || continuation.kind === "execution_check" ? {
           instructions:
-            INTENT_CLARIFICATION_INSTRUCTION +
+            (continuation.kind === "execution_check" ? continuation.answer ?? INTENT_CLARIFICATION_INSTRUCTION : INTENT_CLARIFICATION_INSTRUCTION) +
             "。依据交接中的原文和完整背景判断上一轮结果，不重新执行已完成的开发或测试。" +
             extraInstructionsPrompt,
         } : {}),
@@ -1826,6 +1828,8 @@ export function invokePrompt(
   if (userGuidance?.messages.length) return userGuidance.messages[0]!.text;
   if (continuation?.kind === "user_answer") return continuation.answer ?? "继续";
   if (continuation?.kind === "runtime_resume") return "继续";
+  if (continuation?.kind === "execution_continue" || continuation?.kind === "execution_check")
+    return continuation.answer ?? "请按当前阶段约定的格式说明剩余任务和停止原因。";
   if (continuation?.kind === "intent_clarification") return "请按当前阶段约定的格式说明刚才的结果。";
   if (purpose === "quality_review") {
     return joinPrompt(

@@ -2,6 +2,8 @@ export type IntentSource = "outer" | "nested" | "legacy_submit" | "missing";
 
 export type ContinuationKind =
   | "intent_clarification"
+  | "execution_continue"
+  | "execution_check"
   | "user_answer"
   | "runtime_resume";
 

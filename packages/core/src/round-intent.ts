@@ -6,6 +6,7 @@ import type {
 
 export type ExecutionIntent =
   | "completed"
+  | "incomplete"
   | "need_planner"
   | "need_user"
   | "unclear";
@@ -74,6 +75,7 @@ function recognizedExecutionIntent(
   const key = lower(status);
   if (!key) return undefined;
   if (COMPLETED.has(key)) return "completed";
+  if (key === "incomplete") return "incomplete";
   if (NEED_PLANNER.has(key)) return "need_planner";
   if (NEED_USER.has(key)) return "need_user";
   return "unclear";
@@ -218,6 +220,8 @@ export function asRunContinuation(value: unknown): RunContinuation | undefined {
   const kind = (value as RunContinuation).kind;
   if (
     kind === "intent_clarification" ||
+    kind === "execution_continue" ||
+    kind === "execution_check" ||
     kind === "user_answer" ||
     kind === "runtime_resume"
   )
@@ -230,9 +234,11 @@ export function applyContinuationMaterials(
   continuation?: RunContinuation,
 ): Record<string, unknown> {
   if (!continuation) return fullMaterials;
-  if (continuation.kind === "intent_clarification") {
+  if (continuation.kind === "intent_clarification" || continuation.kind === "execution_check") {
     const result: Record<string, unknown> = {
-      instructions: INTENT_CLARIFICATION_INSTRUCTION,
+      instructions: continuation.kind === "execution_check"
+        ? continuation.answer ?? INTENT_CLARIFICATION_INSTRUCTION
+        : INTENT_CLARIFICATION_INSTRUCTION,
       original_text: continuation.original_text,
       kind: continuation.kind,
       source_run_id: continuation.source_run_id,
@@ -245,6 +251,8 @@ export function applyContinuationMaterials(
     }
     return result;
   }
+  if (continuation.kind === "execution_continue")
+    return { ...fullMaterials, instructions: continuation.answer ?? fullMaterials.instructions };
   if (continuation.kind === "user_answer")
     return {
       ...fullMaterials,
@@ -304,6 +312,8 @@ export function continuationSessionRequired(
   if (purpose === "planning" || purpose === "aside") return false;
   return (
     continuation?.kind === "intent_clarification" ||
+    continuation?.kind === "execution_continue" ||
+    continuation?.kind === "execution_check" ||
     continuation?.kind === "user_answer"
   );
 }

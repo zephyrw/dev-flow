@@ -350,6 +350,7 @@ export function readableLogs(events: any[], workflow: string, formalGuidance: Ar
       ModelRetryScheduled: "等待模型额度恢复",
       ModelInputRecoveryScheduled: "输入问题已返回执行模型",
       ModelRetryStarted: "额度恢复后继续执行",
+      ExecutionContinuationScheduled: p.mode === "clarify" ? "正在核对剩余任务和停止原因" : "正在继续剩余任务",
       ImplementationReconciled: "已有实现已核对",
     };
     if (lifecycle[e.type]) {

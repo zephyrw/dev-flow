@@ -8,6 +8,10 @@ import {
 import { PlanApprovalService } from "./plan-approval-service.js";
 import { projectWorkflowOverview } from "./workflow-overview.js";
 import { recordExecutionTestReport, reportedTestProgress } from "./execution-test-progress.js";
+import {
+  executionContinuationDecision, executionProgressItems, hasExecutionUserRequest,
+  EXECUTION_CONTINUE_INSTRUCTION, EXECUTION_CLARIFY_INSTRUCTION,
+} from "./execution-continuation-policy.js";
 import type { RunApprovalRef } from "../../contracts/src/plan-approval.js";
 
 import { bindProfile, buildDispatchContext, isLegacyProtocol, latestSpec, readEffectiveSpec, type RunPurpose } from "./run-profile.js";
@@ -1834,12 +1838,31 @@ export class Engine {
     const stale = this.staleRoundResult(key, runId, deliverySubmit);
     if (stale) return stale;
     const w = this.get(key);
-    const normalized = normalizeDeliveredRound(
+    let normalized = normalizeDeliveredRound(
       manifest,
       deliverySubmit ? { deliverySubmit: true } : undefined,
     );
     const userInput = this.store.get<SessionInputReceipt>("session_input", runId)?.user_input === true;
     if (!userInput) recordExecutionTestReport(this.store, w, this.store.must<Run>("run", runId), normalized.payload);
+    const executionRun = this.store.must<Run>("run", runId);
+    const canContinue = !userInput && executionRun.routing_role !== "planner" &&
+      ["implement", "execute", "executor_test"].includes(executionRun.purpose ?? "") &&
+      executionRun.dispatch_context?.guidance_mode !== "human_acceptance";
+    if (normalized.intent === "incomplete" && hasExecutionUserRequest(normalized.payload)) {
+      const nested = normalized.payload.delivery as Record<string, unknown> | undefined;
+      normalized = normalizeDeliveredRound({ ...normalized.payload, status: "need_user", verdict: undefined,
+        ...(nested ? { delivery: { ...nested, status: "need_user", verdict: undefined } } : {}) });
+    }
+    if (canContinue) {
+      const mode = executionContinuationDecision(normalized, this.store.get("run_result_parse", runId));
+      if (mode) {
+        if (this.queuePendingRunInput(executionRun)) return { status: "queued" };
+        const continued = this.scheduleExecutionContinuation(key, executionRun, normalized, mode);
+        if (continued) return continued;
+      }
+    }
+    if (normalized.intent === "incomplete")
+      normalized = { ...normalized, intent: "unclear" };
     const commitRecovery = this.store.get<{ requires_user?: boolean; instructions?: string }>("planner_integration_repair", key);
     if (this.store.must<Run>("run", runId).purpose === "planner_commit" && commitRecovery?.requires_user &&
         normalized.intent !== "need_user") {
@@ -3397,6 +3420,16 @@ export class Engine {
           continue;
         }
         if (this.running.has(w.id)) continue;
+        // After a restart, an automatic follow-up must still wait for the
+        // previous managed process tree to have a confirmed exit.
+        const autoSource = this.store.get<PendingModelRetry>("pending_model_retry", w.id)?.retry_run_id;
+        const autoProcess = autoSource && this.store.get<{ status: string; confirmed?: boolean }>("process_record", autoSource);
+        if (autoSource && this.store.get("execution_auto_continuation", autoSource) && autoProcess &&
+            (!["exited", "failed"].includes(autoProcess.status) || !autoProcess.confirmed)) {
+          this.store.put("queue_wait", w.id, w.id, { kind: "preparing",
+            message: "等待上一轮模型进程退出后继续剩余任务", owners: [autoSource] });
+          continue;
+        }
         const review = w.state === "REVIEW_QUEUED";
         // 用户决定启动多少任务；只对实际共享的工作目录获取写锁。
         const runId = id("run");
@@ -4887,6 +4920,63 @@ export class Engine {
       });
       void this.dispatch();
     }
+  }
+
+  private scheduleExecutionContinuation(
+    key: string,
+    run: Run,
+    normalized: ReturnType<typeof normalizeDeliveredRound>,
+    mode: "continue" | "clarify",
+  ): RoundResult {
+    type ContinuationReceipt = {
+      workflow_id: string; source_run_id: string; plan_revision: number;
+      purpose: Run["purpose"]; mode: "continue" | "clarify";
+      completed_items: string[]; no_progress_count: number;
+    };
+    // A receipt belongs to one finished invocation, not a mutable workflow-wide counter.
+    const existing = this.store.get<ContinuationReceipt>("execution_auto_continuation", run.id);
+    if (existing) return { status: "queued" };
+    const parentId = run.continuation?.source_run_id ?? run.dispatch_context?.retry_run_id;
+    const parent = parentId ? this.store.get<ContinuationReceipt>("execution_auto_continuation", parentId) : undefined;
+    const prior = parent?.workflow_id === key && parent.plan_revision === run.plan_revision && parent.purpose === run.purpose
+      ? parent : undefined;
+    const completed = executionProgressItems(normalized.payload);
+    const previousItems = new Set(prior?.completed_items ?? []);
+    const progressed = completed.some(item => !previousItems.has(item));
+    // A clarification turn is deliberately prohibited from doing work.
+    const noProgress = progressed ? 0 : (prior?.no_progress_count ?? 0) +
+      (run.continuation?.kind === "execution_check" ? 0 : 1);
+    if (noProgress >= 3 || mode === "clarify" && prior?.mode === "clarify") {
+      const message = mode === "clarify" && prior?.mode === "clarify"
+        ? "模型补充说明后仍未明确剩余任务或实际卡点，自动核对已停止。已有成果和原会话已保留，请提供处理意见后继续。"
+        : "模型连续三轮未报告新增完成项，自动续执行已停止。已有成果和原会话已保留，请检查卡点或提供处理意见后继续。";
+      return this.routeExecutionIntent(key, run.id, normalizeDeliveredRound({ status: "need_user", summary: message,
+        user_interaction: { kind: "question", title: "自动续执行需要处理意见", message,
+          details: normalized.summary, question: "请说明如何处理当前卡点，或补充继续执行的指导。", allow_free_text: true } }));
+    }
+    return this.store.transaction(() => {
+      const w = this.get(key);
+      const receipt: ContinuationReceipt = { workflow_id: key, source_run_id: run.id,
+        plan_revision: run.plan_revision, purpose: run.purpose, mode,
+        completed_items: [...new Set([...previousItems, ...completed])], no_progress_count: noProgress };
+      this.store.put("execution_auto_continuation", run.id, key, receipt);
+      saveRunContinuation(this.store, key, key, {
+        kind: mode === "continue" ? "execution_continue" : "execution_check",
+        source_run_id: run.id, purpose: "execute", role: "executor",
+        phase: run.dispatch_context?.review_phase, conversation_id: run.conversation_id,
+        original_text: [normalized.summary, normalized.notes].filter(Boolean).join("\n"),
+        answer: mode === "continue" ? EXECUTION_CONTINUE_INSTRUCTION : EXECUTION_CLARIFY_INSTRUCTION,
+      });
+      stageModelRunRetry(this.store, key, run.id);
+      this.restoreDispatchContext(key, run.id);
+      this.transition(key, [w.state], "QUEUED", run.stage, { blocker: undefined });
+      this.store.event(key, w.project_id, "ExecutionContinuationScheduled", {
+        mode, no_progress_count: noProgress,
+        message: mode === "continue" ? "本轮完成了部分任务，正在继续剩余任务。" : "正在核对剩余任务和停止原因。",
+      }, run.id);
+      this.scheduler.enqueue(key, w.project_id);
+      return { status: "queued", summary: normalized.summary };
+    });
   }
 
   private routeExecutionIntent(

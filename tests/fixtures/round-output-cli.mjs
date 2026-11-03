@@ -8,7 +8,7 @@ fs.readFileSync(0, "utf8");
 const emit = value => process.stdout.write(JSON.stringify(value) + "\n");
 emit({ type: "thread.started", thread_id: randomUUID() });
 emit({ type: "turn.started" });
-const response = '本地开发和测试已完成。\n```json\n{"status":"need_user","summary":"等待测试环境恢复","notes":"剩余 IT、E2E 和 OpenTabs","test_results":[{"test_id":"UT-01","case_id":"UT-01-CASE-01","status":"passed"}]}\n```\n依赖测试环境的工作保持暂停。';
+const response = '本地开发和测试已完成。\n```json\n{"status":"need_user","summary":"等待测试环境恢复","notes":"剩余 IT、E2E 和 OpenTabs","user_interaction":{"kind":"action_required","title":"请恢复测试环境","message":"请启动已指定的测试数据库，确认可连接后继续剩余集成和浏览器测试。"},"test_results":[{"test_id":"UT-01","case_id":"UT-01-CASE-01","status":"passed"}]}\n```\n依赖测试环境的工作保持暂停。';
 emit({ type: "item.completed", item: { type: "agent_message", text: response } });
 // Simulate a provider writing an unusable output file while returning valid text.
 const outputFlag = args.indexOf("--output-last-message");

@@ -70,6 +70,7 @@ it("need_user 不生成完成记录，审查不明结论回答后回到原审查
     const asked = await s.engine.deliver(s.w.id, {
       status: "need_user",
       summary: "缺环境变量名称",
+      user_interaction: { kind: "question", title: "请指定环境变量", message: "需要确定配置来源", question: "使用哪个环境变量名称？" },
     });
     expect(asked.status).toBe("need_user");
     expect(s.engine.get(s.w.id).state).toBe("WAITING_INPUT");
@@ -146,6 +147,7 @@ it("嵌套 delivery 不能覆盖外层 need_user，停止的旧运行不能改�
     const nested = await s.engine.receiveRoundResult(s.w.id, "new-run", {
       status: "need_user",
       summary: "需要补充配置",
+      user_interaction: { kind: "question", title: "请补充配置", message: "当前缺少配置入口", question: "使用哪个配置地址？" },
       delivery: { summary: "已完成部分实现" },
     });
     expect(nested.status).toBe("need_user");
@@ -433,7 +435,7 @@ it("need_planner 入口应留下规划交接而不是完成记录", async () => 
   }
 });
 
-it("不明结论会写入完整续接，完成交付只入队归档不改意图", async () => {
+it("执行不明结论自动核对一次，保留原文且不生成完成记录", async () => {
   const s = await fixture();
   try {
     executingRun(s, "run-clarify");
@@ -441,13 +443,13 @@ it("不明结论会写入完整续接，完成交付只入队归档不改意图"
       status: "unclear",
       summary: "请补充本轮结论",
     });
-    expect(result.status).toBe("unclear");
-    expect(s.store.get("run_continuation", s.w.id)).toBeUndefined();
-    expect(s.engine.get(s.w.id).state).toBe("WAITING_INPUT");
-    expect(readWaitingContext(s.store, s.w.id)).toMatchObject({
-      purpose: "execute", role: "executor", original_text: "请补充本轮结论", intent: "unclear",
+    expect(result.status).toBe("queued");
+    expect(s.engine.get(s.w.id).state).toBe("QUEUED");
+    expect(readRunContinuation(s.store, s.w.id)).toMatchObject({
+      kind: "execution_check", purpose: "execute", role: "executor", original_text: "请补充本轮结论",
     });
-    expect(readWaitingContext(s.store, s.w.id)?.continuation).toBe(true);
+    expect(readWaitingContext(s.store, s.w.id)).toBeUndefined();
+    expect(s.store.get("execution_completion", "run-clarify")).toBeUndefined();
   } finally {
     await cleanup(s);
   }

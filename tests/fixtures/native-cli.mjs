@@ -91,7 +91,11 @@ if (fixture.readAttachments) emitAttachmentReads(fixture.attachmentPaths);
 if (fixture.holdMs) await sleep(fixture.holdMs);
 completeHeldChildren(tree);
 let result;
-if (stage === "planning") {
+const scriptedRound = nextExecutionRound(fixture);
+if (scriptedRound) {
+  if (scriptedRound.hold_ms) await sleep(scriptedRound.hold_ms);
+  result = scriptedRound.result;
+} else if (stage === "planning") {
   // Sidecar lookup restores context; only a path in this prompt identifies a handoff input.
   const isFollowupPrompt = Boolean(!promptHandoffFile && prompt.trim());
   const feedbackText = isFollowupPrompt
@@ -390,6 +394,7 @@ function readFixtureOptions(handoff) {
     nested,
     mixed,
     grandchild,
+    executionRounds: Array.isArray(fromFile.execution_rounds) ? fromFile.execution_rounds : [],
     childCount: Math.max(
       0,
       Math.floor(
@@ -431,6 +436,16 @@ function readFixtureOptions(handoff) {
       ) || attachmentPaths.length > 0,
     attachmentPaths,
   };
+}
+
+function nextExecutionRound(fixture) {
+  if (stage !== "execute" || !fixture.executionRounds.length) return undefined;
+  const counterFile = path.join(process.cwd(), `.devflow-fixture-execution-${process.env.DEVFLOW_WORKFLOW_ID}.json`);
+  const rounds = fs.existsSync(counterFile) ? JSON.parse(fs.readFileSync(counterFile, "utf8")) : [];
+  const scripted = fixture.executionRounds[rounds.length];
+  rounds.push({ run_id: process.env.DEVFLOW_RUN_ID, session_id: rootThread, prompt });
+  fs.writeFileSync(counterFile, JSON.stringify(rounds));
+  return scripted;
 }
 
 function resolveHandoffFile(file) {

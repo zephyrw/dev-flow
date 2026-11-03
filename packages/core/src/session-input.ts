@@ -3,6 +3,7 @@ import { FlowError } from "../../contracts/src/index.js";
 import type { Store } from "../../store/src/store.js";
 import { boundConversationContinuation } from "./conversation-lineage.js";
 import { nativeAdapter } from "./native-session.js";
+import { EXECUTION_CLARIFY_INSTRUCTION, EXECUTION_CONTINUE_INSTRUCTION } from "./execution-continuation-policy.js";
 
 export interface SessionInputReceipt {
   run_id: string;
@@ -123,6 +124,10 @@ export function followupText(store: Store, run: Run, messages: Pick<FeedbackMess
   const userInput = runUserInputText(store, run, messages);
   if (userInput !== undefined) return userInput;
   const continuation = boundConversationContinuation(store, run);
+  if (continuation?.kind === "execution_continue")
+    return continuation.answer || EXECUTION_CONTINUE_INSTRUCTION;
+  if (continuation?.kind === "execution_check")
+    return continuation.answer || EXECUTION_CLARIFY_INSTRUCTION;
   if (continuation?.kind === "intent_clarification")
     return continuation.answer || "用户已确认仅补充结果说明。请说明刚才的结果是已完成、需要用户补充、需要规划调整还是遇到阻塞，并返回当前阶段约定的结果。只补充结果，不重新执行开发、测试或其他操作；需要外部条件时返回 need_user 并保持等待。";
   return "继续";

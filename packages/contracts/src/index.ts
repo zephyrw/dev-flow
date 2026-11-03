@@ -3,6 +3,7 @@ import { PlanSelfCheckReportSchema } from "./plan-self-check.js";
 import { NativePlanSchema } from "./native-plan.js";
 import { QualityReviewResultSchema } from "./quality.js";
 import { ReviewFindingSchema } from "./review-findings.js";
+import { UserInteractionOutputSchema } from "./user-interaction.js";
 export const Id = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,95}$/);
 import { RelativePath } from "./base.js";
 export { RelativePath } from "./base.js";
@@ -500,7 +501,7 @@ export const DeliveryManifestSchema = z
       .optional()
       .default([]),
     status: z
-      .enum(["completed", "need_planner", "need_user", "unclear"])
+      .enum(["completed", "incomplete", "need_planner", "need_user", "unclear"])
       .optional(),
     summary: z.string().optional(),
     notes: z.string().optional(),
@@ -520,7 +521,10 @@ const ExecutorArtifactOutputSchema = z.union([
 export const ExecutorRoundOutputSchema = z
   .object({
     test_results: z.array(ReportedTestResultSchema).optional(),
-    status: z.enum(["completed", "need_planner", "need_user", "unclear"]).optional(),
+    status: z.enum(["completed", "incomplete", "need_planner", "need_user", "unclear"]).optional(),
+    completed_items: z.array(z.string()).optional(),
+    unfinished_items: DeliveryManifestSchema.shape.unfinished_items.optional(),
+    user_interaction: UserInteractionOutputSchema.optional(),
     summary: z.string().optional(),
     notes: z.string().optional(),
     artifacts: z.array(ExecutorArtifactOutputSchema).optional(),
@@ -543,7 +547,7 @@ export const ExecutorRoundOutputSchema = z
 // Historical evidence imports still use the strict DeliveryManifestSchema.
 export const ExecutorRoundResultSchema = z
   .object({
-    status: z.unknown().optional().describe("completed, need_planner, need_user or unclear"),
+    status: z.unknown().optional().describe("completed, incomplete, need_planner, need_user or unclear"),
     summary: z.unknown().optional(),
     notes: z.unknown().optional(),
     artifacts: z.unknown().optional(),

@@ -9,11 +9,12 @@ import {
   normalizeOptionalDeliveryManifest,
   type Run,
 } from "../../packages/contracts/src/index.js";
-import { modelOutputSchema } from "../../packages/contracts/src/review-output.js";
+import { modelOutputSchema, normalizeModelOutput } from "../../packages/contracts/src/review-output.js";
+import { UserInteractionInputSchema } from "../../packages/contracts/src/user-interaction.js";
 
 it("structured output guidance retains typed intent and text while input remains tolerant", () => {
   const schema = modelOutputSchema(ExecutorRoundOutputSchema, ["main"]);
-  expect(schema.properties.status.anyOf[0].enum).toEqual(["completed", "need_planner", "need_user", "unclear"]);
+  expect(schema.properties.status.anyOf[0].enum).toEqual(["completed", "incomplete", "need_planner", "need_user", "unclear"]);
   expect(schema.properties.summary.anyOf[0].type).toBe("string");
   expect(schema.properties.notes.anyOf[0].type).toBe("string");
   const delivery = schema.properties.delivery.anyOf[0];
@@ -25,6 +26,42 @@ it("structured output guidance retains typed intent and text while input remains
   const received = { status: "completed", notes: { unexpected: true }, delivery: { test_executions: [{ report_paths: ["report.json"] }] } };
   expect(ExecutorRoundOutputSchema.safeParse(received).success).toBe(false);
   expect(ExecutorRoundResultSchema.parse(received).status).toBe("completed");
+});
+
+it("closed provider output schema permits concrete questions and user actions", () => {
+  const schema = modelOutputSchema(ExecutorRoundOutputSchema, ["main"]);
+  expect(schema.additionalProperties).toBe(false);
+  expect(schema.required).toContain("user_interaction");
+  const interaction = schema.properties.user_interaction.anyOf[0];
+  expect(interaction.additionalProperties).toBe(false);
+  expect(interaction.properties.kind.enum).toEqual(["action_required", "question"]);
+  expect(interaction.required).toEqual(["kind", "title", "message", "details", "action_label", "question", "choices", "allow_free_text", "target", "resume_note"]);
+  expect(interaction.properties.question.anyOf[0]).toMatchObject({ type: "string", maxLength: 1000 });
+  expect(interaction.properties.allow_free_text.anyOf[0].type).toBe("boolean");
+  const choice = interaction.properties.choices.anyOf[0].items;
+  expect(choice.additionalProperties).toBe(false);
+  expect(choice.required).toEqual(["id", "label", "description"]);
+  const target = interaction.properties.target.anyOf[0];
+  expect(target.additionalProperties).toBe(false);
+  expect(target.required).toEqual(["url", "tab_id", "connection_hint"]);
+  expect(target.properties.url.anyOf[0].type).toBe("string");
+  const requests = [
+    { kind: "question", title: "选择输出格式", message: "两种格式均可使用，请选择。", question: "保存 Markdown 还是 PDF？",
+      choices: [{ id: "markdown", label: "Markdown", description: null }], allow_free_text: true },
+    { kind: "action_required", title: "登录阅读账号", message: "请在已打开的页面完成登录，成功后继续。",
+      target: { url: "https://example.com/login", tab_id: 1, connection_hint: null }, action_label: "已登录，继续" },
+  ];
+  for (const request of requests) {
+    // Providers require all optional keys as null. None of the actual request
+    // fields may be rejected by the generated closed object.
+    expect(Object.keys(request).every(key => key in interaction.properties)).toBe(true);
+    const output = { status: "need_user", user_interaction: {
+      ...Object.fromEntries(interaction.required.map((key: string) => [key, null])), ...request,
+    } };
+    const normalized = normalizeModelOutput(output);
+    expect(ExecutorRoundOutputSchema.parse(normalized).status).toBe("need_user");
+    expect(UserInteractionInputSchema.parse(normalized.user_interaction).kind).toBe(request.kind);
+  }
 });
 
 it("Codex executor and planner takeover output schemas contain typed artifact items at both levels", () => {

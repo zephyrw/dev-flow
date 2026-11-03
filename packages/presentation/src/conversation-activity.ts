@@ -51,6 +51,7 @@ const businessEventTypes = new Set([
   "PreparationStarted", "SourceVersionSelected", "ServiceExited",
   "OperationCompleted", "ResourceWaiting", "ModelRetryScheduled",
   "ModelRetryStarted", "ImplementationReconciled", "ProcessesReconciled",
+  "ExecutionContinuationScheduled",
   "TaskStarted", "TaskCompleted", "TaskClaimed", "StateChanged",
   "EnvironmentFailed", "BuildStarted", "BuildReady", "BuildFailed",
   "Stopped", "ReviewCompletionQueued", "WorkflowCreated",

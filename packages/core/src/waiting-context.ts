@@ -337,7 +337,15 @@ export function currentContinuation(
     // a successful current Run cannot revive its old staged answer.
     const consumedAnswer = boundParent?.source_run_id === run.id &&
       boundParent.purpose === candidate.purpose && boundParent.role === candidate.role;
-    if ((run.status === "completed" || run.exit_code === 0) && !pendingAnswer && !consumedAnswer) return;
+    const automatic = candidate.kind === "execution_continue" || candidate.kind === "execution_check";
+    const receipt = automatic && candidate.source_run_id === run.id
+      ? store.get<{ workflow_id: string; source_run_id: string; mode: string }>("execution_auto_continuation", run.id)
+      : undefined;
+    const pendingAutomatic = receipt?.workflow_id === workflowId && receipt.source_run_id === run.id &&
+      receipt.mode === (candidate.kind === "execution_continue" ? "continue" : "clarify");
+    if (automatic && candidate.source_run_id === run.id && !pendingAutomatic) return;
+    if (automatic && store.get("run_stop", run.id)) return;
+    if ((run.status === "completed" || run.exit_code === 0) && !pendingAnswer && !consumedAnswer && !pendingAutomatic) return;
     chain.add(run.id);
     if (run.id === candidate.source_run_id) {
       const owner = waitingPurposeFromRun(run.purpose, run.stage);

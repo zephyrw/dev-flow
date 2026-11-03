@@ -27,7 +27,7 @@ export async function fixture(
   const w = s.engine.create(
     {
       project_id: p.id,
-      title: "需求-" + crypto.randomUUID(),
+      title: "需求-" + crypto.randomUUID().slice(0, 8),
       request: "修改文本后复核",
       complexity: "simple",
       workspace_mode: "existing_workspace",
