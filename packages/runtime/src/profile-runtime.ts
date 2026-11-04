@@ -1574,7 +1574,9 @@ export class ProfileRuntime {
       exit = await proc.completion;
       consume("stdout", "", true);
       consume("stderr", "", true);
-      if (profile.adapterId === "agy" && !agyResult)
+      // Failed or terminated processes are rejected below. Preserve their stderr
+      // diagnostic so missing-session recovery can still recognize the cause.
+      if (profile.adapterId === "agy" && exit.code === 0 && !exit.termination_reason && !agyResult)
         failure ??= "AGY_RESULT_MISSING: CLI 未返回结束事件，原任务尚未确认完成。";
       // Exit 0 only confirms the CLI process ended. A failed/cancelled AGY
       // terminal cannot lend authority to an embedded completed/incomplete result.
