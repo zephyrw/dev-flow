@@ -40,7 +40,7 @@ function openCodeBase(token: string): { base: string; variant?: string } {
 
 function isProviderModel(token: string): boolean {
   if (HEADER_TOKENS.has(token.toLowerCase())) return false;
-  return /^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._:+-]*(?:#[a-z0-9._-]+)?$/i.test(
+  return /^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._:+-]*(?:\/[a-z0-9][a-z0-9._:+-]*)*(?:#[a-z0-9._-]+)?$/i.test(
     token,
   );
 }
@@ -134,7 +134,28 @@ function variantsFromFollowLine(line: string): string[] | undefined {
 function rowsFromText(lines: string[]): Map<string, string[]> {
   const merged = new Map<string, string[]>();
   let current: string | undefined;
+  let metadata: string[] | undefined;
+  const mergeMetadata = () => {
+    if (current && metadata) {
+      try {
+        const row = asRecord(JSON.parse(metadata.join("\n")));
+        mergeRow(merged, { base: current, variants: variantsFromUnknown(row?.variants ?? row?.variant) });
+      } catch {
+        // Plain catalog rows still identify the model when verbose metadata is unavailable.
+      }
+    }
+    metadata = undefined;
+  };
   for (const line of lines) {
+    if (!metadata && current && line.trim() === "{") {
+      metadata = [line];
+      continue;
+    }
+    if (metadata) {
+      metadata.push(line);
+      if (line === "}") mergeMetadata();
+      continue;
+    }
     const follow = variantsFromFollowLine(line);
     if (follow && current) {
       mergeRow(merged, { base: current, variants: follow });
@@ -153,6 +174,7 @@ function rowsFromText(lines: string[]): Map<string, string[]> {
       variants: split.variant ? [split.variant] : [],
     });
   }
+  mergeMetadata();
   return merged;
 }
 

@@ -208,7 +208,7 @@ export function registerModelRoutes(
   const specs = new ExecutionSpecService(engine.store, engine.config, getActiveCategory);
   const defaults = new ModelDefaultsService(engine.store);
   const catalog = new ModelCatalogService(engine.store, accountService
-    ? { readAgyModels: () => accountService.readActiveModelIds() } : {});
+    ? { readAgyModels: async () => accountService.isManaged() ? accountService.readActiveModelIds() : undefined } : {});
   const access = modelAccess ?? new ModelAccessService(engine.store, {
     catalog,
     ...(accountService ? {
@@ -244,7 +244,7 @@ export function registerModelRoutes(
       .string()
       .parse((req.params as { adapter: string }).adapter);
     const scopeId = (req.query as { scope_id?: string }).scope_id;
-    if (adapter === "agy" && accountService) await accountService.syncActiveAccountFromHost();
+    if (adapter === "agy" && accountService?.isManaged()) await accountService.syncActiveAccountFromHost();
     const result = catalog.getModels(adapter, scopeId);
     return adapter === "agy" ? { ...result, entries: result.entries.filter(entry => entry.availability === "listed") } : result;
   });
@@ -255,7 +255,7 @@ export function registerModelRoutes(
       .string()
       .parse((req.params as { adapter: string }).adapter);
     const body = (req.body || {}) as Record<string, unknown>;
-    if (adapter === "agy" && accountService) await accountService.syncActiveAccountFromHost();
+    if (adapter === "agy" && accountService?.isManaged()) await accountService.syncActiveAccountFromHost();
     const result = catalog.refreshModels({
       adapter,
       request_id: parseUuid(body.request_id),

@@ -90,6 +90,14 @@ function openCatalog(control: Record<string, unknown> = {}, executable = FIXTURE
 }
 
 describe("model catalog operations", { timeout: 30000 }, () => {
+  it("未启用受管 AGY 时从已登录的 CLI 读取模型目录", async () => {
+    const env = openCatalog({ catalogStdout: "gemini-3.8-flash-high\tGemini 3.8 Flash (High)\n" });
+    new ModelCatalogService(env.store, { readAgyModels: async () => undefined });
+    const operation = env.catalog.refreshModels({ adapter: "agy", request_id: randomUUID() });
+    expect((await waitDone(env.catalog, operation.operation.id)).status).toBe("committed");
+    expect(env.catalog.getModels("agy").entries.map(entry => entry.nativeId)).toContain("gemini-3.8-flash-high");
+  });
+
   it("keeps old and new AGY catalogs isolated by account and rejects an identity change during discovery", async () => {
     const env = openCatalog();
     const native = modelIdentity.resolveModelIdentity(env.store, { adapterId: "agy", executableRef: FIXTURE });
@@ -389,12 +397,14 @@ describe("model catalog operations", { timeout: 30000 }, () => {
   });
 
   it.each([
-    ["flag", "opencode run --model provider/model --variant value"],
-    ["hash", "opencode run --model provider/model#<variant>"],
-  ] as const)("OpenCode %s 能力来自实际 help 并供验证和冻结共用", async (encoding, helpStdout) => {
+    ["flag", "opencode run --model provider/model --variant value", false],
+    ["hash", "opencode run --model provider/model#<variant>", false],
+    ["flag", "opencode run --model provider/model --variant value", true],
+  ] as const)("OpenCode %s 能力来自实际 help 并供验证和冻结共用", async (encoding, help, stderr) => {
     const env = openCatalog({
       adapterId: "opencode",
-      helpStdout,
+      helpStdout: stderr ? "" : help,
+      helpStderr: stderr ? help : "",
       catalogStdout: readFileSync(join(CATALOG_ROOT, "opencode", "models-success.txt"), "utf8"),
     });
     const operation = env.catalog.discoverTools({ request_id: randomUUID(), adapter_ids: ["opencode"] });

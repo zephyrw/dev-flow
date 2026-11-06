@@ -8,8 +8,8 @@ import { objectHash } from "../../packages/core/src/util.js";
 const s = setup(),
   r = await repository(s.root),
   p = project(r.repo);
-s.config.opentabs.endpoint = "http://127.0.0.1:9515/mcp";
-s.config.opentabs.secret_file = join(
+s.config.opentabs.endpoint = process.env.DEVFLOW_OPENTABS_TEST_ENDPOINT ?? "http://127.0.0.1:9515/mcp";
+s.config.opentabs.secret_file = process.env.DEVFLOW_OPENTABS_TEST_SECRET_FILE ?? join(
   homedir(),
   ".opentabs/extension/auth.json",
 );
@@ -33,7 +33,7 @@ await s.engine.registerProject(p);
 const w = s.engine.create(
   {
     project_id: p.id,
-    title: "真实 Browser Gateway 验收",
+    title: "真实浏览器网关验收",
     request: "专用本机测试页面",
     complexity: "simple",
     workspace_mode: "existing_workspace",

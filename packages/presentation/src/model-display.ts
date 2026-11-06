@@ -26,6 +26,7 @@ export type ModelChoice = {
 };
 
 const KNOWN_MODEL_LABELS: Record<string, string> = {
+  "gpt-6.1-sol": "GPT-6.1 Sol",
   "gpt-6-astra": "GPT-6 Astra",
   "gpt-5": "GPT-5",
   "gpt-5.1": "GPT-5.1",
@@ -71,6 +72,7 @@ const KNOWN_MODEL_LABELS: Record<string, string> = {
   "deepseek-v4-pro": "DeepSeek V4 Pro",
   "deepseek-v4-flash": "DeepSeek V4 Flash",
   "deepseek-v4.1-flash": "DeepSeek V4.1 Flash",
+  "deepseek-v4.1-flash-free": "DeepSeek V4.1 Flash Free",
   "cloudwalk/deepseek-v4.1-flash": "DeepSeek V4.1 Flash",
   "kimi-k3": "Kimi K3",
   "kimi-k2.7-code": "Kimi K2.7 Code",

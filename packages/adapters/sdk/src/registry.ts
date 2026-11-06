@@ -155,6 +155,15 @@ export function resolveAdapterExecutable(
   customPath?: string,
 ): string | undefined {
   if (executableResolver) return executableResolver(adapterId, customPath);
+  if (adapterId === "opencode" && !customPath) {
+    // Keep GUI and terminal installs aligned, including the official user-scoped binary.
+    const selected = resolveToolExecutable(ADAPTER_BINARY_NAMES.opencode, undefined, []);
+    if (selected) return selected;
+    const userBin = process.env.HOME ? [process.env.HOME + "/.opencode/bin"] : [];
+    const installed = resolveToolExecutable(ADAPTER_BINARY_NAMES.opencode, undefined, userBin);
+    if (installed) return installed;
+  }
+
   return resolveToolExecutable(
     ADAPTER_BINARY_NAMES[adapterId],
     customPath,

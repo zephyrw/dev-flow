@@ -140,7 +140,7 @@ export type LimitedCliHandle = {
 };
 
 export type ModelCatalogServiceOptions = {
-  readAgyModels?: () => Promise<string[]>;
+  readAgyModels?: () => Promise<string[] | undefined>;
   extraEnv?: Record<string, string>;
   versionHelpTimeoutMs?: number;
   catalogTimeoutMs?: number;
@@ -814,7 +814,7 @@ function mergeManualEntries(
 }
 
 type CatalogWork = {
-  readAgyModels?: () => Promise<string[]>;
+  readAgyModels?: () => Promise<string[] | undefined>;
   scanLimit: Semaphore;
   queryLimit: Semaphore;
   inflight: Map<string, Promise<ModelCatalog>>;
@@ -1283,7 +1283,9 @@ export class ModelCatalogService {
     const wanted = scopeId?.trim() ? scopeId.trim() : "default";
     const cached = this.latestMatching(adapterId, wanted);
     if (!cached && wanted.startsWith("codex-config:")) return undefined;
-    const executablePath = cached?.cliPath ?? this.lookupExecutable(adapterId);
+    const executablePath = adapterId === "opencode" && wanted === "default"
+      ? this.lookupExecutable(adapterId) ?? cached?.cliPath
+      : cached?.cliPath ?? this.lookupExecutable(adapterId);
     if (!executablePath) return undefined;
     return this.resolveScope(
       adapterId,
@@ -1470,7 +1472,7 @@ export class ModelCatalogService {
     if (scope.adapterId === "opencode") {
       const help = await this.runCli(scope, ["run", "--help"], this.versionHelpTimeoutMs);
       if (help.exitCode !== 0 || help.timedOut || help.truncated || help.spawnError) return undefined;
-      const encoding = detectOpenCodeVariantEncoding(help.stdout);
+      const encoding = detectOpenCodeVariantEncoding(help.stdout + "\n" + help.stderr);
       return encoding ? { opencodeVariantEncoding: encoding } : undefined;
     }
     if (scope.adapterId === "mimo-code") {
@@ -1580,10 +1582,9 @@ export class ModelCatalogService {
 
   private async queryCatalog(scope: CatalogScopeInput): Promise<LimitedCliResult> {
     const reader = scope.adapterId === "agy" ? catalogWorkByStore.get(this.store)?.readAgyModels : undefined;
-    if (reader) {
-      const ids = await reader();
-      return { stdout: ids.join("\n"), stderr: "", exitCode: 0, timedOut: false, cancelled: false, truncated: false };
-    }
+    const managedModels = await reader?.();
+    if (managedModels !== undefined)
+      return { stdout: managedModels.join("\n"), stderr: "", exitCode: 0, timedOut: false, cancelled: false, truncated: false };
     if (scope.adapterId === "claude-code") {
       return {
         stdout: claudeCatalogStdout(),

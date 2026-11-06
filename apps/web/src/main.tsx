@@ -1,3 +1,4 @@
+import { GroupChatPage } from "./group-chat.js";
 import { isWorkflowRunning } from "../../../packages/contracts/src/workflow-visibility.js";
 import { TaskNameEditAction } from "./components/TaskNameEditAction.js";
 import { ProjectName } from "./components/ProjectName.js";
@@ -2258,6 +2259,7 @@ function App() {
         >
           <span className="nav-icon">◫</span> 任务总览
         </button>
+        <a className="nav" href="/group-chat"><span className="nav-icon">◉</span> 模型群聊</a>
         <div
           style={{
             display: "flex",
@@ -3310,7 +3312,7 @@ if (rootEl) {
       const response = await fetch("/api/health");
       if (!response.ok) throw new Error("无法读取服务模式");
       const health = await response.json();
-      root.render(health.mode === "accounts" ? <AgyAccountsPage /> : <App />);
+      root.render(health.mode === "accounts" ? <AgyAccountsPage /> : window.location.pathname.replace(/\/$/, "") === "/group-chat" ? <GroupChatPage /> : <App />);
     } catch (error) {
       root.render(<div role="alert">{error instanceof Error ? error.message : "服务暂不可用"}</div>);
     }

@@ -254,6 +254,16 @@ api_key = "sk-test-should-not-leak"
     expect(readonly.args).toContain("xhigh");
   });
 
+  it("OpenCode 保留含命名空间的模型 ID 及 verbose JSON 中的 max 档位", async () => {
+    const id = "nvidia/deepseek-ai/deepseek-v4.1-flash";
+    const catalog = await discoverOpenCodeModels({
+      stdout: id + "\n" + JSON.stringify({ id: "deepseek-ai/deepseek-v4.1-flash", variants: { high: {}, max: {} } }, null, 2) +
+        "\nopencode/deepseek-v4.1-flash-free\n{}\n",
+    });
+    expect(requireEntry(catalog, id).effort.values).toEqual(["high", "max"]);
+    expect(requireEntry(catalog, "opencode/deepseek-v4.1-flash-free").effort.values).toEqual([]);
+  });
+
   it("OpenCode verbose 保留 provider/model，有 variants 才开放档位", async () => {
     const catalog = await discoverOpenCodeModels({
       stdout: readNamedOrThrow("opencode", ["models-success.txt"]),

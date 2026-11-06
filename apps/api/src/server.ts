@@ -119,10 +119,15 @@ import {
   reconcileRestartedConversations,
 } from "../../../packages/runtime/src/recovery.js";
 
+import { registerGroupChat } from "./routes/group-chat.js";
+import type { RunModel } from "../../../packages/group-chat/src/model-runner.js";
+
 export async function buildServer(
   engine: Engine,
   options: {
     webRoot?: string;
+    groupRunModel?: RunModel;
+    groupSkillPath?: string;
     accountService?: AgyAccountService;
     developmentFrontendOrigin?: string;
     onMaintenancePrepare?: (body: {
@@ -212,10 +217,6 @@ export async function buildServer(
       { realm_id: identity.realmId, account_id: identity.accountId, auth_epoch: identity.authEpoch, model_id: identity.modelId, category_permit_id: identity.categoryPermitId }, verify,
     ),
   });
-  app.addHook("onClose", async () => {
-    await accessService.close();
-    if (!options.accountService) await accountService.close();
-  });
   const createWorkflowService = new CreateWorkflowService(
     engine.store,
     engine.config,
@@ -233,6 +234,11 @@ export async function buildServer(
   const planApprovalService = new PlanApprovalService(engine, documentService);
   const visibilityService = new WorkflowVisibilityService(engine.store, engine);
   const modelServices = registerModelRoutes(app, engine, human, accessService, accountService);
+  registerGroupChat(app, engine, modelServices.catalog, human, accountService, options.groupRunModel, options.groupSkillPath);
+  app.addHook("onClose", async () => {
+    await accessService.close();
+    if (!options.accountService) await accountService.close();
+  });
   const conversations = conversationServiceOf(engine.store);
   const conversationFiles = new ConversationFileService(
     engine.store,

@@ -1,3 +1,4 @@
+import { groupChatFixtureModel } from "../fixtures/group-chat-model.js";
 import { startTask } from "../../packages/core/src/progress.js";
 import {
   existsSync,
@@ -632,7 +633,14 @@ if (
   accountEnvironment.service.isManaged()
 )
   throw new Error("Model E2E fixture must keep account management disabled");
+const groupSkillPath = join(s.root, "group-fiction-skill");
+mkdirSync(join(groupSkillPath, "references"), { recursive: true });
+writeFileSync(join(groupSkillPath, "SKILL.md"), "# plan-fiction");
+for (const file of ["character-and-premise.md", "causality-and-pressure.md", "reader-and-structure.md", "delivery-and-review.md"])
+  writeFileSync(join(groupSkillPath, "references", file), "优先处理用户选择与故事因果。");
 const app = await buildServer(engine, {
+  groupRunModel: groupChatFixtureModel,
+  groupSkillPath,
   webRoot:
     process.env.DEVFLOW_E2E_WEB_ROOT ||
     resolve(fileURLToPath(new URL("../../dist/web", import.meta.url))),
