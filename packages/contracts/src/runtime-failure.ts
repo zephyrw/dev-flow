@@ -26,8 +26,7 @@ const resolutions: Record<string, Omit<RuntimeFailureResolution, "code">> = {
     title: "模型访问验证环境不可用",
     message: "本机环境无法完成模型访问验证，执行尚未开始；原计划、模型和工作区已保留。",
     steps: [
-      "核对当前工具的登录、网络和目录权限，在“工具与模型”中重新验证本轮模型；历史失败记录不能代表当前访问状态。",
-      "验证成功后继续原任务，无需重新规划或修改业务代码。",
+      "检查所选工具的登录、网络和目录权限，然后继续原任务。",
     ],
   },
   AGY_MODEL_PROBE_TIMEOUT: {
@@ -109,12 +108,12 @@ const resolutions: Record<string, Omit<RuntimeFailureResolution, "code">> = {
   MODEL_ACCESS_REQUIRED: {
     title: "当前账号的模型尚未验证",
     message: "已保留本轮模型和任务现场，需要验证当前账号对此模型的访问权限。",
-    steps: ["在“工具与模型”中验证本轮所选模型。", "验证成功后继续原任务，无需重新规划或修改业务代码。"],
+    steps: ["确认所选工具已登录，然后继续原任务。"],
   },
   MODEL_IDENTITY_CHANGED: {
     title: "模型账号身份已变化",
     message: "执行账号已变化，需要重新验证模型访问权限。",
-    steps: ["确认当前账号及本轮模型，在“工具与模型”中完成访问验证。", "确认后继续原任务。"],
+    steps: ["确认当前账号及本轮模型后，继续原任务。"],
   },
   MODEL_FORBIDDEN: {
     title: "当前账号无权使用模型",

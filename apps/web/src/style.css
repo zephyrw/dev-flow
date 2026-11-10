@@ -640,6 +640,18 @@ aside .mark {
   padding: 6px 10px 4px;
 }
 
+.project-nav button.project-name {
+  flex: 1;
+  text-align: left;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.project-nav button.project-name:hover {
+  color: var(--primary);
+}
+
 .flow-title-text {
   min-width: 0;
   overflow: hidden;

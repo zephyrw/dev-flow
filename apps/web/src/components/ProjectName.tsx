@@ -3,10 +3,11 @@ import { AppDialog } from "./AppDialog.js";
 import { NameEditDialog } from "./NameEditDialog.js";
 import { TaskTitle } from "./TaskTitle.js";
 
-export function ProjectName({ project, onRenamed, onDeleted }: {
+export function ProjectName({ project, onRenamed, onDeleted, disclosure }: {
   project: { id: string; name: string; has_running_tasks?: boolean; primary_repo_id?: string; repositories?: { id: string; path: string }[] };
   onRenamed: (id: string, name: string) => void;
   onDeleted: (id: string) => void;
+  disclosure?: React.ComponentProps<typeof TaskTitle>["disclosure"];
 }) {
   const [editing, setEditing] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -40,7 +41,8 @@ export function ProjectName({ project, onRenamed, onDeleted }: {
     }
   };
   return <div className="project-name-editor">
-    <TaskTitle className="project-name" title={`▱ ${project.name}`} tooltip={path} />
+    <TaskTitle className="project-name" title={`▱ ${project.name}`} tooltip={path}
+      as={disclosure ? "button" : "span"} disclosure={disclosure} />
     <button type="button" className="project-name-edit" aria-label={`编辑项目名称：${project.name}`}
       onClick={() => setEditing(true)}>✎</button>
     {!project.has_running_tasks && <button type="button" className="project-name-delete" aria-label={`删除项目：${project.name}`}

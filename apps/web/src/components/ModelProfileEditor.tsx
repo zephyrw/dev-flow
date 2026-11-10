@@ -20,7 +20,6 @@ import {
   modelCatalogNeedsRefresh,
   refreshAdapterModels,
   isVerifyAbort,
-  accessStatusLabel,
   type AccessState,
   type ApiError,
   verifyModelAccess,
@@ -65,7 +64,6 @@ export function ModelProfileEditor({
     complete?: boolean;
   }>({ adapter: "", reloadToken, status: "loading" });
   const [access, setAccess] = useState<AccessState | null>(null);
-  const [verifying, setVerifying] = useState(false);
   const generation = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
   const verifyGen = useRef(0);
@@ -133,7 +131,6 @@ export function ModelProfileEditor({
     verifyGen.current += 1;
     verifyAbort.current?.abort();
     setAccess(null);
-    setVerifying(false);
     onAccessChange?.(null);
     setLoading(true);
     setLoadError(null);
@@ -195,12 +192,11 @@ export function ModelProfileEditor({
     return () => abortRef.current?.abort();
   }, [adapter, reloadToken]);
 
-  const runVerify = (candidate: ToolProfile, force = false) => {
+  const runVerify = (candidate: ToolProfile) => {
     verifyGen.current += 1;
     verifyAbort.current?.abort();
     if (disabled || !autoVerify || !candidate.modelId || !toolVisible || !catalogReady) {
       setAccess(null);
-      setVerifying(false);
       onAccessChange?.(null);
       return;
     }
@@ -208,7 +204,6 @@ export function ModelProfileEditor({
     verifyAbort.current = controller;
     const token = verifyGen.current;
 
-    setVerifying(true);
     const checkingState: AccessState = { status: "checking", message: "正在验证" };
     setAccess(checkingState);
     onAccessChange?.(checkingState);
@@ -216,7 +211,7 @@ export function ModelProfileEditor({
       ? normalizeProfileEffort(candidate, currentChoice)
       : candidate;
 
-    verifyModelAccess(effectiveCandidate, controller.signal, force)
+    verifyModelAccess(effectiveCandidate, controller.signal)
       .then((state) => {
         if (controller.signal.aborted || token !== verifyGen.current) return;
         setAccess(state);
@@ -232,11 +227,6 @@ export function ModelProfileEditor({
         };
         setAccess(failState);
         onAccessChange?.(failState);
-      })
-      .finally(() => {
-        if (!controller.signal.aborted && token === verifyGen.current) {
-          setVerifying(false);
-        }
       });
   };
 
@@ -246,11 +236,10 @@ export function ModelProfileEditor({
     verifyGen.current += 1;
     verifyAbort.current?.abort();
     setAccess(null);
-    setVerifying(false);
     onAccessChange?.(null);
     if (catalogReady && effectiveProfile === profile) {
       verifyTimer.current = window.setTimeout(() => {
-        runVerify(profile, false);
+        runVerify(profile);
       }, 200);
     }
     return () => {
@@ -465,7 +454,7 @@ export function ModelProfileEditor({
     if (!profile.modelId) return "";
     const base = activeChoice?.label || formatModelName(adapter, profile.modelId);
     if (activeChoice?.availability === "candidate") {
-      return `${base} [候补 / ${access?.status === "verified" ? "已核验" : "待核验"}]`;
+      return `${base} [候补]`;
     }
     return base;
   })();
@@ -599,7 +588,7 @@ export function ModelProfileEditor({
                     {isCandidate && (
                       <span
                         className="ms-candidate-tag"
-                        title="候补模型，待实际核验"
+                        title="候补模型"
                         style={{
                           fontSize: "11px",
                           padding: "1px 5px",
@@ -610,7 +599,7 @@ export function ModelProfileEditor({
                           marginLeft: "6px",
                         }}
                       >
-                        候补 / 待核验
+                        候补
                       </span>
                     )}
                     {showIdText && <span className="ms-option-id">{idText}</span>}
@@ -701,25 +690,8 @@ export function ModelProfileEditor({
           </p>
         )}
 
-      <div className="ms-access" role="status">
-        <span>
-          访问状态：
-          {accessStatusLabel(access)}
-          {activeChoice?.availability === "candidate" && " · 候补目录项"}
-        </span>
-        {profile.modelId && (
-          <button
-            type="button"
-            className="ms-link"
-            disabled={disabled || verifying || !catalogReady}
-            onClick={() => runVerify(profile, true)}
-          >
-            {verifying ? "正在验证…" : "重新验证"}
-          </button>
-        )}
-      </div>
-      {access?.message && access.status !== "verified" && (
-        <p className="ms-muted" role="status">{access.message}</p>
+      {access && !["verified", "checking", "queued"].includes(access.status) && (
+        <p className="ms-error" role="alert">{access.message}</p>
       )}
     </div>
   );

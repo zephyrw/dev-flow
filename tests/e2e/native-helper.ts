@@ -87,12 +87,6 @@ export async function pickListedModel(
   }
 }
 
-export async function waitAccessStatus(root: Locator, text: string | RegExp) {
-  await expect(root.locator(".ms-access").first()).toContainText(text, {
-    timeout: 20000,
-  });
-}
-
 export async function workflowDetail(page: Page, id: string) {
   const response = await page.request.get("/api/workflows/" + id);
   expect(response.ok(), await response.text()).toBeTruthy();

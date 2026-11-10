@@ -2,11 +2,12 @@ import React, { useId, useState } from "react";
 import { createPortal } from "react-dom";
 
 /** Show the full name only when the rendered task title is truncated. */
-export function TaskTitle({ title, className, tooltip, as: Tag = "span" }: {
+export function TaskTitle({ title, className, tooltip, as: Tag = "span", disclosure }: {
   title: string;
   className?: string;
   tooltip?: string;
-  as?: "span" | "h3";
+  as?: "span" | "h3" | "button";
+  disclosure?: { expanded: boolean; controls: string; toggle: () => void };
 }) {
   const tooltipId = useId();
   const [position, setPosition] = useState<{ left: number; top: number }>();
@@ -20,6 +21,10 @@ export function TaskTitle({ title, className, tooltip, as: Tag = "span" }: {
   };
   return <>
     <Tag className={className} tabIndex={tooltip ? 0 : undefined} aria-describedby={position ? tooltipId : undefined}
+      type={Tag === "button" ? "button" : undefined}
+      aria-expanded={disclosure?.expanded}
+      aria-controls={disclosure?.controls}
+      onClick={disclosure?.toggle}
       onMouseEnter={(event) => show(event.currentTarget)}
       onMouseLeave={() => setPosition(undefined)}
       onFocus={(event) => show(event.currentTarget)}

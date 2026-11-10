@@ -8,7 +8,6 @@ import {
   openTaskModels,
   composerInput,
   sendComposerText,
-  waitAccessStatus,
   workflowDetail,
 } from "./native-helper.js";
 
@@ -88,7 +87,6 @@ test("E2E-R20 待复测问题指定另一模型确实提交", async ({ page }) =
   await card.getByText("本次修复由谁处理").click();
   await card.getByLabel("自定义工具/模型").check();
   await pickListedModel(card, "修复工具", "gpt-5.6-sol");
-  await waitAccessStatus(card, "已验证可访问");
   const posted = page.waitForRequest(
     (request) =>
       request.url().includes("/functional-issues/") &&

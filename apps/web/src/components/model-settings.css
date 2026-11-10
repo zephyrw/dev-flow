@@ -403,7 +403,6 @@
   color: var(--color-success-text, #065f46);
 }
 
-.ms-access,
 .ms-actions,
 .ms-inline {
   display: flex;

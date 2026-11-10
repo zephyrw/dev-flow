@@ -48,7 +48,7 @@ it("keeps a model verification environment failure distinct from a test service 
   expect((error.details as any).diagnostic).toBe("本机环境无法完成模型访问验证");
   const summary = failureSummary(error.code, error.message);
   expect(summary).toContain("模型访问验证环境不可用");
-  expect(summary).toContain("重新验证本轮模型");
+  expect(summary).toContain("检查所选工具的登录、网络和目录权限");
   expect(summary).not.toContain("测试服务");
 });
 

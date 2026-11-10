@@ -124,7 +124,7 @@ test("model verification failure shows access recovery instructions instead of a
   const fixture = await screen(page, true, true);
   const card = page.getByRole("region", { name: "运行问题处理方法" });
   await expect(card.getByRole("heading", { name: "模型访问验证环境不可用" })).toBeVisible();
-  await expect(card).toContainText("重新验证本轮模型");
+  await expect(card).toContainText("检查所选工具的登录、网络和目录权限");
   await expect(page.locator(".attention-message")).not.toContainText("测试服务没有成功启动");
   await card.getByRole("button", { name: "已处理，继续原任务" }).click();
   await expect(card).toHaveCount(0);

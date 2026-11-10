@@ -8,7 +8,6 @@ import {
   fixtureState,
   pickListedModel,
   testInstance,
-  waitAccessStatus,
   workflowDetail,
 } from "./native-helper.js";
 
@@ -49,7 +48,6 @@ test("E2E-U02 修改全局默认后新建任务预填新值", async ({ page }) =
   await dialog.getByRole("tab", { name: "执行" }).click();
   await exactLabel(dialog, "工具").selectOption("agy");
   await pickListedModel(dialog, "工具", "gemini-3.8-flash-high");
-  await waitAccessStatus(dialog.locator(".ms-editor"), "已验证可访问");
   expect(before.plannerProfile.modelId).not.toBe("gpt-5.6-sol");
   await dialog.getByRole("button", { name: "保存配置" }).click();
   await expect(dialog).not.toBeVisible({ timeout: 15000 });
@@ -169,8 +167,7 @@ test("E2E-U12 快速切换工具会清掉旧模型并选中新工具默认模型
   await planner.selectOption("agy");
   await planner.selectOption("codex");
   await expect(exactLabel(dialog, "工具模型搜索")).toHaveValue(defaultEntry.label);
-  await waitAccessStatus(dialog.locator(".ms-editor"), "已验证可访问");
-  expect(verifiedProfiles.at(-1)).toMatchObject({ adapterId: "codex", modelId: expectedModelId,
+  await expect.poll(() => verifiedProfiles.at(-1)).toMatchObject({ adapterId: "codex", modelId: expectedModelId,
     reasoning: { mode: "explicit", value: expectedEffort } });
   await expect(planner.locator("option")).toHaveCount(4);
   const unchangedDefaults = await page.request.get("/api/settings/model-defaults");
@@ -251,11 +248,9 @@ test("E2E-U03 新建当场改工具/模型/强度且后台 Run 参数一致", as
   await modal.getByRole("tab", { name: "规划" }).click();
   await pickListedModel(modal, "工具", "gpt-5.6-sol");
   await exactLabel(modal, "工具思考强度").selectOption("xhigh");
-  await waitAccessStatus(modal.locator(".ms-editor"), "已验证可访问");
   await modal.getByRole("tab", { name: "执行" }).click();
   await exactLabel(modal, "工具").selectOption("agy");
   await pickListedModel(modal, "工具", "gemini-3.8-flash-high");
-  await waitAccessStatus(modal.locator(".ms-editor"), "已验证可访问");
   await modal.locator("textarea").fill("U03 当场改工具模型强度并核验 Run 参数");
   const created = page.waitForResponse(
     (r) =>
@@ -300,16 +295,18 @@ test("E2E-U09 再次使用已验证模型无登录弹窗且探测不增加", asy
   await expect(dialog).toBeVisible();
   await dialog.getByRole("tab", { name: "规划" }).click();
   await pickListedModel(dialog, "工具", "gpt-6-astra");
-  await waitAccessStatus(dialog.locator(".ms-editor").first(), "已验证可访问");
+  const planner = dialog.locator(".ms-editor").first();
+  await expect(planner.getByText(/访问状态|已验证可访问/)).toHaveCount(0);
+  await expect(planner.getByRole("button", { name: "重新验证" })).toHaveCount(0);
   await expect(page.getByRole("dialog", { name: /登录|验证访问/ })).toHaveCount(
     0,
   );
-  await expect(dialog.getByText("需要登录该工具")).toHaveCount(0);
+  await dialog.getByRole("button", { name: "保存配置" }).click();
+  await expect(dialog).toBeHidden({ timeout: 20000 });
   expect(await fixtureProbeCount(page)).toBe(before);
 });
 
 test("E2E-U10 首次验证失败准确错误与草稿不丢", async ({ page }) => {
-  const state = fixtureState();
   await fixturePost(page, "/__fixture/probe-control", {
     behavior: "login",
     adapterId: "codex",
@@ -321,10 +318,9 @@ test("E2E-U10 首次验证失败准确错误与草稿不丢", async ({ page }) =
   const planner = dialog.locator(".ms-editor").first();
   const searchInput = exactLabel(planner, "工具模型搜索");
   await pickListedModel(planner, "工具", "codex-login-required-model");
-  await expect(planner.locator(".ms-access")).toContainText(/登录|验证未通过/, {
+  await expect(planner.getByRole("alert")).toHaveText("请先登录所选工具，再试一次。", {
     timeout: 20000,
   });
-  await expect(planner.getByRole("button", { name: "重新验证" })).toBeVisible();
   await expect(searchInput).toHaveValue(
     /Login Required|codex-login-required-model/,
   );
@@ -411,7 +407,6 @@ test("E2E-R23 其他页面改了默认时提示冲突不覆盖草稿", async ({ 
 
 test("E2E-R22 长验证不在 16 秒误报失败", async ({ page }) => {
   test.setTimeout(90000);
-  const state = fixtureState();
   await fixturePost(page, "/__fixture/probe-control", {
     behavior: "ok",
     adapterId: "codex",
@@ -422,54 +417,29 @@ test("E2E-R22 长验证不在 16 秒误报失败", async ({ page }) => {
   const dialog = page.getByRole("dialog", { name: "设置" });
   await dialog.getByRole("tab", { name: "规划" }).click();
   const planner = dialog.locator(".ms-editor").first();
-  await planner.getByRole("button", { name: "重新验证" }).click();
-  await expect(planner.locator(".ms-access")).toContainText("正在验证");
+  const modelId = "codex-long-verification-model";
+  const verification = page.waitForResponse((response) =>
+    response.url().endsWith("/api/model-access/verify") &&
+    response.request().postDataJSON()?.profile?.modelId === modelId,
+  );
+  const search = exactLabel(planner, "工具模型搜索");
+  await search.fill(modelId);
+  await search.press("Enter");
+  const job = await (await verification).json();
+  expect(job.status).toMatch(/checking|queued/);
+  const finished = page.waitForResponse(async (response) =>
+    response.url().endsWith(`/api/model-access/verifications/${job.id}`) &&
+    (await response.json()).status === "verified", { timeout: 45000 },
+  );
   await page.waitForTimeout(16500);
-  await expect(planner.locator(".ms-access")).toContainText("正在验证");
-  await expect(planner.locator(".ms-access")).not.toContainText("验证暂时失败");
-  await waitAccessStatus(planner, "已验证可访问");
+  await expect(planner.getByRole("alert")).toHaveCount(0);
+  await expect(planner.getByText(/访问状态|正在验证|已验证可访问/)).toHaveCount(0);
+  await finished;
   await fixturePost(page, "/__fixture/probe-control", {
     behavior: "ok",
     adapterId: "codex",
     delayMs: 0,
   });
-});
-
-test("E2E-R24 verified 后重新验证 force=true，普通再保存不重复探针", async ({
-  page,
-}) => {
-  const state = fixtureState();
-  await fixturePost(page, "/__fixture/probe-control", {
-    behavior: "ok",
-    adapterId: "codex",
-    delayMs: 0,
-  });
-  await page.goto("/");
-  await page.getByRole("button", { name: "设置", exact: true }).click();
-  const dialog = page.getByRole("dialog", { name: "设置" });
-  await dialog.getByRole("tab", { name: "规划" }).click();
-  const planner = dialog.locator(".ms-editor").first();
-  await pickListedModel(dialog, "工具", "gpt-6-astra");
-  await waitAccessStatus(planner, "已验证可访问");
-  const verifyBodies: Record<string, unknown>[] = [];
-  page.on("request", (request) => {
-    if (
-      request.url().includes("/api/model-access/verify") &&
-      request.method() === "POST"
-    ) {
-      verifyBodies.push(request.postDataJSON() as Record<string, unknown>);
-    }
-  });
-  const before = await fixtureProbeCount(page);
-  await planner.getByRole("button", { name: "重新验证" }).click();
-  await waitAccessStatus(planner, "已验证可访问");
-  const forced = verifyBodies.filter((item) => item.force === true);
-  expect(forced.length).toBeGreaterThan(0);
-  expect(await fixtureProbeCount(page)).toBeGreaterThan(before);
-  const afterForce = await fixtureProbeCount(page);
-  await dialog.getByRole("button", { name: "保存配置" }).click();
-  await expect(dialog).not.toBeVisible({ timeout: 15000 });
-  expect(await fixtureProbeCount(page)).toBe(afterForce);
 });
 
 test("手工输入只在确认完整模型 ID 后验证", async ({ page }) => {

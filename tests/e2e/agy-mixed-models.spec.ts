@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { exactLabel, pickListedModel, waitAccessStatus } from "./native-helper.js";
+import { exactLabel, pickListedModel } from "./native-helper.js";
 
 test("Gemini occupancy permits selecting and saving Claude, and Claude occupancy permits Gemini and custom IDs", async ({ page }) => {
   test.setTimeout(90000);
@@ -18,7 +18,6 @@ test("Gemini occupancy permits selecting and saving Claude, and Claude occupancy
   await exactLabel(dialog, "工具模型搜索").fill("claude-sonnet-5-5");
   await page.getByRole("option", { name: /Claude Sonnet 5\.5/ }).click();
   await expect(dialog).not.toContainText("类别冲突");
-  await waitAccessStatus(dialog.locator(".ms-editor"), "已验证可访问");
   await dialog.getByRole("button", { name: "保存配置" }).click();
   await expect(dialog).not.toBeVisible({ timeout: 20000 });
   const saved = await page.request.get("/api/settings/model-defaults");
@@ -29,7 +28,6 @@ test("Gemini occupancy permits selecting and saving Claude, and Claude occupancy
   dialog = page.getByRole("dialog", { name: "设置" });
   await dialog.getByRole("tab", { name: "执行", exact: true }).click();
   await pickListedModel(dialog, "工具", "gemini-3.8-flash-high");
-  await waitAccessStatus(dialog.locator(".ms-editor"), "已验证可访问");
   await dialog.getByRole("button", { name: "保存配置" }).click();
   await expect(dialog).not.toBeVisible({ timeout: 20000 });
   const gemini = await page.request.get("/api/settings/model-defaults");

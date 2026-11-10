@@ -684,7 +684,19 @@ export async function verifyModelAccess(
   }
   shared.subscribers += 1;
   try {
-    return await waitWithSignal(shared.promise, signal);
+    const result = await waitWithSignal(shared.promise, signal);
+    return result.status === "verified"
+      ? result
+      : { ...result, message: modelAccessErrorMessage(result.errorCode, result.status) };
+  } catch (error) {
+    if (isAbortError(error)) throw error;
+    const api = error as ApiError;
+    throw Object.assign(new Error(modelAccessErrorMessage(api?.code)), {
+      code: api?.code,
+      status: api?.status,
+      retryable: api?.retryable,
+      details: api?.details,
+    });
   } finally {
     shared.subscribers -= 1;
     if (shared.subscribers === 0) shared.controller.abort();
@@ -845,29 +857,25 @@ export function formatApiError(error: unknown): string {
   return String(error);
 }
 
-export function accessStatusLabel(state?: AccessState | null): string {
-  if (!state) return "未验证";
-  switch (state.status) {
-    case "verified":
-      return "已验证可访问";
-    case "checking":
-    case "queued":
-      return "正在验证访问";
+export function modelAccessErrorMessage(code?: string, status?: string): string {
+  switch (code) {
+    case "TOOL_NOT_FOUND":
+      return "找不到所选工具，请安装后重试，或选择其他工具。";
+    case "MODEL_IDENTITY_CHANGED":
+    case "MODEL_ACCOUNT_SWITCHING":
+      return "工具账号正在切换，请稍后重试。";
+  }
+  switch (code ?? status) {
     case "login_required":
     case "MODEL_LOGIN_REQUIRED":
-      return "需要登录该工具";
+      return "请先登录所选工具，再试一次。";
     case "model_forbidden":
     case "MODEL_FORBIDDEN":
-      return "当前账号不能使用该模型";
+      return "当前账号无权使用此模型，请选择其他模型或切换账号。";
     case "unavailable":
     case "MODEL_UNAVAILABLE":
-      return "模型当前不可用";
-    case "environment_error":
-    case "VERIFICATION_ENVIRONMENT_UNAVAILABLE":
-      return "本机环境无法完成验证";
-    case "temporary_error":
-      return "验证暂时失败，可重试";
+      return "此模型当前不可用，请稍后重试或选择其他模型。";
     default:
-      return state.message || "未验证";
+      return "暂时无法确认此模型可用，请检查工具登录和网络后重试。";
   }
 }

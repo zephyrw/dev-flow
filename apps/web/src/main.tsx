@@ -1646,6 +1646,7 @@ function App() {
   const [connected, setConnected] = useState(false);
   const [navigationWidth, setNavigationWidth] = useState(readNavigationWidth);
   const [expandedProjects, setExpandedProjects] = useState<Record<string, boolean>>({});
+  const [collapsedProjects, setCollapsedProjects] = useState<Record<string, boolean>>({});
   const resizeNavigation = (value: number) => {
     const width = Math.max(220, Math.min(560, value));
     setNavigationWidth(width);
@@ -2294,9 +2295,20 @@ function App() {
             .map((p) => {
               const projectFlows = flows.filter((f) => f.project_id === p.id);
               const expanded = expandedProjects[p.id] ?? false;
+              const collapsed = collapsedProjects[p.id] ?? false;
+              const projectSessionsId = `project-sessions-${p.id}`;
               return (
               <div key={p.id} className="project-nav">
-                <ProjectName project={{ ...p, has_running_tasks: p.has_running_tasks || flows.some((flow) => flow.project_id === p.id && isWorkflowRunning(flow)) }} onDeleted={onProjectDeleted} onRenamed={(id, name) => setProjects((current) => current.map((project) => project.id === id ? { ...project, name } : project))} />
+                <ProjectName project={{ ...p, has_running_tasks: p.has_running_tasks || projectFlows.some(isWorkflowRunning) }}
+                  onDeleted={onProjectDeleted}
+                  onRenamed={(id, name) => setProjects((current) => current.map((project) => project.id === id ? { ...project, name } : project))}
+                  disclosure={{
+                    expanded: !collapsed,
+                    controls: projectSessionsId,
+                    toggle: () => setCollapsedProjects((current) => ({ ...current, [p.id]: !current[p.id] })),
+                  }}
+                />
+                <div id={projectSessionsId} hidden={collapsed}>
                 <div id={`project-tasks-${p.id}`}>
                 {projectFlows
                   .slice(0, expanded ? undefined : 5)
@@ -2352,6 +2364,7 @@ function App() {
                     onClick={() => setExpandedProjects((previous) => ({ ...previous, [p.id]: !expanded }))}
                   >{expanded ? "收起任务" : `展开剩余 ${projectFlows.length - 5} 个任务`}</button>
                 )}
+                </div>
             </div>
           ); })}
         </div>
