@@ -45,7 +45,7 @@ export class GrokBuildNativeAdapter extends BaseNativeAgentAdapter {
   }
   async prepare(input: RunContext) {
     const prepared = await super.prepare(input);
-    const workspaceRoot = Object.values(input.workspaceRoots)[0];
+    const workspaceRoot = input.executionRoot ?? Object.values(input.workspaceRoots)[0];
     if (workspaceRoot) {
       this.lastBound = {
         workspaceRoot,

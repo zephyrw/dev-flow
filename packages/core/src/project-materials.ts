@@ -1,3 +1,4 @@
+import { PROJECT_DOCS_ID, insideDirectory } from "./project-layout.js";
 import { existsSync, readFileSync } from "node:fs";
 import { isAbsolute, normalize, relative, resolve } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
@@ -60,7 +61,9 @@ export function originalPlanPath(store: Store, workflowId: string, revision?: nu
   const record = records.find(p => p.revision === (revision ?? wf?.plan_revision));
   const project = wf?.project_id ? store.get<Project>("project", wf.project_id) : undefined;
   const workspaces = store.list<Workspace>("workspace", workflowId);
+  const projectDocs = projectDocsWorkspace(store, workflowId);
   const roots = [
+    ...(projectDocs ? [{ repo_id: projectDocs.repo_id, root: projectDocs.root }] : []),
     ...workspaces.map(w => ({ repo_id: w.repo_id, root: w.root })),
     ...(project?.repositories ?? []).map(r => ({ repo_id: r.id, root: r.path })),
   ];
@@ -68,7 +71,7 @@ export function originalPlanPath(store: Store, workflowId: string, revision?: nu
   if (typeof ref === "string" && ref.trim()) {
     if (isAbsolute(ref)) return normalize(ref);
     const qualified = roots.find(r => ref.startsWith(r.repo_id + ":"));
-    const root = qualified ?? roots.find(r => r.repo_id === project?.primary_repo_id) ?? roots.find(r => r.repo_id === "main") ?? roots[0];
+    const root = qualified ?? (ref.replaceAll("\\", "/").startsWith("docs/") ? roots.find(r => r.repo_id === PROJECT_DOCS_ID) : undefined) ?? roots.find(r => r.repo_id === project?.primary_repo_id) ?? roots.find(r => r.repo_id === "main") ?? roots[0];
     if (root) {
       const relativeRef = sanitizeRelativePath(root.root, qualified ? ref.slice(root.repo_id.length + 1) : ref);
       // Registration pins the original. Creating an execution worktree must
@@ -116,6 +119,21 @@ export function originalPlanPath(store: Store, workflowId: string, revision?: nu
  * 单工作区自动选择；多工作区必须由 project.primary_repo_id 唯一定位，若未配置或不唯一抛出 WORKSPACE_AMBIGUOUS 错误，
  * 禁止静默 fallback 到 workspaces[0] 或未声明的属性。
  */
+export function projectDocsWorkspace(store: Store, workflowId: string) {
+  const projectRoot = store.get<{ project_root?: string }>("entry_context", workflowId)?.project_root;
+  return projectRoot ? {
+    id: `project-docs-${workflowId}`,
+    workflow_id: workflowId,
+    repo_id: PROJECT_DOCS_ID,
+    root: projectRoot,
+  } : undefined;
+}
+
+function materialWorkspace(store: Store, workflowId: string, workspaceId: string) {
+  const docs = projectDocsWorkspace(store, workflowId);
+  return docs?.id === workspaceId ? docs : store.get<Workspace>("workspace", workspaceId);
+}
+
 export function resolveMaterialLocator(options: {
   store: Store;
   workflowId: string;
@@ -137,6 +155,7 @@ export function resolveMaterialLocator(options: {
   const project = wf?.project_id ? store.get<Project>("project", wf.project_id) : undefined;
 
   const savedWorkspaces = store.list<Workspace>("workspace", workflowId);
+  const docs = projectDocsWorkspace(store, workflowId);
   const workspaces = savedWorkspaces.length ? savedWorkspaces : (project?.repositories ?? []).map(r => ({
     id: `project:${r.id}`, repo_id: r.id, root: r.path,
   } as Workspace));
@@ -144,10 +163,12 @@ export function resolveMaterialLocator(options: {
   const existingPath = explicitAbsolute ?? (kind === "plan" && customRelPath === undefined ? originalPlanPath(store, workflowId, revision) : undefined);
   requireCondition(workspaces.length > 0, "NO_WORKSPACES", `工作流 ${workflowId} 无可用工作区`, 404);
 
-  let targetWs: Workspace | undefined;
+  let targetWs: Pick<Workspace, "id" | "root" | "repo_id"> | undefined;
   if (preferredWorkspaceId) {
-    targetWs = workspaces.find((w) => w.id === preferredWorkspaceId);
+    targetWs = docs?.id === preferredWorkspaceId ? docs : workspaces.find((w) => w.id === preferredWorkspaceId);
     requireCondition(targetWs, "WORKSPACE_NOT_FOUND", `显式指定的工作区不存在: ${preferredWorkspaceId}`, 404);
+  } else if (docs) {
+    targetWs = docs;
   } else if (workspaces.length === 1) {
     targetWs = workspaces[0];
   } else {
@@ -177,9 +198,12 @@ export function resolveMaterialLocator(options: {
   requireCondition(targetWs, "WORKSPACE_NOT_FOUND", "未找到适用的工作区进行材料定位", 404);
 
   if (existingPath) {
-    const roots = preferredWorkspaceId ? [targetWs] : [...workspaces,
+    const roots = preferredWorkspaceId ? [targetWs] : [...(docs ? [docs] : []), ...workspaces,
       ...(project?.repositories ?? []).map(r => ({ id: `project:${r.id}`, repo_id: r.id, root: r.path } as Workspace))];
-    const root = roots.find(w => { const rel = relative(resolve(w.root), resolve(existingPath)); return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel); });
+    const root = roots.find(w => {
+      const base = w.id === docs?.id ? resolve(w.root, "docs") : resolve(w.root);
+      return resolve(existingPath) !== base && insideDirectory(base, resolve(existingPath));
+    });
     requireCondition(root, "PATH_ESCAPE", "计划原件必须属于项目或任务工作区", 400);
     targetWs = root;
   }
@@ -242,6 +266,8 @@ export function resolveMaterialLocator(options: {
   }
 
   relPath = sanitizeRelativePath(targetWs.root, relPath);
+  if (targetWs.id === docs?.id) requireCondition(relPath.startsWith("docs/"),
+    "PATH_ESCAPE", "项目级文档必须位于 docs 目录", 400);
   const permitted = [matPaths?.plan_dir ?? "docs/plan", matPaths?.review_dir ?? "docs/plan", matPaths?.repair_dir ?? "docs/plan", matPaths?.process_dir ?? "docs/process", matPaths?.evidence_dir ?? "docs/test/evidence"].map(materialRelativePath);
   requireCondition(options.projectOriginal || permitted.some((dir) => relPath.startsWith(`${dir}/`)), "INVALID_PATH", "材料路径不在允许的材料目录中", 400);
   const absPath = normalize(resolve(targetWs.root, relPath));
@@ -274,7 +300,7 @@ interface MaterialBinding {
 }
 
 function workspaceBinding(store: Store, locator: MaterialLocator, rootIdentity: string): MaterialBinding {
-  const ws = store.get<Workspace>("workspace", locator.workspace_id);
+  const ws = materialWorkspace(store, locator.workflow_id, locator.workspace_id);
   requireCondition(ws && ws.workflow_id === locator.workflow_id && ws.repo_id === locator.repo_id && resolve(ws.root) === resolve(locator.workspace_root), "MATERIAL_BINDING_CONFLICT", "材料工作区绑定已变化", 409);
   const old = store.get<MaterialBinding>("material_binding", locator.workspace_id);
   if (old) {
@@ -337,7 +363,7 @@ export function migrateMaterialBinding(store: Store, workspaceId: string, newRoo
 
 export function readVerifiedProjectMaterial(store: Store, material: ProjectMaterial, options: { allowUpdatedContent?: boolean } = {}): string {
   requireCondition(material.status === "verified", "PLAN_MATERIAL_CONFLICT", "材料尚未核验", 409);
-  const ws = store.get<Workspace>("workspace", material.workspace_id);
+  const ws = materialWorkspace(store, material.workflow_id, material.workspace_id);
   requireCondition(ws && ws.workflow_id === material.workflow_id && (!material.repo_id || material.repo_id === ws.repo_id), "PLAN_MATERIAL_CONFLICT", "材料工作区归属不一致", 409);
   const path = options.allowUpdatedContent ? material.logical_path ?? material.path : material.path;
   resolveMaterialLocator({ store, workflowId: material.workflow_id, kind: material.kind, revision: material.revision, preferredWorkspaceId: ws.id, customRelPath: path });
@@ -363,7 +389,7 @@ export function readVerifiedProjectMaterial(store: Store, material: ProjectMater
 }
 
 function assertFrozenBinding(store: Store, material: ProjectMaterial, identity: string): void {
-  const ws = store.get<Workspace>("workspace", material.workspace_id);
+  const ws = materialWorkspace(store, material.workflow_id, material.workspace_id);
   const binding = store.get<MaterialBinding>("material_binding", material.workspace_id);
   requireCondition(ws && binding && ws.workflow_id === material.workflow_id && ws.repo_id === material.repo_id && binding.workflow_id === material.workflow_id && binding.repo_id === material.repo_id && binding.generation === material.material_binding_generation && binding.root_identity === identity && material.root_identity === identity && material.workspace_root === binding.workspace_root && resolve(ws.root) === binding.workspace_root, "MATERIAL_BINDING_CONFLICT", "材料发布意图绑定已变化", 409);
 }

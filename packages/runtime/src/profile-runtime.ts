@@ -236,7 +236,7 @@ export class ProfileRuntime {
     const acceptance = Array.isArray(rawPlan.acceptance_items)
       ? rawPlan.acceptance_items
       : (Array.isArray(rawPlan.acceptance) ? rawPlan.acceptance : []);
-    const primaryRepo = workspaces[0]?.repo_id ?? "main";
+    const primaryRepo = this.engine.project(w.project_id).primary_repo_id ?? workspaces[0]?.repo_id ?? "main";
 
     requireCondition(
       workItems.length > 0,
@@ -549,6 +549,7 @@ export class ProfileRuntime {
     workspaces: Workspace[],
     selectedSource: SourceInput | undefined,
   ) {
+    const projectRoot = this.engine.store.get<{ project_root?: string }>("entry_context", w.id)?.project_root;
     return applyPlanningHandoffMaterials(
       {
         instructions:
@@ -558,6 +559,7 @@ export class ProfileRuntime {
           : null,
         selected_source:
           selectedSource?.plan_hash === w.plan_hash ? selectedSource : null,
+        project_docs: projectRoot ? resolve(projectRoot, "docs") : undefined,
         requirements: this.engine.store.list("requirement_message", w.id),
         request: w.request,
         project: this.engine.project(w.project_id),
@@ -865,7 +867,11 @@ export class ProfileRuntime {
         w.id,
         permissionCategoryForPurpose(purpose),
       );
-    const primaryWs = workspaces[0];
+    const layout = this.engine.store.get<{ execution_root?: string }>("entry_context", w.id);
+    const project = this.engine.project(w.project_id);
+    const primaryWs = workspaces.find(ws => ws.repo_id === project.primary_repo_id) ?? workspaces[0];
+    const executionRoot = !["aside", "diagnose", "merge_conflict"].includes(purpose)
+      ? layout?.execution_root : undefined;
     const nativeIdentity = new ModelAccessService(this.engine.store).resolveNativeConfig(profile);
     const frozen = run.frozen_invocation ?? run.model_binding?.frozen_invocation;
     if (frozen && nativeIdentity.identityConfidence === "account" &&
@@ -930,7 +936,7 @@ export class ProfileRuntime {
               accountRecovery?.decision === "exact_resume" ? accountRecovery.original_conversation_id : undefined)
           : undefined;
         sessionBinding = reusableBinding ?? agyBinding ?? this.executionSessionStore.getOrCreateBinding(bindingKey, {
-          workspace_root: primaryWs?.root ?? "",
+          workspace_root: executionRoot ?? primaryWs?.root ?? "",
           source_root: primaryWs?.source_root ?? primaryWs?.root ?? "",
           repo_id: primaryWs?.repo_id ?? "primary",
         });
@@ -1061,6 +1067,7 @@ export class ProfileRuntime {
       stage: run.stage,
       epoch: w.version,
       purpose,
+      executionRoot,
       workspaceRoots: Object.fromEntries(
         workspaces.flatMap((ws) => {
           const roots = [[ws.repo_id, ws.root]];

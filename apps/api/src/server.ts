@@ -3,8 +3,8 @@ import { TaskNameSchema } from "../../../packages/contracts/src/task-name.js";
 import { createBaseServer } from "./base-server.js";
 import websocket from "@fastify/websocket";
 import staticPlugin from "@fastify/static";
-import { existsSync, readFileSync } from "node:fs";
-import { resolve, join, basename, normalize } from "node:path";
+import { existsSync, lstatSync, readFileSync } from "node:fs";
+import { resolve, join, basename } from "node:path";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { NodeStreamableHTTPServerTransport } from "@modelcontextprotocol/node";
@@ -39,11 +39,12 @@ import {
   LocalRuntime,
   runtimeStopPort,
 } from "../../../packages/runtime/src/runtime.js";
-import { CreateWorkflowService, generateWorkflowId } from "../../../packages/core/src/create-workflow.js";
+import { CreateWorkflowService, generateWorkflowId, planWorkflowWorkspaces } from "../../../packages/core/src/create-workflow.js";
+import { PROJECT_DOCS_ID, resolveProjectLayout } from "../../../packages/core/src/project-layout.js";
 import { WorkspaceReferenceService } from "../../../packages/workspace/src/references.js";
 import { AsideSessionService } from "../../../packages/asides/src/service.js";
 import { FunctionalIssueService } from "../../../packages/core/src/functional-issues.js";
-import { repositoryInfo, previewWorktreePath } from "../../../packages/git/src/git.js";
+import { previewWorktreePath } from "../../../packages/git/src/git.js";
 import { GitDeliveryCoordinator } from "../../../packages/git/src/delivery-coordinator.js";
 import { DocumentService } from "../../../packages/core/src/document-service.js";
 import { PlanApprovalService } from "../../../packages/core/src/plan-approval-service.js";
@@ -162,7 +163,7 @@ export async function buildServer(
       ...project,
       has_running_tasks: engine.list().some((workflow) => workflow.project_id === project.id && isWorkflowRunning(workflow)),
       name: engine.store.get<{ name: string }>("project_display", project.id)?.name
-        ?? basename((project.repositories.find((repo) => repo.id === project.primary_repo_id)
+        ?? basename(project.project_root ?? (project.repositories.find((repo) => repo.id === project.primary_repo_id)
           ?? project.repositories[0])!.path),
     }));
   });
@@ -336,14 +337,15 @@ export async function buildServer(
       .object({
         workspace_root: z.string().min(1),
         request_id: z.string().optional(),
-        workflow_id: z.string().optional(),
+        workflow_id: Id.optional(),
         repo_id: z.string().default("main"),
         workspace_mode: z
           .enum(["existing_workspace", "new_worktree"])
           .default("existing_workspace"),
         explicit_path: z.string().optional(),
         worktree_path: z.string().optional(),
-        project_configured_path: z.string().optional(),
+        worktree_paths: z.record(Id, z.string()).optional(),
+        branches: z.record(Id, z.string()).optional(),
         branch: z.string().optional(),
       })
       .parse(req.body);
@@ -351,30 +353,34 @@ export async function buildServer(
       b.workflow_id ||
       (b.request_id ? generateWorkflowId(b.request_id) : "preview-wf");
 
-    // 服务端读取已登记 Project，客户端不得伪造 project_configured_path
-    const normSource = normalize(resolve(b.workspace_root)).toLowerCase();
-    const existingProject = engine.store
-      .list<Project>("project")
-      .find((p) =>
-        p.repositories.some(
-          (r: any) => normalize(resolve(r.path)).toLowerCase() === normSource,
-        ),
-      );
-    const effectiveRepo =
-      existingProject?.repositories.find(
-        (r: any) => normalize(resolve(r.path)).toLowerCase() === normSource,
-      ) ?? existingProject?.repositories[0];
-    const serverConfiguredPath = effectiveRepo?.worktree_base_path;
 
-    return previewWorktreePath({
-      sourceRoot: b.workspace_root,
-      workflowId: effectiveWorkflowId,
-      repoId: effectiveRepo?.id ?? b.repo_id,
-      mode: b.workspace_mode,
-      explicitPath: b.worktree_path || b.explicit_path,
-      projectConfiguredPath: serverConfiguredPath,
-      branch: b.branch,
+    const layout = planWorkflowWorkspaces(engine.store, {
+      ...b,
+      worktree_path: b.worktree_path || b.explicit_path,
+    }, effectiveWorkflowId);
+    const primary = layout.repositories[0]!;
+    const items = layout.repositories.map(repo => ({
+      repo_id: repo.id,
+      source_root: repo.path,
+      source_branch: repo.branch,
+      relative_path: repo.relativePath,
+      target_path: repo.target_path,
+      task_branch: repo.task_branch,
+    }));
+    const singlePreview = layout.grouped ? items[0] : previewWorktreePath({
+      sourceRoot: primary.path, workflowId: effectiveWorkflowId, repoId: primary.id, mode: layout.mode,
+      explicitPath: b.worktree_path || b.explicit_path, projectConfiguredPath: primary.worktree_base_path, branch: b.branch,
     });
+    return {
+      ...singlePreview,
+      mode: layout.mode,
+      is_worktree: layout.mode === "new_worktree",
+      project_root: layout.root,
+      grouped: layout.grouped,
+      execution_root: layout.executionRoot,
+      repositories: items,
+      preview_digest: layout.digest,
+    };
   });
 
   app.post("/api/workflows", async (req) => {
@@ -395,6 +401,7 @@ export async function buildServer(
         worktree_paths: body.worktree_paths,
         branch: body.branch,
         branches: body.branches,
+        preview_digest: body.preview_digest,
         planner_profile_id: body.planner_profile_id,
         executor_profile_id: body.executor_profile_id,
         planner_profile: body.planner_profile,
@@ -418,46 +425,55 @@ export async function buildServer(
     return engine.create(b, b.idempotency_key);
   });
 
-  const referenceRoot = async (q: any) => {
+
+  const referenceRoots = (q: any) => {
+    const withDocs = (projectRoot: string | undefined, repos: { root: string; repo_id: string }[]) => {
+      const docs = projectRoot && join(projectRoot, "docs");
+      return docs && existsSync(docs) && lstatSync(docs).isDirectory() && !lstatSync(docs).isSymbolicLink() ? [{ root: docs, repo_id: PROJECT_DOCS_ID }, ...repos] : repos;
+    };
     if (q.workflow_id) {
-      engine.get(Id.parse(q.workflow_id));
-      const workspaces = engine.store.list<any>("workspace", q.workflow_id);
-      const ws = q.repo_id
-        ? workspaces.find((w) => w.repo_id === q.repo_id)
-        : workspaces[0];
-      requireCondition(ws, "WORKSPACE_MISSING", "请选择当前任务仓库", 422);
-      return ws.root as string;
+      const workflowId = Id.parse(q.workflow_id);
+      engine.get(workflowId);
+      const context = engine.store.get<{ project_root?: string }>("entry_context", workflowId);
+      const workspaces = engine.store.list<Workspace>("workspace", workflowId);
+      return withDocs(context?.project_root, workspaces.map(ws => ({ root: ws.root, repo_id: ws.repo_id })));
     }
-    requireCondition(
-      typeof q.workspace_root === "string" && q.workspace_root.trim(),
-      "WORKSPACE_REQUIRED",
-      "先选择工作区路径",
-      422,
-    );
-    return (await repositoryInfo(q.workspace_root)).path;
+    requireCondition(typeof q.workspace_root === "string" && q.workspace_root.trim(),
+      "WORKSPACE_REQUIRED", "先选择工作区路径");
+    const layout = resolveProjectLayout(engine.store, q.workspace_root.trim());
+    return withDocs(layout.grouped ? layout.root : undefined,
+      layout.repositories.map(repo => ({ root: repo.path, repo_id: repo.id })));
   };
-  // 工作区 @ 引用候选与目录浏览路由 (RQ-10)
+  const referenceRoot = (q: any) => {
+    const roots = referenceRoots(q);
+    const repo = q.repo_id ? roots.find(item => item.repo_id === q.repo_id) : roots[0];
+    requireCondition(repo, "WORKSPACE_MISSING", "请选择当前任务仓库或项目文档");
+    return repo;
+  };
   app.get("/api/workspaces/references", async (req) => {
     human(req);
     const q = (req.query || {}) as any;
     const query = String(q.query || "");
     const dir = q.directory !== undefined ? q.directory : q.dir;
-    const root = await referenceRoot(q);
     if (dir !== undefined) {
-      return WorkspaceReferenceService.listDirectory(root, String(dir));
+      const repo = referenceRoot(q);
+      return WorkspaceReferenceService.listDirectory(repo.root, String(dir), 0, 100, repo.repo_id);
     }
-    return WorkspaceReferenceService.searchReferences(root, query);
+    const roots = q.repo_id ? [referenceRoot(q)] : referenceRoots(q);
+    if (roots.length === 1) {
+      const repo = roots[0]!;
+      return WorkspaceReferenceService.searchReferences(repo.root, query, 0, 50, repo.repo_id);
+    }
+    const items = roots.flatMap(repo =>
+      WorkspaceReferenceService.searchReferences(repo.root, query, 0, 50, repo.repo_id).items);
+    return { items: items.slice(0, 50) };
   });
 
-  // 工作区文件有界预览 (RQ-11)
   app.get("/api/workspaces/reference-preview", async (req) => {
     human(req);
     const q = (req.query || {}) as any;
-    const root = await referenceRoot(q);
-    return WorkspaceReferenceService.readTextPreview(
-      root,
-      q.relative_path || q.path || "",
-    );
+    const { root } = referenceRoot(q);
+    return WorkspaceReferenceService.readTextPreview(root, q.relative_path || q.path || "");
   });
 
   app.get("/api/workflows/:id/session-bindings", async (req) => {

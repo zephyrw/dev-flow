@@ -178,7 +178,7 @@ export abstract class BaseNativeAgentAdapter implements NativeAgentAdapter {
         cwd:
           typeof cwd === "string"
             ? cwd
-            : Object.values(context.workspaceRoots)[0]!,
+            : context.executionRoot ?? Object.values(context.workspaceRoots)[0]!,
         started_at: timestamp,
         status: "RUNNING",
       });

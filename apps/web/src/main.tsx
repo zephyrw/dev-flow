@@ -3174,7 +3174,9 @@ function App() {
           void refresh();
         }}
         defaultWorkspaceRoot={
+          detail?.project?.project_root ??
           detail?.project?.repositories?.[0]?.path ??
+          projects[0]?.project_root ??
           projects[0]?.repositories?.[0]?.path ??
           ""
         }

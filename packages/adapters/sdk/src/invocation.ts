@@ -60,7 +60,7 @@ export function clientInvocation(
     throw new FlowError("INPUT_UNSUPPORTED",
       "当前工具尚未实现本轮附件的独立输入；指导原文和附件已保留，未追加附件提示词或发送本轮指导", 422);
   }
-  const cwd = Object.values(input.workspaceRoots)[0];
+  const cwd = input.executionRoot ?? Object.values(input.workspaceRoots)[0];
   if (!cwd) throw new Error("执行轮次没有工作区");
   const prompt =
     input.prompt ??
@@ -87,7 +87,7 @@ export function clientInvocation(
         'approval_policy="never"',
       );
       if (resume) args.push("resume", resume);
-      if (input.purpose === "planner_commit")
+      if (input.purpose === "planner_commit" || (input.executionRoot && !readonly))
         args.push("-c", "sandbox_workspace_write.writable_roots=" + JSON.stringify(Object.values(input.workspaceRoots)));
       args.push("--json", "--skip-git-repo-check");
       pushFrozenSelection(args, env, input);

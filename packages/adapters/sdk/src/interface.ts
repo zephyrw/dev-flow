@@ -45,6 +45,7 @@ export interface RunContext {
   stage: string;
   epoch: number;
   workspaceRoots: Record<string, string>; // repo_id -> absolute path
+  executionRoot?: string;
   allowedPaths: string[];
   toolProfile: ToolProfile;
   handoffDocPath?: string;
