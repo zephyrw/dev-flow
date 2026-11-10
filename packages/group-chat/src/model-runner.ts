@@ -4,18 +4,43 @@ import { join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { createDefaultAdapterRegistry } from "../../adapters/sdk/src/index.js";
 import { resolveAdapterExecutable } from "../../adapters/sdk/src/registry.js";
+import { nativeLaunch } from "../../adapters/sdk/src/launch.js";
 import { selectionCapabilityFromCatalog } from "../../adapters/sdk/src/frozen-invocation.js";
+import { hasAgyPrintTimeout } from "../../adapters/agy/src/failure-fact.js";
 import type { ModelCatalog } from "../../contracts/src/model-catalog.js";
 import { ProcessManager } from "../../process/src/manager.js";
 import { modelReplyText } from "../../presentation/src/model-reply.js";
 import { observeProcessRecord } from "../../process/src/process-protocol.js";
-import type { AgyAccountService, UsagePermit } from "../../agy-accounts/src/service.js";
+import type { AgyAccountService, AgyUsageRequest, UsagePermit } from "../../agy-accounts/src/service.js";
 import type { Model } from "./contracts.js";
 
 export type RunModel = (input: {
   session: string; member: Model; cwd: string; scratch: string; prompt: string; execute: boolean; structured?: boolean;
   signal: AbortSignal;
 }) => Promise<string>;
+
+const isAgyProbeTimeout = (error: unknown) =>
+  error instanceof Error && ("code" in error ? error.code : error.message) === "agy_model_probe_timeout";
+
+export async function acquireGroupAgyPermit(
+  accounts: Pick<AgyAccountService, "acquireUsagePermit">, request: AgyUsageRequest, signal: AbortSignal,
+) {
+  signal.throwIfAborted();
+  try {
+    return await accounts.acquireUsagePermit(request);
+  } catch (error) {
+    if (!isAgyProbeTimeout(error)) throw error;
+  }
+  // The failed check has already stopped. Ask the account service to validate
+  // the current account again before starting the real reply.
+  signal.throwIfAborted();
+  try {
+    return await accounts.acquireUsagePermit(request);
+  } catch (error) {
+    if (isAgyProbeTimeout(error)) throw new Error("AGY 模型访问核验连续超时，回复尚未开始，可重试本成员", { cause: error });
+    throw error;
+  }
+}
 
 export function createGroupModelRunner(getCatalog: (tool: string) => ModelCatalog, customCodex?: string, customAgy?: string, accountService?: AgyAccountService) {
   const records = new Map<string, { path: string; permit?: UsagePermit }>();
@@ -57,6 +82,7 @@ export function createGroupModelRunner(getCatalog: (tool: string) => ModelCatalo
         promptKind: "user", prompt, timeoutMs: 300_000,
         ...(member.tool === "codex" ? { outputPath } : {}),
       }, executable);
+      const launch = nativeLaunch(invocation.executable, member.tool);
       delete invocation.env.DEVFLOW_WORKFLOW_ID;
       delete invocation.env.DEVFLOW_STAGE;
       // Keep OpenCode's native providers and credentials. Group calls never grant tools.
@@ -83,30 +109,35 @@ export function createGroupModelRunner(getCatalog: (tool: string) => ModelCatalo
         invocation.args.splice(0, 0, "--disable-slash-commands", "--sandbox");
         if (accountService?.isManaged()) {
           const model = (member.effort ? entry.effort.variants?.[member.effort] : undefined) ?? member.model;
-          permit = await accountService.acquireUsagePermit({
+          permit = await acquireGroupAgyPermit(accountService, {
             realm_id: "default-agy-realm", consumer_id: runId, usage_kind: "execution",
             required_pool_ids: [], required_model_ids: [model], model_id: model,
-          });
+          }, signal);
           signal.throwIfAborted();
           accountService.markUsageStarted(permit.permit_id);
         }
       }
       signal.throwIfAborted();
       records.set(runId, { path: record, permit });
-      const task = manager.start({ id: runId, ...invocation, timeout_ms: 300_000 });
+      const task = manager.start({
+        id: runId, ...invocation, executable: launch.executable,
+        args: [...launch.prefix, ...invocation.args], timeout_ms: 300_000,
+      });
       confirmed = false;
       const stop = () => { void task.stop().catch(() => {}); };
       signal.addEventListener("abort", stop, { once: true });
       let stdout = "";
       const decoder = new StringDecoder("utf8");
       let failure = false;
+      let stderrTail = "";
       let providerError: string | undefined;
-      if (member.tool === "opencode") {
-        let stderrTail = "";
+      let agyPrintTimedOut = false;
+      if (member.tool === "opencode" || member.tool === "agy") {
         task.on("stderr", (chunk: Buffer) => {
-          if (providerError) return;
+          if (providerError || agyPrintTimedOut) return;
           stderrTail = (stderrTail + chunk.toString("utf8")).slice(-8192);
-          providerError = openCodeGroupFailure(stderrTail);
+          if (member.tool === "opencode") providerError = openCodeGroupFailure(stderrTail);
+          else agyPrintTimedOut = hasAgyPrintTimeout(stderrTail);
         });
       }
       task.on("stdout", chunk => {
@@ -116,16 +147,23 @@ export function createGroupModelRunner(getCatalog: (tool: string) => ModelCatalo
       try {
         const result = await task.completion;
         confirmed = true;
-        successful = result.code === 0;
         signal.throwIfAborted();
         if (failure) throw new Error("模型输出超过运行限制");
+        if (agyPrintTimedOut) throw new Error("AGY 模型回复超时，可重试本成员");
         if (result.code !== 0 || result.termination_reason)
-          throw new Error(providerError ?? (result.termination_reason === "timeout" ? "模型响应超时" : `工具退出（${result.code ?? "已终止"}），请检查工具的模型与登录状态`));
+          throw new Error(providerError ?? (result.termination_reason === "timeout" ? "模型回复超时，可重试本成员"
+            : result.code === -1 ? "模型工具未能启动，请检查本机 CLI 安装和可执行路径"
+            : `模型工具退出（${result.code ?? "已终止"}），请检查模型或工具状态`));
         if (member.tool === "codex") {
-          try { const reply = readFileSync(outputPath, "utf8").trim(); if (reply) return reply; } catch {}
+          try {
+            const reply = readFileSync(outputPath, "utf8").trim();
+            if (reply) { successful = true; return reply; }
+          } catch {}
         }
         try {
-          return parseGroupReply(member.tool, stdout + decoder.end(), structured);
+          const reply = parseGroupReply(member.tool, stdout + decoder.end(), structured);
+          successful = true;
+          return reply;
         } catch (error) {
           if (providerError) throw new Error(providerError);
           throw error;
@@ -166,7 +204,12 @@ export function parseGroupReply(tool: Model["tool"], stdout: string, structured 
     if (!row || typeof row !== "object") continue;
     if (row.type === "error" || row.type === "turn.failed") throw new Error("工具报告本次模型调用失败");
     if (tool === "agy" && row.event === "result") {
-      if (row.result?.status !== "SUCCESS") throw new Error("AGY 未能完成本次请求");
+      if (row.result?.status !== "SUCCESS") {
+        const detail = row.result?.error;
+        if (typeof detail === "string" && /\b(?:timeout|timed out|deadline exceeded)\b/i.test(detail))
+          throw new Error("AGY 模型回复超时，可重试本成员");
+        throw new Error("AGY 未能完成本次请求");
+      }
       answer = reply(row.result.response);
     } else if (tool === "codex" && row.type === "item.completed" && row.item?.type === "agent_message") {
       answer = row.item.text ?? answer;

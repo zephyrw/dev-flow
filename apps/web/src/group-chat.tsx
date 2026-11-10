@@ -10,6 +10,12 @@ type View = { session: Session; round?: Round; messages: (Message & { seq: numbe
 type Page = { items: Session[]; next?: string };
 type Document = Artifact & { body: string };
 const toolNames = { codex: "Codex", agy: "Antigravity CLI", "claude-code": "Claude Code", opencode: "OpenCode" };
+const defaultMembers: Omit<Model, "id">[] = [
+  { nickname: "", tool: "codex", model: "gpt-6-astra", effort: "max" },
+  { nickname: "", tool: "codex", model: "gpt-6.1-sol", effort: "high" },
+  { nickname: "", tool: "agy", model: "gemini-3.8-flash-high", effort: "high" },
+  { nickname: "", tool: "agy", model: "gemini-4-argon-high", effort: "high" },
+];
 const sceneNames = { open: "开放讨论", fiction: "小说选题与大纲", design: "方案设计" };
 const stageNames = {
   reply: "成员回复", summary: "管理员整理", ideas: "独立选题", idea_vote: "点子投票",
@@ -32,10 +38,16 @@ function memberChoice(member: Pick<Model, "model">, choices: ModelChoice[] = [])
     Object.values(choice.variantByEffort).includes(member.model));
 }
 
+class GroupConnectionError extends Error {
+  constructor(cause: unknown) {
+    super("暂时无法连接 DevFlow 服务，请稍后重试。", { cause });
+  }
+}
+
 async function api<T>(path: string, method = "GET", body?: unknown): Promise<T> {
   const response = await fetch(path, { method, ...(body === undefined ? {} : {
     headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
-  }) });
+  }) }).catch(error => { throw new GroupConnectionError(error); });
   if (!response.ok) {
     const error = await response.json().catch(() => ({}));
     throw new Error(error.error?.message ?? `请求失败（${response.status}）`);
@@ -69,7 +81,9 @@ function Modal({ title, children, close }: { title: string; children: ReactNode;
 }
 
 function GroupForm({ save, close, group }: { save: (data: unknown) => Promise<void>; close: () => void; group?: Group }) {
-  const [members, setMembers] = useState<Omit<Model, "id">[]>(group?.members.map(({ id: _id, ...member }) => member) ?? [{ nickname: "", tool: "codex", model: "" }]);
+  const [members, setMembers] = useState<Omit<Model, "id">[]>(() =>
+    group ? group.members.map(({ id: _id, ...member }) => member) : defaultMembers,
+  );
   const [catalogs, setCatalogs] = useState<Partial<Record<Model["tool"], ModelChoice[]>>>({});
   const [loading, setLoading] = useState<Partial<Record<Model["tool"], boolean>>>({});
   const [catalogErrors, setCatalogErrors] = useState<Partial<Record<Model["tool"], string>>>({});
@@ -77,6 +91,7 @@ function GroupForm({ save, close, group }: { save: (data: unknown) => Promise<vo
   const [admin, setAdmin] = useState(group?.members.findIndex(member => member.id === group.admin) ?? 0);
   const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
+  const [editor, setEditor] = useState<{ index: number; member: Omit<Model, "id">; admin: boolean }>();
   async function load(tool: Model["tool"], force = false) {
     requests.current.get(tool)?.abort();
     const controller = new AbortController();
@@ -101,23 +116,27 @@ function GroupForm({ save, close, group }: { save: (data: unknown) => Promise<vo
       if (!controller.signal.aborted) setLoading(value => ({ ...value, [tool]: false }));
     }
   }
-  const memberTools = [...new Set(members.map(member => member.tool))].join(",");
+  const memberTools = [...new Set([...members.map(member => member.tool), ...(editor ? [editor.member.tool] : [])])].join(",");
   useEffect(() => {
-    for (const tool of memberTools.split(",") as Model["tool"][])
+    for (const tool of memberTools.split(",").filter(Boolean) as Model["tool"][])
       if (!requests.current.has(tool)) void load(tool);
   }, [memberTools]);
   useEffect(() => () => {
     for (const controller of requests.current.values()) controller.abort();
     requests.current.clear();
   }, []);
-  const canSave = members.every(member => {
+  function isAvailable(member: Omit<Model, "id">) {
     const choice = memberChoice(member, catalogs[member.tool]);
     return choice && !loading[member.tool] && !catalogErrors[member.tool] &&
       (!member.effort || (choice.effortStatus === "supported" && choice.effortValues.includes(member.effort)));
-  });
-  function patch(index: number, value: Partial<Omit<Model, "id">>) {
-    setMembers(rows => rows.map((row, i) => i === index ? { ...row, ...value } : row));
   }
+  const canSave = members.length > 0 && members.every(isAvailable);
+  function patch(value: Partial<Omit<Model, "id">>) {
+    setEditor(current => current && { ...current, member: { ...current.member, ...value } });
+  }
+  const taken = (tool: Model["tool"], choice: ModelChoice, except: number) =>
+    members.some((member, index) => index !== except && member.tool === tool &&
+      memberChoice(member, catalogs[tool]) === choice);
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!canSave) { setError("请等待模型目录加载完成，并选择当前可用的模型与推理强度"); return; }
@@ -141,55 +160,94 @@ function GroupForm({ save, close, group }: { save: (data: unknown) => Promise<vo
     catch (error) { setError(error instanceof Error ? error.message : String(error)); }
     finally { setPending(false); }
   }
-  return <Modal title={group ? "编辑群配置" : "新建群聊"} close={close}>
+  return <><Modal title={group ? "编辑群配置" : "新建群聊"} close={close}>
     <form onSubmit={submit} className="gc-form">
       <label>群名称<input name="title" required maxLength={100} defaultValue={group?.title} autoFocus /></label>
       <label>我的昵称<input name="human" required maxLength={32} defaultValue={group?.human ?? "我"} /></label>
-      {members.map((member, index) => {
+      <ul className="gc-member-list" aria-label="模型成员">
+        {members.map((member, index) => {
+          const name = modelName(member, memberChoice(member, catalogs[member.tool])?.label);
+          const unavailable = catalogs[member.tool] && !loading[member.tool] && !catalogErrors[member.tool] && !isAvailable(member);
+          return <li key={index} className="gc-member-item">
+            <span>{name}</span>
+            {admin === index && <span className="gc-tag">管理员</span>}
+            {unavailable && <small role="alert">当前目录不可用，请修改或移除</small>}
+            <div className="gc-member-controls">
+              <button type="button" title="编辑成员" aria-label={`编辑成员 ${name}`}
+                onClick={() => setEditor({ index, member, admin: admin === index })}>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="m14 5 5 5M4 20l4-1 12-12-3-3L5 16z" /></svg>
+              </button>
+              <button type="button" title="移除成员" aria-label={`移除成员 ${name}`} onClick={() => {
+                setMembers(rows => rows.filter((_, i) => i !== index));
+                setAdmin(value => value === index ? 0 : value > index ? value - 1 : value);
+              }}>×</button>
+            </div>
+          </li>;
+        })}
+      </ul>
+      {[...new Set(members.map(member => member.tool))].map(tool => catalogErrors[tool] && <p key={tool} role="alert">{toolNames[tool]}：{catalogErrors[tool]}</p>)}
+      {error && <p role="alert">{error}</p>}
+      <div className="gc-actions">
+        <button type="button" disabled={members.length >= 16} onClick={() => setEditor({
+          index: members.length, member: { nickname: "", tool: "codex", model: "" }, admin: members.length === 0,
+        })}>新增成员</button>
+        <button className="gc-primary" disabled={pending || !canSave}>{group ? "保存群配置" : "创建群聊"}</button>
+      </div>
+    </form>
+  </Modal>
+  {editor && (() => {
+        const { member, index } = editor;
         const ready = !!catalogs[member.tool] && !loading[member.tool] && !catalogErrors[member.tool];
         const models = ready ? catalogs[member.tool]! : [];
         const model = memberChoice(member, models);
         const efforts = model?.effortStatus === "supported" ? model.effortValues : [];
         const effort = member.effort ?? Object.entries(model?.variantByEffort ?? {}).find(([, id]) => id === member.model)?.[0] ?? "";
-        return <fieldset key={index} className="gc-member-form">
-          <legend>模型成员 {index + 1}</legend>
-          <label>昵称<input aria-label={`成员 ${index + 1} 昵称`} maxLength={32} value={member.nickname}
-            placeholder={modelName(member, model?.label) || "留空使用模型名"} onInput={event => patch(index, { nickname: event.currentTarget.value })} /></label>
-          <label>工具<select value={member.tool} onChange={e => patch(index, { tool: e.target.value as Model["tool"], model: "", effort: undefined })}>
+        const adding = index === members.length;
+        const duplicate = model && taken(member.tool, model, index) &&
+          !(members[index]?.tool === member.tool && memberChoice(members[index], models) === model);
+        return <Modal title={adding ? "新增成员" : "编辑成员"} close={() => setEditor(undefined)}>
+        <form className="gc-form gc-member-form" onSubmit={event => {
+          event.preventDefault();
+          if (!isAvailable(member) || duplicate) return;
+          setMembers(rows => adding ? [...rows, member] : rows.map((row, i) => i === index ? member : row));
+          if (editor.admin) setAdmin(index);
+          setEditor(undefined);
+        }}>
+          <label>昵称<input maxLength={32} value={member.nickname}
+            placeholder={modelName(member, model?.label) || "留空使用模型名"} onInput={event => patch({ nickname: event.currentTarget.value })} /></label>
+          <label>工具<select value={member.tool} onChange={e => patch({ tool: e.target.value as Model["tool"], model: "", effort: undefined })}>
             {tools.map(tool => <option value={tool} key={tool}>{toolNames[tool]}</option>)}
           </select></label>
-          <label>模型<select required disabled={!ready} value={model?.nativeId ?? member.model} onChange={e => patch(index, { model: e.target.value, effort: undefined })}>
+          <label>模型<select required disabled={!ready} value={model?.nativeId ?? member.model} onChange={e => patch({ model: e.target.value, effort: undefined })}>
             <option value="">{loading[member.tool] ? "正在读取模型目录…" : "选择具体模型"}</option>
             {member.model && !model && <option value={member.model} disabled>{formatModelName(member.tool, member.model)}（{ready ? "当前目录不可用" : "等待目录确认"}）</option>}
-            {models.map(item => <option key={item.entryIds.join("|")} value={item.nativeId}>{item.label}</option>)}
+            {models.map(item => {
+              const used = taken(member.tool, item, index) && item !== model;
+              return <option key={item.entryIds.join("|")} value={item.nativeId} disabled={used}>{item.label}{used && "（已有成员）"}</option>;
+            })}
           </select></label>
-          <label>推理强度<select disabled={!model || efforts.length === 0} value={effort} onChange={e => {
+          <label>推理强度<select disabled={!model || (efforts.length === 0 && !member.effort)} value={effort} onChange={e => {
             const value = e.target.value;
-            patch(index, { model: model?.variantByEffort[value] ?? model?.nativeId ?? member.model, effort: value || undefined });
+            patch({ model: model?.variantByEffort[value] ?? model?.nativeId ?? member.model, effort: value || undefined });
           }}>
             <option value="">模型默认</option>
-            {effort && !efforts.includes(effort) && <option value={effort} disabled>{effort}（当前模型不支持）</option>}
+            {effort && !efforts.includes(effort) && <option value={effort} disabled>{effort}{model && "（当前模型不支持）"}</option>}
             {efforts.map(value => <option key={value}>{value}</option>)}
           </select></label>
           {catalogErrors[member.tool] && <p role="alert">{catalogErrors[member.tool]}</p>}
-          {ready && member.model && !model && <p role="alert">原模型已不在当前目录，请重新选择。</p>}
+          {ready && member.model && !model && <p role="alert">{group
+            ? "原模型已不在当前目录，请重新选择。"
+            : "预选模型不在当前目录，请重新选择或移除此成员。"}</p>}
           <div className="gc-actions">
-            <label><input type="radio" name="admin" checked={admin === index} onChange={() => setAdmin(index)} /> 管理员</label>
+            <label><input type="checkbox" checked={editor.admin} disabled={index === admin} onChange={event => {
+              const checked = event.currentTarget.checked;
+              setEditor(current => current && { ...current, admin: checked });
+            }} /> 设为管理员</label>
             <button type="button" disabled={loading[member.tool]} onClick={() => void load(member.tool, true)}>{loading[member.tool] ? "刷新中" : "刷新模型目录"}</button>
-            {members.length > 1 && <button type="button" onClick={() => {
-              setMembers(rows => rows.filter((_, i) => i !== index));
-              setAdmin(value => value === index ? 0 : value > index ? value - 1 : value);
-            }}>移除此成员</button>}
+            <button className="gc-primary" disabled={!isAvailable(member) || duplicate}>{adding ? "添加成员" : "保存成员"}</button>
           </div>
-        </fieldset>;
-      })}
-      {error && <p role="alert">{error}</p>}
-      <div className="gc-actions">
-        <button type="button" disabled={members.length >= 16} onClick={() => setMembers(rows => [...rows, { nickname: "", tool: "codex", model: "" }])}>添加模型成员</button>
-        <button className="gc-primary" disabled={pending || !canSave}>{group ? "保存群配置" : "创建群聊"}</button>
-      </div>
-    </form>
-  </Modal>;
+        </form></Modal>;
+  })()}</>;
 }
 
 function RosterEditor({ row, save, admin, close, error }: { row: Group | Session; save: (id: string, name: string) => void; admin: (id: string) => void; close: () => void; error?: ReactNode }) {
@@ -327,6 +385,7 @@ function Results({ view, preview, act }: { view: View; preview: (id: string) => 
 }
 
 export function GroupChatPage() {
+  const [refreshError, setRefreshError] = useState("");
   const [groups, setGroups] = useState<Group[]>([]);
   const [groupId, setGroupId] = useState("");
   const [sessions, setSessions] = useState<Page>({ items: [] });
@@ -392,14 +451,22 @@ export function GroupChatPage() {
     setAll(false);
     setMentions(false);
     setMemberQuery("");
+    setRefreshError("");
     if (!sessionId) return;
     let live = true;
     let timer: ReturnType<typeof setTimeout>;
     async function refresh() {
       try {
         const next = await api<View>(sessionUrl(sessionId));
-        if (live) setView(prior => prior?.session.id === sessionId && prior.session.version >= next.session.version ? prior : next);
-      } catch (error) { if (live) report(error); }
+        if (live) {
+          setView(prior => prior?.session.id === sessionId && prior.session.version >= next.session.version ? prior : next);
+          setRefreshError("");
+        }
+      } catch (error) {
+        if (live) setRefreshError(error instanceof GroupConnectionError
+          ? "群聊暂时无法连接服务，正在自动重连。"
+          : error instanceof Error ? error.message : String(error));
+      }
       if (live) timer = setTimeout(() => void refresh(), 950);
     }
     void refresh();
@@ -489,7 +556,9 @@ export function GroupChatPage() {
     if (!session) return;
     setAuthor(session.admin); setBase(artifact); setModal(session.scene === "fiction" ? "outline" : "final");
   };
-  const errorMessage = error && <p className="gc-error" role="alert">{error}<button aria-label="关闭错误" onClick={() => setError("")}>×</button></p>;
+  const errorMessage = (error || refreshError) && <p className="gc-error" role="alert">{error || refreshError}<button aria-label="关闭错误" onClick={() => {
+    setError(""); setRefreshError("");
+  }}>×</button></p>;
   return <div className="gc-shell">
     <header className="gc-top">
       <a href="/" className="gc-back" aria-label="返回任务工作台">‹ <span>任务工作台</span></a>

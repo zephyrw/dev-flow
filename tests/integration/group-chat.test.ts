@@ -4,7 +4,8 @@ import { existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:
 import { join } from "node:path";
 import { buildServer } from "../../apps/api/src/server.js";
 import { GroupChat } from "../../packages/group-chat/src/service.js";
-import { openCodeGroupFailure, parseGroupReply } from "../../packages/group-chat/src/model-runner.js";
+import { acquireGroupAgyPermit, openCodeGroupFailure, parseGroupReply } from "../../packages/group-chat/src/model-runner.js";
+import type { AgyUsageRequest, UsagePermit } from "../../packages/agy-accounts/src/service.js";
 import { scoreTotal, type Action } from "../../packages/group-chat/src/contracts.js";
 import { groupChatFixtureModel } from "../fixtures/group-chat-model.js";
 import { setup, testConsoleHeaders } from "../helpers.js";
@@ -36,6 +37,35 @@ function fixture() {
 }
 
 describe("模型群聊", () => {
+  const agyRequest: AgyUsageRequest = {
+    realm_id: "default-agy-realm", consumer_id: "reply", usage_kind: "execution",
+    required_pool_ids: [], required_model_ids: ["gemini-4-argon-high"], model_id: "gemini-4-argon-high",
+  };
+  const probeTimeout = () => Object.assign(new Error("agy_model_probe_timeout"), { code: "agy_model_probe_timeout" });
+
+  it("AGY 核验超时后以原模型重试一次，拿到许可才继续", async () => {
+    const permit = { permit_id: "permit-after-probe" } as UsagePermit;
+    const acquireUsagePermit = vi.fn<(request: AgyUsageRequest) => Promise<UsagePermit>>()
+      .mockRejectedValueOnce(probeTimeout()).mockResolvedValueOnce(permit);
+    await expect(acquireGroupAgyPermit({ acquireUsagePermit }, agyRequest, new AbortController().signal)).resolves.toBe(permit);
+    expect(acquireUsagePermit.mock.calls).toEqual([[agyRequest], [agyRequest]]);
+  });
+
+  it("AGY 连续超时会停止；用户取消后不再次探测", async () => {
+    const acquireUsagePermit = vi.fn(async () => { throw probeTimeout(); });
+    const controller = new AbortController();
+    await expect(acquireGroupAgyPermit({ acquireUsagePermit }, agyRequest, controller.signal))
+      .rejects.toThrow("回复尚未开始");
+    expect(acquireUsagePermit).toHaveBeenCalledTimes(2);
+    acquireUsagePermit.mockClear().mockImplementationOnce(async () => {
+      controller.abort();
+      throw probeTimeout();
+    });
+    await expect(acquireGroupAgyPermit({ acquireUsagePermit }, agyRequest, controller.signal))
+      .rejects.toMatchObject({ name: "AbortError" });
+    expect(acquireUsagePermit).toHaveBeenCalledTimes(1);
+  });
+
   it("分别改名、按成员投递与执行，并隔离、删除工作目录", async () => {
     const { chat, group, run, act, wait, root } = fixture();
     const first = chat.createSession(group.id, "会话一", "open");

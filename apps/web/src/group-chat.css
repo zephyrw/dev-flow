@@ -190,6 +190,14 @@
 .gc-member-form,.gc-roster-row { min-width: 0; border: 1px solid var(--gc-edge); border-radius: 10px; padding: 9px; display: grid; gap: 7px; }
 .gc-member-form { grid-template-columns: repeat(2,minmax(0,1fr)); }
 .gc-member-form .gc-actions { grid-column: 1 / -1; }
+.gc-member-form > [role="alert"] { grid-column: 1 / -1; }
+.gc-member-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.gc-member-item { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-height: 38px; padding: 3px 8px; border: 1px solid var(--gc-edge); border-radius: 8px; }
+.gc-member-item > small { color: var(--gc-muted); }
+.gc-member-controls { display: flex; gap: 4px; margin-left: auto; opacity: 0; pointer-events: none; }
+.gc-member-item:hover .gc-member-controls, .gc-member-item:focus-within .gc-member-controls { opacity: 1; pointer-events: auto; }
+.gc-shell .gc-member-controls button { display: grid; place-items: center; width: 30px; height: 30px; padding: 0; }
+@media (hover: none) { .gc-member-controls { opacity: 1; pointer-events: auto; } }
 .gc-roster-row { grid-template-columns: minmax(100px, 1fr) minmax(110px, 1fr) auto; align-items: end; }
 .gc-roster-row > small { align-self: center; overflow-wrap: anywhere; }
 .gc-tag { padding: 3px 8px; background: var(--gc-soft); border-radius: 20px; font-size: 12px; }
