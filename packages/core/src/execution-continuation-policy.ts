@@ -43,18 +43,21 @@ function hasConflictingStatuses(payload: Record<string, unknown>): boolean {
   return new Set(intents).size > 1;
 }
 
+export function hasUnfinishedExecutionItems(payload: Record<string, unknown>): boolean {
+  return owners(payload).some(owner =>
+    Array.isArray(owner.unfinished_items) && owner.unfinished_items.length > 0);
+}
+
 /** This only routes declared results; it never certifies work or scans source files. */
 export function executionContinuationDecision(
   normalized: NormalizedExecution,
   parse?: { kind: string; reason?: string },
 ): "continue" | "clarify" | undefined {
   if (parse?.kind === "ambiguous" || hasConflictingStatuses(normalized.payload)) return;
-  if (normalized.intent === "completed") {
-    return owners(normalized.payload).some(owner =>
-      Array.isArray(owner.unfinished_items) && owner.unfinished_items.length > 0)
-      ? "clarify" : undefined;
-  }
   if (hasExecutionUserRequest(normalized.payload)) return;
+  if (normalized.intent === "completed") {
+    return hasUnfinishedExecutionItems(normalized.payload) ? "clarify" : undefined;
+  }
   if (normalized.intent === "incomplete") return "continue";
   if (normalized.intent === "need_user" || normalized.intent === "unclear") return "clarify";
   return;

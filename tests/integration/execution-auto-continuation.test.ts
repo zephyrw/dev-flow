@@ -72,6 +72,37 @@ it("queues partial work once and retains the frozen model, stage and original se
   } finally { await cleanup(s); }
 });
 
+it.each([
+  { status: "incomplete", workflow_id: "another-workflow" },
+  { status: "incomplete", run_id: "another-run" },
+  { status: "completed", unfinished_items: ["T02"], workflow_id: "another-workflow" },
+  { summary: "第一部分完成", delivery: { workflow_id: "another-workflow" } },
+  { status: "incomplete", delivery: { run_id: "another-run" } },
+])("rejects foreign result ownership before scheduling automatic execution or clarification: %j", async result => {
+  const s = fixture();
+  try {
+    const run = executing(s, "owned-result", { conversation_id: "original-session" });
+    await expect(s.engine.receiveRoundResult(s.w.id, run.id, result))
+      .rejects.toMatchObject({ code: "ROUND_RESULT_IDENTITY_MISMATCH" });
+    expect(s.engine.get(s.w.id).state).toBe("EXECUTING");
+    expect(s.store.list("execution_auto_continuation", s.w.id)).toHaveLength(0);
+    expect(readRunContinuation(s.store, s.w.id)).toBeUndefined();
+    expect(s.store.get("pending_model_retry", s.w.id)).toBeUndefined();
+  } finally { await cleanup(s); }
+});
+
+it("accepts an echoed source run only when it belongs to the same workflow and native conversation", async () => {
+  const s = fixture();
+  try {
+    const prior = executing(s, "same-session-source", { conversation_id: "original-session", status: "completed" });
+    const run = executing(s, "same-session-followup", { conversation_id: "original-session" });
+    await expect(s.engine.receiveRoundResult(s.w.id, run.id, {
+      status: "incomplete", run_id: prior.id, delivery: { run_id: prior.id }, completed_items: ["T01"],
+    })).resolves.toMatchObject({ status: "queued" });
+    expect(readRunContinuation(s.store, s.w.id)?.source_run_id).toBe(run.id);
+  } finally { await cleanup(s); }
+});
+
 it.each([{ summary: "阶段总结：已读前两章" }, { status: "need_user", summary: "阶段总结：完成部分" },
   { status: "completed", unfinished_items: ["T02"] }])("checks an incomplete or unclear summary without opening a popup: %j", async result => {
   const s = fixture();
@@ -116,6 +147,25 @@ it("stops after three consecutive rounds without a newly completed item", async 
       if (index < 3) expect(s.store.get("execution_auto_continuation", run.id)).toMatchObject({ no_progress_count: index });
     }
     expect(new UserInteractionService(s.store).getCurrentInteraction(s.w.id)?.request.message).toContain("连续三轮");
+  } finally { await cleanup(s); }
+});
+
+it.each([
+  { status: "completed", unfinished_items: ["T02"], user_interaction: question },
+  { status: "completed", delivery: { unfinished_items: ["T02"], user_interaction: question } },
+])("waits for the declared user request instead of clarifying a contradictory completion: %j", async result => {
+  const s = fixture();
+  try {
+    const run = executing(s, "contradictory-request", { conversation_id: "original-session" });
+    await expect(s.engine.receiveRoundResult(s.w.id, run.id, result)).resolves.toMatchObject({ status: "need_user" });
+    expect(s.engine.get(s.w.id).state).toBe("WAITING_INPUT");
+    const interaction = new UserInteractionService(s.store).getCurrentInteraction(s.w.id);
+    expect(interaction).toMatchObject({ status: "pending", request: { question: question.question } });
+    expect(interaction?.response).toBeUndefined();
+    expect(s.store.list("execution_auto_continuation", s.w.id)).toHaveLength(0);
+    expect(s.store.get("execution_completion", run.id)).toBeUndefined();
+    await s.engine.dispatch();
+    expect(s.store.list("run", s.w.id)).toHaveLength(1);
   } finally { await cleanup(s); }
 });
 

@@ -110,6 +110,7 @@ test("E2E-U02 修改全局默认后新建任务预填新值", async ({ page }) =
   }
   const modal = page.locator(".modal-backdrop").last();
   await modal.getByLabel("工作区真实路径").fill(fixtureState().nativeRepo);
+  await modal.getByLabel("任务名称", { exact: true }).fill("U02 默认配置派发");
   await modal.locator("textarea").fill("U02 保存默认配置后的真实派发");
   const created = page.waitForResponse(response => response.url().endsWith("/api/workflows") && response.request().method() === "POST");
   await modal.getByRole("button", { name: "创建并开始规划" }).click();
@@ -243,6 +244,7 @@ test("E2E-U03 新建当场改工具/模型/强度且后台 Run 参数一致", as
   await page.getByRole("button", { name: "+ 新建", exact: true }).click();
   const modal = page.locator(".modal-backdrop").last();
   await modal.getByLabel("工作区真实路径").fill(state.nativeRepo);
+  await modal.getByLabel("任务名称", { exact: true }).fill("U03 模型参数派发");
   await modal
     .getByRole("radio", { name: /现有工作区/ })
     .check();

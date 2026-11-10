@@ -1574,7 +1574,13 @@ export class ProfileRuntime {
       exit = await proc.completion;
       consume("stdout", "", true);
       consume("stderr", "", true);
-      if (agyResult?.error) {
+      // Failed or terminated processes are rejected below. Preserve their stderr
+      // diagnostic so missing-session recovery can still recognize the cause.
+      if (profile.adapterId === "agy" && exit.code === 0 && !exit.termination_reason && !agyResult)
+        failure ??= "AGY_RESULT_MISSING: CLI 未返回结束事件，原任务尚未确认完成。";
+      // Exit 0 only confirms the CLI process ended. A failed/cancelled AGY
+      // terminal cannot lend authority to an embedded completed/incomplete result.
+      if (agyResult && (agyResult.status !== "SUCCESS" || agyResult.error)) {
         const safeStderr = classifyFailure(stderrTail);
         const stderrCode = safeStderr.code === "EXECUTION_FAILED"
           ? stderrClassification?.code ?? safeStderr.code : safeStderr.code;
@@ -1585,13 +1591,16 @@ export class ProfileRuntime {
         }
         const reported = accountTurn.reportedFailure(agyResult.response);
         if (reported) failure ??= `${reported.code}: ${reported.message}`;
-        const historical = exit.code === 0 && !exit.termination_reason &&
+        const historical = typeof agyResult.error === "string" && !!agyResult.error.trim() &&
+          exit.code === 0 && !exit.termination_reason &&
           !failure && !permissionFailure && !this.engine.store.get("run_stop", run.id) &&
           accountTurn.staleError(agyResult, [], exit.code);
         // A historical footer can also retain an older structured_output.
         // The completed current response remains the result authority.
         if (historical) final = undefined;
-        if (!historical) failure ??= nativeFailureDiagnostic({ event: "result", result: agyResult });
+        if (!historical) failure ??= agyResult.error
+          ? nativeFailureDiagnostic({ event: "result", result: agyResult })
+          : "AGY_RESULT_STATUS_INVALID: CLI 结束事件未报告 SUCCESS，原任务尚未确认完成。";
       }
     } finally {
       if (permissionToken) this.engine.auth.revoke(permissionToken);

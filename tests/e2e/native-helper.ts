@@ -160,7 +160,7 @@ export async function openFixtureWorkflow(page: Page) {
 
 export async function createNative(
   page: Page,
-  title: string,
+  requestText: string,
   mode = "new_worktree",
   waitForPlan = true,
 ) {
@@ -170,6 +170,9 @@ export async function createNative(
   await dismissFirstRun(page);
   await page.getByRole("button", { name: "+ 新建", exact: true }).click();
   const modal = page.locator(".modal-backdrop").last();
+  // The task name is independent of the full scenario sent to the model.
+  const title = "原生流程回归";
+  await modal.getByLabel("任务名称", { exact: true }).fill(title);
   await modal.getByLabel("工作区真实路径").fill(state.nativeRepo);
   // ModelConfigTabs 每个职责 tab 只渲染一个「工具」选择器
   await modal.getByRole("tab", { name: "规划", exact: true }).click();
@@ -180,7 +183,7 @@ export async function createNative(
   await pickListedModel(modal, "工具", "gpt-6-astra");
   if (mode === "existing_workspace")
     await modal.locator('input[name="workspaceMode"][value="existing_workspace"]').check();
-  await modal.locator("textarea").fill(title);
+  await modal.locator("textarea").fill(requestText);
   const fixtureCli = resolve("tests/fixtures/native-cli.mjs");
   await page.route("**/api/workflows", async (route) => {
     const req = route.request();
@@ -211,7 +214,9 @@ export async function createNative(
   const response = await created;
   await page.unroute("**/api/workflows");
   expect(response.status(), await response.text()).toBe(200);
-  const id = (await response.json()).workflow.id;
+  const workflow = (await response.json()).workflow;
+  expect(workflow).toMatchObject({ title, request: requestText });
+  const id = workflow.id;
   if (waitForPlan) {
     await expect(page.locator(".header-title-wrapper .badge")).toContainText(
       "等待计划批准",

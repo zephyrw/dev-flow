@@ -33,8 +33,11 @@ const passed = { test_id: "UT01", case_id: "case-a", status: "passed" };
 
 it("persists partial optional results on need_user and retains them through review", async () => {
   await s.engine.receiveRoundResult(wid, "executor", { status: "need_user", summary: "Need external credentials",
+    user_interaction: { kind: "action_required", title: "Sign in to the test environment",
+      message: "Sign in with the test account, then confirm to resume the integration tests." },
     delivery: { test_results: [passed, { test_id: "IT01", status: "not_run", summary: "No test credentials" }] } });
   expect(s.engine.get(wid).state).toBe("WAITING_INPUT");
+  expect(s.store.list("execution_auto_continuation", wid)).toHaveLength(0);
   expect(s.store.must<any>("execution_test_report", "executor").material.test_results).toHaveLength(2);
   expect(both()).toMatchObject({ total: 3, passed: 1, unreported: 1 });
   expect(both().cases.map(c => c.status)).toEqual(["passed", "unreported", "not_run"]);

@@ -24,5 +24,5 @@ if (adapter === "codex") {
 } else {
   emit({ event: "init", conversation_id: native });
   emit({ event: "step_update", step_update: { step_type: "user_input", state: "DONE" } });
-  emit({ event: "result", result: { response: JSON.stringify(result), error: false } });
+  emit({ event: "result", result: { status: "SUCCESS", response: JSON.stringify(result), error: false } });
 }
