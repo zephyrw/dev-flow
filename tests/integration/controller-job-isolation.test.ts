@@ -1,6 +1,7 @@
 import { expect, it, vi } from "vitest";
 import { spawn } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { getWindowsNative } from "../../packages/process/src/native/index.js";
@@ -46,7 +47,9 @@ it.skipIf(process.platform !== "win32").each([
     brokerInput.keepOpen = false;
     if (foreignModules) vi.unstubAllEnvs();
     if (pid) await expect.poll(() => { try { process.kill(pid!, 0); return true; } catch { return false; } }).toBe(false);
-    rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+    // Windows may retain the cwd handle briefly after the child stops.
+    // Use asynchronous removal so transient directory locks are retried.
+    await rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
   }
 }, 30000);
 
@@ -80,6 +83,8 @@ it.skipIf(process.platform !== "win32")("controller survives MCP host Job closur
     if (child?.isolated && alive(child.isolated)) process.kill(child.isolated);
     if (alive(owner.pid!)) owner.kill();
     if (child?.isolated) await expect.poll(() => alive(child!.isolated)).toBe(false);
-    rmSync(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+    // Windows may retain the cwd handle briefly after the child stops.
+    // Use asynchronous removal so transient directory locks are retried.
+    await rm(root, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
   }
 }, 45000);
