@@ -50,11 +50,22 @@ describe("AGY image file input", () => {
     expect(new AgyNativeCliAdapter().buildInvocation(input, "agy"))
       .toEqual(clientInvocation("agy", input, "agy"));
   });
-  it("blocks user guidance with images instead of appending attachment instructions", () => {
-    const {input} = fixture();
+  it("continues the AGY session with verbatim guidance followed by scoped image references", () => {
+    const { input, file, root } = fixture();
     input.promptKind = "user";
-    const original = input.prompt;
-    expect(() => new AgyNativeCliAdapter().buildInvocation(input, "agy")).toThrow("独立输入");
+    const original = "请按截图调整。\n保留现有行为。";
+    input.prompt = original;
+    const invocation = new AgyNativeCliAdapter().buildInvocation(input, "agy");
+    const prompt = invocation.args[invocation.args.indexOf("-p") + 1]!;
+    expect(prompt.startsWith(original + "\n")).toBe(true);
+    expect(prompt).toContain("view_file");
+    expect(JSON.parse(prompt.split("\n").at(-1)!)).toEqual([{
+      id: file.id, display_name: file.display_name, mime: file.mime,
+      absolute_path: file.absolute_path, sha256: file.sha256,
+    }]);
+    expect(invocation.args.slice(-2)).toEqual(["--add-dir", root]);
+    expect(invocation.conversationId).toBe("old-session");
+    expect(invocation.args[invocation.args.indexOf("--conversation") + 1]).toBe("old-session");
     expect(input.prompt).toBe(original);
   });
   it("passes Codex guidance images as separate native arguments without changing prompt bytes", () => {
@@ -68,6 +79,7 @@ describe("AGY image file input", () => {
   });
   it.each(["missing", "changed", "unsupported"])("rejects %s input instead of silently dropping it", (failure) => {
     const { file, input } = fixture();
+    input.promptKind = "user";
     if (failure === "missing") file.absolute_path += ".missing";
     if (failure === "changed") writeFileSync(file.absolute_path, "replaced");
     if (failure === "unsupported") file.mime = "image/webp";
