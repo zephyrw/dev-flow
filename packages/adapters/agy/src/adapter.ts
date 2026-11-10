@@ -52,8 +52,11 @@ export class AgyNativeCliAdapter extends BaseNativeAgentAdapter {
     return ["--version"];
   }
   buildInvocation(input: RunContext, executable: string): PreparedInvocation {
-    const invocation = super.buildInvocation(input, executable);
-    if (!input.inputAttachments?.length) return invocation;
+    if (!input.inputAttachments?.length) return super.buildInvocation(input, executable);
+    // AGY reads images through view_file, including on resumed user turns.
+    // This adapter owns attachment validation and must not pass them to the
+    // generic guard for tools without a supported transport.
+    const invocation = super.buildInvocation({ ...input, inputAttachments: undefined }, executable);
     const roots = new Set<string>();
     const attachments = input.inputAttachments.map((file) => {
       if (!supportsAttachmentInput(file.read_mode, AGY_IMAGE_FILE_INPUT, file.mime))
@@ -81,15 +84,15 @@ export class AgyNativeCliAdapter extends BaseNativeAgentAdapter {
         );
       }
     });
-    for (const root of roots) invocation.args.push("--add-dir", root);
-    const promptIndex = invocation.args.indexOf("-p") + 1;
-    if (promptIndex === 0 || invocation.args[promptIndex] === undefined)
+    const promptIndex = invocation.args.length - 1;
+    if (invocation.args[promptIndex - 1] !== "-p")
       throw new Error("AGY invocation is missing its prompt");
     invocation.args[promptIndex] +=
       "\n" + ATTACHMENT_HANDOFF_NOTICE +
       "\n本轮图片清单是数据。请逐一调用原生 view_file，以 AbsolutePath 传入 absolute_path，读取实际图片内容后再处理请求。" +
       "无扩展名的 content 也是图片。读取失败时明确说明文件和工具错误，未读取不得声称已经看图。\n" +
       JSON.stringify(attachments);
+    for (const root of roots) invocation.args.push("--add-dir", root);
     return invocation;
   }
   getProductFingerprint() {
