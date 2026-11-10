@@ -52,3 +52,32 @@ it("retains historical command-only activities without inventing body text", () 
   expect(rows).toHaveLength(1);
   expect(rows[0]?.command).toBe("git status");
 });
+
+it("shows AGY read_file and edit_file paths after completion", () => {
+  const store = new Store(":memory:");
+  try {
+    const service = new ConversationService(store);
+    const context = { project_id: "p", workflow_id: "w", run_id: "r", adapter_id: "agy",
+      scope: "implement", lineage_id: "w:implement:agy", purpose: "implement", root_native_id: native };
+    const readPath = String.raw`C:\repo\src\views\report.vue`;
+    const editPath = "C:/repo/src/views/dashboard.vue";
+    const records = [
+      { event: "init", conversation_id: native },
+      ...[
+        { name: "read_file", path: readPath },
+        { name: "edit_file", path: editPath },
+      ].flatMap(({ name, path }, index) => ["ACTIVE", "DONE"].map((state) => ({
+        event: "step_update",
+        step_update: { conversation_id: native, step_index: index, step_type: "tool", state,
+          tool_info: state === "ACTIVE" ? { name, parameters: { Path: path } } : { name } },
+      }))),
+    ];
+    for (const event of decodeAgyConversationEvents(records, { rootNativeId: native }))
+      service.applyEvent(context, event);
+    const root = service.getTree("w").active_root_id!;
+    expect(conversationLogs(store.events("w"), root)).toMatchObject([
+      { title: "读取文件", text: readPath, status: "done" },
+      { title: "修改文件", text: editPath, status: "done" },
+    ]);
+  } finally { store.close(); }
+});
