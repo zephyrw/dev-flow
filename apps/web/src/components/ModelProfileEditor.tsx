@@ -17,6 +17,7 @@ import {
   cloneProfile,
   formatApiError,
   getAdapterModels,
+  modelCatalogNeedsRefresh,
   refreshAdapterModels,
   isVerifyAbort,
   accessStatusLabel,
@@ -146,17 +147,7 @@ export function ModelProfileEditor({
         setLoading(false);
       }
       // 过期目录、缺失目录和全 manual 候补都触发一次真实发现。
-      const allManual =
-        result.entries.length > 0 &&
-        result.entries.every((entry) => entry.source === "manual");
-      const needsRefresh =
-        !disabled &&
-        (result.discoveryStatus === "missing" ||
-          result.status === "missing" ||
-          result.status === "stale" ||
-          result.status === "refreshing" ||
-          result.status === "failed" ||
-          allManual);
+      const needsRefresh = !disabled && modelCatalogNeedsRefresh(result);
       if (doRefresh || needsRefresh) {
         setRefreshing(true);
         await refreshAdapterModels(nextAdapter, controller.signal);

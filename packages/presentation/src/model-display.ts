@@ -42,6 +42,7 @@ const KNOWN_MODEL_LABELS: Record<string, string> = {
   "gemini-4-argon": "Gemini 4 Argon",
   "claude-opus-5-5": "Claude Opus 5.5",
   "claude-sonnet-5-5": "Claude Sonnet 5.5",
+  "gpt-oss-120b": "GPT OSS 120B",
   "gemini-3.7-flash": "Gemini 3.7 Flash",
   "gemini-3.6-flash": "Gemini 3.6 Flash",
   "gemini-3.1-pro": "Gemini 3.1 Pro",

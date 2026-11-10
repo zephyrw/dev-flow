@@ -2,8 +2,8 @@ import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "rea
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { scoreTotal, tools, type Action, type Artifact, type Group, type Message, type Model, type Round, type Session } from "../../../packages/group-chat/src/contracts.js";
-import type { ModelCatalog } from "../../../packages/contracts/src/model-catalog.js";
-import { formatModelName } from "../../../packages/presentation/src/model-display.js";
+import { buildModelChoices, formatModelName, type ModelChoice } from "../../../packages/presentation/src/model-display.js";
+import { formatApiError, getAdapterModels, modelCatalogNeedsRefresh, refreshAdapterModels } from "./components/model-api.js";
 import "./group-chat.css";
 
 type View = { session: Session; round?: Round; messages: (Message & { seq: number })[]; artifacts: Artifact[]; next?: number };
@@ -26,6 +26,11 @@ function modelName(member: Pick<Model, "tool" | "model" | "effort">, catalogLabe
 }
 const messageTime = new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", hour: "2-digit", minute: "2-digit", hour12: false });
 const sessionUrl = (id: string) => "/api/group-sessions/" + id;
+
+function memberChoice(member: Pick<Model, "model">, choices: ModelChoice[] = []) {
+  return choices.find(choice => choice.nativeId === member.model ||
+    Object.values(choice.variantByEffort).includes(member.model));
+}
 
 async function api<T>(path: string, method = "GET", body?: unknown): Promise<T> {
   const response = await fetch(path, { method, ...(body === undefined ? {} : {
@@ -65,37 +70,57 @@ function Modal({ title, children, close }: { title: string; children: ReactNode;
 
 function GroupForm({ save, close, group }: { save: (data: unknown) => Promise<void>; close: () => void; group?: Group }) {
   const [members, setMembers] = useState<Omit<Model, "id">[]>(group?.members.map(({ id: _id, ...member }) => member) ?? [{ nickname: "", tool: "codex", model: "" }]);
-  const [catalogs, setCatalogs] = useState<Partial<Record<Model["tool"], ModelCatalog>>>({});
+  const [catalogs, setCatalogs] = useState<Partial<Record<Model["tool"], ModelChoice[]>>>({});
+  const [loading, setLoading] = useState<Partial<Record<Model["tool"], boolean>>>({});
+  const [catalogErrors, setCatalogErrors] = useState<Partial<Record<Model["tool"], string>>>({});
+  const requests = useRef(new Map<Model["tool"], AbortController>());
   const [admin, setAdmin] = useState(group?.members.findIndex(member => member.id === group.admin) ?? 0);
   const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
-  const [refreshing, setRefreshing] = useState<Model["tool"]>();
-  async function load(tool: Model["tool"]) {
-    const data = await api<ModelCatalog>("/api/model-tools/" + tool + "/models");
-    setCatalogs(value => ({ ...value, [tool]: data }));
-    return data;
+  async function load(tool: Model["tool"], force = false) {
+    requests.current.get(tool)?.abort();
+    const controller = new AbortController();
+    requests.current.set(tool, controller);
+    setLoading(value => ({ ...value, [tool]: true }));
+    setCatalogErrors(value => ({ ...value, [tool]: undefined }));
+    try {
+      let data = await getAdapterModels(tool, controller.signal);
+      if (force || modelCatalogNeedsRefresh(data)) {
+        await refreshAdapterModels(tool, controller.signal);
+        data = await getAdapterModels(tool, controller.signal);
+      }
+      if (controller.signal.aborted) return;
+      if (data.status !== "fresh" || data.discoveryStatus === "missing")
+        throw new Error(data.catalog?.errorMessage || "模型目录尚未加载完成，请刷新后重试");
+      const choices = buildModelChoices(data.entries.filter(entry => entry.adapterId === tool &&
+        entry.selectionKind === "fixed" && (tool !== "agy" || entry.availability === "listed")));
+      setCatalogs(value => ({ ...value, [tool]: choices }));
+    } catch (error) {
+      if (!controller.signal.aborted) setCatalogErrors(value => ({ ...value, [tool]: formatApiError(error) }));
+    } finally {
+      if (!controller.signal.aborted) setLoading(value => ({ ...value, [tool]: false }));
+    }
   }
-  useEffect(() => { for (const tool of tools) void load(tool).catch(() => {}); }, []);
+  const memberTools = [...new Set(members.map(member => member.tool))].join(",");
+  useEffect(() => {
+    for (const tool of memberTools.split(",") as Model["tool"][])
+      if (!requests.current.has(tool)) void load(tool);
+  }, [memberTools]);
+  useEffect(() => () => {
+    for (const controller of requests.current.values()) controller.abort();
+    requests.current.clear();
+  }, []);
+  const canSave = members.every(member => {
+    const choice = memberChoice(member, catalogs[member.tool]);
+    return choice && !loading[member.tool] && !catalogErrors[member.tool] &&
+      (!member.effort || (choice.effortStatus === "supported" && choice.effortValues.includes(member.effort)));
+  });
   function patch(index: number, value: Partial<Omit<Model, "id">>) {
     setMembers(rows => rows.map((row, i) => i === index ? { ...row, ...value } : row));
   }
-  async function refresh(tool: Model["tool"]) {
-    setRefreshing(tool);
-    setError("");
-    try {
-      const operation = await api<{ id: string }>("/api/model-tools/" + tool + "/models/refresh", "POST", { request_id: crypto.randomUUID() });
-      for (let attempt = 0; attempt < 45; attempt++) {
-        await new Promise(resolve => setTimeout(resolve, 700));
-        const status = await api<{ status: string; error_message?: string }>("/api/model-operations/" + operation.id);
-        if (status.status === "failed") throw new Error(status.error_message ?? "模型目录刷新失败");
-        if (["committed", "partial", "completed", "succeeded"].includes(status.status)) { await load(tool); return; }
-      }
-      await load(tool);
-    } catch (error) { setError(String(error instanceof Error ? error.message : error)); }
-    finally { setRefreshing(undefined); }
-  }
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (!canSave) { setError("请等待模型目录加载完成，并选择当前可用的模型与推理强度"); return; }
     const data = new FormData(event.currentTarget);
     setPending(true);
     setError("");
@@ -103,7 +128,7 @@ function GroupForm({ save, close, group }: { save: (data: unknown) => Promise<vo
     const taken = new Set(["全部", "全部模型", normalize(String(data.get("human"))), ...members.map(member => normalize(member.nickname))]);
     const namedMembers = members.map(member => {
       if (member.nickname.trim()) return member;
-      const base = modelName(member, catalogs[member.tool]?.entries.find(entry => entry.nativeId === member.model)?.label);
+      const base = modelName(member, memberChoice(member, catalogs[member.tool])?.label);
       let nickname = base.slice(0, 32).trimEnd();
       for (let count = 2; taken.has(normalize(nickname)); count++) {
         const suffix = " " + count;
@@ -121,8 +146,11 @@ function GroupForm({ save, close, group }: { save: (data: unknown) => Promise<vo
       <label>群名称<input name="title" required maxLength={100} defaultValue={group?.title} autoFocus /></label>
       <label>我的昵称<input name="human" required maxLength={32} defaultValue={group?.human ?? "我"} /></label>
       {members.map((member, index) => {
-        const models = catalogs[member.tool]?.entries.filter(entry => !entry.hidden && entry.selectionKind === "fixed" && entry.availability !== "unavailable") ?? [];
-        const model = models.find(entry => entry.nativeId === member.model);
+        const ready = !!catalogs[member.tool] && !loading[member.tool] && !catalogErrors[member.tool];
+        const models = ready ? catalogs[member.tool]! : [];
+        const model = memberChoice(member, models);
+        const efforts = model?.effortStatus === "supported" ? model.effortValues : [];
+        const effort = member.effort ?? Object.entries(model?.variantByEffort ?? {}).find(([, id]) => id === member.model)?.[0] ?? "";
         return <fieldset key={index} className="gc-member-form">
           <legend>模型成员 {index + 1}</legend>
           <label>昵称<input aria-label={`成员 ${index + 1} 昵称`} maxLength={32} value={member.nickname}
@@ -130,15 +158,24 @@ function GroupForm({ save, close, group }: { save: (data: unknown) => Promise<vo
           <label>工具<select value={member.tool} onChange={e => patch(index, { tool: e.target.value as Model["tool"], model: "", effort: undefined })}>
             {tools.map(tool => <option value={tool} key={tool}>{toolNames[tool]}</option>)}
           </select></label>
-          <label>模型<select required value={member.model} onChange={e => patch(index, { model: e.target.value, effort: undefined })}>
-            <option value="">选择具体模型</option>{models.map(item => <option key={item.entryId} value={item.nativeId}>{item.label}</option>)}
+          <label>模型<select required disabled={!ready} value={model?.nativeId ?? member.model} onChange={e => patch(index, { model: e.target.value, effort: undefined })}>
+            <option value="">{loading[member.tool] ? "正在读取模型目录…" : "选择具体模型"}</option>
+            {member.model && !model && <option value={member.model} disabled>{formatModelName(member.tool, member.model)}（{ready ? "当前目录不可用" : "等待目录确认"}）</option>}
+            {models.map(item => <option key={item.entryIds.join("|")} value={item.nativeId}>{item.label}</option>)}
           </select></label>
-          <label>推理强度<select value={member.effort ?? ""} onChange={e => patch(index, { effort: e.target.value || undefined })}>
-            <option value="">模型默认</option>{model?.effort.values.map(value => <option key={value}>{value}</option>)}
+          <label>推理强度<select disabled={!model || efforts.length === 0} value={effort} onChange={e => {
+            const value = e.target.value;
+            patch(index, { model: model?.variantByEffort[value] ?? model?.nativeId ?? member.model, effort: value || undefined });
+          }}>
+            <option value="">模型默认</option>
+            {effort && !efforts.includes(effort) && <option value={effort} disabled>{effort}（当前模型不支持）</option>}
+            {efforts.map(value => <option key={value}>{value}</option>)}
           </select></label>
+          {catalogErrors[member.tool] && <p role="alert">{catalogErrors[member.tool]}</p>}
+          {ready && member.model && !model && <p role="alert">原模型已不在当前目录，请重新选择。</p>}
           <div className="gc-actions">
             <label><input type="radio" name="admin" checked={admin === index} onChange={() => setAdmin(index)} /> 管理员</label>
-            <button type="button" disabled={!!refreshing} onClick={() => void refresh(member.tool)}>{refreshing === member.tool ? "刷新中" : "刷新模型目录"}</button>
+            <button type="button" disabled={loading[member.tool]} onClick={() => void load(member.tool, true)}>{loading[member.tool] ? "刷新中" : "刷新模型目录"}</button>
             {members.length > 1 && <button type="button" onClick={() => {
               setMembers(rows => rows.filter((_, i) => i !== index));
               setAdmin(value => value === index ? 0 : value > index ? value - 1 : value);
@@ -149,7 +186,7 @@ function GroupForm({ save, close, group }: { save: (data: unknown) => Promise<vo
       {error && <p role="alert">{error}</p>}
       <div className="gc-actions">
         <button type="button" disabled={members.length >= 16} onClick={() => setMembers(rows => [...rows, { nickname: "", tool: "codex", model: "" }])}>添加模型成员</button>
-        <button className="gc-primary" disabled={pending}>{group ? "保存群配置" : "创建群聊"}</button>
+        <button className="gc-primary" disabled={pending || !canSave}>{group ? "保存群配置" : "创建群聊"}</button>
       </div>
     </form>
   </Modal>;

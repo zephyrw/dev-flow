@@ -421,6 +421,12 @@ export async function refreshAdapterModels(
   return waitForModelOperation(operation, signal);
 }
 
+export function modelCatalogNeedsRefresh(result: Awaited<ReturnType<typeof getAdapterModels>>): boolean {
+  return result.discoveryStatus === "missing" ||
+    ["missing", "stale", "refreshing", "failed"].includes(result.status ?? "missing") ||
+    (result.entries.length > 0 && result.entries.every(entry => entry.source === "manual"));
+}
+
 export async function discoverTools(
   adapterIds: string[],
   signal?: AbortSignal,

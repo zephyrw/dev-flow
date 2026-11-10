@@ -1,4 +1,102 @@
 import { test, expect } from "@playwright/test";
+import { readFileSync } from "node:fs";
+import { parseAgyModelCatalog } from "../../packages/adapters/agy/src/model-configuration.js";
+
+const currentAgyCatalog = () => parseAgyModelCatalog({
+  stdout: readFileSync(new URL("../fixtures/model-catalog/agy/models-20261023.txt", import.meta.url), "utf8"),
+});
+
+test("群聊刷新失效目录，模型与强度分开选择并保存实际 CLI ID", async ({ page }) => {
+  const old = parseAgyModelCatalog({ stdout: "gemini-3.7-flash-high\ngemini-3.6-flash-low\nclaude-sonnet-4-6" });
+  let refreshed = false;
+  let refreshes = 0;
+  await page.route("**/api/model-tools/agy/models", route => route.fulfill({ json: refreshed
+    ? currentAgyCatalog() : { ...old, status: "failed", discoveryStatus: "missing" } }));
+  await page.route("**/api/model-tools/agy/models/refresh", route => {
+    refreshes++;
+    return route.fulfill({ status: 202, json: { id: "group-catalog-refresh", status: "processing" } });
+  });
+  await page.route("**/api/model-operations/group-catalog-refresh", route => route.fulfill({
+    json: { id: "group-catalog-refresh", status: refreshed ? "committed" : "processing" },
+  }));
+  await page.goto("/group-chat");
+  await page.getByRole("button", { name: "新建群聊" }).click();
+  await page.getByLabel("群名称").fill("AGY 模型目录验收");
+  await page.getByRole("combobox", { name: "工具", exact: true }).selectOption("agy");
+  const model = page.getByRole("combobox", { name: "模型", exact: true });
+  const effort = page.getByRole("combobox", { name: "推理强度", exact: true });
+  await expect.poll(() => refreshes).toBe(1);
+  await expect(model).toBeDisabled();
+  await expect(model.locator("option")).toHaveCount(1);
+  await expect(page.getByRole("button", { name: "创建群聊" })).toBeDisabled();
+  refreshed = true;
+  await expect(model).toBeEnabled();
+  await expect(model.locator("option")).toHaveText([
+    "选择具体模型", "Gemini 4 Argon", "Gemini 3.8 Flash", "Claude Opus 5.5", "Claude Sonnet 5.5", "GPT OSS 120B",
+  ]);
+  await model.selectOption({ label: "Gemini 4 Argon" });
+  await effort.selectOption("medium");
+  await expect(model).toHaveValue("gemini-4-argon-high");
+  await expect(page.getByLabel("成员 1 昵称")).toHaveAttribute("placeholder", "Gemini 4 Argon medium");
+  const created = page.waitForRequest(request => request.url().endsWith("/api/groups") && request.method() === "POST");
+  await page.getByRole("button", { name: "创建群聊" }).click();
+  expect((await created).postDataJSON().members).toEqual([
+    { nickname: "Gemini 4 Argon medium", tool: "agy", model: "gemini-4-argon-medium", effort: "medium" },
+  ]);
+  await page.getByRole("button", { name: "关闭", exact: true }).click();
+  await page.getByLabel("群设置").click();
+  await page.getByRole("button", { name: "编辑群配置" }).click();
+  await expect(model).toHaveValue("gemini-4-argon-high");
+  await expect(effort).toHaveValue("medium");
+  await model.selectOption({ label: "Claude Sonnet 5.5" });
+  await effort.selectOption("low");
+  const updated = page.waitForRequest(request => /\/api\/groups\/[^/]+$/.test(request.url()) && request.method() === "PUT");
+  await page.getByRole("button", { name: "保存群配置" }).click();
+  expect((await updated).postDataJSON().members[0]).toMatchObject({ model: "claude-sonnet-5-5-low", effort: "low" });
+  expect(refreshes).toBe(1);
+});
+
+test("群聊目录刷新失败时显示错误并阻止提交，重试后恢复", async ({ page }) => {
+  let recovered = false;
+  await page.route("**/api/model-tools/agy/models", route => route.fulfill({ json: recovered
+    ? currentAgyCatalog() : { ...currentAgyCatalog(), status: "stale" } }));
+  await page.route("**/api/model-tools/agy/models/refresh", route => route.fulfill({ json: recovered
+    ? { status: "committed" } : { status: "retryable", error_message: "无法读取当前账号模型，请重试" } }));
+  await page.goto("/group-chat");
+  await page.getByRole("button", { name: "新建群聊" }).click();
+  await page.getByRole("combobox", { name: "工具", exact: true }).selectOption("agy");
+  await expect(page.getByRole("alert")).toContainText("无法读取当前账号模型，请重试");
+  await expect(page.getByRole("combobox", { name: "模型", exact: true })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "创建群聊" })).toBeDisabled();
+  recovered = true;
+  await page.getByRole("button", { name: "刷新模型目录" }).click();
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  const model = page.getByRole("combobox", { name: "模型", exact: true });
+  await expect(model).toBeEnabled();
+  await model.selectOption({ label: "GPT OSS 120B" });
+  await expect(page.getByRole("combobox", { name: "推理强度", exact: true }).locator("option")).toHaveText(["模型默认", "medium"]);
+  await expect(page.getByRole("button", { name: "创建群聊" })).toBeEnabled();
+});
+
+test("编辑旧群时保留已下线模型提示，重选前不能保存", async ({ page, request, baseURL }) => {
+  await page.route("**/api/model-tools/agy/models", route => route.fulfill({ json: currentAgyCatalog() }));
+  const response = await request.post("/api/groups", { headers: { Origin: baseURL! }, data: {
+    title: "旧模型群配置", human: "我", admin: 0,
+    members: [{ nickname: "旧成员", tool: "agy", model: "gemini-3.7-flash-low" }],
+  } });
+  expect(response.ok()).toBeTruthy();
+  await page.goto("/group-chat");
+  await page.getByRole("button", { name: /旧模型群配置/ }).click();
+  await page.getByLabel("群设置").click();
+  await page.getByRole("button", { name: "编辑群配置" }).click();
+  await expect(page.getByRole("alert")).toContainText("原模型已不在当前目录，请重新选择");
+  await expect(page.getByRole("button", { name: "保存群配置" })).toBeDisabled();
+  const model = page.getByRole("combobox", { name: "模型", exact: true });
+  await expect(model.locator('option[value="gemini-3.7-flash-low"]')).toHaveJSProperty("disabled", true);
+  await model.selectOption({ label: "Gemini 3.8 Flash" });
+  await expect(page.getByRole("button", { name: "保存群配置" })).toBeEnabled();
+});
+
 test("群聊界面修改各昵称、比较方案并指定成员成稿", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("link", { name: "模型群聊" }).click();
