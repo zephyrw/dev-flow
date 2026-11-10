@@ -84,6 +84,7 @@ export type VerifyAccessRequest = {
   force?: boolean;
   identity?: AccessIdentityInput;
   catalog?: ModelCatalog;
+  workspaceRoot?: string;
 };
 
 export type VerifyAccessOutcome =
@@ -501,6 +502,15 @@ function fallbackAccessProbe(
       return buildAgyProbe(selection, executable, cwd);
     case "claude-code":
       return buildClaudeProbe(selection, executable, cwd);
+    case "codebuddy-code": {
+      const args = ["--print", "--output-format", "stream-json", "--verbose",
+        "--permission-mode", "plan", "--tools", "", "--strict-mcp-config",
+        "--no-session-persistence", "--max-turns", "1", "--settings", '{"disableAllHooks":true}'];
+      if (selection.modelToken) args.push("--model", selection.modelToken);
+      args.push(...selection.effortArgs);
+      return { executable, cwd, args, stdin: ACCESS_PROBE_PROMPT,
+        env: { ...selection.effortEnv, CODEBUDDY_CODE_DISABLE_BACKGROUND_TASKS: "1" } };
+    }
     case "cursor-agent":
       return buildCursorProbe(selection, executable, cwd);
     case "grok-build":
@@ -630,6 +640,7 @@ export class ModelAccessService {
     force?: boolean;
     identity?: AccessIdentityInput;
     catalog?: ModelCatalog;
+    workspaceRoot?: string;
   }): { cached: boolean; job: ModelVerificationJob } {
     const started = this.beginVerify({
       request_id: input.request_id,
@@ -637,6 +648,7 @@ export class ModelAccessService {
       force: input.force,
       identity: input.identity,
       catalog: input.catalog,
+      workspaceRoot: input.workspaceRoot,
     });
     if (started.statusCode === 200) {
       return {
@@ -658,9 +670,9 @@ export class ModelAccessService {
     return this.beginVerify(req);
   }
 
-  async verifyAndWait(profile: ToolProfile): Promise<void> {
+  async verifyAndWait(profile: ToolProfile, workspaceRoot?: string): Promise<void> {
     this.assertProfileSupported(profile);
-    const outcome = await this.verify({ request_id: randomUUID(), profile });
+    const outcome = await this.verify({ request_id: randomUUID(), profile, workspaceRoot });
     if (outcome.statusCode === 202) {
       let job = outcome.job;
       while (job.status === "queued" || job.status === "checking") {
@@ -675,7 +687,7 @@ export class ModelAccessService {
         throw new FlowError(job.error_code ?? "MODEL_ACCESS_REQUIRED", job.error_message ?? "目标模型未通过访问核验，任务保持暂停", 422);
       }
     }
-    this.assertCachedAccess(profile, this.identityFromProfile(profile));
+    this.assertCachedAccess(profile, this.identityFromProfile(profile, workspaceRoot));
   }
 
   private beginVerify(req: VerifyAccessRequest): VerifyAccessOutcome {
@@ -745,8 +757,8 @@ export class ModelAccessService {
     return this.requireVerifiedRecord(accessKey);
   }
 
-  identityFromProfile(profile: ToolProfile): AccessIdentityInput {
-    return resolveModelIdentityInput(this.store, profile);
+  identityFromProfile(profile: ToolProfile, workspaceRoot?: string): AccessIdentityInput {
+    return resolveModelIdentityInput(this.store, profile, workspaceRoot);
   }
 
   recordAccountRecoveryAccess(profile: ToolProfile, frozen: FrozenInvocation, operationId: string): ModelAccessRecord {
@@ -810,9 +822,9 @@ export class ModelAccessService {
     return record;
   }
 
-  assertFrozenAccess(profile: ToolProfile, frozen: FrozenInvocation): ModelAccessRecord {
+  assertFrozenAccess(profile: ToolProfile, frozen: FrozenInvocation, workspaceRoot?: string): ModelAccessRecord {
     this.assertProfileSupported(profile);
-    const native = this.resolveNativeConfig(profile);
+    const native = this.resolveNativeConfig(profile, this.identityFromProfile(profile, workspaceRoot));
     if (frozen.adapterId !== profile.adapterId ||
         frozen.accountScope !== native.accountFingerprint ||
         frozen.providerScope !== native.providerEndpointFingerprint) {
@@ -1183,11 +1195,13 @@ export class ModelAccessService {
   private parseRequest(req: VerifyAccessRequest) {
     const profile = ToolProfileSchema.parse(req.profile);
     this.assertProfileSupported(profile);
+    const workspaceRoot = profile.adapterId === "codebuddy-code" ? req.workspaceRoot : undefined;
     return {
       request_id: z.string().uuid().parse(req.request_id),
       profile,
       force: req.force === true,
-      identity: req.identity ?? this.identityFromProfile(profile),
+      identity: req.identity ?? this.identityFromProfile(profile, workspaceRoot),
+      workspaceRoot,
     };
   }
 
@@ -1356,7 +1370,7 @@ export class ModelAccessService {
     );
     this.inflight.set(accessKey, job.id);
     const managed = parsed.profile.adapterId === "agy" ? readManagedAgyModelIdentity(this.store) : undefined;
-    void this.executeProbe(job, parsed.profile, selection, managed).catch((error) => {
+    void this.executeProbe(job, parsed.profile, selection, managed, parsed.workspaceRoot).catch((error) => {
       this.failProbeLaunch(job, error);
     });
     return { statusCode: 202, job };
@@ -1392,10 +1406,15 @@ export class ModelAccessService {
     profile: ToolProfile,
     selection: ResolvedSelection,
     managed?: ManagedAgyModelIdentity,
+    workspaceRoot?: string,
   ): Promise<void> {
-    const cwd = join(this.probeRoot, job.id);
-    mkdirSync(cwd, { recursive: true });
-    writeProbeWorkspace(profile.adapterId, cwd);
+    const cwd = workspaceRoot ?? join(this.probeRoot, job.id);
+    if (!workspaceRoot) {
+      mkdirSync(cwd, { recursive: true });
+      writeProbeWorkspace(profile.adapterId, cwd);
+    }
+    const initialScope = profile.adapterId === "codebuddy-code"
+      ? this.identityFromProfile(profile, workspaceRoot).nativeConfigScope : undefined;
     const executable = resolveModelExecutable(profile);
     if (!executable) {
       this.finishFailure(job, {
@@ -1418,10 +1437,14 @@ export class ModelAccessService {
           selection,
           executable,
           cwd,
-          this.options.probeAdapter,
+          workspaceRoot ? undefined : this.options.probeAdapter,
         );
         const invocation = applyNativeProfileArgs(prepared, profile);
-        assertProbeSafe(invocation, this.probeRoot);
+        if (workspaceRoot) {
+          if (resolve(invocation.cwd) !== resolve(workspaceRoot)) throw new FlowError(
+            "VERIFICATION_ENVIRONMENT_UNAVAILABLE", "CodeBuddy 探测工作区与已验证路径不一致", 503,
+          );
+        } else assertProbeSafe(invocation, this.probeRoot);
         const handle = profile.adapterId === "agy" && probeLifecycle
           ? this.startAgyProbe(job, invocation, remainingMs, probeLifecycle)
           : startLimitedCli({
@@ -1479,6 +1502,9 @@ export class ModelAccessService {
         result = await coordinatedProbe();
       }
       if (this.closed || this.cancelledJobs.has(job.id)) return;
+      if (initialScope && this.identityFromProfile(profile, workspaceRoot).nativeConfigScope !== initialScope) {
+        throw new FlowError("MODEL_IDENTITY_CHANGED", "验证期间 CodeBuddy 账号或项目配置已变化，请重新验证", 409);
+      }
       this.applyProbeResult(job, selection, result);
     } catch (error) {
       if (error instanceof FlowError && error.code === "PROCESS_STOP_UNCONFIRMED") {

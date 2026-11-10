@@ -35,6 +35,7 @@ export interface ModelProfileEditorProps {
   onAccessChange?: (state: AccessState | null) => void;
   reloadToken?: number;
   isFutureConfig?: boolean;
+  catalogScope?: string;
 }
 
 export function ModelProfileEditor({
@@ -46,19 +47,23 @@ export function ModelProfileEditor({
   onAccessChange,
   reloadToken = 0,
   isFutureConfig = false,
+  catalogScope,
 }: ModelProfileEditorProps) {
   const [query, setQuery] = useState("");
   const [openList, setOpenList] = useState(false);
   const [activeIndex, setActiveIndex] = useState(-1);
   const [entriesData, setEntriesData] = useState<{
     adapter: string;
+    scope?: string;
     items: ModelEntry[];
+    cliVersion?: string;
   }>({ adapter: "", items: [] });
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [catalogState, setCatalogState] = useState<{
     adapter: string;
+    scope?: string;
     reloadToken: number;
     status: "loading" | "ready" | "failed";
     complete?: boolean;
@@ -83,12 +88,15 @@ export function ModelProfileEditor({
   } | null>(null);
 
   const adapter = profile.adapterId;
+  const activeScope = adapter === "codebuddy-code" ? catalogScope : undefined;
   const toolVisible = TOOL_DISPLAY_ORDER.some((item) => item.adapterId === adapter);
 
   // 严格校验 entries 所属工具，彻底杜绝切换工具时残留上一工具模型（如 Claude Code 显示 Gemini）
-  const entries = entriesData.adapter === adapter ? entriesData.items : [];
+  const matchingCatalog = entriesData.adapter === adapter && entriesData.scope === activeScope ? entriesData : undefined;
+  const entries = matchingCatalog?.items ?? [];
   const catalogReady =
     catalogState.adapter === adapter &&
+    catalogState.scope === activeScope &&
     catalogState.reloadToken === reloadToken &&
     catalogState.status === "ready";
   const catalogComplete = catalogReady && catalogState.complete === true;
@@ -120,13 +128,14 @@ export function ModelProfileEditor({
   }, [choices, query]);
 
   const loadCatalog = (nextAdapter: string, doRefresh = false) => {
+    const scope = nextAdapter === "codebuddy-code" ? catalogScope : undefined;
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
     generation.current += 1;
     const token = generation.current;
     const isCurrent = () => token === generation.current && !controller.signal.aborted;
-    setCatalogState({ adapter: nextAdapter, reloadToken, status: "loading" });
+    setCatalogState({ adapter: nextAdapter, scope, reloadToken, status: "loading" });
     if (verifyTimer.current) window.clearTimeout(verifyTimer.current);
     verifyGen.current += 1;
     verifyAbort.current?.abort();
@@ -136,20 +145,20 @@ export function ModelProfileEditor({
     setLoadError(null);
 
     const run = async () => {
-      let result = await getAdapterModels(nextAdapter, controller.signal);
+      let result = await getAdapterModels(nextAdapter, controller.signal, scope);
       if (!isCurrent()) return;
       if (result.entries.length > 0) {
         // 先展示缓存或种子条目，loading 只兜住空目录首载
-        setEntriesData({ adapter: nextAdapter, items: result.entries });
+        setEntriesData({ adapter: nextAdapter, scope, items: result.entries, cliVersion: result.cliVersion });
         setLoading(false);
       }
       // 过期目录、缺失目录和全 manual 候补都触发一次真实发现。
       const needsRefresh = !disabled && modelCatalogNeedsRefresh(result);
       if (doRefresh || needsRefresh) {
         setRefreshing(true);
-        await refreshAdapterModels(nextAdapter, controller.signal);
+        await refreshAdapterModels(nextAdapter, controller.signal, scope);
         if (!isCurrent()) return;
-        result = await getAdapterModels(nextAdapter, controller.signal);
+        result = await getAdapterModels(nextAdapter, controller.signal, scope);
         if (!isCurrent()) return;
       }
       if (result.status !== "fresh" || result.discoveryStatus === "missing") {
@@ -161,9 +170,9 @@ export function ModelProfileEditor({
     run()
       .then((result) => {
         if (!isCurrent() || !result) return;
-        setEntriesData({ adapter: nextAdapter, items: result.entries });
+        setEntriesData({ adapter: nextAdapter, scope, items: result.entries, cliVersion: result.cliVersion });
         setCatalogState({
-          adapter: nextAdapter, reloadToken, status: "ready",
+          adapter: nextAdapter, scope, reloadToken, status: "ready",
           // 截断目录仍允许验证自定义模型，但不能据此清除已有强度。
           complete: result.discoveryStatus !== "partial",
         });
@@ -171,12 +180,12 @@ export function ModelProfileEditor({
       .catch((error) => {
         if (!isCurrent()) return;
         setEntriesData((prev) =>
-          prev.adapter === nextAdapter && prev.items.length > 0
+          prev.adapter === nextAdapter && prev.scope === scope && prev.items.length > 0
             ? prev
-            : { adapter: nextAdapter, items: [] },
+            : { adapter: nextAdapter, scope, items: [] },
         );
         setLoadError(formatApiError(error));
-        setCatalogState({ adapter: nextAdapter, reloadToken, status: "failed" });
+        setCatalogState({ adapter: nextAdapter, scope, reloadToken, status: "failed" });
       })
       .finally(() => {
         if (isCurrent()) {
@@ -190,7 +199,7 @@ export function ModelProfileEditor({
     if (!toolVisible) return;
     loadCatalog(adapter);
     return () => abortRef.current?.abort();
-  }, [adapter, reloadToken]);
+  }, [adapter, reloadToken, activeScope]);
 
   const runVerify = (candidate: ToolProfile) => {
     verifyGen.current += 1;
@@ -211,7 +220,7 @@ export function ModelProfileEditor({
       ? normalizeProfileEffort(candidate, currentChoice)
       : candidate;
 
-    verifyModelAccess(effectiveCandidate, controller.signal)
+    verifyModelAccess(effectiveCandidate, controller.signal, false, catalogScope)
       .then((state) => {
         if (controller.signal.aborted || token !== verifyGen.current) return;
         setAccess(state);
@@ -374,6 +383,7 @@ export function ModelProfileEditor({
   useEffect(() => {
     if (disabled || !catalogReady) return;
     const isResidual =
+      adapter !== "codebuddy-code" &&
       catalogComplete &&
       Boolean(profile.modelId) &&
       !currentChoice &&
@@ -487,6 +497,11 @@ export function ModelProfileEditor({
             </option>
           ))}
         </select>
+        {adapter === "codebuddy-code" && matchingCatalog?.cliVersion && (
+          <p className="ms-muted" role="note">
+            版本 {matchingCatalog.cliVersion} · 当前 CLI 登录账号 · {activeScope ? "项目模型目录" : "用户模型目录"}
+          </p>
+        )}
       </div>
 
       {/* 模型选择（可搜索 combobox） */}

@@ -2,6 +2,7 @@ import { normalizeOptionalDeliveryManifest, type DeliveryManifest, type Plan, ty
 import type { Store } from "../../store/src/store.js";
 import type { testProgress } from "./progress.js";
 import { now } from "./util.js";
+import { taskListSnapshot } from "./task-list.js";
 
 type TestReport = {
   run_id: string;
@@ -50,8 +51,16 @@ export function reportedTestProgress(store: Store, w: Workflow, plan: Plan | nul
       latest.set(`${test.id}:${caseId}`, { report, result });
     }
   }
+  const checklist = taskListSnapshot(store, w)?.list;
+  const live = new Map(checklist?.tests.map(t => [JSON.stringify([t.test_id, t.case_id]), t]));
   const cases = base.cases.map(c => {
     const entry = latest.get(`${c.test_id}:${c.id}`);
+    const row = live.get(JSON.stringify([c.test_id, c.id]));
+    if (row && (!["not_run", "unreported"].includes(row.status) || (!entry && !c.evidence_id))) {
+      return { ...c, status: row.status, last_status: row.status, evidence_id: undefined,
+        report_source: "task_list", reported_at: row.updated_at, summary: row.summary,
+        scenario: row.scenario, expected_outcome: row.expected_outcome, attempt: row.attempt };
+    }
     // Valid imported evidence remains authoritative. A newer explicit report
     // may supersede a stale display row, never mutate the evidence itself.
     if (c.evidence_id) {
@@ -73,5 +82,6 @@ export function reportedTestProgress(store: Store, w: Workflow, plan: Plan | nul
   return { ...base, cases, passed: cases.filter(c => c.status === "passed").length,
     failed: cases.filter(c => c.status === "failed").length, stale: cases.filter(c => c.status === "stale").length,
     previously_passed: cases.filter(c => c.status === "stale" && c.last_status === "passed").length,
+    running: cases.filter(c => c.status === "running").length,
     unreported: cases.filter(c => c.status === "unreported").length };
 }

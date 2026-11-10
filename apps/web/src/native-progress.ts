@@ -4,7 +4,7 @@ import { nativeProgress } from "../../../packages/presentation/src/native-progre
 /** Read existing APIs only: no model tool call, workflow mutation or runner. */
 export function useNativeProgress(detail: any, observe = true) {
   const workflow = detail?.workflow;
-  const native = detail?.plan?.plan?.task_model === "native-v2";
+  const native = !detail?.task_list && detail?.plan?.plan?.task_model === "native-v2";
   const binding = native
     ? `${workflow.id}:${workflow.plan_revision}:${workflow.plan_hash ?? ""}`
     : "";

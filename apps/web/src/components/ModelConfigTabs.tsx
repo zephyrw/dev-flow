@@ -23,6 +23,7 @@ export interface ModelConfigTabsProps {
   onExecutorChange: (profile: ToolProfile) => void;
   onOverrideChange?: (role: "reviewer" | "review_fixer" | "functional_fixer", mode: "inherit" | "explicit", profile?: ToolProfile) => void;
   disabled?: boolean;
+  catalogScope?: string;
 }
 
 export function ModelConfigTabs({
@@ -36,6 +37,7 @@ export function ModelConfigTabs({
   onExecutorChange,
   onOverrideChange,
   disabled = false,
+  catalogScope,
 }: ModelConfigTabsProps) {
   // 当前角色是否是附加的角色
   const isOverrideRole =
@@ -76,6 +78,7 @@ export function ModelConfigTabs({
         {activeTab === "planner" && (
           <ModelProfileEditor
             profile={plannerProfile}
+            catalogScope={catalogScope}
             toolLabel="工具"
             disabled={disabled}
             onChange={onPlannerChange}
@@ -85,6 +88,7 @@ export function ModelConfigTabs({
         {activeTab === "executor" && (
           <ModelProfileEditor
             profile={executorProfile}
+            catalogScope={catalogScope}
             toolLabel="工具"
             disabled={disabled}
             onChange={onExecutorChange}
@@ -134,6 +138,7 @@ export function ModelConfigTabs({
               </div>
             ) : (
               <ModelProfileEditor
+                catalogScope={catalogScope}
                 profile={
                   currentOverride.mode === "explicit"
                     ? currentOverride.profile

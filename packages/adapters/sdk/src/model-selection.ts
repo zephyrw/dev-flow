@@ -222,6 +222,10 @@ function buildAdapterSelection(
       return buildAgy(catalogEntry, token, requested);
     case "claude-code":
       return buildClaude(token, requested);
+    case "codebuddy-code":
+      if (catalogEntry?.effort.status !== "supported")
+        fail("EFFORT_METADATA_UNKNOWN", "CodeBuddy 未声明当前模型的思考强度");
+      return { modelToken: token, effortArgs: ["--effort", requested], effortEnv: {}, transport: "flag" };
     case "cursor-agent":
       return buildCursor(catalogEntry, token, requested);
     case "grok-build":

@@ -385,6 +385,7 @@ export async function getAdapterModels(
   status?: string;
   discoveryStatus?: string;
   parserRevision?: string;
+  cliVersion?: string;
 }> {
   const query = scopeId ? `?scope_id=${encodeURIComponent(scopeId)}` : "";
   const data = await requestJson(
@@ -399,6 +400,7 @@ export async function getAdapterModels(
     status: data.status ?? catalog?.status,
     discoveryStatus: data.discoveryStatus ?? catalog?.discoveryStatus,
     parserRevision: data.parserRevision ?? catalog?.parserRevision,
+    cliVersion: typeof catalog?.cliVersion === "string" ? catalog.cliVersion : undefined,
   };
 }
 
@@ -590,6 +592,7 @@ async function startVerification(
   force: boolean,
   key: string,
   signal: AbortSignal,
+  scopeId?: string,
 ): Promise<AccessState> {
   const previous = verificationJobs.get(key);
   if (previous) {
@@ -607,7 +610,7 @@ async function startVerification(
   if (!pendingPost) {
     pendingPost = requestJson("/api/model-access/verify", {
       method: "POST",
-      body: JSON.stringify({ request_id: newRequestId(), profile, force }),
+      body: JSON.stringify({ request_id: newRequestId(), profile, force, scope_id: scopeId }),
     }).finally(() => verificationPosts.delete(key));
     verificationPosts.set(key, pendingPost);
   }
@@ -644,9 +647,9 @@ async function startVerification(
   };
 }
 
-async function verifyWithAccountRetry(profile: ToolProfile, force: boolean, key: string, signal: AbortSignal): Promise<AccessState> {
+async function verifyWithAccountRetry(profile: ToolProfile, force: boolean, key: string, signal: AbortSignal, scopeId?: string): Promise<AccessState> {
   for (let attempt = 0; ; attempt++) {
-    const result = await startVerification(profile, force, key, signal);
+    const result = await startVerification(profile, force, key, signal, scopeId);
     if (profile.adapterId !== "agy" || !result.retryable ||
         !["MODEL_IDENTITY_CHANGED", "MODEL_ACCOUNT_SWITCHING"].includes(result.errorCode ?? "")) return result;
     if (attempt >= 2) return { ...result, message: "AGY 账号仍在变化，暂未完成核验。输入已保留，请稍后重试。" };
@@ -660,9 +663,11 @@ export async function verifyModelAccess(
   profile: ToolProfile,
   signal?: AbortSignal,
   force = false,
+  catalogScope?: string,
 ): Promise<AccessState> {
   if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
-  const key = verifyCacheKey(profile, force);
+  const scopeId = profile.adapterId === "codebuddy-code" ? catalogScope : undefined;
+  const key = JSON.stringify([verifyCacheKey(profile, force), scopeId]);
   let shared = verifyInflight.get(key);
   if (!shared || shared.controller.signal.aborted) {
     const controller = new AbortController();
@@ -676,6 +681,7 @@ export async function verifyModelAccess(
       force,
       key,
       controller.signal,
+      scopeId,
     ).finally(() => {
       if (verifyInflight.get(key) === entry) verifyInflight.delete(key);
     });

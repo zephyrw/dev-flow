@@ -224,6 +224,15 @@ function textCandidates(raw: string): TextCandidates {
   return { values, limited: scanObjects(text.slice(outside), values) };
 }
 
+export function extractPlanningOutput(raw: string): RecordValue | undefined {
+  const { values, limited } = textCandidates(raw);
+  if (limited) return;
+  const plans = values.map(record).filter((value): value is RecordValue =>
+    Boolean(value && field(value.markdown) && record(value.plan)),
+  );
+  if (plans.length === 1) return plans[0];
+}
+
 function select(
   values: unknown[],
   source: string,

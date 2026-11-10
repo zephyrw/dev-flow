@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from "react";
+import type { CreditQuota, CreditQuotaStatus } from "../../../../packages/contracts/src/run-observation.js";
 import "./quota-popover.css";
 
 export interface QuotaWindowData {
@@ -18,6 +19,7 @@ export interface QuotaPopoverProps {
   fiveHourData?: QuotaWindowData | null;
   isStale?: boolean;
   isShared?: boolean;
+  creditQuota?: { status?: CreditQuotaStatus; value?: CreditQuota; observedAt?: string };
 }
 
 function formatResetTime(resetsAtEpochSeconds?: number): string {
@@ -136,6 +138,52 @@ function UnknownQuotaRow({ title }: { title: string }) {
   );
 }
 
+const creditMessages: Record<CreditQuotaStatus, string> = {
+  available: "",
+  stale: "额度可能已过期，显示上次读取结果",
+  "auth-required": "请登录 CodeBuddy CLI 后重试",
+  external: "当前模型使用外部服务额度",
+  unsupported: "当前客户端或账号暂不支持查询积分",
+  unavailable: "暂时无法查询积分，请稍后重试",
+};
+const creditNumber = new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 6 });
+
+function CreditQuotaRows({ status, value, observedAt }: NonNullable<QuotaPopoverProps["creditQuota"]>) {
+  return (
+    <div className="credit-quota">
+      {value && (
+        <>
+          <div className="quota-row">
+            <div className="quota-row-title">剩余积分</div>
+            <strong>{creditNumber.format(value.remaining)} 积分</strong>
+          </div>
+          <div className="quota-row-subtitle">账号共享积分</div>
+          {(value.total !== undefined || value.used !== undefined) && (
+            <div className="quota-row-subtitle">
+              {[
+                value.total !== undefined ? `总计 ${creditNumber.format(value.total)}` : undefined,
+                value.used !== undefined ? `已用 ${creditNumber.format(value.used)}` : undefined,
+              ].filter(Boolean).join(" · ")}
+            </div>
+          )}
+          {value.packages.length > 1 && value.packages.map(pkg => (
+            <div className="quota-row" key={pkg.code}>
+              <span>{pkg.name ?? pkg.code}</span>
+              <span>{creditNumber.format(pkg.remaining)} 积分</span>
+            </div>
+          ))}
+          {observedAt && (
+            <div className="quota-row-subtitle">更新于 {new Date(observedAt).toLocaleString()}</div>
+          )}
+        </>
+      )}
+      {!status || creditMessages[status] ? (
+        <div className="quota-row-subtitle">{status ? creditMessages[status] : "正在读取积分…"}</div>
+      ) : null}
+    </div>
+  );
+}
+
 export function QuotaPopover({
   open,
   onOpenChange,
@@ -146,6 +194,7 @@ export function QuotaPopover({
   fiveHourData,
   isStale = false,
   isShared = false,
+  creditQuota,
 }: QuotaPopoverProps) {
   const [localOpen, setLocalOpen] = useState(false);
   const isOpen = open ?? localOpen;
@@ -248,6 +297,7 @@ export function QuotaPopover({
               {categoryLabel}
             </div>
           )}
+          {creditQuota ? <CreditQuotaRows {...creditQuota} /> : <>
           {/* AGY 固定展示两个窗口；其他工具保留没有限额时隐藏该行的行为。 */}
           {hasQuotaData(weeklyData) ? (
             <QuotaRow title="周额度剩余" data={weeklyData} />
@@ -267,6 +317,7 @@ export function QuotaPopover({
           {isStale && (
             <div className="quota-stale-notice">额度数据可能已过期，待更新</div>
           )}
+          </>}
         </div>
       )}
     </div>

@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { dirname, join, extname } from "node:path";
+import { basename, dirname, join, extname } from "node:path";
 import { requireCondition } from "../../../contracts/src/index.js";
 
 /** Resolve known package shims without evaluating shell text or interpolating prompts into a shell. */
@@ -10,6 +10,14 @@ export function nativeLaunch(
   const ext = extname(path).toLowerCase();
   if ([".js", ".cjs", ".mjs"].includes(ext))
     return { executable: process.execPath, prefix: [path] };
+  if (adapterId === "codebuddy-code" && basename(path) === "codebuddy") {
+    const manifest = join(dirname(path), "..", "package.json");
+    if (existsSync(manifest)) {
+      const pkg = JSON.parse(readFileSync(manifest, "utf8"));
+      if (pkg.name === "@tencent-ai/codebuddy-code" || pkg.publishConfig?.name === "@tencent-ai/codebuddy-code")
+        return { executable: process.execPath, prefix: [path] };
+    }
+  }
   if (process.platform !== "win32" || ext === ".exe")
     return { executable: path, prefix: [] };
   const dir = dirname(path);
@@ -19,6 +27,7 @@ export function nativeLaunch(
     opencode: "opencode-ai",
     "kimi-code": "@moonshot-ai/kimi-code",
     "mimo-code": "@mimo-ai/cli",
+    "codebuddy-code": "@tencent-ai/codebuddy-code",
   };
   const packageName = packageNames[adapterId];
   if (packageName) {
@@ -29,8 +38,8 @@ export function nativeLaunch(
       return { executable: native, prefix: [] };
     if (existsSync(manifest)) {
       const pkg = JSON.parse(readFileSync(manifest, "utf8"));
-      const bin =
-        typeof pkg.bin === "string" ? pkg.bin : Object.values(pkg.bin ?? {})[0];
+      const bin = typeof pkg.bin === "string" ? pkg.bin
+        : adapterId === "codebuddy-code" ? pkg.bin?.codebuddy : Object.values(pkg.bin ?? {})[0];
       if (typeof bin === "string" && existsSync(join(base, bin)))
         return nativeLaunch(join(base, bin), adapterId);
     }

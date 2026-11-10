@@ -42,6 +42,7 @@ export const runtimeToolNames: Record<string, string> = {
   opencode: "OpenCode",
   "mimo-code": "MiMo Code",
   "cursor-agent": "Cursor Agent",
+  "codebuddy-code": "CodeBuddy CLI",
 };
 export const runtimePurposeNames: Record<string, string> = {
   planning: "规划模型 · 制定计划",

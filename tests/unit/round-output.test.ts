@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 import { readFileSync } from "node:fs";
-import { extractRoundOutput } from "../../packages/runtime/src/round-output.js";
+import { extractPlanningOutput, extractRoundOutput } from "../../packages/runtime/src/round-output.js";
 
 const result = {
   status: "need_user",
@@ -10,6 +10,14 @@ const result = {
 const json = JSON.stringify(result);
 const extract = (replyText: string, extra = {}) =>
   extractRoundOutput({ kind: "execution", replyText, ...extra });
+
+it("extracts a single complete plan after a prose preamble", () => {
+  const plan = { markdown: "# 计划\n保留换行", plan: { work_items: [{ id: "T01" }] } };
+  const raw = JSON.stringify(plan, null, 2);
+  expect(extractPlanningOutput(`Here is the plan for your approval:\n\n${raw}`)).toEqual(plan);
+  expect(extractPlanningOutput(`${raw}\n第二个方案\n${JSON.stringify({ ...plan, markdown: "冲突方案" })}`)).toBeUndefined();
+  expect(extractPlanningOutput(JSON.stringify([plan]))).toBeUndefined();
+});
 
 it.each([
   json,

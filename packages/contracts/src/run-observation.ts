@@ -21,6 +21,15 @@ export interface QuotaBucket {
   }[];
 }
 
+export interface CreditQuota {
+  remaining: number;
+  total?: number;
+  used?: number;
+  packages: Array<{ code: string; name?: string; remaining: number; total?: number; used?: number }>;
+}
+
+export type CreditQuotaStatus = "available" | "stale" | "auth-required" | "external" | "unsupported" | "unavailable";
+
 export interface RunObservation {
   run_id: string;
   adapter: string;
@@ -50,5 +59,6 @@ export interface RunObservation {
     source: "native_session" | "native_event" | "account_api";
     observed_at: string;
     buckets: QuotaBucket[];
+    credits?: CreditQuota;
   };
 }

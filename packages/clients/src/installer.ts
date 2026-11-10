@@ -217,6 +217,8 @@ export class ClientInstaller {
         return join(h, ".gemini", process.platform === "darwin" ? "antigravity-cli" : "antigravity");
       case "claude-code":
         return join(h, ".claude");
+      case "codebuddy-code":
+        return (!isolated && process.env.CODEBUDDY_CONFIG_DIR) || join(h, ".codebuddy");
       case "kimi-code":
         return (
           (!isolated && process.env.KIMI_CODE_HOME) || join(h, ".kimi-code")

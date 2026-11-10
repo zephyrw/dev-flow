@@ -51,6 +51,7 @@ export const QODER_BINARY_CANDIDATES = ["qodercli", "qoder"] as const;
 export const QODER_PRODUCT_IDENTITY = "qodercli|\\bqoder\\b";
 
 export function binaryNamesForLookup(binaryName: string): string[] {
+  if (binaryName === "codebuddy") return ["codebuddy", "codebuddy-code", "cbc"];
   if (binaryName === "qoder" || binaryName === "qodercli") {
     return [...QODER_BINARY_CANDIDATES];
   }
@@ -113,6 +114,7 @@ export const ADAPTER_BINARY_NAMES: Record<SupportedAdapterId, string> = {
   opencode: "opencode",
   "cursor-agent": "agent",
   "mimo-code": "mimo",
+  "codebuddy-code": "codebuddy",
 };
 
 export type AdapterExecutableResolver = (
@@ -166,7 +168,7 @@ export function resolveAdapterExecutable(
 
   return resolveToolExecutable(
     ADAPTER_BINARY_NAMES[adapterId],
-    customPath,
+    customPath ?? (adapterId === "codebuddy-code" ? process.env.DEVFLOW_CODEBUDDY_EXECUTABLE : undefined),
     defaultAdapterFallbackDirs(),
   );
 }

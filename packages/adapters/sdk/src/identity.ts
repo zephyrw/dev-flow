@@ -137,6 +137,9 @@ export function resolveClientScope(
     case "claude-code":
       clientScope = env.CLAUDE_HOME || join(h, ".claude");
       break;
+    case "codebuddy-code":
+      clientScope = env.CODEBUDDY_CONFIG_DIR || join(h, ".codebuddy");
+      break;
     case "grok-build":
       clientScope = env.GROK_HOME || join(h, ".grok");
       break;

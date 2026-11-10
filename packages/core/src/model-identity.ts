@@ -1,12 +1,15 @@
 import { createHmac, randomBytes } from "node:crypto";
 import type { Store } from "../../store/src/store.js";
 import { AgyAccountRepository } from "../../agy-accounts/src/repository.js";
+import { codeBuddyScope } from "../../adapters/codebuddy/src/local-scope.js";
 import {
   FlowError,
   NativeResolvedConfigSchema,
   type IdentityConfidence,
   type NativeResolvedConfig,
   type ToolProfile,
+  type Project,
+  type Workflow,
 } from "../../contracts/src/index.js";
 import {
   identityInputFromProfile,
@@ -59,6 +62,7 @@ export function readManagedAgyModelIdentity(store: Store): ManagedAgyModelIdenti
 export function resolveModelIdentityInput(
   store: Store,
   profile: Pick<ToolProfile, "adapterId" | "nativeConfigProfile" | "providerConfigRef" | "modelId">,
+  workspaceRoot?: string,
 ): AccessIdentityInput {
   const managed = profile.adapterId === "agy" ? readManagedAgyModelIdentity(store) : undefined;
   if (managed) return {
@@ -66,7 +70,21 @@ export function resolveModelIdentityInput(
     accountId: managedAgyAccountIdentityId(managed.realmId, managed.accountId),
     identityConfidence: "account",
   };
-  return identityInputFromProfile(profile);
+  const identity = identityInputFromProfile(profile);
+  if (profile.adapterId !== "codebuddy-code" || !workspaceRoot) return identity;
+  const scope = codeBuddyScope(workspaceRoot);
+  return {
+    ...identity,
+    nativeConfigScope: scope,
+    accountFingerprint: fingerprintModelIdentity(store, identity).accountFingerprint,
+    providerEndpointFingerprint: scope,
+  };
+}
+
+export function workflowModelWorkspace(store: Store, workflowId: string): string | undefined {
+  const workflow = store.get<Workflow>("workflow", workflowId);
+  const project = workflow && store.get<Project>("project", workflow.project_id);
+  return project?.project_root ?? (project?.repositories.find(repo => repo.id === project.primary_repo_id) ?? project?.repositories[0])?.path;
 }
 
 export function resolveModelExecutable(

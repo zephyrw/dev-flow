@@ -8,10 +8,56 @@ import { readableLogs, userFacingLogs } from "../../packages/presentation/src/ac
 import { conversationLogs } from "../../packages/presentation/src/conversation-activity.js";
 import { filterConversationEntries } from "../../apps/web/src/use-conversation-view.js";
 import { modelReplyText } from "../../packages/presentation/src/model-reply.js";
+import { CodeBuddyNativeAdapter } from "../../packages/adapters/codebuddy/src/adapter.js";
+import type { Run, Workflow } from "../../packages/contracts/src/index.js";
+import { currentContinuation, saveWaitingContext } from "../../packages/core/src/waiting-context.js";
+import { interactionConversationContext } from "../../packages/core/src/user-interaction-service.js";
+import { bindRunConversationObserver } from "../../packages/runtime/src/profile-runtime.js";
+import { RunTelemetry } from "../../packages/runtime/src/run-telemetry.js";
 
 const native = "11111111-1111-4111-8111-111111111111";
 const context = { project_id: "p", workflow_id: "w", run_id: "r", adapter_id: "agy",
   scope: "acceptance_guidance", lineage_id: "w:agy", purpose: "acceptance_guidance", root_native_id: native };
+
+it("attaches a short CodeBuddy retry and its pending answer to the reused native session", async () => {
+  const store = new Store(":memory:");
+  const adapter = new CodeBuddyNativeAdapter();
+  const conversations = new ConversationService(store);
+  const init = { type: "system", subtype: "init", session_id: native };
+  try {
+    for (const [index, runId] of ["first", "retry"].entries()) {
+      const workflow = { id: "w", project_id: "p", run_id: runId, plan_revision: 1, state: "EXECUTING" } as Workflow;
+      const run = { id: runId, workflow_id: workflow.id, purpose: "implement", stage: "execute",
+        adapter: "codebuddy-code", plan_revision: 1, status: "running", conversation_id: native,
+        started_at: new Date().toISOString() } as Run;
+      store.put("workflow", workflow.id, workflow.project_id, workflow);
+      store.put("run", run.id, workflow.id, run);
+      const telemetry = new RunTelemetry(store, workflow, run);
+      bindRunConversationObserver({ store, workflow, run, adapter, telemetry,
+        previousNativeId: index ? native : undefined });
+      telemetry.accept(init);
+      if (!index) {
+        for (let seq = 0; seq < 12; seq++) telemetry.accept({ type: "system", subtype: "status", session_id: native });
+      }
+      telemetry.finish();
+    }
+    const { nodes, attempts } = conversations.getTree("w");
+    expect(nodes).toHaveLength(1);
+    expect(attempts.map(({ run_id, generation }) => [run_id, generation])).toEqual([
+      ["first", 0], ["retry", 1],
+    ]);
+    expect(interactionConversationContext(store, "w", "retry", native)).toMatchObject({
+      rootConversationId: nodes[0]!.id, sourceGeneration: 1, nativeSessionId: native,
+    });
+    saveWaitingContext(store, "w", { purpose: "execute", role: "executor", intent: "need_user",
+      run_id: "retry", conversation_id: native });
+    expect(currentContinuation(store, "w", { kind: "user_answer", source_run_id: "retry",
+      purpose: "execute", role: "executor", conversation_id: native })).toBeDefined();
+  } finally {
+    await new Promise<void>(resolve => setImmediate(resolve));
+    store.close();
+  }
+});
 
 it("omits historical identity-only records from HTTP history while retaining actual replies", async () => {
   const store = new Store(":memory:");

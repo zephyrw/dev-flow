@@ -247,8 +247,8 @@ export function nativeProgress(detail: any, changes?: any[]) {
     .find((t) => t.status !== "running" && t.status !== "interrupted");
   return {
     ...detail,
-    tasks,
-    task_counts: {
+    tasks: detail.task_list ? detail.tasks : tasks,
+    task_counts: detail.task_list ? detail.task_counts : {
       total: tasks.length,
       developed: tasks.filter((t: any) => t.development_status === "completed")
         .length,

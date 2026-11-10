@@ -121,7 +121,7 @@ describe("model selector directory refresh", () => {
     api.get.mockResolvedValue({ entries: oldEntries, status: "fresh", discoveryStatus: "complete" });
     await render();
     const select = container.querySelector<HTMLSelectElement>('select[aria-label="工具"]')!;
-    expect(Array.from(select.options, (option) => option.value)).toEqual(["codex", "agy", "claude-code", "opencode"]);
+    expect(Array.from(select.options, (option) => option.value)).toEqual(["codex", "agy", "claude-code", "opencode", "codebuddy-code"]);
     expect(onChange).not.toHaveBeenCalled();
   });
   it("preserves a historical tool without probing it or displaying it as Codex", async () => {

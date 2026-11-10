@@ -8,6 +8,8 @@ import {
 import { PlanApprovalService } from "./plan-approval-service.js";
 import { projectWorkflowOverview } from "./workflow-overview.js";
 import { recordExecutionTestReport, reportedTestProgress } from "./execution-test-progress.js";
+import { initTaskList, syncTaskList, taskListSnapshot, taskListView } from "./task-list.js";
+import { originalPlanPath } from "./project-materials.js";
 import {
   executionContinuationDecision, executionProgressItems, hasExecutionUserRequest, hasUnfinishedExecutionItems,
   EXECUTION_CONTINUE_INSTRUCTION, EXECUTION_CLARIFY_INSTRUCTION,
@@ -350,6 +352,7 @@ export class Engine {
           }
         : null,
       tasks: [],
+      task_list: taskListView(this.store, w),
       task_counts: {
         total: tasks.length,
         started: tasks.filter((t) => ["active", "completed", "pending_check"].includes(t.development_status)).length,
@@ -430,6 +433,7 @@ export class Engine {
         : this.store.list<Run>("run", key),
       evidence: evidenceList,
       tasks: taskList,
+      task_list: taskListView(this.store, w),
       test_progress: testProg,
       active_task:
         this.store.get<any>("task_activity", key)?.run_id === w.run_id &&
@@ -755,6 +759,13 @@ export class Engine {
           created_at: now(),
         };
         this.store.put("plan", record.id, key, record);
+        try {
+          initTaskList(this.store, w, {
+            ...record, material_path: record.material_path ?? originalPlanPath(this.store, key, revision),
+          });
+        } catch {
+          // The approved plan remains usable; the executor handoff retries initialization.
+        }
         if (document || existingDoc) {
           const docRef = document ?? existingDoc!;
           this.store.put("planning_document", key, key, {
@@ -1257,6 +1268,14 @@ export class Engine {
     if (!w.plan_revision) return [];
     const plan = this.plan(key).plan;
     if (!Array.isArray(plan?.tasks)) return [];
+    const checklist = taskListSnapshot(this.store, w)?.list;
+    if (checklist) return checklist.tasks.map(t => {
+      const done = t.status === "completed";
+      const state = t.status === "in_progress" ? "active" : t.status;
+      return { ...t, status: t.status, completed: done, development_status: state,
+        implementation_status: state, validation_status: "not_certified",
+        has_implementation: done, summary: t.summary ?? "", recheck_reason: undefined };
+    });
     const currentRun = w.run_id ? this.store.get<Run>("run", w.run_id) : undefined;
     if (!isLegacyProtocol(currentRun, plan)) {
       const intent = this.reviewPointer(key);
@@ -1843,7 +1862,10 @@ export class Engine {
       deliverySubmit ? { deliverySubmit: true } : undefined,
     );
     const userInput = this.store.get<SessionInputReceipt>("session_input", runId)?.user_input === true;
-    if (!userInput) recordExecutionTestReport(this.store, w, this.store.must<Run>("run", runId), normalized.payload);
+    if (!userInput) {
+      syncTaskList(this.store, w, runId);
+      recordExecutionTestReport(this.store, w, this.store.must<Run>("run", runId), normalized.payload);
+    }
     const executionRun = this.store.must<Run>("run", runId);
     const canContinue = !userInput && executionRun.routing_role !== "planner" &&
       ["implement", "execute", "executor_test"].includes(executionRun.purpose ?? "") &&

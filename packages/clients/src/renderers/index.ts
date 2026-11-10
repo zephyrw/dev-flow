@@ -21,7 +21,7 @@ import { mimoRenderer } from "./mimo.js";
 import type { SupportedAdapterId } from "../../../contracts/src/execution-spec.js";
 import type { ClientRenderer } from "./types.js";
 
-export const RENDERERS: Record<SupportedAdapterId, ClientRenderer> = {
+export const RENDERERS: Partial<Record<SupportedAdapterId, ClientRenderer>> = {
   agy: agyRenderer,
   codex: codexRenderer,
   "claude-code": claudeRenderer,

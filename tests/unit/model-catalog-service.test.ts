@@ -133,10 +133,27 @@ describe("model catalog operations", { timeout: 30000 }, () => {
       }
     }
   });
-  it("lists the four enabled workbench tools without launching discovery", () => {
+  it("lists enabled workbench tools without launching discovery", () => {
     const env = openCatalog();
-    expect(env.catalog.listTools().map((tool) => tool.adapterId)).toEqual(["codex", "agy", "claude-code", "opencode"]);
+    expect(env.catalog.listTools().map((tool) => tool.adapterId)).toEqual(["codex", "agy", "claude-code", "opencode", "codebuddy-code"]);
     expect(existsSync(join(env.logDir, "calls.jsonl"))).toBe(false);
+  });
+  it("reads the CodeBuddy project model picker using ACP without sending a prompt", async () => {
+    const env = openCatalog({}, join(dirname(FIXTURE), "../codebuddy-cli.mjs"));
+    const result = env.catalog.refreshModels({ adapter: "codebuddy-code", request_id: randomUUID() });
+    expect((await waitDone(env.catalog, result.operation.id)).status).toBe("committed");
+    const { entries } = env.catalog.getModels("codebuddy-code");
+    expect(entries.map(({ nativeId, selectionKind }) => [nativeId, selectionKind])).toEqual([
+      ["auto", "native-router"], ["example/custom-model", "fixed"],
+      ["hy4free", "fixed"], ["hy4std", "fixed"],
+    ]);
+    expect(readFileSync(join(env.logDir, "acp-methods"), "utf8")).toBe("initialize\nsession/new\n");
+  });
+  it("reports the native CodeBuddy login error without claiming a usable directory", async () => {
+    const env = openCatalog({ authRequired: true }, join(dirname(FIXTURE), "../codebuddy-cli.mjs"));
+    const result = env.catalog.refreshModels({ adapter: "codebuddy-code", request_id: randomUUID() });
+    expect(await waitDone(env.catalog, result.operation.id)).toMatchObject({ status: "failed", error_code: "AUTH_REQUIRED" });
+    expect(env.catalog.getModels("codebuddy-code").entries).toEqual([]);
   });
   it("does not make an expired Codex native cache fresh after a failed live query", async () => {
     const env = openCatalog({

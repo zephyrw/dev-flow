@@ -2170,6 +2170,9 @@ select:focus {
 }
 
 .activity-indicator {
+  --timeline-dot-size: 9px;
+  --timeline-dot-offset: 5px;
+  --timeline-dot-center: calc(var(--timeline-dot-offset) + var(--timeline-dot-size) / 2);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -2178,11 +2181,11 @@ select:focus {
 }
 
 .indicator-dot {
-  width: 9px;
-  height: 9px;
+  width: var(--timeline-dot-size);
+  height: var(--timeline-dot-size);
   border-radius: 50%;
   background: var(--border-medium);
-  margin-top: 5px;
+  margin-top: var(--timeline-dot-offset);
   z-index: 1;
   transition: all var(--transition);
 }
@@ -2203,14 +2206,19 @@ select:focus {
 }
 
 .timeline-line {
-  flex: 1;
+  display: none;
+  position: absolute;
+  top: var(--timeline-dot-center);
+  bottom: calc(-1 * var(--timeline-dot-center));
+  left: 7px;
+  transform: translateX(-50%);
   width: 1.5px;
   background: var(--border-subtle);
-  margin-top: 4px;
+  pointer-events: none;
 }
 
-.activity:last-child .timeline-line {
-  display: none;
+.activity:has(+ article.activity:not(.conversation-turn)) .timeline-line {
+  display: block;
 }
 
 .activity-body {

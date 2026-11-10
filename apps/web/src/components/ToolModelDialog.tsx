@@ -222,6 +222,8 @@ export function ToolModelDialog({
         const access = await verifyModelAccess(
           profile,
           panelAbort.current?.signal,
+          false,
+          "workflow:" + workflowId,
         );
         if (access.status !== "verified") {
           throw {
@@ -429,6 +431,7 @@ export function ToolModelDialog({
         <div className="ms-dialog-loading">正在读取配置…</div>
       ) : (
         <ModelConfigTabs
+          catalogScope={"workflow:" + workflowId}
           tabs={tabs}
           activeTab={activeTab}
           onTabChange={setActiveTab}

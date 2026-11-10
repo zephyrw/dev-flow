@@ -1,0 +1,46 @@
+import { test, expect } from "@playwright/test";
+import { readFileSync, writeFileSync } from "node:fs";
+import type { TaskList } from "../../packages/contracts/src/task-list.js";
+import { atomicWrite } from "../../packages/core/src/util.js";
+import { updateTaskListEntry } from "../../packages/core/src/task-list.js";
+import { fixturePost, workflowDetail } from "./native-helper.js";
+
+test.use({ channel: "chrome", launchOptions: { channel: "chrome" } });
+
+test("Chrome shows independently updated development and test results before the execution round exits", async ({ page }) => {
+  const { workflow_id, path } = await fixturePost(page, "/__fixture/task-list");
+  const list = JSON.parse(readFileSync(path, "utf8")) as TaskList;
+  expect(list.tasks.map(t => t.status)).toEqual(["pending", "pending"]);
+  await page.goto(`/?workflow=${workflow_id}`);
+  const strip = page.getByLabel("交付进度");
+  await expect(strip).toContainText("开发完成0/2");
+  list.tasks[0]!.status = "in_progress";
+  list.tasks[1]!.status = "completed";
+  list.tests[0]!.status = "running";
+  list.tests[1]!.status = "passed";
+  atomicWrite(path, JSON.stringify(list));
+  await expect(strip).toContainText("开发完成1/2", { timeout: 5000 });
+  await expect(strip).toContainText("计划用例报告通过1/2");
+  await expect(strip).toContainText("1 项运行中");
+  await expect(page.getByText("测试场景甲", { exact: true })).toBeVisible();
+  await expect(page.getByText("运行中", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "任务进度", exact: true }).click();
+  await expect(page.getByText("并行任务乙", { exact: true })).toBeVisible();
+  await expect(page.locator(".task-tree-container")).toContainText("开发完成");
+  await page.getByRole("button", { name: "测试进度", exact: true }).click();
+  await page.getByText("集成测试", { exact: true }).click();
+  await expect(page.locator(".test-case.running")).toContainText("测试场景甲");
+  writeFileSync(path, "{");
+  await expect(strip).toContainText("已保留上次进度");
+  await expect(strip).toContainText("1/2");
+  atomicWrite(path, JSON.stringify(list));
+  expect(() => updateTaskListEntry(path, "old-run", "test", "T01", "failed")).toThrow("已交接");
+  updateTaskListEntry(path, list.writer_run_id!, "test", "T01", "failed", "模拟失败结果");
+  await expect(page.locator(".test-case.failed")).toContainText("测试场景甲");
+  await expect(strip).not.toContainText("已保留上次进度");
+  updateTaskListEntry(path, list.writer_run_id!, "test", "T01", "running");
+  await expect(page.locator(".test-case.running")).toHaveCount(1);
+  updateTaskListEntry(path, list.writer_run_id!, "test", "T01", "passed");
+  await expect(strip).toContainText("计划用例报告通过2/2");
+  expect((await workflowDetail(page, workflow_id)).workflow.state).toBe("EXECUTING");
+});

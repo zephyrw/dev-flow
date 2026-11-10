@@ -24,6 +24,7 @@ export const NativeWorkItemSchema = z
     repo_id: Id.optional(),
     title: z.string().min(1),
     description: z.string().optional(),
+    completion_criteria: z.array(z.string().min(1)).optional(),
     paths: z.array(RelativePath).default([]),
     depends_on: z.array(Id).default([]),
     acceptance_ids: z.array(Id).default([]),

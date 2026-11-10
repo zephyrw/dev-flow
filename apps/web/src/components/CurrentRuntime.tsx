@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import type { QuotaBucket, RunObservation } from "../../../../packages/contracts/src/run-observation.js";
+import type { CreditQuotaStatus, QuotaBucket, RunObservation } from "../../../../packages/contracts/src/run-observation.js";
 import { runtimeToolNames, visibleRunObservation } from "../../../../packages/presentation/src/run-observation.js";
 import { projectRoleRuntime } from "../../../../packages/presentation/src/role-runtime.js";
 import { effectiveRuntimeQuotaWindows } from "../../../../packages/presentation/src/agy-accounts.js";
@@ -71,25 +71,36 @@ function RuntimeQuota({
   const workflowId = detail?.workflow?.id;
   const profile = detail?.execution_spec?.spec?.[role === "planner" ? "plannerProfile" : "executorProfile"];
   const identity = JSON.stringify([workflowId, role, adapterId, modelId, profile]);
-  const [account, setAccount] = useState<{ identity: string; quota: RunObservation["quota"] | null }>();
+  const [account, setAccount] = useState<{ identity: string; quota: RunObservation["quota"] | null; creditStatus?: CreditQuotaStatus }>();
+  const isCodeBuddy = adapterId === "codebuddy-code";
   useEffect(() => {
-    if (!workflowId || !role || !["codex", "agy"].includes(adapterId ?? "")) return;
+    if (!workflowId || !role || !["codex", "agy", "codebuddy-code"].includes(adapterId ?? "")) return;
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout>;
     const refresh = async () => {
       try {
-        const response = await fetch(`/api/workflows/${encodeURIComponent(workflowId)}/quota?role=${role}`, { signal: controller.signal });
-        if (response.ok) {
-          const result = await response.json();
-          if (!controller.signal.aborted && result.adapter === adapterId && result.model === modelId)
-            setAccount({ identity, quota: result.quota });
+        const signal = isCodeBuddy
+          ? AbortSignal.any([controller.signal, AbortSignal.timeout(45_000)])
+          : controller.signal;
+        const response = await fetch(`/api/workflows/${encodeURIComponent(workflowId)}/quota?role=${role}`, { signal });
+        const result = response.ok ? await response.json() : null;
+        if (controller.signal.aborted) return;
+        if (result && result.adapter === adapterId && result.model === modelId && (!isCodeBuddy || result.credit_status)) {
+          setAccount({ identity, quota: result.quota, creditStatus: result.credit_status });
+        } else if (isCodeBuddy) {
+          throw new Error("CodeBuddy quota request failed");
         }
-      } catch { /* Keep the last observation and its original freshness timestamp. */ }
+      } catch {
+        // Only the server can confirm a cached balance still belongs to the active account.
+        if (isCodeBuddy && !controller.signal.aborted) {
+          setAccount({ identity, quota: null, creditStatus: "unavailable" });
+        }
+      }
       if (!controller.signal.aborted) timer = setTimeout(refresh, 15000);
     };
     void refresh();
     return () => { controller.abort(); clearTimeout(timer); };
-  }, [identity, workflowId, role, adapterId, modelId]);
+  }, [identity, workflowId, role, adapterId, modelId, isCodeBuddy]);
   const accountQuota = account?.identity === identity ? account.quota : undefined;
   const quota = accountQuota !== undefined ? accountQuota : observation && observation.adapter === adapterId
       ? observation.quota : undefined;
@@ -192,6 +203,13 @@ function RuntimeQuota({
         fiveHourData={fiveHourData}
         isStale={Boolean(quota && stale)}
         isShared={isBucketShared}
+        creditQuota={isCodeBuddy ? {
+          status: account?.identity === identity
+            ? stale && account.creditStatus === "available" ? "stale" : account.creditStatus
+            : undefined,
+          value: accountQuota?.credits,
+          observedAt: accountQuota?.observed_at,
+        } : undefined}
       />
     </div>
   );
@@ -276,9 +294,9 @@ export function CurrentRuntime({ detail, connected, onEdit }: {
           <span className="runtime-badge-label">{compactBadge.label}</span>
           <span className="runtime-badge-text">{compactBadge.displayText}</span>
         </button>
-        <RuntimeQuota detail={detail} connected={connected} now={now}
+        {quotaTarget?.adapter !== "codebuddy-code" && <RuntimeQuota detail={detail} connected={connected} now={now}
           adapterId={quotaTarget?.adapter} modelId={quotaTarget?.model} label={compactBadge.label} open={openQuota === "compact"}
-          onOpenChange={open => setOpenQuota(current => open ? "compact" : current === "compact" ? null : current)} />
+          onOpenChange={open => setOpenQuota(current => open ? "compact" : current === "compact" ? null : current)} />}
         </div>
       )}
     </section>

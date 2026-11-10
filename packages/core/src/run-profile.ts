@@ -35,6 +35,7 @@ import type { ModelCatalog, ModelEntry } from "../../contracts/src/model-catalog
 import { buildFrozenInvocation, selectionCapabilityFromCatalog } from "../../adapters/sdk/src/frozen-invocation.js";
 import { ModelCatalogService } from "./model-catalog-service.js";
 import { ModelAccessService } from "./model-access-service.js";
+import { workflowModelWorkspace } from "./model-identity.js";
 import { assertAccountModelRetryAccess, type PendingModelRetry } from "./model-retry.js";
 import { id, objectHash } from "./util.js";
 import { usesPolicyV2 } from "./quality-policy-migration.js";
@@ -136,7 +137,7 @@ export function bindProfile(
   );
   const frozen = preview.frozen_invocation
     ? { ...preview.frozen_invocation, runtimeFlavor: flavor }
-    : freezeDispatchInvocation(store, preview.profile, flavor);
+    : freezeDispatchInvocation(store, preview.profile, flavor, workflowModelWorkspace(store, workflowId));
   if (retryOverride?.account_recovery) {
     new ModelAccessService(store).assertFrozenAccess(preview.profile, frozen);
   } else if (context.retry_run_id) {
@@ -945,10 +946,11 @@ function freezeDispatchInvocation(
   store: Store,
   profile: ToolProfile,
   flavor: RuntimeFlavor,
+  workspaceRoot?: string,
 ): FrozenInvocation {
   const catalog = new ModelCatalogService(store);
   const access = new ModelAccessService(store, { catalog });
-  const native = access.resolveNativeConfig(profile);
+  const native = access.resolveNativeConfig(profile, access.identityFromProfile(profile, workspaceRoot));
   const cached = catalog.readCached({
     adapterId: profile.adapterId,
     executablePath: native.executablePath,

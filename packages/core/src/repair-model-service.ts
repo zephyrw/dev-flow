@@ -22,6 +22,7 @@ import {
 import { id, now, objectHash } from "./util.js";
 import type { ExecutionSpecService } from "./execution-spec-service.js";
 import { assertProfilesVerified } from "./access-guard.js";
+import { workflowModelWorkspace } from "./model-identity.js";
 
 const BATCH_KIND = "repair_model_batch";
 const ASSIGNMENT_KIND = "repair_model_assignment";
@@ -256,7 +257,7 @@ export class RepairModelService {
     }
     this.assertSpecRevision(input.workflow_id, expectedSpec);
     const profile = this.profileFromSelection(input.workflow_id, selection, batch.kind);
-    assertProfilesVerified(this.store, [profile]);
+    assertProfilesVerified(this.store, [profile], undefined, workflowModelWorkspace(this.store, input.workflow_id));
     if (selection.mode === "task-default") {
       const remembered = input.remember_for_task
         ? this.rememberFixer(input.workflow_id, requestId, profile, batch.kind)
@@ -302,7 +303,7 @@ export class RepairModelService {
       const profile = selection.mode !== "task-default" || remember
         ? this.profileFromSelection(input.workflow_id, selection)
         : undefined;
-      if (profile) assertProfilesVerified(this.store, [profile]);
+      if (profile) assertProfilesVerified(this.store, [profile], undefined, workflowModelWorkspace(this.store, input.workflow_id));
       const batch = this.openFunctionalBatch(input.workflow_id, [input.issue.issue_id]);
       if (selection.mode === "task-default") {
         this.clearOverride(batch);
@@ -350,7 +351,7 @@ export class RepairModelService {
         this.clearOverride(batch);
       } else {
         const profile = this.profileFromSelection(input.workflow_id, selection);
-        assertProfilesVerified(this.store, [profile]);
+        assertProfilesVerified(this.store, [profile], undefined, workflowModelWorkspace(this.store, input.workflow_id));
         const assignment = this.writeAssignment(batch, profile, batch.issue_ids);
         this.store.put(BATCH_KIND, batch.id, input.workflow_id, {
           ...batch,

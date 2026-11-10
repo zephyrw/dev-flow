@@ -1,4 +1,5 @@
 import { spawn, execFileSync, type ChildProcess } from "node:child_process";
+import { StringDecoder } from "node:string_decoder";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -54,13 +55,14 @@ import {
 import { parseGrokModelCatalog } from "../../adapters/grok/src/model-configuration.js";
 import { parseKimiModelCatalog } from "../../adapters/kimi/src/model-configuration.js";
 import { parseQoderModelCatalog } from "../../adapters/qoder/src/model-configuration.js";
+import { parseCodeBuddyModelCatalog } from "../../adapters/codebuddy/src/model-configuration.js";
 import { parseOpenCodeModelCatalog, detectOpenCodeVariantEncoding } from "../../adapters/opencode/src/model-configuration.js";
 import {
   parseMimoModelCatalog,
   detectMimoVariantEncoding,
 } from "../../adapters/mimo/src/model-configuration.js";
 import { now, objectHash } from "./util.js";
-import { resolveModelIdentity } from "./model-identity.js";
+import { resolveModelIdentity, resolveModelIdentityInput } from "./model-identity.js";
 
 const OPERATION_KIND = "model_config_operation";
 const CATALOG_KIND = "model_catalog";
@@ -76,6 +78,7 @@ const FINGERPRINTS: Record<SupportedAdapterId, string> = {
   opencode: "opencode",
   "cursor-agent": "cursor|agent",
   "mimo-code": "mimo",
+  "codebuddy-code": "CodeBuddy Code",
 };
 
 export type CatalogOperationStatus =
@@ -105,6 +108,7 @@ export type CatalogOperation = {
 export type CatalogScopeInput = {
   adapterId: SupportedAdapterId;
   executablePath: string;
+  workingDirectory?: string;
   nativeConfigScope?: string;
   nativeConfigProfile?: string;
   accountFingerprint?: string;
@@ -435,6 +439,86 @@ async function queryCodexAppServer(
   });
 }
 
+// ACP session initialization reads the native model picker without sending a prompt.
+export async function queryCodeBuddyAcp(
+  req: LimitedCliRequest,
+  method: "session/new" | "_codebuddy.ai/getUserInfo" = "session/new",
+): Promise<LimitedCliResult> {
+  const launch = nativeLaunch(req.executable, req.adapterId);
+  const child = spawn(launch.executable, [...launch.prefix, ...req.args], {
+    cwd: req.cwd,
+    env: { ...collectSafeEnv(), ...req.env },
+    stdio: "pipe",
+    windowsHide: true,
+    detached: process.platform !== "win32",
+  });
+  ownLimitedGroup(child);
+  return new Promise(resolve => {
+    const decoder = new StringDecoder("utf8");
+    let buffer = "";
+    let stdout = "";
+    let totalBytes = 0;
+    let timedOut = false;
+    let truncated = false;
+    let ending = false;
+    let reapTimer: ReturnType<typeof setTimeout> | undefined;
+    let spawnError: NodeJS.ErrnoException | undefined;
+    const stop = () => {
+      if (ending) return;
+      ending = true;
+      child.stdin.end();
+      reapTimer = setTimeout(() => {
+        void cancelChild(child).finally(() => {
+          if (child.exitCode === null && child.signalCode === null) child.kill();
+        });
+      }, 500);
+    };
+    const timer = setTimeout(() => {
+      timedOut = true;
+      stop();
+    }, req.timeoutMs);
+    child.on("error", (error: NodeJS.ErrnoException) => { spawnError = error; });
+    child.stdin.on("error", stop);
+    child.stderr.resume();
+    child.once("spawn", () => writeJsonRpc(child, {
+      jsonrpc: "2.0", id: 1, method: "initialize",
+      params: { protocolVersion: 1, clientCapabilities: {}, clientInfo: { name: "DevFlow", version: "1" } },
+    }));
+    let initialized = false;
+    child.stdout.on("data", (data: Buffer) => {
+      if (ending) return;
+      totalBytes += data.length;
+      if (totalBytes > req.outputLimit) {
+        truncated = true;
+        stop();
+        return;
+      }
+      const parsed = readJsonRpcLines(buffer + decoder.write(data));
+      buffer = parsed.rest;
+      for (const message of parsed.messages) {
+        if (message.id === 1 && !initialized && message.result) {
+          initialized = true;
+          writeJsonRpc(child, { jsonrpc: "2.0", id: 2, method,
+            params: method === "session/new" ? { cwd: req.cwd, mcpServers: [] } : {} });
+        } else if (message.id === 2 && initialized) {
+          stdout = JSON.stringify(message);
+          stop();
+          break;
+        } else if (message.id === 1 && message.error) {
+          stop();
+          break;
+        }
+      }
+    });
+    child.once("close", code => {
+      clearTimeout(timer);
+      clearTimeout(reapTimer);
+      resolve({ stdout, stderr: "", exitCode: stdout ? 0 : code, timedOut,
+        cancelled: false, truncated, spawnError, pid: child.pid });
+    });
+  });
+}
+
 function feedChildStdin(child: ChildProcess, stdin?: string) {
   let sent = false;
   const send = () => {
@@ -587,6 +671,7 @@ function parseAdapterCatalog(
   if (adapterId === "qoder") return parseQoderModelCatalog(input);
   if (adapterId === "opencode") return parseOpenCodeModelCatalog(input);
   if (adapterId === "mimo-code") return parseMimoModelCatalog(input);
+  if (adapterId === "codebuddy-code") return parseCodeBuddyModelCatalog(input);
   return failedModelCatalog(
     adapterId,
     input,
@@ -828,6 +913,7 @@ export class ModelCatalogService {
   private readonly inflight: Map<string, Promise<ModelCatalog>>;
   private readonly operationWork: Map<string, Promise<void>>;
   private readonly versionHelpTimeoutMs: number;
+  private readonly codeBuddyVersionHelpTimeoutMs: number;
   private readonly catalogTimeoutMs: number;
   private readonly workingDirectory: string;
   private readonly extraEnv?: Record<string, string>;
@@ -841,6 +927,7 @@ export class ModelCatalogService {
   ) {
     this.versionHelpTimeoutMs =
       options.versionHelpTimeoutMs ?? VERSION_HELP_TIMEOUT_MS;
+    this.codeBuddyVersionHelpTimeoutMs = options.versionHelpTimeoutMs ?? CATALOG_READ_TIMEOUT_MS;
     this.catalogTimeoutMs = options.catalogTimeoutMs ?? CATALOG_READ_TIMEOUT_MS;
     this.workingDirectory = options.workingDirectory ?? process.cwd();
     this.extraEnv = options.extraEnv;
@@ -1281,6 +1368,12 @@ export class ModelCatalogService {
     scopeId?: string,
   ): CatalogScopeInput | undefined {
     const wanted = scopeId?.trim() ? scopeId.trim() : "default";
+    if (adapterId === "codebuddy-code") {
+      const executablePath = this.lookupExecutable(adapterId);
+      if (!executablePath) return undefined;
+      const cwd = wanted.startsWith("workspace:") ? wanted.slice("workspace:".length) : undefined;
+      return this.resolveScope(adapterId, executablePath, undefined, cwd);
+    }
     const cached = this.latestMatching(adapterId, wanted);
     if (!cached && wanted.startsWith("codex-config:")) return undefined;
     const executablePath = adapterId === "opencode" && wanted === "default"
@@ -1300,20 +1393,24 @@ export class ModelCatalogService {
     adapterId: SupportedAdapterId,
     executablePath: string,
     nativeConfigProfile?: string,
+    workingDirectory?: string,
   ): CatalogScopeInput {
-    const native = resolveModelIdentity(this.store, {
+    const profile = {
       adapterId,
       executableRef: executablePath,
       ...(nativeConfigProfile && nativeConfigProfile !== "default"
         ? { nativeConfigProfile }
         : {}),
-    });
+    };
+    const native = resolveModelIdentity(this.store, profile, workingDirectory
+      ? resolveModelIdentityInput(this.store, profile, workingDirectory) : undefined);
     if (nativeConfigProfile && nativeConfigProfile !== "default" && !native.profileSelectionSupported) {
       throw new FlowError("CLI_PARAMETER_UNSUPPORTED", "当前工具不支持命名原生配置", 422);
     }
     return {
       adapterId,
       executablePath: native.executablePath,
+      workingDirectory,
       nativeConfigScope: native.nativeConfigScope,
       nativeConfigProfile: native.nativeConfigProfile,
       accountFingerprint: native.accountFingerprint,
@@ -1457,6 +1554,11 @@ export class ModelCatalogService {
       );
     }
     const capability = await this.readInvocationCapability(scope);
+    if (scope.adapterId === "codebuddy-code") {
+      const current = this.resolveScope("codebuddy-code", scope.executablePath, undefined, scope.workingDirectory);
+      if (current.accountFingerprint !== scope.accountFingerprint || current.nativeConfigScope !== scope.nativeConfigScope)
+        throw new FlowError("ACCOUNT_CHANGED_DURING_DISCOVERY", "CodeBuddy 账号或项目配置在读取目录期间发生变化，请重试", 409);
+    }
     if (scope.adapterId === "agy" &&
         this.resolveScope("agy", scope.executablePath, scope.nativeConfigProfile).accountFingerprint !== scope.accountFingerprint)
       throw new FlowError("ACCOUNT_CHANGED_DURING_DISCOVERY", "账号在模型目录读取期间发生变化，请重试", 409);
@@ -1581,6 +1683,18 @@ export class ModelCatalogService {
   }
 
   private async queryCatalog(scope: CatalogScopeInput): Promise<LimitedCliResult> {
+    if (scope.adapterId === "codebuddy-code") {
+      return queryCodeBuddyAcp({
+        adapterId: scope.adapterId,
+        executable: scope.executablePath,
+        args: ["--acp", "--tools", "", "--strict-mcp-config", "--no-session-persistence",
+          "--settings", '{"disableAllHooks":true}'],
+        cwd: scope.workingDirectory ?? homedir(),
+        env: { ...this.extraEnv, CODEBUDDY_CODE_DISABLE_BACKGROUND_TASKS: "1" },
+        timeoutMs: this.catalogTimeoutMs,
+        outputLimit: CATALOG_OUTPUT_LIMIT,
+      });
+    }
     const reader = scope.adapterId === "agy" ? catalogWorkByStore.get(this.store)?.readAgyModels : undefined;
     const managedModels = await reader?.();
     if (managedModels !== undefined)
@@ -1680,7 +1794,7 @@ export class ModelCatalogService {
     errorMessage: string,
     cliVersion: string,
   ): ModelCatalog {
-    if (previous && previous.entries.length > 0) {
+    if (previous && previous.entries.length > 0 && !(scope.adapterId === "codebuddy-code" && errorCode === "AUTH_REQUIRED")) {
       const kept = ModelCatalogSchema.parse({
         ...previous,
         status: "failed",
@@ -1755,7 +1869,9 @@ export class ModelCatalogService {
         errorMessage: "未找到指定 CLI",
       };
     }
-    const help = await this.runCli(scope, ["--help"], this.versionHelpTimeoutMs);
+    const timeoutMs = scope.adapterId === "codebuddy-code"
+      ? this.codeBuddyVersionHelpTimeoutMs : this.versionHelpTimeoutMs;
+    const help = await this.runCli(scope, ["--help"], timeoutMs);
     const matched = help.exitCode === 0 && !help.timedOut && !help.truncated &&
       !help.spawnError && matchesFingerprint(scope.adapterId, `${help.stdout}\n${help.stderr}`);
     // AGY's Go CLI writes successful usage/help to stderr.
@@ -1771,7 +1887,7 @@ export class ModelCatalogService {
     }
     // Version is optional diagnostic metadata. Product identity comes from the
     // actual help/protocol entry points, never a supported-version range.
-    const version = await this.runCli(scope, ["--version"], this.versionHelpTimeoutMs);
+    const version = await this.runCli(scope, ["--version"], timeoutMs);
     const cliVersion = version.exitCode !== 0 || classifySpawnOrOutput(version)
       ? undefined
       : firstNonEmptyLine(version.stdout) ?? firstNonEmptyLine(version.stderr);
@@ -1787,7 +1903,7 @@ export class ModelCatalogService {
       adapterId: scope.adapterId,
       executable: scope.executablePath,
       args: [...this.nativeProfileArgs(scope), ...args],
-      cwd: this.workingDirectory,
+      cwd: scope.adapterId === "codebuddy-code" ? scope.workingDirectory ?? homedir() : this.workingDirectory,
       env: this.extraEnv,
       timeoutMs,
       outputLimit: CATALOG_OUTPUT_LIMIT,

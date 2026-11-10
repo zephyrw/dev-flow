@@ -1516,6 +1516,7 @@ const CentralWorkspace = React.memo(
       prev.detail?.plan === next.detail?.plan &&
       prev.detail?.tasks === next.detail?.tasks &&
       prev.detail?.test_progress === next.detail?.test_progress &&
+      prev.detail?.task_list?.seq === next.detail?.task_list?.seq &&
       prev.detail?.review === next.detail?.review &&
       prev.detail?.environment === next.detail?.environment &&
       prev.diff === next.diff &&
@@ -1730,9 +1731,12 @@ function App() {
       setDetail((previous: any) => {
         const current = previous?.workflow.id === key ? previous : null;
         if (current?.workflow.version > next.workflow.version) return current;
+        if (current?.workflow.version === next.workflow.version &&
+            (current?.task_list?.seq ?? 0) > (next.task_list?.seq ?? 0)) return current;
         const merged = {
           ...current,
           ...next,
+          task_list: next.task_list,
           // A completed preparation has no queue in the JSON projection.
           // Clear the prior transient queue instead of retaining its badge.
           queue: next.queue ?? null,
@@ -1856,6 +1860,7 @@ function App() {
           window.dispatchEvent(new CustomEvent("devflow-reconnected", {
             detail: { workflowId: selected },
           }));
+          void refresh().catch(() => {});
         }
       };
       ws.onmessage = (e) => {
@@ -3187,7 +3192,9 @@ function App() {
           void refresh();
         }}
         defaultWorkspaceRoot={
+          detail?.project?.project_root ??
           detail?.project?.repositories?.[0]?.path ??
+          projects[0]?.project_root ??
           projects[0]?.repositories?.[0]?.path ??
           ""
         }

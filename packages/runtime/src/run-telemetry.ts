@@ -383,7 +383,7 @@ export class RunTelemetry {
     if (isNativeConversationEvent(raw)) return raw;
     this.streamSeq += 1;
     return {
-      source_id: "run-stream",
+      source_id: `run-stream:${this.run.id}`,
       source_seq: String(this.streamSeq),
       root_native_id: route.nativeRootId ?? route.rootId,
       session_native_id: route.nativeConversationId,
@@ -450,7 +450,9 @@ export class RunTelemetry {
     this.schedule();
   }
   private applyRootModel(raw: any) {
-    const model =
+    const model = (this.run.profile?.adapterId ?? this.run.adapter) === "codebuddy-code"
+      ? (raw.type === "assistant" ? raw.message?.model : undefined)
+      :
       raw.init?.model ??
       (raw.event === "init" ||
       raw.type === "system" ||

@@ -5,6 +5,7 @@ import remarkGfm from "remark-gfm";
 export function DeliveryStrip({ detail }: { detail: any }) {
   const leaf = detail.plan?.plan.task_model === "leaf-v1";
   const native = detail.plan?.plan.task_model === "native-v2";
+  const observed = native && !detail.task_list;
   const total = detail.task_counts?.total ?? detail.tasks.length,
     completed =
       detail.task_counts?.developed ??
@@ -25,6 +26,10 @@ export function DeliveryStrip({ detail }: { detail: any }) {
 
   return (
     <div className="delivery-strip" aria-label="交付进度">
+      {detail.task_list?.sync_error && <span className="metric-chip error-chip" role="status">{detail.task_list.sync_error}</span>}
+      {detail.task_list?.updated_at && <span className="metric-chip">
+        更新于 <time dateTime={detail.task_list.updated_at}>{new Date(detail.task_list.updated_at).toLocaleTimeString()}</time>
+      </span>}
       {["PLAN_PENDING", "REPAIR_PLAN_PENDING"].includes(
         detail.workflow.state,
       ) && (
@@ -74,15 +79,15 @@ export function DeliveryStrip({ detail }: { detail: any }) {
       ) : (
         <span className="metric-chip">
           <span className="chip-label">
-            {native ? "工作包已开展" : "开发完成"}
+            {observed ? "工作包已开展" : "开发完成"}
           </span>
           <b className="chip-value">
-            {native ? (detail.task_counts?.started ?? 0) : completed}/{total}
+            {observed ? (detail.task_counts?.started ?? 0) : completed}/{total}
           </b>
           {!native && <span className="chip-percent">{taskPercent}%</span>}
           <progress
-            aria-label={native ? "工作包开展进度" : "开发完成进度"}
-            value={native ? (detail.task_counts?.started ?? 0) : completed}
+            aria-label={observed ? "工作包开展进度" : "开发完成进度"}
+            value={observed ? (detail.task_counts?.started ?? 0) : completed}
             max={total || 1}
           />
         </span>
@@ -116,6 +121,7 @@ export function DeliveryStrip({ detail }: { detail: any }) {
             max={test.total}
           />
           {native && unreported > 0 && <span> · {unreported} 项未回传</span>}
+          {test.running > 0 && <span> · {test.running} 项运行中</span>}
           </>}
         </span>
       )}

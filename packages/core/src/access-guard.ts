@@ -35,12 +35,13 @@ export function assertProfilesVerified(
   store: Store,
   profiles: ToolProfile[],
   identity?: AccessIdentityInput,
+  workspaceRoot?: string,
 ): void {
   const access = accessForStore(store);
   for (const raw of profiles) {
     const profile = ToolProfileSchema.parse(raw);
     access.assertProfileSupported(profile);
-    const resolvedIdentity = identity ?? access.identityFromProfile(profile);
+    const resolvedIdentity = identity ?? access.identityFromProfile(profile, workspaceRoot);
     access.assertCachedAccess(profile, resolvedIdentity);
   }
 }

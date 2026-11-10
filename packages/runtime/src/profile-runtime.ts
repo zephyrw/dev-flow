@@ -6,7 +6,7 @@ import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir } from "node:os";
 import { z } from "zod";
-import { extractRoundOutput } from "./round-output.js";
+import { extractPlanningOutput, extractRoundOutput } from "./round-output.js";
 import type { Engine } from "../../core/src/engine.js";
 import { pauseForNativePermission, bindNativePermission } from "../../core/src/native-permission.js";
 import { installAgyPermissionHook } from "../../adapters/agy/src/permission-hook.js";
@@ -63,6 +63,7 @@ import {
 } from "../../contracts/src/index.js";
 import { git, repositoryInfo } from "../../git/src/git.js";
 import { NativePlanSchema } from "../../contracts/src/native-plan.js";
+import { prepareTaskList, progressInstructions, taskListWritableDirectory } from "../../core/src/task-list.js";
 import {
   modelOutputSchema,
   normalizeModelOutput,
@@ -115,6 +116,9 @@ import {
 } from "../../adapters/agy/src/failure-fact.js";
 import { CurrentTurn } from "../../adapters/agy/src/current-turn.js";
 import { ModelAccessService } from "../../core/src/model-access-service.js";
+import { workflowModelWorkspace } from "../../core/src/model-identity.js";
+import { isCodeBuddyExternalModel, sameCodeBuddyProjectConfig } from "../../adapters/codebuddy/src/local-scope.js";
+import { classifyCodeBuddyQuotaFailure } from "../../adapters/codebuddy/src/provider-failure.js";
 import { assertPlanMaterialReady, readPlanMaterial } from "../../core/src/plan-review.js";
 import type { SourceInput } from "../../core/src/source-change.js";
 import {
@@ -168,7 +172,9 @@ async function adapterForToolProfile(
   profile: ToolProfile,
 ): Promise<NativeAgentAdapter> {
   const adapter = createDefaultAdapterRegistry().mustGet(profile.adapterId);
-  await adapter.probe({ toolProfile: profile });
+  // CodeBuddy's catalog and access verification already probe the CLI. Its
+  // adapter needs no probe state, so do not block the controller on metadata reads.
+  if (profile.adapterId !== "codebuddy-code") await adapter.probe({ toolProfile: profile });
   return adapter;
 }
 
@@ -236,7 +242,7 @@ export class ProfileRuntime {
     const acceptance = Array.isArray(rawPlan.acceptance_items)
       ? rawPlan.acceptance_items
       : (Array.isArray(rawPlan.acceptance) ? rawPlan.acceptance : []);
-    const primaryRepo = workspaces[0]?.repo_id ?? "main";
+    const primaryRepo = this.engine.project(w.project_id).primary_repo_id ?? workspaces[0]?.repo_id ?? "main";
 
     requireCondition(
       workItems.length > 0,
@@ -549,15 +555,17 @@ export class ProfileRuntime {
     workspaces: Workspace[],
     selectedSource: SourceInput | undefined,
   ) {
+    const projectRoot = this.engine.store.get<{ project_root?: string }>("entry_context", w.id)?.project_root;
     return applyPlanningHandoffMaterials(
       {
         instructions:
-          "你是规划模型。读取用户需求及必要的真实工作区材料，用自然语言交代完整开发工作，等待用户批准后才实施。只调查与规划，不修改产品代码。如果提供 current_plan，先读取原文并保留其完整内容及已完成进度；根据用户明确的规划反馈补充需要改变的事项。返回的 markdown 包含原正文及必要补充，不能只返回恢复摘要或用缩水正文替换原件。不能自行批准或启动实施。" + planningWritingInstructions,
+          "你是规划模型。读取用户需求及必要的真实工作区材料，用自然语言交代完整开发工作，等待用户批准后才实施。只调查与规划，不修改产品代码。如果提供 current_plan，先读取原文并保留其完整内容及已完成进度；根据用户明确的规划反馈补充需要改变的事项。返回的 markdown 包含原正文及必要补充，不能只返回恢复摘要或用缩水正文替换原件。为每个工作项提供具体 description 和 completion_criteria，并为测试给出可识别的 scenario 和 expected_outcome；仅记录真实依赖。不能自行批准或启动实施。" + planningWritingInstructions,
         current_plan: w.plan_revision
           ? this.planReference(w)
           : null,
         selected_source:
           selectedSource?.plan_hash === w.plan_hash ? selectedSource : null,
+        project_docs: projectRoot ? resolve(projectRoot, "docs") : undefined,
         requirements: this.engine.store.list("requirement_message", w.id),
         request: w.request,
         project: this.engine.project(w.project_id),
@@ -580,6 +588,14 @@ export class ProfileRuntime {
   }
   private executeMaterials(w: Workflow, run: Run) {
     const material = assertPlanMaterialReady(this.engine.store, w.id, w.plan_revision);
+    let taskListPath: string | undefined;
+    try {
+      taskListPath = prepareTaskList(this.engine.store, w, run, {
+        ...this.engine.plan(w.id), material_path: material.path,
+      });
+    } catch {
+      // A progress file failure is not an execution gate.
+    }
     const plan = { ...material, plan: { ...material.plan, markdown: material.markdown } };
     const policy2 = usesPolicyV2({ quality_policy_version: run.quality_policy_version ?? w.quality_policy_version });
     const purpose = run.purpose ?? "implement";
@@ -616,8 +632,11 @@ export class ProfileRuntime {
     return this.continuationMaterials(
       {
         instructions: baseInstructions + extraInstructionsPrompt +
+          (taskListPath ? "\n任务清单：" + taskListPath + "\n" + progressInstructions : "") +
           (acceptanceGuidance ? "" : "\n可在顶层或delivery.test_results逐项回传原计划测试结果：test_id用计划测试ID，case_id必须用计划expected_case_ids，不填测试文件路径或类名；按test_result_targets中的test_id/case_id逐项填写。status为passed/failed/skipped/not_run，summary简述结果或未运行原因；只报告你明确确认的场景，need_user时也保留已完成结果，未回传项不会被当作失败或未执行。") + (sourceReview
           ? "\n本轮是代码复核整改。读取 source_review 中的问题正文及 repair_instructions，按问题编号逐项修复并说明处理结果；沿用原批准计划和已有修改，不从头开发，不以整改摘要替代问题正文。" : ""),
+        ...(taskListPath ? { task_list_path: taskListPath,
+          task_list_update: "可用 devflow progress <清单路径> <当前运行ID> <task|test|check> <编号> <状态> [摘要] [场景ID] 按项更新，也可用原生文件工具保存。" } : {}),
         ...(roleSpecific ? {} : { execution_order: batchExecutionInstructions }),
         ...(nativeLoading ? {
           skills: requiredSkills,
@@ -865,16 +884,27 @@ export class ProfileRuntime {
         w.id,
         permissionCategoryForPurpose(purpose),
       );
-    const primaryWs = workspaces[0];
-    const nativeIdentity = new ModelAccessService(this.engine.store).resolveNativeConfig(profile);
+    const layout = this.engine.store.get<{ execution_root?: string; project_root?: string }>("entry_context", w.id);
+    const project = this.engine.project(w.project_id);
+    const primaryWs = workspaces.find(ws => ws.repo_id === project.primary_repo_id) ?? workspaces[0];
+    const executionRoot = !["aside", "diagnose", "merge_conflict"].includes(purpose)
+      ? layout?.execution_root : undefined;
+    const access = new ModelAccessService(this.engine.store);
+    const codeBuddy = profile.adapterId === "codebuddy-code";
+    const modelWorkspace = codeBuddy ? workflowModelWorkspace(this.engine.store, w.id) : undefined;
+    if (modelWorkspace && (executionRoot || primaryWs?.root) && !sameCodeBuddyProjectConfig(modelWorkspace, (executionRoot || primaryWs?.root)!)) {
+      throw new FlowError("MODEL_IDENTITY_CHANGED", "工作区的 CodeBuddy 项目配置与已验证配置不同，请同步项目配置后重试", 409);
+    }
+    const nativeIdentity = access.resolveNativeConfig(profile, access.identityFromProfile(profile, modelWorkspace));
     const frozen = run.frozen_invocation ?? run.model_binding?.frozen_invocation;
+    if (frozen && codeBuddy) access.assertFrozenAccess(profile, frozen, modelWorkspace);
     if (frozen && nativeIdentity.identityConfidence === "account" &&
         frozen.accountScope !== nativeIdentity.accountFingerprint) {
       throw new FlowError("SESSION_IDENTITY_CHANGED", "当前工具账号与本轮冻结账号不一致", 409);
     }
     const identity = await resolveSessionIdentity(adapter, {
       frozenProfile: profile,
-      verifiedAccountScope: nativeIdentity.identityConfidence === "account"
+      verifiedAccountScope: codeBuddy || nativeIdentity.identityConfidence === "account"
         ? nativeIdentity.accountId ?? nativeIdentity.accountFingerprint : undefined,
       workspace: {
         root: primaryWs?.root ?? "",
@@ -930,7 +960,7 @@ export class ProfileRuntime {
               accountRecovery?.decision === "exact_resume" ? accountRecovery.original_conversation_id : undefined)
           : undefined;
         sessionBinding = reusableBinding ?? agyBinding ?? this.executionSessionStore.getOrCreateBinding(bindingKey, {
-          workspace_root: primaryWs?.root ?? "",
+          workspace_root: executionRoot ?? primaryWs?.root ?? "",
           source_root: primaryWs?.source_root ?? primaryWs?.root ?? "",
           repo_id: primaryWs?.repo_id ?? "primary",
         });
@@ -1007,6 +1037,12 @@ export class ProfileRuntime {
     // recovery, task or cross-tool instructions around their text.
     const crossToolHandoff = userFollowup ? undefined : sessionHandoffForRun(this.engine.store, run, previous?.id);
     const followup = userFollowup || (!crossToolHandoff && isSessionFollowup(this.engine.store, run, previous?.id, messages));
+    let continuedTaskList: string | undefined;
+    if (followup && w.plan_revision) {
+      try {
+        continuedTaskList = prepareTaskList(this.engine.store, w, run, this.engine.plan(w.id));
+      } catch { /* Keep the current conversation available on a file error. */ }
+    }
     const inputFiles = resolveRunConversationAttachments(
       this.engine, w, profile, adapter.subagents?.file_input,
       followup ? new Set(messages.flatMap(message => message.attachment_ids ?? [])) : undefined,
@@ -1038,7 +1074,8 @@ export class ProfileRuntime {
       ? followupText(this.engine.store, run, messages)
       : invokePrompt(purpose, handoff, schemaPath);
     const inputFeedback = this.engine.store.get<{ message: string }>("model_input_feedback", run.id)?.message;
-    const prompt = userFollowup && userInput !== undefined ? userInput : [basePrompt, userInput, inputFeedback, ...imageProblems].filter(Boolean).join("\n\n");
+    const progressReminder = continuedTaskList ? `任务清单：${continuedTaskList}\n当前运行 ID：${run.id}\n${progressInstructions}` : undefined;
+    const prompt = userFollowup && userInput !== undefined ? userInput : [basePrompt, userInput, inputFeedback, progressReminder, ...imageProblems].filter(Boolean).join("\n\n");
     const inputReceipt: SessionInputReceipt = {
       run_id: run.id, conversation_id: previous?.id, kind: crossToolHandoff ? "cross_tool_handoff" : followup ? "followup" : "stage_start",
       stage_key: inputStageKey(run), message_ids: messages.map(message => message.message_id), state: "prepared",
@@ -1055,14 +1092,16 @@ export class ProfileRuntime {
       adapter: profile.adapterId, model: profile.modelId, native_session_id: previous?.id,
       mode: crossToolHandoff ? previous ? "resume_with_handoff" : "start_with_handoff" : previous ? "resume" : "start",
     }, run.id);
+    const progressDir = taskListWritableDirectory(this.engine.store, w, run);
     const context = {
       workflowId: w.id,
       runId: run.id,
       stage: run.stage,
       epoch: w.version,
       purpose,
-      workspaceRoots: Object.fromEntries(
-        workspaces.flatMap((ws) => {
+      executionRoot,
+      workspaceRoots: Object.fromEntries([
+        ...workspaces.flatMap((ws) => {
           const roots = [[ws.repo_id, ws.root]];
           if (purpose === "planner_commit" && this.engine.store.get("planner_integration_repair", w.id)) {
             const source = ws.source_root ?? this.engine.project(w.project_id).repositories.find(repo => repo.id === ws.repo_id)?.path;
@@ -1070,7 +1109,8 @@ export class ProfileRuntime {
           }
           return roots;
         }),
-      ),
+        ...(progressDir ? [["task-list:material", progressDir]] : []),
+      ]),
       allowedPaths: [
         ...inputFiles.extraReadRoots,
       ],
@@ -1297,6 +1337,7 @@ export class ProfileRuntime {
       failure: string | undefined,
       stderrTail = "";
     let stderrClassification: ReturnType<typeof classifyFailure> | undefined;
+    let codeBuddyQuotaFailure: ReturnType<typeof classifyCodeBuddyQuotaFailure>;
     let failureFromStderr = false;
     let pendingStderrDiagnostic = "";
     const classifyStderrRecord = (record: string) => {
@@ -1461,6 +1502,11 @@ export class ProfileRuntime {
           );
         }
         agy?.accept(v);
+        if (codeBuddy && v.type === "result" && v.is_error === true) {
+          codeBuddyQuotaFailure ??= classifyCodeBuddyQuotaFailure(
+            v, !isCodeBuddyExternalModel(invocation.cwd, profile.modelId),
+          );
+        }
         if (
           v.is_error === true ||
           v.type === "error" ||
@@ -1700,9 +1746,9 @@ export class ProfileRuntime {
             ? "AGY_ACCOUNT_WAIT"
             : exit.termination_reason === "timeout"
               ? "TIMEOUT"
-              : classified.code === "EXECUTION_FAILED"
+              : codeBuddyQuotaFailure ?? (classified.code === "EXECUTION_FAILED"
                 ? "NATIVE_RUN_FAILED"
-                : classified.code;
+                : classified.code);
       retainConversation(conversation);
       throw normalizeRuntimeFailure(
         new FlowError(code, diagnostic, 422, {
@@ -1786,9 +1832,10 @@ export class ProfileRuntime {
     const finalObj = final as Record<string, unknown> | undefined;
     if (purpose === "planning" && (!finalObj?.markdown || typeof finalObj.markdown !== "string" || !finalObj.plan)) {
       const textToExtract = typeof finalObj?.summary === "string" ? finalObj.summary : (typeof text === "string" ? text : "");
+      const embeddedPlan = extractPlanningOutput(textToExtract);
       const codeBlockRegex = /```(?:json)?\s*([\s\S]*?)\s*```/g;
       let blockMatch: RegExpExecArray | null;
-      while ((blockMatch = codeBlockRegex.exec(textToExtract)) !== null) {
+      while (!embeddedPlan && (blockMatch = codeBlockRegex.exec(textToExtract)) !== null) {
         try {
           const parsed = JSON.parse(blockMatch[1]!);
           if (parsed && typeof parsed === "object") {
@@ -1811,6 +1858,7 @@ export class ProfileRuntime {
           }
         } catch {}
       }
+      if (embeddedPlan) final = embeddedPlan;
     }
     if (purpose === "aside") {
       const recovered = recoverAsideAnswer(final, text);
@@ -1840,6 +1888,15 @@ export function invokePrompt(
   if (continuation?.kind === "execution_continue" || continuation?.kind === "execution_check")
     return continuation.answer ?? "请按当前阶段约定的格式说明剩余任务和停止原因。";
   if (continuation?.kind === "intent_clarification") return "请按当前阶段约定的格式说明刚才的结果。";
+  if (purpose === "planning") {
+    return joinPrompt(
+      "任务工作包：" + handoff +
+        "。先读取本轮角色职责和用户需求，仅查阅制定计划所需的工作区材料。" +
+        "当前阶段只规划。给出待用户批准的完整计划，现有计划修订仅以工作包中的 current_plan 为准。" +
+        "按 " + schemaPath + " 返回一个包含计划正文的 JSON 对象作为最终回答。",
+      recoveryGuidance,
+    );
+  }
   if (purpose === "quality_review") {
     return joinPrompt(
       "任务工作包：" +

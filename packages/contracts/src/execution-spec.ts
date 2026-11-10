@@ -11,6 +11,7 @@ export const SupportedAdapters = [
   "opencode",
   "cursor-agent",
   "mimo-code",
+  "codebuddy-code",
 ] as const;
 export type SupportedAdapterId = (typeof SupportedAdapters)[number];
 

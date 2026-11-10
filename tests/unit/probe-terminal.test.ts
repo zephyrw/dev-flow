@@ -68,6 +68,19 @@ describe("访问验证的整轮终态", () => {
     expect(parse([{ type: "result", model: { providerID: "other", modelID: "chosen" } }], patch).observedModelStatus).toBe("mismatch");
   });
 
+  it("CodeBuddy 区分 Hy4 的已知响应标识与实际回退", () => {
+    const patch = { adapterId: "codebuddy-code", selectedModel: "hy4free" };
+    const records = [
+      { type: "system", subtype: "init", model: "hy4free" },
+      { type: "assistant", message: { model: "hy4-free" } },
+      { type: "result", subtype: "success", is_error: false, result: "OK" },
+    ];
+    expect(parse(records, patch)).toMatchObject({ success: true, observedModel: "hy4-free", observedModelStatus: "matched" });
+    expect(parse(records, { ...patch, stderr: "falling back to hy4-free" }).success).toBe(false);
+    records[1]!.message = { model: "hy4-std" };
+    expect(parse(records, patch)).toMatchObject({ success: false, observedModel: "hy4-std", observedModelStatus: "mismatch" });
+  });
+
   it("plain 客户端只有正常结束、最后独立 OK 且无 JSON 流时才通过", () => {
     expect(parse([], { stdout: "OK\n", stderr: "model: chosen\n", selectedModel: "chosen" })).toMatchObject({ success: true, observedModelStatus: "matched" });
     expect(parse([], { stdout: "some log\nOK\n" }).success).toBe(true);

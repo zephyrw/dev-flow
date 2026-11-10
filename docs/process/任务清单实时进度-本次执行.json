@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "tasks": [
+    {
+      "id": "D01",
+      "title": "核对计划、现有代码和浏览器测试入口",
+      "status": "completed",
+      "summary": "已确认轻量回合缺少逐项状态，以及页面缓存与推送刷新路径。",
+      "updated_at": "2026-11-10T09:48:59.026Z"
+    },
+    {
+      "id": "D02",
+      "title": "规划清单、执行交接和逐项写入",
+      "status": "completed",
+      "summary": "已接入规划清单生成、首次交接和续接提示，更新不依赖执行顺序。",
+      "updated_at": "2026-11-10T09:48:59.076Z"
+    },
+    {
+      "id": "D03",
+      "title": "监听清单并持久化实时快照",
+      "status": "completed",
+      "summary": "已接入目录监听、周期补读、归属校验和持久化快照。",
+      "updated_at": "2026-11-10T09:48:59.080Z"
+    },
+    {
+      "id": "D04",
+      "title": "统一概览、任务进度、测试进度",
+      "status": "completed",
+      "summary": "已接入概览、顶部计数、任务和测试面板。",
+      "updated_at": "2026-11-10T09:48:59.085Z"
+    }
+  ],
+  "tests": [
+    {
+      "id": "C01",
+      "title": "全项目类型检查",
+      "status": "passed",
+      "summary": "最终源码 pnpm typecheck 通过。",
+      "updated_at": "2026-11-10T10:11:46.670Z"
+    },
+    {
+      "id": "C02",
+      "title": "生产构建",
+      "status": "passed",
+      "summary": "隔离源码快照正式构建脚本通过，构建号 workspace-3d31211127ce951378af；共享工作区的并发改动未纳入此结论。",
+      "updated_at": "2026-11-10T10:22:17.744Z"
+    },
+    {
+      "id": "T01",
+      "title": "清单与实时同步定向回归",
+      "status": "passed",
+      "summary": "execution-test-progress.test.ts 9 项通过。",
+      "updated_at": "2026-11-10T09:59:37.240Z"
+    },
+    {
+      "id": "T02",
+      "title": "真实 Chrome 验证执行中的逐项状态更新",
+      "status": "passed",
+      "summary": "Google Chrome 1 项端到端通过：不结束执行回合，开发与测试并行更新、失败重测、无效 JSON 保留结果。",
+      "updated_at": "2026-11-10T10:05:40.048Z"
+    },
+    {
+      "id": "T03",
+      "title": "OpenTabs 实际页面核验",
+      "status": "blocked",
+      "summary": "打开了隔离 Chrome 标签页，OpenTabs 两次读取超时，未完成独立人工式核验；Google Chrome 自动化通过。",
+      "updated_at": "2026-11-10T10:10:32.396Z"
+    }
+  ]
+}

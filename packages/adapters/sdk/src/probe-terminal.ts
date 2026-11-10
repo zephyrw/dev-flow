@@ -108,6 +108,8 @@ export function recordIsTerminalSuccess(record: JsonRecord): boolean {
 }
 
 function normalizedModel(model: string, adapterId?: string): string {
+  // CodeBuddy 2.182.0 selects Hy4 as hy4free and reports hy4-free on assistant messages.
+  if (adapterId === "codebuddy-code" && model === "hy4-free") return "hy4free";
   return adapterId === "opencode" || adapterId === "mimo-code"
     ? model.split("#")[0]!
     : model;

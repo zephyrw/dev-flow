@@ -278,9 +278,10 @@ function buildFindingsAndUnresolved(
 
 function normalizeTaskStatus(
   rawStatus?: string,
-): "pending" | "in_progress" | "completed" | "blocked" {
+): OverviewTaskView["status"] {
   if (!rawStatus) return "pending";
   const s = rawStatus.toLowerCase();
+  if (s === "unreported") return s;
   if (
     s === "completed" ||
     s === "done" ||
@@ -309,6 +310,7 @@ const TASK_SORT_WEIGHT: Record<OverviewTaskView["status"], number> = {
   blocked: 0,
   in_progress: 1,
   pending: 2,
+  unreported: 2,
   completed: 3,
 };
 
@@ -364,6 +366,10 @@ function buildTasks(detail: any, planObj: any): OverviewTaskView[] {
 
 const TEST_SORT_WEIGHT: Record<OverviewTestView["status"], number> = {
   failed: 0,
+  blocked: 0,
+  running: 1,
+  skipped: 3,
+  unreported: 2,
   stale: 1,
   pending: 2,
   passed: 3,
@@ -374,6 +380,19 @@ function buildTests(
   planObj: any,
   workflow: any,
 ): OverviewTestView[] {
+  if (detail?.task_list) {
+    const planned = new Map((planObj?.tests ?? []).map((t: any) => [t.id, t]));
+    return (detail.test_progress?.cases ?? []).map((c: any): OverviewTestView => {
+      const test: any = planned.get(c.test_id);
+      return {
+        id: JSON.stringify([c.test_id, c.id]),
+        scenario: c.scenario ?? test?.steps?.[0] ?? c.id,
+        expected: c.expected_outcome ?? test?.assertions?.[0],
+        status: c.status === "not_run" || c.status === "missing" ? "pending" : c.status,
+        source: "native_acceptance",
+      };
+    }).sort((a: OverviewTestView, b: OverviewTestView) => TEST_SORT_WEIGHT[a.status] - TEST_SORT_WEIGHT[b.status]);
+  }
   const result: OverviewTestView[] = [];
   const evidences = [...(detail?.evidence ?? []), ...(detail?.development_evidence ?? [])];
   const currentRev = workflow?.plan_revision ?? 0;
@@ -496,7 +515,7 @@ function buildTestProgress(tests: OverviewTestView[]): ProgressView | null {
   if (tests.length === 0) return null;
   const total = tests.length;
   const passed = tests.filter((t) => t.status === "passed").length;
-  const failed = tests.filter((t) => t.status === "failed").length;
+  const failed = tests.filter((t) => t.status === "failed" || t.status === "blocked").length;
   const percentage = Math.min(100, Math.max(0, Math.round((passed / total) * 100)));
   return {
     total,

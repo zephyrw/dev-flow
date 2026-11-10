@@ -86,6 +86,13 @@ const KNOWN_MODEL_LABELS: Record<string, string> = {
   "mimo-v2.5": "MiMo V2.5",
 };
 
+const CODEBUDDY_MODEL_LABELS = new Map([
+  ["hy4free", "Hy4 free"],
+  ["hy4-free", "Hy4 free"],
+  ["hy4std", "Hy4 std"],
+  ["hy3-x", "Hy3 x"],
+]);
+
 export function isEquivalentModelName(
   a?: string | null,
   b?: string | null,
@@ -110,6 +117,8 @@ export function formatToolName(adapterId?: string | null): string {
       return "MiMo Code";
     case "claude-code":
       return "Claude Code";
+    case "codebuddy-code":
+      return "CodeBuddy CLI";
     case "cursor-agent":
       return "Cursor Agent";
     case "grok-build":
@@ -132,6 +141,8 @@ export function formatModelName(
   if (!modelIdOrLabel || !modelIdOrLabel.trim()) return "";
   const token = modelIdOrLabel.trim();
   const lower = token.toLowerCase();
+  const codeBuddyLabel = adapterId === "codebuddy-code" ? CODEBUDDY_MODEL_LABELS.get(lower) : undefined;
+  if (codeBuddyLabel) return codeBuddyLabel;
   if (KNOWN_MODEL_LABELS[token]) return KNOWN_MODEL_LABELS[token];
   if (KNOWN_MODEL_LABELS[lower]) return KNOWN_MODEL_LABELS[lower];
 
@@ -278,7 +289,10 @@ export function buildModelChoices(entries: ModelEntry[]): ModelChoice[] {
       });
     } else {
       const choiceId = entry.nativeId;
-      const label = formatModelName(entry.adapterId, entry.label || entry.nativeId);
+      const codeBuddyLabel = entry.adapterId === "codebuddy-code"
+        ? CODEBUDDY_MODEL_LABELS.get(entry.nativeId.toLowerCase())
+        : undefined;
+      const label = codeBuddyLabel ?? formatModelName(entry.adapterId, entry.label || entry.nativeId);
       const effortValues = [...entry.effort.values];
       choicesMap.set(scope + choiceId, {
         choiceId,
@@ -297,7 +311,18 @@ export function buildModelChoices(entries: ModelEntry[]): ModelChoice[] {
     }
   }
 
-  return Array.from(choicesMap.values());
+  const choices = [...choicesMap.values()];
+  const labelCounts = new Map<string, number>();
+  for (const { label } of choices) {
+    const key = label.toLowerCase();
+    labelCounts.set(key, (labelCounts.get(key) ?? 0) + 1);
+  }
+  return choices.map(choice => {
+    if (labelCounts.get(choice.label.toLowerCase()) === 1) return choice;
+    const id = choice.providerId && !choice.nativeId.startsWith(`${choice.providerId}/`)
+      ? `${choice.providerId}/${choice.nativeId}` : choice.nativeId;
+    return { ...choice, label: `${choice.label} (${id})` };
+  });
 }
 
 function detectAgyFamily(nativeId: string): string | undefined {

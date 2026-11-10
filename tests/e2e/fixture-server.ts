@@ -24,6 +24,7 @@ import { LocalRuntime } from "../../packages/runtime/src/runtime.js";
 import { now, objectHash, atomicWrite } from "../../packages/core/src/util.js";
 import { git } from "../../packages/git/src/git.js";
 import { buildServer } from "../../apps/api/src/server.js";
+import { prepareTaskList } from "../../packages/core/src/task-list.js";
 import type {
   MergeConflictRequest,
   ModelCatalog,
@@ -59,11 +60,13 @@ import {
 } from "../../packages/evidence/src/archive-consumer.js";
 
 const PROBE_CLI = resolve("tests/fixtures/model-probe/cli.mjs");
+const CODEBUDDY_FIXTURE = resolve("tests/fixtures/codebuddy-cli.mjs");
 // Install before setup creates any store, engine or model service. This resolver
 // is authoritative in this fixture process: no discovery can reach host CLIs.
-setAdapterExecutableResolver((_adapterId, customPath) => {
+setAdapterExecutableResolver((adapterId, customPath) => {
+  const defaultExecutable = adapterId === "codebuddy-code" ? CODEBUDDY_FIXTURE : PROBE_CLI;
   const requested = customPath?.trim();
-  if (!requested || !/[\\/:]/.test(requested)) return PROBE_CLI;
+  if (!requested || !/[\\/:]/.test(requested)) return defaultExecutable;
   if (isAbsolute(requested)) {
     const normalized = resolve(requested);
     const equalPath = (allowed: string) =>
@@ -71,6 +74,7 @@ setAdapterExecutableResolver((_adapterId, customPath) => {
         ? normalized.toLowerCase() === allowed.toLowerCase()
         : normalized === allowed;
     if (equalPath(PROBE_CLI)) return PROBE_CLI;
+    if (adapterId === "codebuddy-code" && equalPath(CODEBUDDY_FIXTURE)) return CODEBUDDY_FIXTURE;
     if (equalPath(process.execPath)) return process.execPath;
   }
   throw new Error(
@@ -1327,6 +1331,35 @@ app.post("/__fixture/feedback/stop", async (request, reply) => {
     return reply.code(404).send({ ok: false });
   await engine.stop(input.workflow_id, "local_console");
   return { ok: true };
+});
+app.post("/__fixture/task-list", async (request, reply) => {
+  if (!assertFixtureToken(request)) return reply.code(403).send({ ok: false });
+  const suffix = crypto.randomUUID();
+  const flow = engine.create({ project_id: p.id, title: "实时清单验证 " + suffix.slice(0, 8), request: "验证逐项进度",
+    complexity: "simple", workspace_mode: "existing_workspace" }, suffix);
+  const draft = plan(objectHash(p), repo.baseline);
+  engine.submitPlan(flow.id, {
+    ...draft, task_model: "native-v2", markdown: "# 实时清单验证\n\n验证并行开发与测试进度。",
+    design_ref: { summary: "独立更新开发和测试状态" },
+    modules: [{ id: "m", title: "进度", paths: [] }],
+    work_items: ["D01", "D02"].map((id, i) => ({
+      id, module_id: "m", repo_id: p.repositories[0]!.id, title: i ? "并行任务乙" : "并行任务甲",
+      acceptance_ids: [i ? "T02" : "T01"], completion_criteria: ["可以观察到状态变化"],
+    })),
+    acceptance_items: ["T01", "T02"].map((id, i) => ({
+      id, work_item_ids: [i ? "D02" : "D01"], layer: "integration",
+      scenario: i ? "测试场景乙" : "测试场景甲", expected_outcome: "显示逐项结果",
+    })),
+  }, flow.version, suffix + "-plan");
+  const current = engine.get(flow.id);
+  const run = { id: "progress-" + suffix, workflow_id: flow.id, plan_revision: current.plan_revision,
+    purpose: "implement", adapter: "codex", protocol: "lightweight", stage: "execute",
+    status: "running", started_at: new Date().toISOString(), package_hash: "fixture" } as Run;
+  s.store.put("run", run.id, flow.id, run);
+  engine.transition(flow.id, [current.state], "EXECUTING", "execute", { run_id: run.id });
+  const path = prepareTaskList(s.store, engine.get(flow.id), run, engine.plan(flow.id));
+  if (!path) throw new Error("任务清单未生成");
+  return { workflow_id: flow.id, path };
 });
 app.post("/__fixture/shutdown", async (request, reply) => {
   if (!assertFixtureToken(request)) return reply.code(403).send({ ok: false });

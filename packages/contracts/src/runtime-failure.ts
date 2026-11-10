@@ -128,6 +128,16 @@ const resolutions: Record<string, Omit<RuntimeFailureResolution, "code">> = {
       "若页面已显示自动继续时间，等待恢复即可；否则恢复额度后继续原任务。",
     ],
   },
+  MODEL_CREDITS_EXHAUSTED: {
+    title: "模型额度已用尽",
+    message: "模型服务已确认本轮使用的额度耗尽。",
+    steps: ["查看对应账号的剩余额度和资源包，额度恢复后继续原任务。"],
+  },
+  MODEL_RATE_LIMIT: {
+    title: "模型请求速率受限",
+    message: "模型服务暂时限制了请求频率。",
+    steps: ["等待服务方的限流窗口结束，再继续原任务。"],
+  },
   MODEL_CONNECTION_FAILED: {
     title: "模型服务连接失败",
     message: "无法连接模型服务，或服务暂时不可用。",

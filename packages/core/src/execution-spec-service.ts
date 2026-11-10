@@ -25,6 +25,7 @@ import {
 } from "./model-defaults-service.js";
 import { readEffectiveSpec } from "./run-profile.js";
 import { assertProfilesVerified, collectExplicitProfiles, isModelAccessError } from "./access-guard.js";
+import { workflowModelWorkspace } from "./model-identity.js";
 import { id, now, objectHash } from "./util.js";
 import type { AgyModelCategory } from "../../contracts/src/agy-account.js";
 import { getAgyModelCategory } from "../../adapters/agy/src/model-configuration.js";
@@ -291,7 +292,7 @@ export class ExecutionSpecService {
     });
     const profilesToVerify = changedProfiles.length > 0 ? changedProfiles : candidates;
     try {
-      assertProfilesVerified(this.store, profilesToVerify);
+      assertProfilesVerified(this.store, profilesToVerify, undefined, workflowModelWorkspace(this.store, parsed.workflow_id));
     } catch (error) {
       if (isModelAccessError(error)) {
         this.recordAwaitingAccess(prior, operationId, parsed, requestHash);

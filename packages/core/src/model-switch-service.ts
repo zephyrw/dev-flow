@@ -14,6 +14,7 @@ import { now, objectHash } from "./util.js";
 import type { ExecutionSpecService } from "./execution-spec-service.js";
 import type { Engine } from "./engine.js";
 import { assertProfilesVerified, collectExplicitProfiles } from "./access-guard.js";
+import { workflowModelWorkspace } from "./model-identity.js";
 import type { AgyModelCategory } from "../../contracts/src/agy-account.js";
 import { getAgyModelCategory } from "../../adapters/agy/src/model-configuration.js";
 
@@ -69,7 +70,7 @@ export class ModelSwitchService {
     private store: Store,
     private specs: ExecutionSpecService,
     private getActiveCategory?: (excludeConsumerId?: string) => AgyModelCategory | "mixed" | null,
-    private verifyProfiles?: (profiles: ToolProfile[]) => Promise<void>,
+    private verifyProfiles?: (profiles: ToolProfile[], workspaceRoot?: string) => Promise<void>,
   ) {}
 
   private assertAgyCategoryConsistency(req: SwitchRequest, excludeRunId?: string | null) {
@@ -285,18 +286,19 @@ export class ModelSwitchService {
     let current = operation;
     // A dispatch retry must never stop or resume a workflow a second time.
     if (current.resume_status !== "completed") {
+      const workspaceRoot = workflowModelWorkspace(this.store, current.entity_id);
       const profiles = collectExplicitProfiles(req.planner_profile, req.executor_profile, req.role_overrides);
       this.assertAgyCategoryConsistency(req, req.expected_run_id);
       // Legacy callers without a verifier must retain their verified-only guard.
-      if (!this.verifyProfiles) assertProfilesVerified(this.store, profiles);
+      if (!this.verifyProfiles) assertProfilesVerified(this.store, profiles, undefined, workspaceRoot);
       current = await this.ensureStopped(engine, current);
       this.assertAgyCategoryConsistency(req);
       if (!current.spec_receipt) {
-        await this.verifyProfiles?.(profiles);
+        await this.verifyProfiles?.(profiles, workspaceRoot);
         this.assertTargetRunStopped(engine, current);
         this.assertSpecRevision(current.entity_id, req.expected_spec_revision);
         this.assertAgyCategoryConsistency(req);
-        assertProfilesVerified(this.store, profiles);
+        assertProfilesVerified(this.store, profiles, undefined, workspaceRoot);
         current = this.markSpecSaved(current, this.saveSpec(current.entity_id, req));
       }
       this.assertTargetRunStopped(engine, current);

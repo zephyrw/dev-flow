@@ -15,6 +15,7 @@ export function toolSummary(name: string | undefined, args: any) {
     args.FilePath,
     args.path,
     args.file_path,
+    name === "read_file" || name === "edit_file" ? args.Path : undefined,
   );
   const command = first(args.CommandLine, args.command, args.cmd);
   const cwd = first(args.Cwd, args.cwd, args.working_directory);
@@ -35,6 +36,8 @@ export function toolSummary(name: string | undefined, args: any) {
     command_status: "查看命令结果",
     send_command_input: "向命令输入",
     view_file: "读取文件",
+    read_file: "读取文件",
+    edit_file: "修改文件",
     write_to_file: "写入文件",
     replace_file_content: "修改文件",
     multi_replace_file_content: "修改文件",

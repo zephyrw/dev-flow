@@ -181,6 +181,8 @@ export function ToolModelDrawer({
         const access = await verifyModelAccess(
           profile,
           panelAbort.current?.signal,
+          false,
+          "workflow:" + workflowId,
         );
         if (access.status !== "verified") {
           throw {
@@ -298,6 +300,8 @@ export function ToolModelDrawer({
         const access = await verifyModelAccess(
           profile,
           panelAbort.current?.signal,
+          false,
+          "workflow:" + workflowId,
         );
         if (access.status !== "verified") {
           throw {
@@ -419,6 +423,7 @@ export function ToolModelDrawer({
                           : `跟随：${profileSummary(view.inherited_profile)}`}
                       </p>
                       <RepairModelPicker
+                        catalogScope={"workflow:" + workflowId}
                         name={`batch-${view.batch.id}`}
                         value={picker}
                         plannerProfile={payload?.spec.plannerProfile}
@@ -471,6 +476,7 @@ export function ToolModelDrawer({
               <h4>后续分配</h4>
               <ModelProfileEditor
                 profile={planner}
+                catalogScope={"workflow:" + workflowId}
                 toolLabel="规划工具"
                 disabled={readonly}
                 isFutureConfig={true}
@@ -478,6 +484,7 @@ export function ToolModelDrawer({
               />
               <ModelProfileEditor
                 profile={executor}
+                catalogScope={"workflow:" + workflowId}
                 toolLabel="执行工具"
                 disabled={readonly}
                 isFutureConfig={true}
@@ -533,6 +540,7 @@ export function ToolModelDrawer({
                       {binding.mode === "explicit" && (
                         <ModelProfileEditor
                           profile={binding.profile}
+                          catalogScope={"workflow:" + workflowId}
                           toolLabel={roleTitle(role)}
                           disabled={readonly}
                           isFutureConfig={true}

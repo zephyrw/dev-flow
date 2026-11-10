@@ -474,4 +474,59 @@ test.describe("H02 Activity & Guidance Resilience", () => {
     await expect(sidebar.getByText("等待可用执行资源。")).toHaveCount(0);
     olderRequest.release?.();
   });
+
+  test("H02-C06: 执行过程连接相邻节点并保留完整文件路径", async ({ page }) => {
+    const workflow = { id: "wf-file-activity", project_id: "p1", title: "文件操作", state: "EXECUTING" };
+    const project = { ...mockProject(), id: "p1" };
+    const paths = [
+      "C:/repo/src/views/homepage/material/ai-mix/components/AnExampleFileThatExceedsTheSidebarWidth.vue",
+      String.raw`C:\repo\src\views\dashboard.vue`,
+    ];
+    const events = paths.map((path, index) => ({
+      workflow_id: workflow.id,
+      event_seq: index + 1,
+      type: "ConversationActivity",
+      created_at: "2026-11-10T08:28:56.000Z",
+      payload: {
+        kind: "tool", title: index === 0 ? "读取文件" : "修改文件",
+        public_text: path, status: "completed", activity_id: `step-${index}`,
+        conversation_id: "root", root_id: "root", attempt_id: "attempt",
+      },
+    }));
+    const detail = {
+      workflow, project, events, runs: [], tasks: [], evidence: [], attention: null,
+      test_progress: { total: 0, passed: 0, failed: 0, cases: [] },
+    };
+    await page.route("**/api/**", (route) => {
+      const path = new URL(route.request().url()).pathname;
+      if (path.endsWith("/projects")) return route.fulfill({ json: [project] });
+      if (path.endsWith("/workflows")) return route.fulfill({ json: [workflow] });
+      if (path.endsWith("/history")) return route.fulfill({ json: { events, next_before: null } });
+      if (path.endsWith("/functional-issues") || path.endsWith("/asides")) {
+        return route.fulfill({ json: [] });
+      }
+      return route.fulfill({ json: detail });
+    });
+    await page.routeWebSocket("**/api/notifications", () => {});
+    await page.routeWebSocket("**/api/events?*", () => {});
+    await installMockWorkflowConfiguration(page);
+    await page.goto("/?workflow=" + workflow.id);
+    await openExecutionSidebar(page);
+    const rows = page.getByRole("region", { name: "执行过程侧栏" }).locator("article.activity.tool");
+    await expect(rows).toHaveCount(2);
+    for (const [index, path] of paths.entries()) {
+      const summary = rows.nth(index).locator(".activity-summary");
+      await expect(summary).toBeVisible();
+      await expect(summary).toHaveText(path);
+      await expect(summary).toHaveAttribute("title", path);
+    }
+    await expect(rows.last().locator(".timeline-line")).toBeHidden();
+    const upper = await rows.first().locator(".indicator-dot").boundingBox();
+    const lower = await rows.last().locator(".indicator-dot").boundingBox();
+    const line = await rows.first().locator(".timeline-line").boundingBox();
+    expect(upper && lower && line).toBeTruthy();
+    expect(line!.x + line!.width / 2).toBeCloseTo(upper!.x + upper!.width / 2, 0);
+    expect(line!.y).toBeCloseTo(upper!.y + upper!.height / 2, 0);
+    expect(line!.y + line!.height).toBeCloseTo(lower!.y + lower!.height / 2, 0);
+  });
 });

@@ -32,7 +32,7 @@ export const OverviewTaskViewSchema = z
   .object({
     id: z.string(),
     title: z.string(),
-    status: z.enum(["pending", "in_progress", "completed", "blocked"]),
+    status: z.enum(["pending", "in_progress", "completed", "blocked", "unreported"]),
     source: z.enum(["native_work_item", "plan_task", "inferred"]),
   })
   .strict();
@@ -43,7 +43,7 @@ export const OverviewTestViewSchema = z
     id: z.string(),
     scenario: z.string(),
     expected: z.string().optional(),
-    status: z.enum(["pending", "passed", "failed", "stale"]),
+    status: z.enum(["pending", "passed", "failed", "stale", "running", "blocked", "skipped", "unreported"]),
     source: z.enum(["native_acceptance", "plan_test", "inferred"]),
   })
   .strict();

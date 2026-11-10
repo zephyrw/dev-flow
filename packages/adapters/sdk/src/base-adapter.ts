@@ -35,6 +35,9 @@ export abstract class BaseNativeAgentAdapter implements NativeAgentAdapter {
   ) {}
   abstract getVersionArgs(): string[];
   abstract getProductFingerprint(): string;
+  protected resolveExecutable(customPath?: string): string | undefined {
+    return resolveToolExecutable(this.defaultBinaryName, customPath, this.fallbackDirs);
+  }
   buildInvocation(input: RunContext, executable: string): PreparedInvocation {
     return clientInvocation(this.adapterId, input, executable);
   }
@@ -56,10 +59,8 @@ export abstract class BaseNativeAgentAdapter implements NativeAgentAdapter {
       asyncProcessFacts: false,
       usageReporting: false,
     };
-    const path = resolveToolExecutable(
-      this.defaultBinaryName,
+    const path = this.resolveExecutable(
       input.customPath ?? input.toolProfile.executableRef,
-      this.fallbackDirs,
     );
     if (!path)
       return {
@@ -127,10 +128,8 @@ export abstract class BaseNativeAgentAdapter implements NativeAgentAdapter {
     );
     if (unknown.length)
       throw new Error("不支持的工具配置项：" + unknown.join(", "));
-    const path = resolveToolExecutable(
-      this.defaultBinaryName,
+    const path = this.resolveExecutable(
       input.frozenInvocation?.executable ?? input.toolProfile.executableRef,
-      this.fallbackDirs,
     );
     if (!path)
       throw new Error("找不到适配器 " + this.adapterId + " 的指定可执行文件");
@@ -178,7 +177,7 @@ export abstract class BaseNativeAgentAdapter implements NativeAgentAdapter {
         cwd:
           typeof cwd === "string"
             ? cwd
-            : Object.values(context.workspaceRoots)[0]!,
+            : context.executionRoot ?? Object.values(context.workspaceRoots)[0]!,
         started_at: timestamp,
         status: "RUNNING",
       });

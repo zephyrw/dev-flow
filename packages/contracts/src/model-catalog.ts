@@ -169,6 +169,7 @@ export const TOOL_DISPLAY_ORDER: Array<{
   { adapterId: "agy", label: "Antigravity CLI" },
   { adapterId: "claude-code", label: "Claude Code" },
   { adapterId: "opencode", label: "OpenCode" },
+  { adapterId: "codebuddy-code", label: "CodeBuddy CLI" },
 ];
 
 export const CATALOG_FRESH_MS = 24 * 60 * 60 * 1000;

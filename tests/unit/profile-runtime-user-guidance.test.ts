@@ -87,6 +87,14 @@ it("keeps the existing prompt unchanged when this run has no newly assigned feed
     .toBe(invokePrompt("implement", "HANDOFF.json", "schema.json"));
 });
 
+it("starts planning from the current requirement and requests a plan for user approval", () => {
+  const prompt = invokePrompt("planning", "HANDOFF.json", "schema.json");
+  expect(prompt).toContain("任务工作包：HANDOFF.json");
+  expect(prompt).toContain("待用户批准");
+  expect(prompt).toContain("schema.json");
+  expect(prompt).not.toContain("批准设计");
+});
+
 function resumedRun(id: string, sourceId?: string, extra: Partial<Run> = {}): Run {
   return { id, workflow_id: "workflow", plan_revision: 1, adapter: "agy", purpose: "functional_fix",
     stage: "functional_fix", status: "stopped", started_at: "2026-09-29T02:17:11.000Z", package_hash: "package",

@@ -27,7 +27,7 @@ test("E2E-QP2-01 设置页提供四种已适配工具并出现模型搜索", asy
     releaseDefaults();
     await expect(toolSelect).toHaveCount(1);
     await expect(toolSelect).toBeEnabled();
-    expect(await toolSelect.locator("option").evaluateAll((options) => options.map((option) => (option as HTMLOptionElement).value))).toEqual(["codex", "agy", "claude-code", "opencode"]);
+    expect(await toolSelect.locator("option").evaluateAll((options) => options.map((option) => (option as HTMLOptionElement).value))).toEqual(["codex", "agy", "claude-code", "opencode", "codebuddy-code"]);
     await toolSelect.selectOption("agy");
     // 模型搜索框可聚焦；目录为空时提示搜索，不冒充已接入
     const modelSearch = exactLabel(drawer, "工具模型搜索");
@@ -76,7 +76,7 @@ test("E2E-QP2-04 当前任务只提供已支持工具和规划执行职责", asy
     await expect(toolSelect).toHaveCount(1);
     await expect(toolSelect).toBeEnabled();
     const tools = await toolSelect.locator("option").evaluateAll(options => options.map(option => (option as HTMLOptionElement).value));
-    expect(tools).toEqual(["codex", "agy", "claude-code", "opencode"]);
+    expect(tools).toEqual(["codex", "agy", "claude-code", "opencode", "codebuddy-code"]);
     await expect(exactLabel(dialog, "工具模型搜索")).toBeEnabled();
   }
   await expect(dialog.getByText(/三次接管|两阶段独立计数|测试真实性核验/)).toHaveCount(0);

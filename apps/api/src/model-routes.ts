@@ -15,6 +15,7 @@ import {
   type FunctionalIssue,
   type ModelDefaults,
   type MutationReceipt,
+  type Project,
   type RoleBinding,
   type RepairKind,
   type RepairModelAssignment,
@@ -23,6 +24,7 @@ import {
   type ToolProfile,
 } from "../../../packages/contracts/src/index.js";
 import type { Engine } from "../../../packages/core/src/engine.js";
+import { resolveProjectLayout } from "../../../packages/core/src/project-layout.js";
 import type { Store } from "../../../packages/store/src/store.js";
 import { ExecutionSpecService } from "../../../packages/core/src/execution-spec-service.js";
 import { ModelDefaultsService } from "../../../packages/core/src/model-defaults-service.js";
@@ -31,6 +33,7 @@ import { ModelAccessService } from "../../../packages/core/src/model-access-serv
 import { ModelSwitchService } from "../../../packages/core/src/model-switch-service.js";
 import { RepairModelService } from "../../../packages/core/src/repair-model-service.js";
 import { assertProfilesVerified } from "../../../packages/core/src/access-guard.js";
+import { workflowModelWorkspace } from "../../../packages/core/src/model-identity.js";
 import type { AgyAccountService } from "../../../packages/agy-accounts/src/service.js";
 import {
   buildExecutionSpecResponse,
@@ -218,10 +221,29 @@ export function registerModelRoutes(
         accountService.withModelVerification({ realm_id: identity.realmId, account_id: identity.accountId, auth_epoch: identity.authEpoch, model_id: identity.modelId, category_permit_id: identity.categoryPermitId }, verify),
     } : {}),
   });
-  const switches = new ModelSwitchService(engine.store, specs, getActiveCategory, async profiles => {
-    for (const profile of profiles) await access.verifyAndWait(profile);
+  const switches = new ModelSwitchService(engine.store, specs, getActiveCategory, async (profiles, workspaceRoot) => {
+    for (const profile of profiles) await access.verifyAndWait(profile, workspaceRoot);
   });
   const repairs = new RepairModelService(engine.store, specs);
+
+  const modelScope = async (adapter: string, scopeId?: string) => {
+    if (adapter !== "codebuddy-code" || !scopeId) return scopeId;
+    if (scopeId.startsWith("workflow:")) {
+      const workflow = engine.get(Id.parse(scopeId.slice("workflow:".length)));
+      const project = engine.store.must<Project>("project", workflow.project_id);
+      const repo = project.repositories.find(repo => repo.id === project.primary_repo_id) ?? project.repositories[0];
+      return project.project_root ? "workspace:" + project.project_root : repo ? "workspace:" + repo.path : undefined;
+    }
+    if (scopeId.startsWith("workspace:")) {
+      const selected = z.string().trim().min(1).parse(scopeId.slice("workspace:".length));
+      try {
+        return "workspace:" + resolveProjectLayout(engine.store, selected).root;
+      } catch {
+        throw new FlowError("GIT_REPOSITORY_REQUIRED", "请选择可访问的 Git 工作区", 422);
+      }
+    }
+    return undefined;
+  };
 
   app.get("/api/model-tools", async (req) => {
     human(req);
@@ -243,7 +265,7 @@ export function registerModelRoutes(
     const adapter = z
       .string()
       .parse((req.params as { adapter: string }).adapter);
-    const scopeId = (req.query as { scope_id?: string }).scope_id;
+    const scopeId = await modelScope(adapter, (req.query as { scope_id?: string }).scope_id);
     if (adapter === "agy" && accountService?.isManaged()) await accountService.syncActiveAccountFromHost();
     const result = catalog.getModels(adapter, scopeId);
     return adapter === "agy" ? { ...result, entries: result.entries.filter(entry => entry.availability === "listed") } : result;
@@ -259,7 +281,7 @@ export function registerModelRoutes(
     const result = catalog.refreshModels({
       adapter,
       request_id: parseUuid(body.request_id),
-      scope_id: typeof body.scope_id === "string" ? body.scope_id : undefined,
+      scope_id: await modelScope(adapter, typeof body.scope_id === "string" ? body.scope_id : undefined),
     });
     return reply.code(result.created ? 202 : 200).send(result.operation);
   });
@@ -303,10 +325,14 @@ export function registerModelRoutes(
   app.post("/api/model-access/verify", async (req, reply) => {
     human(req);
     const body = (req.body || {}) as Record<string, unknown>;
+    const profile = ToolProfileSchema.parse(body.profile);
+    const scope = await modelScope(profile.adapterId, typeof body.scope_id === "string" ? body.scope_id : undefined);
     const result = access.verifyAccess({
       request_id: parseUuid(body.request_id),
-      profile: body.profile,
+      profile,
       force: body.force === true,
+      workspaceRoot: profile.adapterId === "codebuddy-code" && scope?.startsWith("workspace:")
+        ? scope.slice("workspace:".length) : undefined,
     });
     return reply.code(result.cached ? 200 : 202).send(result.job);
   });
@@ -458,17 +484,17 @@ function assertRepairSelectionVerified(
       spec.roleOverrides.functional_fixer.mode === "explicit"
         ? spec.roleOverrides.functional_fixer.profile
         : spec.executorProfile;
-    assertProfilesVerified(store, [inherited]);
+    assertProfilesVerified(store, [inherited], undefined, workflowModelWorkspace(store, workflowId));
     return;
   }
   if (selection.mode === "custom") {
-    assertProfilesVerified(store, [selection.profile]);
+    assertProfilesVerified(store, [selection.profile], undefined, workflowModelWorkspace(store, workflowId));
     return;
   }
   const spec = specs.getLatestSpec(workflowId);
   const profile =
     selection.mode === "planner" ? spec.plannerProfile : spec.executorProfile;
-  assertProfilesVerified(store, [profile]);
+  assertProfilesVerified(store, [profile], undefined, workflowModelWorkspace(store, workflowId));
 }
 
 const BATCH_KIND = "repair_model_batch";

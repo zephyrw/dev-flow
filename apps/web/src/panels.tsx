@@ -1,5 +1,7 @@
 import React, { useState } from "react";
 export const taskLabels: Record<string, string> = {
+  blocked: "受阻",
+  unreported: "未回传",
   completed: "开发完成",
   active: "进行中",
   pending_check: "待核验",
@@ -14,6 +16,8 @@ function developmentStatus(task: any) {
   return status === "in_progress" ? "active" : status;
 }
 export const caseLabels: Record<string, string> = {
+  running: "运行中",
+  blocked: "受阻",
   unreported: "未回传",
   passed: "已通过",
   failed: "失败",
@@ -135,7 +139,9 @@ export function TaskTree({ detail, title }: { detail: any; title?: string }) {
                   <span className="module-title">{m.title}</span>
                 </span>
                 <span className={`module-badge ${isAllDone ? "all-done" : ""}`}>
-                  {native
+                  {detail.task_list
+                    ? `开发完成 ${completedCount} / ${all.length}`
+                    : native
                     ? `已开展 ${all.filter((t: any) => ["active", "completed", "pending_check"].includes(t.development_status)).length} / ${all.length}`
                     : leaf
                       ? `开发 ${completedCount} / ${all.length} · 验证 ${all.filter((t: any) => t.status === "verified").length} / ${all.length}`
@@ -228,11 +234,11 @@ export function TaskTree({ detail, title }: { detail: any; title?: string }) {
                                 </p>
                               </div>
                             )}
-                            {taskSpec?.completion && (
+                            {(detail.task_list ? t.completion_criteria?.length > 0 : taskSpec?.completion) && (
                               <div className="spec-field">
                                 <span className="field-label">完成条件：</span>
                                 <p className="field-value">
-                                  {taskSpec.completion}
+                                  {detail.task_list ? t.completion_criteria.join("；") : taskSpec.completion}
                                 </p>
                               </div>
                             )}
@@ -296,6 +302,11 @@ export function TestResults({
         </div>
       </div>
       <div className="test-layers-list">
+        {!!detail.task_list?.checks?.length && <div className="associated-tasks">
+          {detail.task_list.checks.map((check: any) => <p key={check.id}>
+            {check.kind === "typecheck" ? "类型检查" : "生产构建"}：{caseLabels[check.status]}{check.summary ? ` · ${check.summary}` : ""}
+          </p>)}
+        </div>}
         {Object.entries(layers).map(([layer, label]) => {
           const all = progress.cases.filter((c: any) => c.layer === layer),
             cases = all.filter(
@@ -334,12 +345,12 @@ export function TestResults({
                     key={c.test_id + ":" + c.id}
                   >
                     <div className="test-case-row">
-                      <b className="test-case-id">{c.id}</b>
+                      <b className="test-case-id">{c.scenario ?? c.id}</b>
                       <span className={"badge " + c.status}>
                         {labels[c.status]}
                       </span>
                     </div>
-                    {c.report_source === "executor_report" && <p className="associated-tasks">
+                    {(c.report_source === "executor_report" || c.report_source === "task_list") && <p className="associated-tasks">
                       执行模型上次报告
                       {c.reported_at && <> · <time dateTime={c.reported_at}>{new Date(c.reported_at).toLocaleString()}</time></>}
                     </p>}

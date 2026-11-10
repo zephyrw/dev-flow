@@ -37,6 +37,7 @@ import { QoderNativeAdapter } from "../../qoder/src/adapter.js";
 import { OpenCodeNativeAdapter } from "../../opencode/src/adapter.js";
 import { MimoCodeNativeAdapter } from "../../mimo/src/adapter.js";
 import { CursorAgentNativeAdapter } from "../../cursor/src/adapter.js";
+import { CodeBuddyNativeAdapter } from "../../codebuddy/src/adapter.js";
 import { parseStructuredProbeTerminal } from "./probe-terminal.js";
 import type { ProbeTerminalInput } from "./interface.js";
 
@@ -58,5 +59,6 @@ export function createDefaultAdapterRegistry(): AdapterRegistry {
   registry.register("opencode", new OpenCodeNativeAdapter());
   registry.register("cursor-agent", new CursorAgentNativeAdapter());
   registry.register("mimo-code", new MimoCodeNativeAdapter());
+  registry.register("codebuddy-code", new CodeBuddyNativeAdapter());
   return registry;
 }

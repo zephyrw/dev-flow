@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
 import { extractSafeAuthMetadata } from "../../../agy-accounts/src/auth-metadata.js";
+import { codeBuddyScope } from "../../codebuddy/src/local-scope.js";
 import type { ToolProfile } from "../../../contracts/src/execution-spec.js";
 import type { NonSecretIdentity } from "../../../contracts/src/model-access.js";
 import type { IdentityContext } from "./interface.js";
@@ -39,6 +40,7 @@ export function nativeProfileSupported(adapterId: string): boolean {
 }
 
 function nativeScope(adapterId: string, profileName = "default"): string {
+  if (adapterId === "codebuddy-code") return codeBuddyScope();
   if (adapterId !== "codex") return profileName;
   // The same profile name in separate Codex homes is a separate native scope.
   // Hash only the already-used configuration path and name, never credentials.

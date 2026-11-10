@@ -1,11 +1,18 @@
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fixture, runtime, until, cleanup } from "../fixtures/native-flow.js";
 import { LocalRuntime } from "../../packages/runtime/src/runtime.js";
 import { workflowAttention } from "../../packages/core/src/attention.js";
-import { FlowError, type Run } from "../../packages/contracts/src/index.js";
+import { FlowError, ToolProfileSchema, type Run } from "../../packages/contracts/src/index.js";
 import { repairFailure } from "../../packages/core/src/repair.js";
+import { ModelAccessService } from "../../packages/core/src/model-access-service.js";
+
+const codeBuddyFailure = (code: number) => `console.log(JSON.stringify({
+  type: "result", subtype: "error_during_execution", is_error: true,
+  session_id: "isolated-session", errors: ["Request rejected by provider"],
+  errors_info: [{ status: 429, code: ${code} }],
+}));`;
 
 const versionError =
   "The 'gpt-6-astra' model requires a newer version of Codex. Please upgrade to the latest app or CLI and try again.";
@@ -15,40 +22,46 @@ it.each([
     "json",
     "CLI_VERSION_UNSUPPORTED",
     `console.log(JSON.stringify({type:'error',message:JSON.stringify({type:'error',status:400,error:{message:${JSON.stringify(versionError)}}})}));`,
+    "codex",
   ],
   [
     "turn-failed",
     "CLI_VERSION_UNSUPPORTED",
     `console.log(JSON.stringify({type:'turn.failed',error:{message:${JSON.stringify(versionError)}}}));`,
+    "codex",
   ],
   [
     "stderr",
     "MODEL_AUTH",
     "process.stderr.write('Please run agy '); setTimeout(() => console.error('login to continue (unauthenticated) token=fixture-secret'), 10);",
+    "codex",
   ],
   [
     "unknown",
     "NATIVE_RUN_FAILED",
     "console.error('unexpected process exit 17');",
+    "codex",
   ],
+  ["codebuddy-rate-limit", "MODEL_RATE_LIMIT", codeBuddyFailure(14003), "codebuddy-code"],
+  ["codebuddy-exhausted", "MODEL_CREDITS_EXHAUSTED", codeBuddyFailure(14018), "codebuddy-code"],
 ])(
   "production native runtime blocks %s once without consuming planner repairs",
-  async (_mode, code, output) => {
+  async (_mode, code, output, adapterId) => {
     const s = await fixture();
     const cli = join(s.root, "failing-cli.mjs");
     writeFileSync(
       cli,
       `console.log(JSON.stringify({type:'thread.started',thread_id:'isolated-session'})); ${output} process.exitCode=1;`,
     );
-    const profile = {
-      id: "isolated-codex",
+    const profile = ToolProfileSchema.parse({
+      id: "isolated-provider",
       revision: 1,
-      adapterId: "codex",
+      adapterId,
       executableRef: process.execPath,
       modelSelection: "explicit",
       modelId: "fixture-model",
       options: { prefixArgs: [cli] },
-    };
+    });
     s.store.put("execution_spec", "isolated-spec", s.w.id, {
       id: "isolated-spec",
       workflow_id: s.w.id,
@@ -76,6 +89,12 @@ it.each([
     const runtime = new LocalRuntime(s.engine);
     s.engine.runtime = runtime;
     try {
+      if (adapterId === "codebuddy-code") {
+        for (const name of ["CODEBUDDY_API_KEY", "CODEBUDDY_AUTH_TOKEN", "CODEBUDDY_BASE_URL"]) vi.stubEnv(name, undefined);
+        vi.stubEnv("CODEBUDDY_CONFIG_DIR", s.root);
+        const access = new ModelAccessService(s.store);
+        access.seedVerified(profile, access.identityFromProfile(profile, s.repo));
+      }
       await until(s, ["BLOCKED"], 30000);
       const w = s.engine.get(s.w.id);
       expect(w.blocker?.code).toBe(code);
@@ -122,6 +141,7 @@ it.each([
       });
     } finally {
       await runtime.close();
+      vi.unstubAllEnvs();
       await cleanup(s);
     }
   },

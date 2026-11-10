@@ -142,6 +142,7 @@ export function WorkflowActivity({
       picker,
       currentSpec,
       panelAbort.current?.signal,
+      "workflow:" + workflow.id,
     );
     await postRepairAssignment(workflow.id, {
       request_id: newRequestId(),
@@ -169,6 +170,7 @@ export function WorkflowActivity({
           picker,
           spec,
           panelAbort.current?.signal,
+          "workflow:" + workflow.id,
         );
       }
       await confirmFunctionalIssue(workflow.id, issue.issue_id, {
@@ -250,6 +252,7 @@ export function WorkflowActivity({
                 {issuePickerVisible(i, workflow) && (
                   <div className="actions">
                     <RepairModelPicker
+                      catalogScope={"workflow:" + workflow.id}
                       name={`repair-${i.issue_id}`}
                       value={pickerFor(i.issue_id)}
                       plannerProfile={spec?.spec?.plannerProfile}
@@ -318,6 +321,7 @@ async function assertRepairSelectionAccess(
   picker: RepairPickerValue,
   spec: ExecutionSpecPayload,
   signal?: AbortSignal,
+  catalogScope?: string,
 ) {
   if (picker.selection.mode === "task-default") return;
   const profile = profileFromRepairSelection(
@@ -326,7 +330,7 @@ async function assertRepairSelectionAccess(
     spec.spec.executorProfile,
   );
   if (!profile) return;
-  const access = await verifyModelAccess(profile, signal);
+  const access = await verifyModelAccess(profile, signal, false, catalogScope);
   if (access.status !== "verified") {
     throw {
       message: access.message,

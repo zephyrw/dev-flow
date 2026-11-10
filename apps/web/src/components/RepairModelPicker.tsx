@@ -25,6 +25,7 @@ export function RepairModelPicker({
   repairKind = "functional",
   policyVersion = 1,
   lockedRole,
+  catalogScope,
 }: {
   value: RepairPickerValue;
   onChange: (next: RepairPickerValue) => void;
@@ -40,6 +41,7 @@ export function RepairModelPicker({
   policyVersion?: number;
   /** 策略 2 下锁定职责组：规划质量修复/提交只能用 planner；执行测试只能用 executor。 */
   lockedRole?: "planner" | "executor";
+  catalogScope?: string;
 }) {
   const [open, setOpen] = useState(false);
   const mode = value.selection.mode;
@@ -152,6 +154,7 @@ export function RepairModelPicker({
       </label>
       {mode === "custom" && (
         <ModelProfileEditor
+          catalogScope={catalogScope}
           profile={{ ...customProfile, id: `${name}-custom` }}
           toolLabel="修复工具"
           disabled={disabled}

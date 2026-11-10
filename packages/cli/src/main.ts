@@ -886,6 +886,15 @@ async function main(): Promise<number> {
     printVersion();
     return INSTALL_EXIT_CODES.SUCCESS;
   }
+  if (command === "progress") {
+    const [, path, run, kind, item, status, summary, caseId] = args;
+    if (!path || !run || !kind || !item || !status)
+      throw new Error("用法：devflow progress <任务清单路径> <运行ID> <task|test|check> <编号> <状态> [摘要] [场景ID]");
+    const { updateTaskListEntry } = await import("../../core/src/task-list.js");
+    updateTaskListEntry(path, run, kind, item, status, summary, caseId);
+    console.log("进度已保存");
+    return 0;
+  }
   if (command === "status") return commandStatus();
   if (command === "doctor") return commandDoctor();
   if (command === "stop") return commandStop();

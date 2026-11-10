@@ -21,6 +21,42 @@ describe("model-display 展示格式化与变体聚合", () => {
     expect(formatModelName("agy", "gemini-3.8-flash-high")).toBe("Gemini 3.8 Flash");
     expect(formatModelName("agy", "gemini-3.8-flash-medium")).toBe("Gemini 3.8 Flash");
     expect(formatModelName("agy", "custom-experimental-model")).toBe("custom-experimental-model");
+    expect(formatModelName("codebuddy-code", "hy4-free")).toBe("Hy4 free");
+  });
+
+  it("区分 CodeBuddy 同名模型并保留原生 ID", () => {
+    const variants = [
+      ["hy4free", "Hy4"],
+      ["hy4std", "Hy4"],
+      ["hy3", "Hy3"],
+      ["hy3-x", "Hy3"],
+      ["preview-a", "Preview"],
+      ["preview-b", "Preview"],
+    ] as const;
+    const entries: ModelEntry[] = variants.map(([nativeId, label]) => ({
+      entryId: nativeId,
+      adapterId: "codebuddy-code",
+      nativeId,
+      label,
+      source: "native-live",
+      selectionKind: "fixed",
+      discoveredAt: "2026-11-10T00:00:00.000Z",
+      hidden: false,
+      availability: "listed",
+      capabilityRevision: "1",
+      effort: { status: "unknown", transport: "none", values: [] },
+    }));
+
+    const choices = buildModelChoices(entries);
+    expect(choices.map(choice => choice.choiceId)).toEqual(variants.map(([nativeId]) => nativeId));
+    expect(choices.map(choice => [choice.nativeId, choice.label])).toEqual([
+      ["hy4free", "Hy4 free"],
+      ["hy4std", "Hy4 std"],
+      ["hy3", "Hy3"],
+      ["hy3-x", "Hy3 x"],
+      ["preview-a", "Preview (preview-a)"],
+      ["preview-b", "Preview (preview-b)"],
+    ]);
   });
 
   it("U03: formatRuntimeDisplay 规范输出，强度在括号内且只出现一次", () => {

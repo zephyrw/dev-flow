@@ -335,10 +335,17 @@ if (scriptedRound) {
       findings: [],
     };
 }
-emit({
-  type: "item.completed",
-  item: { type: "agent_message", text: JSON.stringify(result) },
-});
+if (stage === "planning" && process.env.DEVFLOW_TEST_CODEBUDDY_STREAM === "1") {
+  emit({
+    type: "result", subtype: "success", is_error: false, session_id: rootThread,
+    result: "Here is the plan for your approval:\n\n" + JSON.stringify(result),
+  });
+} else {
+  emit({
+    type: "item.completed",
+    item: { type: "agent_message", text: JSON.stringify(result) },
+  });
+}
 
 function flag(value) {
   return value === true || value === "1" || value === "true";

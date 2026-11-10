@@ -1,11 +1,71 @@
 import { it, expect, vi } from "vitest";
 import { writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { setup, project, testConsoleHeaders } from "../helpers.js";
 import { buildServer } from "../../apps/api/src/server.js";
 import { accountFixture } from "../fixtures/agy-accounts/service-fixture.js";
 import { readToolQuota } from "../../packages/runtime/src/tool-quota.js";
 import { ToolProfileSchema } from "../../packages/contracts/src/execution-spec.js";
+import { setAdapterExecutableResolver } from "../../packages/adapters/sdk/src/registry.js";
+
+it("serves shared CodeBuddy credits for a configured role without a model turn", async () => {
+  const s = setup();
+  const p = project(s.root);
+  s.store.put("project", p.id, p.id, p);
+  s.store.put("workflow", "wf-codebuddy-quota", p.id, {
+    id: "wf-codebuddy-quota", project_id: p.id, state: "EXECUTING", stage: "execute", run_id: "other-run", version: 1,
+  });
+  s.store.put("run", "codebuddy-planner-run", "wf-codebuddy-quota", {
+    id: "codebuddy-planner-run", workflow_id: "wf-codebuddy-quota", purpose: "planning", started_at: new Date().toISOString(),
+    profile: ToolProfileSchema.parse({ id: "codebuddy", adapterId: "codebuddy-code", modelId: "auto" }),
+  });
+  const app = await buildServer(s.engine);
+  const restore = setAdapterExecutableResolver(adapter => adapter === "codebuddy-code" ? resolve("tests/fixtures/codebuddy-cli.mjs") : undefined);
+  vi.stubEnv("CODEBUDDY_TEST_ACCOUNT", "signed-in");
+  vi.stubEnv("CODEBUDDY_INTERNET_ENVIRONMENT", "internal");
+  vi.stubEnv("CODEBUDDY_CONFIG_DIR", s.root);
+  const available = () => new Response(JSON.stringify({ code: 0, data: { Packages: [
+    { PackageCode: "monthly", CycleRemainCapacity: "13.50", CycleTotalCapacity: 20 },
+  ] } }));
+  const request = vi.fn(async () => available());
+  const time = Date.now();
+  const clock = vi.spyOn(Date, "now").mockReturnValue(time);
+  vi.stubGlobal("fetch", request);
+  try {
+    const options = { url: "/api/workflows/wf-codebuddy-quota/quota?role=planner", headers: testConsoleHeaders() };
+    const results = await Promise.all([app.inject(options), app.inject(options)]);
+    for (const result of results) {
+      expect(result.statusCode, result.body).toBe(200);
+      expect(result.json()).toMatchObject({ adapter: "codebuddy-code", credit_status: "available",
+        quota: { source: "account_api", buckets: [], credits: { remaining: 13.5, total: 20 } } });
+      expect(result.body).not.toContain("test-token");
+    }
+    expect(request).toHaveBeenCalledTimes(1);
+    const original = results[0]!.json().quota;
+
+    clock.mockReturnValue(time + 61_000);
+    request.mockResolvedValueOnce(new Response(null, { status: 429, headers: { "Retry-After": "120" } }));
+    expect((await app.inject(options)).json()).toMatchObject({ credit_status: "stale", quota: original });
+    clock.mockReturnValue(time + 180_000);
+    expect((await app.inject(options)).json()).toMatchObject({ credit_status: "stale", quota: original });
+    expect(request).toHaveBeenCalledTimes(2);
+    clock.mockReturnValue(time + 181_000);
+    expect((await app.inject(options)).json()).toMatchObject({ credit_status: "available" });
+    expect(request).toHaveBeenCalledTimes(3);
+
+    vi.stubEnv("CODEBUDDY_CONFIG_DIR", join(s.root, "changed-scope"));
+    vi.stubEnv("CODEBUDDY_TEST_ACCOUNT", "signed-out");
+    expect((await app.inject(options)).json()).toMatchObject({ credit_status: "auth-required", quota: null });
+    expect(request).toHaveBeenCalledTimes(3);
+  } finally {
+    clock.mockRestore();
+    restore();
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+    await app.close();
+    s.store.close();
+  }
+});
 
 it("reads Codex account quota without a running Codex task and rejects invalid role/workflow", async () => {
   const s = setup();

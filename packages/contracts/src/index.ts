@@ -174,6 +174,7 @@ export const ProjectSchema = z
   .object({
     id: Id,
     name: z.string().min(1),
+    project_root: z.string().min(1).optional(),
     primary_repo_id: Id.optional(),
     repositories: z
       .array(ProjectRepositorySchema)

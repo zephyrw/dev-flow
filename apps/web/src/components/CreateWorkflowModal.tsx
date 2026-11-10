@@ -67,6 +67,14 @@ export function CreateWorkflowModal({
   const [activeTab, setActiveTab] = useState<ConfigTabId>("planner");
   const [moreOpen, setMoreOpen] = useState(false);
   const requestId = useRef(newRequestId());
+  const [preview, setPreview] = useState<{
+    key: string;
+    digest?: string;
+    error?: string;
+    repositories?: { repo_id: string; source_root: string; source_branch: string; target_path: string }[];
+  }>();
+  const previewKey = JSON.stringify([workspaceRoot.trim(), workspaceMode, requestId.current]);
+  const currentPreview = preview?.key === previewKey ? preview : undefined;
   const panelAbort = useRef<AbortController | null>(null);
 
   const applyDefaults = (
@@ -141,6 +149,35 @@ export function CreateWorkflowModal({
     return () => window.removeEventListener("focus", onFocus);
   }, [isOpen, dirty, loadedRevision]);
 
+  useEffect(() => {
+    if (!isOpen || !workspaceRoot.trim()) return;
+    const controller = new AbortController();
+    const timer = window.setTimeout(async () => {
+      try {
+        const response = await fetch("/api/workspaces/preview", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          signal: controller.signal,
+          body: JSON.stringify({
+            workspace_root: workspaceRoot.trim(),
+            workspace_mode: workspaceMode,
+            request_id: requestId.current,
+          }),
+        });
+        const result = await response.json();
+        if (!controller.signal.aborted) setPreview(response.ok
+          ? { key: previewKey, digest: result.preview_digest, repositories: result.repositories }
+          : { key: previewKey, error: result.message ?? "无法识别项目仓库" });
+      } catch {
+        if (!controller.signal.aborted) setPreview({ key: previewKey, error: "无法读取项目仓库预览" });
+      }
+    }, 250);
+    return () => {
+      controller.abort();
+      window.clearTimeout(timer);
+    };
+  }, [isOpen, workspaceRoot, workspaceMode, previewKey]);
+
   if (!isOpen) return null;
 
   const changePlanner = (next: ToolProfile) => {
@@ -199,6 +236,8 @@ export function CreateWorkflowModal({
         const access = await verifyModelAccess(
           profile,
           panelAbort.current?.signal,
+          false,
+          "workspace:" + workspaceRoot.trim(),
         );
         if (access.status !== "verified") {
           throw {
@@ -237,7 +276,8 @@ export function CreateWorkflowModal({
         body: JSON.stringify({
           request_id: requestId.current,
           title: title.trim(),
-          workspace_root: workspaceRoot,
+          workspace_root: workspaceRoot.trim(),
+          preview_digest: currentPreview?.digest,
           request_text: text,
           refs,
           workspace_mode: workspaceMode,
@@ -311,8 +351,21 @@ export function CreateWorkflowModal({
             onChange={(e) => setWorkspaceRoot(e.target.value)}
           />
         </div>
+        {currentPreview?.error && <p role="status">{currentPreview.error}</p>}
+        {currentPreview?.repositories?.length ? (
+          <div aria-label="识别到的仓库">
+            <p>识别到 {currentPreview.repositories.length} 个 Git 仓库</p>
+            <ul>{currentPreview.repositories.map(repo => (
+              <li key={repo.repo_id}>
+                <code>{repo.source_root}</code> · {repo.source_branch}
+                {workspaceMode === "new_worktree" && <> → <code>{repo.target_path}</code></>}
+              </li>
+            ))}</ul>
+          </div>
+        ) : null}
         <div style={{ margin: "16px 0" }}>
           <ModelConfigTabs
+            catalogScope={workspaceRoot.trim() ? "workspace:" + workspaceRoot.trim() : undefined}
             tabs={[
               { id: "planner", label: "规划" },
               { id: "executor", label: "执行" },
@@ -389,7 +442,7 @@ export function CreateWorkflowModal({
                   borderRadius: "4px",
                 }}
               >
-                路径位置：将按项目约定缺省在 <code>{workspaceRoot || "<source_root>"}/.worktrees/&lt;任务ID&gt;/main</code> 下创建，自动通过 Git 本地 exclude 忽略，任务完成不自动删除。
+                各仓库使用独立的任务分支和工作树。
               </div>
             )}
           </div>
