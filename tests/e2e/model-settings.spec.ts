@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { TOOL_DISPLAY_ORDER } from "../../packages/contracts/src/index.js";
 import type { ModelEntry, ToolProfile } from "../../packages/contracts/src/index.js";
 import {
   exactLabel,
@@ -169,7 +170,9 @@ test("E2E-U12 快速切换工具会清掉旧模型并选中新工具默认模型
   await expect(exactLabel(dialog, "工具模型搜索")).toHaveValue(defaultEntry.label);
   await expect.poll(() => verifiedProfiles.at(-1)).toMatchObject({ adapterId: "codex", modelId: expectedModelId,
     reasoning: { mode: "explicit", value: expectedEffort } });
-  await expect(planner.locator("option")).toHaveCount(4);
+  await expect.poll(() => planner.locator("option").evaluateAll(options =>
+    options.map(option => (option as HTMLOptionElement).value),
+  )).toEqual(TOOL_DISPLAY_ORDER.map(tool => tool.adapterId));
   const unchangedDefaults = await page.request.get("/api/settings/model-defaults");
   expect(unchangedDefaults.ok(), await unchangedDefaults.text()).toBe(true);
   expect((await unchangedDefaults.json()).defaults).toEqual(savedDefaults);
