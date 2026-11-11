@@ -16,6 +16,29 @@ it("shows exact guidance as a user turn instead of generic dispatch notices", ()
   ]);
 });
 
+it.each(["legacy", "marked"])("hides %s guidance handoff pauses but keeps the model reply and manual pause", mode => {
+  const event = (event_seq: number, type: string, payload: object, run_id?: string) => ({
+    event_seq, type, payload, run_id, workflow_id: "w", created_at: "2026-11-11T10:38:37Z",
+  });
+  const marker = mode === "marked" ? { stop_source: "guidance" } : {};
+  const rows = userFacingLogs(readableLogs([
+    event(1, "UserGuidance", { text: "请并行检查" }),
+    event(2, "ConversationControlUpdated", { control: { request_id: "msg-pause:request-1" } }, "run-1"),
+    event(3, "StateChanged", { from: "EXECUTING", to: "STOPPING", stage: "stop", ...marker }),
+    event(4, "StateChanged", { from: "STOPPING", to: "STOPPED", stage: "stopped", ...marker }),
+    event(5, "Stopped", { source: mode === "marked" ? "guidance" : "local_console", prior_run_id: "run-1" }),
+    event(6, "StateChanged", { from: "STOPPED", to: "QUEUED", stage: "execute" }),
+    event(7, "StateChanged", { from: "QUEUED", to: "EXECUTING", stage: "execute", user_guidance: true }),
+    event(8, "AgentEvent", { event: "step_update", step_update: { step_index: 12, step_type: "agent_response",
+      state: "DONE", text: "已开始并行检查。" } }, "run-2"),
+    event(9, "StateChanged", { from: "EXECUTING", to: "STOPPING", stage: "stop", stop_source: "local_console" }),
+    event(10, "StateChanged", { from: "STOPPING", to: "STOPPED", stage: "stopped", stop_source: "local_console" }),
+    event(11, "Stopped", { source: "local_console", prior_run_id: "run-2" }),
+  ], "w"), "run-2");
+  expect(rows.map(row => row.sequence)).toEqual([1, 8, 9, 10, 11]);
+  expect(rows[1]?.text).toBe("已开始并行检查。");
+});
+
 it("keeps model question, choices and user reply after answering, without continuation instructions", () => {
   const record: UserInteractionRecord = {
     id: "question-1", workflow_id: "w", source_run_id: "r", source_plan_revision: 1,

@@ -18,6 +18,7 @@ import { resolveConversationRuntimeDisplay } from "../../../../packages/core/src
 import type { ConversationService } from "../../../../packages/core/src/conversation-service.js";
 import { conversationActivityLogEntry } from "../../../../packages/presentation/src/conversation-activity.js";
 import type { Store } from "../../../../packages/store/src/store.js";
+import { projectAgySubagents, readAgySubagentActivities } from "./agy-subagents.js";
 
 export interface ConversationPluginOptions {
   conversations: ConversationService;
@@ -162,7 +163,7 @@ function requireRootInWorkflow(
   }
 }
 
-function buildTreeResponse(
+async function buildTreeResponse(
   conversations: ConversationService,
   store: Store,
   workflowId: string,
@@ -170,7 +171,7 @@ function buildTreeResponse(
 ) {
   const snapshot = conversations.getTree(workflowId);
   if (rootId) requireRootInWorkflow(store, workflowId, rootId, snapshot);
-  const current = scopedTree(snapshot, rootId ?? snapshot.active_root_id);
+  const current = await projectAgySubagents(scopedTree(snapshot, rootId ?? snapshot.active_root_id));
   return {
     roots: publicRoots(snapshot),
     nodes: current.nodes.map(publicNode),
@@ -193,17 +194,19 @@ function scopedTree(
   };
 }
 
-function buildNodeResponse(
+async function buildNodeResponse(
   conversations: ConversationService,
   store: Store,
   workflowId: string,
   nodeId: string,
 ) {
   const read = readOwnedNode(conversations, workflowId, nodeId);
-  const attempts = listNodeAttempts(read.node, conversations, workflowId);
-  const current = attempts[attempts.length - 1] ?? read.attempt;
+  const tree = await projectAgySubagents(conversations.getTree(workflowId, read.node.root_id));
+  const node = tree.nodes.find(item => item.id === nodeId) ?? read.node;
+  const attempts = tree.attempts.filter(attempt => attempt.conversation_id === nodeId);
+  const current = attempts.at(-1) ?? read.attempt;
   return {
-    node: publicNode(read.node),
+    node: publicNode(node),
     ancestors: read.ancestors.map(publicNode),
     attempts: attempts.map(publicAttempt),
     run: publicRun(store, current?.run_id),
@@ -211,7 +214,7 @@ function buildNodeResponse(
   };
 }
 
-function buildActivityResponse(
+async function buildActivityResponse(
   conversations: ConversationService,
   store: Store,
   workflowId: string,
@@ -221,6 +224,26 @@ function buildActivityResponse(
   const read = readOwnedNode(conversations, workflowId, nodeId);
   if (!store.get<ConversationNode>(CONVERSATION_ENTITY.node, read.node.id)) {
     return { items: [], has_more: false };
+  }
+  const native = await readAgySubagentActivities(read.node, read.attempt);
+  if (native.length && read.attempt) {
+    const before = query.before_seq ?? Infinity;
+    const eligible = native.filter(row => row.sequence < before);
+    const page = eligible.slice(-query.limit);
+    const hasMore = eligible.length > page.length;
+    return {
+      items: page.flatMap(({ sequence, created_at, ...activity }) => {
+        const activityId = `agy-transcript:${sequence}`;
+        const attemptId = read.attempt!.id;
+        const entry = conversationActivityLogEntry({ event_seq: sequence, created_at, payload: {
+          ...activity, conversation_id: nodeId, attempt_id: attemptId,
+          root_id: read.node.root_id, activity_id: activityId, source_event_id: activityId,
+        } });
+        return entry ? [{ ...entry, conversation_id: nodeId, attempt_id: attemptId, activity_id: activityId }] : [];
+      }),
+      has_more: hasMore,
+      next_before_seq: hasMore ? page[0]?.sequence : undefined,
+    };
   }
   const page = conversations.listActivities(workflowId, nodeId, query);
   return {
@@ -265,17 +288,6 @@ function readLegacyNode(
   if (!node || node.workflow_id !== workflowId) throw notFound;
   const attempt = tree.attempts.find((item) => item.conversation_id === nodeId);
   return { node, attempt, ancestors: [] as ConversationNode[] };
-}
-
-function listNodeAttempts(
-  node: ConversationNode,
-  conversations: ConversationService,
-  workflowId: string,
-): ConversationAttempt[] {
-  const tree = conversations.getTree(workflowId);
-  return tree.attempts
-    .filter((attempt) => attempt.conversation_id === node.id)
-    .sort((a, b) => a.generation - b.generation);
 }
 
 function publicRoots(snapshot: ConversationTreeSnapshot) {

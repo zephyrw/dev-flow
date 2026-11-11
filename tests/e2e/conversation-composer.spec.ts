@@ -5,7 +5,6 @@ import {
   openExecutionSidebar,
   setNativeFixture,
   waitForSubagents,
-  workCardName,
 } from "./native-helper.js";
 
 test.describe.configure({ mode: "serial" });
@@ -93,7 +92,8 @@ test("SA-E07 child identity and activity stay scoped while the task model header
   );
   expect(child).toBeTruthy();
   const parentModels = await page.locator(".current-runtime .runtime-row-text").allTextContents();
-  await workCardName(page, child.title).click();
+  await page.goto(`/?workflow=${id}&conversation=${child.id}`);
+  await openExecutionSidebar(page);
   await expect(page.locator(".execution-session-badge")).toHaveText(child.title);
   await expect(page.locator(".execution-sidebar")).toHaveAttribute("data-child-view", "true");
   await expect(page.locator(".current-runtime .runtime-row-text")).toHaveText(parentModels);

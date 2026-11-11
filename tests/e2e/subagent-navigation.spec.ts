@@ -11,7 +11,7 @@ import {
 test.describe.configure({ mode: "serial" });
 test.use({ trace: "off" });
 
-test("SA-E04 child then grandchild logs stay isolated and ancestors remain readable", async ({
+test("SA-E04 child and grandchild open isolated execution dialogs", async ({
   page,
 }) => {
   test.setTimeout(120000);
@@ -38,29 +38,24 @@ test("SA-E04 child then grandchild logs stay isolated and ancestors remain reada
   );
   expect(child?.id).toBeTruthy();
   expect(grandchild?.id).toBeTruthy();
-  await expect(page.locator(".logs")).toContainText("root-fixture-cmd");
+  const mainLogs = page.locator("main .logs");
+  await expect(mainLogs).toContainText("root-fixture-cmd");
+  const dialog = page.getByRole("dialog");
   await workCardName(page, child.title || "explore").click();
-  await expect(page.locator(".execution-sidebar")).toHaveAttribute(
-    "data-child-view",
-    "true",
-  );
-  await expect(page.locator(".logs")).toContainText("child-fixture-cmd");
-  await expect(page.locator(".logs")).not.toContainText("root-fixture-cmd");
-  await expect(page.locator(".logs")).not.toContainText("grand-fixture-cmd");
+  await expect(dialog).toHaveAccessibleName(`${child.title}的执行记录`);
+  await expect(dialog.locator(".logs")).toContainText("child-fixture-cmd");
+  await expect(dialog).not.toContainText("root-fixture-cmd");
+  await expect(dialog).not.toContainText("grand-fixture-cmd");
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await expect(mainLogs).toContainText("root-fixture-cmd");
   await workCardName(page, grandchild.title || "review").click();
-  await expect(page.locator(".logs")).toContainText("grand-fixture-cmd");
-  await expect(page.locator(".logs")).not.toContainText(
-    /(^|[^a-z])child-fixture-cmd/,
-  );
-  await expect(page.locator(".logs")).not.toContainText("root-fixture-cmd");
-  await page.locator(".conversation-breadcrumb-link").last().click();
-  await expect(page.locator(".logs")).toContainText("child-fixture-cmd");
-  await page.locator(".conversation-breadcrumb-link").last().click();
-  await expect(page.locator(".execution-sidebar")).not.toHaveAttribute(
-    "data-child-view",
-    "true",
-  );
-  await expect(page.locator(".logs")).toContainText("root-fixture-cmd");
+  await expect(dialog).toHaveAccessibleName(`${grandchild.title}的执行记录`);
+  await expect(dialog.locator(".logs")).toContainText("grand-fixture-cmd");
+  await expect(dialog).not.toContainText(/(^|[^a-z])child-fixture-cmd/);
+  await expect(dialog).not.toContainText("root-fixture-cmd");
+  await dialog.getByRole("button", { name: "关闭执行记录" }).click();
+  await expect(mainLogs).toContainText("root-fixture-cmd");
 });
 
 test("SA-E05 child view hides composer and restoring the root keeps draft state", async ({
@@ -88,7 +83,8 @@ test("SA-E05 child view hides composer and restoring the root keeps draft state"
   const child = (await (
     await page.request.get(`/api/workflows/${id}/conversations`)
   ).json()).nodes.find((node: { kind?: string }) => node.kind === "subagent");
-  await workCardName(page, child.title).click();
+  await page.goto(`/?workflow=${id}&conversation=${child.id}`);
+  await openExecutionSidebar(page);
   await expect(page.locator(".conversation-composer")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "发送", exact: true })).toHaveCount(
     0,

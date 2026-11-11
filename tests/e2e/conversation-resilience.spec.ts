@@ -92,7 +92,7 @@ test("SA-E21 sidebar 320/520, long names, many children and keyboard stay on scr
   await handle.focus();
   for (let i = 0; i < 20; i++) await page.keyboard.press("ArrowLeft");
   await expect(handle).toHaveAttribute("aria-valuenow", "520");
-  await expect(workCard(page)).toContainText(/Working|extra-agent|running-agent/);
+  await expect(workCard(page)).toContainText(/子 Agent|extra-agent|running-agent/);
   await page.keyboard.press("Tab");
   await page.keyboard.press("Tab");
 });

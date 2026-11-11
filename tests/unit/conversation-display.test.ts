@@ -91,7 +91,7 @@ function model(input: {
 }
 
 describe("SA-U02 conversation display", () => {
-  it("counts only starting and running as Working N", () => {
+  it("shows the total while keeping starting and running counts separate", () => {
     const built = model({
       nodes: [
         node("root1"),
@@ -112,9 +112,9 @@ describe("SA-U02 conversation display", () => {
       ],
     });
     expect(built.counts.working).toBe(2);
-    expect(built.headline).toBe("Working 2");
+    expect(built.headline).toBe("子 Agent 6");
     expect(built.chips.map((chip) => chip.label)).toEqual([
-      "Working 2",
+      "子 Agent 6",
       "等待 1",
       "暂停 1",
       "异常 2",
@@ -176,7 +176,7 @@ describe("SA-U02 conversation display", () => {
     });
     expect(built.counts.working).toBe(1);
     expect(built.counts.waiting).toBe(1);
-    expect(built.headline).toBe("Working 1");
+    expect(built.headline).toBe("子 Agent 2");
     const nested = built.rows.find((row) => row.conversationId === "nested");
     expect(nested?.parentPath).toBe("父会话");
     expect(nested?.statusLabel).toBe("正在工作");
@@ -198,7 +198,7 @@ describe("SA-U02 conversation display", () => {
     });
     expect(built.visibility).toBe("active");
     expect(built.headline).not.toContain("已完成");
-    expect(built.headline).toBe("Working 1");
+    expect(built.headline).toBe("子 Agent 1");
     expect(built.rows[0]?.statusLabel).toBe("状态待确认");
     expect(built.rows[0]?.secondaryTitle).toContain("gpt-5");
     expect(built.chips.some((chip) => chip.label.startsWith("状态待确认"))).toBe(
@@ -215,8 +215,7 @@ describe("SA-U02 conversation display", () => {
       ],
     });
     expect(unconfirmedIdle.visibility).toBe("active");
-    expect(unconfirmedIdle.headline).toBe("状态待确认");
-    expect(unconfirmedIdle.headline).not.toBe("Working 0");
+    expect(unconfirmedIdle.headline).toBe("子 Agent 1");
     expect(unconfirmedIdle.rows[0]?.statusLabel).toBe("状态待确认");
   });
 
@@ -270,7 +269,7 @@ describe("SA-U02 conversation display", () => {
       ],
     });
     expect(built.visibility).toBe("complete");
-    expect(built.headline).toBe("子 Agent · 已完成 2");
+    expect(built.headline).toBe("子 Agent 2");
     expect(built.rows).toEqual([]);
     expect(built.historyRows.map((row) => row.name)).toEqual([
       "已完成甲",

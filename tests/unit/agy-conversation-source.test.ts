@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,6 +11,7 @@ import {
   agySubagentCapabilities,
   decodeAgyConversationEvents,
 } from "../../packages/adapters/agy/src/conversation-source.js";
+import { AgySubagentRecords, agySubagentStatus } from "../../packages/adapters/agy/src/subagent-records.js";
 import { AgyNativeCliAdapter } from "../../packages/adapters/agy/src/adapter.js";
 import {
   AgyNativeRecordSource,
@@ -111,6 +112,50 @@ describe("SA-U12 agy conversation source", () => {
     expect(capabilities.reason).toContain("受管进程树");
     expect(capabilities.stop).not.toBe("native");
     expect(capabilities.readonly_delegation).not.toBe("verified");
+  });
+
+  it("reads the async delegation receipt, role, status and isolated public transcript", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agy-subagent-records-"));
+    try {
+      const base = join(root, ".gemini", "antigravity-cli");
+      const generated = (id: string) => join(base, "brain", id, ".system_generated");
+      const output = join(generated(PARENT), "steps", "4");
+      mkdirSync(output, { recursive: true });
+      writeFileSync(join(output, "output.txt"),
+        'Created the following subagent:\r\n{\r\n  "conversationId": "' + CHILD +
+        '",\r\n  "logAbsoluteUri": "file:///ignored/path.jsonl"\r\n}\r\n\r\nThe subagent will send you a message.');
+      const created_at = "2026-11-11T18:39:22+08:00";
+      const transcript = (id: string, rows: object[]) => {
+        const logs = join(generated(id), "logs");
+        mkdirSync(logs, { recursive: true });
+        writeFileSync(join(logs, "transcript.jsonl"), rows.map(row => JSON.stringify(row)).join("\n"));
+      };
+      transcript(PARENT, [{ step_index: 3, tool_calls: [{ name: "invoke_subagent",
+        args: { Role: '"Frontend Engineer"' } }] }]);
+      transcript(CHILD, [
+        { step_index: 0, source: "SYSTEM", type: "SYSTEM_MESSAGE", created_at, content: "private system input" },
+        { step_index: 1, source: "MODEL", type: "PLANNER_RESPONSE", created_at, status: "DONE",
+          content: "检查完成", thinking: "internal reasoning",
+          tool_calls: [{ name: "run_command", args: { CommandLine: '"pnpm typecheck"' } }] },
+      ]);
+      const index = new Database(join(base, "conversation_summaries.db"));
+      index.exec("CREATE TABLE conversation_summaries(conversation_id TEXT, parent_conversation_id TEXT, agent_name TEXT, status TEXT, not_fully_idle INTEGER, killed INTEGER)");
+      index.prepare("INSERT INTO conversation_summaries VALUES (?, ?, ?, ?, ?, ?)").run(
+        CHILD, PARENT, "Frontend Engineer", "CASCADE_RUN_STATUS_RUNNING", 1, 0,
+      );
+      index.close();
+      const records = new AgySubagentRecords(root);
+      expect(await records.readDelegation(PARENT, 4)).toBe(CHILD);
+      expect(await records.readDelegation(PARENT, 5)).toBeUndefined();
+      expect((await records.readDelegationNames(PARENT)).get(4)).toBe("Frontend Engineer");
+      expect(agySubagentStatus(records.readSummaries([CHILD]).get(CHILD))).toBe("running");
+      expect(await records.readActivities(CHILD)).toMatchObject([
+        { kind: "message", public_text: "检查完成", status: "completed" },
+        { kind: "tool", command: "pnpm typecheck" },
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("projects parent wait separately from child run using real invoke_subagent identity", () => {

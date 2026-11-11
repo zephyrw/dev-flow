@@ -151,6 +151,7 @@ function delegationEvents(
         "discovered",
         {
           spawn_call_id: association.spawn_call_id,
+          title: association.title ?? association.agent_native_id,
           unread_fields: association.unread_fields,
           unread_reason: association.unread_reason,
         },

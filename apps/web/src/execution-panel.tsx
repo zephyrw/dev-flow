@@ -132,6 +132,7 @@ export function ExecutionPanel({
   isChildView,
   sessionIdentity,
   onCopyPublicText,
+  dialogTitle,
 }: {
   entries: LogEntry[];
   connected: boolean;
@@ -152,6 +153,7 @@ export function ExecutionPanel({
   isChildView?: boolean;
   sessionIdentity?: string;
   onCopyPublicText?: (text: string) => void;
+  dialogTitle?: string;
 }) {
   const scroll = useRef<HTMLDivElement>(null);
   const [follow, setFollow] = useState(true);
@@ -228,7 +230,7 @@ export function ExecutionPanel({
       aria-label="执行过程侧栏"
       data-child-view={isChildView ? "true" : undefined}
     >
-      <div
+      {!dialogTitle && <div
         className="resize-handle"
         role="separator"
         aria-label="调整执行侧栏宽度"
@@ -260,10 +262,10 @@ export function ExecutionPanel({
           if (e.currentTarget.hasPointerCapture(e.pointerId))
             e.currentTarget.releasePointerCapture(e.pointerId);
         }}
-      />
+      />}
       <div className="execution-heading">
         <div className="execution-heading-left">
-          <h2>执行过程</h2>
+          <h2>{dialogTitle ?? "执行过程"}</h2>
           {sessionIdentity && (
             <span
               className="execution-session-badge"
@@ -276,11 +278,11 @@ export function ExecutionPanel({
         <button
           className="btn-icon-close"
           onClick={close}
-          aria-label="收起执行过程"
-          title="收起执行过程"
+          aria-label={dialogTitle ? "关闭执行记录" : "收起执行过程"}
+          title={dialogTitle ? "关闭执行记录" : "收起执行过程"}
         >
-          <span>收起</span>
-          <svg
+          <span>{dialogTitle ? "关闭" : "收起"}</span>
+          {!dialogTitle && <svg
             className="collapse-icon"
             width="14"
             height="14"
@@ -293,7 +295,7 @@ export function ExecutionPanel({
             aria-hidden="true"
           >
             <polyline points="9 18 15 12 9 6" />
-          </svg>
+          </svg>}
         </button>
       </div>
       {notice && (

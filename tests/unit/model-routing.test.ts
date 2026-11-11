@@ -276,6 +276,35 @@ describe("模型路由与配置解析", () => {
       expect(resolveRoutingRole({ purpose: "merge_conflict" })).toBe("executor");
     });
 
+    it("临时提问沿用提交时的主会话模型，并创建独立的只读轮次", () => {
+      const { store, config } = setup();
+      const workflowId = "wf-aside-routing";
+      const planner = makeProfile("planner", "codex", "gpt-6.1-sol");
+      const executor = makeProfile("executor", "agy", "gemini-3.8-flash-high");
+      putSpec(store, workflowId, 1, planner, executor);
+      const active = bindProfile(store, config, workflowId, "implement");
+      const source = putRun(store, workflowId, {
+        ...active,
+        id: "run-gemini",
+        status: "running",
+        repair_batch_id: "formal-batch",
+        assignment_id: "formal-assignment",
+      });
+      const next = putRun(store, workflowId, { id: "run-codex", profile: planner, purpose: "planning" });
+      store.put("workflow", workflowId, "project", { id: workflowId, run_id: next.id });
+
+      const aside = bindProfile(store, config, workflowId, "aside", { source_run_id: source.id });
+
+      expect(aside.profile).toEqual(executor);
+      expect(aside.frozen_invocation).toEqual(active.frozen_invocation);
+      expect(aside.routing_role).toBe("executor");
+      expect(aside.logical_round_id).not.toBe(active.logical_round_id);
+      expect(aside.invocation_fingerprint).not.toBe(active.invocation_fingerprint);
+      expect(aside).not.toHaveProperty("repair_batch_id");
+      expect(aside).not.toHaveProperty("assignment_id");
+      expect(bindProfile(store, config, workflowId, "aside").profile).toEqual(planner);
+    });
+
     it("遗留 quality 记录时只看本轮 dispatch context", () => {
       const { store, config } = setup();
       const workflowId = "wf-ctx";

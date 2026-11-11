@@ -9,7 +9,6 @@ import {
   waitForSubagents,
   waitForWorkflowState,
   workCard,
-  workCardRow,
 } from "./native-helper.js";
 
 test.describe.configure({ mode: "serial" });
@@ -136,7 +135,8 @@ test("SA-E12 child-view pause is scoped; another task keeps working", async ({
   const child = (tree.nodes ?? []).find(
     (node: { kind?: string }) => node.kind === "subagent",
   );
-  await workCardRow(page, child.title).click();
+  await page.goto(`/?workflow=${first}&conversation=${child.id}`);
+  await openExecutionSidebar(page);
   await expect(page.locator(".execution-sidebar")).toHaveAttribute(
     "data-child-view",
     "true",

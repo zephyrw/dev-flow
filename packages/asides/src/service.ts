@@ -28,10 +28,12 @@ export class AsideSessionService {
   ): AsideSession {
     return this.store.transaction(() => {
       const sessionId = id("aside");
+      const sourceRunId = this.store.get<{ run_id?: string }>("workflow", workflowId)?.run_id;
 
       const session: AsideSession = {
         id: sessionId,
         workflow_id: workflowId,
+        ...(sourceRunId ? { source_run_id: sourceRunId } : {}),
         profile_revision: profileRevision,
         context_ref: planContext
           ? `workflow:${workflowId}:plan:${planContext.plan_revision}`
@@ -136,7 +138,7 @@ export class AsideSessionService {
       if (answer) return this.completeSession(workflowId, sessionId, answer);
       const timedOut = isAsideTimeout(result.error);
       const message = timedOut
-        ? "提问超时，规划模型未在时限内给出回答。"
+        ? "提问超时，模型未在时限内给出回答。"
         : "这次提问未能完成：" + asideErrorText(result.error);
       return this.failSession(workflowId, sessionId, message);
     });

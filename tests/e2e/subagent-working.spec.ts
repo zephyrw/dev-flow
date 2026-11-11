@@ -125,16 +125,16 @@ test("SA-E03 collapse does not call control API and keeps preference", async ({
   });
   const card = workCard(page);
   await expect(card).toBeVisible();
-  await expect(card).toContainText("Working 1");
+  await expect(card).toContainText("子 Agent 3");
   await page.getByLabel("收起子 Agent 工作卡").click();
-  await expect(page.getByRole("button", { name: /Working 1/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: /子 Agent 3/ })).toBeVisible();
   expect(controlWrites).toEqual([]);
-  await page.getByRole("button", { name: /Working 1/ }).click();
+  await page.getByRole("button", { name: /子 Agent 3/ }).click();
   await expect(card).toContainText("running-agent");
   await page.getByLabel("收起子 Agent 工作卡").click();
   await page.reload();
   await openExecutionSidebar(page);
-  await expect(page.getByRole("button", { name: /Working 1/ })).toBeVisible({
+  await expect(page.getByRole("button", { name: /子 Agent 3/ })).toBeVisible({
     timeout: 15000,
   });
   expect(controlWrites).toEqual([]);

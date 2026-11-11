@@ -445,7 +445,7 @@ export class Engine {
         const rows = this.store.db
           .prepare(
             displayOnly
-              ? "SELECT data FROM events WHERE workflow_id=? AND json_extract(data, '$.type') NOT IN ('ServiceOutput','FixtureOutput','CheckOutput','BuildOutput','AgentEvent','NativeActivity','RunObserved','ConversationUpdated','ConversationDiscovered','ConversationControlUpdated','AsideUpdated','AgentDiagnostic') ORDER BY seq DESC LIMIT 100"
+              ? "SELECT data FROM events WHERE workflow_id=? AND (json_extract(data, '$.type') NOT IN ('ServiceOutput','FixtureOutput','CheckOutput','BuildOutput','AgentEvent','NativeActivity','RunObserved','ConversationUpdated','ConversationDiscovered','ConversationControlUpdated','AsideUpdated','AgentDiagnostic') OR (json_extract(data, '$.type')='ConversationControlUpdated' AND json_extract(data, '$.payload.control.request_id') LIKE 'msg-pause:%')) ORDER BY seq DESC LIMIT 100"
               : "SELECT data FROM events WHERE workflow_id=? AND json_extract(data, '$.type') NOT IN ('ServiceOutput','FixtureOutput','CheckOutput','BuildOutput','AgentEvent','NativeActivity','RunObserved') ORDER BY seq DESC LIMIT 500",
           )
           .all(key)
@@ -598,7 +598,7 @@ export class Engine {
     state: State,
     stage: string,
     patch: Partial<Workflow> = {},
-    event: { resumed?: boolean; intent_clarification?: boolean; repair_source?: "quality_review"; source_review_id?: string; guidance_mode?: "human_acceptance"; user_guidance?: boolean } = {},
+    event: { resumed?: boolean; intent_clarification?: boolean; repair_source?: "quality_review"; source_review_id?: string; guidance_mode?: "human_acceptance"; user_guidance?: boolean; stop_source?: "local_console" | "controller" | "guidance" } = {},
   ) {
     return this.store.transaction(() => {
       const w = this.get(key);
@@ -2670,7 +2670,7 @@ export class Engine {
   }
   async stop(
     key: string,
-    source: "local_console" | "controller" = "controller",
+    source: "local_console" | "controller" | "guidance" = "controller",
     expectedRunId?: string | null,
   ) {
     const w = this.get(key);
@@ -2713,7 +2713,7 @@ export class Engine {
       message:
         source === "local_console"
           ? "你在控制台暂停了执行"
-          : "执行已由控制程序暂停",
+          : source === "guidance" ? "执行已暂停，正在切换到你的指导" : "执行已由控制程序暂停",
       next_action: "核实后继续这个任务",
     };
     this.store.put("interruption", key, key, interruption);
@@ -2732,7 +2732,7 @@ export class Engine {
     this.store.remove("model_retry", key);
     this.store.remove("pending_model_retry", key);
     this.store.remove("transient_network_retry", key);
-    this.transition(key, [w.state], "STOPPING", "stop");
+    this.transition(key, [w.state], "STOPPING", "stop", {}, { stop_source: source });
     await this.pauseActiveConversationTree(key);
 
     let stopResult: any = { status: "confirmed_not_started" };
@@ -2767,7 +2767,7 @@ export class Engine {
           updated_at: now(),
         });
       });
-      const next = this.transition(key, ["STOPPING"], "STOPPED", "stopped");
+      const next = this.transition(key, ["STOPPING"], "STOPPED", "stopped", {}, { stop_source: source });
       this.store.event(key, w.project_id, "Stopped", {
         ...interruption,
         agent_stopped: true,
@@ -2955,7 +2955,7 @@ export class Engine {
             accountRetry ? {
               retry_run_id: accountRetry.retry_run_id,
               logical_round_id: accountRetry.logical_round_id,
-            } : buildDispatchContext(this.store, w.id, "aside"),
+            } : { source_run_id: aside.source_run_id },
             accountRetry,
           );
           const run: Run = {
@@ -3083,7 +3083,7 @@ export class Engine {
             "VERIFYING",
           ].includes(w.state)
         )
-          await this.stop(w.id, "local_console");
+          await this.stop(w.id, "guidance");
         this.store.jobStatus(job.id, "delivered");
         continue;
       }

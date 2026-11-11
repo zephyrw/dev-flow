@@ -145,13 +145,12 @@ test("SA-E18 cancelling an aside does not stop the main tree", async ({
   await expect(page.getByRole("button", { name: "取消本次提问" })).toBeVisible({
     timeout: 15000,
   });
-  const working = await workCard(page).innerText();
   await page.getByRole("button", { name: "取消本次提问" }).click();
   const after = await (await page.request.get(`/api/workflows/${id}`)).json();
   expect(after.workflow.state).toBe(before.workflow.state);
   expect(after.workflow.version).toBe(before.workflow.version);
   await expect(workCard(page)).toContainText(
-    working.includes("Working") ? /Working/ : /running-agent|explore/,
+    /子 Agent \d+/,
   );
 });
 

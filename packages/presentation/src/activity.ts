@@ -260,6 +260,7 @@ export function readableLogs(events: any[], workflow: string, formalGuidance: Ar
       : (previous?.text ?? "") + (typeof step.text_delta === "string" ? step.text_delta : "");
     narratives.set(narrativeKey(e), { text, last: e });
   }
+  const legacyGuidanceStops = legacyGuidanceStopSequences(ordered);
   events = ordered.map(e => {
     const narrative = narratives.get(narrativeKey(e));
     if (!narrative || narrative.last !== e) return publicLogEvent(e);
@@ -280,6 +281,9 @@ export function readableLogs(events: any[], workflow: string, formalGuidance: Ar
     const p = e.payload ?? {},
       step = p.step_update;
     if (NON_LOG_EVENT_TYPES.includes(e.type)) continue;
+    if (e.type === "StateChanged" && p.stop_source === "guidance") continue;
+    if (e.type === "Stopped" && p.source === "guidance") continue;
+    if (legacyGuidanceStops.has(e.event_seq)) continue;
     if (isAsideRun(e.run_id)) continue;
     if (e.type === "NativeActivity") {
       if (!p.id || !["tool", "message", "event"].includes(p.kind)) continue;
@@ -875,6 +879,43 @@ export function readableLogs(events: any[], workflow: string, formalGuidance: Ar
       ? { ...row, text: displayResultEnvelope(row.text) } : row)
     .filter(isMeaningfulLogEntry)
     .sort((a, b) => a.sequence - b.sequence || a.created_at.localeCompare(b.created_at));
+}
+
+/** Older composer stops carry the guidance request on the conversation control. */
+function legacyGuidanceStopSequences(events: any[]): Set<number> {
+  const hidden = new Set<number>();
+  let guidanceRun: string | undefined;
+  let stopping: any;
+  let stopped: any;
+  for (const event of events) {
+    const payload = event.payload;
+    if (event.type === "UserGuidance") {
+      guidanceRun = undefined;
+    } else if (event.type === "ConversationControlUpdated" && !stopping) {
+      const request = payload?.control?.request_id;
+      guidanceRun = typeof request === "string" && request.startsWith("msg-pause:")
+        ? event.run_id : undefined;
+    } else if (event.type === "StateChanged") {
+      if (payload?.to === "STOPPING" && !payload.stop_source && guidanceRun) {
+        stopping = event;
+        stopped = undefined;
+      } else if (stopping && payload?.from === "STOPPING" && payload.to === "STOPPED" && !payload.stop_source) {
+        stopped = event;
+      } else {
+        guidanceRun = undefined;
+        stopping = stopped = undefined;
+      }
+    } else if (event.type === "Stopped") {
+      if (stopping && stopped && payload?.source === "local_console" && payload.prior_run_id === guidanceRun) {
+        hidden.add(stopping.event_seq);
+        hidden.add(stopped.event_seq);
+        hidden.add(event.event_seq);
+      }
+      guidanceRun = undefined;
+      stopping = stopped = undefined;
+    }
+  }
+  return hidden;
 }
 
 /** Keep diagnostics available for progress parsing without putting raw logs in the UI. */

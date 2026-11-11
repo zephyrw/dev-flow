@@ -94,6 +94,7 @@ import {
 import { conversationFilePlugin } from "./routes/conversation-files.js";
 import { projectAsidesPlugin } from "./routes/project-asides.js";
 import { conversationPlugin } from "./routes/conversations.js";
+import { projectAgySubagents } from "./routes/agy-subagents.js";
 import { conversationControlPlugin } from "./routes/conversation-controls.js";
 import { conversationMessagePlugin } from "./routes/conversation-messages.js";
 import { userInteractionPlugin } from "./routes/user-interactions.js";
@@ -1426,7 +1427,7 @@ export async function buildServer(
         workflow: { ...w, feedback: [] },
         runtime: currentRunObservation(engine.store, w),
         execution_spec: readEffectiveSpec(engine.store, engine.config, key).spec,
-        conversation_tree: conversations.getTree(key, undefined, engine.store.runSummaries(key)),
+        conversation_tree: await projectAgySubagents(conversations.getTree(key, undefined, engine.store.runSummaries(key))),
         loading: true, events: [], runs: [], tasks: [], operations: [],
       };
     }
@@ -1448,7 +1449,7 @@ export async function buildServer(
             .map(message => ({ id: message.id, workflow_id: key, text: message.text,
               created_at: message.created_at, feedback_id: message.feedback_message_id }))),
           attachment_status: listAttachmentRecords(engine.store, key),
-          conversation_tree: conversations.getTree(key, undefined, detail.runs),
+          conversation_tree: await projectAgySubagents(conversations.getTree(key, undefined, detail.runs)),
           display_revision: revision,
           material_revision: objectHash(detail.plan),
         };
@@ -1462,7 +1463,7 @@ export async function buildServer(
     if ((req.query as any)?.view === "summary") {
       return {
         ...engine.summary(key),
-        conversation_tree: conversations.getTree(key),
+        conversation_tree: await projectAgySubagents(conversations.getTree(key)),
       };
     }
     const detail = engine.detail(key, false);
@@ -1475,7 +1476,7 @@ export async function buildServer(
         .map((message) => ({ id: message.id, workflow_id: key, text: message.text,
           created_at: message.created_at, feedback_id: message.feedback_message_id }))),
       attachment_status: listAttachmentRecords(engine.store, key),
-      conversation_tree: conversations.getTree(key),
+      conversation_tree: await projectAgySubagents(conversations.getTree(key)),
     };
   });
 
@@ -2265,7 +2266,7 @@ async function submitLegacyFeedback(
     body.interrupt_requested ||
     ["EXECUTING", "VERIFYING", "QUEUED", "HUMAN_PENDING"].includes(w.state)
   ) {
-    await engine.stop(key, "local_console").catch(() => {});
+    await engine.stop(key, "guidance").catch(() => {});
   }
   await engine.waitForIdle(key);
   if (
@@ -2453,7 +2454,7 @@ async function afterConversationMessage(
     engine.get(workflowId).state,
   );
   if (result.mode === "formal" && running) {
-    await stopWorkflowIfAllowed(engine, workflowId);
+    await stopWorkflowIfAllowed(engine, workflowId, "guidance");
   }
   if (saved?.feedback_message_id) {
     try {
@@ -2463,9 +2464,9 @@ async function afterConversationMessage(
   void engine.dispatch();
 }
 
-async function stopWorkflowIfAllowed(engine: Engine, workflowId: string) {
+async function stopWorkflowIfAllowed(engine: Engine, workflowId: string, source: "local_console" | "guidance" = "local_console") {
   try {
-    return await engine.stop(workflowId, "local_console");
+    return await engine.stop(workflowId, source);
   } catch (error) {
     if (error instanceof FlowError && error.code === "INVALID_STATE") {
       return engine.get(workflowId);

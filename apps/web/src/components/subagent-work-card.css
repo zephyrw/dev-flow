@@ -199,3 +199,29 @@
   background: var(--color-warning-bg, #fffbeb);
   border-color: var(--color-warning-border, #fde68a);
 }
+
+.subagent-execution-dialog {
+  width: min(680px, calc(100vw - 32px));
+  max-height: min(76dvh, 760px);
+  padding: 0;
+  border: 0;
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.subagent-execution-dialog::backdrop {
+  background: rgb(15 23 42 / 35%);
+}
+
+.subagent-execution-dialog .execution-sidebar {
+  position: relative;
+  inset: auto;
+  width: 100%;
+  height: min(76dvh, 760px);
+  max-height: none;
+  box-sizing: border-box;
+}
+
+.subagent-execution-dialog .execution-heading h2 {
+  overflow-wrap: anywhere;
+}

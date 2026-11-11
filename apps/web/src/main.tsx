@@ -40,6 +40,9 @@ import { AgyAccountsDialog } from "./components/AgyAccountsDialog.js";
 import { AgyAccountsPage } from "./components/AgyAccountsPage.js";
 import {
   SubagentWorkCard,
+  conversationDisplayName,
+  conversationStatusLabel,
+  isUnconfirmedFreshness,
   readWorkCardPreference,
 } from "./components/SubagentWorkCard.js";
 import { ConversationBreadcrumb } from "./components/ConversationBreadcrumb.js";
@@ -48,6 +51,7 @@ import {
   useConversationView,
 } from "./use-conversation-view.js";
 import {
+  isTerminalConversationStatus,
   unknownSubagentCapabilities,
   type ConversationAttempt,
   type ConversationNode,
@@ -58,7 +62,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { PlanTocButton, usePlanReading } from "./plan-reading.js";
 import { PlanMaterialNotice } from "./components/PlanMaterialNotice.js";
-import { ConversationHistoryCache, type ConversationHistorySnapshot } from "./conversation-history.js";
+import { ConversationHistoryCache } from "./conversation-history.js";
 
 import { createRoot } from "react-dom/client";
 import type { Components } from "react-markdown";
@@ -1603,13 +1607,7 @@ function App() {
   const [locate, setLocate] = useState<{ sequence: number; request: number }>();
   const [stopping, setStopping] = useState(false);
   const [workCardExpanded, setWorkCardExpanded] = useState(false);
-  const [childEntries, setChildEntries] = useState<LogEntry[]>([]);
-  const [childHasMore, setChildHasMore] = useState(false);
-  const childHistory = useRef(new ConversationHistoryCache());
-  const publishChildHistory = (snapshot: ConversationHistorySnapshot) => {
-    setChildEntries(asConversationLogEntries(snapshot.items));
-    setChildHasMore(snapshot.hasMore);
-  };
+  const [selectedAgent, setSelectedAgent] = useState<{ workflowId: string; id: string }>();
   const [updated, setUpdated] = useState(false);
   useEffect(() => {
     let alive = true;
@@ -2136,26 +2134,12 @@ function App() {
         "expanded",
     );
   }, [selected, conversationView.rootConversationId]);
-  React.useLayoutEffect(() => {
-    childHistory.current.select(selected,
-      conversationView.isChildView ? conversationView.selectedConversationId : null);
-    publishChildHistory(childHistory.current.snapshot());
-    return () => childHistory.current.select("", null);
-  }, [selected, conversationView.isChildView, conversationView.selectedConversationId]);
-  useEffect(() => {
-    const request = childHistory.current.begin("latest");
-    if (!request) return;
-    void api(`/workflows/${request.workflowId}/conversations/${request.conversationId}/activities?limit=100`)
-      .then((page) => {
-        const snapshot = childHistory.current.applyPage(request, page);
-        if (snapshot) publishChildHistory(snapshot);
-      })
-      .catch((error) => {
-        if (childHistory.current.finish(request)) {
-          setError(`无法刷新子会话记录：${error instanceof Error ? error.message : String(error)}`);
-        }
-      });
-  }, [selected, conversationView.isChildView, conversationView.selectedConversationId, conversationTree?.cursor]);
+  const childHistory = useChildConversationHistory(selected,
+    conversationView.isChildView ? conversationView.selectedConversationId : null, conversationTree?.cursor);
+  const subagentNodes = (conversationTree?.nodes ?? []) as ConversationNode[];
+  const selectedAgentNode = selectedAgent?.workflowId === selected
+    ? subagentNodes.find(node => node.id === selectedAgent.id) : undefined;
+  const agySubagents = subagentNodes.some(node => node.kind === "subagent" && node.adapter_id === "agy");
   const phaseStart =
     [...(detail?.events ?? [])]
       .reverse()
@@ -2186,6 +2170,11 @@ function App() {
     if (["WAITING_AUTHORIZATION", "WAITING_INPUT"].includes(w?.state))
       setSidebarPrefs((previous) => ({ ...previous, [selected]: true }));
   }, [selected, w?.state]);
+  useEffect(() => {
+    if (!sidebarOpen || !agySubagents || !w || !isWorkflowRunning(w)) return;
+    const timer = window.setInterval(() => void refresh().catch(() => {}), 5000);
+    return () => window.clearInterval(timer);
+  }, [selected, sidebarOpen, agySubagents, w?.state]);
   const toggleSidebar = (open: boolean) => {
     setSidebarPrefs((previous) => {
       const next = { ...previous, [selected]: open };
@@ -2265,7 +2254,7 @@ function App() {
         >
           <span className="nav-icon">◫</span> 任务总览
         </button>
-        <a className="nav" href="/group-chat"><span className="nav-icon">◉</span> 模型群聊</a>
+        <a className="nav" href="/group-chat" target="_blank" rel="noopener noreferrer"><span className="nav-icon">◉</span> 模型群聊</a>
         <div
           style={{
             display: "flex",
@@ -2930,7 +2919,7 @@ function App() {
                         }
                         onToggle={() => setWorkCardExpanded(true)}
                         onCollapse={() => setWorkCardExpanded(false)}
-                        onSelect={conversationView.selectConversation}
+                        onSelect={id => setSelectedAgent({ workflowId: selected, id })}
                         onPauseAll={() =>
                           void pauseAllConversations(
                             conversationView.rootConversationId,
@@ -2957,27 +2946,13 @@ function App() {
                     selectedTitle: conversationView.breadcrumb.at(-1)?.title,
                   })}
                   viewedRuntime={conversationView.viewedRuntimeText}
-                  notice={conversationView.notice}
+                  notice={childHistory.error ?? conversationView.notice}
                   workflowId={selected}
                   conversationId={conversationView.selectedConversationId}
                   isChildView={conversationView.isChildView}
                   loadHistory={
                     conversationView.isChildView
-                      ? childHasMore
-                        ? async () => {
-                            const request = childHistory.current.begin("older");
-                            if (!request) return;
-                            try {
-                              const page = await api(`/workflows/${request.workflowId}/conversations/${request.conversationId}/activities?before_seq=${request.beforeSeq}&limit=100`);
-                              const snapshot = childHistory.current.applyPage(request, page);
-                              if (snapshot) publishChildHistory(snapshot);
-                            } catch (error) {
-                              if (childHistory.current.finish(request)) {
-                                setError(`无法加载更早的记录：${error instanceof Error ? error.message : String(error)}`);
-                              }
-                            }
-                          }
-                        : undefined
+                      ? childHistory.loadOlder
                       : detail.history_cursor === null
                         ? undefined
                         : async () => {
@@ -3000,7 +2975,7 @@ function App() {
                   }
                   entries={
                     conversationView.isChildView
-                      ? childEntries
+                      ? childHistory.entries
                       : (conversationView.entries as LogEntry[])
                   }
                   connected={connected}
@@ -3021,6 +2996,13 @@ function App() {
           )
         )}
       </main>
+      {selectedAgentNode && (
+        <SubagentExecutionDialog key={selectedAgentNode.id} workflowId={selected}
+          node={selectedAgentNode}
+          attempt={(conversationTree?.attempts as ConversationAttempt[] | undefined)
+            ?.find(item => item.id === selectedAgentNode.current_attempt_id)}
+          cursor={conversationTree?.cursor} connected={connected} close={() => setSelectedAgent(undefined)} />
+      )}
       {fileDiff && (
         <div className="modal-backdrop" onClick={() => setFileDiff(null)}>
           <section
@@ -3254,6 +3236,87 @@ function latestConversationGeneration(
       .filter((item) => item.conversation_id === rootId)
       .sort((a, b) => a.generation - b.generation)
       .at(-1)?.generation ?? 0
+  );
+}
+
+function useChildConversationHistory(workflowId: string, conversationId: string | null, cursor?: number, poll = false) {
+  const history = useRef(new ConversationHistoryCache());
+  const [snapshot, setSnapshot] = useState(() => history.current.snapshot());
+  const [error, setError] = useState<string>();
+  const load = async (kind: "latest" | "older") => {
+    const request = history.current.begin(kind);
+    if (!request) return;
+    try {
+      const query = new URLSearchParams({ limit: "100" });
+      if (request.beforeSeq !== null) query.set("before_seq", String(request.beforeSeq));
+      const page = await api(`/workflows/${request.workflowId}/conversations/${request.conversationId}/activities?${query}`);
+      const next = history.current.applyPage(request, page);
+      if (next) {
+        setSnapshot(next);
+        setError(undefined);
+      }
+    } catch (error) {
+      if (history.current.finish(request))
+        setError(`无法加载子 Agent 的执行记录：${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+  React.useLayoutEffect(() => {
+    history.current.select(workflowId, conversationId);
+    setSnapshot(history.current.snapshot());
+    setError(undefined);
+    return () => history.current.select("", null);
+  }, [workflowId, conversationId]);
+  useEffect(() => {
+    void load("latest");
+  }, [workflowId, conversationId, cursor]);
+  useEffect(() => {
+    if (!poll || !conversationId) return;
+    const timer = window.setInterval(() => void load("latest"), 5000);
+    return () => window.clearInterval(timer);
+  }, [workflowId, conversationId, poll]);
+  return {
+    entries: asConversationLogEntries(snapshot.items),
+    loadOlder: snapshot.hasMore ? () => load("older") : undefined,
+    error,
+  };
+}
+
+function SubagentExecutionDialog({ workflowId, node, attempt, cursor, connected, close }: {
+  workflowId: string;
+  node: ConversationNode;
+  attempt?: ConversationAttempt;
+  cursor?: number;
+  connected: boolean;
+  close: () => void;
+}) {
+  const dialog = useRef<HTMLDialogElement>(null);
+  const name = conversationDisplayName(node);
+  const status = attempt && (isUnconfirmedFreshness(attempt.freshness)
+    ? "状态待确认" : conversationStatusLabel(attempt.status));
+  const history = useChildConversationHistory(workflowId, node.id, cursor,
+    node.adapter_id === "agy" && !!attempt && !isTerminalConversationStatus(attempt.status));
+  React.useLayoutEffect(() => {
+    dialog.current?.showModal();
+  }, []);
+  return (
+    <dialog ref={dialog} className="subagent-execution-dialog" aria-label={`${name}的执行记录`}
+      onCancel={event => { event.preventDefault(); close(); }}>
+      <ExecutionPanel
+        dialogTitle={name}
+        sessionIdentity={status}
+        workflowId={workflowId}
+        conversationId={node.id}
+        isChildView
+        connected={connected}
+        close={close}
+        width={640}
+        resize={() => {}}
+        read={() => {}}
+        notice={history.error}
+        entries={history.entries}
+        loadHistory={history.loadOlder}
+      />
+    </dialog>
   );
 }
 

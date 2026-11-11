@@ -27,6 +27,7 @@ export type WorkCardNode = Pick<
   | "kind"
   | "title"
   | "task_summary"
+  | "spawn_call_id"
   | "workflow_id"
   | "created_at"
 >;
@@ -140,7 +141,7 @@ export function shortConversationId(id: string): string {
 
 export function conversationDisplayName(node: WorkCardNode): string {
   const title = node.title.trim();
-  if (title && title !== node.id) return title;
+  if (title && title !== node.id && title !== node.spawn_call_id) return title;
   const task = node.task_summary?.trim();
   if (task) return clipWorkSummary(task);
   return `子 Agent · ${shortConversationId(node.id)}`;
@@ -199,18 +200,16 @@ export function buildSubagentWorkCardModel(input: {
       : emptyConversationWorkCounts();
   const { rows, historyRows } = splitWorkRows(nodes, attempts, byId);
   const hasActiveWork = counts.working > 0;
-  const visibility = workCardVisibility(
-    rows.length + historyRows.length,
-    counts,
-    attempts,
-  );
+  const total = rows.length + historyRows.length;
+  const visibility = workCardVisibility(total, counts, attempts);
+  const headline = `子 Agent ${total}`;
   return {
     visibility,
-    headline: workCardHeadline(visibility, counts),
+    headline,
     counts,
     rows,
     historyRows,
-    chips: workCardChips(counts),
+    chips: workCardChips(headline, counts),
     hasActiveWork,
   };
 }
@@ -399,20 +398,11 @@ function isAllComplete(
   );
 }
 
-function workCardHeadline(
-  visibility: WorkCardVisibility,
-  counts: ConversationWorkCounts,
-): string {
-  if (visibility === "complete") return `子 Agent · 已完成 ${counts.completed}`;
-  if (counts.working === 0 && counts.stale > 0) return "状态待确认";
-  return `Working ${counts.working}`;
-}
-
-function workCardChips(counts: ConversationWorkCounts): WorkCardChip[] {
+function workCardChips(headline: string, counts: ConversationWorkCounts): WorkCardChip[] {
   const exception = counts.failed + counts.interrupted + counts.unknown;
   const paused = counts.pausing + counts.paused;
   const chips: WorkCardChip[] = [
-    { key: "working", label: `Working ${counts.working}` },
+    { key: "working", label: headline },
   ];
   if (counts.waiting > 0) {
     chips.push({ key: "waiting", label: `等待 ${counts.waiting}` });
@@ -558,7 +548,7 @@ function ExpandedWorkCard({
           </button>
         </div>
       </header>
-      <WorkRowList rows={model.rows} onSelect={onSelect} />
+      <WorkRowList rows={[...model.rows, ...model.historyRows]} onSelect={onSelect} />
     </section>
   );
 }

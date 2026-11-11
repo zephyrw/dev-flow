@@ -124,4 +124,13 @@ describe("IT-ASIDE: 提问并行、旧队列恢复、取消与正式反馈幂等
     expect(updated.status).toBe("expired");
     expect(updated.answer).toContain("提问超时");
   });
+
+  it("临时提问保存发送时的主运行，等待派发期间可切换主会话", () => {
+    const workflow = env.store.must<Record<string, unknown>>("workflow", wf1);
+    env.store.put("workflow", wf1, "proj_aside", { ...workflow, run_id: "run-gemini" });
+    const aside = asideService.submitQuestion(wf1, "执行到哪了？");
+    env.store.put("workflow", wf1, "proj_aside", { ...workflow, run_id: "run-codex" });
+
+    expect(env.store.get("aside_session", aside.id)).toMatchObject({ source_run_id: "run-gemini" });
+  });
 });

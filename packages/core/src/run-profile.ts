@@ -78,7 +78,6 @@ const PLANNER_RUN_PURPOSES = new Set([
   "planning",
   "planner_takeover",
   "planner_commit",
-  "aside",
 ]);
 const EXECUTOR_RUN_PURPOSES = new Set([
   "implement",
@@ -271,6 +270,19 @@ export function resolveRoutingPreview(
   const view = readEffectiveSpec(store, config, workflowId);
   const retry = retryPreview(store, workflowId, context, view.spec.revision, retryOverride);
   if (retry) return withPreviewHash(retry);
+  if (context.purpose === "aside") {
+    const sourceId = context.source_run_id ?? store.get<{ run_id?: string }>("workflow", workflowId)?.run_id;
+    const source = sourceId ? store.get<Run>("run", sourceId) : undefined;
+    if (source?.workflow_id === workflowId && source.purpose !== "aside" && source.profile) {
+      const preview = previewFromFrozenRun(source, context, source.routing_source ?? taskSource(view.persisted), view.spec.revision);
+      return withPreviewHash({
+        ...preview,
+        logical_round_id: id("round"),
+        repair_batch_id: undefined,
+        assignment_id: undefined,
+      });
+    }
+  }
   const continuation = sourceContinuationPreview(
     store,
     workflowId,

@@ -83,6 +83,7 @@ export const AsideSessionSchema = z
     id: Id,
     workflow_id: Id,
     run_id: Id.optional(),
+    source_run_id: Id.optional(),
     account_recovery: AccountRecoveryRetrySchema.optional(),
     profile_revision: z.string().min(1),
     context_ref: z.string().min(1),
