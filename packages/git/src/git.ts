@@ -192,25 +192,6 @@ export class GitManager {
         source_branch: info.branch,
         ...(mode === "existing_workspace" ? captureInitialState(root) : {}),
       };
-      requireCondition(
-        !this.store
-          .list<Workspace>("workspace")
-          .some(
-            (w) =>
-              w.root.toLowerCase() === ws.root.toLowerCase() &&
-              w.workflow_id !== workflow &&
-              (this.store.get<{ state: string }>("workflow", w.workflow_id)
-                ?.state !== "COMMITTED" ||
-                ["ready", "starting"].includes(
-                  this.store.get<{ status: string }>(
-                    "environment",
-                    w.workflow_id,
-                  )?.status ?? "",
-                )),
-          ),
-        "WORKSPACE_BUSY",
-        "该工作区已属于其他工作流",
-      );
       this.store.put("workspace", ws.id, workflow, ws);
       this.store.remove("workspace_intent", workflow + "-" + repo.id);
       result.push(ws);

@@ -54,14 +54,15 @@ describe.runIf(process.platform === "win32")("physical Windows workspace identit
     expect(() => service.execute({ request_id: "subdirectory", workspace_root: join(alias, "subdirectory"), request_text: "invalid" })).toThrow(/根目录/);
   }, 30000);
 
-  it("historical short-name workspace and project records retain busy exclusion and reuse the project", () => {
+  it("historical short-name workspace and project records retain reuse the project and allow shared workspace", () => {
     const service = new CreateWorkflowService(store);
     const first = service.execute({ request_id: "first", workspace_root: repo, request_text: "first" });
     const workspace = store.list<Workspace>("workspace", first.workflow.id)[0]!;
     store.put("workspace", workspace.id, first.workflow.id, { ...workspace, root: alias });
     const project = store.must<Project>("project", first.workflow.project_id);
     store.put("project", project.id, project.id, { ...project, repositories: project.repositories.map(r => ({ ...r, path: alias })) });
-    expect(() => service.execute({ request_id: "busy", workspace_root: repo, request_text: "busy" })).toThrow(/已有未完成任务/);
+    const shared = service.execute({ request_id: "busy", workspace_root: repo, request_text: "busy" });
+    expect(shared.workflow.workspace_mode).toBe("existing_workspace");
     const parallel = service.execute({ request_id: "parallel", workspace_root: alias, workspace_mode: "new_worktree", request_text: "parallel" });
     expect(parallel.workflow.project_id).toBe(first.workflow.project_id);
     expect(store.list<Project>("project")).toHaveLength(1);

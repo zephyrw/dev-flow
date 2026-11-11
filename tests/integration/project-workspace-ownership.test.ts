@@ -78,7 +78,7 @@ describe("NV-I02 & NV-I13: 项目工作区归属与工作树路径集成测试",
     expect(excludeContent).toContain(".worktrees/");
   });
 
-  it("当工作区已有活动任务时，existing_workspace 拒绝创建，而 new_worktree 允许并行工作", () => {
+  it("当工作区已有活动任务时，支持共用工作区创建第二个 existing_workspace 任务，new_worktree 允许创建独立工作树", () => {
     // 先创建一个任务占用 existing_workspace
     service.execute({
       request_id: "req-first-busy",
@@ -87,15 +87,17 @@ describe("NV-I02 & NV-I13: 项目工作区归属与工作树路径集成测试",
       workspace_mode: "existing_workspace",
     });
 
-    // 尝试在同一个工作区创建第二个 existing_workspace 任务，应报错 WORKSPACE_BUSY
-    expect(() => {
-      service.execute({
-        request_id: "req-second-busy",
-        workspace_root: repoDir,
-        request_text: "第二个任务尝试占用",
-        workspace_mode: "existing_workspace",
-      });
-    }).toThrowError(/已有未完成任务/);
+    // 轻量模型调度系统不强行限制工作区，共用工作区创建第二个 existing_workspace 任务
+    const secondResult = service.execute({
+      request_id: "req-second-busy",
+      workspace_root: repoDir,
+      request_text: "第二个任务尝试占用",
+      workspace_mode: "existing_workspace",
+    });
+    expect(secondResult.workflow.workspace_mode).toBe("existing_workspace");
+    const wsList = store.list<any>("workspace", secondResult.workflow.id);
+    expect(wsList.length).toBe(1);
+    expect(wsList[0].root.toLowerCase()).toBe(repoDir.toLowerCase());
 
     // 但如果指定 new_worktree，则允许创建独立工作树
     const parallelResult = service.execute({

@@ -112,4 +112,49 @@ describe("Git 真实副作用与拒绝路径", { timeout: 60000 }, () => {
       s.store.close();
     }
   });
+
+  it("轻量调度支持多个任务共用主工作区，前置任务暂停/归档不阻碍新任务准备工作区", async () => {
+    const s = setup(),
+      r = await repository(s.root),
+      p = project(r.repo),
+      id1 = "wf-task-1",
+      id2 = "wf-task-2";
+    try {
+      s.store.put("project", p.id, "global", p);
+      s.store.put("workflow", id1, p.id, {
+        id: id1,
+        project_id: p.id,
+        title: "前置任务",
+        version: 1,
+        state: "STOPPED",
+        stage: "stopped",
+        workspace_mode: "existing_workspace",
+      });
+      // 前置任务在主工作区有 workspace 记录
+      await s.engine.git.prepare(p, id1, "existing_workspace", { main: r.baseline });
+
+      // 新任务也使用主工作区
+      s.store.put("workflow", id2, p.id, {
+        id: id2,
+        project_id: p.id,
+        title: "新任务共用主工作区",
+        version: 1,
+        state: "PLANNING",
+        stage: "planning",
+        workspace_mode: "existing_workspace",
+      });
+      // 准备工作区不应抛出 WORKSPACE_BUSY 或 "该工作区已属于其他工作流"
+      const ws2 = await s.engine.git.prepare(p, id2, "existing_workspace", { main: r.baseline });
+      expect(ws2).toHaveLength(1);
+      expect(ws2[0]!.workflow_id).toBe(id2);
+      expect(ws2[0]!.root.toLowerCase()).toBe(r.repo.toLowerCase());
+
+      // 验证两个任务的工作区记录独立共存于 store 中
+      const allWs = s.store.list<any>("workspace");
+      expect(allWs.filter((w) => w.workflow_id === id1)).toHaveLength(1);
+      expect(allWs.filter((w) => w.workflow_id === id2)).toHaveLength(1);
+    } finally {
+      s.store.close();
+    }
+  });
 });

@@ -285,11 +285,6 @@ export class CreateWorkflowService {
       assertProfilesVerified(this.store, collectExplicitProfiles(plannerProfile, executorProfile, roleOverrides),
         undefined, root);
     }
-    const active = this.store.list<Workspace>("workspace").find(ws =>
-      repositories.some(repo => sameWorkspacePath(ws.root, repo.path))
-      && !["COMMITTED", "COMPLETED"].includes(this.store.get<Workflow>("workflow", ws.workflow_id)?.state ?? ""));
-    requireCondition(mode !== "existing_workspace" || !active,
-      "WORKSPACE_BUSY", `仓库已有未完成任务：${active?.root ?? ""}`, 409);
     const project = pending?.project ?? existing ?? ProjectSchema.parse({
       id: id("proj"),
       name: basename(root),

@@ -64,13 +64,14 @@ describe("项目根目录不属于 Git 仓库", () => {
     expect(resolveMaterialLocator({ store, workflowId: workflow.id, kind: "plan" }).repo_id).toBe("project-docs");
   });
 
-  it("普通模式绑定两个源仓库，并拒绝复用被占用的任一仓库", () => {
+  it("普通模式绑定两个源仓库，且支持共用工作区创建新任务", () => {
     const input = { request_id: "group-existing", workspace_root: root, request_text: "修改前后端" };
     const { workflow } = service.execute(input);
     const workspaces = store.list<Workspace>("workspace", workflow.id);
     expect(workspaces.map(ws => ws.root).sort()).toEqual([join(root, "backend"), join(root, "frontend")]);
     expect(workspaces.every(ws => !ws.owned)).toBe(true);
-    expect(() => service.execute({ ...input, request_id: "other" })).toThrow(/已有未完成任务/);
+    const second = service.execute({ ...input, request_id: "other" });
+    expect(second.workflow.workspace_mode).toBe("existing_workspace");
   });
 
   it("后一个工作树创建失败后保留意图，重开数据库可继续", () => {
