@@ -802,8 +802,17 @@ export class AgyAccountService {
   }>>();
   private backgroundProbeAbort?: AbortController;
   private beginBackgroundProbe(realmId: string) {
-    if (this.repository.getRealm(realmId)?.last_error === "process_stop_unconfirmed")
-      throw new AccountServiceError("process_stop_unconfirmed");
+    const realm = this.repository.getRealm(realmId);
+    if (realm?.last_error === "process_stop_unconfirmed") {
+      if (!this.backgroundProbeAbort) {
+        realm.last_error = undefined;
+        if (realm.phase === "blocked") realm.phase = "idle";
+        realm.revision++;
+        this.repository.saveRealm(realm);
+      } else {
+        throw new AccountServiceError("process_stop_unconfirmed");
+      }
+    }
     const abort = new AbortController(); this.backgroundProbeAbort = abort;
     const deadline = setTimeout(() => abort.abort(new AccountServiceError("quota_refresh_timeout")), 15000);
     return { abort, finish: () => { clearTimeout(deadline); if (this.backgroundProbeAbort === abort) this.backgroundProbeAbort = undefined; } };
