@@ -8,7 +8,7 @@ it.each(["QUEUED", "EXECUTING", "VERIFYING"])("keeps %s final commit in the last
     payload: { from: "QUEUED", to: state, stage: "planner_commit" } }];
   const progress = workflowProgress(workflow, events, { native: true, humanAccepted: true });
   expect(progress.index).toBe(7);
-  expect(progress.title).toBe("本地提交");
+  expect(progress.title).toBe("提交");
   expect(progress.done).toEqual([true, true, true, true, true, true, true, false]);
   expect(progress.completed).toBe(false);
   expect(progress.next).toContain("提交与合并");

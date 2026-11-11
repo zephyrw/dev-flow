@@ -12,8 +12,8 @@ const timing=JSON.parse(await readFile(resolve(out,'project/src/audio-timing.jso
 for(const r of revisionFrames){frameNames['v2-f'+String(r.frame).padStart(4,'0')]=r.title;frameNames[(r.file||'v3-f'+String(r.frame).padStart(4,'0')+'.png').slice(0,-4)]=r.title;}
 frameNames['v2-f0625']='第二版八步方框总览';
 const currentFiles=new Set(revisionFrames.map(r=>r.file));
-Object.assign(pageNames,{'07-model-config':'可自定义的规划工具与模型','07-model-executor':'可自定义的执行工具与模型','08-research':'调研计划','09-approval':'人工审批','10-implement':'开发实施','11-tests':'自动测试','12-pre-review':'验收前质量审查','13-acceptance':'人工验收','14-final-review':'验收后代码复核','15-commit':'本地提交'});
-Object.assign(cutoutNames,{'07-model-config-panel':'规划配置弹窗','07-model-executor-panel':'执行配置弹窗','08-research-plan':'调研计划正文','09-approval-dialog':'人工审批弹窗','10-implement-main':'开发实施进度','11-tests-main':'执行模型的测试清单','12-pre-review-main':'验收前质量审查结果','13-acceptance-main':'人工验收交接','14-final-review-main':'验收后代码复核结果','15-commit-main':'本地提交进度'});
+Object.assign(pageNames,{'07-model-config':'可自定义的规划工具与模型','07-model-executor':'可自定义的执行工具与模型','08-research':'调研计划','09-approval':'人工审批','10-implement':'开发实施','11-tests':'自动测试','12-pre-review':'代码审查','13-acceptance':'人工验收','14-final-review':'代码复核','15-commit':'提交'});
+Object.assign(cutoutNames,{'07-model-config-panel':'规划配置弹窗','07-model-executor-panel':'执行配置弹窗','08-research-plan':'调研计划正文','09-approval-dialog':'人工审批弹窗','10-implement-main':'开发实施进度','11-tests-main':'执行模型的测试清单','12-pre-review-main':'代码审查结果','13-acceptance-main':'人工验收交接','14-final-review-main':'代码复核结果','15-commit-main':'提交进度'});
 for(const dir of ['article-frames','project/public/textures']){
  for(const file of (await readdir(resolve(out,dir))).filter(f=>f.endsWith('.png')).sort()){
   const b=await readFile(resolve(out,dir,file)),stem=file.slice(0,-4);

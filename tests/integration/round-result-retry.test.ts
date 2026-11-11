@@ -139,7 +139,7 @@ it("keeps quality progress through restart-shaped pauses without UI event histor
     expect(businessProgress.index).toBe(4);
     expect(s.engine.detail(w.id, false).business_progress.index).toBe(4);
     const view = workflowProgress(s.engine.get(w.id), [], { native: true, businessProgress });
-    expect(view.title).toBe("验收前质量审查");
+    expect(view.title).toBe("代码审查");
     expect(view.done[5]).toBe(false);
     s.engine.transition(w.id, ["STOPPED"], "EXECUTING", "executor_test");
     expect(readBusinessProgress(s.store, s.engine.get(w.id)).index).toBe(4);

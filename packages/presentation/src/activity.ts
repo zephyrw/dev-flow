@@ -121,7 +121,7 @@ export const stages = [
   "自动测试",
   "人工验收",
   "代码复核",
-  "本地提交",
+  "提交",
 ];
 const stageIndex: Record<string, number> = {
   RESEARCHING: 0,
@@ -177,7 +177,7 @@ export function workflowProgress(
     : w.stage);
   // These are existing workflow phases, not new transitions or gates.
   const labels = display.native
-    ? [...stages.slice(0, 4), "验收前质量审查", "人工验收", "验收后代码复核", "本地提交"]
+    ? [...stages.slice(0, 4), "代码审查", "人工验收", "代码复核", "提交"]
     : stages;
   const index = display.native && display.businessProgress ? display.businessProgress.index
     : display.native && ["planner_takeover", "executor_test"].includes(phase) ? 4
@@ -231,7 +231,7 @@ export function workflowProgress(
       : phase === "acceptance_guidance"
         ? state === "QUEUED" ? "你的指导已排队，等待执行模型处理" : "执行模型正在处理你的指导，回复和操作显示在执行过程"
       : phase === "executor_test"
-        ? `正在完成整改后测试；完成后进入${index === 6 ? "本地提交" : "人工验收"}，不重复代码复核`
+        ? `正在完成整改后测试；完成后进入${index === 6 ? "提交" : "人工验收"}，不重复代码复核`
       : phase === "planner_takeover"
         ? "规划模型正在修复本轮审查问题，完成后交执行模型测试"
       : phase === "functional_fix"
@@ -664,7 +664,7 @@ export function readableLogs(events: any[], workflow: string, formalGuidance: Ar
           :
           p.stage === "quality_before_human"
             ? "正在审查代码质量，通过后进入人工功能确认。"
-            : "正在进行人工后代码质量审查，通过后进入本地提交。";
+            : "正在进行人工后代码质量审查，通过后进入提交。";
       } else if (p.to === "STOPPED") {
         title = "执行已暂停";
         text = "已保留原计划、工作区和已有修改。";

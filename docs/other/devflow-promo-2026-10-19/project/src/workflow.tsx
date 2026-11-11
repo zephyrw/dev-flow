@@ -9,10 +9,10 @@ export const STEPS=[
  {title:'人工审批',short:'人工审批',role:'人工决策',owner:'human',tool:'由你决定',beat:60,page:'09-approval',lines:['确认计划与实施边界','批准后，再开始开发']},
  {title:'开发实施',short:'开发实施',role:'执行模型',owner:'executor',tool:'Agy',beat:68,page:'10-implement',lines:['按照已批准的计划开发','保留任务上下文与进度']},
  {title:'自动测试',short:'自动测试',role:'执行模型',owner:'executor',tool:'Agy',beat:80,page:'11-tests',lines:['完成类型检查、构建与测试','修复相关问题，再次测试']},
- {title:'验收前质量审查',short:'验收前\n质量审查',role:'复核模型',owner:'reviewer',tool:'Codex',beat:92,page:'12-pre-review',lines:['检查代码质量与遗漏','有问题，安排修复与自测']},
+ {title:'代码审查',short:'代码审查',role:'复核模型',owner:'reviewer',tool:'Codex',beat:92,page:'12-pre-review',lines:['检查代码质量与遗漏','有问题，安排修复与自测']},
  {title:'人工验收',short:'人工验收',role:'人工决策',owner:'human',tool:'由你决定',beat:104,page:'13-acceptance',lines:['实际操作，验证功能','功能问题修复后，再验收']},
- {title:'验收后代码复核',short:'验收后\n代码复核',role:'复核模型',owner:'reviewer',tool:'Codex',beat:112,page:'14-final-review',lines:['功能确认后，复核最终代码','有问题先修复，再交执行测试']},
- {title:'本地提交',short:'本地提交',role:'规划模型',owner:'planner',tool:'Codex',beat:124,page:'15-commit',lines:['实际执行 git commit','仅提交本任务改动']},
+ {title:'代码复核',short:'代码复核',role:'复核模型',owner:'reviewer',tool:'Codex',beat:112,page:'14-final-review',lines:['功能确认后，复核最终代码','有问题先修复，再交执行测试']},
+ {title:'提交',short:'提交',role:'规划模型',owner:'planner',tool:'Codex',beat:124,page:'15-commit',lines:['实际执行 git commit','仅提交本任务改动']},
 ] as const;
 export const STEP_STARTS=STEPS.map(s=>beat(s.beat)-beat(48));
 const CHAPTERS=[

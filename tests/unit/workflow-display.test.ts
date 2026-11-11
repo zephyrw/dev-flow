@@ -20,7 +20,7 @@ it("shows the existing before-human review without implying human acceptance or 
     [],
     { native: true, humanAccepted: false },
   );
-  expect(p.title).toBe("验收前质量审查");
+  expect(p.title).toBe("代码审查");
   expect(p.done[p.stages.indexOf("人工验收")]).toBe(false);
   expect(p.next).toContain("进入人工验收");
   expect(p.next).not.toContain("自动提交");
@@ -45,7 +45,7 @@ it("keeps a paused before-human review in its actual phase", () => {
     ],
     { native: true },
   );
-  expect(p).toMatchObject({ title: "验收前质量审查", paused: true });
+  expect(p).toMatchObject({ title: "代码审查", paused: true });
   expect(p.done[5]).toBe(false);
 });
 

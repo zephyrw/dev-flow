@@ -76,7 +76,7 @@ test("native report results and before/after-human reviews display independently
   await page.goto(`/?workflow=${workflow.id}`);
   const human = page.locator(".stage-track li").filter({ hasText: "人工验收" });
   await expect(page.locator(".stage-track [aria-current=step]")).toHaveText(
-    /验收前质量审查/,
+    /代码审查/,
   );
   await expect(human).not.toHaveClass(/past/);
   await expect(human).not.toContainText("✓");
@@ -97,7 +97,7 @@ test("native report results and before/after-human reviews display independently
   detail.human_accepted = true;
   await page.reload();
   await expect(page.locator(".stage-track [aria-current=step]")).toHaveText(
-    /验收后代码复核/,
+    /代码复核/,
   );
   await expect(human).toContainText("✓");
   expect(writes).toEqual([]);

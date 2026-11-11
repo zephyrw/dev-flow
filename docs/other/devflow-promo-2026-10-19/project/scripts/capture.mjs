@@ -68,7 +68,7 @@ function response(path){
   d.tasks=d.tasks.map((t,i)=>({...t,title:['完成本任务代码实现','补齐相关联动与边界处理','运行类型检查、构建与相关测试'][i],development_status:['plan','research'].includes(phase)?'pending':phase==='execute'&&i===2?'in_progress':'completed',implementation_status:['plan','research'].includes(phase)?'pending':phase==='execute'&&i===2?'in_progress':'completed',validation_status:phase==='test'?'passed':t.validation_status}));
   d.plan.plan.tasks=d.tasks;
   d.test_progress={total:6,passed:['plan','research','execute'].includes(phase)?0:6,failed:0,cases:['输入边界处理','异常返回处理','接口参数联动','数据一致性','主流程操作','交互异常提示'].map((title,i)=>({id:'check-'+(i+1),title,layer:['unit','unit','integration','integration','e2e','e2e'][i],status:'passed',result:'passed',scenario:title,report_source:'executor_report',summary:title+' · 虚构演示',task_ids:['T03'],evidence_ids:[]}))};
-  if(phase==='review'||phase==='final-review')d.review={...review,verdict:'passed',summary:phase==='review'?'验收前质量审查：已审查本任务代码质量、遗漏与边界处理。当前未发现必须修改项，可交用户实际验收。':'验收后代码复核：用户已确认功能，已复核最终代码质量。当前未发现必须修改项，可进入本地提交。',findings:[],repair_document:'> 演示复核结论，不代表真实任务执行结果。'};
+  if(phase==='review'||phase==='final-review')d.review={...review,verdict:'passed',summary:phase==='review'?'代码审查：已审查本任务代码质量、遗漏与边界处理。当前未发现必须修改项，可交用户实际验收。':'代码复核：用户已确认功能，已复核最终代码质量。当前未发现必须修改项，可进入提交。',findings:[],repair_document:'> 演示复核结论，不代表真实任务执行结果。'};
   if(phase==='accept')d.acceptance_handoff={summary:'## 由你实际验收\n\n按批准计划中的场景实际操作，确认目标功能与异常处理符合要求。\n\n发现功能问题可反馈给执行模型，修复和测试后再由你验收。\n\n> 页面为虚构演示。'};
  }
  return d;

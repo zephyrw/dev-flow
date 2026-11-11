@@ -10,7 +10,7 @@
 
 <picture>
   <source media="(max-width: 600px)" srcset="docs/guide/assets/devflow-workflow-mobile.svg">
-  <img src="docs/guide/assets/devflow-workflow.svg" alt="八步模型接力：调研计划、人工审批；开发实施、自动测试、验收前质量审查；人工验收、验收后代码复核、本地提交。各角色工具与模型可自定义。" width="1120">
+  <img src="docs/guide/assets/devflow-workflow.svg" alt="八步模型接力：调研计划、人工审批；开发实施、自动测试、代码审查；人工验收、代码复核、提交。各角色工具与模型可自定义。" width="1120">
 </picture>
 
 开发与测试由执行模型完成，代码质量由复核模型判断，实际功能由你验收。DevFlow 负责调度与展示；代码或功能问题在原任务中处理，推送与发布另行授权。完整分工见 [职责与调度](packages/skills/devflow/references/role-and-schedule.md)。
@@ -21,9 +21,9 @@
 
 | 角色 | 示例配置 | 负责什么 |
 | --- | --- | --- |
-| 规划模型 | Codex · GPT-6 Astra | 调研计划、本地提交 |
+| 规划模型 | Codex · GPT-6 Astra | 调研计划、提交 |
 | 执行模型 | Agy · Gemini 3.8 Flash | 开发实施、自动测试及相关修复 |
-| 复核模型 | Codex · GPT-6 Astra | 验收前质量审查、验收后代码复核 |
+| 复核模型 | Codex · GPT-6 Astra | 代码审查、代码复核 |
 
 复核可跟随规划，也可单独指定工具、模型与思考强度。全局默认用于新任务，已有任务可以单独调整；可用模型取决于所接入客户端和账号授权。
 

@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1120" height="556" viewBox="0 0 1120 556" role="img" aria-labelledby="title description">
   <title id="title">DevFlow 模型接力工作流</title>
-  <desc id="description">依次经过规划与审批、开发与检查、验收与提交三段。八步为：调研计划、人工审批、开发实施、自动测试、验收前质量审查、人工验收、验收后代码复核、本地提交。人工审批和人工验收由你确认；其余步骤按规划、执行和复核职责分工。各角色的工具与模型均可自定义。</desc>
+  <desc id="description">依次经过规划与审批、开发与检查、验收与提交三段。八步为：调研计划、人工审批、开发实施、自动测试、代码审查、人工验收、代码复核、提交。人工审批和人工验收由你确认；其余步骤按规划、执行和复核职责分工。各角色的工具与模型均可自定义。</desc>
   <defs>
     <linearGradient id="surface" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#f8fafc"/><stop offset="1" stop-color="#f3f6fb"/></linearGradient>
     <linearGradient id="human" x1="0" y1="0" x2="1" y2="0"><stop stop-color="#e4f5ee"/><stop offset="1" stop-color="#edf8f3" stop-opacity="0.4"/></linearGradient>
@@ -39,7 +39,7 @@
 
     <circle cx="409" cy="409" r="16" fill="#7550bd"/>
     <text x="409" y="413.5" font-size="12" fill="#fff" font-weight="700" text-anchor="middle">05</text>
-    <text x="457" y="416" font-size="23" fill="#16243b" font-weight="650" >验收前质量审查</text>
+    <text x="457" y="416" font-size="23" fill="#16243b" font-weight="650" >代码审查</text>
     <text x="457" y="442" font-size="14" fill="#7550bd" font-weight="600" >复核模型</text>
     <text x="457" y="467" font-size="15" fill="#58677e" font-weight="400" >检查代码质量与实现遗漏</text>
   </g></g><g data-chapter="03"><text x="772" y="43" font-size="13" fill="#73829a" font-weight="650" letter-spacing="1.5">03</text><text x="801" y="43" font-size="14" fill="#687890" font-weight="400" >由你验收，再完成交付</text><text x="772" y="89" font-size="29" fill="#16243b" font-weight="700" >验收与提交</text><path d="M772 114H1076" stroke="#d6deea"/><path d="M773 183V393" stroke="#cdd7e6" stroke-width="2"/><g data-step="06" transform="translate(0 0)">
@@ -53,14 +53,14 @@
 
     <circle cx="773" cy="288" r="16" fill="#7550bd"/>
     <text x="773" y="292.5" font-size="12" fill="#fff" font-weight="700" text-anchor="middle">07</text>
-    <text x="821" y="295" font-size="23" fill="#16243b" font-weight="650" >验收后代码复核</text>
+    <text x="821" y="295" font-size="23" fill="#16243b" font-weight="650" >代码复核</text>
     <text x="821" y="321" font-size="14" fill="#7550bd" font-weight="600" >复核模型</text>
     <text x="821" y="346" font-size="15" fill="#58677e" font-weight="400" >复核验收后的最终代码</text>
   </g><g data-step="08" transform="translate(0 0)">
 
     <circle cx="773" cy="409" r="16" fill="#3159d9"/>
     <text x="773" y="413.5" font-size="12" fill="#fff" font-weight="700" text-anchor="middle">08</text>
-    <text x="821" y="416" font-size="23" fill="#16243b" font-weight="650" >本地提交</text>
+    <text x="821" y="416" font-size="23" fill="#16243b" font-weight="650" >提交</text>
     <text x="821" y="442" font-size="14" fill="#3159d9" font-weight="600" >规划模型</text>
     <text x="821" y="467" font-size="15" fill="#58677e" font-weight="400" >仅提交本任务相关改动</text>
   </g></g><path d="M44 497H1076" stroke="#d6deea"/><text x="44" y="532" font-size="16" fill="#3159d9" font-weight="600" >工具与模型可自定义</text><text x="1076" y="532" font-size="15" fill="#687890" font-weight="400" text-anchor="end">DevFlow 负责阶段衔接与进度展示</text></g>
