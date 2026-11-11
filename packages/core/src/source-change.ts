@@ -95,9 +95,18 @@ async function capture(engine: Engine, key: string): Promise<SourceVersion[]> {
         knownWorkspaces: allWorkspaces,
         currentWorkspaceRoot: root,
       });
+      // DevFlow's own progress material is not user source code: submitPlan
+      // rewrites docs/plan/<workflow>/task-list.json on every new plan
+      // revision, including the resolve-"continue" revision bump. That
+      // rewrite must not look like the user changed the code after
+      // confirming it, or the next dispatch would block with
+      // BASELINE_CHANGED.
+      const taskListRelative = engine.store.get<any>("task_list_binding", key)?.relative
+        ?? `docs/plan/${key}/task-list.json`;
       const scanOptions = {
         registeredWorktrees,
         backupSubtrees,
+        excludes: [taskListRelative],
       };
       const fingerprint = WorkspaceFingerprintService.compute(root, scanOptions).fingerprint;
       const [local, commits, files, head] = await Promise.all([
