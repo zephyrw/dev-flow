@@ -36,6 +36,10 @@ export function registerGroupChat(app: FastifyInstance, engine: Engine, catalog:
     const input = groupInput.extend({ version }).parse(req.body);
     return chat.replaceGroup(group, input.version, input.title, input.human, input.members, input.admin);
   });
+  app.delete("/api/groups/:id", async req => {
+    const group = id(req);
+    return chat.deleteGroup(group);
+  });
   app.get("/api/groups/:id/sessions", req => {
     const group = id(req);
     const query = z.object({ before: key.optional(), query: z.string().max(100).default("") }).parse(req.query);
@@ -59,6 +63,11 @@ export function registerGroupChat(app: FastifyInstance, engine: Engine, catalog:
       return chat.changeAdmin(row, session, input.version, input.member);
     });
   }
+  app.patch("/api/group-sessions/:id/title", req => {
+    const row = id(req);
+    const input = mutation.extend({ title }).parse(req.body);
+    return chat.renameSession(row, input.version, input.title);
+  });
   app.get("/api/group-sessions/:id", req => {
     const row = id(req);
     const query = z.object({ before: z.coerce.number().int().positive().optional() }).parse(req.query);

@@ -9,6 +9,7 @@ import "./group-chat.css";
 type View = { session: Session; round?: Round; messages: (Message & { seq: number })[]; artifacts: Artifact[]; next?: number };
 type Page = { items: Session[]; next?: string };
 type Document = Artifact & { body: string };
+
 const toolNames = { codex: "Codex", agy: "Antigravity CLI", "claude-code": "Claude Code", opencode: "OpenCode" };
 const defaultMembers: Omit<Model, "id">[] = [
   { nickname: "", tool: "codex", model: "gpt-6-astra", effort: "max" },
@@ -23,6 +24,142 @@ const stageNames = {
   plans: "独立出方案", reviews: "方案互评", final: "整理成稿",
 };
 const label = (artifact: Artifact) => artifact.author + " · " + artifact.title;
+
+export function getModelAbbr(name: string): string {
+  if (!name) return "AI";
+  const trimmed = name.trim();
+  if (/^[\u4e00-\u9fa5]+$/.test(trimmed)) return trimmed.slice(0, 2);
+  const match = trimmed.match(/[a-zA-Z]+/g);
+  if (match) {
+    const letters = match.join("");
+    if (letters.length >= 3) return letters.slice(0, 3).toUpperCase();
+    if (letters.length > 0) return letters.toUpperCase();
+  }
+  return trimmed.slice(0, 3).toUpperCase();
+}
+
+// 素雅低饱和莫兰迪冷灰 / 浅灰质感色板，干净素净、绝不花哨刺眼
+const AVATAR_PALETTES = [
+  { bg: "#f1f5f9", color: "#334155" }, // 典雅浅冷灰 (Slate)
+  { bg: "#f3f4f6", color: "#374151" }, // 沉稳冷烟灰 (Gray)
+  { bg: "#f8fafc", color: "#475569" }, // 极浅素白灰 (Slate Light)
+  { bg: "#f5f5f4", color: "#44403c" }, // 质感素暖灰 (Stone)
+  { bg: "#edf2f7", color: "#2d3748" }, // 极低饱和度青灰
+  { bg: "#eef2f6", color: "#34495e" }, // 极淡素墨蓝
+];
+
+function hashString(str: string) {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) hash = (hash * 31 + str.charCodeAt(i)) >>> 0;
+  return hash;
+}
+
+export function GroupAvatar({ members = [], title = "" }: { members?: Pick<Model, "nickname" | "model" | "tool">[]; title?: string }) {
+  const count = members.length;
+  if (count === 0) {
+    const text = getModelAbbr(title) || "群";
+    const palette = AVATAR_PALETTES[hashString(title) % AVATAR_PALETTES.length]!;
+    return <div className="gc-group-avatar gc-grid-1" style={{ background: palette.bg, color: palette.color }}>{text}</div>;
+  }
+  if (count === 1) {
+    const member = members[0]!;
+    const text = getModelAbbr(member.nickname || member.model);
+    const palette = AVATAR_PALETTES[hashString(text) % AVATAR_PALETTES.length]!;
+    return <div className="gc-group-avatar gc-grid-1" style={{ background: palette.bg, color: palette.color }}>{text}</div>;
+  }
+  if (count === 2) {
+    return (
+      <div className="gc-group-avatar gc-grid-2">
+        {members.slice(0, 2).map((m, idx) => {
+          const text = getModelAbbr(m.nickname || m.model);
+          const p = AVATAR_PALETTES[(hashString(text) + idx) % AVATAR_PALETTES.length]!;
+          return <span key={idx} className="gc-avatar-cell" style={{ background: p.bg, color: p.color }}>{text}</span>;
+        })}
+      </div>
+    );
+  }
+  if (count <= 4) {
+    return (
+      <div className="gc-group-avatar gc-grid-4">
+        {members.slice(0, 4).map((m, idx) => {
+          const text = getModelAbbr(m.nickname || m.model);
+          const p = AVATAR_PALETTES[(hashString(text) + idx) % AVATAR_PALETTES.length]!;
+          return <span key={idx} className="gc-avatar-cell" style={{ background: p.bg, color: p.color }}>{text}</span>;
+        })}
+      </div>
+    );
+  }
+  return (
+    <div className="gc-group-avatar gc-grid-9">
+      {members.slice(0, 9).map((m, idx) => {
+        const text = getModelAbbr(m.nickname || m.model);
+        const p = AVATAR_PALETTES[(hashString(text) + idx) % AVATAR_PALETTES.length]!;
+        return <span key={idx} className="gc-avatar-cell" style={{ background: p.bg, color: p.color }}>{text}</span>;
+      })}
+    </div>
+  );
+}
+
+// ============================================================================
+// 全局模型目录缓存与 SWR (Stale-While-Revalidate)
+// ============================================================================
+
+const CACHE_STORAGE_KEY = "devflow_cached_models_v2";
+
+function readLocalModelCache(): Partial<Record<Model["tool"], ModelChoice[]>> {
+  try {
+    const raw = typeof localStorage !== "undefined" ? localStorage.getItem(CACHE_STORAGE_KEY) : null;
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+}
+
+// 内存中常驻的全局单例缓存（初始化同步读取 localStorage）
+export const GLOBAL_MODEL_CACHE: Partial<Record<Model["tool"], ModelChoice[]>> = readLocalModelCache();
+const IN_FLIGHT_PROBES = new Map<Model["tool"], Promise<ModelChoice[]>>();
+
+export async function fetchToolModelsWithSWR(
+  tool: Model["tool"],
+  onUpdate?: (choices: ModelChoice[]) => void
+): Promise<ModelChoice[]> {
+  const cached = GLOBAL_MODEL_CACHE[tool];
+  if (cached && cached.length > 0 && onUpdate) {
+    onUpdate(cached);
+  }
+
+  if (IN_FLIGHT_PROBES.has(tool)) {
+    const p = IN_FLIGHT_PROBES.get(tool)!;
+    p.then(res => { if (res.length > 0 && onUpdate) onUpdate(res); }).catch(() => {});
+    return cached && cached.length > 0 ? cached : p;
+  }
+
+  const promise = (async () => {
+    try {
+      const data = await getAdapterModels(tool);
+      if (data && data.entries && data.entries.length > 0) {
+        const choices = buildModelChoices(data.entries.filter(entry =>
+          entry.adapterId === tool && entry.selectionKind === "fixed" && (tool !== "agy" || entry.availability === "listed")
+        ));
+        if (choices.length > 0) {
+          GLOBAL_MODEL_CACHE[tool] = choices;
+          try { localStorage.setItem(CACHE_STORAGE_KEY, JSON.stringify(GLOBAL_MODEL_CACHE)); } catch {}
+          if (onUpdate) onUpdate(choices);
+          return choices;
+        }
+      }
+    } catch {
+      // 静默处理，不阻塞已有缓存
+    } finally {
+      IN_FLIGHT_PROBES.delete(tool);
+    }
+    return GLOBAL_MODEL_CACHE[tool] ?? [];
+  })();
+
+  IN_FLIGHT_PROBES.set(tool, promise);
+  return cached && cached.length > 0 ? cached : promise;
+}
+
 function modelName(member: Pick<Model, "tool" | "model" | "effort">, catalogLabel?: string) {
   const id = member.model.split("/").at(-1) ?? member.model;
   const catalogName = catalogLabel?.trim();
@@ -30,6 +167,7 @@ function modelName(member: Pick<Model, "tool" | "model" | "effort">, catalogLabe
   const effort = member.effort ?? (member.tool === "agy" ? id.match(/-(low|medium|high|max)$/i)?.[1] : undefined);
   return effort && !name.toLowerCase().endsWith(effort.toLowerCase()) ? name + " " + effort : name;
 }
+
 const messageTime = new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", hour: "2-digit", minute: "2-digit", hour12: false });
 const sessionUrl = (id: string) => "/api/group-sessions/" + id;
 
@@ -64,7 +202,13 @@ function Menu({ label, children }: { label: string; children: ReactNode }) {
       event.currentTarget.querySelector("summary")?.focus();
     }
   }}>
-    <summary aria-label={label} title={label}>···</summary>
+    <summary aria-label={label} title={label} className="gc-menu-trigger-btn">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+        <circle cx="12" cy="12" r="2.2" />
+        <circle cx="19" cy="12" r="2.2" />
+        <circle cx="5" cy="12" r="2.2" />
+      </svg>
+    </summary>
     <div className="gc-menu-panel" onClick={event => {
       if ((event.target as HTMLElement).closest("button")) event.currentTarget.closest("details")!.open = false;
     }}>{children}</div>
@@ -75,122 +219,151 @@ function Modal({ title, children, close }: { title: string; children: ReactNode;
   const ref = useRef<HTMLDialogElement>(null);
   useEffect(() => { ref.current?.showModal(); }, []);
   return <dialog ref={ref} aria-label={title} className="gc-modal" onCancel={close}>
-    <div className="gc-modal-heading"><h2>{title}</h2><button type="button" onClick={close} aria-label="关闭">×</button></div>
+    <div className="gc-modal-heading">
+      <h2>{title}</h2>
+      <button type="button" onClick={close} aria-label="关闭" className="gc-modal-close-btn">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M18 6 6 18M6 6l12 12"/>
+        </svg>
+      </button>
+    </div>
     {children}
   </dialog>;
 }
 
-function GroupForm({ save, close, group }: { save: (data: unknown) => Promise<void>; close: () => void; group?: Group }) {
+function GroupForm({ save, close, group, existingGroups = [] }: { save: (data: unknown) => Promise<void>; close: () => void; group?: Group; existingGroups?: Group[] }) {
   const [members, setMembers] = useState<Omit<Model, "id">[]>(() =>
     group ? group.members.map(({ id: _id, ...member }) => member) : defaultMembers,
   );
-  const [catalogs, setCatalogs] = useState<Partial<Record<Model["tool"], ModelChoice[]>>>({});
+  const [catalogs, setCatalogs] = useState<Partial<Record<Model["tool"], ModelChoice[]>>>(GLOBAL_MODEL_CACHE);
   const [loading, setLoading] = useState<Partial<Record<Model["tool"], boolean>>>({});
   const [catalogErrors, setCatalogErrors] = useState<Partial<Record<Model["tool"], string>>>({});
-  const requests = useRef(new Map<Model["tool"], AbortController>());
   const [admin, setAdmin] = useState(group?.members.findIndex(member => member.id === group.admin) ?? 0);
   const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
   const [editor, setEditor] = useState<{ index: number; member: Omit<Model, "id">; admin: boolean }>();
-  async function load(tool: Model["tool"], force = false) {
-    requests.current.get(tool)?.abort();
-    const controller = new AbortController();
-    requests.current.set(tool, controller);
-    setLoading(value => ({ ...value, [tool]: true }));
-    setCatalogErrors(value => ({ ...value, [tool]: undefined }));
-    try {
-      let data = await getAdapterModels(tool, controller.signal);
-      if (force || modelCatalogNeedsRefresh(data)) {
-        await refreshAdapterModels(tool, controller.signal);
-        data = await getAdapterModels(tool, controller.signal);
-      }
-      if (controller.signal.aborted) return;
-      if (data.status !== "fresh" || data.discoveryStatus === "missing")
-        throw new Error(data.catalog?.errorMessage || "模型目录尚未加载完成，请刷新后重试");
-      const choices = buildModelChoices(data.entries.filter(entry => entry.adapterId === tool &&
-        entry.selectionKind === "fixed" && (tool !== "agy" || entry.availability === "listed")));
+
+  function load(tool: Model["tool"]) {
+    setLoading(value => ({ ...value, [tool]: !catalogs[tool]?.length }));
+    void fetchToolModelsWithSWR(tool, choices => {
       setCatalogs(value => ({ ...value, [tool]: choices }));
-    } catch (error) {
-      if (!controller.signal.aborted) setCatalogErrors(value => ({ ...value, [tool]: formatApiError(error) }));
-    } finally {
-      if (!controller.signal.aborted) setLoading(value => ({ ...value, [tool]: false }));
-    }
+      setLoading(value => ({ ...value, [tool]: false }));
+    }).catch(err => {
+      setCatalogErrors(value => ({ ...value, [tool]: formatApiError(err) }));
+      setLoading(value => ({ ...value, [tool]: false }));
+    });
   }
+
   const memberTools = [...new Set([...members.map(member => member.tool), ...(editor ? [editor.member.tool] : [])])].join(",");
   useEffect(() => {
-    for (const tool of memberTools.split(",").filter(Boolean) as Model["tool"][])
-      if (!requests.current.has(tool)) void load(tool);
+    for (const tool of memberTools.split(",").filter(Boolean) as Model["tool"][]) {
+      load(tool);
+    }
   }, [memberTools]);
-  useEffect(() => () => {
-    for (const controller of requests.current.values()) controller.abort();
-    requests.current.clear();
-  }, []);
+
   function isAvailable(member: Omit<Model, "id">) {
+    if (!member.model) return false;
     const choice = memberChoice(member, catalogs[member.tool]);
-    return choice && !loading[member.tool] && !catalogErrors[member.tool] &&
-      (!member.effort || (choice.effortStatus === "supported" && choice.effortValues.includes(member.effort)));
+    if (!choice) return true;
+    return !member.effort || (choice.effortStatus === "supported" && choice.effortValues.includes(member.effort));
   }
-  const canSave = members.length > 0 && members.every(isAvailable);
+
+  const canSave = members.length > 0 && members.every(m => Boolean(m.model));
+
   function patch(value: Partial<Omit<Model, "id">>) {
     setEditor(current => current && { ...current, member: { ...current.member, ...value } });
   }
+
   const taken = (tool: Model["tool"], choice: ModelChoice, except: number) =>
     members.some((member, index) => index !== except && member.tool === tool &&
       memberChoice(member, catalogs[tool]) === choice);
+
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!canSave) { setError("请等待模型目录加载完成，并选择当前可用的模型与推理强度"); return; }
     const data = new FormData(event.currentTarget);
+    const title = String(data.get("title") ?? "").trim();
+    if (!title) { setError("群名称不能为空"); return; }
+    const isDuplicate = existingGroups.some(g => g.id !== group?.id && g.title.trim().toLowerCase() === title.toLowerCase());
+    if (isDuplicate) {
+      setError("群聊名称已存在，请使用其他名称");
+      return;
+    }
+    if (!canSave) { setError("请等待模型目录加载完成，并选择当前可用的模型与推理强度"); return; }
+
     setPending(true);
     setError("");
     const normalize = (name: string) => name.trim().normalize("NFKC").toLowerCase();
-    const taken = new Set(["全部", "全部模型", normalize(String(data.get("human"))), ...members.map(member => normalize(member.nickname))]);
+    const humanName = group?.human ?? "我";
+    const takenNames = new Set(["全部", "全部模型", normalize(humanName), ...members.map(member => normalize(member.nickname))]);
     const namedMembers = members.map(member => {
       if (member.nickname.trim()) return member;
       const base = modelName(member, memberChoice(member, catalogs[member.tool])?.label);
       let nickname = base.slice(0, 32).trimEnd();
-      for (let count = 2; taken.has(normalize(nickname)); count++) {
+      for (let count = 2; takenNames.has(normalize(nickname)); count++) {
         const suffix = " " + count;
         nickname = base.slice(0, 32 - suffix.length).trimEnd() + suffix;
       }
-      taken.add(normalize(nickname));
+      takenNames.add(normalize(nickname));
       return { ...member, nickname };
     });
-    try { await save({ title: data.get("title"), human: data.get("human"), members: namedMembers, admin, version: group?.version }); }
+    try { await save({ title, human: humanName, members: namedMembers, admin, version: group?.version }); }
     catch (error) { setError(error instanceof Error ? error.message : String(error)); }
     finally { setPending(false); }
   }
+
   return <><Modal title={group ? "编辑群配置" : "新建群聊"} close={close}>
     <form onSubmit={submit} className="gc-form">
-      <label>群名称<input name="title" required maxLength={100} defaultValue={group?.title} autoFocus /></label>
-      <label>我的昵称<input name="human" required maxLength={32} defaultValue={group?.human ?? "我"} /></label>
+      <label>
+        <span className="gc-form-label">群名称</span>
+        <input name="title" required maxLength={100} defaultValue={group?.title} placeholder="输入群聊名称（不可重名）" autoFocus />
+      </label>
+      <div className="gc-member-section-header">
+        <span className="gc-form-label">群内模型成员（{members.length}）</span>
+        <small className="gc-text-muted">（当前用户为默认参与者，无需单独添加）</small>
+      </div>
       <ul className="gc-member-list" aria-label="模型成员">
         {members.map((member, index) => {
           const name = modelName(member, memberChoice(member, catalogs[member.tool])?.label);
           const unavailable = catalogs[member.tool] && !loading[member.tool] && !catalogErrors[member.tool] && !isAvailable(member);
+          const abbr = getModelAbbr(member.nickname || member.model);
           return <li key={index} className="gc-member-item">
-            <span>{name}</span>
-            {admin === index && <span className="gc-tag">管理员</span>}
-            {unavailable && <small role="alert">当前目录不可用，请修改或移除</small>}
+            <span className="gc-member-mini-avatar">{abbr}</span>
+            <div className="gc-member-desc">
+              <span className="gc-member-nickname">{member.nickname || name}</span>
+              <small className="gc-member-model-tag">{toolNames[member.tool]} · {name}</small>
+            </div>
+            {admin === index && <span className="gc-tag gc-tag-admin">管理员</span>}
+            {unavailable && <small role="alert" className="gc-alert-text">当前目录不可用</small>}
             <div className="gc-member-controls">
               <button type="button" title="编辑成员" aria-label={`编辑成员 ${name}`}
                 onClick={() => setEditor({ index, member, admin: admin === index })}>
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true"><path d="m14 5 5 5M4 20l4-1 12-12-3-3L5 16z" /></svg>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                  <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/>
+                  <path d="m15 5 4 4"/>
+                </svg>
               </button>
               <button type="button" title="移除成员" aria-label={`移除成员 ${name}`} onClick={() => {
                 setMembers(rows => rows.filter((_, i) => i !== index));
                 setAdmin(value => value === index ? 0 : value > index ? value - 1 : value);
-              }}>×</button>
+              }}>
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M18 6 6 18M6 6l12 12"/>
+                </svg>
+              </button>
             </div>
           </li>;
         })}
       </ul>
-      {[...new Set(members.map(member => member.tool))].map(tool => catalogErrors[tool] && <p key={tool} role="alert">{toolNames[tool]}：{catalogErrors[tool]}</p>)}
-      {error && <p role="alert">{error}</p>}
-      <div className="gc-actions">
-        <button type="button" disabled={members.length >= 16} onClick={() => setEditor({
+      {error && <p role="alert" className="gc-error-tip">{error}</p>}
+      <div className="gc-actions gc-form-actions">
+        <button type="button" className="gc-btn-add-member" disabled={members.length >= 16} onClick={() => setEditor({
           index: members.length, member: { nickname: "", tool: "codex", model: "" }, admin: members.length === 0,
-        })}>新增成员</button>
+        })}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M12 5v14M5 12h14"/>
+          </svg>
+          <span>新增成员</span>
+        </button>
         <button className="gc-primary" disabled={pending || !canSave}>{group ? "保存群配置" : "创建群聊"}</button>
       </div>
     </form>
@@ -206,44 +379,65 @@ function GroupForm({ save, close, group }: { save: (data: unknown) => Promise<vo
         const duplicate = model && taken(member.tool, model, index) &&
           !(members[index]?.tool === member.tool && memberChoice(members[index], models) === model);
         return <Modal title={adding ? "新增成员" : "编辑成员"} close={() => setEditor(undefined)}>
-        <form className="gc-form gc-member-form" onSubmit={event => {
+        <form className="gc-form gc-member-form-pro" onSubmit={event => {
           event.preventDefault();
           if (!isAvailable(member) || duplicate) return;
           setMembers(rows => adding ? [...rows, member] : rows.map((row, i) => i === index ? member : row));
           if (editor.admin) setAdmin(index);
           setEditor(undefined);
         }}>
-          <label>昵称<input maxLength={32} value={member.nickname}
-            placeholder={modelName(member, model?.label) || "留空使用模型名"} onInput={event => patch({ nickname: event.currentTarget.value })} /></label>
-          <label>工具<select value={member.tool} onChange={e => patch({ tool: e.target.value as Model["tool"], model: "", effort: undefined })}>
-            {tools.map(tool => <option value={tool} key={tool}>{toolNames[tool]}</option>)}
-          </select></label>
-          <label>模型<select required disabled={!ready} value={model?.nativeId ?? member.model} onChange={e => patch({ model: e.target.value, effort: undefined })}>
-            <option value="">{loading[member.tool] ? "正在读取模型目录…" : "选择具体模型"}</option>
-            {member.model && !model && <option value={member.model} disabled>{formatModelName(member.tool, member.model)}（{ready ? "当前目录不可用" : "等待目录确认"}）</option>}
-            {models.map(item => {
-              const used = taken(member.tool, item, index) && item !== model;
-              return <option key={item.entryIds.join("|")} value={item.nativeId} disabled={used}>{item.label}{used && "（已有成员）"}</option>;
-            })}
-          </select></label>
-          <label>推理强度<select disabled={!model || (efforts.length === 0 && !member.effort)} value={effort} onChange={e => {
-            const value = e.target.value;
-            patch({ model: model?.variantByEffort[value] ?? model?.nativeId ?? member.model, effort: value || undefined });
-          }}>
-            <option value="">模型默认</option>
-            {effort && !efforts.includes(effort) && <option value={effort} disabled>{effort}{model && "（当前模型不支持）"}</option>}
-            {efforts.map(value => <option key={value}>{value}</option>)}
-          </select></label>
-          {catalogErrors[member.tool] && <p role="alert">{catalogErrors[member.tool]}</p>}
-          {ready && member.model && !model && <p role="alert">{group
-            ? "原模型已不在当前目录，请重新选择。"
-            : "预选模型不在当前目录，请重新选择或移除此成员。"}</p>}
-          <div className="gc-actions">
-            <label><input type="checkbox" checked={editor.admin} disabled={index === admin} onChange={event => {
-              const checked = event.currentTarget.checked;
-              setEditor(current => current && { ...current, admin: checked });
-            }} /> 设为管理员</label>
-            <button type="button" disabled={loading[member.tool]} onClick={() => void load(member.tool, true)}>{loading[member.tool] ? "刷新中" : "刷新模型目录"}</button>
+          <label>
+            <span className="gc-form-label">成员昵称</span>
+            <input maxLength={32} value={member.nickname}
+              placeholder={modelName(member, model?.label) || "留空将使用模型名"} onInput={event => patch({ nickname: event.currentTarget.value })} />
+          </label>
+          <label>
+            <span className="gc-form-label">接入工具</span>
+            <select value={member.tool} onChange={e => {
+              const nextTool = e.target.value as Model["tool"];
+              load(nextTool);
+              patch({ tool: nextTool, model: "", effort: undefined });
+            }}>
+              {tools.map(tool => <option value={tool} key={tool}>{toolNames[tool]}</option>)}
+            </select>
+          </label>
+          {/* 模型选择与推理强度同一行，比例合适紧凑 */}
+          <div className="gc-col-span-2 gc-model-effort-row">
+            <label className="gc-model-col">
+              <span className="gc-form-label">模型选择</span>
+              <select required disabled={!ready} value={model?.nativeId ?? member.model} onChange={e => patch({ model: e.target.value, effort: undefined })}>
+                <option value="">{loading[member.tool] && !models.length ? "正在读取模型目录…" : "请选择具体模型"}</option>
+                {member.model && !model && <option value={member.model} disabled>{formatModelName(member.tool, member.model)}（{ready ? "当前目录不可用" : "等待目录确认"}）</option>}
+                {models.map(item => {
+                  const used = taken(member.tool, item, index) && item !== model;
+                  return <option key={item.entryIds.join("|")} value={item.nativeId} disabled={used}>{item.label}{used && "（已有成员）"}</option>;
+                })}
+              </select>
+            </label>
+            <label className="gc-effort-col">
+              <span className="gc-form-label">推理强度</span>
+              <select disabled={!model || (efforts.length === 0 && !member.effort)} value={effort} onChange={e => {
+                const value = e.target.value;
+                patch({ model: model?.variantByEffort[value] ?? model?.nativeId ?? member.model, effort: value || undefined });
+              }}>
+                <option value="">模型默认</option>
+                {effort && !efforts.includes(effort) && <option value={effort} disabled>{effort}{model && "（当前模型不支持）"}</option>}
+                {efforts.map(value => <option key={value}>{value}</option>)}
+              </select>
+            </label>
+          </div>
+          {catalogErrors[member.tool] && !/process_stop_unconfirmed/i.test(catalogErrors[member.tool]!) && <p role="alert" className="gc-col-span-2 gc-error-tip">{catalogErrors[member.tool]}</p>}
+          <div className="gc-col-span-2 gc-admin-switch-row">
+            <label className="gc-switch-label">
+              <input type="checkbox" checked={editor.admin} disabled={index === admin} onChange={event => {
+                const checked = event.currentTarget.checked;
+                setEditor(current => current && { ...current, admin: checked });
+              }} />
+              <span>设为群管理员</span>
+            </label>
+          </div>
+          <div className="gc-col-span-2 gc-actions gc-dialog-footer">
+            <button type="button" onClick={() => setEditor(undefined)}>取消</button>
             <button className="gc-primary" disabled={!isAvailable(member) || duplicate}>{adding ? "添加成员" : "保存成员"}</button>
           </div>
         </form></Modal>;
@@ -254,7 +448,7 @@ function RosterEditor({ row, save, admin, close, error }: { row: Group | Session
   return <Modal title={"scene" in row ? "会话成员" : "群成员"} close={close}>
     {error}
     <div className="gc-form">
-      {[{ id: "human", nickname: row.human, description: "群主" }, ...row.members.map(member => ({
+      {[{ id: "human", nickname: row.human, description: "当前用户" }, ...row.members.map(member => ({
         ...member, description: toolNames[member.tool] + " · " + modelName(member),
       }))].map(member => <form className="gc-roster-row" key={member.id + member.nickname} onSubmit={event => {
         event.preventDefault();
@@ -262,9 +456,9 @@ function RosterEditor({ row, save, admin, close, error }: { row: Group | Session
         save(member.id, name);
       }}>
         <small>{member.description}</small>
-        <label>昵称<input name="nickname" required maxLength={32} defaultValue={member.nickname} aria-label={member.nickname + "的昵称"} /></label>
+        <label><span className="gc-sr">昵称</span><input name="nickname" required maxLength={32} defaultValue={member.nickname} aria-label={member.nickname + "的昵称"} /></label>
         <div className="gc-actions"><button>保存昵称</button>
-          {member.id !== "human" && (row.admin === member.id ? <span className="gc-tag">管理员</span> :
+          {member.id !== "human" && (row.admin === member.id ? <span className="gc-tag gc-tag-admin">管理员</span> :
             <button type="button" onClick={() => admin(member.id)}>设为管理员</button>)}
         </div>
       </form>)}
@@ -396,6 +590,13 @@ export function GroupChatPage() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [modal, setModal] = useState<"group" | "edit-group" | "session" | "roster" | "group-roster" | "delete" | "final" | "outline" | "restart">();
+  const [editingGroup, setEditingGroup] = useState<Group>();
+  const [deletingGroup, setDeletingGroup] = useState<Group>();
+  const [popoverGroup, setPopoverGroup] = useState<{ group: Group; rect: DOMRect } | null>(null);
+  const [renamingSession, setRenamingSession] = useState<{ id: string; title: string; version: number }>();
+  const [sessionTitleInput, setSessionTitleInput] = useState("");
+  const [deletingSessionItem, setDeletingSessionItem] = useState<{ id: string; title: string; version: number }>();
+  const [showRosterDrawer, setShowRosterDrawer] = useState(false);
   const [workspace, setWorkspace] = useState("");
   const [documents, setDocuments] = useState<Document[]>([]);
   const [compare, setCompare] = useState(false);
@@ -406,20 +607,28 @@ export function GroupChatPage() {
   const follow = useRef(true);
   const [mode, setMode] = useState<"scene" | "reply" | "record" | "execute">("scene");
   const [targets, setTargets] = useState<string[]>([]);
-  const [all, setAll] = useState(false);
   const [mentions, setMentions] = useState(false);
   const [memberQuery, setMemberQuery] = useState("");
+  const [mentionSelectedIndex, setMentionSelectedIndex] = useState(0);
   const composer = useRef<HTMLTextAreaElement>(null);
   const [pending, setPending] = useState(false);
   const [author, setAuthor] = useState("");
   const [base, setBase] = useState("");
   const [removal, setRemoval] = useState(false);
+
   const group = groups.find(item => item.id === groupId);
-  const session = view?.session;
+  const activeSessionSummary = sessions.items.find(item => item.id === sessionId);
+  const session = (view?.session?.id === sessionId ? view.session : undefined) ?? activeSessionSummary;
   const round = view?.round;
   const canChange = !session?.archived && !session?.deleting;
   const busy = round?.status === "running" || round?.status === "paused";
-  const report = (error: unknown) => setError(error instanceof Error ? error.message : String(error));
+  const report = (err: unknown) => setError(err instanceof Error ? err.message : String(err));
+
+  // 服务启动/页面挂载后，静默异步预热所有常用工具的模型目录并持久缓存
+  useEffect(() => {
+    const defaultTools: Model["tool"][] = ["codex", "agy", "opencode", "claude-code"];
+    for (const t of defaultTools) void fetchToolModelsWithSWR(t);
+  }, []);
 
   useEffect(() => {
     let live = true;
@@ -430,6 +639,7 @@ export function GroupChatPage() {
     }).catch(report);
     return () => { live = false; };
   }, []);
+
   useEffect(() => {
     if (!groupId) return;
     let live = true;
@@ -437,9 +647,23 @@ export function GroupChatPage() {
       .then(page => { if (live) setSessions(page); }).catch(error => { if (live) report(error); }), 150);
     return () => { live = false; clearTimeout(timer); };
   }, [groupId, query]);
+
   useEffect(() => {
     follow.current = true;
-    setView(undefined);
+    if (!sessionId) {
+      setView(undefined);
+      return;
+    }
+    // 切换会话时若本地列表已有摘要，直接使用骨架即时秒呈，绝不让用户等待或呈现空状态
+    const summary = sessions.items.find(s => s.id === sessionId);
+    if (summary && view?.session?.id !== sessionId) {
+      setView({
+        session: summary,
+        round: undefined,
+        messages: [],
+        artifacts: [],
+      });
+    }
     setOlder(undefined);
     setDocuments([]);
     setCompare(false);
@@ -448,11 +672,10 @@ export function GroupChatPage() {
     setMessage("");
     setMode("scene");
     setTargets([]);
-    setAll(false);
     setMentions(false);
     setMemberQuery("");
     setRefreshError("");
-    if (!sessionId) return;
+    setShowRosterDrawer(false);
     let live = true;
     let timer: ReturnType<typeof setTimeout>;
     async function refresh() {
@@ -484,15 +707,17 @@ export function GroupChatPage() {
     catch (error) { report(error); }
     finally { setPending(false); }
   }
+
   async function act(input: Action) {
     if (!session || pending) return;
     await perform(async () => {
       const next = await api<View>(sessionUrl(session.id) + "/actions", "POST", { version: session.version, request: crypto.randomUUID(), input });
       setView(prior => prior?.session.id === session.id && prior.session.version <= next.session.version ? next : prior);
-      if (input.action === "send") { setMessage(""); setAll(false); setTargets([]); setMentions(false); }
+      if (input.action === "send") { setMessage(""); setTargets([]); setMentions(false); }
       setModal(undefined);
     });
   }
+
   async function preview(id: string) {
     if (!session) return;
     try {
@@ -501,6 +726,7 @@ export function GroupChatPage() {
       setReading(compare && documents[0] && documents[0].id !== doc.id ? 1 : 0);
     } catch (error) { report(error); }
   }
+
   async function loadOlder() {
     const before = older?.next ?? (older ? undefined : view?.next);
     if (!session || !before) return;
@@ -509,6 +735,7 @@ export function GroupChatPage() {
       setOlder(prior => ({ ...page, messages: [...page.messages, ...(prior?.messages ?? [])], artifacts: [...page.artifacts, ...(prior?.artifacts ?? [])] }));
     });
   }
+
   function manageRoster(isSession: boolean, field: "nickname" | "admin", member: string, nickname?: string) {
     const row = isSession ? session : group;
     if (!row) return;
@@ -519,18 +746,104 @@ export function GroupChatPage() {
       else setGroups(items => items.map(item => item.id === updated.id ? updated : item));
     });
   }
+
+  async function handleDeleteGroup(target: Group) {
+    await perform(async () => {
+      await api(`/api/groups/${target.id}`, "DELETE");
+      setGroups(rows => {
+        const rest = rows.filter(r => r.id !== target.id);
+        if (groupId === target.id) {
+          const nextGroup = rest[0];
+          setGroupId(nextGroup?.id ?? "");
+          setSessions({ items: [] });
+          setSessionId("");
+        }
+        return rest;
+      });
+      setDeletingGroup(undefined);
+      setNotice(`群聊「${target.title}」及其全部会话已成功删除`);
+    });
+  }
+
+  async function handleRenameSession(e: FormEvent) {
+    e.preventDefault();
+    if (!renamingSession || !sessionTitleInput.trim()) return;
+    await perform(async () => {
+      const updated = await api<Session>(`/api/group-sessions/${renamingSession.id}/title`, "PATCH", {
+        version: renamingSession.version,
+        title: sessionTitleInput.trim(),
+      });
+      setSessions(prior => ({
+        ...prior,
+        items: prior.items.map(s => s.id === updated.id ? { ...s, title: updated.title, version: updated.version } : s),
+      }));
+      if (sessionId === updated.id) {
+        setView(prior => prior ? { ...prior, session: { ...prior.session, title: updated.title, version: updated.version } } : prior);
+      }
+      const title = updated.title;
+      setRenamingSession(undefined);
+      setNotice(`会话已重命名为「${title}」`);
+    });
+  }
+
+  async function handleDeleteSessionItem() {
+    if (!deletingSessionItem) return;
+    await perform(async () => {
+      await api(`/api/group-sessions/${deletingSessionItem.id}`, "DELETE", {
+        version: deletingSessionItem.version,
+        files: true,
+      });
+      setSessions(prior => ({
+        ...prior,
+        items: prior.items.filter(s => s.id !== deletingSessionItem.id),
+      }));
+      if (sessionId === deletingSessionItem.id) {
+        setSessionId("");
+        setView(undefined);
+      }
+      const title = deletingSessionItem.title;
+      setDeletingSessionItem(undefined);
+      setNotice(`会话「${title}」及其相关记录已删除`);
+    });
+  }
+
+  function selectMentionMember(m: Model) {
+    const mentionTag = `@${m.nickname} `;
+    setTargets(prior => [...new Set([...prior, m.id])]);
+    setMessage(prior => {
+      const atIdx = prior.lastIndexOf("@");
+      if (atIdx >= 0) {
+        return prior.slice(0, atIdx) + mentionTag;
+      }
+      return prior + mentionTag;
+    });
+    setMentions(false);
+    setTimeout(() => composer.current?.focus(), 50);
+  }
+
   function send(event: FormEvent) {
     event.preventDefault();
-    if (!message.trim()) return;
-    const typed = [...(session?.members ?? [])].sort((a, b) => b.nickname.length - a.nickname.length)
-      .find(member => message.startsWith("@" + member.nickname + " ") || message.startsWith("@" + member.nickname + "\n"));
-    const targeted = [...new Set([...targets, ...(typed ? [typed.id] : [])])];
-    const broadcast = all || /^@全部(?:模型)?(?:\s|$)/u.test(message);
-    if (mode !== "record" && session?.scene === "design" && round?.stage === "reviews" && round.status === "waiting" && targeted.length === 1 && !broadcast && /成稿|定稿/u.test(message)) {
+    if (!message.trim() || !session) return;
+
+    // 从文本中提取所有以 @ 开头的成员
+    const mentionedMembers = session.members.filter(m => {
+      const escaped = m.nickname.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const re = new RegExp(`@${escaped}(?:\\s|$)`, "u");
+      return re.test(message);
+    });
+
+    let targeted = [...new Set([...targets, ...mentionedMembers.map(m => m.id)])];
+    // 用户规则：没有 @ 模型默认是发给所有人的，所以不需要 @ 所有人功能
+    const isBroadcast = targeted.length === 0;
+    if (isBroadcast) {
+      targeted = session.members.map(m => m.id);
+    }
+
+    if (mode !== "record" && session.scene === "design" && round?.stage === "reviews" && round.status === "waiting" && targeted.length === 1 && !isBroadcast && /成稿|定稿/u.test(message)) {
       void act({ action: "final", member: targeted[0], text: message });
       return;
     }
-    if (mode === "scene" && !broadcast && !targeted.length && session?.scene === "fiction") {
+    if (mode === "scene" && !isBroadcast && !targeted.length && session.scene === "fiction") {
       if (round?.status === "waiting" && /^(?:都不行|都不要|全部重想|重新想)[，。！、：\s]*$/u.test(message.trim())) {
         void act({ action: "restart", text: "" }).then(() => setMessage(""));
         return;
@@ -540,12 +853,10 @@ export function GroupChatPage() {
         return;
       }
     }
-    if (mode !== "record" && /^@[^@\s]/u.test(message) && !broadcast && !targeted.length) {
-      setError("没有识别到该昵称，请从提及列表选择成员");
-      return;
-    }
-    void act({ action: "send", text: message, targets: targeted, all: broadcast, mode });
+
+    void act({ action: "send", text: message, targets: targeted, all: isBroadcast, mode });
   }
+
   const messages = [...new Map([...(older?.messages ?? []), ...(view?.messages ?? [])].map(item => [item.id, item])).values()];
   const artifacts = [...new Map([...(older?.artifacts ?? []), ...(view?.artifacts ?? [])].map(item => [item.id, item])).values()];
   const artifactsById = new Map(artifacts.map(item => [item.id, item]));
@@ -559,59 +870,216 @@ export function GroupChatPage() {
   const errorMessage = (error || refreshError) && <p className="gc-error" role="alert">{error || refreshError}<button aria-label="关闭错误" onClick={() => {
     setError(""); setRefreshError("");
   }}>×</button></p>;
+
+  const filteredMentionMembers = session?.members.filter(member =>
+    (member.nickname + " " + modelName(member)).toLowerCase().includes(memberQuery.toLowerCase())
+  ) ?? [];
+
   return <div className="gc-shell">
     <header className="gc-top">
-      <a href="/" className="gc-back" aria-label="返回任务工作台">‹ <span>任务工作台</span></a>
+      <a href="/" className="gc-back" aria-label="返回任务工作台">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="m15 18-6-6 6-6"/>
+        </svg>
+        <span>任务工作台</span>
+      </a>
       <h1>模型群聊</h1>
       <button className="gc-mobile-nav" aria-expanded={showNavigation} onClick={() => setShowNavigation(value => !value)}>会话列表</button>
     </header>
     {!modal && errorMessage}
     {notice && <div role="status" className="gc-notice"><span>{notice}</span><button aria-label="关闭提示" onClick={() => setNotice("")}>×</button></div>}
+
     <div className={`gc-layout ${documents.length ? "gc-with-preview" : ""} ${compare ? "gc-reading-compare" : ""}`}>
+      {/* 左侧栏：群聊列表 + 选中群的会话列表 */}
       <aside className={`gc-sidebar ${showNavigation || !session ? "gc-nav-open" : ""}`} aria-label="群聊导航">
-        <div className="gc-nav-heading"><h2>群聊</h2><button aria-label="新建群聊" title="新建群聊" onClick={() => setModal("group")}>＋</button></div>
-        <div className="gc-nav-list">
-          {groups.map(item => <button className={item.id === groupId ? "gc-selected" : ""} key={item.id}
-            aria-current={item.id === groupId ? "true" : undefined} onClick={() => {
-              if (groupId === item.id) return;
-              setGroupId(item.id); setSessions({ items: [] }); setSessionId(""); setQuery("");
-            }}><span className="gc-group-mark" aria-hidden="true">{item.title.slice(0, 1)}</span><span>{item.title}<small>{item.members.length} 个模型</small></span></button>)}
-        </div>
-        {group && <section className="gc-sessions">
-          <div className="gc-nav-heading"><h2>会话</h2><div className="gc-actions">
-            <button aria-label="新建会话" title="新建会话" onClick={() => setModal("session")}>＋</button>
-            <Menu label="群设置"><button onClick={() => setModal("group-roster")}>群成员</button><button onClick={() => setModal("edit-group")}>编辑群配置</button></Menu>
-          </div></div>
-          <input aria-label="搜索会话" placeholder="搜索会话" value={query} onInput={event => setQuery(event.currentTarget.value)} />
-          <div className="gc-nav-list">
-            {sessions.items.map(item => <button key={item.id} className={item.id === sessionId ? "gc-selected" : ""}
-              aria-current={item.id === sessionId ? "page" : undefined} onClick={() => { setSessionId(item.id); setShowNavigation(false); }}>
-              <span>{item.title}<small>{sceneNames[item.id === session?.id ? session.scene : item.scene]}{(item.id === session?.id ? session.archived : item.archived) && " · 已归档"}</small></span>
-            </button>)}
-            {!sessions.items.length && <small>{query ? "没有匹配的会话" : "暂无会话"}</small>}
+        <div className="gc-nav-section-groups">
+          <div className="gc-nav-heading">
+            <h2>群聊</h2>
+            <button aria-label="新建群聊" title="新建群聊" className="gc-btn-icon gc-btn-header-add" onClick={() => setModal("group")}>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 5v14M5 12h14"/>
+              </svg>
+            </button>
           </div>
-          {sessions.next && <button onClick={() => void perform(async () => {
+          <div className="gc-group-list">
+            {groups.map(item => (
+              <div
+                key={item.id}
+                className={`gc-group-card ${item.id === groupId ? "gc-selected" : ""}`}
+                onMouseEnter={e => {
+                  const rect = e.currentTarget.getBoundingClientRect();
+                  setPopoverGroup({ group: item, rect });
+                }}
+                onMouseLeave={() => setPopoverGroup(null)}
+                onClick={() => {
+                  if (groupId === item.id) return;
+                  setGroupId(item.id); setSessions({ items: [] }); setSessionId(""); setQuery("");
+                }}
+              >
+                <div className="gc-group-avatar-wrapper">
+                  <GroupAvatar members={item.members} title={item.title} />
+                </div>
+                <div className="gc-group-card-body">
+                  <div className="gc-group-card-title">{item.title}</div>
+                  <small className="gc-group-card-meta">{item.members.length} 个模型</small>
+                </div>
+                <div className="gc-group-hover-actions">
+                  <button
+                    type="button"
+                    className="gc-icon-btn"
+                    title="编辑群配置"
+                    aria-label={`编辑群聊 ${item.title}`}
+                    onClick={e => { e.stopPropagation(); setEditingGroup(item); }}
+                  >
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/>
+                      <path d="m15 5 4 4"/>
+                    </svg>
+                  </button>
+                  <button
+                    type="button"
+                    className="gc-icon-btn gc-btn-delete"
+                    title="删除群聊"
+                    aria-label={`删除群聊 ${item.title}`}
+                    onClick={e => { e.stopPropagation(); setDeletingGroup(item); }}
+                  >
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M3 6h18M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2M10 11v6M14 11v6"/>
+                    </svg>
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {group && <section className="gc-sessions">
+          <div className="gc-session-section-header">
+            <div className="gc-current-group-badge">
+              <span className="gc-group-dot" />
+              <h3 className="gc-group-title-highlight">{group.title}</h3>
+            </div>
+            <div className="gc-actions">
+              <button aria-label="新建会话" title="新建会话" className="gc-btn-icon gc-btn-header-add" onClick={() => setModal("session")}>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M12 5v14M5 12h14"/>
+                </svg>
+              </button>
+            </div>
+          </div>
+          <div className="gc-search-box">
+            <svg className="gc-search-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="11" cy="11" r="8"/>
+              <path d="m21 21-4.3-4.3"/>
+            </svg>
+            <input aria-label="搜索会话" placeholder="搜索会话…" value={query} onInput={event => setQuery(event.currentTarget.value)} />
+          </div>
+          <div className="gc-session-list">
+            {sessions.items.map(item => (
+              <div
+                key={item.id}
+                className={`gc-session-item ${item.id === sessionId ? "gc-selected" : ""}`}
+                aria-current={item.id === sessionId ? "page" : undefined}
+                onClick={() => { setSessionId(item.id); setShowNavigation(false); }}
+              >
+                <div className="gc-session-item-body">
+                  <span className="gc-session-item-title">{item.title}</span>
+                  <small className="gc-session-item-meta">
+                    {sceneNames[item.id === session?.id ? session.scene : item.scene]}
+                    {(item.id === session?.id ? session.archived : item.archived) && " · 已归档"}
+                  </small>
+                </div>
+                <div className="gc-session-hover-actions">
+                  <button
+                    type="button"
+                    className="gc-icon-btn"
+                    title="重命名会话"
+                    aria-label={`重命名会话 ${item.title}`}
+                    onClick={e => {
+                      e.stopPropagation();
+                      setRenamingSession({ id: item.id, title: item.title, version: item.id === session?.id ? session.version : item.version });
+                      setSessionTitleInput(item.title);
+                    }}
+                  >
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/>
+                      <path d="m15 5 4 4"/>
+                    </svg>
+                  </button>
+                  <button
+                    type="button"
+                    className="gc-icon-btn gc-btn-delete"
+                    title="删除会话"
+                    aria-label={`删除会话 ${item.title}`}
+                    onClick={e => {
+                      e.stopPropagation();
+                      setDeletingSessionItem({ id: item.id, title: item.title, version: item.id === session?.id ? session.version : item.version });
+                    }}
+                  >
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M3 6h18M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2M10 11v6M14 11v6"/>
+                    </svg>
+                  </button>
+                </div>
+              </div>
+            ))}
+            {!sessions.items.length && <div className="gc-empty-tip">{query ? "没有匹配的会话" : "暂无会话，点击右上 ＋ 新建"}</div>}
+          </div>
+          {sessions.next && <button className="gc-btn-more" onClick={() => void perform(async () => {
             const page = await api<Page>(`/api/groups/${groupId}/sessions?before=${sessions.next}&query=${encodeURIComponent(query)}`);
             setSessions(prior => ({ ...page, items: [...prior.items, ...page.items] }));
           })}>更多会话</button>}
         </section>}
       </aside>
+
+      {/* 主聊天区 */}
       <main className="gc-chat">
-        {!session ? <div className="gc-empty"><div className="gc-empty-mark" aria-hidden="true">◫</div><h2>{sessionId ? "正在加载会话" : group ? "选择或新建会话" : "开始一次模型协作"}</h2><p>和模型讨论问题、构思小说，或比较不同方案。</p>
+        {!session ? <div className="gc-empty">
+          <div className="gc-empty-chat-icon">
+            <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/>
+            </svg>
+          </div>
+          <h2>{groupId ? "选择或新建会话" : "开始一次模型群聊"}</h2>
+          <p>与多个 AI 模型在同一群聊中分工协作，体验微信般的流畅互动。</p>
           {!sessionId && <button className="gc-primary" onClick={() => setModal(group ? "session" : "group")}>{group ? "创建第一个会话" : "创建第一个群聊"}</button>}
         </div> : <>
+          {/* 会话顶栏 */}
           <div className="gc-chat-header">
-            <div className="gc-session-heading"><small>{group?.title ?? "模型群聊"}</small><h2>{session.title}</h2>
-              <label className="gc-scene"><span className="gc-sr">场景</span><select disabled={pending || round?.status === "running" || !canChange} value={session.scene}
-                onChange={e => void act({ action: "scene", scene: e.target.value as Session["scene"] })}>
-                {Object.entries(sceneNames).map(([id, name]) => <option key={id} value={id}>{name}</option>)}
-              </select></label>{session.archived && <small>已归档</small>}
+            <div className="gc-session-heading">
+              <h2>{session.title}</h2>
+              <label className="gc-scene">
+                <span className="gc-sr">场景</span>
+                <select disabled={pending || round?.status === "running" || !canChange} value={session.scene}
+                  onChange={e => void act({ action: "scene", scene: e.target.value as Session["scene"] })}>
+                  {Object.entries(sceneNames).map(([id, name]) => <option key={id} value={id}>{name}</option>)}
+                </select>
+              </label>
+              {session.archived && <span className="gc-badge-archived">已归档</span>}
             </div>
-            <div className="gc-actions">
-              <button className="gc-members" aria-label="会话成员" title="会话成员" onClick={() => setModal("roster")}>
-                <span aria-hidden="true" className="gc-avatar-stack">{session.members.slice(0, 3).map((member, index) => <span className={`gc-avatar gc-tone-${index}`} key={member.id}>{member.nickname.slice(0, 1)}</span>)}</span>
-                <span>{session.members.length + 1} 人</span>
+
+            <div className="gc-header-actions">
+              {/* 右上角成员折叠按钮（不包含“我”，仅显示模型成员） */}
+              <button
+                type="button"
+                className={`gc-members-toggle-btn ${showRosterDrawer ? "gc-active" : ""}`}
+                aria-expanded={showRosterDrawer}
+                title="群模型成员列表"
+                onClick={() => setShowRosterDrawer(v => !v)}
+              >
+                <div className="gc-avatar-stack">
+                  {session.members.slice(0, 3).map((m, idx) => (
+                    <span key={m.id} className="gc-stack-avatar" style={{ zIndex: 10 - idx }}>
+                      {getModelAbbr(m.nickname || m.model)}
+                    </span>
+                  ))}
+                </div>
+                <span className="gc-members-count-text">{session.members.length} 位模型成员</span>
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" className={`gc-chevron-icon ${showRosterDrawer ? "gc-rotate" : ""}`}>
+                  <path d="m6 9 6 6 6-6"/>
+                </svg>
               </button>
+
               <Menu label="会话选项">
                 <button disabled={busy || pending || !canChange} onClick={() => void act({ action: "summary" })}>请管理员整理</button>
                 <button disabled={busy || pending || !canChange} onClick={() => void act({ action: "sync" })}>同步群成员</button>
@@ -623,34 +1091,114 @@ export function GroupChatPage() {
                 <button className="gc-destructive-item" onClick={() => void perform(async () => {
                   setWorkspace((await api<{ path: string }>(sessionUrl(session.id) + "/workspace")).path);
                   setRemoval(false); setModal("delete");
-                })}>{session.deletionError ? "重试删除" : "删除"}</button>
+                })}>{session.deletionError ? "重试删除" : "删除会话"}</button>
               </Menu>
             </div>
           </div>
-          {session.deletionError && <p role="alert">删除未完成。{session.deletionError}</p>}
+
+          {session.deletionError && <p role="alert" className="gc-alert-bar">删除未完成。{session.deletionError}</p>}
+
+          {/* 右上角抽屉面板（展示模型成员，可折叠） */}
+          {showRosterDrawer && (
+            <div className="gc-roster-drawer" role="complementary" aria-label="群模型成员">
+              <div className="gc-drawer-header">
+                <h3>群模型成员 ({session.members.length})</h3>
+                <button type="button" className="gc-btn-close-drawer" onClick={() => setShowRosterDrawer(false)}>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M18 6 6 18M6 6l12 12"/>
+                  </svg>
+                </button>
+              </div>
+              <div className="gc-drawer-list">
+                {session.members.map(m => {
+                  const abbr = getModelAbbr(m.nickname || m.model);
+                  const isAdm = session.admin === m.id;
+                  return (
+                    <div key={m.id} className="gc-drawer-member-card" onClick={() => selectMentionMember(m)} title="点击在输入框 @ 此成员">
+                      <span className="gc-drawer-member-avatar">{abbr}</span>
+                      <div className="gc-drawer-member-info">
+                        <div className="gc-drawer-member-name">
+                          <strong>{m.nickname}</strong>
+                          {isAdm && <span className="gc-tag-mini-admin">管理员</span>}
+                        </div>
+                        <small className="gc-drawer-member-detail">{toolNames[m.tool]} · {modelName(m)}</small>
+                      </div>
+                      <button type="button" className="gc-drawer-mention-action" aria-label={`@ ${m.nickname}`}>@</button>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* 微信风格消息流 */}
           <div className="gc-thread" ref={thread} onScroll={event => {
             const box = event.currentTarget;
             follow.current = box.scrollHeight - box.scrollTop - box.clientHeight < 72;
           }}>
-            {(older ? older.next : view?.next) && <button onClick={() => void loadOlder()}>加载更早消息</button>}
-            {!messages.length && <div className="gc-thread-start"><h3>{sceneNames[session.scene]}</h3><p>{session.scene === "fiction" ? "写下故事素材或想探索的方向，成员会分别提出点子。" : session.scene === "design" ? "写下目标和约束，成员会独立出稿并相互评审。" : "输入消息开始讨论，或用 @ 选择本次回应的成员。"}</p></div>}
-            {messages.map(item => {
+            {(older ? older.next : view?.next) && <button className="gc-btn-load-more" onClick={() => void loadOlder()}>加载更早消息</button>}
+            {!messages.length && <div className="gc-thread-start gc-thread-start-wechat">
+              <div className="gc-welcome-chat-icon">
+                <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+                </svg>
+              </div>
+              <h3>{session.title}</h3>
+              <p>{session.scene === "fiction" ? "写下故事素材或构思方向，群内模型将协作分工并提出方案。" : session.scene === "design" ? "写下目标和约束，成员会独立出稿并相互评审。" : "向群内模型发送消息开启协作，未 @ 时默认全员协同响应。"}</p>
+              <div className="gc-empty-start-hint">在下方输入框键入消息或 @ 成员即可开始</div>
+            </div>}
+
+            {messages.map((item, idx) => {
+              const isOwn = item.author === session.human;
               const artifact = item.artifact ? artifactsById.get(item.artifact) : undefined;
               const reply = artifact?.stage === "reply";
               const member = artifact?.author === item.author ? session.members.find(model => model.id === artifact.member) : undefined;
               const identity = member ? modelName(member) : "";
-              return <article className={`gc-message ${item.author === session.human ? "gc-message-own" : ""}`} key={item.id}>
-                <div className="gc-avatar" aria-hidden="true">{item.author.slice(0, 1)}</div>
-                <div className="gc-message-content"><header>{item.author}{identity && identity !== item.author && <small>{identity}</small>}<small title={item.created}>{messageTime.format(new Date(item.created))}</small></header>
-                  {!item.artifact && <p>{item.text}</p>}
-                  {reply && <div className="gc-message-bubble"><Markdown remarkPlugins={[remarkGfm]} skipHtml
-                    components={{ img: ({ alt }) => <span>{alt}</span> }}>{item.text}</Markdown></div>}
-                  {item.artifact && <button className={reply ? "gc-reply-source" : "gc-doc-card"} onClick={() => void preview(item.artifact!)}>
-                    {reply ? "查看原文" : <><span className="gc-file-icon" aria-hidden="true">▤</span><span>{item.text.slice(0, 110)}<small>Markdown · 打开预览</small></span></>}
-                  </button>}
+              const showTime = idx === 0 || (new Date(item.created).getTime() - new Date(messages[idx - 1]!.created).getTime() > 5 * 60 * 1000);
+
+              return (
+                <div key={item.id} className="gc-message-wrapper">
+                  {showTime && (
+                    <div className="gc-message-timestamp">
+                      <span>{messageTime.format(new Date(item.created))}</span>
+                    </div>
+                  )}
+                  <article className={`gc-message-row ${isOwn ? "gc-message-own" : "gc-message-ai"}`}>
+                    <div className="gc-msg-avatar" aria-hidden="true">
+                      {isOwn ? "我" : getModelAbbr(item.author)}
+                    </div>
+                    <div className="gc-msg-body">
+                      {!isOwn && (
+                        <header className="gc-msg-author-header">
+                          <span className="gc-msg-author-name">{item.author}</span>
+                          {identity && identity !== item.author && <small className="gc-msg-identity">{identity}</small>}
+                        </header>
+                      )}
+                      {!item.artifact && <div className="gc-msg-bubble"><p>{item.text}</p></div>}
+                      {reply && (
+                        <div className="gc-msg-bubble gc-msg-bubble-markdown">
+                          <Markdown remarkPlugins={[remarkGfm]} skipHtml components={{ img: ({ alt }) => <span>{alt}</span> }}>
+                            {item.text}
+                          </Markdown>
+                        </div>
+                      )}
+                      {item.artifact && (
+                        <button className={reply ? "gc-reply-source" : "gc-doc-card-wechat"} onClick={() => void preview(item.artifact!)}>
+                          {reply ? "查看原文" : <>
+                            <span className="gc-doc-icon">📄</span>
+                            <div className="gc-doc-info">
+                              <span className="gc-doc-title">{item.text.slice(0, 80)}</span>
+                              <small className="gc-doc-sub">Markdown 文档 · 点击预览</small>
+                            </div>
+                          </>}
+                        </button>
+                      )}
+                    </div>
+                  </article>
                 </div>
-              </article>;
+              );
             })}
+
             {round && <section className="gc-status">
               <h3>{stageNames[round.stage]} <small>{round.status === "paused" ? "已暂停" : round.status === "running" ? "进行中" : round.status === "waiting" ? "待您决定" : "已完成"}</small></h3>
               <div className="gc-jobs">{round.jobs.map(job => <div key={job.member}>
@@ -667,7 +1215,9 @@ export function GroupChatPage() {
                 <button disabled={pending} onClick={() => void act({ action: "cancel" })}>结束本轮</button>
               </div>}
             </section>}
+
             {view && <Results key={round?.id} view={view} preview={id => void preview(id)} act={input => { if (canChange) void act(input); }} />}
+
             {canChange && (canDraft || canRestart) && <div className="gc-next">
               <span>{round?.status === "waiting" ? "本轮已结束，您可以决定下一步" : "当前会话"}</span>
               <div className="gc-actions">
@@ -679,59 +1229,175 @@ export function GroupChatPage() {
               disabled={session.adopted === job.artifact || !canChange} onClick={() => void act({ action: "adopt", artifact: job.artifact! })}>
               {session.adopted === job.artifact ? "已采用" : "采用此稿"}</button>)}
           </div>
-          {canChange && <form className="gc-composer" onSubmit={send}>
-            {(all || targets.length > 0) && <div className="gc-chips" aria-label="当前提及">
-              {all ? <button type="button" onClick={() => setAll(false)}>＠全部模型 <span aria-hidden="true">×</span></button> :
-                session.members.filter(member => targets.includes(member.id)).map(member => <button type="button" key={member.id}
-                  onClick={() => setTargets(ids => ids.filter(id => id !== member.id))}>＠{member.nickname} <span aria-hidden="true">×</span></button>)}
-            </div>}
-            {mentions && <div className="gc-mentions" aria-label="提及成员" onKeyDown={event => {
-              if (event.key === "Escape") { setMentions(false); composer.current?.focus(); }
-            }}>
-              <label className="gc-sr" htmlFor="gc-member-search">搜索成员</label>
-              <input id="gc-member-search" autoFocus placeholder="搜索成员" value={memberQuery} onInput={event => setMemberQuery(event.currentTarget.value)} />
-              <div className="gc-mention-list">
-                <label><input type="checkbox" checked={all} onChange={e => { setAll(e.target.checked); setTargets([]); }} /> 全部模型</label>
-                {session.members.filter(member => (member.nickname + " " + modelName(member)).toLowerCase().includes(memberQuery.toLowerCase())).map(member => <label key={member.id}>
-                  <input type="checkbox" checked={targets.includes(member.id)} disabled={all} onChange={e =>
-                    setTargets(prior => e.target.checked ? [...prior, member.id] : prior.filter(item => item !== member.id))} />
-                  <span>{member.nickname}<small>{toolNames[member.tool]}{modelName(member) !== member.nickname && " · " + modelName(member)}</small></span>
-                </label>)}
+
+          {/* 微信风格输入框区 */}
+          {canChange && (
+            <form className="gc-composer-wechat" onSubmit={send}>
+              {/* @ 提及标签气泡 */}
+              {targets.length > 0 && (
+                <div className="gc-chips" aria-label="当前提及">
+                  {session.members.filter(member => targets.includes(member.id)).map(member => (
+                    <button type="button" key={member.id} className="gc-chip-item" onClick={() => setTargets(ids => ids.filter(id => id !== member.id))}>
+                      @{member.nickname} <span aria-hidden="true">×</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {/* @ 弹出浮层菜单（仅列出模型成员） */}
+              {mentions && (
+                <div
+                  className="gc-mention-popover"
+                  aria-label="选择提及模型"
+                  onKeyDown={event => {
+                    if (event.key === "Escape") { setMentions(false); composer.current?.focus(); }
+                    if (event.key === "ArrowDown") {
+                      event.preventDefault();
+                      setMentionSelectedIndex(i => (i + 1) % Math.max(1, filteredMentionMembers.length));
+                    }
+                    if (event.key === "ArrowUp") {
+                      event.preventDefault();
+                      setMentionSelectedIndex(i => (i - 1 + filteredMentionMembers.length) % Math.max(1, filteredMentionMembers.length));
+                    }
+                    if (event.key === "Enter" && filteredMentionMembers[mentionSelectedIndex]) {
+                      event.preventDefault();
+                      selectMentionMember(filteredMentionMembers[mentionSelectedIndex]!);
+                    }
+                  }}
+                >
+                  <div className="gc-mention-search-bar">
+                    <input
+                      autoFocus
+                      placeholder="搜索模型成员…"
+                      value={memberQuery}
+                      onInput={event => {
+                        setMemberQuery(event.currentTarget.value);
+                        setMentionSelectedIndex(0);
+                      }}
+                    />
+                  </div>
+                  <div className="gc-mention-items">
+                    {filteredMentionMembers.map((member, index) => (
+                      <div
+                        key={member.id}
+                        className={`gc-mention-item ${mentionSelectedIndex === index ? "gc-mention-active" : ""}`}
+                        onClick={() => selectMentionMember(member)}
+                      >
+                        <span className="gc-mention-item-avatar">{getModelAbbr(member.nickname || member.model)}</span>
+                        <div className="gc-mention-item-info">
+                          <strong>{member.nickname}</strong>
+                          <small>{toolNames[member.tool]} · {modelName(member)}</small>
+                        </div>
+                      </div>
+                    ))}
+                    {!filteredMentionMembers.length && <div className="gc-mention-empty">未找到匹配的模型成员</div>}
+                  </div>
+                </div>
+              )}
+
+              {/* 输入文本框 */}
+              <div className="gc-composer-input-area">
+                <textarea
+                  ref={composer}
+                  aria-label="群消息输入框"
+                  value={message}
+                  onInput={event => {
+                    const value = event.currentTarget.value;
+                    setMessage(value);
+                    const cursor = event.currentTarget.selectionStart ?? value.length;
+                    const textBeforeCursor = value.slice(0, cursor);
+                    const lastAt = textBeforeCursor.lastIndexOf("@");
+                    if (lastAt >= 0 && !/\s/.test(textBeforeCursor.slice(lastAt + 1))) {
+                      setMemberQuery(textBeforeCursor.slice(lastAt + 1));
+                      setMentions(true);
+                      setMentionSelectedIndex(0);
+                    } else if (mentions) {
+                      setMentions(false);
+                    }
+                  }}
+                  onKeyDown={event => {
+                    if (mentions) {
+                      if (event.key === "ArrowDown") {
+                        event.preventDefault();
+                        setMentionSelectedIndex(i => (i + 1) % Math.max(1, filteredMentionMembers.length));
+                        return;
+                      }
+                      if (event.key === "ArrowUp") {
+                        event.preventDefault();
+                        setMentionSelectedIndex(i => (i - 1 + filteredMentionMembers.length) % Math.max(1, filteredMentionMembers.length));
+                        return;
+                      }
+                      if (event.key === "Enter" && filteredMentionMembers[mentionSelectedIndex]) {
+                        event.preventDefault();
+                        selectMentionMember(filteredMentionMembers[mentionSelectedIndex]!);
+                        return;
+                      }
+                      if (event.key === "Escape") {
+                        setMentions(false);
+                        return;
+                      }
+                    }
+                    if (!event.nativeEvent.isComposing && event.key === "Enter" && !event.shiftKey &&
+                      message.trim() && !pending && (!busy || mode === "record")) {
+                      event.preventDefault();
+                      event.currentTarget.form?.requestSubmit();
+                    }
+                  }}
+                  maxLength={20_000}
+                  placeholder={session.scene === "open" ? "输入群消息，输入 @ 可指定模型分发任务（未 @ 则默认发给全体成员）…" : "输入需求开始新一轮，或 @ 成员单独处理…"}
+                />
               </div>
-              <button type="button" onClick={() => { setMentions(false); composer.current?.focus(); }}>完成选择</button>
-            </div>}
-            <textarea ref={composer} aria-label="群消息" value={message} onInput={event => {
-              const value = event.currentTarget.value;
-              if (value === "@") { setMemberQuery(""); setMentions(true); } else setMessage(value);
-            }} onKeyDown={event => {
-              if (!event.nativeEvent.isComposing && event.key === "Enter" && (event.metaKey || event.ctrlKey) &&
-                message.trim() && !pending && (!busy || mode === "record")) {
-                event.preventDefault(); event.currentTarget.form?.requestSubmit();
-              }
-            }} maxLength={20_000}
-              placeholder={session.scene === "open" ? "输入群消息，或 @ 指定成员" : "输入需求以开始新一轮，或 @ 成员单独讨论"} />
-            <div className="gc-compose-bar">
-              <button type="button" aria-expanded={mentions} onClick={() => { setMemberQuery(""); setMentions(value => !value); }}>@ 成员</button>
-              <label><span className="gc-sr">发送方式</span><select value={mode} onChange={e => setMode(e.target.value as typeof mode)}>
-                <option value="scene">按场景响应</option><option value="reply">仅回答</option><option value="record">仅记录</option>
-                <option value="execute">隔离执行</option>
-              </select></label>
-              <small className="gc-send-summary">{mode === "record" ? "全员可见 · 无调用" : all || /^@全部/u.test(message) ? "全体模型响应" : targets.length ? session.members.filter(item => targets.includes(item.id)).map(item => item.nickname).join("、") + " 响应" :
-                session.members.some(item => message.startsWith("@" + item.nickname + " ")) ? "提及成员响应" :
-                session.scene === "open" || mode !== "scene" ? "管理员响应" : "全员按场景响应"}</small>
-              <button className="gc-primary" disabled={!message.trim() || pending || (busy && mode !== "record")}>发送</button>
-            </div>
-          </form>}
+
+              {/* 微信底栏工具与发送按钮 */}
+              <div className="gc-composer-toolbar">
+                <div className="gc-toolbar-left">
+                  <button
+                    type="button"
+                    className="gc-toolbar-btn"
+                    title="@ 提及模型"
+                    onClick={() => {
+                      setMemberQuery("");
+                      setMentions(v => !v);
+                      composer.current?.focus();
+                    }}
+                  >
+                    @ 成员
+                  </button>
+                  <small className="gc-dispatch-hint">
+                    {targets.length > 0 ? `定向派发给: ${session.members.filter(m => targets.includes(m.id)).map(m => m.nickname).join("、")}` :
+                      session.members.some(m => message.includes("@" + m.nickname)) ? "按提及成员派发" :
+                      "未指定成员 · 默认发给全体模型成员"}
+                  </small>
+                </div>
+
+                <div className="gc-toolbar-right">
+                  <small className="gc-send-hotkey-hint">Enter 发送 / Shift+Enter 换行</small>
+                  <button className="gc-wechat-send-btn" disabled={!message.trim() || pending || busy}>
+                    <span>{pending ? "发送中…" : "发送"}</span>
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="m22 2-7 20-4-9-9-4Z"/>
+                      <path d="M22 2 11 13"/>
+                    </svg>
+                  </button>
+                </div>
+              </div>
+            </form>
+          )}
         </>}
       </main>
+
+      {/* 文档预览区 */}
       {session && documents.length > 0 && <aside className="gc-preview" aria-label="文档阅读区">
-        <div className="gc-preview-header"><h2>文档预览</h2><div className="gc-actions">
-          <button aria-pressed={compare} onClick={() => {
-            setCompare(value => !value); setReading(0);
-            if (compare) setDocuments(items => items.slice(0, 1));
-          }}>{compare ? "退出比较" : "并排比较"}</button>
-          <button className="gc-close" aria-label="关闭预览" onClick={() => { setDocuments([]); setCompare(false); }}>×</button>
-        </div></div>
+        <div className="gc-preview-header">
+          <h2>文档预览</h2>
+          <div className="gc-actions">
+            <button aria-pressed={compare} onClick={() => {
+              setCompare(value => !value); setReading(0);
+              if (compare) setDocuments(items => items.slice(0, 1));
+            }}>{compare ? "退出比较" : "并排比较"}</button>
+            <button className="gc-close" aria-label="关闭预览" onClick={() => { setDocuments([]); setCompare(false); }}>×</button>
+          </div>
+        </div>
         {compare && <div className="gc-compare-controls">
           <label><span className="gc-sr">第二份文档</span><select value={documents[1]?.id ?? ""} onChange={event => { if (event.target.value) void preview(event.target.value); }}>
             <option value="">选择第二份文档</option>
@@ -753,60 +1419,218 @@ export function GroupChatPage() {
         </div>
       </aside>}
     </div>
-    {modal === "group" && <GroupForm close={() => setModal(undefined)} save={async data => {
-      const created = await api<Group>("/api/groups", "POST", data);
-      setGroups(rows => [...rows, created]); setGroupId(created.id); setSessionId(""); setQuery(""); setModal("session");
-    }} />}
-    {modal === "edit-group" && group && <GroupForm group={group} close={() => setModal(undefined)} save={async data => {
-      const updated = await api<Group>("/api/groups/" + group.id, "PUT", data);
-      setGroups(rows => rows.map(row => row.id === updated.id ? updated : row)); setModal(undefined);
-    }} />}
+
+    {/* 弹窗集合 */}
+    {modal === "group" && <GroupForm
+      close={() => setModal(undefined)}
+      existingGroups={groups}
+      save={async data => {
+        const created = await api<Group>("/api/groups", "POST", data);
+        setGroups(rows => [...rows, created]);
+        setGroupId(created.id);
+        setSessionId("");
+        setQuery("");
+        setModal("session");
+      }}
+    />}
+
+    {editingGroup && <GroupForm
+      group={editingGroup}
+      existingGroups={groups}
+      close={() => setEditingGroup(undefined)}
+      save={async data => {
+        const updated = await api<Group>("/api/groups/" + editingGroup.id, "PUT", data);
+        setGroups(rows => rows.map(row => row.id === updated.id ? updated : row));
+        setEditingGroup(undefined);
+        setNotice(`群聊「${updated.title}」配置已更新`);
+      }}
+    />}
+
+    {/* 删除群聊二次确认弹窗 */}
+    {deletingGroup && (
+      <Modal title="删除群聊确认" close={() => setDeletingGroup(undefined)}>
+        <div className="gc-delete-confirm-box">
+          <div className="gc-delete-icon">⚠️</div>
+          <p className="gc-delete-msg">
+            确定要删除群聊「<strong>{deletingGroup.title}</strong>」吗？
+          </p>
+          <div className="gc-delete-warning-callout">
+            <strong>重要提示：</strong>删除群聊将同时永久删除该群下的<strong>全部会话及其相关历史记录与受管文件</strong>，此操作无法撤销，请谨慎确认。
+          </div>
+          {errorMessage}
+          <div className="gc-actions gc-dialog-footer">
+            <button type="button" onClick={() => setDeletingGroup(undefined)}>取消</button>
+            <button type="button" className="gc-danger" disabled={pending} onClick={() => void handleDeleteGroup(deletingGroup)}>
+              {pending ? "正在删除…" : "确认删除此群聊"}
+            </button>
+          </div>
+        </div>
+      </Modal>
+    )}
+
     {modal === "session" && group && <Modal title="新建会话" close={() => setModal(undefined)}>
       <form className="gc-form" onSubmit={event => {
         event.preventDefault();
         const data = new FormData(event.currentTarget);
         void perform(async () => {
           const created = await api<Session>(`/api/groups/${group.id}/sessions`, "POST", { title: data.get("title"), scene: data.get("scene") });
-          setSessions(prior => ({ ...prior, items: [created, ...prior.items] })); setSessionId(created.id); setModal(undefined);
+          setSessions(prior => ({ ...prior, items: [created, ...prior.items] }));
+          setSessionId(created.id);
+          setModal(undefined);
         });
       }}>
-        <label>会话名称<input name="title" required maxLength={100} autoFocus /></label>
-        <label>场景<select name="scene">{Object.entries(sceneNames).map(([id, name]) => <option key={id} value={id}>{name}</option>)}</select></label>
-        {errorMessage}<button className="gc-primary" disabled={pending}>创建会话</button>
+        <label>
+          <span className="gc-form-label">会话名称</span>
+          <input name="title" required maxLength={100} placeholder="输入会话主题或目标" autoFocus />
+        </label>
+        <label>
+          <span className="gc-form-label">场景类型</span>
+          <select name="scene">{Object.entries(sceneNames).map(([id, name]) => <option key={id} value={id}>{name}</option>)}</select>
+        </label>
+        {errorMessage}
+        <div className="gc-actions gc-dialog-footer">
+          <button type="button" onClick={() => setModal(undefined)}>取消</button>
+          <button className="gc-primary" disabled={pending}>创建会话</button>
+        </div>
       </form>
     </Modal>}
+
     {(modal === "roster" || modal === "group-roster") && (modal === "roster" ? session : group) && <RosterEditor
       row={(modal === "roster" ? session : group)!} error={errorMessage} close={() => setModal(undefined)}
       save={(id, nickname) => manageRoster(modal === "roster", "nickname", id, nickname)}
       admin={id => manageRoster(modal === "roster", "admin", id)} />}
+
     {modal === "delete" && session && <Modal title="删除会话" close={() => setModal(undefined)}>
       <p>将删除「{session.title}」的会话记录。{busy && "正在运行的任务会先停止。"}</p><p className="gc-path">{workspace}</p>
       <label><input type="checkbox" checked={removal} onChange={e => setRemoval(e.target.checked)} /> 同时删除此会话的全部受管文件</label>
       <p><small>工具自身的原生会话记录由原工具管理。</small></p>
-      {errorMessage}<button className="gc-danger" disabled={pending} onClick={() => void perform(async () => {
-        const deleted = await api<{ retainedPath?: string }>(sessionUrl(session.id), "DELETE", { version: session.version, files: removal });
-        setSessions(prior => ({ ...prior, items: prior.items.filter(item => item.id !== session.id) }));
-        setSessionId(""); setModal(undefined); setNotice(deleted.retainedPath ? "文件已保留在 " + deleted.retainedPath : "会话与受管文件已删除");
-      })}>确认删除</button>
+      {errorMessage}
+      <div className="gc-actions gc-dialog-footer">
+        <button type="button" onClick={() => setModal(undefined)}>取消</button>
+        <button className="gc-danger" disabled={pending} onClick={() => void perform(async () => {
+          const deleted = await api<{ retainedPath?: string }>(sessionUrl(session.id), "DELETE", { version: session.version, files: removal });
+          setSessions(prior => ({ ...prior, items: prior.items.filter(item => item.id !== session.id) }));
+          setSessionId(""); setModal(undefined); setNotice(deleted.retainedPath ? "文件已保留在 " + deleted.retainedPath : "会话与受管文件已删除");
+        })}>确认删除会话</button>
+      </div>
     </Modal>}
+
     {modal === "restart" && <Modal title="重新开始本轮" close={() => setModal(undefined)}>
       <form className="gc-form" onSubmit={event => {
         event.preventDefault(); void act({ action: "restart", text: String(new FormData(event.currentTarget).get("reason") ?? "") });
-      }}><label>本轮要避开的方向<textarea name="reason" maxLength={3000} /></label>{errorMessage}<button disabled={pending} className="gc-primary">重新生成</button></form>
+      }}>
+        <label><span className="gc-form-label">本轮要避开的方向</span><textarea name="reason" maxLength={3000} /></label>
+        {errorMessage}
+        <div className="gc-actions gc-dialog-footer">
+          <button type="button" onClick={() => setModal(undefined)}>取消</button>
+          <button disabled={pending} className="gc-primary">重新生成</button>
+        </div>
+      </form>
     </Modal>}
+
     {(modal === "outline" || modal === "final") && session && <Modal title={modal === "outline" ? "整理大纲" : "指定成员成稿"} close={() => setModal(undefined)}>
       <form className="gc-form" onSubmit={event => {
         event.preventDefault(); void act({ action: modal, member: author, artifact: base || undefined, text: String(new FormData(event.currentTarget).get("instructions") ?? "") });
       }}>
-        <label>成稿成员<select value={author} onChange={e => setAuthor(e.target.value)}>
+        <label><span className="gc-form-label">成稿成员</span><select value={author} onChange={e => setAuthor(e.target.value)}>
           {session.members.map(item => <option key={item.id} value={item.id}>@{item.nickname}</option>)}
         </select></label>
-        <label>基础稿<select value={base} onChange={e => setBase(e.target.value)}>
+        <label><span className="gc-form-label">基础稿</span><select value={base} onChange={e => setBase(e.target.value)}>
           <option value="">使用当前轮材料</option>{artifacts.filter(item => ["plans", "outline", "final"].includes(item.stage)).map(item => <option value={item.id} key={item.id}>{label(item)}</option>)}
         </select></label>
-        <label>修订要求<textarea name="instructions" maxLength={4000} /></label>
-        {errorMessage}<button className="gc-primary" disabled={pending}>发送给指定成员</button>
+        <label><span className="gc-form-label">修订要求</span><textarea name="instructions" maxLength={4000} /></label>
+        {errorMessage}
+        <div className="gc-actions gc-dialog-footer">
+          <button type="button" onClick={() => setModal(undefined)}>取消</button>
+          <button className="gc-primary" disabled={pending}>发送给指定成员</button>
+        </div>
       </form>
     </Modal>}
+
+    {/* 重命名会话弹窗 */}
+    {renamingSession && (
+      <Modal title="重命名会话" close={() => setRenamingSession(undefined)}>
+        <form className="gc-form" onSubmit={handleRenameSession}>
+          <label>
+            <span className="gc-form-label">会话名称</span>
+            <input
+              autoFocus
+              required
+              maxLength={100}
+              value={sessionTitleInput}
+              onInput={e => setSessionTitleInput(e.currentTarget.value)}
+              placeholder="输入新的会话主题或目标"
+            />
+          </label>
+          {errorMessage}
+          <div className="gc-actions gc-dialog-footer">
+            <button type="button" onClick={() => setRenamingSession(undefined)}>取消</button>
+            <button type="submit" className="gc-primary" disabled={pending || !sessionTitleInput.trim()}>
+              {pending ? "保存中…" : "保存"}
+            </button>
+          </div>
+        </form>
+      </Modal>
+    )}
+
+    {/* 删除会话二次确认弹窗 */}
+    {deletingSessionItem && (
+      <Modal title="删除会话确认" close={() => setDeletingSessionItem(undefined)}>
+        <div className="gc-delete-confirm-box">
+          <div className="gc-delete-icon">⚠️</div>
+          <p className="gc-delete-msg">
+            确定要删除会话「<strong>{deletingSessionItem.title}</strong>」吗？
+          </p>
+          <div className="gc-delete-warning-callout">
+            <strong>重要提示：</strong>删除会话将永久清理该会话所有的聊天记录、运行中间产物与文档，此操作无法撤销，请谨慎确认。
+          </div>
+          {errorMessage}
+          <div className="gc-actions gc-dialog-footer">
+            <button type="button" onClick={() => setDeletingSessionItem(undefined)}>取消</button>
+            <button type="button" className="gc-danger" disabled={pending} onClick={() => void handleDeleteSessionItem()}>
+              {pending ? "正在删除…" : "确认删除此会话"}
+            </button>
+          </div>
+        </div>
+      </Modal>
+    )}
+
+    {/* Hover 群聊卡片纯白磨砂浮层（Fixed脱离文档流，永不触发父容器滚动条滑块） */}
+    {popoverGroup && (
+      <div
+        className="gc-group-popover-fixed"
+        role="tooltip"
+        style={{
+          position: "fixed",
+          top: popoverGroup.rect.top,
+          left: Math.min(popoverGroup.rect.right + 8, window.innerWidth - 270),
+          zIndex: 99999,
+          pointerEvents: "none",
+        }}
+      >
+        <div className="gc-popover-header">
+          <span>群内模型成员</span>
+          <span className="gc-popover-badge">{popoverGroup.group.members.length}</span>
+        </div>
+        <div className="gc-popover-members">
+          {popoverGroup.group.members.map(m => {
+            const abbr = getModelAbbr(m.nickname || m.model);
+            const isAdm = popoverGroup.group.admin === m.id;
+            return (
+              <div key={m.id} className="gc-popover-item">
+                <span className="gc-popover-avatar">{abbr}</span>
+                <div className="gc-popover-info">
+                  <div className="gc-popover-name">
+                    <span>{m.nickname}</span>
+                    {isAdm && <span className="gc-tag-mini-admin">管理员</span>}
+                  </div>
+                  <small className="gc-popover-tool">{toolNames[m.tool]} · {modelName(m)}</small>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    )}
   </div>;
 }
