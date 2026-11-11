@@ -141,7 +141,7 @@ export function prepareTaskList(store: Store, w: Workflow, run: Run, record: Pla
   if (!activePurposes.has(run.purpose ?? "implement") || run.dispatch_context?.guidance_mode === "human_acceptance" ||
       run.workflow_id !== w.id || run.plan_revision !== w.plan_revision || w.run_id !== run.id ||
       store.get("run_stop", run.id)) return;
-  const binding = initTaskList(store, w, record, true);
+  const binding = initTaskList(store, w, record, false);
   if (!binding) return;
   if (binding.writer !== run.id) {
     const last = taskListSnapshot(store, w);

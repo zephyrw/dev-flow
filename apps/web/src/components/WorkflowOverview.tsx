@@ -19,9 +19,9 @@ const TASK_STATUS_META: Record<
   OverviewTaskView["status"],
   { label: string; bg: string; color: string; dot: string }
 > = {
-  unreported: { label: "未回传", bg: "#f8fafc", color: "#475569", dot: "#94a3b8" },
+  unreported: { label: "待开始", bg: "#f8fafc", color: "#475569", dot: "#94a3b8" },
   blocked: {
-    label: "受阻",
+    label: "失败",
     bg: "#fef2f2",
     color: "#b91c1c",
     dot: "#ef4444",
@@ -50,12 +50,12 @@ const TEST_STATUS_META: Record<
   OverviewTestView["status"],
   { label: string; bg: string; color: string; dot: string }
 > = {
-  running: { label: "运行中", bg: "#eff6ff", color: "#1d4ed8", dot: "#3b82f6" },
-  blocked: { label: "受阻", bg: "#fef2f2", color: "#b91c1c", dot: "#ef4444" },
+  running: { label: "进行中", bg: "#eff6ff", color: "#1d4ed8", dot: "#3b82f6" },
+  blocked: { label: "失败", bg: "#fef2f2", color: "#b91c1c", dot: "#ef4444" },
   skipped: { label: "已跳过", bg: "#f8fafc", color: "#475569", dot: "#94a3b8" },
-  unreported: { label: "未回传", bg: "#f8fafc", color: "#475569", dot: "#94a3b8" },
+  unreported: { label: "待开始", bg: "#f8fafc", color: "#475569", dot: "#94a3b8" },
   failed: {
-    label: "未通过",
+    label: "失败",
     bg: "#fef2f2",
     color: "#b91c1c",
     dot: "#ef4444",
@@ -67,13 +67,13 @@ const TEST_STATUS_META: Record<
     dot: "#f59e0b",
   },
   pending: {
-    label: "待执行",
+    label: "待开始",
     bg: "#f8fafc",
     color: "#475569",
     dot: "#94a3b8",
   },
   passed: {
-    label: "已通过",
+    label: "已完成",
     bg: "#f0fdf4",
     color: "#15803d",
     dot: "#22c55e",

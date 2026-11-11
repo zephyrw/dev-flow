@@ -283,4 +283,39 @@ describe("W08 & W09: 概览业务摘要投影与文档下载修复测试 (D07/D0
 
     await app.close();
   });
+
+  it("projectWorkflowOverview 将 unreported 任务与测试项归一化为 pending 待开始", () => {
+    const detail = {
+      workflow: { id: "wf-norm", plan_revision: 1, plan_hash: "hash-1" },
+      plan: {
+        plan: {
+          task_model: "native-v2",
+          tests: [
+            { id: "T1", steps: ["步骤1"], assertions: ["断言1"] },
+            { id: "T2", steps: ["步骤2"], assertions: ["断言2"] },
+          ],
+        },
+      },
+      tasks: [
+        { id: "task-1", title: "任务1", status: "unreported", development_status: "unreported" },
+        { id: "task-2", title: "任务2", status: "in_progress", development_status: "active" },
+      ],
+      task_list: {
+        path: "/fake/path/task-list.json",
+        seq: 1,
+      },
+      test_progress: {
+        cases: [
+          { id: "C1", test_id: "T1", scenario: "场景1", status: "unreported" },
+          { id: "C2", test_id: "T2", scenario: "场景2", status: "passed" },
+        ],
+      },
+    };
+
+    const overview = projectWorkflowOverview(detail);
+    expect(overview.tasks.find((t) => t.id === "task-1")?.status).toBe("pending");
+    expect(overview.tasks.find((t) => t.id === "task-2")?.status).toBe("in_progress");
+    expect(overview.tests.find((t) => t.id === JSON.stringify(["T1", "C1"]))?.status).toBe("pending");
+    expect(overview.tests.find((t) => t.id === JSON.stringify(["T2", "C2"]))?.status).toBe("passed");
+  });
 });

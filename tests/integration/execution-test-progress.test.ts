@@ -3,6 +3,10 @@ import { setup, plan, project } from "../helpers.js";
 import { recordExecutionTestReport, reportedTestProgress } from "../../packages/core/src/execution-test-progress.js";
 import { testProgress } from "../../packages/core/src/progress.js";
 import { normalizeOptionalDeliveryManifest, type Run, type Workflow } from "../../packages/contracts/src/index.js";
+import { prepareTaskList, taskListSnapshot } from "../../packages/core/src/task-list.js";
+import { projectWorkflowOverview } from "../../packages/core/src/workflow-overview.js";
+import { writeFileSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 
 let s: ReturnType<typeof setup>;
 const wid = "reported-tests";
@@ -126,4 +130,24 @@ it("retains the original report time across stages and marks an environment chan
   expect(both().cases.map(c => c.status)).toEqual(["passed", "unreported", "stale"]);
   expect((both().cases[0] as any).reported_at).toBe(time);
   expect((both().cases[2] as any).reported_at).toBe(time);
+});
+
+it("prepareTaskList 为执行阶段初始化任务清单时，任务初始为 pending 且测试为 not_run，概览投影为 pending", () => {
+  const w = s.engine.get(wid), run = s.store.must<Run>("run", "executor");
+  const planRecord = s.engine.plan(wid);
+  const planFile = join(s.root, "plan.md");
+  writeFileSync(planFile, "# Plan\n");
+  const record = { ...planRecord, material_path: planFile };
+
+  const taskListFile = prepareTaskList(s.store, w, run, record);
+  expect(taskListFile).toBeDefined();
+
+  const diskContent = JSON.parse(readFileSync(taskListFile!, "utf8"));
+  expect(diskContent.tasks.every((t: any) => t.status === "pending")).toBe(true);
+  expect(diskContent.tests.every((t: any) => t.status === "not_run")).toBe(true);
+
+  const detail = s.engine.detail(wid, false);
+  const overview = projectWorkflowOverview(detail);
+  expect(overview.tasks.every((t: any) => t.status === "pending")).toBe(true);
+  expect(overview.tests.every((t: any) => t.status === "pending")).toBe(true);
 });

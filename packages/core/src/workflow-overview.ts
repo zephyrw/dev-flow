@@ -281,7 +281,7 @@ function normalizeTaskStatus(
 ): OverviewTaskView["status"] {
   if (!rawStatus) return "pending";
   const s = rawStatus.toLowerCase();
-  if (s === "unreported") return s;
+  if (s === "unreported") return "pending";
   if (
     s === "completed" ||
     s === "done" ||
@@ -388,7 +388,7 @@ function buildTests(
         id: JSON.stringify([c.test_id, c.id]),
         scenario: c.scenario ?? test?.steps?.[0] ?? c.id,
         expected: c.expected_outcome ?? test?.assertions?.[0],
-        status: c.status === "not_run" || c.status === "missing" ? "pending" : c.status,
+        status: c.status === "not_run" || c.status === "missing" || c.status === "unreported" ? "pending" : c.status,
         source: "native_acceptance",
       };
     }).sort((a: OverviewTestView, b: OverviewTestView) => TEST_SORT_WEIGHT[a.status] - TEST_SORT_WEIGHT[b.status]);

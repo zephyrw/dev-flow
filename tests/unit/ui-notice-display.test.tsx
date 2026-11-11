@@ -227,4 +227,38 @@ describe("user-facing notices", () => {
       formatApiError({ code: "INTERNAL_CODE", message: "请重新登录" }),
     ).toBe("请重新登录");
   });
+
+  it("WorkflowOverview 任务概览仅展示待开始、进行中、已完成、失败，不显示未回传", () => {
+    const html = renderToStaticMarkup(
+      <WorkflowOverview
+        workflow={{ title: "混剪工作台", state: "EXECUTING" }}
+        overview={{
+          goal: { status: "available", summary: "实现核心混剪功能" },
+          background: { status: "missing", summary: "", items: [] },
+          findings: [],
+          unresolved: [],
+          tasks: [
+            { id: "t1", title: "创作模板与顶部工具栏", status: "pending" },
+            { id: "t2", title: "镜头录制和生成提示词", status: "in_progress" },
+            { id: "t3", title: "本地导入和素材图标", status: "completed" },
+            { id: "t4", title: "固定单轨主视频显示", status: "blocked" },
+            { id: "t5", title: "历史任务状态兼容", status: "unreported" },
+          ],
+          tests: [
+            { id: "ts1", scenario: "验证视频裁剪与已选切换", status: "pending" },
+            { id: "ts2", scenario: "验证时间轴多轨播放", status: "running" },
+            { id: "ts3", scenario: "验证导出合成并核验视频", status: "passed" },
+            { id: "ts4", scenario: "验证两租户隔离访问拦截", status: "failed" },
+            { id: "ts5", scenario: "历史测试状态兼容", status: "unreported" },
+          ],
+          progress: { tasks: null, tests: null },
+        } as any}
+      />,
+    );
+    expect(html).not.toContain("未回传");
+    expect(html).toContain("待开始");
+    expect(html).toContain("进行中");
+    expect(html).toContain("已完成");
+    expect(html).toContain("失败");
+  });
 });
