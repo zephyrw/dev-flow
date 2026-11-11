@@ -1269,13 +1269,35 @@ export class Engine {
     const plan = this.plan(key).plan;
     if (!Array.isArray(plan?.tasks)) return [];
     const checklist = taskListSnapshot(this.store, w)?.list;
-    if (checklist) return checklist.tasks.map(t => {
+    if (!checklist) return this.evidenceTaskStatus(key, verifyFiles);
+    const evidence = new Map(this.evidenceTaskStatus(key, verifyFiles).map((t) => [t.id, t]));
+    return checklist.tasks.map((t) => {
       const done = t.status === "completed";
       const state = t.status === "in_progress" ? "active" : t.status;
-      return { ...t, status: t.status, completed: done, development_status: state,
-        implementation_status: state, validation_status: "not_certified",
-        has_implementation: done, summary: t.summary ?? "", recheck_reason: undefined };
+      // The checklist only records progress the executor reported. When it
+      // has nothing for a task yet (pending/unreported), fall back to the
+      // evidence-based completion (review pointer + execution-completion
+      // record) so an after-human review keeps its completion source.
+      const fallback = evidence.get(t.id);
+      const useEvidence = (t.status === "pending" || t.status === "unreported") && fallback?.completed === true;
+      return {
+        ...t,
+        status: useEvidence ? "completed" : t.status,
+        completed: done || useEvidence,
+        development_status: useEvidence ? "completed" : state,
+        implementation_status: useEvidence ? "completed" : state,
+        validation_status: "not_certified",
+        has_implementation: done || useEvidence,
+        summary: useEvidence && !t.summary ? (fallback.summary ?? "") : (t.summary ?? ""),
+        recheck_reason: undefined,
+      };
     });
+  }
+
+  private evidenceTaskStatus(key: string, verifyFiles = true) {
+    const w = this.get(key);
+    const plan = this.plan(key).plan;
+    if (!Array.isArray(plan?.tasks)) return [];
     const currentRun = w.run_id ? this.store.get<Run>("run", w.run_id) : undefined;
     if (!isLegacyProtocol(currentRun, plan)) {
       const intent = this.reviewPointer(key);

@@ -277,13 +277,20 @@ export class CreateWorkflowService {
       pending?.spec.source_defaults_revision ?? resolved.sourceDefaultsRevision;
 
     const workflowId = pending?.workflow.id ?? generateWorkflowId(input.request_id);
+    if (!pending) {
+      // Profile verification precedes workspace resolution (R07): an
+      // unverified profile must fail with MODEL_ACCESS_REQUIRED even when
+      // the selected root is not a repository. The workspace root passed
+      // here is the user-selected project root; planWorkflowWorkspaces
+      // canonicalizes the same directory as layout.root.
+      assertProfilesVerified(this.store, collectExplicitProfiles(plannerProfile, executorProfile, roleOverrides),
+        undefined, input.workspace_root);
+    }
     const layout = planWorkflowWorkspaces(this.store, input, workflowId);
     const { root, existing, repositories, executionRoot } = layout;
     if (!pending) {
       requireCondition(!input.preview_digest || input.preview_digest === layout.digest,
         "WORKSPACE_PREVIEW_CHANGED", "仓库或分支已变化，请重新预览后创建", 409);
-      assertProfilesVerified(this.store, collectExplicitProfiles(plannerProfile, executorProfile, roleOverrides),
-        undefined, root);
     }
     const active = this.store.list<Workspace>("workspace").find(ws =>
       repositories.some(repo => sameWorkspacePath(ws.root, repo.path))
