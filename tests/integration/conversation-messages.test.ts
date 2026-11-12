@@ -429,6 +429,56 @@ describe("SA-I17 conversation message attachment paths", () => {
 });
 
 describe("SA-I18 conversation message routing and guards", () => {
+  it("keeps request receipts separate from message keys containing the receipt suffix", async () => {
+    const f = fixture();
+    const first = await f.messages.submit("wf1", payload(f.roots, "wf1", { request_id: "A" }));
+    const second = await f.messages.submit("wf1", payload(f.roots, "wf1", { request_id: "A:request" }));
+    expect(second.message_id).not.toBe(first.message_id);
+    expect(f.s.store.list(CONVERSATION_ENTITY.message, "wf1")).toHaveLength(2);
+  });
+
+  it("replays the original receipt after the workflow and root generation advance", async () => {
+    const f = fixture();
+    const request = payload(f.roots, "wf1");
+    const first = await f.messages.submit("wf1", request);
+    expect(f.control.calls).toHaveLength(1);
+
+    const newer = runRecord("run-newer", "wf1");
+    f.s.store.put("run", newer.id, "wf1", newer);
+    const workflow = f.s.store.must<Workflow>("workflow", "wf1");
+    f.s.store.put("workflow", workflow.id, "p1", { ...workflow, run_id: newer.id, state: "COMPLETED" });
+    const resumed = f.conversations.applyEvent(ctx("wf1", newer.id, "native-wf1"),
+      event("native-wf1", { source_id: "newer-receipt", source_seq: "2" }));
+    expect(resumed.attempt?.generation).toBe(1);
+
+    await expect(f.messages.submit("wf1", request)).resolves.toEqual(first);
+    expect(f.control.calls).toHaveLength(1);
+    expect(f.s.store.list(CONVERSATION_ENTITY.message, "wf1")).toHaveLength(1);
+    expect(f.s.store.list("feedback_message", "wf1")).toHaveLength(1);
+    await expect(f.messages.submit("wf1", { ...request, text: "不同正文" }))
+      .rejects.toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
+    await expect(f.messages.submit("wf1", { ...request, request_id: "new-request" }))
+      .rejects.toMatchObject({ code: "SEND_DISABLED" });
+  });
+
+  it("retries a failed pause for the accepted original attempt without duplicating guidance", async () => {
+    const f = fixture();
+    const originalPause = f.control.pauseTree.bind(f.control);
+    let fail = true;
+    f.control.pauseTree = async (workflowId, request) => {
+      if (fail) throw new Error("pause response lost");
+      return originalPause(workflowId, request);
+    };
+    const request = payload(f.roots, "wf1");
+    await expect(f.messages.submit("wf1", request)).rejects.toMatchObject({ code: "MESSAGE_ACCEPTED_PAUSE_PENDING", status: 503 });
+    expect(f.s.store.list(CONVERSATION_ENTITY.message, "wf1")).toHaveLength(1);
+    fail = false;
+    await expect(f.messages.submit("wf1", request)).resolves.toMatchObject({ accepted: true });
+    expect(f.control.calls).toHaveLength(1);
+    expect(f.s.store.list(CONVERSATION_ENTITY.message, "wf1")).toHaveLength(1);
+    expect(f.s.store.events("wf1", 0, 1000).filter(event => event.type === "UserGuidance")).toHaveLength(1);
+  });
+
   it("keeps a projected root send bound to the same Run when native discovery replaces it", async () => {
     const f = fixture();
     const run = runRecord("run-discovery", "wf1");

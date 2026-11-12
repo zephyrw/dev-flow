@@ -46,7 +46,7 @@ export type AttachmentRecord = {
   previewUrl?: string;
 };
 
-type PersistedAttachment = {
+export type PersistedAttachment = {
   clientId: string;
   requestId: string;
   fileId?: string;
@@ -59,6 +59,13 @@ type PersistedAttachment = {
   interrupted: boolean;
   error?: string;
 };
+
+export function persistableAttachment(item: AttachmentRecord): PersistedAttachment {
+  const { clientId, requestId, fileId, displayName, size, mime, kind, status,
+    supported, interrupted, error } = item;
+  return { clientId, requestId, fileId, displayName, size, mime, kind, status,
+    supported, interrupted: interrupted || (!item.file && status !== "ready"), error };
+}
 
 const IMAGE_MIMES = new Set([
   "image/png",
@@ -124,10 +131,25 @@ const TEXT_EXT = new Set([
 ]);
 
 const queues = new Map<string, AttachmentRecord[]>();
+const queueRestoreTokens = new Map<string, object>();
+const submissionFiles = new Map<string, Map<string, Set<string>>>();
+
+export function retainSubmissionAttachmentFiles(workflowId: string, requestId: string, records: AttachmentRecord[]): void {
+  const requests = submissionFiles.get(workflowId) ?? new Map<string, Set<string>>();
+  requests.set(requestId, new Set(records.map(item => item.fileId ?? item.clientId)));
+  submissionFiles.set(workflowId, requests);
+}
+export function releaseSubmissionAttachmentFiles(workflowId: string, requestId: string): void {
+  const requests = submissionFiles.get(workflowId);
+  requests?.delete(requestId);
+  if (!requests?.size) submissionFiles.delete(workflowId);
+}
+function fileHeldBySubmission(workflowId: string, fileId: string): boolean {
+  return [...(submissionFiles.get(workflowId)?.values() ?? [])].some(ids => ids.has(fileId));
+}
 const listeners = new Map<string, Set<() => void>>();
 const restores = new Set<string>();
 const uploads = new Map<string, AbortController>();
-const EMPTY_ITEMS: AttachmentRecord[] = [];
 
 function draftSignature(items: AttachmentRecord[]): string {
   return items
@@ -143,6 +165,8 @@ export function resetConversationAttachments(): void {
     if (item.previewUrl) URL.revokeObjectURL(item.previewUrl);
   }
   queues.clear();
+  queueRestoreTokens.clear();
+  submissionFiles.clear();
   restores.clear();
   for (const controller of uploads.values()) controller.abort();
   uploads.clear();
@@ -314,13 +338,24 @@ function emit(workflowId: string): void {
 function queueOf(workflowId: string): AttachmentRecord[] {
   const existing = queues.get(workflowId);
   if (existing) return existing;
-  const created: AttachmentRecord[] = [];
+  // Restore ownership synchronously. Metadata requests must never leave a window
+  // in which a persisted draft appears to have no attachments.
+  let created: AttachmentRecord[] = [];
+  try {
+    const raw = readStorage()?.getItem(conversationAttachmentsStorageKey(workflowId));
+    const parsed: unknown = raw ? JSON.parse(raw) : [];
+    if (Array.isArray(parsed)) created = parsed.map(item => persistedToRecord(workflowId, item));
+  } catch {
+    // Unavailable storage or malformed drafts cannot prevent composer access.
+  }
   queues.set(workflowId, created);
+  queueRestoreTokens.set(workflowId, {});
   return created;
 }
 
-function replaceQueue(workflowId: string, next: AttachmentRecord[]): void {
+function replaceQueue(workflowId: string, next: AttachmentRecord[], options: { preserveRestore?: boolean } = {}): void {
   queues.set(workflowId, next);
+  if (!options.preserveRestore) queueRestoreTokens.set(workflowId, {});
   emit(workflowId);
 }
 
@@ -568,8 +603,8 @@ export async function removeConversationAttachment(
   const item = queueOf(workflowId).find((entry) => entry.clientId === clientId);
   if (!item) return;
   uploads.get(uploadKey(workflowId, clientId))?.abort();
-  if (item.previewUrl) URL.revokeObjectURL(item.previewUrl);
-  if (item.fileId) {
+  if (item.previewUrl && !fileHeldBySubmission(workflowId, item.fileId ?? item.clientId)) URL.revokeObjectURL(item.previewUrl);
+  if (item.fileId && !fileHeldBySubmission(workflowId, item.fileId)) {
     try {
       await deleteDraftFile(workflowId, item.fileId);
     } catch {
@@ -594,6 +629,38 @@ export function clearSubmittedConversationAttachments(
     return false;
   });
   replaceQueue(workflowId, next);
+}
+
+/** Move records without deleting remote files or releasing previews needed for recovery. */
+export function takeConversationAttachments(workflowId: string, ids: string[]): AttachmentRecord[] {
+  const selected = new Set(ids);
+  const current = queueOf(workflowId);
+  const taken = current.filter(item => selected.has(item.fileId ?? item.clientId));
+  replaceQueue(workflowId, current.filter(item => !taken.includes(item)));
+  return taken;
+}
+
+export function snapshotConversationAttachments(workflowId: string): AttachmentRecord[] {
+  return [...queueOf(workflowId)];
+}
+
+export function restoreConversationAttachments(workflowId: string, records: AttachmentRecord[]): void {
+  restores.add(workflowId);
+  replaceQueue(workflowId, [...records]);
+}
+
+export function releaseConversationAttachments(records: AttachmentRecord[]): void {
+  for (const item of records) {
+    if (item.previewUrl) URL.revokeObjectURL(item.previewUrl);
+  }
+}
+
+export function hydrateConversationAttachments(workflowId: string, records: PersistedAttachment[]): AttachmentRecord[] {
+  return records.map(item => persistedToRecord(workflowId, item));
+}
+
+export function draftConversationAttachments(records: AttachmentRecord[]): ConversationDraftAttachment[] {
+  return records.map(toDraftAttachment);
 }
 
 export function clearConversationAttachments(workflowId: string): void {
@@ -623,7 +690,7 @@ export function applyAttachmentCapability(
     changed = true;
     return { ...item, supported, unsupportedReason: reason };
   });
-  if (changed) replaceQueue(workflowId, next);
+  if (changed) replaceQueue(workflowId, next, { preserveRestore: true });
 }
 
 function persistedToRecord(
@@ -648,33 +715,23 @@ function persistedToRecord(
   };
 }
 
-async function restoreQueue(workflowId: string): Promise<void> {
+export async function restoreConversationAttachmentQueue(workflowId: string): Promise<void> {
   if (restores.has(workflowId)) return;
   restores.add(workflowId);
-  const storage = readStorage();
-  const raw = storage?.getItem(conversationAttachmentsStorageKey(workflowId));
-  if (!raw) return;
-  let parsed: PersistedAttachment[] = [];
-  try {
-    parsed = JSON.parse(raw) as PersistedAttachment[];
-  } catch {
-    return;
-  }
+  const initial = queueOf(workflowId);
+  const token = queueRestoreTokens.get(workflowId);
   const restored: AttachmentRecord[] = [];
-  for (const item of parsed) {
+  for (const item of initial) {
     if (item.status === "ready" && item.fileId) {
-      const meta = await fetchMetadata(workflowId, item.fileId);
+      const meta = await fetchMetadata(workflowId, item.fileId).catch(() => undefined);
+      // A replacement (including an empty queue) belongs to a newer draft.
+      if (queueRestoreTokens.get(workflowId) !== token) return;
       if (!meta) {
-        restored.push({
-          ...persistedToRecord(workflowId, item),
-          status: "ready",
-          interrupted: false,
-          error: undefined,
-        });
+        restored.push(item);
         continue;
       }
       restored.push({
-        ...persistedToRecord(workflowId, item),
+        ...item,
         fileId: meta.id || item.fileId,
         displayName: meta.display_name || item.displayName,
         size: meta.size || item.size,
@@ -686,10 +743,16 @@ async function restoreQueue(workflowId: string): Promise<void> {
       });
       continue;
     }
-    restored.push(persistedToRecord(workflowId, item));
+    restored.push(item);
   }
-  if (queueOf(workflowId).length) return;
-  if (restored.length) replaceQueue(workflowId, restored);
+  if (queueRestoreTokens.get(workflowId) !== token) return;
+  // Capability updates retain ownership and must survive metadata enrichment.
+  const current = new Map(queueOf(workflowId).map(item => [item.clientId, item]));
+  if (restored.length) replaceQueue(workflowId, restored.map(item => ({
+    ...item,
+    supported: current.get(item.clientId)!.supported,
+    unsupportedReason: current.get(item.clientId)!.unsupportedReason,
+  })), { preserveRestore: true });
 }
 
 function subscribe(workflowId: string, listener: () => void): () => void {
@@ -726,14 +789,14 @@ export function useConversationAttachmentQueue(
     lastDraftSig.current = "";
     const refresh = () => setTick((value) => value + 1);
     const unsubscribe = subscribe(workflowId, refresh);
-    void restoreQueue(workflowId).then(refresh);
+    void restoreConversationAttachmentQueue(workflowId).then(refresh);
     return unsubscribe;
   }, [workflowId]);
 
   const capabilityKey = capability
     ? JSON.stringify(capability)
     : "";
-  const items = queues.get(workflowId) ?? EMPTY_ITEMS;
+  const items = queueOf(workflowId);
   useEffect(() => {
     applyAttachmentCapability(workflowId, capability);
   }, [capability, capabilityKey, workflowId, items]);

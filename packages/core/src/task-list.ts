@@ -43,7 +43,7 @@ export function taskListWritableDirectory(store: Store, w: Workflow, run: Run) {
 function save(store: Store, w: Workflow, list: TaskList, error?: string) {
   const last = taskListSnapshot(store, w);
   const digest = hash(JSON.stringify({ tasks: list.tasks, tests: list.tests, checks: list.checks }));
-  if (last?.digest === digest && last.error === error) return;
+  if (last?.digest === digest && last.error === error && last.list.writer_run_id === list.writer_run_id) return;
   const snapshot = {
     revision: w.plan_revision, seq: (store.get<Snapshot>("task_list_snapshot", w.id)?.seq ?? 0) + 1,
     digest, changed_at: last?.digest === digest ? last.changed_at : now(), error, list,
@@ -99,6 +99,13 @@ export function initTaskList(store: Store, w: Workflow, record: PlanRecord, hist
   return binding;
 }
 
+class TaskListSyncError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "TaskListSyncError";
+  }
+}
+
 export function syncTaskList(store: Store, w: Workflow, finishingRun?: string) {
   const binding = store.get<Binding>("task_list_binding", w.id);
   const last = taskListSnapshot(store, w);
@@ -107,38 +114,69 @@ export function syncTaskList(store: Store, w: Workflow, finishingRun?: string) {
   const writable = !!run && w.run_id === run.id && run.workflow_id === w.id &&
     run.plan_revision === w.plan_revision && (run.status === "running" || finishingRun === run.id) &&
     !store.get("run_stop", run.id);
-  if (!writable) return;
+  const recovering = !writable && !terminal.has(w.state) && !!last.error;
+  if (!writable && !recovering) return;
+
   try {
     const raw = readMaterialFile(binding.root, binding.relative);
-    if (!raw || raw.length > 4 * 1024 * 1024) throw new Error();
-    const list = TaskListSchema.parse(JSON.parse(raw.toString("utf8")));
-    if (list.workflow_id !== w.id || list.plan_revision !== w.plan_revision || list.writer_run_id !== binding.writer)
-      throw new Error();
-    const merge = <T extends { status: string }>(definitions: T[], rows: T[], key: (item: T) => string): T[] => {
+    if (!raw) throw new TaskListSyncError("任务清单文件无法读取或不存在");
+    if (raw.length > 4 * 1024 * 1024) throw new TaskListSyncError("任务清单文件超出大小限制（4MB）");
+
+    let parsedJson: unknown;
+    try {
+      parsedJson = JSON.parse(raw.toString("utf8"));
+    } catch {
+      throw new TaskListSyncError("任务清单 JSON 解析失败，语法无效");
+    }
+
+    const parseResult = TaskListSchema.safeParse(parsedJson);
+    if (!parseResult.success) {
+      throw new TaskListSyncError("任务清单结构不符合契约定义");
+    }
+    const list = parseResult.data;
+
+    if (list.workflow_id !== w.id) {
+      throw new TaskListSyncError("任务清单与当前工作流不匹配");
+    }
+    if (list.plan_revision !== w.plan_revision) {
+      throw new TaskListSyncError("任务清单与当前计划版本不匹配");
+    }
+    if (binding.writer && list.writer_run_id !== binding.writer) {
+      throw new TaskListSyncError("任务清单写入者归属冲突，非当前授权运行");
+    }
+
+    const merge = <T extends { status: string }>(definitions: T[], rows: T[], key: (item: T) => string, itemType: string): T[] => {
       const byKey = new Map(rows.map(r => [key(r), r]));
-      if (rows.length !== definitions.length || byKey.size !== definitions.length) throw new Error();
+      if (rows.length !== definitions.length || byKey.size !== definitions.length) {
+        throw new TaskListSyncError(`任务清单包含未批准的${itemType}项或数量不匹配`);
+      }
       return definitions.map(item => {
         const row = byKey.get(key(item));
-        if (!row) throw new Error();
+        if (!row) throw new TaskListSyncError(`任务清单缺少已批准的${itemType}项: ${key(item)}`);
         // Only accept progress fields; approved definitions are pinned.
         const fields = ["status", "summary", "updated_at", "started_at", "completed_at", "finished_at", "attempt"];
         return { ...item, ...Object.fromEntries(fields.filter(f => f in row).map(f => [f, row[f as keyof T]])) };
       });
     };
     const d = binding.definition;
-    save(store, w, {
+    const validated = {
       ...d, writer_run_id: list.writer_run_id, updated_at: list.updated_at,
-      tasks: merge(d.tasks, list.tasks, row => row.id),
-      tests: merge(d.tests, list.tests, caseKey),
-      checks: merge(d.checks, list.checks, row => row.id),
-    });
-  } catch {
-    save(store, w, last.list, "任务清单暂不可读取或格式无效，已保留上次进度。");
+      tasks: merge(d.tasks, list.tasks, row => row.id, "任务"),
+      tests: merge(d.tests, list.tests, caseKey, "测试"),
+      checks: merge(d.checks, list.checks, row => row.id, "检查"),
+    };
+    // Recovery must pass the same identity checks, but cannot accept progress
+    // written after the run lost permission.
+    save(store, w, recovering ? last.list : validated, undefined);
+  } catch (err) {
+    const detail = err instanceof TaskListSyncError ? err.message : "任务清单暂不可读取或格式无效";
+    const errorMsg = `${detail}，已保留上次进度。`;
+    save(store, w, last.list, errorMsg);
   }
 }
 
 export function prepareTaskList(store: Store, w: Workflow, run: Run, record: PlanRecord) {
-  if (!activePurposes.has(run.purpose ?? "implement") || run.dispatch_context?.guidance_mode === "human_acceptance" ||
+  if (!activePurposes.has(run.purpose ?? "implement") ||
       run.workflow_id !== w.id || run.plan_revision !== w.plan_revision || w.run_id !== run.id ||
       store.get("run_stop", run.id)) return;
   const binding = initTaskList(store, w, record, false);
@@ -147,11 +185,18 @@ export function prepareTaskList(store: Store, w: Workflow, run: Run, record: Pla
     const last = taskListSnapshot(store, w);
     if (!last) return;
     const raw = readMaterialFile(binding.root, binding.relative);
-    const updated = encode({ ...last.list, writer_run_id: run.id });
-    if (raw) replaceMaterialFile(binding.root, binding.relative, raw, updated, randomUUID());
-    else publishMaterialFile(binding.root, binding.relative, updated, randomUUID());
-    store.put("task_list_binding", w.id, w.id, { ...binding, writer: run.id });
-    store.event(w.id, w.project_id, "TaskProgressWatch", {}, run.id);
+    // The prior run's final authorized sync owns progress acceptance. Disk
+    // contents may already contain a late write and are only a CAS precondition.
+    const transferred = { ...last.list, writer_run_id: run.id };
+    const updated = encode(transferred);
+    store.transaction(() => {
+      if (raw) replaceMaterialFile(binding.root, binding.relative, raw, updated, randomUUID());
+      else publishMaterialFile(binding.root, binding.relative, updated, randomUUID());
+      store.onRollback(() => replaceMaterialFile(binding.root, binding.relative, updated, raw, randomUUID()));
+      store.put("task_list_binding", w.id, w.id, { ...binding, writer: run.id });
+      save(store, w, transferred);
+      store.event(w.id, w.project_id, "TaskProgressWatch", {}, run.id);
+    });
   }
   return resolve(binding.root, binding.relative);
 }
@@ -202,10 +247,13 @@ export function observeTaskLists(store: Store) {
     const active = new Set<string>();
     for (const binding of store.list<Binding>("task_list_binding")) {
       const w = store.get<Workflow>("workflow", binding.key);
-      if (!w || terminal.has(w.state) || w.plan_revision !== binding.revision || w.run_id !== binding.writer || !binding.writer)
+      if (!w || terminal.has(w.state) || w.plan_revision !== binding.revision)
         continue;
-      const run = store.get<Run>("run", binding.writer);
-      if (run?.status !== "running") continue;
+      const last = taskListSnapshot(store, w);
+      const run = binding.writer ? store.get<Run>("run", binding.writer) : undefined;
+      const isRunning = run?.status === "running" && w.run_id === binding.writer;
+      const hasErrorToRecover = Boolean(last?.error);
+      if (!isRunning && !hasErrorToRecover) continue;
       active.add(w.id);
       const path = resolve(binding.root, binding.relative);
       if (watchers.get(w.id)?.path !== path) {

@@ -154,7 +154,7 @@ test("SA-E18 cancelling an aside does not stop the main tree", async ({
   );
 });
 
-test("SA-E19 promote an aside answer into one formal feedback with readable files", async ({
+test("SA-E19 promote retry after response loss and reload remains one formal feedback", async ({
   page,
 }) => {
   test.setTimeout(120000);
@@ -169,15 +169,27 @@ test("SA-E19 promote an aside answer into one formal feedback with readable file
   await expect(promote).toBeVisible();
   await promote.click();
   await expect(composerInput(page)).toHaveValue(/为什么只改 app\.txt/);
-  const posts: string[] = [];
-  page.on("request", (request) => {
-    if (request.url().includes("/asides/") && request.url().includes("/promote") && request.method() === "POST") {
-      posts.push(request.postData() || "");
-    }
+  const posts: Array<{ url: string; body: string }> = [];
+  await page.route("**/asides/*/promote", async route => {
+    posts.push({ url: route.request().url(), body: route.request().postData() || "" });
+    const response = await route.fetch();
+    expect(response.ok(), await response.text()).toBe(true);
+    if (posts.length === 1) await route.abort("failed");
+    else await route.fulfill({ response });
   });
   await page.getByRole("button", { name: "发送", exact: true }).click();
-  await expect.poll(() => posts.length).toBe(1);
+  await expect(page.locator(".conversation-failed-submission-banner")).toContainText("发送结果待确认");
+  await expect(composerInput(page)).toHaveValue("");
+  await page.reload();
+  await openExecutionSidebar(page);
+  await page.getByRole("button", { name: "重试原提交", exact: true }).click();
+  await expect(page.locator(".conversation-failed-submission-banner")).toHaveCount(0);
+  expect(posts).toHaveLength(2);
+  expect(posts[1]).toEqual(posts[0]);
   const detail = await (await page.request.get(`/api/workflows/${id}`)).json();
   expect(detail.workflow.id).toBe(id);
   expect(JSON.stringify(detail)).toMatch(/为什么只改 app\.txt|正式反馈/);
+  const feedback = await (await page.request.get(`/api/workflows/${id}/messages`)).json();
+  expect(feedback.messages.filter((message: { client_request_id?: string }) =>
+    message.client_request_id?.startsWith("promoted_"))).toHaveLength(1);
 });

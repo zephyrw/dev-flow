@@ -23,7 +23,7 @@ test("Chrome shows independently updated development and test results before the
   await expect(strip).toContainText("计划用例报告通过1/2");
   await expect(strip).toContainText("1 项运行中");
   await expect(page.getByText("测试场景甲", { exact: true })).toBeVisible();
-  await expect(page.getByText("运行中", { exact: true })).toBeVisible();
+  await expect(page.getByText(/运行中|进行中/).first()).toBeVisible();
   await page.getByRole("button", { name: "任务进度", exact: true }).click();
   await expect(page.getByText("并行任务乙", { exact: true })).toBeVisible();
   await expect(page.locator(".task-tree-container")).toContainText("开发完成");

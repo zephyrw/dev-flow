@@ -116,7 +116,11 @@ async function api(path: string, body?: unknown, signal?: AbortSignal) {
     signal,
   });
   const result = await r.json();
-  if (!r.ok) throw Error(result.error?.message ?? "请求失败");
+  if (!r.ok) {
+    throw Object.assign(new Error(result.error?.message ?? "请求失败"), {
+      status: r.status, code: result.error?.code,
+    });
+  }
   return result;
 }
 function formatTaskTime(value?: string) {

@@ -3,10 +3,12 @@ import { setup, plan, project } from "../helpers.js";
 import { recordExecutionTestReport, reportedTestProgress } from "../../packages/core/src/execution-test-progress.js";
 import { testProgress } from "../../packages/core/src/progress.js";
 import { normalizeOptionalDeliveryManifest, type Run, type Workflow } from "../../packages/contracts/src/index.js";
-import { prepareTaskList, taskListSnapshot } from "../../packages/core/src/task-list.js";
+import { prepareTaskList, syncTaskList, taskListSnapshot } from "../../packages/core/src/task-list.js";
 import { projectWorkflowOverview } from "../../packages/core/src/workflow-overview.js";
 import { writeFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { TaskListSchema, type TaskList } from "../../packages/contracts/src/task-list.js";
+import * as materialFilesystem from "../../packages/core/src/material-filesystem.js";
 
 let s: ReturnType<typeof setup>;
 const wid = "reported-tests";
@@ -150,4 +152,216 @@ it("prepareTaskList 为执行阶段初始化任务清单时，任务初始为 pe
   const overview = projectWorkflowOverview(detail);
   expect(overview.tasks.every((t: any) => t.status === "pending")).toBe(true);
   expect(overview.tests.every((t: any) => t.status === "pending")).toBe(true);
+});
+
+it("prepareTaskList 正常接管来自人工验收派发的修复运行 (human_acceptance)", () => {
+  const w = s.engine.get(wid);
+  const fixRun: Run = {
+    id: "fix-run-1",
+    workflow_id: wid,
+    adapter: "agy",
+    purpose: "functional_fix",
+    protocol: "lightweight",
+    stage: "execute",
+    status: "running",
+    plan_revision: 1,
+    quality_policy_version: 2,
+    started_at: new Date().toISOString(),
+    package_hash: "package",
+    dispatch_context: {
+      purpose: "functional_fix",
+      guidance_mode: "human_acceptance",
+    },
+  };
+  s.store.put("run", fixRun.id, wid, fixRun);
+  s.store.put("workflow", wid, "p1", { ...w, run_id: fixRun.id });
+
+  const planRecord = s.engine.plan(wid);
+  const planFile = join(s.root, "plan.md");
+  writeFileSync(planFile, "# Plan\n");
+  const record = { ...planRecord, material_path: planFile };
+
+  const taskListFile = prepareTaskList(s.store, { ...w, run_id: fixRun.id }, fixRun, record);
+  expect(taskListFile).toBeDefined();
+
+  const diskContent = JSON.parse(readFileSync(taskListFile!, "utf8"));
+  expect(diskContent.writer_run_id).toBe("fix-run-1");
+});
+
+it("syncTaskList 能够准确区分错误分类、保留上次有效进度并在合法恢复时自动清除告警", () => {
+  const w = s.engine.get(wid);
+  const run = s.store.must<Run>("run", "executor");
+  const planRecord = s.engine.plan(wid);
+  const planFile = join(s.root, "plan.md");
+  writeFileSync(planFile, "# Plan\n");
+  const record = { ...planRecord, material_path: planFile };
+  const taskListFile = prepareTaskList(s.store, w, run, record)!;
+
+  // 1. 正常写入一次进度并同步
+  const validList = JSON.parse(readFileSync(taskListFile, "utf8"));
+  validList.tasks[0].status = "in_progress";
+  writeFileSync(taskListFile, JSON.stringify(validList, null, 2));
+  syncTaskList(s.store, w);
+
+  let snap = taskListSnapshot(s.store, w)!;
+  expect(snap.error).toBeUndefined();
+  expect(snap.list.tasks[0]?.status).toBe("in_progress");
+
+  // 2. 写入无效 JSON，断言错误分类为语法无效，且保留上次有效进度
+  writeFileSync(taskListFile, "{ invalid json content");
+  syncTaskList(s.store, w);
+  snap = taskListSnapshot(s.store, w)!;
+  expect(snap.error).toBe("任务清单 JSON 解析失败，语法无效，已保留上次进度。");
+  expect(snap.list.tasks[0]?.status).toBe("in_progress");
+
+  // 3. 写入归属错误的 writer_run_id，断言归属冲突
+  const wrongWriterList = { ...validList, writer_run_id: "other-intruder" };
+  writeFileSync(taskListFile, JSON.stringify(wrongWriterList, null, 2));
+  syncTaskList(s.store, w);
+  snap = taskListSnapshot(s.store, w)!;
+  expect(snap.error).toBe("任务清单写入者归属冲突，非当前授权运行，已保留上次进度。");
+  expect(snap.list.tasks[0]?.status).toBe("in_progress");
+
+  // 4. 模拟运行已中断/结束（非 running，且非 finishingRun），旧写入者在失去权限后写入新状态并恢复合法结构
+  s.store.put("run", "executor", wid, { ...run, status: "stopped" });
+  s.store.put("workflow", wid, "p1", { ...w, state: "BLOCKED" });
+  validList.tasks[0].status = "completed";
+  writeFileSync(taskListFile, JSON.stringify(validList, null, 2));
+
+  // 调用 syncTaskList 进行告警恢复：告警恢复与进度接收严格隔离，已失去写入权限的运行无法改变任务状态
+  syncTaskList(s.store, s.engine.get(wid));
+  snap = taskListSnapshot(s.store, s.engine.get(wid))!;
+  expect(snap.error).toBeUndefined();
+  expect(snap.list.tasks[0]?.status).toBe("in_progress"); // 严格保留上次合法进度，不接收撤权后的新状态
+});
+
+function acceptedTaskList() {
+  const w = s.engine.get(wid);
+  const run = s.store.must<Run>("run", "executor");
+  const planFile = join(s.root, "plan.md");
+  writeFileSync(planFile, "# Plan\n");
+  const record = { ...s.engine.plan(wid), material_path: planFile };
+  const file = prepareTaskList(s.store, w, run, record)!;
+  const list = TaskListSchema.parse(JSON.parse(readFileSync(file, "utf8")));
+  list.tasks[0]!.status = "completed";
+  list.tests[0]!.status = "passed";
+  list.checks[0]!.status = "passed";
+  writeFileSync(file, JSON.stringify(list));
+  syncTaskList(s.store, w);
+  return { w, run, record, file, list };
+}
+
+function successor(w: Workflow, run: Run) {
+  const nextRun: Run = { ...run, id: "successor", status: "running" };
+  const nextWorkflow: Workflow = { ...w, state: "EXECUTING", run_id: nextRun.id };
+  s.store.put("run", nextRun.id, wid, nextRun);
+  s.store.put("workflow", wid, "p1", nextWorkflow);
+  return { nextRun, nextWorkflow };
+}
+
+it.each(["stopped", "failed", "completed"] as const)("交接不接收 %s 运行的迟到进度", (status) => {
+  const { w, run, record, file, list } = acceptedTaskList();
+  s.store.put("run", run.id, wid, { ...run, status });
+  if (status === "stopped") s.store.put("run_stop", run.id, wid, { source: "controller" });
+  list.tasks[0]!.status = "pending";
+  list.tests[0]!.status = "failed";
+  writeFileSync(file, JSON.stringify(list));
+  const { nextRun, nextWorkflow } = successor(w, run);
+
+  prepareTaskList(s.store, nextWorkflow, nextRun, record);
+
+  const snapshot = taskListSnapshot(s.store, nextWorkflow)!;
+  expect(snapshot.list.writer_run_id).toBe(nextRun.id);
+  expect(snapshot.list.tasks[0]!.status).toBe("completed");
+  expect(snapshot.list.tests[0]!.status).toBe("passed");
+  expect(snapshot.list.checks[0]!.status).toBe("passed");
+  expect(TaskListSchema.parse(JSON.parse(readFileSync(file, "utf8")))).toEqual(snapshot.list);
+  expect(s.store.must<{ writer: string }>("task_list_binding", wid).writer).toBe(nextRun.id);
+});
+
+function invalidateTaskList(list: TaskList, kind: "missing-task" | "duplicate-test" | "unknown-check") {
+  if (kind === "missing-task") list.tasks = [];
+  if (kind === "duplicate-test") list.tests[1] = { ...list.tests[0]! };
+  if (kind === "unknown-check") list.checks[0]!.id = "not-approved";
+}
+
+it.each(["missing-task", "duplicate-test", "unknown-check"] as const)("%s 错误在结束后仍保留，合法修复仅清除告警", (kind) => {
+  const { w, run, file, list } = acceptedTaskList();
+  const accepted = taskListSnapshot(s.store, w)!.list;
+  invalidateTaskList(list, kind);
+  writeFileSync(file, JSON.stringify(list));
+  syncTaskList(s.store, w);
+  const invalid = taskListSnapshot(s.store, w)!;
+  expect(invalid.error).toBeDefined();
+  s.store.put("run", run.id, wid, { ...run, status: "failed" });
+  s.store.put("workflow", wid, "p1", { ...w, state: "BLOCKED" });
+
+  syncTaskList(s.store, s.engine.get(wid));
+  expect(taskListSnapshot(s.store, w)).toEqual(invalid);
+
+  const repaired = { ...accepted, tasks: accepted.tasks.map(t => ({ ...t, status: "pending" as const })) };
+  writeFileSync(file, JSON.stringify(repaired));
+  syncTaskList(s.store, s.engine.get(wid));
+  expect(taskListSnapshot(s.store, w)!.error).toBeUndefined();
+  expect(taskListSnapshot(s.store, w)!.list).toEqual(accepted);
+});
+
+it.each(["missing-task", "duplicate-test", "unknown-check"] as const)("交接遇到 %s 时从合法快照重建，不重置已有结果", (kind) => {
+  const { w, run, record, file, list } = acceptedTaskList();
+  const accepted = taskListSnapshot(s.store, w)!.list;
+  invalidateTaskList(list, kind);
+  writeFileSync(file, JSON.stringify(list));
+  syncTaskList(s.store, w);
+  expect(taskListSnapshot(s.store, w)!.error).toBeDefined();
+  const { nextRun, nextWorkflow } = successor(w, run);
+
+  prepareTaskList(s.store, nextWorkflow, nextRun, record);
+
+  const expected = { ...accepted, writer_run_id: nextRun.id };
+  expect(taskListSnapshot(s.store, nextWorkflow)!.list).toEqual(expected);
+  expect(taskListSnapshot(s.store, nextWorkflow)!.error).toBeUndefined();
+  expect(TaskListSchema.parse(JSON.parse(readFileSync(file, "utf8")))).toEqual(expected);
+});
+
+it("交接比较替换失败时不发布快照、绑定或进度事件", () => {
+  const { w, run, record, file, list } = acceptedTaskList();
+  writeFileSync(file, "{ invalid");
+  syncTaskList(s.store, w);
+  writeFileSync(file, JSON.stringify(list));
+  const beforeSnapshot = taskListSnapshot(s.store, w);
+  const beforeBinding = s.store.get("task_list_binding", wid);
+  const { nextRun, nextWorkflow } = successor(w, run);
+  const beforeEvents = s.store.events(wid);
+  const replace = materialFilesystem.replaceMaterialFile;
+  const concurrent = JSON.stringify({ ...list, updated_at: "concurrent-write" });
+  vi.spyOn(materialFilesystem, "replaceMaterialFile").mockImplementationOnce((...args) => {
+    writeFileSync(file, concurrent);
+    replace(...args);
+  });
+
+  expect(() => prepareTaskList(s.store, nextWorkflow, nextRun, record)).toThrow();
+  expect(taskListSnapshot(s.store, nextWorkflow)).toEqual(beforeSnapshot);
+  expect(s.store.get("task_list_binding", wid)).toEqual(beforeBinding);
+  expect(s.store.events(wid)).toEqual(beforeEvents);
+  expect(readFileSync(file, "utf8")).toBe(concurrent);
+});
+
+it("交接文件已替换但数据库登记失败时回滚文件和绑定", () => {
+  const { w, run, record, file } = acceptedTaskList();
+  const beforeFile = readFileSync(file, "utf8");
+  const beforeSnapshot = taskListSnapshot(s.store, w);
+  const beforeBinding = s.store.get("task_list_binding", wid);
+  const { nextRun, nextWorkflow } = successor(w, run);
+  const beforeEvents = s.store.events(wid);
+  const put = s.store.put.bind(s.store);
+  vi.spyOn(s.store, "put").mockImplementation((kind, key, owner, value) => {
+    if (kind === "task_list_snapshot") throw new Error("snapshot persistence failed");
+    return put(kind, key, owner, value);
+  });
+
+  expect(() => prepareTaskList(s.store, nextWorkflow, nextRun, record)).toThrow("snapshot persistence failed");
+  expect(taskListSnapshot(s.store, nextWorkflow)).toEqual(beforeSnapshot);
+  expect(s.store.get("task_list_binding", wid)).toEqual(beforeBinding);
+  expect(s.store.events(wid)).toEqual(beforeEvents);
+  expect(readFileSync(file, "utf8")).toBe(beforeFile);
 });

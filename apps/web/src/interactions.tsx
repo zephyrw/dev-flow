@@ -11,6 +11,7 @@ import {
   shouldRenderConversationComposer,
   showsRoundFeedbackEntry,
   useConversationDraft,
+  type CommittedSubmission,
 } from "./use-conversation-draft.js";
 import {
   clearAsidePromoteDraft,
@@ -121,72 +122,78 @@ export function TaskInteraction({
     }
   };
 
-  const submitComposer = async (payload: ConversationComposerSubmit) => {
-    await act(async () => {
-      if (payload.mode === "aside") {
-        clearAsidePromoteDraft(w.id);
-        const target = await resolveConversationMessageTarget(
-          w.id,
-          rootConversationId,
-          expectedGeneration,
-        );
-        const created = await send(`/workflows/${w.id}/conversation-messages`, {
-          request_id: payload.requestId,
-          root_conversation_id: target.rootId,
-          expected_generation: target.generation,
-          text: payload.draftText,
-          refs: payload.refs,
-          attachment_ids: readyAttachmentIds(payload.attachments),
-          client_mode: "aside",
-        });
-        asides.selectCreated(
-          {
-            id: created.aside_id ?? created.message_id,
-            workflow_id: w.id,
-            question: payload.sendText,
-            status: "active",
-            created_at: new Date().toISOString(),
-          },
-          w.title,
-        );
+  const sendingRef = useRef(false);
+  const deliverSubmission = async (submission: CommittedSubmission) => {
+    if (sendingRef.current) return;
+    sendingRef.current = true;
+    setPending(true);
+    setError("");
+    let accepted = false;
+    try {
+      if (!submission.transport) {
+        if (submission.promoteTarget && submission.mode === "formal") {
+          const promote = submission.promoteTarget;
+          draftApi.setSubmissionTransport(submission, {
+            path: `/workflows/${promote.workflowId}/asides/${promote.asideId}/promote`,
+            body: {
+              request_id: submission.requestId, text: submission.sendText,
+              attachment_ids: readyAttachmentIds(submission.attachments),
+            },
+          });
+        } else {
+          const target = await resolveConversationMessageTarget(w.id, rootConversationId, expectedGeneration);
+          draftApi.setSubmissionTransport(submission, {
+            path: `/workflows/${w.id}/conversation-messages`,
+            body: {
+              request_id: submission.requestId, root_conversation_id: target.rootId,
+              expected_generation: target.generation,
+              text: submission.mode === "aside" ? submission.draftText : submission.sendText,
+              refs: submission.refs, attachment_ids: readyAttachmentIds(submission.attachments),
+              client_mode: submission.mode,
+            },
+          });
+        }
+      }
+      // Retries use the frozen route and body, even after reload or a new run.
+      const transport = submission.transport!;
+      const created = await send(transport.path, transport.body);
+      accepted = true;
+      draftApi.resolveSubmissionSuccess(submission);
+      if (submission.mode === "aside") {
+        asides.selectCreated({
+          id: created.aside_id ?? created.message_id, workflow_id: w.id,
+          question: submission.sendText, status: "active", created_at: new Date().toISOString(),
+        }, w.title);
         setAsideOpen(true);
-        return;
       }
-      const promote = peekAsidePromoteDraft(w.id);
-      if (promote) {
-        await send(
-          `/workflows/${promote.workflowId}/asides/${promote.asideId}/promote`,
-          {
-            request_id: payload.requestId,
-            text: payload.sendText,
-            attachment_ids: readyAttachmentIds(payload.attachments),
-          },
-        );
-        clearAsidePromoteDraft(w.id);
-        return;
-      }
-      const target = await resolveConversationMessageTarget(
-        w.id,
-        rootConversationId,
-        expectedGeneration,
-      );
-      // The normal composer sends the user's message, including at acceptance.
-      // Explicit issue/retest actions remain available in the tool/model dialog.
-      await send(`/workflows/${w.id}/conversation-messages`, {
-        request_id: payload.requestId,
-        root_conversation_id: target.rootId,
-        expected_generation: target.generation,
-        text: payload.sendText,
-        refs: payload.refs,
-        attachment_ids: readyAttachmentIds(payload.attachments),
-        client_mode: "formal",
-      });
-    }, true);
-    draftApi.applySuccessfulSend(
-      payload.draftText,
-      payload.requestId,
-      payload.mode === "formal",
-    );
+    } catch (error) {
+      if (!accepted) draftApi.resolveSubmissionFailure(submission, error);
+      setError(String(error instanceof Error ? error.message : error));
+      throw error;
+    } finally {
+      sendingRef.current = false;
+      setPending(false);
+    }
+    // Acceptance and display refresh have separate failure boundaries.
+    try {
+      await refresh();
+      window.dispatchEvent(new Event("devflow-activity"));
+    } catch (refreshError) {
+      setError(`指导已成功发送，但页面数据刷新失败：${String(refreshError instanceof Error ? refreshError.message : refreshError)}`);
+    }
+  };
+  const submitComposer = async (payload: ConversationComposerSubmit) => {
+    if (sendingRef.current) return;
+    const promote = payload.mode === "formal" ? peekAsidePromoteDraft(w.id) : undefined;
+    const submission = draftApi.commitSubmission({ ...payload, promoteTarget: promote });
+    // Route ownership moves with the committed request, not with the next draft.
+    clearAsidePromoteDraft(w.id);
+    await deliverSubmission(submission);
+  };
+  const retrySubmission = async (submission: CommittedSubmission) => {
+    if (sendingRef.current || readonly || submission.recoveryBlockedReason || (submission.mode === "formal" && requests.length > 0)) return;
+    draftApi.beginSubmission(submission);
+    await deliverSubmission(submission);
   };
 
   return (
@@ -360,6 +367,7 @@ export function TaskInteraction({
             showRoundFeedback={showsRoundFeedbackEntry(w.state)}
             fetchReferences={(query) => fetchWorkflowReferences(w.id, query)}
             onSubmit={submitComposer}
+            onRetrySubmission={retrySubmission}
             formalBlockedReason={
               requests.length > 0
                 ? "先批准或拒绝待授权操作；可在授权卡片填写意见"

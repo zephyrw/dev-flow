@@ -87,6 +87,33 @@ describe("AGY model access probe cache and shared calls", () => {
     expect(await f.probe.probeModelAccess(model, identity)).toBe(true);
     expect(f.runAuxiliaryProbe).toHaveBeenCalledTimes(2);
   });
+  it.each([
+    "local error: tls: bad record MAC",
+    "network error: connection reset",
+    "permission denied",
+  ])("does not report quota exhaustion when the same stdout error contains %s", async conflict => {
+    const f = fixture();
+    f.runAuxiliaryProbe.mockResolvedValueOnce({ code: 3, stderr: "", stdout: [
+      JSON.stringify({ event: "init", init: { model } }),
+      JSON.stringify({ event: "result", result: { status: "ERROR",
+        error: `Individual quota reached. Resets in 37m46s.\n${conflict}`,
+      } }),
+    ].join("\n") });
+    await expect(f.probe.probeModelAccess(model, identity)).resolves.toBe(false);
+    // An inconclusive failure must not prevent a later fresh access probe.
+    expect(await f.probe.probeModelAccess(model, identity)).toBe(true);
+    expect(f.runAuxiliaryProbe).toHaveBeenCalledTimes(2);
+  });
+  it("preserves timeout classification when stdout also contains a quota line", async () => {
+    const f = fixture();
+    f.runAuxiliaryProbe.mockResolvedValueOnce({ code: 3, stderr: "", stdout: [
+      JSON.stringify({ event: "init", init: { model } }),
+      JSON.stringify({ event: "result", result: { status: "ERROR",
+        error: "Individual quota reached.\nPrint request timed out",
+      } }),
+    ].join("\n") });
+    await expect(f.probe.probeModelAccess(model, identity)).rejects.toMatchObject({ code: "agy_model_probe_timeout" });
+  });
   it.each(["wrong_model", "wrong_exit", "denied", "network", "network_stderr"])("does not label %s as a fresh quota failure", async kind => {
     const f = fixture();
     f.runAuxiliaryProbe.mockResolvedValueOnce({ code: kind === "wrong_exit" ? 1 : 3,

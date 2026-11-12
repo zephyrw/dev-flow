@@ -112,6 +112,8 @@ import type { AgyWorkflowBridge } from "./agy-workflow-bridge.js";
 import {
   classifyAgyFailure,
   confirmAgyQuotaFailure,
+  extractAgyStderrQuotaCandidate,
+  hasConflictingAgyFailureDiagnostic,
   type AgyFailureFact,
 } from "../../adapters/agy/src/failure-fact.js";
 import { CurrentTurn } from "../../adapters/agy/src/current-turn.js";
@@ -120,6 +122,7 @@ import { workflowModelWorkspace } from "../../core/src/model-identity.js";
 import { isCodeBuddyExternalModel, sameCodeBuddyProjectConfig } from "../../adapters/codebuddy/src/local-scope.js";
 import { classifyCodeBuddyQuotaFailure } from "../../adapters/codebuddy/src/provider-failure.js";
 import { assertPlanMaterialReady, readPlanMaterial } from "../../core/src/plan-review.js";
+import { syncTaskList } from "../../core/src/task-list.js";
 import type { SourceInput } from "../../core/src/source-change.js";
 import {
   asideRecoveryGuidance,
@@ -1340,6 +1343,8 @@ export class ProfileRuntime {
     let codeBuddyQuotaFailure: ReturnType<typeof classifyCodeBuddyQuotaFailure>;
     let failureFromStderr = false;
     let pendingStderrDiagnostic = "";
+    let stderrAccountFailure: AgyFailureFact | undefined;
+    let stderrAccountConflict = false;
     const classifyStderrRecord = (record: string) => {
       const classified = classifyFailure(record);
       // Keep only a fixed failure fact; authentication text is never retained
@@ -1347,6 +1352,22 @@ export class ProfileRuntime {
       if (classified.code !== "EXECUTION_FAILED" &&
           (!stderrClassification || classified.code === "MODEL_CONNECTION_FAILED")) {
         stderrClassification = classified;
+      }
+      stderrAccountConflict ||= hasConflictingAgyFailureDiagnostic(record);
+      if (profile.adapterId === "agy" && accountBinding && !stderrAccountFailure && !stderrAccountConflict) {
+        const candidate = extractAgyStderrQuotaCandidate({
+          realmId: accountBinding.realm_id,
+          accountId: accountBinding.account_id,
+          authEpoch: accountBinding.auth_epoch,
+          runId: run.id,
+          conversationId: conversation,
+          stderr: record,
+          currentProcess: true,
+          eventOffset: accountEventOffset++,
+        });
+        if (candidate?.can_switch_account) {
+          stderrAccountFailure = candidate;
+        }
       }
     };
     let permissionFailure: FlowError | undefined;
@@ -1675,6 +1696,11 @@ export class ProfileRuntime {
     // Native session scanning may discover the ID without a stdout init event.
     conversation ??= this.engine.store.get<Run>("run", run.id)?.conversation_id;
     retainConversation(conversation);
+    const finishingWorkflow = this.engine.get(w.id);
+    if (finishingWorkflow.run_id === run.id && finishingWorkflow.plan_revision === run.plan_revision &&
+        !["STOPPING", "STOPPED", "PAUSED", "COMMITTED", "COMPLETED", "COMMIT_PARTIAL"].includes(finishingWorkflow.state)) {
+      syncTaskList(this.engine.store, finishingWorkflow, run.id);
+    }
     this.engine.store.put("run", run.id, w.id, {
       ...this.engine.store.must<Run>("run", run.id),
       status: permissionFailure && this.engine.get(w.id).state === "WAITING_INPUT" ? "waiting"
@@ -1683,6 +1709,30 @@ export class ProfileRuntime {
       exit_code: exit.code,
       conversation_id: conversation,
     });
+    if (
+      profile.adapterId === "agy" &&
+      accountBinding &&
+      !stderrAccountConflict &&
+      !hasConflictingAgyFailureDiagnostic(failure ?? "") &&
+      !hasConflictingAgyFailureDiagnostic(stderrTail)
+    ) {
+      // stderr belongs to this process even when a resumed CLI fails before
+      // acknowledging user_input. Prefer it over a retained stdout candidate,
+      // while still requiring official quota verification.
+      const candidate = stderrAccountFailure ?? extractAgyStderrQuotaCandidate({
+        realmId: accountBinding.realm_id,
+        accountId: accountBinding.account_id,
+        authEpoch: accountBinding.auth_epoch,
+        runId: run.id,
+        conversationId: conversation,
+        stderr: stderrTail,
+        currentProcess: true,
+        eventOffset: accountEventOffset++,
+      });
+      if (candidate?.can_switch_account) {
+        accountFailure = candidate;
+      }
+    }
     let accountWaiting = exit.termination_reason === "account_switch";
     try {
       if (
@@ -1692,18 +1742,24 @@ export class ProfileRuntime {
         classifyFailure(failure ?? stderrTail).code !== "MODEL_CONNECTION_FAILED" &&
         !this.engine.store.get("run_stop", run.id) &&
         !exit.termination_reason &&
-        (!previous || accountTurn.canAttributeFailureToCurrentTurn()) &&
+        (accountFailure.source_event_type === "stderr" || !previous || accountTurn.canAttributeFailureToCurrentTurn()) &&
         (exit.code !== 0 || failure)
       ) {
         const fact = confirmAgyQuotaFailure(accountFailure, {
-          exitCode: exit.code, currentTurn: !previous || accountTurn.canAttributeFailureToCurrentTurn(),
-          stderr: stderrTail, terminationReason: exit.termination_reason,
+          exitCode: exit.code,
+          currentTurn: !previous || accountTurn.canAttributeFailureToCurrentTurn(),
+          stderr: stderrTail,
+          stdout: text,
+          diagnostic: failure,
+          terminationReason: exit.termination_reason,
         });
         const decision = await this.accountBridge!.observeFailure(accountBinding, fact);
         accountWaiting = decision === "waiting";
         if (!accountWaiting && fact.requires_quota_verification &&
-            classifyFailure(failure ?? "").code === "MODEL_QUOTA") {
-          failure = "会话中的历史额度提示未获当前运行确认，原任务已保留。请检查本轮运行诊断后继续。";
+            classifyFailure(failure ?? stderrTail).code === "MODEL_QUOTA") {
+          failure = fact.source_event_type === "stderr"
+            ? "本轮额度提示未获当前额度核验确认，原任务已保留。请检查账号诊断后继续。"
+            : "会话中的历史额度提示未获当前运行确认，原任务已保留。请检查本轮运行诊断后继续。";
           if (dispatchRecord)
             dispatchManager.finishDispatch(dispatchId, { exitCode: exit.code, error: failure });
         }
@@ -1751,13 +1807,17 @@ export class ProfileRuntime {
                 : classified.code);
       retainConversation(conversation);
       throw normalizeRuntimeFailure(
-        new FlowError(code, diagnostic, 422, {
-          diagnostic,
-          diagnostic_source: failureFromStderr || !failure || failure === redact(stderrTail).trim() ? "stderr" : "provider_result",
-          exit_code: exit.code,
-          termination_reason: exit.termination_reason,
-          adapter: profile.adapterId,
-          executable: invocation.executable,
+        new FlowError(
+          code,
+          accountWaiting ? "账号额度或授权不可用，等待切换后继续原任务" : diagnostic,
+          accountWaiting ? 409 : 422,
+          {
+            diagnostic,
+            diagnostic_source: failureFromStderr || !failure || failure === redact(stderrTail).trim() ? "stderr" : "provider_result",
+            exit_code: exit.code,
+            termination_reason: exit.termination_reason,
+            adapter: profile.adapterId,
+            executable: invocation.executable,
           executable_ref: profile.executableRef,
           model: profile.modelId,
           ...(classified.code === "MODEL_REQUEST_INVALID" ? {

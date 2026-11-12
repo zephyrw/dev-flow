@@ -48,9 +48,54 @@ function record(value: unknown): Record<string, unknown> | undefined {
     ? (value as Record<string, unknown>)
     : undefined;
 }
+const INDIVIDUAL_QUOTA_PATTERN =
+  /^Individual quota reached\.(?: Please upgrade your subscription to increase your limits\.)?(?: Resets in (?:\d+[dhms])+\.?)?$/i;
+
+export function unwrapAgyQuotaError(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      const err = (value as Record<string, unknown>).error;
+      if (typeof err === "string") return unwrapAgyQuotaError(err);
+    }
+    return undefined;
+  }
+  const trimmed = value.trim();
+  // Check the entire error before unwrapping or selecting a quota line. Shared
+  // consumers must not lose a conflicting diagnostic elsewhere in this error.
+  if (hasConflictingAgyFailureDiagnostic(trimmed)) return undefined;
+  if (INDIVIDUAL_QUOTA_PATTERN.test(trimmed)) {
+    return trimmed;
+  }
+  const prefixMatch = /^(?:(?:FlowError:\s*)?(?:CLI\s*返回错误|AGY_ERROR|\[agy\]|Error)[：:]\s*)(.*)$/is.exec(trimmed);
+  const target = prefixMatch ? prefixMatch[1]!.trim() : trimmed;
+  if (INDIVIDUAL_QUOTA_PATTERN.test(target)) {
+    return target;
+  }
+  if (target.startsWith("{") && target.endsWith("}")) {
+    try {
+      const parsed = JSON.parse(target);
+      if (parsed && typeof parsed === "object" && typeof parsed.error === "string") {
+        const inner = parsed.error.trim();
+        if (INDIVIDUAL_QUOTA_PATTERN.test(inner)) return inner;
+      }
+    } catch {
+      // ignore malformed JSON
+    }
+  }
+  // Try line by line if text contains multiple lines
+  if (trimmed.includes("\n")) {
+    for (const line of trimmed.split(/[\r\n]+/)) {
+      const lineTrimmed = line.trim();
+      if (!lineTrimmed) continue;
+      const unwrapped = unwrapAgyQuotaError(lineTrimmed);
+      if (unwrapped) return unwrapped;
+    }
+  }
+  return undefined;
+}
+
 export function isAgyIndividualQuotaError(value: unknown): value is string {
-  return typeof value === "string" &&
-    /^Individual quota reached\.(?: Please upgrade your subscription to increase your limits\.)?(?: Resets in (?:\d+[dhms])+\.?)?$/i.test(value.trim());
+  return unwrapAgyQuotaError(value) !== undefined;
 }
 export function hasConflictingAgyFailureDiagnostic(text: string) {
   return isRetryableModelTransportFailure(text) || /tls|bad record mac|econn|etimedout|enotfound|network|connection|fetch failed|permission.?denied|unauthorized|unauthenticated|invalid_grant|timeout|timed out/i.test(text);
@@ -64,14 +109,77 @@ export function hasAgyPrintTimeout(stderr: string): boolean {
 /** A resumed footer alone is historical. Confirm it only with this process's
  * quota exit and unfinished current turn, with no conflicting host failure. */
 export function confirmAgyQuotaFailure(fact: AgyFailureFact, completion: {
-  exitCode: number | null; currentTurn: boolean; stderr?: string; terminationReason?: string;
+  exitCode: number | null;
+  currentTurn: boolean;
+  stderr?: string;
+  stdout?: string;
+  diagnostic?: string;
+  terminationReason?: string;
 }): AgyFailureFact {
-  if (!fact.requires_quota_verification || !fact.can_switch_account ||
-      completion.exitCode !== 3 || !completion.currentTurn || completion.terminationReason ||
-      hasConflictingAgyFailureDiagnostic(completion.stderr ?? ""))
+  const stdoutDiag = completion.stdout ?? "";
+  const stderrDiag = completion.stderr ?? "";
+  const extraDiag = completion.diagnostic ?? "";
+  // Exit 0 and process stderr always require official quota verification.
+  // Only a bound current-turn result with quota exit 3 can confirm itself.
+  if (
+    !fact.requires_quota_verification ||
+    !fact.can_switch_account ||
+    fact.source_event_type === "stderr" ||
+    completion.exitCode !== 3 ||
+    !completion.currentTurn ||
+    completion.terminationReason ||
+    hasConflictingAgyFailureDiagnostic(stderrDiag) ||
+    hasConflictingAgyFailureDiagnostic(stdoutDiag) ||
+    hasConflictingAgyFailureDiagnostic(extraDiag) ||
+    hasAgyPrintTimeout(stderrDiag) ||
+    hasAgyPrintTimeout(stdoutDiag)
+  ) {
     return fact;
+  }
   const { requires_quota_verification: _, ...confirmed } = fact;
   return { ...confirmed, reason: "current_turn_quota_exit", raw_message: "current_turn_quota_exit" };
+}
+
+/** Extract a constrained quota failure candidate from current process stderr.
+ * Retains requires_quota_verification so official probeUsage verification is still required. */
+export function extractAgyStderrQuotaCandidate(input: {
+  realmId: string;
+  accountId: string;
+  authEpoch: number;
+  runId?: string;
+  conversationId?: string;
+  stderr: string;
+  /** The caller read this stderr from the managed process for runId. */
+  currentProcess: boolean;
+  eventOffset?: number;
+}): AgyFailureFact | undefined {
+  if (!input.currentProcess || !input.runId || !Number.isSafeInteger(input.authEpoch) || input.authEpoch <= 0) {
+    return undefined;
+  }
+  const rawStderr = input.stderr ?? "";
+  if (hasConflictingAgyFailureDiagnostic(rawStderr) || hasAgyPrintTimeout(rawStderr)) {
+    return undefined;
+  }
+  const unwrapped = unwrapAgyQuotaError(rawStderr);
+  if (!unwrapped) return undefined;
+
+  return {
+    realm_id: input.realmId,
+    account_id: input.accountId,
+    auth_epoch: input.authEpoch,
+    run_id: input.runId,
+    conversation_id: input.conversationId,
+    category: "quota_exhausted",
+    reason: "stderr_quota_requires_verification",
+    window: "unknown",
+    can_switch_account: true,
+    requires_quota_verification: true,
+    requires_reauth: false,
+    observed_at: new Date().toISOString(),
+    raw_message: "stderr_quota_requires_verification",
+    source_event_type: "stderr",
+    source_offset: input.eventOffset,
+  };
 }
 export function extractAgyFailureFact(input: AgyFailureInput): AgyFailureFact {
   const event = input.event;
@@ -89,11 +197,12 @@ export function extractAgyFailureFact(input: AgyFailureInput): AgyFailureFact {
   // AGY 1.2.x reports quota as a result string, not an error object. A resumed
   // footer can be historical even after a fresh TLS failure, so this shape
   // only requests an official quota check; it never proves exhaustion itself.
+  const rawCandidateError = typeof event?.error === "string" ? event.error : (typeof result?.error === "string" ? result.error : undefined);
+  const unwrappedCandidateError = unwrapAgyQuotaError(rawCandidateError);
   const quotaTextCandidate = boundCurrentEvent && type === "result" &&
-    result?.status === "ERROR" && typeof event?.error === "string" &&
-    result.error === event.error &&
+    result?.status === "ERROR" && !!unwrappedCandidateError &&
     !(Array.isArray(result.denied_actions) && result.denied_actions.length) &&
-    isAgyIndividualQuotaError(event.error);
+    (result.error === event?.error || unwrappedCandidateError === unwrapAgyQuotaError(result?.error));
   const code = trusted
     ? String(error?.code ?? event?.code ?? "").toLowerCase()
     : "";

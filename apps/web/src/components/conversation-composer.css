@@ -350,3 +350,17 @@
   background: transparent;
   cursor: pointer;
 }
+
+.conversation-submission-recovery:empty { display: none; }
+.conversation-failed-submission-banner {
+  padding: 8px 12px;
+  margin-bottom: 6px;
+  border: 1px solid var(--color-border-warning, #d9b86c);
+  border-radius: 6px;
+  background: var(--color-bg-warning, #fff8e6);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.conversation-failed-submission-banner details { margin-bottom: 6px; }
+.conversation-failed-submission-banner pre { max-height: 240px; overflow: auto; }
+.conversation-failed-submission-banner button { margin-right: 8px; }

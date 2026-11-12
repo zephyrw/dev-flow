@@ -937,23 +937,31 @@ export async function buildServer(
     const asideId = Id.parse((req.params as any).asideId);
     const body = (req.body || {}) as any;
 
-    if (body.expected_version !== undefined) {
-      const w = engine.get(workflowId);
-      requireCondition(
-        w.version === body.expected_version,
-        "VERSION_CONFLICT",
-        `工作流版本冲突: 期望 v${body.expected_version}, 当前 v${w.version}`,
-        409,
+    const promote = () => {
+      if (body.expected_version !== undefined) {
+        const w = engine.get(workflowId);
+        requireCondition(
+          w.version === body.expected_version,
+          "VERSION_CONFLICT",
+          `工作流版本冲突: 期望 v${body.expected_version}, 当前 v${w.version}`,
+          409,
+        );
+      }
+      const message = asideService.promoteToFormalFeedback(
+        workflowId, asideId, body.text, body.target_revision ?? body.answer_revision,
       );
-    }
-
-    const message = asideService.promoteToFormalFeedback(
-      workflowId,
-      asideId,
-      body.text,
-      body.target_revision ?? body.answer_revision,
-    );
-    engine.queueFormalFeedback(workflowId, message.message_id);
+      engine.queueFormalFeedback(workflowId, message.message_id);
+      return message;
+    };
+    // A transport retry must replay the accepted promotion, not reclassify it
+    // using the workflow's new stage or enqueue it a second time.
+    const message = typeof body.request_id === "string" && body.request_id
+      ? engine.store.deduplicate(
+          `aside-promote-request:${JSON.stringify([workflowId, asideId, body.request_id])}`,
+          body,
+          promote,
+        )
+      : promote();
     void engine.dispatch();
     return message;
   });

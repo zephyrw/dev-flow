@@ -28,13 +28,13 @@ import {
   useConversationDraft,
   type ConversationDraft,
   type ConversationDraftAttachment,
+  type CommittedSubmission,
 } from "../use-conversation-draft.js";
 import {
   ConversationAttachments,
   conversationDropFiles,
   conversationPasteImageFiles,
   conversationPasteText,
-  clearSubmittedConversationAttachments,
   isConversationFileDrag,
   useConversationAttachmentQueue,
 } from "./ConversationAttachments.js";
@@ -71,6 +71,7 @@ export function ConversationComposer({
   showRoundFeedback,
   fetchReferences,
   onSubmit,
+  onRetrySubmission,
   onOpenHistory,
   hasAsideHistory,
   attachmentsSlot,
@@ -89,6 +90,7 @@ export function ConversationComposer({
   showRoundFeedback: boolean;
   fetchReferences: (query: string) => Promise<ReferenceItem[]>;
   onSubmit: (payload: ConversationComposerSubmit) => Promise<void>;
+  onRetrySubmission?: (submission: CommittedSubmission) => Promise<void>;
   onOpenHistory?: () => void;
   hasAsideHistory?: boolean;
   attachmentsSlot?: React.ReactNode;
@@ -96,32 +98,52 @@ export function ConversationComposer({
   modelSlot?: React.ReactNode;
   formalBlockedReason?: string;
 }) {
-  if (readonly) {
-    return (
-      <EndedComposer
-        reason={readonlyReason}
-        showRoundFeedback={showRoundFeedback}
-      />
-    );
-  }
   return (
-    <ActiveComposer
-      workflowId={workflowId}
-      runtimeDetail={runtimeDetail}
-      draft={draft}
-      setText={setText}
-      setRefs={setRefs}
-      pending={pending}
-      fetchReferences={fetchReferences}
-      onSubmit={onSubmit}
-      onOpenHistory={onOpenHistory}
-      hasAsideHistory={hasAsideHistory}
-      attachmentsSlot={attachmentsSlot}
-      statusSlot={statusSlot}
-      modelSlot={modelSlot}
-      formalBlockedReason={formalBlockedReason}
-    />
+    <>
+      <SubmissionRecovery workflowId={workflowId} pending={pending} readonly={readonly} onRetry={onRetrySubmission} formalBlockedReason={formalBlockedReason} />
+      {readonly ? <EndedComposer reason={readonlyReason} showRoundFeedback={showRoundFeedback} /> : (
+        <ActiveComposer
+          workflowId={workflowId} runtimeDetail={runtimeDetail} draft={draft}
+          setText={setText} setRefs={setRefs} pending={pending}
+          fetchReferences={fetchReferences} onSubmit={onSubmit}
+          onOpenHistory={onOpenHistory} hasAsideHistory={hasAsideHistory}
+          attachmentsSlot={attachmentsSlot} statusSlot={statusSlot} modelSlot={modelSlot}
+          formalBlockedReason={formalBlockedReason}
+        />
+      )}
+    </>
   );
+}
+
+function SubmissionRecovery({ workflowId, pending, readonly, onRetry, formalBlockedReason }: {
+  workflowId: string;
+  pending: boolean;
+  readonly: boolean;
+  onRetry?: (submission: CommittedSubmission) => Promise<void>;
+  formalBlockedReason?: string;
+}) {
+  const { submissions, draft, restoreFailedSubmission, discardFailedSubmission } = useConversationDraft(workflowId);
+  const uploading = draft.attachments.some(item => item.status === "pending" || item.status === "uploading");
+  return <div className="conversation-submission-recovery">
+    {submissions.filter(item => item.status !== "sending").map(item => (
+      <div className="conversation-failed-submission-banner" key={item.requestId}>
+        <details>
+          <summary>{item.status === "uncertain" ? "发送结果待确认" : item.status === "failed" ? "发送失败" : "已暂存草稿"}：{item.draftText.slice(0, 30) || "附件"}</summary>
+          <pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{item.draftText}</pre>
+          {item.refs.map(ref => <div key={`${ref.repo_id}:${ref.relative_path}`}>{ref.relative_path}</div>)}
+          {item.attachmentRecords.map(file => <div key={file.clientId}>{file.displayName}</div>)}
+        </details>
+        {item.recoveryBlockedReason && <p>{item.recoveryBlockedReason}</p>}
+        {!item.recoveryBlockedReason && item.status !== "saved" && onRetry && <button type="button" disabled={pending || readonly || (item.mode === "formal" && Boolean(formalBlockedReason))}
+          title={item.mode === "formal" ? formalBlockedReason : undefined}
+          onClick={() => { void onRetry(item).catch(() => {}); }}>重试原提交</button>}
+        {!item.recoveryBlockedReason && item.status !== "uncertain" && <button type="button" disabled={pending || readonly || uploading}
+          title={uploading ? "附件上传完成后可恢复；当前草稿会另外暂存" : "当前草稿会另外暂存"}
+          onClick={() => restoreFailedSubmission(item.requestId)}>恢复原内容</button>}
+        <button type="button" disabled={pending} onClick={() => discardFailedSubmission(item.requestId)}>忽略</button>
+      </div>
+    ))}
+  </div>;
 }
 
 function EndedComposer({
@@ -206,7 +228,6 @@ function ActiveComposer({
   const submit = useCallback(async () => {
     if (submittingRef.current || pending || !payload.canSend) return;
     submittingRef.current = true;
-    const submittedIds = draft.attachments.map((item) => item.id);
     try {
       await onSubmit({
         mode: payload.mode,
@@ -216,10 +237,8 @@ function ActiveComposer({
         requestId: draft.requestId,
         attachments: draft.attachments,
       });
-      clearSubmittedConversationAttachments(workflowId, submittedIds);
     } catch {
-      // The submission owner renders the error. Keep drafts and attachments,
-      // and consume the rejected event-handler promise so it is not unhandled.
+      // The submission owner renders the error.
     } finally {
       submittingRef.current = false;
     }

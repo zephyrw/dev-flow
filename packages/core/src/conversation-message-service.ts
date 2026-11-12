@@ -152,7 +152,43 @@ export class ConversationMessageService {
     body: unknown,
   ): Promise<ConversationMessageResult> {
     const request = ConversationMessageRequestSchema.parse(body);
-    return this.accept(workflowId, request, "auto");
+    // Freeze the original HTTP request before resolving mutable workflow state or
+    // legacy roots. A lost response must remain replayable after the run advances.
+    const receipt = this.deps.store.deduplicate(
+      `conversation-message-request:${workflowId}:${request.request_id}`,
+      request,
+      () => {
+        const prepared = this.prepare(workflowId, request, "auto");
+        return {
+          message: this.persist(prepared),
+          pause: prepared.shouldPause ? {
+            request_id: pauseRequestId(request.request_id),
+            action: "pause" as const,
+            root_id: prepared.request.root_conversation_id,
+            expected_generation: prepared.request.expected_generation,
+          } : null,
+        };
+      },
+    );
+    if (receipt.pause) {
+      // Retry an interrupted pause only for its original, still-running attempt.
+      // Never interrupt a newer healthy generation merely to replay a receipt.
+      const latest = latestRootAttempt(
+        this.deps.conversations.getTree(workflowId).attempts,
+        receipt.pause.root_id,
+      );
+      if (latest?.generation === receipt.pause.expected_generation &&
+          this.rootIsWorking(workflowId, receipt.pause.root_id)) {
+        try {
+          await this.deps.control.pauseTree(workflowId, receipt.pause);
+        } catch {
+          // The message is already durable. Do not present a control failure as
+          // a rejected message that the user may edit and submit a second time.
+          throw new FlowError("MESSAGE_ACCEPTED_PAUSE_PENDING", "指导已保存，暂停结果待确认，请重试原提交。", 503);
+        }
+      }
+    }
+    return toResult(receipt.message);
   }
 
   async submitFormal(

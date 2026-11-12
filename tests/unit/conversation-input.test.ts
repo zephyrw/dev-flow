@@ -17,13 +17,20 @@ import {
 import {
   applyConversationCommandSuggestion,
   composerTextareaHeight,
+  commitConversationSubmission,
   conversationHandoverHint,
   draftAfterSuccessfulSend,
   isConversationComposerReadonly,
+  listConversationSubmissions,
+  peekCommittedSubmission,
   peekConversationDraft,
+  peekFailedSubmission,
   removeConversationAsideCommand,
   resetConversationDrafts,
   resolveComposerSendPayload,
+  resolveConversationSubmissionFailure,
+  resolveConversationSubmissionSuccess,
+  restoreFailedConversationSubmission,
   shouldRenderConversationComposer,
   shouldSubmitComposerKey,
   showsRoundFeedbackEntry,
@@ -386,6 +393,70 @@ describe("SA-D18 composer helpers", () => {
         sentRequestId: "req-1",
       }),
     ).toEqual({ clear: false, rotateRequestId: false });
+  });
+
+  it("handles commitSubmission, protects new draft during flight, and recovers on failure", () => {
+    resetConversationDrafts();
+    const wfId = "wf-commit-test";
+    const draft = peekConversationDraft(wfId);
+    draft.text = "待发送指导";
+    const originalReqId = draft.requestId;
+
+    // 1. 提交时立即移出输入框文字与附件，并固定提交快照
+    const submission = commitConversationSubmission(wfId, {
+      draftText: "待发送指导",
+      sendText: "待发送指导",
+      refs: [],
+      attachments: [],
+      mode: "formal",
+      requestId: originalReqId,
+    });
+    expect(submission.requestId).toBe(originalReqId);
+    expect(draft.text).toBe(""); // 输入框立即被清空
+    expect(draft.requestId).not.toBe(originalReqId); // 自动换上新 requestId
+    expect(peekCommittedSubmission(wfId)).toEqual(submission);
+
+    // 2. 模拟发送期间，用户输入了新草稿
+    draft.text = "发送期间写的新文字";
+
+    // 3. 成功回执到达，断言绝对不清除新草稿
+    resolveConversationSubmissionSuccess(wfId, submission);
+    expect(draft.text).toBe("发送期间写的新文字");
+    expect(peekCommittedSubmission(wfId)).toBeUndefined();
+
+    // 4. 测试发送失败分支：若输入框无新内容，自动恢复原草稿和原 requestId
+    resetConversationDrafts();
+    const draft2 = peekConversationDraft(wfId);
+    draft2.text = "将失败的指导";
+    const failReqId = draft2.requestId;
+    const sub2 = commitConversationSubmission(wfId, {
+      draftText: "将失败的指导",
+      sendText: "将失败的指导",
+      refs: [],
+      attachments: [],
+      mode: "formal",
+      requestId: failReqId,
+    });
+    expect(draft2.text).toBe(""); // 提交后立即清空
+
+    // 失败且用户期间未输入任何新内容
+    resolveConversationSubmissionFailure(wfId, sub2, new Error("network failed"));
+    expect(draft2.text).toBe("将失败的指导");
+    expect(draft2.requestId).toBe(failReqId); // 保持原请求标识以便重试去重
+
+    // 5. 测试发送失败分支：若用户已输入新内容，保留新内容，不覆盖
+    draft2.text = "失败期间输入的新文字";
+    resolveConversationSubmissionFailure(wfId, sub2, new Error("second fail"));
+    expect(draft2.text).toBe("失败期间输入的新文字");
+    expect(peekFailedSubmission(wfId)).toBeDefined();
+
+    // 6. 恢复原提交，同时将新草稿另行暂存。
+    expect(restoreFailedConversationSubmission(wfId, "missing-request")).toBe(false);
+    expect(draft2.text).toBe("失败期间输入的新文字");
+    expect(restoreFailedConversationSubmission(wfId, sub2.requestId)).toBe(true);
+    expect(draft2.text).toBe("将失败的指导");
+    expect(draft2.requestId).toBe(failReqId);
+    expect(listConversationSubmissions(wfId).some(item => item.status === "saved" && item.draftText === "失败期间输入的新文字")).toBe(true);
   });
 
   it("isolates drafts by workflow and shows the formal handover hint", () => {
