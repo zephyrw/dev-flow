@@ -17,7 +17,7 @@ import {
   peekAsidePromoteDraft,
   promoteDraftText,
   shouldHideAsidePopover,
-  useProjectAsides,
+  useWorkflowAsides,
   writeAsidePromoteDraft,
 } from "./use-project-asides.js";
 import { UserInteractionDialog } from "./components/UserInteractionDialog.js";
@@ -58,10 +58,11 @@ export function TaskInteraction({
   const requests = (detail.operations ?? []).filter(
     (request: any) => request.status === "pending",
   );
-  const asides = useProjectAsides({
+  const asides = useWorkflowAsides({
+    workflowId: w.id,
     projectId: w.project_id,
     open: asideOpen && !hideAside,
-    enabled: Boolean(w.project_id),
+    enabled: Boolean(w.id),
   });
   const asideSummary = asides.summary;
   const popoverVisible =
@@ -87,6 +88,7 @@ export function TaskInteraction({
   const activeInteraction = useRef(interaction?.id);
   activeInteraction.current = interaction?.id;
   useEffect(() => {
+    setAsideOpen(false);
     setInteractionOpen(false);
     dismissedInteractionId.current = "";
   }, [w.id]);
@@ -417,6 +419,7 @@ function promoteAsideToDraft(input: {
   detail: { question: string; answer?: string } | null;
   setText: (text: string) => void;
 }) {
+  if (input.summary.workflow_id !== input.composerWorkflowId) return;
   const question = input.detail?.question ?? "";
   if (!question) return;
   writeAsidePromoteDraft(input.composerWorkflowId, {

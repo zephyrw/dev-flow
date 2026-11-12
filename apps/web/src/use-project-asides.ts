@@ -6,11 +6,12 @@ export const ASIDE_UPDATE_POLL_MS = 2000;
 export type AsideStatus =
   | "active"
   | "queued"
+  | "waiting_account"
   | "completed"
   | "expired"
   | "cancelled";
 
-export type ProjectAsideSummary = {
+export type WorkflowAsideSummary = {
   id: string;
   project_id: string;
   workflow_id: string;
@@ -20,28 +21,28 @@ export type ProjectAsideSummary = {
   created_at: string;
 };
 
-export type ProjectAsideListPage = {
-  items: ProjectAsideSummary[];
+export type WorkflowAsideListPage = {
+  items: WorkflowAsideSummary[];
   total: number;
   next_cursor: string | null;
   snapshot_cursor: number;
 };
 
-export type ProjectAsidePosition = {
+export type WorkflowAsidePosition = {
   index: number;
   total: number;
   prev_id?: string;
   next_id?: string;
 };
 
-export type ProjectAsideUpdateItem = {
+export type WorkflowAsideUpdateItem = {
   id: string;
   status: AsideStatus;
-  updated_project_seq: number;
+  updated_seq: number;
 };
 
-export type ProjectAsideUpdatePage = {
-  items: ProjectAsideUpdateItem[];
+export type WorkflowAsideUpdatePage = {
+  items: WorkflowAsideUpdateItem[];
   snapshot_cursor: number;
 };
 
@@ -55,7 +56,13 @@ export type AsideDetail = {
   refs?: unknown[];
 };
 
-type ProjectAsideUi = {
+export type ProjectAsideSummary = WorkflowAsideSummary;
+export type ProjectAsideListPage = WorkflowAsideListPage;
+export type ProjectAsidePosition = WorkflowAsidePosition;
+export type ProjectAsideUpdateItem = WorkflowAsideUpdateItem;
+export type ProjectAsideUpdatePage = WorkflowAsideUpdatePage;
+
+type WorkflowAsideUi = {
   selectedId?: string;
   snapshotCursor?: number;
   updateCursor?: number;
@@ -66,28 +73,28 @@ type PromoteDraftTarget = {
   asideId: string;
 };
 
-const uiByProject = new Map<string, ProjectAsideUi>();
+const uiByWorkflow = new Map<string, WorkflowAsideUi>();
 const promoteByComposer = new Map<string, PromoteDraftTarget>();
 
-export function readProjectAsideUi(projectId: string): ProjectAsideUi {
-  return uiByProject.get(projectId) ?? {};
+export function readWorkflowAsideUi(workflowId: string): WorkflowAsideUi {
+  return uiByWorkflow.get(workflowId) ?? {};
 }
 
-export function writeProjectAsideUi(
-  projectId: string,
-  patch: Partial<ProjectAsideUi>,
-): ProjectAsideUi {
-  const next = { ...readProjectAsideUi(projectId), ...patch };
-  uiByProject.set(projectId, next);
+export function writeWorkflowAsideUi(
+  workflowId: string,
+  patch: Partial<WorkflowAsideUi>,
+): WorkflowAsideUi {
+  const next = { ...readWorkflowAsideUi(workflowId), ...patch };
+  uiByWorkflow.set(workflowId, next);
   return next;
 }
 
-export function clearProjectAsideUi(projectId: string): void {
-  uiByProject.delete(projectId);
+export function clearWorkflowAsideUi(workflowId: string): void {
+  uiByWorkflow.delete(workflowId);
 }
 
-export function resetProjectAsideUi(): void {
-  uiByProject.clear();
+export function resetWorkflowAsideUi(): void {
+  uiByWorkflow.clear();
   promoteByComposer.clear();
 }
 
@@ -109,7 +116,11 @@ export function clearAsidePromoteDraft(composerWorkflowId: string): void {
 }
 
 export function isPendingAsideStatus(status: string): boolean {
-  return status === "active" || status === "queued";
+  return (
+    status === "active" ||
+    status === "queued" ||
+    status === "waiting_account"
+  );
 }
 
 export function asideStatusLabel(status: string): string {
@@ -117,6 +128,7 @@ export function asideStatusLabel(status: string): string {
     {
       active: "正在回答…",
       queued: "等待回答",
+      waiting_account: "等待可用账号…",
       completed: "已回答",
       cancelled: "已取消",
       expired: "未完成",
@@ -125,7 +137,7 @@ export function asideStatusLabel(status: string): string {
 }
 
 export function asidePositionLabel(
-  position?: ProjectAsidePosition | null,
+  position?: WorkflowAsidePosition | null,
 ): string {
   const index = position?.index ?? 0;
   const total = position?.total ?? 0;
@@ -134,14 +146,14 @@ export function asidePositionLabel(
 
 export function isAsideNavDisabled(
   kind: "prev" | "next",
-  position?: ProjectAsidePosition | null,
+  position?: WorkflowAsidePosition | null,
 ): boolean {
   if (!position || position.total <= 0) return true;
   if (kind === "prev") return !position.prev_id || position.index <= 1;
   return !position.next_id || position.index >= position.total;
 }
 
-export function shouldPollProjectAsideUpdates(input: {
+export function shouldPollWorkflowAsideUpdates(input: {
   popoverOpen: boolean;
   hasPending: boolean;
 }): boolean {
@@ -155,30 +167,30 @@ export function shouldHideAsidePopover(input: {
   return !shouldRenderConversationComposer(input);
 }
 
-export function nextProjectAsideSelection(input: {
-  previousProjectId?: string;
-  nextProjectId?: string;
+export function nextWorkflowAsideSelection(input: {
+  previousWorkflowId?: string;
+  nextWorkflowId?: string;
   previousSelectedId?: string;
 }): string | undefined {
-  if (!input.nextProjectId) return undefined;
+  if (!input.nextWorkflowId) return undefined;
   if (
-    input.previousProjectId &&
-    input.previousProjectId !== input.nextProjectId
+    input.previousWorkflowId &&
+    input.previousWorkflowId !== input.nextWorkflowId
   ) {
     return undefined;
   }
   return input.previousSelectedId;
 }
 
-export function snapshotAfterProjectSwitch(input: {
-  previousProjectId?: string;
-  nextProjectId?: string;
+export function snapshotAfterWorkflowSwitch(input: {
+  previousWorkflowId?: string;
+  nextWorkflowId?: string;
   previousSnapshot?: number;
 }): number | undefined {
-  if (!input.nextProjectId) return undefined;
+  if (!input.nextWorkflowId) return undefined;
   if (
-    input.previousProjectId &&
-    input.previousProjectId !== input.nextProjectId
+    input.previousWorkflowId &&
+    input.previousWorkflowId !== input.nextWorkflowId
   ) {
     return undefined;
   }
@@ -192,7 +204,7 @@ export function defaultSelectedAsideId(
 }
 
 export function isViewingHistoricalAside(
-  position?: Pick<ProjectAsidePosition, "index"> | null,
+  position?: Pick<WorkflowAsidePosition, "index"> | null,
 ): boolean {
   return !!position && position.index > 1;
 }
@@ -231,7 +243,9 @@ export function nextPendingIds(
 export function pendingIdsFromSummaries(
   items: Array<{ id: string; status: string }>,
 ): string[] {
-  return items.filter((item) => isPendingAsideStatus(item.status)).map((item) => item.id);
+  return items
+    .filter((item) => isPendingAsideStatus(item.status))
+    .map((item) => item.id);
 }
 
 export function showAsideSourceWorkflow(
@@ -262,7 +276,7 @@ export function summaryFromCreatedAside(input: {
   };
   projectId: string;
   workflowTitle: string;
-}): ProjectAsideSummary {
+}): WorkflowAsideSummary {
   const question = input.session.question ?? "";
   return {
     id: input.session.id,
@@ -293,11 +307,11 @@ export async function readAsides(
   return value;
 }
 
-export async function readProjectAsidePage(
-  projectId: string,
+export async function readWorkflowAsidePage(
+  workflowId: string,
   query: { limit?: number; before?: string; snapshot_cursor?: number } = {},
   signal?: AbortSignal,
-): Promise<ProjectAsideListPage> {
+): Promise<WorkflowAsideListPage> {
   const params = new URLSearchParams();
   if (query.limit !== undefined) params.set("limit", String(query.limit));
   if (query.before) params.set("before", query.before);
@@ -306,32 +320,46 @@ export async function readProjectAsidePage(
   }
   const suffix = params.toString();
   const response = await fetch(
-    "/api/projects/" + projectId + "/asides" + (suffix ? "?" + suffix : ""),
+    "/api/workflows/" +
+      workflowId +
+      "/aside-history" +
+      (suffix ? "?" + suffix : ""),
     { credentials: "same-origin", signal },
   );
-  const value = await readApiJson(response, "无法读取项目提问");
-  if (!value || !Array.isArray(value.items) || !Number.isSafeInteger(value.total) || value.total < 0 ||
-    !Number.isSafeInteger(value.snapshot_cursor) || value.snapshot_cursor < 0 ||
-    !(value.next_cursor === null || typeof value.next_cursor === "string")) {
-    throw new Error("项目提问响应格式无效，请刷新重试");
+  const value = await readApiJson(response, "无法读取任务提问");
+  if (
+    !value ||
+    !Array.isArray(value.items) ||
+    !Number.isSafeInteger(value.total) ||
+    value.total < 0 ||
+    !Number.isSafeInteger(value.snapshot_cursor) ||
+    value.snapshot_cursor < 0 ||
+    !(value.next_cursor === null || typeof value.next_cursor === "string")
+  ) {
+    throw new Error("任务提问响应格式无效，请刷新重试");
   }
-  return value;
+  return {
+    ...value,
+    items: value.items.filter(
+      (item: WorkflowAsideSummary) => item.workflow_id === workflowId,
+    ),
+  };
 }
 
-export async function readProjectAsidePosition(
-  projectId: string,
+export async function readWorkflowAsidePosition(
+  workflowId: string,
   asideId: string,
   snapshotCursor?: number,
   signal?: AbortSignal,
-): Promise<ProjectAsidePosition> {
+): Promise<WorkflowAsidePosition> {
   const params = new URLSearchParams();
   if (snapshotCursor !== undefined) {
     params.set("snapshot_cursor", String(snapshotCursor));
   }
   const suffix = params.toString();
   const response = await fetch(
-    "/api/projects/" +
-      projectId +
+    "/api/workflows/" +
+      workflowId +
       "/asides/" +
       asideId +
       "/position" +
@@ -341,13 +369,13 @@ export async function readProjectAsidePosition(
   return readApiJson(response, "无法读取提问位置");
 }
 
-export async function readProjectAsideUpdates(
-  projectId: string,
+export async function readWorkflowAsideUpdates(
+  workflowId: string,
   after = 0,
   signal?: AbortSignal,
-): Promise<ProjectAsideUpdatePage> {
+): Promise<WorkflowAsideUpdatePage> {
   const response = await fetch(
-    "/api/projects/" + projectId + "/aside-updates?after=" + after,
+    "/api/workflows/" + workflowId + "/aside-updates?after=" + after,
     { credentials: "same-origin", signal },
   );
   return readApiJson(response, "无法读取提问更新");
@@ -363,9 +391,18 @@ export async function readAsideDetail(
     { credentials: "same-origin", signal },
   );
   if (response.status === 404) {
+    const body = await response.json().catch(() => null);
+    const code = body?.error?.code;
+    if (code === "ASIDE_NOT_IN_WORKFLOW") {
+      throw new Error(apiErrorMessage(body, "提问不属于该任务"));
+    }
     return readAsideDetailFromList(workflowId, asideId, signal);
   }
-  return readApiJson(response, "无法读取提问详情");
+  const detail = await readApiJson(response, "无法读取提问详情");
+  if (detail?.workflow_id && detail.workflow_id !== workflowId) {
+    throw new Error("提问不属于该任务");
+  }
+  return detail;
 }
 
 async function readAsideDetailFromList(
@@ -374,26 +411,30 @@ async function readAsideDetailFromList(
   signal?: AbortSignal,
 ): Promise<AsideDetail> {
   const list = await readAsides(workflowId, signal);
-  const found = list.find((item) => item.id === asideId);
+  const found = list.find(
+    (item) => item.id === asideId && item.workflow_id === workflowId,
+  );
   if (!found) throw new Error("提问不属于该任务");
   return found;
 }
 
-async function findProjectAsideSummary(
-  projectId: string,
+async function findWorkflowAsideSummary(
+  workflowId: string,
   asideId: string,
   snapshotCursor: number | undefined,
   signal?: AbortSignal,
-): Promise<ProjectAsideSummary | undefined> {
+): Promise<WorkflowAsideSummary | undefined> {
   let before: string | undefined;
   const seen = new Set<string>();
   for (;;) {
-    const page = await readProjectAsidePage(
-      projectId,
+    const page = await readWorkflowAsidePage(
+      workflowId,
       { limit: 50, before, snapshot_cursor: snapshotCursor },
       signal,
     );
-    const found = page.items.find((item) => item.id === asideId);
+    const found = page.items.find(
+      (item) => item.id === asideId && item.workflow_id === workflowId,
+    );
     if (found) return found;
     if (!page.next_cursor || seen.has(page.next_cursor)) return undefined;
     seen.add(page.next_cursor);
@@ -401,24 +442,28 @@ async function findProjectAsideSummary(
   }
 }
 
-export function useProjectAsides(input: {
+/**
+ * 按任务（workflowId）隔离管理当前任务的临时提问浮窗、分页与状态轮询。
+ */
+export function useWorkflowAsides(input: {
+  workflowId?: string;
   projectId?: string;
   open: boolean;
   enabled: boolean;
 }) {
-  const { projectId, open, enabled } = input;
-  const [selectedId, setSelectedId] = useState<string | undefined>(
-    () => (projectId ? readProjectAsideUi(projectId).selectedId : undefined),
+  const { workflowId, projectId = "", open, enabled } = input;
+  const [selectedId, setSelectedId] = useState<string | undefined>(() =>
+    workflowId ? readWorkflowAsideUi(workflowId).selectedId : undefined,
   );
-  const [snapshotCursor, setSnapshotCursor] = useState<number | undefined>(
-    () => (projectId ? readProjectAsideUi(projectId).snapshotCursor : undefined),
+  const [snapshotCursor, setSnapshotCursor] = useState<number | undefined>(() =>
+    workflowId ? readWorkflowAsideUi(workflowId).snapshotCursor : undefined,
   );
-  const [updateCursor, setUpdateCursor] = useState(
-    () => (projectId ? readProjectAsideUi(projectId).updateCursor : undefined),
+  const [updateCursor, setUpdateCursor] = useState<number | undefined>(() =>
+    workflowId ? readWorkflowAsideUi(workflowId).updateCursor : undefined,
   );
-  const [summary, setSummary] = useState<ProjectAsideSummary | null>(null);
+  const [summary, setSummary] = useState<WorkflowAsideSummary | null>(null);
   const [detail, setDetail] = useState<AsideDetail | null>(null);
-  const [position, setPosition] = useState<ProjectAsidePosition | null>(null);
+  const [position, setPosition] = useState<WorkflowAsidePosition | null>(null);
   const [total, setTotal] = useState(0);
   const [pendingIds, setPendingIds] = useState<string[]>([]);
   const [hasNew, setHasNew] = useState(false);
@@ -426,29 +471,31 @@ export function useProjectAsides(input: {
   const [listError, setListError] = useState("");
   const [reloadToken, setReloadToken] = useState(0);
 
-  const summariesRef = useRef(new Map<string, ProjectAsideSummary>());
+  const summariesRef = useRef(new Map<string, WorkflowAsideSummary>());
   const seenIdsRef = useRef(new Set<string>());
-  const previousProjectId = useRef<string | undefined>(projectId);
+  const previousWorkflowId = useRef<string | undefined>(workflowId);
+  const activeWorkflowRef = useRef<string | undefined>(workflowId);
   const selectedIdRef = useRef(selectedId);
   const snapshotRef = useRef(snapshotCursor);
   const updateCursorRef = useRef(updateCursor);
   const positionRef = useRef(position);
+  activeWorkflowRef.current = workflowId;
   selectedIdRef.current = selectedId;
   snapshotRef.current = snapshotCursor;
   updateCursorRef.current = updateCursor;
   positionRef.current = position;
 
-  const rememberSummary = useCallback((item: ProjectAsideSummary) => {
+  const rememberSummary = useCallback((item: WorkflowAsideSummary) => {
     summariesRef.current.set(item.id, item);
     seenIdsRef.current.add(item.id);
   }, []);
 
   const persist = useCallback(
-    (patch: Partial<ProjectAsideUi>) => {
-      if (!projectId) return;
-      writeProjectAsideUi(projectId, patch);
+    (patch: Partial<WorkflowAsideUi>) => {
+      if (!workflowId) return;
+      writeWorkflowAsideUi(workflowId, patch);
     },
-    [projectId],
+    [workflowId],
   );
 
   const reload = useCallback(() => {
@@ -457,7 +504,7 @@ export function useProjectAsides(input: {
 
   const selectCreated = useCallback(
     (session: AsideDetail, workflowTitle: string) => {
-      if (!projectId) return;
+      if (!workflowId || session.workflow_id !== workflowId) return;
       const item = summaryFromCreatedAside({
         session,
         projectId,
@@ -479,7 +526,7 @@ export function useProjectAsides(input: {
       persist({ selectedId: item.id, snapshotCursor: undefined });
       setReloadToken((value) => value + 1);
     },
-    [persist, projectId, rememberSummary],
+    [persist, projectId, rememberSummary, workflowId],
   );
 
   const goLatest = useCallback(() => {
@@ -491,15 +538,16 @@ export function useProjectAsides(input: {
   }, [persist]);
 
   useEffect(() => {
-    const previous = previousProjectId.current;
-    previousProjectId.current = projectId;
-    if (previous && previous !== projectId) {
-      clearProjectAsideUi(previous);
+    const previous = previousWorkflowId.current;
+    previousWorkflowId.current = workflowId;
+    if (previous !== workflowId) {
+      if (previous) clearWorkflowAsideUi(previous);
       summariesRef.current.clear();
       seenIdsRef.current.clear();
-      setSelectedId(undefined);
-      setSnapshotCursor(undefined);
-      setUpdateCursor(undefined);
+      const restored = workflowId ? readWorkflowAsideUi(workflowId) : {};
+      setSelectedId(restored.selectedId);
+      setSnapshotCursor(restored.snapshotCursor);
+      setUpdateCursor(restored.updateCursor);
       setSummary(null);
       setDetail(null);
       setPosition(null);
@@ -509,27 +557,27 @@ export function useProjectAsides(input: {
       setError("");
       setListError("");
     }
-  }, [projectId]);
+  }, [workflowId]);
 
   useEffect(() => {
     persist({ selectedId, snapshotCursor, updateCursor });
   }, [persist, selectedId, snapshotCursor, updateCursor]);
 
   useEffect(() => {
-    if (!enabled || !projectId) return;
-    const id = projectId;
+    if (!enabled || !workflowId) return;
+    const id = workflowId;
     const abort = new AbortController();
     void loadList(abort.signal);
     return () => abort.abort();
 
     async function loadList(signal: AbortSignal) {
       try {
-        const page = await readProjectAsidePage(
+        const page = await readWorkflowAsidePage(
           id,
           { limit: 20, snapshot_cursor: snapshotRef.current },
           signal,
         );
-        if (signal.aborted) return;
+        if (signal.aborted || activeWorkflowRef.current !== id) return;
         for (const item of page.items) rememberSummary(item);
         setTotal(page.total);
         setUpdateCursor(page.snapshot_cursor);
@@ -541,13 +589,13 @@ export function useProjectAsides(input: {
         const currentId = selectedIdRef.current;
         if (currentId && summariesRef.current.has(currentId)) return;
         if (currentId) {
-          const found = await findProjectAsideSummary(
+          const found = await findWorkflowAsideSummary(
             id,
             currentId,
             snapshotRef.current,
             signal,
           );
-          if (signal.aborted) return;
+          if (signal.aborted || activeWorkflowRef.current !== id) return;
           if (found) {
             rememberSummary(found);
             return;
@@ -555,17 +603,22 @@ export function useProjectAsides(input: {
         }
         const latest = defaultSelectedAsideId(page.items);
         if (latest) setSelectedId(latest);
+        else setSelectedId(undefined);
       } catch (cause) {
-        if (!signal.aborted && !isAbortError(cause)) {
+        if (
+          !signal.aborted &&
+          !isAbortError(cause) &&
+          activeWorkflowRef.current === id
+        ) {
           setListError(String(cause instanceof Error ? cause.message : cause));
         }
       }
     }
-  }, [enabled, projectId, rememberSummary, reloadToken]);
+  }, [enabled, workflowId, rememberSummary, reloadToken]);
 
   useEffect(() => {
-    if (!enabled || !projectId || !selectedId) return;
-    const id = projectId;
+    if (!enabled || !workflowId || !selectedId) return;
+    const id = workflowId;
     const asideId = selectedId;
     const abort = new AbortController();
     void loadSelected(abort.signal);
@@ -574,8 +627,11 @@ export function useProjectAsides(input: {
     async function loadSelected(signal: AbortSignal) {
       try {
         let item = summariesRef.current.get(asideId);
+        if (item && item.workflow_id !== id) {
+          item = undefined;
+        }
         if (!item) {
-          item = await findProjectAsideSummary(
+          item = await findWorkflowAsideSummary(
             id,
             asideId,
             snapshotRef.current,
@@ -583,46 +639,46 @@ export function useProjectAsides(input: {
           );
           if (item) rememberSummary(item);
         }
-        if (signal.aborted) return;
+        if (signal.aborted || activeWorkflowRef.current !== id) return;
         if (!item) {
           setSummary(null);
           setDetail(null);
           return;
         }
         setSummary(item);
-        const nextPosition = await readProjectAsidePosition(
+        const nextPosition = await readWorkflowAsidePosition(
           id,
           asideId,
           snapshotRef.current,
           signal,
         );
-        if (signal.aborted) return;
+        if (signal.aborted || activeWorkflowRef.current !== id) return;
         setPosition(nextPosition);
         setTotal(nextPosition.total);
-        const nextDetail = await readAsideDetail(
-          item.workflow_id,
-          item.id,
-          signal,
-        );
-        if (signal.aborted) return;
+        const nextDetail = await readAsideDetail(id, item.id, signal);
+        if (signal.aborted || activeWorkflowRef.current !== id) return;
         setDetail(nextDetail);
         setPendingIds((ids) => nextPendingIds(ids, [nextDetail]));
         setError("");
       } catch (cause) {
-        if (!signal.aborted && !isAbortError(cause)) {
+        if (
+          !signal.aborted &&
+          !isAbortError(cause) &&
+          activeWorkflowRef.current === id
+        ) {
           setError(String(cause instanceof Error ? cause.message : cause));
         }
       }
     }
-  }, [enabled, projectId, rememberSummary, selectedId, snapshotCursor, reloadToken]);
+  }, [enabled, workflowId, rememberSummary, selectedId, snapshotCursor, reloadToken]);
 
   const hasPending = pendingIds.length > 0;
   useEffect(() => {
-    if (!enabled || !projectId) return;
-    if (!shouldPollProjectAsideUpdates({ popoverOpen: open, hasPending })) {
+    if (!enabled || !workflowId) return;
+    if (!shouldPollWorkflowAsideUpdates({ popoverOpen: open, hasPending })) {
       return;
     }
-    const id = projectId;
+    const id = workflowId;
     const abort = new AbortController();
     const timer = window.setInterval(() => {
       void pullUpdates(abort.signal);
@@ -634,15 +690,15 @@ export function useProjectAsides(input: {
 
     async function pullUpdates(signal: AbortSignal) {
       try {
-        const page = await readProjectAsideUpdates(
+        const page = await readWorkflowAsideUpdates(
           id,
           updateCursorRef.current ?? 0,
           signal,
         );
-        if (signal.aborted) return;
+        if (signal.aborted || activeWorkflowRef.current !== id) return;
         const newIds = page.items
           .map((item) => item.id)
-          .filter((id) => !seenIdsRef.current.has(id));
+          .filter((itemId) => !seenIdsRef.current.has(itemId));
         for (const item of page.items) seenIdsRef.current.add(item.id);
         const arrival = resolveBackgroundAsideArrival({
           selectedId: selectedIdRef.current,
@@ -666,12 +722,16 @@ export function useProjectAsides(input: {
           setReloadToken((value) => value + 1);
         }
       } catch (cause) {
-        if (!signal.aborted && !isAbortError(cause)) {
+        if (
+          !signal.aborted &&
+          !isAbortError(cause) &&
+          activeWorkflowRef.current === id
+        ) {
           setError(String(cause instanceof Error ? cause.message : cause));
         }
       }
     }
-  }, [enabled, hasPending, open, projectId, rememberSummary]);
+  }, [enabled, hasPending, open, workflowId, rememberSummary]);
 
   const goPrev = useCallback(() => {
     if (isAsideNavDisabled("prev", position) || !position?.prev_id) return;
@@ -714,7 +774,10 @@ function apiErrorMessage(value: unknown, fallback: string): string {
   if (typeof record.message === "string" && record.message.trim()) {
     return record.message;
   }
-  if (typeof record.error?.message === "string" && record.error.message.trim()) {
+  if (
+    typeof record.error?.message === "string" &&
+    record.error.message.trim()
+  ) {
     return record.error.message;
   }
   return fallback;

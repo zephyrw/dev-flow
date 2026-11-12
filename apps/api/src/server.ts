@@ -93,6 +93,7 @@ import {
 } from "../../../packages/contracts/src/session-binding.js";
 import { conversationFilePlugin } from "./routes/conversation-files.js";
 import { projectAsidesPlugin } from "./routes/project-asides.js";
+import { workflowAsidesPlugin } from "./routes/workflow-asides.js";
 import { conversationPlugin } from "./routes/conversations.js";
 import { projectAgySubagents } from "./routes/agy-subagents.js";
 import { conversationControlPlugin } from "./routes/conversation-controls.js";
@@ -279,6 +280,7 @@ export async function buildServer(
     human,
   });
   await app.register(projectAsidesPlugin, { store: engine.store, human });
+  await app.register(workflowAsidesPlugin, { store: engine.store, human });
   await app.register(conversationPlugin, {
     conversations,
     store: engine.store,

@@ -115,9 +115,9 @@ test.describe("H02 Activity & Guidance Resilience", () => {
       if (path.endsWith("/conversation-messages")) return route.fulfill({ json: { client_mode: "btw", aside_id: "aside-c02", message_id: "msg-c02" } });
       if (path.endsWith("/position")) return route.fulfill({ json: { index: 1, total: 1 } });
       if (path.endsWith("/aside-updates")) return route.fulfill({ json: { items: [], snapshot_cursor: 1 } });
-      if (path.endsWith("/asides/aside-c02")) return route.fulfill({ json: { id: "aside-c02", workflow_id: workflow.id, question: "查询项目提问历史", answer: "历史已恢复", status: "completed", created_at: new Date().toISOString() } });
-      if (path === "/api/projects/p1/asides") {
-        return route.fulfill({ json: returnValid ? { items: [{ id: "aside-c02", project_id: "p1", workflow_id: workflow.id, workflow_title: workflow.title, question_preview: "查询项目提问历史", status: "completed", created_at: new Date().toISOString() }], total: 1, next_cursor: null, snapshot_cursor: 1 } : { bad: "structure" } });
+      if (path.endsWith("/asides/aside-c02")) return route.fulfill({ json: { id: "aside-c02", workflow_id: workflow.id, question: "查询任务提问历史", answer: "历史已恢复", status: "completed", created_at: new Date().toISOString() } });
+      if (path === "/api/workflows/wf-c02/aside-history") {
+        return route.fulfill({ json: returnValid ? { items: [{ id: "aside-c02", project_id: "p1", workflow_id: workflow.id, workflow_title: workflow.title, question_preview: "查询任务提问历史", status: "completed", created_at: new Date().toISOString() }], total: 1, next_cursor: null, snapshot_cursor: 1 } : { bad: "structure" } });
       }
       if (path.endsWith("/projects")) return route.fulfill({ json: [detail.project] });
       if (path.endsWith("/workflows")) return route.fulfill({ json: [workflow] });
@@ -130,18 +130,18 @@ test.describe("H02 Activity & Guidance Resilience", () => {
     await installMockWorkflowConfiguration(page);
     await page.goto("/?workflow=wf-c02");
     await openExecutionSidebar(page);
-    await page.locator(".conversation-composer-input").fill("/btw 查询项目提问历史");
+    await page.locator(".conversation-composer-input").fill("/btw 查询任务提问历史");
     await page.getByRole("button", { name: "发送", exact: true }).click();
 
     const alert = page.getByRole("alert");
     await expect(alert).toBeVisible();
-    await expect(alert).toContainText("项目提问响应格式无效");
+    await expect(alert).toContainText("任务提问响应格式无效");
     await expect(page.getByRole("button", { name: "历史提问" })).toHaveCount(0);
 
     returnValid = true;
     await page.reload();
 
-    await page.locator(".conversation-composer-input").fill("/btw 查询项目提问历史");
+    await page.locator(".conversation-composer-input").fill("/btw 查询任务提问历史");
     await page.getByRole("button", { name: "发送", exact: true }).click();
     await expect(page.locator(".aside-popover")).toContainText("历史已恢复");
     await expect(page.getByRole("alert")).not.toBeVisible();
@@ -226,14 +226,43 @@ test.describe("H02 Activity & Guidance Resilience", () => {
           ],
         });
       }
+      if (path === "/api/workflows/wf-a/aside-history") {
+        return route.fulfill({
+          json: {
+            items: [
+              {
+                id: "aside-a-1",
+                project_id: "p1",
+                workflow_id: "wf-a",
+                workflow_title: wfA.title,
+                question_preview: "A任务临时提问",
+                status: "completed",
+                created_at: new Date().toISOString(),
+              },
+            ],
+            total: 1,
+            next_cursor: null,
+            snapshot_cursor: 1,
+          },
+        });
+      }
       if (path.includes("/wf-a/asides")) {
         return route.fulfill({ json: [] });
       }
 
-      if (path.includes("/wf-b/functional-issues") || path.includes("/wf-b/asides")) {
+      if (
+        path.includes("/wf-b/functional-issues") ||
+        path.includes("/wf-b/aside-history") ||
+        path.includes("/wf-b/asides")
+      ) {
         if (delayBResponses) {
           await new Promise<void>((resolve) => {
             bResolver = resolve;
+          });
+        }
+        if (path.endsWith("/aside-history")) {
+          return route.fulfill({
+            json: { items: [], total: 0, next_cursor: null, snapshot_cursor: 0 },
           });
         }
         return route.fulfill({ json: [] });
@@ -262,12 +291,14 @@ test.describe("H02 Activity & Guidance Resilience", () => {
     await page.locator(".flow-nav-btn").filter({ hasText: wfB.title }).click();
     await page.getByRole("button", { name: /^规划模型：/ }).click();
 
-    // 在 B 响应延迟期间，任务 A 的问题和按钮必须已被清理，不得展示
+    // 在 B 响应延迟期间，任务 A 的问题和临时提问入口必须已被清理，不得展示
     await expect(page.getByRole("button", { name: "复测通过" })).not.toBeVisible();
     await expect(page.getByText("A任务遗留问题")).not.toBeVisible();
+    await expect(page.locator(".aside-popover-entry")).toHaveCount(0);
 
     // 释放 B 的延迟
     if (bResolver) (bResolver as () => void)();
+    await expect(page.locator(".aside-popover-entry")).toHaveCount(0);
 
     expect(pageErrors.length).toBe(0);
   });

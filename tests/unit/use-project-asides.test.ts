@@ -1,25 +1,27 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   asidePositionLabel,
+  asideStatusLabel,
+  clearWorkflowAsideUi,
   defaultSelectedAsideId,
   isAsideNavDisabled,
+  isPendingAsideStatus,
   isViewingHistoricalAside,
   nextPendingIds,
-  nextProjectAsideSelection,
+  nextWorkflowAsideSelection,
   peekAsidePromoteDraft,
   promoteDraftText,
-  resetProjectAsideUi,
+  readWorkflowAsideUi,
+  resetWorkflowAsideUi,
   resolveBackgroundAsideArrival,
   shouldHideAsidePopover,
-  shouldPollProjectAsideUpdates,
+  shouldPollWorkflowAsideUpdates,
   shouldRefreshAsideDetail,
-  snapshotAfterProjectSwitch,
+  snapshotAfterWorkflowSwitch,
   summaryFromCreatedAside,
   upsertAside,
   writeAsidePromoteDraft,
-  writeProjectAsideUi,
-  readProjectAsideUi,
-  clearProjectAsideUi,
+  writeWorkflowAsideUi,
 } from "../../apps/web/src/use-project-asides.js";
 
 const position = {
@@ -28,44 +30,45 @@ const position = {
   next_id: "aside_old",
 };
 
-describe("SA-D20 project aside 选择与 1/N", () => {
+describe("SA-D20 workflow aside 任务隔离选择与 1/N", () => {
   beforeEach(() => {
-    resetProjectAsideUi();
+    resetWorkflowAsideUi();
   });
 
-  it("项目切换清空选中 ID 和快照，同项目任务切换保留", () => {
+  it("任务切换清空选中 ID 和快照，不同任务 UI 状态互相隔离", () => {
     expect(
-      nextProjectAsideSelection({
-        previousProjectId: "proj_a",
-        nextProjectId: "proj_b",
+      nextWorkflowAsideSelection({
+        previousWorkflowId: "wf_a",
+        nextWorkflowId: "wf_b",
         previousSelectedId: "aside_1",
       }),
     ).toBeUndefined();
     expect(
-      nextProjectAsideSelection({
-        previousProjectId: "proj_a",
-        nextProjectId: "proj_a",
+      nextWorkflowAsideSelection({
+        previousWorkflowId: "wf_a",
+        nextWorkflowId: "wf_a",
         previousSelectedId: "aside_1",
       }),
     ).toBe("aside_1");
     expect(
-      snapshotAfterProjectSwitch({
-        previousProjectId: "proj_a",
-        nextProjectId: "proj_b",
+      snapshotAfterWorkflowSwitch({
+        previousWorkflowId: "wf_a",
+        nextWorkflowId: "wf_b",
         previousSnapshot: 9,
       }),
     ).toBeUndefined();
     expect(
-      snapshotAfterProjectSwitch({
-        previousProjectId: "proj_a",
-        nextProjectId: "proj_a",
+      snapshotAfterWorkflowSwitch({
+        previousWorkflowId: "wf_a",
+        nextWorkflowId: "wf_a",
         previousSnapshot: 9,
       }),
     ).toBe(9);
 
-    writeProjectAsideUi("proj_a", { selectedId: "aside_1", snapshotCursor: 3 });
-    clearProjectAsideUi("proj_a");
-    expect(readProjectAsideUi("proj_a").selectedId).toBeUndefined();
+    writeWorkflowAsideUi("wf_a", { selectedId: "aside_1", snapshotCursor: 3 });
+    expect(readWorkflowAsideUi("wf_b").selectedId).toBeUndefined();
+    clearWorkflowAsideUi("wf_a");
+    expect(readWorkflowAsideUi("wf_a").selectedId).toBeUndefined();
   });
 
   it("1/N 左右边界禁用且不循环，总数来自服务端位置", () => {
@@ -75,9 +78,9 @@ describe("SA-D20 project aside 选择与 1/N", () => {
     expect(
       isAsideNavDisabled("next", { index: 7, total: 7, prev_id: "aside_new" }),
     ).toBe(true);
-    expect(isAsideNavDisabled("prev", { index: 7, total: 7, prev_id: "aside_new" })).toBe(
-      false,
-    );
+    expect(
+      isAsideNavDisabled("prev", { index: 7, total: 7, prev_id: "aside_new" }),
+    ).toBe(false);
     expect(isAsideNavDisabled("prev", { index: 1, total: 1 })).toBe(true);
     expect(isAsideNavDisabled("next", { index: 1, total: 1 })).toBe(true);
     expect(defaultSelectedAsideId([{ id: "latest" }, { id: "older" }])).toBe(
@@ -114,15 +117,15 @@ describe("SA-D20 project aside 选择与 1/N", () => {
     ).toBe(true);
   });
 
-  it("仅浮窗打开或存在 pending 时轮询，子会话隐藏浮窗", () => {
+  it("仅浮窗打开或存在 pending 时轮询，子会话隐藏浮窗并支持 waiting_account", () => {
     expect(
-      shouldPollProjectAsideUpdates({ popoverOpen: true, hasPending: false }),
+      shouldPollWorkflowAsideUpdates({ popoverOpen: true, hasPending: false }),
     ).toBe(true);
     expect(
-      shouldPollProjectAsideUpdates({ popoverOpen: false, hasPending: true }),
+      shouldPollWorkflowAsideUpdates({ popoverOpen: false, hasPending: true }),
     ).toBe(true);
     expect(
-      shouldPollProjectAsideUpdates({ popoverOpen: false, hasPending: false }),
+      shouldPollWorkflowAsideUpdates({ popoverOpen: false, hasPending: false }),
     ).toBe(false);
     expect(
       shouldHideAsidePopover({
@@ -136,7 +139,11 @@ describe("SA-D20 project aside 选择与 1/N", () => {
         rootConversationId: "root",
       }),
     ).toBe(false);
-    expect(nextPendingIds(["a"], [{ id: "a", status: "completed" }])).toEqual([]);
+    expect(isPendingAsideStatus("waiting_account")).toBe(true);
+    expect(asideStatusLabel("waiting_account")).toBe("等待可用账号…");
+    expect(nextPendingIds(["a"], [{ id: "a", status: "completed" }])).toEqual(
+      [],
+    );
     expect(nextPendingIds([], [{ id: "b", status: "queued" }])).toEqual(["b"]);
   });
 
@@ -145,11 +152,11 @@ describe("SA-D20 project aside 选择与 1/N", () => {
       promoteDraftText({ question: "为什么等待？", answer: "需要稳定输出" }),
     ).toBe("为什么等待？\n需要稳定输出");
     writeAsidePromoteDraft("wf_current", {
-      workflowId: "wf_source",
+      workflowId: "wf_current",
       asideId: "aside_1",
     });
     expect(peekAsidePromoteDraft("wf_current")).toEqual({
-      workflowId: "wf_source",
+      workflowId: "wf_current",
       asideId: "aside_1",
     });
     const created = summaryFromCreatedAside({
