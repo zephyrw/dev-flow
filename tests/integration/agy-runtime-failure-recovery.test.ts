@@ -14,8 +14,9 @@ const quota = "Individual quota reached. Resets in 2h27m12s.";
 const stalled = "error: the connection to the agent was interrupted before the response finished: subscriber fell behind updates, stalled for 10s";
 const internal = "API error (attempt 1): INTERNAL (code 500): Internal error encountered.";
 const interrupted = "The stream was interrupted. Please continue the task you were working on.";
+const capacity = "API error (attempt 6): UNAVAILABLE (code 503): No capacity available for model gemini-3.8-flash-high on the server";
 
-it.each(["stalled", "internal", "stream_interrupted", "unconfirmed", "disabled", "quota", "denied"] as const)(
+it.each(["stalled", "internal", "stream_interrupted", "capacity", "unconfirmed", "disabled", "quota", "denied"] as const)(
   "real profile AGY process preserves current failure and account decision: %s",
   async mode => {
     const s = setup();
@@ -50,7 +51,7 @@ it.each(["stalled", "internal", "stream_interrupted", "unconfirmed", "disabled",
         { event: "step_update", step_update: { conversation_id: session, step_index: 12, step_type: "agent_response", state: "DONE" } },
       ] : []),
       { event: "result", result: { conversation_id: session, status: "ERROR",
-        error: mode === "stream_interrupted" ? JSON.stringify({ error: interrupted }) : mode === "internal" ? internal : quota,
+        error: mode === "stream_interrupted" ? JSON.stringify({ error: interrupted }) : mode === "internal" ? internal : mode === "capacity" ? capacity : quota,
         response: mode === "stream_interrupted" ? JSON.stringify({ status: "completed", summary: "完成", notes: "", artifacts: [] })
           : mode === "internal" ? "本轮仍有输出" : "",
         ...(mode === "denied" ? { denied_actions: [{ display_name: "run_command" }] } : {}) } },
@@ -83,10 +84,11 @@ it.each(["stalled", "internal", "stream_interrupted", "unconfirmed", "disabled",
       const error = await (runtime as any).invoke(w, run, { instructions: "fixture" }, {}).catch((e: unknown) => e);
       expect(error).toBeInstanceOf(FlowError);
       const code = mode === "quota" ? "AGY_ACCOUNT_WAIT" : mode === "denied" ? "NATIVE_PERMISSION_DENIED" :
+        mode === "capacity" ? "MODEL_CAPACITY_UNAVAILABLE" :
         mode === "unconfirmed" || mode === "disabled" ? "NATIVE_RUN_FAILED" : "MODEL_CONNECTION_FAILED";
       expect(error.code).toBe(code);
       if (mode !== "denied") expect(error.details.exit_code).toBe(mode === "internal" || mode === "stream_interrupted" ? 0 : mode === "quota" ? 3 : 1);
-      if (mode === "stalled" || mode === "internal" || mode === "stream_interrupted" || mode === "denied")
+      if (mode === "stalled" || mode === "internal" || mode === "stream_interrupted" || mode === "capacity" || mode === "denied")
         expect(bridge.observeFailure).not.toHaveBeenCalled();
       else expect(bridge.observeFailure).toHaveBeenCalledOnce();
       if (mode === "stalled") expect(error.details.diagnostic).toContain(stalled);

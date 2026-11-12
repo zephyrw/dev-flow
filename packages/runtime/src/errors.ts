@@ -1,5 +1,9 @@
 import { FlowError } from "../../contracts/src/index.js";
-import { isRetryableModelTransportFailure, runtimeFailureResolution } from "../../contracts/src/runtime-failure.js";
+import {
+  isRetryableModelTransportFailure,
+  isTemporaryModelCapacityFailure,
+  runtimeFailureResolution,
+} from "../../contracts/src/runtime-failure.js";
 import { redact } from "../../core/src/util.js";
 
 export function normalizeRuntimeFailure(error: unknown) {
@@ -48,6 +52,16 @@ export function classifyFailure(text: string) {
       message:
         "AGY 拒绝了原生工具操作，执行已暂停并保留现场。核对客户端权限和具体操作后继续；不会自动重试或改用其他工具绕过拒绝。",
     };
+  if (isTemporaryModelCapacityFailure(text)) {
+    const res = runtimeFailureResolution("MODEL_CAPACITY_UNAVAILABLE", text);
+    return {
+      code: "MODEL_CAPACITY_UNAVAILABLE",
+      retry: "auto",
+      message:
+        res?.message ??
+        "所选模型当前在服务端暂时没有可用容量（临时错误），已安排 5 秒后自动恢复执行。",
+    };
+  }
   if (isRetryableModelTransportFailure(text)) {
     const res = runtimeFailureResolution("MODEL_CONNECTION_FAILED", text);
     return {

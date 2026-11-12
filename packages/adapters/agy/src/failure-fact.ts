@@ -1,5 +1,8 @@
 import type { WindowKind } from "../../../contracts/src/agy-account.js";
-import { isRetryableModelTransportFailure } from "../../../contracts/src/runtime-failure.js";
+import {
+  isRetryableModelTransportFailure,
+  isTemporaryModelCapacityFailure,
+} from "../../../contracts/src/runtime-failure.js";
 
 export type AgyFailureCategory =
   | "quota_exhausted"
@@ -53,7 +56,7 @@ export function isAgyIndividualQuotaError(value: unknown): value is string {
     /^Individual quota reached\.(?: Please upgrade your subscription to increase your limits\.)?(?: Resets in (?:\d+[dhms])+\.?)?$/i.test(value.trim());
 }
 export function hasConflictingAgyFailureDiagnostic(text: string) {
-  return isRetryableModelTransportFailure(text) || /tls|bad record mac|econn|etimedout|enotfound|network|connection|fetch failed|permission.?denied|unauthorized|unauthenticated|invalid_grant|timeout|timed out/i.test(text);
+  return isRetryableModelTransportFailure(text) || isTemporaryModelCapacityFailure(text) || /tls|bad record mac|econn|etimedout|enotfound|network|connection|fetch failed|permission.?denied|unauthorized|unauthenticated|invalid_grant|timeout|timed out/i.test(text);
 }
 
 /** Current CLI stderr can report an unfinished turn despite exit 0 / SUCCESS. */

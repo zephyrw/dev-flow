@@ -138,6 +138,14 @@ const resolutions: Record<string, Omit<RuntimeFailureResolution, "code">> = {
     message: "模型服务暂时限制了请求频率。",
     steps: ["等待服务方的限流窗口结束，再继续原任务。"],
   },
+  MODEL_CAPACITY_UNAVAILABLE: {
+    title: "模型服务器容量暂时不足",
+    message: "所选模型当前在服务端暂时没有可用容量，属于临时性问题。",
+    steps: [
+      "系统会自动间隔 5 秒重试恢复执行；原会话、计划与工作区现场已保留。",
+      "若多次重试后仍无可用容量，可等待片刻后继续原任务，或在“工具与模型”中更换其他模型。",
+    ],
+  },
   MODEL_CONNECTION_FAILED: {
     title: "模型服务连接失败",
     message: "无法连接模型服务，或服务暂时不可用。",
@@ -254,6 +262,11 @@ const resolutions: Record<string, Omit<RuntimeFailureResolution, "code">> = {
   },
 };
 
+/** Temporary server-side capacity saturation across any model/role; auto-retries after 5s. */
+export function isTemporaryModelCapacityFailure(detail: string): boolean {
+  return /no capacity available for (?:the )?model\b/i.test(detail);
+}
+
 /** Only pass current process/provider diagnostics, never model or tool output. */
 export function isRetryableModelTransportFailure(detail: string): boolean {
   return /bad record mac|local error:\s*tls:|streamGenerateContent.*(?:request failed|bad record mac|wsasend:.*forcibly closed by the remote host)|the connection to the agent was interrupted before the response finished|the stream was interrupted\.\s+please continue the task you were working on\.|subscriber fell behind updates, stalled for \d+(?:\.\d+)?s|API error \(attempt \d+\):\s*INTERNAL \(code 500\):\s*Internal error encountered\./i.test(detail);
@@ -316,6 +329,8 @@ export function runtimeFailureResolution(
       cause = "MODEL_AUTH";
     else if (/\bINVALID_ARGUMENT\s*\(code\s+400\)|\bRequest contains an invalid argument\b/i.test(detail))
       cause = "MODEL_REQUEST_INVALID";
+    else if (isTemporaryModelCapacityFailure(detail))
+      cause = "MODEL_CAPACITY_UNAVAILABLE";
     else if (isRetryableModelTransportFailure(detail))
       cause = "MODEL_CONNECTION_FAILED";
     else if (
