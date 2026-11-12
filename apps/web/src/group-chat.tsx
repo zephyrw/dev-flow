@@ -970,7 +970,16 @@ export function GroupChatPage() {
         </svg>
         <span>任务工作台</span>
       </a>
-      <h1>模型群聊</h1>
+      <h1 className="gc-title">
+        <img
+          className="gc-brand-logo"
+          src="/devflow-logo.svg"
+          alt=""
+          width={22}
+          height={22}
+        />
+        <span>模型群聊</span>
+      </h1>
       <button className="gc-mobile-nav" aria-expanded={showNavigation} onClick={() => setShowNavigation(value => !value)}>会话列表</button>
     </header>
     {!modal && errorMessage}

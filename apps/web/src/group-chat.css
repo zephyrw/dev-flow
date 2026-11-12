@@ -78,6 +78,8 @@
 }
 .gc-top .gc-back { color: var(--gc-muted); text-decoration: none; display: inline-flex; align-items: center; gap: 6px; font-weight: 500; }
 .gc-top .gc-back:hover { color: var(--gc-ink); }
+.gc-top .gc-title { display: inline-flex; align-items: center; gap: 8px; }
+.gc-top .gc-brand-logo { display: block; width: 22px; height: 22px; border-radius: 5px; flex-shrink: 0; }
 .gc-top h1 { padding-left: 14px; border-left: 1px solid var(--gc-edge); }
 .gc-shell .gc-mobile-nav { display: none; }
 

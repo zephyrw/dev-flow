@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-label="DevFlow icon">
+<defs>
+ <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#171a38"/><stop offset="1" stop-color="#0B1637"/></linearGradient>
+ <linearGradient id="flow" x1="0" y1="1" x2="1" y2="0"><stop stop-color="#9653F7"/><stop offset=".46" stop-color="#386DF9"/><stop offset="1" stop-color="#1BC6F3"/></linearGradient>
+</defs>
+<rect x="0" y="0" width="1024" height="1024" rx="220" fill="url(#bg)"/>
+<path d="M 242 235 H 522 C 738 235 847 354 847 512 C 847 670 738 789 522 789 H 229 L 319 658 H 520 C 642 658 711 604 711 512 C 711 420 642 366 520 366 H 318 Z" fill="url(#flow)"/>
+<path d="M 470 449 L 409 512 L 470 575" fill="none" stroke="#F8FBFF" stroke-width="40" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 577 449 L 638 512 L 577 575" fill="none" stroke="#F8FBFF" stroke-width="40" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M 555 435 L 496 589" fill="none" stroke="#F8FBFF" stroke-width="41" stroke-linecap="round"/>
+</svg>
