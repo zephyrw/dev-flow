@@ -56,12 +56,12 @@ test("SA-E15 popover sits above composer without backdrop and Esc only hides it"
   await expect(page.locator("[data-aside-popover]")).toBeVisible();
 });
 
-test("SA-E16 seven project asides default to latest and can step through cancelled ones", async ({
+test("SA-E16 workflow asides are isolated per task and default to latest", async ({
   page,
 }) => {
   test.setTimeout(180000);
   await setNativeFixture(page, {});
-  const first = await createNative(page, "E16 项目提问甲", "new_worktree");
+  const first = await createNative(page, "E16 任务提问甲", "new_worktree");
   await openExecutionSidebar(page);
   for (const text of ["甲1", "甲2", "甲3", "甲4"]) {
     await sendComposerText(page, `/btw ${text}`);
@@ -70,8 +70,9 @@ test("SA-E16 seven project asides default to latest and can step through cancell
     });
     await page.getByLabel("关闭提问浮窗").click();
   }
-  const second = await createNative(page, "E16 项目提问乙", "new_worktree");
+  const second = await createNative(page, "E16 任务提问乙", "new_worktree");
   await openExecutionSidebar(page);
+  await expect(page.locator(".aside-popover-entry")).toHaveCount(0);
   await setNativeFixture(page, { hold_ms: 8000 });
   await sendComposerText(page, "/btw 乙取消");
   await expect(page.getByRole("button", { name: "取消本次提问" })).toBeVisible({
@@ -86,18 +87,30 @@ test("SA-E16 seven project asides default to latest and can step through cancell
   await setNativeFixture(page, {});
   await sendComposerText(page, "/btw 乙完成");
   await expect(page.locator("[data-aside-popover]")).toContainText("乙完成");
-  await expect(page.locator(".aside-popover-count")).toContainText("1/");
   const count = page.locator(".aside-popover-count");
-  await expect.poll(async () => (await count.innerText()).trim()).toMatch(/^1\/\d+$/);
-  const total = Number((await count.innerText()).trim().split("/")[1]);
+  await expect(count).toHaveText("1/3");
   await expect(page.getByLabel("较旧一条")).toBeEnabled();
   await page.getByLabel("较旧一条").click();
-  await expect(count).toContainText("2/");
+  await expect(count).toHaveText("2/3");
+  await page.getByLabel("较旧一条").click();
+  await expect(count).toHaveText("3/3");
+  await expect(page.getByLabel("较旧一条")).toBeDisabled();
+  await expect(page.locator("[data-aside-popover]")).not.toContainText("甲4");
+
   await page.goto(`/?workflow=${first}`);
   await openExecutionSidebar(page);
+  await expect(page.locator(".aside-popover-entry")).toHaveText("临时提问 4");
   await page.locator(".aside-popover-entry").click();
-  await expect(page.locator(".aside-popover-count")).toContainText(/\/\d+/);
+  await expect(page.locator(".aside-popover-count")).toHaveText("1/4");
+  await expect(page.locator("[data-aside-popover]")).toContainText("甲4");
+  await expect(page.locator("[data-aside-popover]")).not.toContainText("乙完成");
+
+  const third = await createNative(page, "E16 空白任务丙", "new_worktree");
+  await openExecutionSidebar(page);
+  await expect(page.locator(".aside-popover-entry")).toHaveCount(0);
+  await expect(page.locator("[data-aside-popover]")).toHaveCount(0);
   expect(second).toBeTruthy();
+  expect(third).toBeTruthy();
 });
 
 test("SA-E17 new answers do not steal selection; other projects stay isolated", async ({

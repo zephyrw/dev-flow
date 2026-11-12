@@ -6,10 +6,12 @@ import {
   mkdirSync,
   openSync,
   readdirSync,
+  readFileSync,
   realpathSync,
   renameSync,
   rmSync,
   unlinkSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
@@ -74,6 +76,18 @@ interface PersistedUpload {
   sha256: string;
   head: Buffer;
   finalPath: string;
+}
+
+interface DraftMoveRecovery {
+  file_id: string;
+  draft_id: string;
+  workflow_id: string;
+}
+const DRAFT_CANCELLATION = "conversation_file_cancellation";
+const DRAFT_MOVE_RECOVERY = "conversation_file_move_recovery";
+
+export function isDraftScope(scopeId: string): boolean {
+  return typeof scopeId === "string" && (scopeId.startsWith("draft-") || scopeId.startsWith("draft_"));
 }
 
 export function conversationFilesRoot(storageRoot: string): string {
@@ -194,6 +208,7 @@ export function publicConversationFile(file: ConversationFile): ConversationFile
 }
 
 export class ConversationFileService {
+  private activeUploads = new Map<string, () => void>();
   constructor(
     private store: Store,
     private storageRoot: string,
@@ -203,11 +218,18 @@ export class ConversationFileService {
     workflowId: string,
     input: CreateConversationFileRequest,
   ): CreateConversationFileResult {
-    const workflow = this.store.must<Workflow>("workflow", Id.parse(workflowId));
+    const isDraft = isDraftScope(workflowId);
+    let projectId = "draft";
+    const targetWorkflowId = Id.parse(workflowId);
+    if (!isDraft) {
+      const workflow = this.store.must<Workflow>("workflow", targetWorkflowId);
+      projectId = workflow.project_id;
+    }
     if (typeof input.size === "number") this.assertDeclaredSize(input.size);
     const request = CreateConversationFileRequestSchema.parse(input);
+    this.assertDraftActive(targetWorkflowId, request.request_id);
     assertDisplayName(request.display_name);
-    const key = idempotencyKey(workflow.id, request.request_id);
+    const key = idempotencyKey(targetWorkflowId, request.request_id);
     const payloadHash = objectHash({
       display_name: request.display_name,
       size: request.size,
@@ -226,11 +248,11 @@ export class ConversationFileService {
           409,
         );
         return this.toCreateResult(
-          this.requireFileInWorkflow(workflow.id, prior.file_id),
+          this.requireFileInWorkflow(targetWorkflowId, prior.file_id),
         );
       }
-      const file = this.insertPending(workflow, request);
-      this.store.put("idempotency_record", key, workflow.id, {
+      const file = this.insertPendingForScope(targetWorkflowId, projectId, request);
+      this.store.put("idempotency_record", key, targetWorkflowId, {
         file_id: file.id,
         payload_hash: payloadHash,
         created_at: now(),
@@ -246,6 +268,7 @@ export class ConversationFileService {
     contentLength?: number,
   ): Promise<ConversationFile> {
     const file = this.requireFileInWorkflow(workflowId, fileId);
+    this.assertDraftActive(workflowId, file.request_id);
     if (file.status === "ready") {
       await discardSource(source);
       return publicConversationFile(file);
@@ -253,6 +276,10 @@ export class ConversationFileService {
     this.assertCanUpload(file);
     this.precheckContentLength(file, contentLength);
     const uploading = this.saveFile({ ...file, status: "uploading" });
+    this.activeUploads.set(file.id, () => {
+      const stream = source as Readable;
+      if (typeof stream.destroy === "function") stream.destroy();
+    });
     try {
       const saved = await this.persistUpload(uploading, source);
       return this.completeReady(uploading, saved);
@@ -260,6 +287,10 @@ export class ConversationFileService {
       await discardSource(source);
       this.failUpload(uploading);
       throw mapWriteError(error);
+    } finally {
+      this.activeUploads.delete(file.id);
+      const latest = this.store.get<ConversationFile>(CONVERSATION_ENTITY.file, file.id);
+      if (latest?.status === "deleted" && latest.workflow_id === workflowId) this.removeDisk(workflowId, file.id);
     }
   }
 
@@ -291,8 +322,36 @@ export class ConversationFileService {
       "已被消息引用的文件不能删除",
       409,
     );
-    this.removeDisk(file.workflow_id, file.id);
-    return this.saveFile({ ...file, status: "deleted" });
+    this.retireUnboundFile(file);
+    return this.getMetadata(workflowId, fileId);
+  }
+
+  assertDraftForRequest(draftId: string, requestId: string): void {
+    requireCondition(Id.parse(draftId) === `draft-${Id.parse(requestId)}`,
+      CONVERSATION_ERROR.FILE_SCOPE_MISMATCH, "附件草稿不属于本次创建请求", 409);
+    this.assertDraftActive(draftId);
+    this.recoverDraftMoves(draftId);
+  }
+
+  cancelDraftScope(draftId: string): { cancelled: true } {
+    this.assertDraftScope(draftId);
+    this.store.put(DRAFT_CANCELLATION, draftId, draftId, { cancelled_at: now() });
+    this.recoverDraftMoves(draftId);
+    for (const file of this.store.list<ConversationFile>(CONVERSATION_ENTITY.file, draftId)) {
+      if (!file.referenced_message_ids.length) this.retireUnboundFile(file);
+    }
+    return { cancelled: true };
+  }
+
+  cancelDraftRequest(draftId: string, requestId: string): { cancelled: true } {
+    this.assertDraftScope(draftId);
+    this.store.put(DRAFT_CANCELLATION, idempotencyKey(draftId, requestId), draftId,
+      { request_id: requestId, cancelled_at: now() });
+    this.recoverDraftMoves(draftId);
+    for (const file of this.store.list<ConversationFile>(CONVERSATION_ENTITY.file, draftId)) {
+      if (file.request_id === requestId && !file.referenced_message_ids.length) this.retireUnboundFile(file);
+    }
+    return { cancelled: true };
   }
 
   referenceMessage(
@@ -318,13 +377,33 @@ export class ConversationFileService {
   cleanupExpiredDrafts(nowMs = Date.now()): string[] {
     const cutoff = nowMs - CONVERSATION_FILE_LIMITS.draftTtlMs;
     const removed: string[] = [];
+    const recoveredDrafts = new Set<string>();
+    const blockedDrafts = new Set<string>();
     for (const file of this.store.list<ConversationFile>(CONVERSATION_ENTITY.file)) {
+      if (blockedDrafts.has(file.workflow_id)) continue;
+      if (isDraftScope(file.workflow_id) && !recoveredDrafts.has(file.workflow_id)) {
+        try { this.recoverDraftMoves(file.workflow_id); }
+        catch (error) {
+          console.error("附件恢复待重试", file.id, String(error));
+          blockedDrafts.add(file.workflow_id);
+          continue;
+        }
+        recoveredDrafts.add(file.workflow_id);
+      }
+      if (file.status === "deleted" && !file.referenced_message_ids.length) {
+        try {
+          if (existsSync(conversationFileDir(this.storageRoot, file.workflow_id, file.id))) this.retireUnboundFile(file);
+        }
+        catch (error) { console.error("附件清理待重试", file.id, String(error)); }
+        continue;
+      }
       if (!this.shouldExpire(file, cutoff)) continue;
       const latest = this.store.get<ConversationFile>(CONVERSATION_ENTITY.file, file.id);
       if (!latest || !this.shouldExpire(latest, cutoff)) continue;
-      this.removeDisk(latest.workflow_id, latest.id);
-      this.saveFile({ ...latest, status: "deleted" });
-      removed.push(latest.id);
+      try {
+        this.retireUnboundFile(latest);
+        removed.push(latest.id);
+      } catch (error) { console.error("附件清理待重试", latest.id, String(error)); }
     }
     return removed;
   }
@@ -359,14 +438,125 @@ export class ConversationFileService {
     return file;
   }
 
+  bindDraftFiles(
+    draftId: string,
+    workflow: Workflow,
+    attachmentIds: string[],
+    messageId: string,
+    requestId: string,
+  ): ConversationFile[] {
+    if (!attachmentIds.length) return [];
+    requireCondition(attachmentIds.length <= 10, "TOO_MANY_FILES", "每条消息最多 10 个附件", 422);
+    const parsedDraftId = Id.parse(draftId);
+    this.assertDraftForRequest(parsedDraftId, requestId);
+    const parsedMessageId = Id.parse(messageId);
+    const filesToBind: ConversationFile[] = [];
+    let totalBytes = 0;
+
+    for (const fileId of attachmentIds) {
+      const file = this.store.get<ConversationFile>(CONVERSATION_ENTITY.file, Id.parse(fileId));
+      requireCondition(file, CONVERSATION_ERROR.NOT_FOUND, `草稿附件不存在: ${fileId}`, 404);
+      this.assertDraftActive(parsedDraftId, file.request_id);
+      requireCondition(
+        file.workflow_id === parsedDraftId,
+        CONVERSATION_ERROR.FILE_SCOPE_MISMATCH,
+        "文件不属于当前草稿",
+        409,
+      );
+      requireCondition(
+        file.status === "ready",
+        CONVERSATION_ERROR.FILE_NOT_READY,
+        `附件尚未上传完成: ${file.display_name}`,
+        409,
+      );
+      requireCondition(file.referenced_message_ids.length === 0, "FILE_ALREADY_BOUND", "已引用附件不能重新认领", 409);
+      requireCondition(Date.now() - Date.parse(file.created_at) <= CONVERSATION_FILE_LIMITS.draftTtlMs,
+        "DRAFT_EXPIRED", "草稿已超过 24 小时有效期，请重新上传", 410);
+      requireCondition(
+        file.size <= CONVERSATION_FILE_LIMITS.maxFileBytes,
+        CONVERSATION_ERROR.FILE_TOO_LARGE,
+        "单个附件超过 20 MiB",
+        413,
+      );
+      totalBytes += file.size;
+      filesToBind.push(file);
+    }
+
+    requireCondition(
+      totalBytes <= CONVERSATION_FILE_LIMITS.maxTotalBytes,
+      CONVERSATION_ERROR.FILE_TOO_LARGE,
+      "附件总量超过 100 MiB",
+      413,
+    );
+
+    // R06: 提交前预检全部源内容存在性与目标冲突
+    for (const file of filesToBind) {
+      const newDir = conversationFileDir(this.storageRoot, workflow.id, file.id);
+      this.assertContentIntegrity(file, parsedDraftId);
+      requireCondition(
+        !existsSync(newDir),
+        "ATTACHMENT_TARGET_CONFLICT",
+        `目标附件目录已存在冲突: ${file.id}`,
+        409,
+      );
+    }
+
+    const movedDirectories: Array<{ fileId: string; oldDir: string; newDir: string }> = [];
+    this.store.onRollback(() => {
+      // 事务回滚补偿：将已迁移的目录还原回草稿源目录
+      const failures: unknown[] = [];
+      for (const { fileId, oldDir, newDir } of movedDirectories.reverse()) {
+        try {
+          requireCondition(!existsSync(oldDir), "ATTACHMENT_RECOVERY_CONFLICT", "草稿恢复位置已有内容", 409);
+          renameSync(newDir, oldDir);
+        } catch (error) {
+          try {
+            this.store.put(DRAFT_MOVE_RECOVERY, fileId, parsedDraftId, {
+              file_id: fileId, draft_id: parsedDraftId, workflow_id: workflow.id,
+            } satisfies DraftMoveRecovery);
+          } catch (recordError) { failures.push(recordError); }
+          failures.push(error);
+        }
+      }
+      if (failures.length) throw new AggregateError(failures, "附件迁移恢复未完成，已登记恢复记录，请重试原请求");
+    });
+
+    const bound: ConversationFile[] = [];
+    for (const file of filesToBind) {
+      const oldDir = conversationFileDir(this.storageRoot, parsedDraftId, file.id);
+      const newDir = conversationFileDir(this.storageRoot, workflow.id, file.id);
+      mkdirSync(dirname(newDir), { recursive: true });
+      renameSync(oldDir, newDir);
+      movedDirectories.push({ fileId: file.id, oldDir, newDir });
+
+      const updated: ConversationFile = {
+        ...file,
+        workflow_id: workflow.id,
+        project_id: workflow.project_id,
+        referenced_message_ids: [parsedMessageId],
+      };
+      this.store.put(CONVERSATION_ENTITY.file, updated.id, workflow.id, updated);
+      bound.push(publicConversationFile(updated));
+    }
+    return bound;
+  }
+
   private insertPending(
     workflow: Workflow,
     request: CreateConversationFileRequest,
   ): ConversationFile {
+    return this.insertPendingForScope(workflow.id, workflow.project_id, request);
+  }
+
+  private insertPendingForScope(
+    workflowId: string,
+    projectId: string,
+    request: CreateConversationFileRequest,
+  ): ConversationFile {
     const file = publicConversationFile({
       id: id("cfile"),
-      workflow_id: workflow.id,
-      project_id: workflow.project_id,
+      workflow_id: workflowId,
+      project_id: projectId,
       request_id: request.request_id,
       display_name: request.display_name,
       declared_mime: request.declared_mime,
@@ -375,7 +565,7 @@ export class ConversationFileService {
       created_at: now(),
       referenced_message_ids: [],
     });
-    this.store.put(CONVERSATION_ENTITY.file, file.id, workflow.id, file);
+    this.store.put(CONVERSATION_ENTITY.file, file.id, workflowId, file);
     return file;
   }
 
@@ -428,6 +618,7 @@ export class ConversationFileService {
     file: ConversationFile,
     source: ConversationFileSource,
   ): Promise<PersistedUpload> {
+    this.assertUploadActive(file);
     const dir = this.ensureFileDir(file.workflow_id, file.id);
     const partPath = join(dir, CONVERSATION_FILE_PART);
     const finalPath = join(dir, CONVERSATION_FILE_CONTENT);
@@ -436,7 +627,8 @@ export class ConversationFileService {
     const written = await writePartFile(source, partPath, {
       maxBytes: CONVERSATION_FILE_LIMITS.maxFileBytes,
       expectedBytes: file.size,
-    });
+    }, () => this.assertUploadActive(file));
+    this.assertUploadActive(file);
     this.assertStoredPath(partPath);
     renameSync(partPath, finalPath);
     this.assertStoredPath(finalPath);
@@ -447,6 +639,7 @@ export class ConversationFileService {
     file: ConversationFile,
     saved: PersistedUpload,
   ): ConversationFile {
+    this.assertUploadActive(file);
     return this.saveFile({
       ...file,
       status: "ready",
@@ -495,9 +688,84 @@ export class ConversationFileService {
   private shouldExpire(file: ConversationFile, cutoff: number): boolean {
     if (file.status === "deleted") return false;
     if ((file.referenced_message_ids ?? []).length > 0) return false;
-    if (file.status !== "pending" && file.status !== "failed" && file.status !== "ready")
+    if (file.status !== "pending" && file.status !== "failed" && file.status !== "ready" && file.status !== "uploading")
       return false;
     return Date.parse(file.created_at) <= cutoff;
+  }
+
+  private assertDraftScope(draftId: string): void {
+    requireCondition(isDraftScope(Id.parse(draftId)), CONVERSATION_ERROR.FILE_SCOPE_MISMATCH,
+      "只能取消创建前草稿", 409);
+  }
+
+  private assertDraftActive(draftId: string, requestId?: string): void {
+    if (!isDraftScope(draftId)) return;
+    requireCondition(
+      !this.store.get(DRAFT_CANCELLATION, draftId) &&
+        (!requestId || !this.store.get(DRAFT_CANCELLATION, idempotencyKey(draftId, requestId))),
+      "DRAFT_CANCELLED", "草稿或附件已取消，请重新上传", 410,
+    );
+  }
+
+  private assertUploadActive(file: ConversationFile): void {
+    this.assertDraftActive(file.workflow_id, file.request_id);
+    const latest = this.store.get<ConversationFile>(CONVERSATION_ENTITY.file, file.id);
+    requireCondition(latest?.status === "uploading" && latest.workflow_id === file.workflow_id,
+      "UPLOAD_CANCELLED", "附件上传已取消", 410);
+  }
+
+  private retireUnboundFile(file: ConversationFile): void {
+    // Re-read under the write lock to preserve a file another creation has already bound.
+    const retired = this.store.transaction(() => {
+      const latest = this.store.get<ConversationFile>(CONVERSATION_ENTITY.file, file.id);
+      if (!latest || latest.workflow_id !== file.workflow_id || latest.referenced_message_ids.length) return;
+      // Persist cancellation before touching disk, so an outstanding upload cannot resurrect the file.
+      if (isDraftScope(latest.workflow_id)) {
+        this.store.put(DRAFT_CANCELLATION, idempotencyKey(latest.workflow_id, latest.request_id), latest.workflow_id,
+          { request_id: latest.request_id, cancelled_at: now() });
+        this.store.remove("idempotency_record", idempotencyKey(latest.workflow_id, latest.request_id));
+      }
+      return this.saveFile({ ...latest, status: "deleted" });
+    });
+    if (!retired) return;
+    const abort = this.activeUploads.get(retired.id);
+    if (abort) abort();
+    else this.removeDisk(retired.workflow_id, retired.id);
+  }
+
+  private assertContentIntegrity(file: ConversationFile, scopeId: string): void {
+    const path = conversationFileContentPath(this.storageRoot, scopeId, file.id);
+    requireCondition(existsSync(path), CONVERSATION_ERROR.FILE_NOT_READY,
+      `附件实际内容缺失: ${file.display_name}`, 409);
+    this.assertStoredPath(path);
+    const stat = statSync(path);
+    requireCondition(stat.isFile() && stat.size === file.size && !!file.sha256 &&
+      createHash("sha256").update(readFileSync(path)).digest("hex") === file.sha256,
+      CONVERSATION_ERROR.FILE_NOT_READY, `附件内容与记录不一致: ${file.display_name}`, 409);
+  }
+
+  private recoverDraftMoves(draftId: string): void {
+    for (const recovery of this.store.list<DraftMoveRecovery>(DRAFT_MOVE_RECOVERY, draftId)) {
+      const file = this.store.must<ConversationFile>(CONVERSATION_ENTITY.file, recovery.file_id);
+      if (file.workflow_id === recovery.workflow_id && file.referenced_message_ids.length) {
+        this.store.remove(DRAFT_MOVE_RECOVERY, file.id);
+        continue;
+      }
+      requireCondition(file.workflow_id === draftId && file.referenced_message_ids.length === 0,
+        "ATTACHMENT_RECOVERY_CONFLICT", "附件恢复归属冲突，请保留文件并处理后重试", 409);
+      const oldDir = conversationFileDir(this.storageRoot, draftId, file.id);
+      const newDir = conversationFileDir(this.storageRoot, recovery.workflow_id, file.id);
+      if (existsSync(oldDir) && !existsSync(newDir)) {
+        this.assertContentIntegrity(file, draftId);
+      } else {
+        requireCondition(!existsSync(oldDir) && existsSync(newDir), "ATTACHMENT_RECOVERY_CONFLICT",
+          "附件恢复位置冲突，请保留文件并处理后重试", 409);
+        this.assertContentIntegrity(file, recovery.workflow_id);
+        mkdirSync(dirname(oldDir), { recursive: true });
+        renameSync(newDir, oldDir);
+      }
+      this.store.remove(DRAFT_MOVE_RECOVERY, file.id);
+    }
   }
 
   private readyAbsolutePath(file: ConversationFile): string {
@@ -622,6 +890,7 @@ async function writePartFile(
   source: ConversationFileSource,
   partPath: string,
   limits: { maxBytes: number; expectedBytes: number },
+  assertActive?: () => void,
 ): Promise<{ bytes: number; sha256: string; head: Buffer }> {
   mkdirSync(dirname(partPath), { recursive: true });
   const digest = createHash("sha256");
@@ -631,6 +900,7 @@ async function writePartFile(
   let headSize = 0;
   try {
     for await (const chunk of iterateSource(source)) {
+      assertActive?.();
       bytes += chunk.length;
       requireCondition(
         bytes <= limits.maxBytes,
@@ -651,6 +921,7 @@ async function writePartFile(
       "实际上传大小与申报不一致",
       422,
     );
+    assertActive?.();
     fsyncSync(handle);
   } finally {
     closeSync(handle);

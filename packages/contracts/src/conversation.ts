@@ -12,6 +12,8 @@ export const CONVERSATION_ENTITY = {
   message: "conversation_message",
   projectAsideIndex: "project_aside_index",
   projectAsideCursor: "project_aside_cursor",
+  workflowAsideIndex: "workflow_aside_index",
+  workflowAsideCursor: "workflow_aside_cursor",
 } as const;
 
 export const CONVERSATION_EVENT = {
@@ -483,6 +485,15 @@ export function countConversationWork(
   return counts;
 }
 
+export const AsideHistoryStatusSchema = z.enum([
+  "active",
+  "queued",
+  "waiting_account",
+  "completed",
+  "expired",
+  "cancelled",
+]);
+
 export const ProjectAsideIndexSchema = z
   .object({
     id: Id,
@@ -490,7 +501,7 @@ export const ProjectAsideIndexSchema = z
     workflow_id: Id,
     workflow_title: z.string().min(1),
     question_preview: z.string().max(500),
-    status: z.enum(["active", "queued", "completed", "expired", "cancelled"]),
+    status: AsideHistoryStatusSchema,
     created_at: z.string().min(1),
     created_project_seq: z.number().int().positive(),
     updated_project_seq: z.number().int().positive(),
@@ -506,3 +517,27 @@ export const ProjectAsideCursorSchema = z
   })
   .strict();
 export type ProjectAsideCursor = z.infer<typeof ProjectAsideCursorSchema>;
+
+export const WorkflowAsideIndexSchema = z
+  .object({
+    id: Id,
+    project_id: Id,
+    workflow_id: Id,
+    workflow_title: z.string().min(1),
+    question_preview: z.string().max(500),
+    status: AsideHistoryStatusSchema,
+    created_at: z.string().min(1),
+    created_seq: z.number().int().positive(),
+    updated_seq: z.number().int().positive(),
+  })
+  .strict();
+export type WorkflowAsideIndex = z.infer<typeof WorkflowAsideIndexSchema>;
+
+export const WorkflowAsideCursorSchema = z
+  .object({
+    workflow_id: Id,
+    seq: z.number().int().nonnegative(),
+    updated_at: z.string().min(1),
+  })
+  .strict();
+export type WorkflowAsideCursor = z.infer<typeof WorkflowAsideCursorSchema>;

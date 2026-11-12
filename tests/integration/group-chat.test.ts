@@ -4,11 +4,11 @@ import { existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:
 import { join } from "node:path";
 import { buildServer } from "../../apps/api/src/server.js";
 import { GroupChat } from "../../packages/group-chat/src/service.js";
-import { acquireGroupAgyPermit, openCodeGroupFailure, parseGroupReply } from "../../packages/group-chat/src/model-runner.js";
+import { acquireGroupAgyPermit, codeBuddyGroupFailure, openCodeGroupFailure, parseGroupReply } from "../../packages/group-chat/src/model-runner.js";
 import type { AgyUsageRequest, UsagePermit } from "../../packages/agy-accounts/src/service.js";
 import { scoreTotal, type Action } from "../../packages/group-chat/src/contracts.js";
 import { groupChatFixtureModel } from "../fixtures/group-chat-model.js";
-import { setup, testConsoleHeaders } from "../helpers.js";
+import { repository, setup, testConsoleHeaders } from "../helpers.js";
 
 const models = [
   { tool: "codex", model: "gpt-6.1-sol", nickname: "墨舟" },
@@ -221,6 +221,63 @@ describe("模型群聊", () => {
     expect(parseGroupReply("codex", '{"type":"item.completed","item":{"type":"agent_message","text":"Codex 回复"}}')).toBe("Codex 回复");
     expect(parseGroupReply("agy", '{"event":"result","result":{"status":"SUCCESS","response":"AGY 回复"}}')).toBe("AGY 回复");
     expect(parseGroupReply("opencode", '{"type":"text","part":{"text":"OpenCode 回复"}}')).toBe("OpenCode 回复");
+    expect(parseGroupReply("codebuddy-code", '{"type":"result","subtype":"success","is_error":false,"result":"CodeBuddy 回复"}')).toBe("CodeBuddy 回复");
+    expect(parseGroupReply("codebuddy-code", '{"type":"assistant","message":{"model":"hy4std","content":[{"type":"text","text":"CodeBuddy 流式文本"}]}}')).toBe("CodeBuddy 流式文本");
     expect(() => parseGroupReply("agy", '{"event":"result","result":{"status":"FAILED"}}')).toThrow();
+    expect(() => parseGroupReply("codebuddy-code", '{"type":"result","subtype":"error","is_error":true,"result":"Model not available"}')).toThrow("Model not available");
+  });
+
+  it("CodeBuddy 识别额度耗尽、限流与认证失败", () => {
+    expect(codeBuddyGroupFailure("error: quota exhausted, please recharge")).toContain("额度不足");
+    expect(codeBuddyGroupFailure("429 rate limit exceeded")).toContain("调用频率超限");
+    expect(codeBuddyGroupFailure("Authentication required, please run codebuddy login")).toContain("未登录");
+    expect(codeBuddyGroupFailure("normal compile error")).toBeUndefined();
+    expect(() => parseGroupReply("codebuddy-code", '{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["credits exhausted"]}')).toThrow("额度不足");
+  });
+
+  it("API 支持创建与修改包含 CodeBuddy 成员的群聊并正确持久化", async () => {
+    const test = setup();
+    const workspace = await repository(test.root);
+    const run = vi.fn(groupChatFixtureModel);
+    const app = await buildServer(test.engine, { groupRunModel: run });
+    resources.push(async () => { await app.close(); test.store.close(); rmSync(test.root, { recursive: true, force: true }); });
+    const headers = testConsoleHeaders(test.config);
+    const payload = {
+      title: "包含 CodeBuddy 的群",
+      model_workspace: workspace.repo,
+      human: "我",
+      members: [
+        { tool: "codebuddy-code", model: "hy4std", nickname: "伙伴" },
+        { tool: "agy", model: "gemini-flash", nickname: "远山" },
+      ],
+      admin: 0,
+    };
+    const missingWorkspace = await app.inject({ method: "POST", url: "/api/groups", headers, payload: { ...payload, model_workspace: undefined } });
+    expect(missingWorkspace.statusCode).toBe(422);
+    const created = await app.inject({ method: "POST", url: "/api/groups", headers, payload });
+    expect(created.statusCode).toBe(200);
+    const group = created.json();
+    expect(group.members[0].tool).toBe("codebuddy-code");
+    expect(group.members[0].model).toBe("hy4std");
+    expect(group.model_workspace).toBe(workspace.repo);
+    const session = (await app.inject({ method: "POST", url: `/api/groups/${group.id}/sessions`, headers,
+      payload: { title: "工作区会话", scene: "open" } })).json();
+    expect(session.model_workspace).toBe(workspace.repo);
+    await app.inject({ method: "POST", url: `/api/group-sessions/${session.id}/actions`, headers,
+      payload: { version: session.version, request: randomUUID(), input: { action: "send", text: "说明配置", targets: [group.members[0].id], mode: "reply" } } });
+    await vi.waitFor(() => expect(run).toHaveBeenCalled(), { timeout: 3000 });
+    expect(run.mock.calls[0]?.[0].modelWorkspace).toBe(workspace.repo);
+
+    // 验证 codebuddy 别名同样能规范化保存
+    const aliasPayload = {
+      ...payload,
+      title: "别名群",
+      members: [
+        { tool: "codebuddy", model: "hy4free", nickname: "小火" },
+      ],
+    };
+    const aliasCreated = await app.inject({ method: "POST", url: "/api/groups", headers, payload: aliasPayload });
+    expect(aliasCreated.statusCode).toBe(200);
+    expect(aliasCreated.json().members[0].tool).toBe("codebuddy-code");
   });
 });

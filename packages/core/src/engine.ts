@@ -27,6 +27,7 @@ import {
   AsideSessionService,
   ASIDE_TIMEOUT_MS,
 } from "../../asides/src/service.js";
+import type { AsideSession } from "../../contracts/src/feedback.js";
 import { FunctionalIssueService } from "./functional-issues.js";
 import { workflowAttention } from "./attention.js";
 import { assertSelectedSource } from "./source-change.js";
@@ -45,7 +46,10 @@ import type {
   AgyRecoveryProgress,
   AccountRecoveryContinuation,
 } from "../../contracts/src/agy-recovery.js";
-import { runtimeFailureResolution } from "../../contracts/src/runtime-failure.js";
+import {
+  isTemporaryModelCapacityFailure,
+  runtimeFailureResolution,
+} from "../../contracts/src/runtime-failure.js";
 import { pendingRunMessages, type SessionInputReceipt } from "./session-input.js";
 import {
   latestEvidence,
@@ -282,6 +286,145 @@ export class Engine {
   private clearNetworkRetryTimer(key: string) {
     clearTimeout(this.networkRetryTimers.get(key));
     this.networkRetryTimers.delete(key);
+  }
+  private classifyTransientRetry(error: unknown): {
+    kind: "capacity" | "network";
+    code: "MODEL_CAPACITY_UNAVAILABLE" | "MODEL_CONNECTION_FAILED";
+    maxAttempts: number;
+  } | undefined {
+    const normalized = normalizeRuntimeFailure(error);
+    const errorCode =
+      normalized instanceof FlowError
+        ? normalized.code
+        : error instanceof FlowError
+          ? error.code
+          : "INTERNAL_FAILURE";
+    const errorText =
+      normalized instanceof FlowError
+        ? String(normalized.message) +
+          " " +
+          JSON.stringify(normalized.details ?? {})
+        : String(error);
+    if (
+      errorCode === "MODEL_CAPACITY_UNAVAILABLE" ||
+      isTemporaryModelCapacityFailure(errorText) ||
+      isTemporaryModelCapacityFailure(String(error))
+    ) {
+      return {
+        kind: "capacity",
+        code: "MODEL_CAPACITY_UNAVAILABLE",
+        maxAttempts: 10,
+      };
+    }
+    if (
+      errorCode === "MODEL_CONNECTION_FAILED" ||
+      /bad record mac|local error:\s*tls:|streamGenerateContent.*(?:request failed|bad record mac)/i.test(
+        errorText,
+      )
+    ) {
+      return {
+        kind: "network",
+        code: "MODEL_CONNECTION_FAILED",
+        maxAttempts: 10,
+      };
+    }
+    return undefined;
+  }
+  private transientRetryDelayMs(kind: "capacity" | "network", attempt: number): number {
+    return kind === "capacity"
+      ? 5000
+      : Math.min(30000, 3000 * Math.pow(1.5, attempt - 1));
+  }
+  private stageTransientContinuation(key: string, runId: string) {
+    const w = this.get(key);
+    const run = this.store.get<Run>("run", runId);
+    const continuation = boundRunContinuation(this.store, runId);
+    if (
+      !run ||
+      run.workflow_id !== key ||
+      run.plan_revision !== w.plan_revision ||
+      run.status === "completed" ||
+      this.store.get("run_continuation_superseded", run.id) ||
+      !continuation
+    )
+      return;
+    saveRunContinuation(this.store, key, key, continuation);
+  }
+  private scheduleWorkflowTransientRetry(
+    key: string,
+    runId: string,
+    error: unknown,
+    targetState: State,
+    targetStage: string,
+  ): boolean {
+    if (this.store.get("run_stop", runId)) return false;
+    const transient = this.classifyTransientRetry(error);
+    if (!transient) return false;
+    const retryState = this.store.get<{ count: number; last_at: number }>(
+      "transient_network_retry",
+      key,
+    ) ?? { count: 0, last_at: 0 };
+    if (retryState.count >= transient.maxAttempts) return false;
+    this.stageTransientContinuation(key, runId);
+    retryState.count += 1;
+    retryState.last_at = Date.now();
+    this.store.put("transient_network_retry", key, key, retryState);
+    stageModelRunRetry(this.store, key, runId);
+    this.restoreDispatchContext(key, runId);
+    const current = this.get(key);
+    const delayMs = this.transientRetryDelayMs(transient.kind, retryState.count);
+    const message =
+      transient.kind === "capacity"
+        ? `检测到模型服务器容量暂时不足（第 ${retryState.count}/${transient.maxAttempts} 次重试），原会话与现场已保留，将在 5 秒后自动恢复执行。`
+        : `检测到偶发模型网络连接异常（第 ${retryState.count}/${transient.maxAttempts} 次重试），代码与现场已保留，正在安排自动重试。`;
+    this.store.event(
+      key,
+      current.project_id,
+      "ModelRetryScheduled",
+      {
+        attempt: retryState.count,
+        max_attempts: transient.maxAttempts,
+        code: transient.code,
+        delay_ms: delayMs,
+        retry_at: Date.now() + delayMs,
+        message,
+      },
+      runId,
+    );
+    this.store.put("queue_wait", key, key, {
+      kind: "preparing",
+      message:
+        transient.kind === "capacity"
+          ? `模型容量暂时不足，5 秒后自动恢复执行（第 ${retryState.count}/${transient.maxAttempts} 次重试）`
+          : `模型网络连接异常，正在等待自动重试（第 ${retryState.count}/${transient.maxAttempts} 次重试）`,
+      owners: [],
+    });
+    if (current.state !== targetState || current.stage !== targetStage) {
+      this.transition(key, [current.state], targetState, targetStage, {
+        feedback: current.feedback,
+        blocker: undefined,
+      });
+    }
+    const expectedRevision = current.plan_revision;
+    this.clearNetworkRetryTimer(key);
+    this.networkRetryTimers.set(
+      key,
+      setTimeout(() => {
+        this.networkRetryTimers.delete(key);
+        const latest = this.store.get<Workflow>("workflow", key);
+        if (
+          !latest ||
+          latest.state !== targetState ||
+          latest.run_id !== runId ||
+          this.store.get("run_stop", runId) ||
+          latest.plan_revision !== expectedRevision
+        )
+          return;
+        this.scheduler.enqueue(key, latest.project_id);
+        void this.dispatch();
+      }, delayMs),
+    );
+    return true;
   }
   hasActiveRuns(): boolean {
     return this.running.size > 0;
@@ -3008,6 +3151,9 @@ export class Engine {
             .aside(w, run, aside)
             .then((answer) => {
               if (this.store.get("run_stop", runId)) return;
+              const retryKey = `aside:${aside.id}`;
+              this.store.remove("transient_network_retry", retryKey);
+              this.clearNetworkRetryTimer(retryKey);
               new AsideSessionService(this.store).settleRun(w.id, aside.id, {
                 answer,
               });
@@ -3020,6 +3166,72 @@ export class Engine {
             })
             .catch((error) => {
               if (this.store.get("run_stop", runId)) return;
+              const retryKey = `aside:${aside.id}`;
+              const currentAside = this.store.get<AsideSession>("aside_session", aside.id);
+              const transient = this.classifyTransientRetry(error);
+              const retryState = this.store.get<{ count: number; last_at: number }>(
+                "transient_network_retry",
+                retryKey,
+              ) ?? { count: 0, last_at: 0 };
+              if (
+                transient &&
+                currentAside &&
+                currentAside.status === "active" &&
+                currentAside.run_id === runId &&
+                retryState.count < transient.maxAttempts
+              ) {
+                retryState.count += 1;
+                retryState.last_at = Date.now();
+                this.store.put("transient_network_retry", retryKey, w.id, retryState);
+                this.store.put("run", runId, w.id, {
+                  ...this.store.must<Run>("run", runId),
+                  status: "failed",
+                  ended_at: now(),
+                  result: { error: String(error) },
+                });
+                const delayMs = this.transientRetryDelayMs(transient.kind, retryState.count);
+                this.store.event(
+                  w.id,
+                  w.project_id,
+                  "ModelRetryScheduled",
+                  {
+                    attempt: retryState.count,
+                    max_attempts: transient.maxAttempts,
+                    code: transient.code,
+                    aside_id: aside.id,
+                    delay_ms: delayMs,
+                    retry_at: Date.now() + delayMs,
+                    message:
+                      transient.kind === "capacity"
+                        ? `临时提问模型容量暂时不足（第 ${retryState.count}/${transient.maxAttempts} 次重试），将在 5 秒后自动恢复提问。`
+                        : `临时提问网络连接异常（第 ${retryState.count}/${transient.maxAttempts} 次重试），正在安排自动重试。`,
+                  },
+                  runId,
+                );
+                this.clearNetworkRetryTimer(retryKey);
+                this.networkRetryTimers.set(
+                  retryKey,
+                  setTimeout(() => {
+                    this.networkRetryTimers.delete(retryKey);
+                    const latest = this.store.get<AsideSession>("aside_session", aside.id);
+                    if (
+                      !latest ||
+                      latest.status !== "active" ||
+                      latest.run_id !== runId ||
+                      this.store.get("run_stop", runId)
+                    )
+                      return;
+                    this.store.enqueue(w.id, "dispatch_run", {
+                      workflow_id: w.id,
+                      aside_id: aside.id,
+                      purpose: "aside",
+                    });
+                    void this.consumeOutbox();
+                  }, delayMs),
+                );
+                return;
+              }
+              this.store.remove("transient_network_retry", retryKey);
               new AsideSessionService(this.store).settleRun(w.id, aside.id, {
                 error,
               });
@@ -3151,6 +3363,8 @@ export class Engine {
     receipt: MergeConflictReceipt,
   ) {
     if (!this.ownsMergeConflict(workflowId, runId, requestId)) return;
+    this.store.remove("transient_network_retry", workflowId);
+    this.clearNetworkRetryTimer(workflowId);
     const coordinator = new GitDeliveryCoordinator(
       this.store,
       this.config.workspace_root,
@@ -3226,6 +3440,86 @@ export class Engine {
   ) {
     if (err?.code === "RUN_REVOKED" ||
         !this.ownsMergeConflict(workflowId, runId, requestId)) return;
+    const transient = this.classifyTransientRetry(err);
+    const retryState = this.store.get<{ count: number; last_at: number }>(
+      "transient_network_retry",
+      workflowId,
+    ) ?? { count: 0, last_at: 0 };
+    if (transient && retryState.count < transient.maxAttempts) {
+      retryState.count += 1;
+      retryState.last_at = Date.now();
+      this.store.put("transient_network_retry", workflowId, workflowId, retryState);
+      const oldRun = this.store.get<Run>("run", runId);
+      if (oldRun) {
+        this.store.put("run", runId, workflowId, {
+          ...oldRun,
+          status: "failed",
+          ended_at: now(),
+          result: { error: String(err) },
+        });
+      }
+      const w = this.get(workflowId);
+      const delayMs = this.transientRetryDelayMs(transient.kind, retryState.count);
+      this.store.event(
+        workflowId,
+        w.project_id,
+        "ModelRetryScheduled",
+        {
+          attempt: retryState.count,
+          max_attempts: transient.maxAttempts,
+          code: transient.code,
+          delay_ms: delayMs,
+          retry_at: Date.now() + delayMs,
+          message:
+            transient.kind === "capacity"
+              ? `合并冲突处理模型容量暂时不足（第 ${retryState.count}/${transient.maxAttempts} 次重试），将在 5 秒后自动恢复执行。`
+              : `合并冲突处理网络连接异常（第 ${retryState.count}/${transient.maxAttempts} 次重试），正在安排自动重试。`,
+        },
+        runId,
+      );
+      this.clearNetworkRetryTimer(workflowId);
+      this.networkRetryTimers.set(
+        workflowId,
+        setTimeout(() => {
+          this.networkRetryTimers.delete(workflowId);
+          if (!this.ownsMergeConflict(workflowId, runId, requestId)) return;
+          const request = this.store.get<MergeConflictRequest>("merge_conflict_request", requestId);
+          const sourceRun = this.store.get<Run>("run", runId);
+          const latestWorkflow = this.get(workflowId);
+          if (!request || !sourceRun) return;
+          const nextRunId = id("run");
+          this.store.transaction(() => {
+            this.store.put("run", nextRunId, workflowId, {
+              ...sourceRun,
+              id: nextRunId,
+              status: "running",
+              started_at: now(),
+              ended_at: undefined,
+              exit_code: undefined,
+              result: undefined,
+              deadline_at: Date.now() + this.config.timeouts.agent_minutes * 60000,
+            });
+            this.store.put("merge_conflict_request", requestId, workflowId, {
+              ...request,
+              run_id: nextRunId,
+              updated_at: now(),
+            });
+            this.store.put("workflow", workflowId, latestWorkflow.project_id, {
+              ...latestWorkflow,
+              run_id: nextRunId,
+              updated_at: now(),
+            });
+            this.store.enqueue(workflowId, "dispatch_run", {
+              purpose: "merge_conflict",
+              request_id: requestId,
+              run_id: nextRunId,
+            });
+          });
+          void this.dispatch();
+        }, delayMs),
+      );
+      return;
+    }
     const request = this.store.get<MergeConflictRequest>(
       "merge_conflict_request",
       requestId,
@@ -3418,6 +3712,7 @@ export class Engine {
         ended_at: now(),
       });
       this.closePlanningHandoff(w.id, "resolved");
+      this.store.remove("transient_network_retry", w.id);
     } catch (error) {
       this.store.put("run", runId, w.id, {
         ...this.store.must<Run>("run", runId),
@@ -3443,6 +3738,8 @@ export class Engine {
             message: "规划格式错误已返回原会话修正（最多一次）", code: error.code,
           }, runId);
           this.scheduler.enqueue(w.id, w.project_id);
+        } else if (this.scheduleWorkflowTransientRetry(w.id, runId, error, "PLANNING", "planning")) {
+          return;
         } else this.block(w.id, error);
       }
     }
@@ -3934,15 +4231,26 @@ export class Engine {
       } else if (approvalRetry === "exhausted") {
         this.routeExecutionIntent(key, runId, normalizeDeliveredRound({ status: "need_user",
           summary: "自动审批服务容量不足", notes: String(e) }));
+      } else if (ownsRun && e instanceof FlowError &&
+          (e.code.startsWith("AGY_ACCOUNT_") || e.code === "AGY_MODEL_PROBE_TIMEOUT")) {
+        this.block(key, e);
+      } else if (
+        ownsRun &&
+        this.scheduleWorkflowTransientRetry(
+          key,
+          runId,
+          e,
+          review ? "REVIEW_QUEUED" : "QUEUED",
+          this.store.get<Run>("run", runId)?.stage ?? this.get(key).stage,
+        )
+      ) {
+        // 瞬态容量/网络错误已保留现场并安排自动恢复。
       } else if (ownsRun && this.store.get<Run>("run", runId)?.purpose === "planner_commit" &&
           ["EXECUTING", "VERIFYING"].includes(this.get(key).state) && !readExecutionCompletion(this.store, runId)) {
         this.routeExecutionIntent(key, runId, normalizeDeliveredRound({ status: "need_user",
           summary: "提交模型当前无法继续，需要你的协助",
           user_interaction: { kind: "action_required", title: "恢复提交处理",
             message: redact(String(e)).slice(0, 3900), action_label: "已处理，继续提交" } }));
-      } else if (ownsRun && e instanceof FlowError &&
-          (e.code.startsWith("AGY_ACCOUNT_") || e.code === "AGY_MODEL_PROBE_TIMEOUT")) {
-        this.block(key, e);
       } else if (ownsRun && !review) {
         const normalized = normalizeRuntimeFailure(e);
         const errorCode =
@@ -3951,68 +4259,8 @@ export class Engine {
             : e instanceof FlowError
               ? e.code
               : "INTERNAL_FAILURE";
-        const errorText =
-          normalized instanceof FlowError
-            ? String(normalized.message) +
-              " " +
-              JSON.stringify(normalized.details ?? {})
-            : String(e);
-        const isTransientNetwork =
-          errorCode === "MODEL_CONNECTION_FAILED" ||
-          /bad record mac|local error:\s*tls:|streamGenerateContent.*(?:request failed|bad record mac)/i.test(
-            errorText,
-          );
-
-        const retryState = this.store.get<{ count: number; last_at: number }>(
-          "transient_network_retry",
-          key,
-        ) ?? { count: 0, last_at: 0 };
-
         if (errorCode === "MODEL_REQUEST_INVALID" && !this.store.get("run_stop", runId)) {
           this.returnInputFailureToModel(key, runId, normalized as FlowError);
-        } else if (isTransientNetwork && retryState.count < 10) {
-          this.stageExecuteContinuation(key);
-          retryState.count += 1;
-          retryState.last_at = Date.now();
-          this.store.put("transient_network_retry", key, key, retryState);
-          stageModelRunRetry(this.store, key, runId);
-          const current = this.get(key);
-          this.store.event(
-            key,
-            current.project_id,
-            "ModelRetryScheduled",
-            {
-              attempt: retryState.count,
-              max_attempts: 10,
-              code: "MODEL_CONNECTION_FAILED",
-              message: `检测到偶发模型网络连接异常（第 ${retryState.count}/10 次重试），代码与现场已保留，正在安排自动重试。`,
-            },
-            runId,
-          );
-          this.transition(
-            key,
-            [current.state],
-            "QUEUED",
-            current.stage,
-            {
-              feedback: current.feedback,
-              blocker: undefined,
-            },
-          );
-          const delayMs = Math.min(
-            30000,
-            3000 * Math.pow(1.5, retryState.count - 1),
-          );
-          this.clearNetworkRetryTimer(key);
-          this.networkRetryTimers.set(key, setTimeout(() => {
-            this.networkRetryTimers.delete(key);
-            const latest = this.get(key);
-            if (latest.state !== "QUEUED" || latest.run_id !== runId ||
-                this.store.get("run_stop", runId) || latest.plan_revision !== current.plan_revision)
-              return;
-            this.scheduler.enqueue(key, current.project_id);
-            void this.dispatch();
-          }, delayMs));
         } else {
           const repair = await repairFailure(this, key, e, runId);
           if (repair?.retry) {

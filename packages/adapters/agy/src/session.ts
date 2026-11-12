@@ -204,7 +204,7 @@ export async function observeAgy(
   }
   const historicalError =
     !reason &&
-    !["MODEL_QUOTA", "MODEL_AUTH", "MODEL_CONNECTION_FAILED"].includes(
+    !["MODEL_QUOTA", "MODEL_AUTH", "MODEL_CONNECTION_FAILED", "MODEL_CAPACITY_UNAVAILABLE"].includes(
       classifyFailure(diagnosticTail).code,
     ) &&
     currentTurn.staleError(
@@ -240,7 +240,8 @@ export async function observeAgy(
     const stderrClassification = classifyFailure(diagnosticTail);
     const combinedClassification = classifyFailure(raw);
     const classification = combinedClassification.code !== "NATIVE_PERMISSION_DENIED" &&
-      stderrClassification.code === "MODEL_CONNECTION_FAILED"
+      (stderrClassification.code === "MODEL_CONNECTION_FAILED" ||
+        stderrClassification.code === "MODEL_CAPACITY_UNAVAILABLE")
       ? stderrClassification : combinedClassification;
     const deniedActions = Array.isArray(protocol.result?.denied_actions)
       ? protocol.result.denied_actions

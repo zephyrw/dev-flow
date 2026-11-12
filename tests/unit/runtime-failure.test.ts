@@ -185,3 +185,33 @@ it("blocked timeline shows the concrete runtime cause and recovery steps", () =>
   expect(rows[0]?.text).toContain("--version");
   expect(rows[0]?.text).toContain("继续原任务");
 });
+
+const agyCapacityError =
+  'CLI 返回错误：{"error":"API error (attempt 6): UNAVAILABLE (code 503): No capacity available for model gemini-3.8-flash-high on the server"}';
+
+it.each([
+  agyCapacityError,
+  '{"error":"API error (attempt 2): UNAVAILABLE (code 503): No capacity available for model claude-sonnet-4-6 on the server"}',
+  "UNAVAILABLE (code 503): No capacity available for model gpt-5 on the server",
+  "No capacity available for model custom-planner-v2",
+  "No capacity available for the model right now",
+])("classifies temporary model capacity errors as auto-retryable: %s", (diagnostic) => {
+  expect(classifyFailure(diagnostic)).toMatchObject({
+    code: "MODEL_CAPACITY_UNAVAILABLE",
+    retry: "auto",
+  });
+  const normalized = normalizeRuntimeFailure(
+    new FlowError("NATIVE_RUN_FAILED", diagnostic, 422, { exit_code: 1, diagnostic }),
+  ) as FlowError;
+  expect(normalized.code).toBe("MODEL_CAPACITY_UNAVAILABLE");
+  expect(normalized.details).toMatchObject({ exit_code: 1, diagnostic });
+  expect(runtimeFailureResolution("", diagnostic)?.code).toBe("MODEL_CAPACITY_UNAVAILABLE");
+  expect(classifyFailure(JSON.stringify({ error: diagnostic, denied_actions: [{ display_name: "run_command" }] })))
+    .toMatchObject({ code: "NATIVE_PERMISSION_DENIED", retry: "manual" });
+});
+
+it("keeps approval service capacity distinct from model capacity unavailable", () => {
+  const approvalErr = "Automatic approval review failed: Selected model is at capacity. Please try a different model.";
+  expect(classifyFailure(approvalErr).code).not.toBe("MODEL_CAPACITY_UNAVAILABLE");
+  expect(runtimeFailureResolution("", approvalErr)?.code).not.toBe("MODEL_CAPACITY_UNAVAILABLE");
+});

@@ -964,7 +964,8 @@ export class LocalRuntime implements Runtime {
           if (
             accountBinding &&
             accountFailure &&
-            !(error instanceof FlowError && error.code === "MODEL_CONNECTION_FAILED") &&
+            !(error instanceof FlowError &&
+              ["MODEL_CONNECTION_FAILED", "MODEL_CAPACITY_UNAVAILABLE"].includes(error.code)) &&
             !this.engine.store.get("run_stop", run.id) &&
             !proc.termination_reason &&
             (!conversation || accountTurn.canAttributeFailureToCurrentTurn())

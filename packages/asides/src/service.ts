@@ -8,14 +8,17 @@ import { id, now } from "../../core/src/util.js";
 import { FeedbackService } from "../../core/src/feedback-service.js";
 import { FlowError, requireCondition } from "../../contracts/src/index.js";
 import { ProjectAsideHistory } from "./project-history.js";
+import { WorkflowAsideHistory } from "./workflow-history.js";
 
 export const ASIDE_TIMEOUT_MS = 10 * 60 * 1000;
 
 export class AsideSessionService {
   private history: ProjectAsideHistory;
+  private workflowHistory: WorkflowAsideHistory;
 
   constructor(private store: Store) {
     this.history = new ProjectAsideHistory(store);
+    this.workflowHistory = new WorkflowAsideHistory(store);
   }
 
   submitQuestion(
@@ -211,6 +214,7 @@ export class AsideSessionService {
 
   private saveSession(session: AsideSession): void {
     this.store.put("aside_session", session.id, session.workflow_id, session);
+    this.workflowHistory.recordSession(session);
     this.history.recordSession(session);
   }
 

@@ -37,12 +37,34 @@ export const conversationFilePlugin: FastifyPluginAsync<
   });
   app.addHook("onReady", async () => {
     files.failLeftoverParts();
+    cleanupDrafts();
+    cleanupTimer = setInterval(cleanupDrafts, 60_000);
+    cleanupTimer.unref();
+  });
+  let cleanupTimer: ReturnType<typeof setInterval> | undefined;
+  function cleanupDrafts() {
+    try { files.cleanupExpiredDrafts(); }
+    catch (error) { app.log.error(error, "附件过期清理失败，稍后重试"); }
+  }
+  app.addHook("onClose", async () => {
+    if (cleanupTimer) clearInterval(cleanupTimer);
   });
 
   app.post("/api/workflows/:id/conversation-files", async (req) => {
     human(req);
     const workflowId = parseWorkflowId(req);
     return files.createMetadata(workflowId, req.body as never);
+  });
+
+  app.delete("/api/workflows/:id/conversation-files", async (req) => {
+    human(req);
+    return files.cancelDraftScope(parseWorkflowId(req));
+  });
+
+  app.delete("/api/workflows/:id/conversation-files/requests/:clientRequestId", async (req) => {
+    human(req);
+    const params = z.object({ id: Id, clientRequestId: z.string().min(1) }).strict().parse(req.params);
+    return files.cancelDraftRequest(params.id, params.clientRequestId);
   });
 
   app.put(

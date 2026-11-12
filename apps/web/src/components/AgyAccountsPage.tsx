@@ -25,8 +25,25 @@ export const AgyAccountsPage: React.FC = () => {
           height: "fit-content",
         }}
       >
-        <h2 style={{ margin: "0 0 20px 0", fontSize: "20px", fontWeight: "600", color: "#0f172a" }}>
-          AGY 账号与额度管理
+        <h2
+          style={{
+            margin: "0 0 20px 0",
+            fontSize: "20px",
+            fontWeight: "600",
+            color: "#0f172a",
+            display: "flex",
+            alignItems: "center",
+            gap: "10px",
+          }}
+        >
+          <img
+            src="/devflow-logo.svg"
+            alt=""
+            width={28}
+            height={28}
+            style={{ borderRadius: "6px", flexShrink: 0 }}
+          />
+          <span>AGY 账号与额度管理</span>
         </h2>
         <AgyAccountsPanel />
       </div>

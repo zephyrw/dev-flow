@@ -1350,7 +1350,9 @@ export class ProfileRuntime {
       // Keep only a fixed failure fact; authentication text is never retained
       // in the public diagnostic tail or persisted as the failure reason.
       if (classified.code !== "EXECUTION_FAILED" &&
-          (!stderrClassification || classified.code === "MODEL_CONNECTION_FAILED")) {
+          (!stderrClassification ||
+            classified.code === "MODEL_CONNECTION_FAILED" ||
+            classified.code === "MODEL_CAPACITY_UNAVAILABLE")) {
         stderrClassification = classified;
       }
       stderrAccountConflict ||= hasConflictingAgyFailureDiagnostic(record);
@@ -1739,7 +1741,9 @@ export class ProfileRuntime {
         accountBinding &&
         accountFailure &&
         !permissionFailure &&
-        classifyFailure(failure ?? stderrTail).code !== "MODEL_CONNECTION_FAILED" &&
+        !["MODEL_CONNECTION_FAILED", "MODEL_CAPACITY_UNAVAILABLE"].includes(
+          classifyFailure(failure ?? stderrTail).code,
+        ) &&
         !this.engine.store.get("run_stop", run.id) &&
         !exit.termination_reason &&
         (accountFailure.source_event_type === "stderr" || !previous || accountTurn.canAttributeFailureToCurrentTurn()) &&
@@ -2291,6 +2295,12 @@ function attachmentIdsFromConversation(
   }
   for (const message of engine.store.list<{ attachment_ids?: string[] }>(
     CONVERSATION_ENTITY.message,
+    workflowId,
+  )) {
+    for (const fileId of message.attachment_ids ?? []) ids.add(fileId);
+  }
+  for (const message of engine.store.list<{ attachment_ids?: string[] }>(
+    "requirement_message",
     workflowId,
   )) {
     for (const fileId of message.attachment_ids ?? []) ids.add(fileId);

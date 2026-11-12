@@ -12,12 +12,25 @@ import {
   type ProjectAsideIndex,
 } from "../../contracts/src/index.js";
 import { now } from "../../core/src/util.js";
+import {
+  ASIDE_BACKFILL_BATCH,
+  clampAsidePageLimit,
+  compareAsideAsc,
+  compareAsideDesc,
+  computeAsidePosition,
+  decodeScopedCursor,
+  encodeScopedCursor,
+  invalidAsideCursor,
+  paginateScopedMembers,
+  questionPreview,
+  resolveSnapshotSeq,
+  type AsideListQuery,
+  type AsidePosition,
+} from "./history-shared.js";
 
 const INDEX_KIND = CONVERSATION_ENTITY.projectAsideIndex;
 const CURSOR_KIND = CONVERSATION_ENTITY.projectAsideCursor;
-const DEFAULT_PAGE_LIMIT = 20;
-const MAX_PAGE_LIMIT = 50;
-export const PROJECT_ASIDE_BACKFILL_BATCH = 200;
+export const PROJECT_ASIDE_BACKFILL_BATCH = ASIDE_BACKFILL_BATCH;
 
 export type AsidePageCursor = {
   project_id: string;
@@ -26,24 +39,13 @@ export type AsidePageCursor = {
   snapshot: number;
 };
 
-export type AsideListQuery = {
-  limit?: number;
-  before?: string;
-  snapshot_cursor?: number;
-};
+export type { AsideListQuery, AsidePosition };
 
 export type AsideListPage = {
   items: ProjectAsideIndex[];
   total: number;
   next_cursor: string | null;
   snapshot_cursor: number;
-};
-
-export type AsidePosition = {
-  index: number;
-  total: number;
-  prev_id?: string;
-  next_id?: string;
 };
 
 export type AsideUpdateItem = {
@@ -58,27 +60,32 @@ export type AsideUpdatePage = {
 };
 
 export function encodeAsidePageCursor(cursor: AsidePageCursor): string {
-  return Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url");
+  return encodeScopedCursor("project_id", cursor.project_id, {
+    created_at: cursor.created_at,
+    id: cursor.id,
+    snapshot: cursor.snapshot,
+  });
 }
 
 export function decodeAsidePageCursor(
   raw: string,
   expectedProjectId: string,
 ): AsidePageCursor {
-  const parsed = parseCursorPayload(raw);
-  if (parsed.project_id !== expectedProjectId) {
-    throw invalidCursor("分页游标不属于当前项目");
-  }
-  return parsed;
+  const parsed = decodeScopedCursor(
+    raw,
+    "project_id",
+    expectedProjectId,
+    "分页游标不属于当前项目",
+  );
+  return {
+    project_id: parsed.scope,
+    created_at: parsed.created_at,
+    id: parsed.id,
+    snapshot: parsed.snapshot,
+  };
 }
 
-export function clampAsidePageLimit(raw?: number): number {
-  if (raw === undefined || Number.isNaN(raw)) return DEFAULT_PAGE_LIMIT;
-  if (!Number.isInteger(raw) || raw < 1) {
-    throw invalidCursor("分页条数无效");
-  }
-  return Math.min(MAX_PAGE_LIMIT, raw);
-}
+export { clampAsidePageLimit };
 
 export class ProjectAsideHistory {
   constructor(private store: Store) {}
@@ -110,23 +117,20 @@ export class ProjectAsideHistory {
     const limit = clampAsidePageLimit(query.limit);
     const snapshot = this.resolveListSnapshot(projectId, query);
     const members = this.snapshotMembers(projectId, snapshot);
-    const remaining = this.applyBefore(members, projectId, query.before);
-    const page = remaining.slice(0, limit);
-    const last = page[page.length - 1];
-    const hasMore = remaining.length > limit && last !== undefined;
-    return {
-      items: page,
-      total: members.length,
-      next_cursor: hasMore
-        ? encodeAsidePageCursor({
-            project_id: projectId,
-            created_at: last.created_at,
-            id: last.id,
-            snapshot,
-          })
-        : null,
-      snapshot_cursor: snapshot,
-    };
+    return paginateScopedMembers({
+      members,
+      limit,
+      snapshot,
+      before: query.before,
+      decodeCursor: (raw) => decodeAsidePageCursor(raw, projectId),
+      encodeCursor: (last) =>
+        encodeAsidePageCursor({
+          project_id: projectId,
+          created_at: last.created_at,
+          id: last.id,
+          snapshot,
+        }),
+    });
   }
 
   position(
@@ -144,27 +148,13 @@ export class ProjectAsideHistory {
         404,
       );
     }
-    const members = this.snapshotMembers(projectId, snapshot);
-    const offset = members.findIndex((row) => row.id === asideId);
-    if (offset < 0) {
-      throw new FlowError(
-        CONVERSATION_ERROR.NOT_FOUND,
-        "提问不在当前历史快照中",
-        404,
-      );
-    }
-    return {
-      index: offset + 1,
-      total: members.length,
-      prev_id: members[offset - 1]?.id,
-      next_id: members[offset + 1]?.id,
-    };
+    return computeAsidePosition(this.snapshotMembers(projectId, snapshot), asideId);
   }
 
   listUpdates(projectId: string, after = 0): AsideUpdatePage {
     this.backfillProject(projectId);
     if (!Number.isInteger(after) || after < 0) {
-      throw invalidCursor("增量游标无效");
+      throw invalidAsideCursor("增量游标无效");
     }
     const snapshot = this.currentSnapshot(projectId);
     const items = this.store
@@ -192,28 +182,13 @@ export class ProjectAsideHistory {
       query.snapshot_cursor !== undefined &&
       fromCursor !== query.snapshot_cursor
     ) {
-      throw invalidCursor("分页游标与快照不一致");
+      throw invalidAsideCursor("分页游标与快照不一致");
     }
     return this.resolveSnapshot(projectId, fromCursor ?? query.snapshot_cursor);
   }
 
   private resolveSnapshot(projectId: string, requested?: number): number {
-    const current = this.currentSnapshot(projectId);
-    if (requested === undefined) return current;
-    if (!Number.isInteger(requested) || requested < 0) {
-      throw invalidCursor("快照游标无效");
-    }
-    return Math.min(requested, current);
-  }
-
-  private applyBefore(
-    members: ProjectAsideIndex[],
-    projectId: string,
-    before?: string,
-  ): ProjectAsideIndex[] {
-    if (!before) return members;
-    const cursor = decodeAsidePageCursor(before, projectId);
-    return members.filter((row) => isOlderThanCursor(row, cursor));
+    return resolveSnapshotSeq(this.currentSnapshot(projectId), requested);
   }
 
   private snapshotMembers(
@@ -315,71 +290,4 @@ export class ProjectAsideHistory {
     const parsed = ProjectAsideCursorSchema.safeParse(raw);
     return parsed.success ? parsed.data : undefined;
   }
-}
-
-function questionPreview(question: string): string {
-  return question.length <= 500 ? question : question.slice(0, 500);
-}
-
-function compareAsideDesc(
-  a: Pick<ProjectAsideIndex, "created_at" | "id">,
-  b: Pick<ProjectAsideIndex, "created_at" | "id">,
-): number {
-  if (a.created_at !== b.created_at) {
-    return a.created_at < b.created_at ? 1 : -1;
-  }
-  return a.id < b.id ? 1 : -1;
-}
-
-function compareAsideAsc(
-  a: Pick<AsideSession, "created_at" | "id">,
-  b: Pick<AsideSession, "created_at" | "id">,
-): number {
-  if (a.created_at !== b.created_at) {
-    return a.created_at < b.created_at ? -1 : 1;
-  }
-  return a.id < b.id ? -1 : 1;
-}
-
-function isOlderThanCursor(
-  item: Pick<ProjectAsideIndex, "created_at" | "id">,
-  cursor: AsidePageCursor,
-): boolean {
-  if (item.created_at !== cursor.created_at) {
-    return item.created_at < cursor.created_at;
-  }
-  return item.id < cursor.id;
-}
-
-function parseCursorPayload(raw: string): AsidePageCursor {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(Buffer.from(raw, "base64url").toString("utf8"));
-  } catch {
-    throw invalidCursor("分页游标无效");
-  }
-  if (!parsed || typeof parsed !== "object") {
-    throw invalidCursor("分页游标无效");
-  }
-  const value = parsed as Record<string, unknown>;
-  if (
-    typeof value.project_id !== "string" ||
-    typeof value.created_at !== "string" ||
-    typeof value.id !== "string" ||
-    typeof value.snapshot !== "number" ||
-    !Number.isInteger(value.snapshot) ||
-    value.snapshot < 0
-  ) {
-    throw invalidCursor("分页游标无效");
-  }
-  return {
-    project_id: value.project_id,
-    created_at: value.created_at,
-    id: value.id,
-    snapshot: value.snapshot,
-  };
-}
-
-function invalidCursor(message: string): FlowError {
-  return new FlowError(CONVERSATION_ERROR.INVALID_CURSOR, message, 400);
 }

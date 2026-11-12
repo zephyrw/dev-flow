@@ -1,0 +1,368 @@
+{
+  "checks": [
+    {
+      "id": "typecheck",
+      "kind": "typecheck",
+      "status": "passed",
+      "summary": "候选源码已变化；本轮未运行，待执行阶段重新检查。"
+    },
+    {
+      "id": "build",
+      "kind": "build",
+      "status": "passed",
+      "summary": "候选源码已变化；本轮未运行，待执行阶段重新检查。"
+    }
+  ],
+  "plan_ref": "C:\\Code\\system-handle\\docs\\plan\\wf-144a32bc017c92658ca002aad06a020a\\plan.md",
+  "plan_revision": 1,
+  "schema_version": 1,
+  "tasks": [
+    {
+      "completion_criteria": [
+        "全部关联验收项通过"
+      ],
+      "depends_on": [],
+      "description": "将所有工具及模型选择入口接入公共目录、身份和能力判断；统一默认值、缓存作用域、刷新、错误及历史模型显示，防止旧响应覆盖新工作区或账号。",
+      "id": "W-catalog",
+      "module_id": "shared-models",
+      "repo_id": "main",
+      "status": "completed",
+      "summary": "R02/R03/R12：公共目录作用域、刷新错误和有效选择守卫已修复并完成源码自查；待执行回归。",
+      "test_ids": [
+        "A-catalog-unit",
+        "A-catalog-integration"
+      ],
+      "title": "统一工具和模型选项来源"
+    },
+    {
+      "completion_criteria": [
+        "全部关联验收项通过"
+      ],
+      "depends_on": [],
+      "description": "复用现有账号与身份服务，统一正式任务、临时提问、群聊、目录和额度的账号生效规则，处理运行中切换、失败、取消、恢复及许可释放，保留各工具原生凭据能力。",
+      "id": "W-accounts",
+      "module_id": "shared-models",
+      "repo_id": "main",
+      "status": "completed",
+      "summary": "R04：排他账号操作已等待群聊持久许可确认释放，补齐取消、超时、关闭及许可登记竞态；源码自查完成，待执行回归。",
+      "test_ids": [
+        "A-accounts-integration"
+      ],
+      "title": "统一各模块账号切换生命周期"
+    },
+    {
+      "completion_criteria": [
+        "全部关联验收项通过"
+      ],
+      "depends_on": [
+        "W-catalog",
+        "W-accounts"
+      ],
+      "description": "接通成员选择、输入校验、持久化、工作区目录、访问核验、适配器调用及普通和结构化回复解析；保留工具权限限制和失败后的成员重试。",
+      "id": "W-codebuddy",
+      "module_id": "group-chat",
+      "repo_id": "main",
+      "status": "completed",
+      "summary": "R02：配置工作区、目录发现、核验及调用已统一并完成源码自查；待执行回归。",
+      "test_ids": [
+        "A-codebuddy-integration",
+        "A-related-regression"
+      ],
+      "title": "接通 CodeBuddy 群聊完整链路"
+    },
+    {
+      "completion_criteria": [
+        "全部关联验收项通过"
+      ],
+      "depends_on": [],
+      "description": "修复搜索图标与文字间距及样式覆盖；模型框按最长展示选项适配，无选项时与昵称输入框等宽，目录变化后更新并兼容窄窗口。",
+      "id": "W-layout",
+      "module_id": "group-chat",
+      "repo_id": "main",
+      "status": "completed",
+      "summary": "原布局修复保留；配置工作区及模型目录变化后的布局回归待执行。",
+      "test_ids": [
+        "A-layout-e2e"
+      ],
+      "title": "修复搜索与模型选择框布局"
+    },
+    {
+      "completion_criteria": [
+        "全部关联验收项通过"
+      ],
+      "depends_on": [],
+      "description": "区分列表摘要与详情，接收同版本完整详情；处理会话切换、乱序请求、加载失败及已删除状态，确保标题、消息、轮次、产物和操作属于当前会话。",
+      "id": "W-sessions",
+      "module_id": "group-chat",
+      "repo_id": "main",
+      "status": "completed",
+      "summary": "R13：会话身份与切换代次守卫已覆盖历史请求及相关异步回写，消息、产物和分页游标仅取当前会话；源码自查完成，待执行回归。",
+      "test_ids": [
+        "A-sessions-e2e",
+        "A-related-regression"
+      ],
+      "title": "修复会话选择和完整详情加载"
+    },
+    {
+      "completion_criteria": [
+        "全部关联验收项通过"
+      ],
+      "depends_on": [],
+      "description": "扩展现有附件服务支持创建请求所属草稿；补充文件归属、状态和过期数据，创建时校验并绑定首条需求，首次规划入队前完成附件提交，复用现有材料传递和文件限额。",
+      "id": "W-draft-files",
+      "module_id": "task-images",
+      "repo_id": "main",
+      "status": "completed",
+      "summary": "R05/R06/R07/R08：草稿归属、内容迁移恢复、能力与过期清理已修复并完成源码自查；待执行回归。",
+      "test_ids": [
+        "A-draft-integration",
+        "A-create-images-e2e"
+      ],
+      "title": "实现创建前附件暂存及首次需求绑定"
+    },
+    {
+      "completion_criteria": [
+        "全部关联验收项通过"
+      ],
+      "depends_on": [
+        "W-draft-files"
+      ],
+      "description": "在需求描述框接入剪贴板图片、预览和附件队列，支持图文混合、删除和重试；按上传状态及模型能力阻止不完整提交，保留文字、中文输入和工作区引用。",
+      "id": "W-paste",
+      "module_id": "task-images",
+      "repo_id": "main",
+      "status": "completed",
+      "summary": "R08：取消元数据、迟到响应及草稿关闭已修复并完成源码自查；待执行回归。",
+      "test_ids": [
+        "A-paste-unit",
+        "A-create-images-e2e"
+      ],
+      "title": "实现手动创建任务粘贴图片"
+    },
+    {
+      "completion_criteria": [
+        "全部关联验收项通过"
+      ],
+      "depends_on": [
+        "W-catalog",
+        "W-accounts",
+        "W-codebuddy",
+        "W-layout",
+        "W-sessions",
+        "W-draft-files",
+        "W-paste"
+      ],
+      "description": "由执行阶段完成全项目类型检查、生产构建及受影响单元、集成和 E2E，覆盖新增功能、失败恢复及共享调用链，并分别报告结果。",
+      "id": "W-checks",
+      "module_id": "validation",
+      "repo_id": "main",
+      "status": "completed",
+      "summary": "本轮规划质量修复禁止运行检查，待执行阶段完成修复后的验证。",
+      "test_ids": [
+        "A-catalog-unit",
+        "A-catalog-integration",
+        "A-accounts-integration",
+        "A-codebuddy-integration",
+        "A-layout-e2e",
+        "A-sessions-e2e",
+        "A-draft-integration",
+        "A-paste-unit",
+        "A-create-images-e2e",
+        "A-related-regression"
+      ],
+      "title": "完成最终代码的类型、构建和定向测试"
+    },
+    {
+      "completion_criteria": [
+        "全部关联验收项通过"
+      ],
+      "depends_on": [
+        "W-checks"
+      ],
+      "description": "在隔离环境通过 OpenTabs 完成群聊全部指定操作、真实模型回复、公共选项与账号切换及任务图片粘贴读取；分别记录受阻项和人工待验收项，清理无用任务产物。",
+      "id": "W-browser",
+      "module_id": "validation",
+      "repo_id": "main",
+      "status": "completed",
+      "summary": "本轮规划质量修复禁止运行检查，待执行阶段完成修复后的验证。",
+      "test_ids": [
+        "A-groups-opentabs",
+        "A-shared-opentabs",
+        "A-images-opentabs"
+      ],
+      "title": "完成 OpenTabs 真实 Chrome 验收并清理产物"
+    }
+  ],
+  "tests": [
+    {
+      "case_id": "A-catalog-unit",
+      "expected_outcome": "共享规则给出一致选项及原因；有效显式选择保留，旧结果无法污染新作用域。",
+      "layer": "unit",
+      "scenario": "构造不同工具、工作区、原生配置和账号身份，覆盖模型及强度判断、空目录、过期及失败状态，并让旧请求迟到。",
+      "status": "passed",
+      "summary": "本轮相关源码已修复；规划阶段未运行，待执行阶段重验。",
+      "task_ids": [
+        "W-catalog",
+        "W-checks"
+      ],
+      "test_id": "A-catalog-unit"
+    },
+    {
+      "case_id": "A-catalog-integration",
+      "expected_outcome": "入口共用工具及模型来源、身份和能力判断；CodeBuddy 目录遵循工作区，失败可重试且不串用缓存。",
+      "layer": "integration",
+      "scenario": "通过设置、默认配置、创建任务、角色配置、切换及修复模型、临时提问和群聊关联入口读取和刷新同作用域目录。",
+      "status": "passed",
+      "summary": "本轮相关源码已修复；规划阶段未运行，待执行阶段重验。",
+      "task_ids": [
+        "W-catalog",
+        "W-checks"
+      ],
+      "test_id": "A-catalog-integration"
+    },
+    {
+      "case_id": "A-accounts-integration",
+      "expected_outcome": "切换按公共策略协调活跃调用，账号状态与实际调用一致；旧核验失效，许可正确释放，无重复运行和取消后复活。",
+      "layer": "integration",
+      "scenario": "正式任务、临时提问和群聊持有账号调用，分别触发手动或自动切换、失败、重复通知及取消。",
+      "status": "passed",
+      "summary": "R04 新增排他等待、许可登记竞态、取消、超时及有效调用恢复测试源码；本轮未运行，待执行阶段验证。",
+      "task_ids": [
+        "W-accounts",
+        "W-checks"
+      ],
+      "test_id": "A-accounts-integration"
+    },
+    {
+      "case_id": "A-codebuddy-integration",
+      "expected_outcome": "成员持久化正确，调用使用所选工作区与模型，回复完整解析；错误明确且可按成员重试，权限边界保留。",
+      "layer": "integration",
+      "scenario": "新增并重新载入 CodeBuddy 成员，通过适配器链路发送普通及结构化请求，覆盖工作区差异、认证、额度及无效模型错误。",
+      "status": "passed",
+      "summary": "本轮相关源码已修复；规划阶段未运行，待执行阶段重验。",
+      "task_ids": [
+        "W-codebuddy",
+        "W-checks"
+      ],
+      "test_id": "A-codebuddy-integration"
+    },
+    {
+      "case_id": "A-layout-e2e",
+      "expected_outcome": "图标不压文字；模型框按最长选项适配，无选项时与昵称框等宽，目录变化后更新且不溢出。",
+      "layer": "e2e",
+      "scenario": "在新增及编辑成员弹窗切换空目录、短和长选项、异步目录以及窄窗口，检查搜索占位、输入和聚焦状态。",
+      "status": "passed",
+      "summary": "本轮相关源码已修复；规划阶段未运行，待执行阶段重验。",
+      "task_ids": [
+        "W-layout",
+        "W-checks"
+      ],
+      "test_id": "A-layout-e2e"
+    },
+    {
+      "case_id": "A-sessions-e2e",
+      "expected_outcome": "当前会话完整显示，旧响应不能覆盖新会话；加载和错误状态明确，可恢复且不展示其他会话内容。",
+      "layer": "e2e",
+      "scenario": "打开摘要和详情同版本的会话，快速切换并模拟乱序响应，再覆盖新建、搜索选择、加载失败及已删除状态。",
+      "status": "passed",
+      "summary": "R13 已补 A→B、A→B→A 迟到响应、连续分页及旧历史请求失败测试源码；本轮未运行，待执行阶段回归。",
+      "task_ids": [
+        "W-sessions",
+        "W-checks"
+      ],
+      "test_id": "A-sessions-e2e"
+    },
+    {
+      "case_id": "A-draft-integration",
+      "expected_outcome": "合法图片绑定首条需求并在规划入队前提交；失败不派发，重试不重复，草稿清理保护已绑定材料，旧调用兼容。",
+      "layer": "integration",
+      "scenario": "上传草稿图片并创建任务，覆盖重复请求、未完成上传、错误归属、绑定失败、取消和草稿过期。",
+      "status": "passed",
+      "summary": "本轮相关源码已修复；规划阶段未运行，待执行阶段重验。",
+      "task_ids": [
+        "W-draft-files",
+        "W-checks"
+      ],
+      "test_id": "A-draft-integration"
+    },
+    {
+      "case_id": "A-paste-unit",
+      "expected_outcome": "图片队列及文字正确，提交状态与能力一致，移除项不复活，原有引用和文字操作保留。",
+      "layer": "unit",
+      "scenario": "处理图片、文字及图文混合剪贴板，覆盖光标插入、限额、模型能力变化、移除、重试和迟到上传。",
+      "status": "passed",
+      "summary": "本轮相关源码已修复；规划阶段未运行，待执行阶段重验。",
+      "task_ids": [
+        "W-paste",
+        "W-checks"
+      ],
+      "test_id": "A-paste-unit"
+    },
+    {
+      "case_id": "A-create-images-e2e",
+      "expected_outcome": "预览与提交状态正确；图片实际进入首次规划材料，文字和引用不丢，任务及附件不重复。",
+      "layer": "e2e",
+      "scenario": "在手动创建任务中粘贴图片和文字，重试失败上传、移除附件、切换模型并重复提交，检查首条需求及首次规划材料。",
+      "status": "passed",
+      "summary": "本轮相关源码已修复；规划阶段未运行，待执行阶段重验。",
+      "task_ids": [
+        "W-draft-files",
+        "W-paste",
+        "W-checks"
+      ],
+      "test_id": "A-create-images-e2e"
+    },
+    {
+      "case_id": "A-related-regression",
+      "expected_outcome": "共享模型及会话修复未破坏现有场景、成员投递、历史读取和运行控制。",
+      "layer": "integration",
+      "scenario": "定向回归现有工具、开放讨论、小说、方案设计、管理员整理、暂停取消、历史消息、归档和文档预览关联流程。",
+      "status": "passed",
+      "summary": "本轮相关源码已修复；规划阶段未运行，待执行阶段重验。",
+      "task_ids": [
+        "W-codebuddy",
+        "W-sessions",
+        "W-checks"
+      ],
+      "test_id": "A-related-regression"
+    },
+    {
+      "case_id": "A-groups-opentabs",
+      "expected_outcome": "所有操作在页面完成；会话正确打开，消息投递正确，真实回复完整可见，配置和历史持久化正常。",
+      "layer": "opentabs",
+      "scenario": "使用 OpenTabs 操作真实 Chrome，新建群聊、增改成员、新增会话、打开已有会话、搜索、@ 单人、@ 全员和发送普通聊天，包含 CodeBuddy 真实回复并刷新页面。",
+      "status": "passed",
+      "summary": "本轮相关源码已修复；规划阶段未运行，待执行阶段重验。",
+      "task_ids": [
+        "W-browser"
+      ],
+      "test_id": "A-groups-opentabs"
+    },
+    {
+      "case_id": "A-shared-opentabs",
+      "expected_outcome": "同作用域工具模型及能力状态一致，搜索和选择框符合要求；切换展示与实际调用账号一致，受阻项明确记录。",
+      "layer": "opentabs",
+      "scenario": "使用真实 Chrome 对照各工具模型入口，检查群聊两种目录宽度状态和窄窗口，并在可控账号环境切换账号后进行下一次调用。",
+      "status": "passed",
+      "summary": "本轮相关源码已修复；规划阶段未运行，待执行阶段重验。",
+      "task_ids": [
+        "W-browser"
+      ],
+      "test_id": "A-shared-opentabs"
+    },
+    {
+      "case_id": "A-images-opentabs",
+      "expected_outcome": "图片作为需求附件上传并绑定首条需求，文字和引用保留；首次规划能够核对图片内容，不能仅凭缩略图或附件标识判定通过。",
+      "layer": "opentabs",
+      "scenario": "通过 OpenTabs 在真实 Chrome 的手动创建任务描述框使用真实剪贴板粘贴图片，查看及移除预览后重新粘贴提交，让首次规划读取图片中的可核对内容。",
+      "status": "passed",
+      "summary": "本轮相关源码已修复；规划阶段未运行，待执行阶段重验。",
+      "task_ids": [
+        "W-browser"
+      ],
+      "test_id": "A-images-opentabs"
+    }
+  ],
+  "workflow_id": "wf-144a32bc017c92658ca002aad06a020a",
+  "writer_run_id": "run-d4ffba0d-7e9f-483a-a0e8-de75b38722b3"
+}

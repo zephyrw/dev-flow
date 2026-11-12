@@ -5,7 +5,10 @@ import { failureSummary } from "../../presentation/src/failure.js";
 import { rejectedDeliveryFeedback } from "./delivery-feedback.js";
 import { batchExecutionInstructions } from "./execution-guidance.js";
 import { normalizeRuntimeFailure } from "../../runtime/src/errors.js";
-import { runtimeFailureResolution } from "../../contracts/src/runtime-failure.js";
+import {
+  isTemporaryModelCapacityFailure,
+  runtimeFailureResolution,
+} from "../../contracts/src/runtime-failure.js";
 import { openRepairBatch } from "./repair-model-service.js";
 import { usesQualityPolicyV2 } from "./quality-flow.js";
 
@@ -140,7 +143,30 @@ export async function repairFailure(
     diagnosedSignature = signature;
     save("diagnosing");
     try {
-      const result = await engine.runtime.diagnose(engine.get(key), message);
+      const invokeDiagnose = async () => {
+        for (let attempt = 0; ; attempt++) {
+          try {
+            return await engine.runtime!.diagnose!(engine.get(key), message);
+          } catch (diagError) {
+            const normalized = normalizeRuntimeFailure(diagError);
+            const capacityError =
+              (normalized instanceof FlowError &&
+                normalized.code === "MODEL_CAPACITY_UNAVAILABLE") ||
+              isTemporaryModelCapacityFailure(String(diagError));
+            if (!capacityError || attempt >= 2 || engine.store.get("run_stop", run))
+              throw diagError;
+            await new Promise((resolve) => setTimeout(resolve, 5000));
+            const latest = engine.get(key);
+            if (
+              engine.store.get("run_stop", run) ||
+              latest.run_id !== run ||
+              !["EXECUTING", "VERIFYING"].includes(latest.state)
+            )
+              throw diagError;
+          }
+        }
+      };
+      const result = await invokeDiagnose();
       const current = engine.get(key);
       if (
         current.run_id !== run ||

@@ -38,6 +38,7 @@ import type {
   ResolvedSelection,
 } from "../../adapters/sdk/src/interface.js";
 import { CATALOG_OUTPUT_LIMIT } from "../../contracts/src/model-catalog.js";
+import { isTemporaryModelCapacityFailure } from "../../contracts/src/runtime-failure.js";
 import { isDiscoveryEnvironmentError } from "../../adapters/sdk/src/catalog-parse.js";
 import {
   ModelCatalogService,
@@ -255,7 +256,7 @@ function classifyProbeFailure(result: LimitedCliResult): ProbeFailure {
       message: "提供方已移除该模型",
     };
   }
-  if (/429|too many requests|rate limit|econnrefused|enotfound|eai_again|etimedout|502|503|504|500 /i.test(combined)) {
+  if (isTemporaryModelCapacityFailure(combined) || /429|too many requests|rate limit|econnrefused|enotfound|eai_again|etimedout|502|503|504|500 /i.test(combined)) {
     return {
       status: "temporary_error",
       errorCode: "MODEL_PROBE_TIMEOUT",

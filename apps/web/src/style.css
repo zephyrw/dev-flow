@@ -434,16 +434,11 @@ aside .brand-main {
 }
 
 aside .mark {
-  display: inline-grid;
-  place-items: center;
+  display: block;
   width: 28px;
   height: 28px;
-  background: linear-gradient(135deg, #3b82f6, #6366f1);
-  color: #ffffff;
   border-radius: var(--radius-md);
-  font-size: 14px;
-  font-weight: 800;
-  box-shadow: 0 2px 8px rgba(59, 130, 246, 0.4);
+  flex-shrink: 0;
 }
 
 .nav,
@@ -1034,6 +1029,14 @@ header h1 {
   font-size: 36px;
   color: var(--text-light);
   margin-bottom: 10px;
+}
+
+.empty-logo {
+  display: block;
+  width: 56px;
+  height: 56px;
+  margin: 0 auto 14px auto;
+  border-radius: var(--radius-lg);
 }
 
 .empty h3 {

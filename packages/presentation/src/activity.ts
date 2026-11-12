@@ -351,9 +351,23 @@ export function readableLogs(events: any[], workflow: string, formalGuidance: Ar
       ServiceExited: "服务运行中退出",
       OperationCompleted: "授权操作已结束",
       ResourceWaiting: "等待共享资源",
-      ModelRetryScheduled: "等待模型额度恢复",
+      ModelRetryScheduled:
+        p.code === "MODEL_CAPACITY_UNAVAILABLE"
+          ? "等待模型容量恢复"
+          : p.code === "MODEL_CONNECTION_FAILED"
+            ? "等待模型网络连接恢复"
+            : p.code === "APPROVAL_SERVICE_UNAVAILABLE"
+              ? "等待审批服务恢复"
+              : "等待模型额度恢复",
       ModelInputRecoveryScheduled: "输入问题已返回执行模型",
-      ModelRetryStarted: "额度恢复后继续执行",
+      ModelRetryStarted:
+        p.code === "MODEL_CAPACITY_UNAVAILABLE"
+          ? "模型容量恢复后继续执行"
+          : p.code === "MODEL_CONNECTION_FAILED"
+            ? "网络恢复后继续执行"
+            : p.code === "APPROVAL_SERVICE_UNAVAILABLE"
+              ? "正在重试自动审批"
+              : "额度恢复后继续执行",
       ExecutionContinuationScheduled: p.mode === "clarify" ? "正在核对剩余任务和停止原因" : "正在继续剩余任务",
       ImplementationReconciled: "已有实现已核对",
     };

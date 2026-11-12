@@ -14,6 +14,16 @@ import {
   ToolProfileSchema,
   inheritRoleOverrides,
   specMode,
+  CONVERSATION_ENTITY,
+  CONVERSATION_ERROR,
+  CONVERSATION_FILE_LIMITS,
+  supportsAttachmentInput,
+  AGY_IMAGE_FILE_INPUT,
+  classifyAttachmentReadMode,
+  resolveEffectiveMime,
+  normalizeAttachmentMime,
+  type ConversationFile,
+  type FileInputCapability,
   type RoleOverrides,
   type ToolProfile,
   type Workflow,
@@ -21,6 +31,7 @@ import {
   type WorkspaceReference,
   type Project,
 } from "../../contracts/src/index.js";
+import { ConversationFileService } from "./conversation-files.js";
 import { WorkspaceReferenceSchema } from "../../contracts/src/feedback.js";
 import { ExecutionSpecSchema } from "../../contracts/src/execution-spec.js";
 import { resolveProfile } from "./run-profile.js";
@@ -61,6 +72,16 @@ export interface CreateWorkflowRequest {
   executor_profile?: ToolProfile;
   role_overrides?: RoleOverrides;
   source_defaults_revision?: number;
+  attachment_ids?: string[];
+  draft_id?: string;
+}
+
+function getAdapterFileInputCapability(adapterId: string): FileInputCapability {
+  if (adapterId === "agy") return AGY_IMAGE_FILE_INPUT;
+  if (["claude", "claude-code", "codex", "opencode"].includes(adapterId)) {
+    return { text: true, image: true, binary: false };
+  }
+  return { text: false, image: false, binary: false };
 }
 
 type AccessGate = {
@@ -228,6 +249,7 @@ export class CreateWorkflowService {
     private store: Store,
     private config?: Config,
     _access?: AccessGate,
+    private conversationFiles?: ConversationFileService,
   ) {}
   execute(input: CreateWorkflowRequest): CreateWorkflowResult {
     Id.parse(input.request_id);
@@ -249,7 +271,9 @@ export class CreateWorkflowService {
       "工作区模式无效",
       422,
     );
-    const payloadHash = objectHash({ ...input, refs, workspace_mode: mode });
+    const attachmentIds = Id.array().max(10).parse(input.attachment_ids ?? []);
+    const draftId = input.draft_id || "draft-" + input.request_id;
+    const payloadHash = objectHash({ ...input, refs, workspace_mode: mode, attachment_ids: attachmentIds });
     const key = "create:" + input.request_id;
     const prior = this.store.get<{ workflow_id: string; payload_hash: string }>(
       "idempotency_record",
@@ -275,6 +299,89 @@ export class CreateWorkflowService {
     const roleOverrides = pending?.spec.roleOverrides ?? resolved.roleOverrides;
     const sourceDefaultsRevision =
       pending?.spec.source_defaults_revision ?? resolved.sourceDefaultsRevision;
+
+    if (attachmentIds.length > 0) {
+      requireCondition(
+        attachmentIds.length <= 10,
+        "TOO_MANY_FILES",
+        "每条消息最多 10 个附件",
+        422,
+      );
+      const fileService = this.conversationFiles ?? new ConversationFileService(
+        this.store, this.config?.storage_root ?? process.cwd(),
+      );
+      fileService.assertDraftForRequest(draftId, input.request_id);
+      requireCondition(new Set(attachmentIds).size === attachmentIds.length,
+        "DUPLICATE_ATTACHMENT", "不能重复提交同一附件", 422);
+      const capPlanner = getAdapterFileInputCapability(plannerProfile.adapterId);
+      const capExecutor = executorProfile ? getAdapterFileInputCapability(executorProfile.adapterId) : undefined;
+      const nowMs = Date.now();
+
+      for (const fileId of attachmentIds) {
+        const file = this.store.get<ConversationFile>(
+          CONVERSATION_ENTITY.file,
+          Id.parse(fileId),
+        );
+        requireCondition(
+          file,
+          CONVERSATION_ERROR.NOT_FOUND,
+          `草稿附件不存在: ${fileId}`,
+          404,
+        );
+        requireCondition(
+          file.workflow_id === draftId,
+          CONVERSATION_ERROR.FILE_SCOPE_MISMATCH,
+          "文件不属于当前草稿",
+          409,
+        );
+        // R05: 排除已引用文件，防止越权认领
+        requireCondition(
+          !file.referenced_message_ids || file.referenced_message_ids.length === 0,
+          "FILE_ALREADY_BOUND",
+          "已引用的历史附件不能作为草稿重复认领",
+          409,
+        );
+        // R05: 检查 24 小时草稿有效期
+        const fileCreatedMs = new Date(file.created_at).getTime();
+        requireCondition(
+          !Number.isNaN(fileCreatedMs) && (nowMs - fileCreatedMs) <= CONVERSATION_FILE_LIMITS.draftTtlMs,
+          "DRAFT_EXPIRED",
+          "草稿已超过 24 小时有效期，请重新上传",
+          410,
+        );
+        requireCondition(
+          file.status === "ready",
+          CONVERSATION_ERROR.FILE_NOT_READY,
+          `附件尚未上传完成: ${file.display_name}`,
+          409,
+        );
+        const mime = resolveEffectiveMime(file);
+        const readMode = classifyAttachmentReadMode(mime);
+        requireCondition(
+          !normalizeAttachmentMime(file.declared_mime).startsWith("image/") ||
+            (readMode === "image" && classifyAttachmentReadMode(file.detected_mime ?? "") === "image"),
+          "ATTACHMENT_CAPABILITY_UNSUPPORTED", `此图片格式尚未接入: ${mime}`, 422,
+        );
+        requireCondition(
+          supportsAttachmentInput(readMode, capPlanner, mime) &&
+            (plannerProfile.adapterId !== "agy" || readMode !== "image" ||
+              supportsAttachmentInput("image", AGY_IMAGE_FILE_INPUT, file.detected_mime ?? "")),
+          "ATTACHMENT_CAPABILITY_UNSUPPORTED",
+          `当前规划模型不支持此附件格式: ${mime}`,
+          422,
+        );
+        if (capExecutor) {
+          requireCondition(
+            supportsAttachmentInput(readMode, capExecutor, mime) &&
+              (executorProfile.adapterId !== "agy" || readMode !== "image" ||
+                supportsAttachmentInput("image", AGY_IMAGE_FILE_INPUT, file.detected_mime ?? "")),
+            "ATTACHMENT_CAPABILITY_UNSUPPORTED",
+            `当前执行模型不支持此附件格式: ${mime}`,
+            422,
+          );
+        }
+      }
+    }
 
     const workflowId = pending?.workflow.id ?? generateWorkflowId(input.request_id);
     if (!pending) {
@@ -391,10 +498,21 @@ export class CreateWorkflowService {
         roots: Object.fromEntries(workspaces.map(ws => [ws.repo_id, ws.source_root])),
         ...(executionRoot ? { execution_root: executionRoot, project_root: root } : {}),
       });
-      this.store.put("requirement_message", id("msg"), workflowId, {
+      const reqMsgId = id("msg");
+      if (attachmentIds.length > 0) {
+        const fileService =
+          this.conversationFiles ??
+          new ConversationFileService(
+            this.store,
+            this.config?.storage_root ?? process.cwd(),
+          );
+        fileService.bindDraftFiles(draftId, workflow, attachmentIds, reqMsgId, input.request_id);
+      }
+      this.store.put("requirement_message", reqMsgId, workflowId, {
         workflow_id: workflowId,
         text: input.request_text,
         refs,
+        ...(attachmentIds.length > 0 ? { attachment_ids: attachmentIds } : {}),
         created_at: now(),
       });
       this.store.enqueue(workflowId, "dispatch_run", {

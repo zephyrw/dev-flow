@@ -2220,7 +2220,13 @@ function App() {
       <aside>
         <div className="brand">
           <div className="brand-main">
-            <span className="mark">D</span>
+            <img
+              className="mark"
+              src="/devflow-logo.svg"
+              alt=""
+              width={28}
+              height={28}
+            />
             <span className="brand-text">DevFlow</span>
           </div>
           <button
@@ -2550,7 +2556,13 @@ function App() {
               </div>
               {!flows.length ? (
                 <div className="empty">
-                  <span>◇</span>
+                  <img
+                    className="empty-logo"
+                    src="/devflow-logo.svg"
+                    alt="DevFlow"
+                    width={56}
+                    height={56}
+                  />
                   <h3>从一个明确的需求开始</h3>
                   <p>
                     在 Codex 的业务项目中说“用 DevFlow
