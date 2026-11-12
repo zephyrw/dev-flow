@@ -2240,6 +2240,12 @@ function attachmentIdsFromConversation(
     for (const fileId of message.attachment_ids ?? []) ids.add(fileId);
   }
   for (const message of engine.store.list<{ attachment_ids?: string[] }>(
+    "requirement_message",
+    workflowId,
+  )) {
+    for (const fileId of message.attachment_ids ?? []) ids.add(fileId);
+  }
+  for (const message of engine.store.list<{ attachment_ids?: string[] }>(
     "feedback_message",
     workflowId,
   )) {

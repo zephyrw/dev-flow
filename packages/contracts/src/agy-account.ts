@@ -305,6 +305,7 @@ export const AgyAccountOperationSchema = z.object({
   workflow_id: Id.optional(),
   run_id: Id.optional(),
   source_run_id: Id.optional(),
+  consumer_id: Id.optional(),
   original_operation_id: Id.optional(),
   created_at: z.string().min(1),
   completed_at: z.string().optional(),

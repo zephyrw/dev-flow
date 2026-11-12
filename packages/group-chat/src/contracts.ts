@@ -1,17 +1,23 @@
 import { z } from "zod";
+import { TOOL_DISPLAY_ORDER } from "../../contracts/src/model-catalog.js";
 
-export const tools = ["codex", "agy", "claude-code", "opencode"] as const;
+type GroupTool = "codex" | "agy" | "claude-code" | "opencode" | "codebuddy-code";
+export const tools = TOOL_DISPLAY_ORDER.map(tool => tool.adapterId) as [GroupTool, ...GroupTool[]];
+export const toolEnum = z.preprocess(
+  (val) => (val === "codebuddy" ? "codebuddy-code" : val),
+  z.enum(tools),
+);
 export const scenes = ["open", "fiction", "design"] as const;
 export const stages = ["reply", "summary", "ideas", "idea_vote", "questions", "question_vote", "outline", "plans", "reviews", "final"] as const;
 export type Stage = (typeof stages)[number];
 export const nickname = z.string().trim().min(1).max(32);
 export const key = z.string().uuid();
 export const modelInput = z.object({
-  nickname, tool: z.enum(tools), model: z.string().trim().min(1).max(200),
+  nickname, tool: toolEnum, model: z.string().trim().min(1).max(200),
   effort: z.string().trim().min(1).max(40).optional(),
 }).strict();
 export type Model = z.infer<typeof modelInput> & { id: string };
-export type Roster = { human: string; admin: string; members: Model[] };
+export type Roster = { human: string; admin: string; members: Model[]; model_workspace?: string };
 export type Group = Roster & { id: string; title: string; version: number };
 export type Session = Roster & {
   id: string; group: string; title: string; scene: (typeof scenes)[number]; version: number;

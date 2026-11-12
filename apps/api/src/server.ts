@@ -221,10 +221,21 @@ export async function buildServer(
       { realm_id: identity.realmId, account_id: identity.accountId, auth_epoch: identity.authEpoch, model_id: identity.modelId, category_permit_id: identity.categoryPermitId }, verify,
     ),
   });
+  const conversations = conversationServiceOf(engine.store);
+  const conversationFiles = new ConversationFileService(
+    engine.store,
+    engine.config.storage_root,
+  );
+  const conversationControls = new ConversationControlService(
+    engine.store,
+    conversations,
+    runtimeStopPort(engine.runtime as LocalRuntime | undefined),
+  );
   const createWorkflowService = new CreateWorkflowService(
     engine.store,
     engine.config,
     accessService,
+    conversationFiles,
   );
   const sessionStore = new ExecutionSessionStore(engine.store);
   const dispatchManager = new CliDispatchManager(engine.store);
@@ -238,21 +249,11 @@ export async function buildServer(
   const planApprovalService = new PlanApprovalService(engine, documentService);
   const visibilityService = new WorkflowVisibilityService(engine.store, engine);
   const modelServices = registerModelRoutes(app, engine, human, accessService, accountService);
-  registerGroupChat(app, engine, modelServices.catalog, human, accountService, options.groupRunModel, options.groupSkillPath);
+  registerGroupChat(app, engine, modelServices.catalog, human, accountService, options.groupRunModel, options.groupSkillPath, accessService);
   app.addHook("onClose", async () => {
     await accessService.close();
     if (!options.accountService) await accountService.close();
   });
-  const conversations = conversationServiceOf(engine.store);
-  const conversationFiles = new ConversationFileService(
-    engine.store,
-    engine.config.storage_root,
-  );
-  const conversationControls = new ConversationControlService(
-    engine.store,
-    conversations,
-    runtimeStopPort(engine.runtime as LocalRuntime | undefined),
-  );
   engine.pauseTree = async (workflowId, request) => {
     const fence = existingPauseFence(engine.store, workflowId, request.root_id, request.expected_generation);
     if (fence) return conversationControls.reconcile(workflowId, fence.control_id);
@@ -412,6 +413,8 @@ export async function buildServer(
         executor_profile: body.executor_profile,
         role_overrides: body.role_overrides,
         source_defaults_revision: body.source_defaults_revision,
+        attachment_ids: body.attachment_ids,
+        draft_id: body.draft_id,
       });
       void engine.dispatch().catch((e) => console.error("调度失败", String(e)));
       return { workflow: res.workflow, is_existing: res.is_existing };

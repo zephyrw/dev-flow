@@ -17,6 +17,7 @@ export interface RequirementComposerProps {
   submitLabel?: string;
   fetchReferences?: (query: string) => Promise<ReferenceItem[]>;
   extraActions?: React.ReactNode;
+  onPasteImages?: (files: File[]) => void;
 }
 
 export function activeReferenceQuery(
@@ -163,6 +164,7 @@ export function RequirementComposer({
   submitLabel = "提交",
   fetchReferences,
   extraActions,
+  onPasteImages,
 }: RequirementComposerProps) {
   const [text, setText] = useState(initialText);
   const [refs, setRefs] = useState<ReferenceItem[]>([]);
@@ -212,6 +214,57 @@ export function RequirementComposer({
       window.removeEventListener("scroll", position, true);
     };
   }, [showPopup]);
+
+  const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const clipboardData = e.clipboardData;
+    if (!clipboardData) return;
+    const files: File[] = [];
+    if (clipboardData.items) {
+      for (let i = 0; i < clipboardData.items.length; i++) {
+        const item = clipboardData.items[i];
+        if (item && item.kind === "file" && item.type.startsWith("image/")) {
+          const f = item.getAsFile();
+          if (f) files.push(f);
+        }
+      }
+    } else if (clipboardData.files) {
+      for (let i = 0; i < clipboardData.files.length; i++) {
+        const f = clipboardData.files[i];
+        if (f && f.type.startsWith("image/")) {
+          files.push(f);
+        }
+      }
+    }
+    if (files.length > 0 && onPasteImages) {
+      onPasteImages(files);
+      const textContent = clipboardData.getData("text");
+      if (textContent) {
+        e.preventDefault();
+        if (textareaRef.current) {
+          const start = textareaRef.current.selectionStart;
+          const end = textareaRef.current.selectionEnd;
+          const next = text.slice(0, start) + textContent + text.slice(end);
+          const nextCursor = start + textContent.length;
+          pendingCaret.current = { text: next, cursor: nextCursor };
+          setText(next);
+          // R10: 混贴插入文字后，根据最终文本和新光标位置重新计算引用弹窗状态
+          const nextPopup = nextReferencePopupState(next, nextCursor, showPopup);
+          setShowPopup(nextPopup.open);
+          if (nextPopup.open) {
+            setQuery(nextPopup.query);
+            if (nextPopup.query === "") setSelectedIndex(0);
+          }
+        }
+      } else {
+        e.preventDefault();
+        if (showPopup && textareaRef.current) {
+          const nextPopup = nextReferencePopupState(text, textareaRef.current.selectionStart, showPopup);
+          setShowPopup(nextPopup.open);
+          if (nextPopup.open) setQuery(nextPopup.query);
+        }
+      }
+    }
+  };
 
   const handleTextChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     pendingCaret.current = null;
@@ -382,6 +435,7 @@ export function RequirementComposer({
           ref={textareaRef}
           value={text}
           onChange={handleTextChange}
+          onPaste={handlePaste}
           onKeyDown={handleKeyDown}
           onCompositionStart={() => setIsComposing(true)}
           onCompositionEnd={() => setIsComposing(false)}

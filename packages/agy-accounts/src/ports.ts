@@ -168,6 +168,7 @@ export interface AccountCommittedEvent {
 }
 
 export interface AccountConsumerPort {
+  isWaitCurrent?(ref: { original_operation_id: string; source_run_id?: string }): boolean;
   allowsAutoSwitch?(): Promise<boolean>;
   onQuotaExhausted?(trigger: AgyQuotaTrigger): Promise<void>;
   listOccupancy(): Promise<ConsumerOccupancy[]>;

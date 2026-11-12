@@ -15,7 +15,12 @@ import {
   supportsAttachmentInput,
   AGY_IMAGE_FORMAT_UNSUPPORTED,
   AGY_IMAGE_FILE_INPUT,
+  resolveEffectiveMime,
+  classifyAttachmentReadMode,
 } from "../../contracts/src/index.js";
+export {
+  normalizeAttachmentMime, isOfficeMime, isPdfMime, resolveEffectiveMime, classifyAttachmentReadMode,
+} from "../../contracts/src/attachment-capabilities.js";
 import {
   CONVERSATION_FILE_CONTENT,
   assertConversationAttachmentSet,
@@ -72,63 +77,6 @@ export interface ResolveConversationInputsParams {
   workflowId: string;
   profile: ToolProfile;
   fileInput: FileInputCapability;
-}
-
-const INLINE_IMAGE_MIMES = new Set([
-  "image/png",
-  "image/jpeg",
-  "image/jpg",
-  "image/webp",
-  "image/gif",
-]);
-
-const TEXT_MIMES = new Set([
-  "application/json",
-  "application/javascript",
-  "application/xml",
-  "application/yaml",
-  "application/x-yaml",
-  "application/toml",
-  "application/sql",
-  "application/graphql",
-  "application/xhtml+xml",
-  "image/svg+xml",
-  "application/x-sh",
-  "application/x-httpd-php",
-]);
-
-export function normalizeAttachmentMime(mime: string | undefined): string {
-  return (mime ?? "").split(";")[0]!.trim().toLowerCase();
-}
-
-export function isOfficeMime(mime: string): boolean {
-  const value = normalizeAttachmentMime(mime);
-  return (
-    value === "application/msword" ||
-    value === "application/rtf" ||
-    value.startsWith("application/vnd.ms-") ||
-    value.startsWith("application/vnd.openxmlformats-officedocument.") ||
-    value.startsWith("application/vnd.oasis.opendocument.")
-  );
-}
-
-export function isPdfMime(mime: string): boolean {
-  return normalizeAttachmentMime(mime) === "application/pdf";
-}
-
-export function resolveEffectiveMime(file: ConversationFile): string {
-  const detected = normalizeAttachmentMime(file.detected_mime);
-  const declared = normalizeAttachmentMime(file.declared_mime);
-  if (detected === "application/zip" && isOfficeMime(declared)) return declared;
-  if (detected && detected !== "application/octet-stream") return detected;
-  return declared || detected || "application/octet-stream";
-}
-
-export function classifyAttachmentReadMode(mime: string): AttachmentReadMode {
-  const value = normalizeAttachmentMime(mime);
-  if (INLINE_IMAGE_MIMES.has(value)) return "image";
-  if (isTextMime(value)) return "text";
-  return "binary";
 }
 
 export function attachmentDeliveryStrategy(
@@ -462,8 +410,3 @@ function fail(
   return { ok: false, code, message, file_id: fileId };
 }
 
-function isTextMime(mime: string): boolean {
-  if (mime.startsWith("text/")) return true;
-  if (TEXT_MIMES.has(mime)) return true;
-  return mime.endsWith("+json") || mime.endsWith("+xml");
-}

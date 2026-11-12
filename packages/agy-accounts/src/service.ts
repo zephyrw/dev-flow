@@ -155,6 +155,7 @@ export interface AccountOperationRequest {
 
 export interface WorkflowAccountOperationRequest
   extends AccountOperationRequest {
+  consumer_id?: string;
   kind: "switch";
   trigger: "workflow_quota" | "workflow_auth";
   source_event_key: string;
@@ -167,6 +168,7 @@ export interface WorkflowAccountOperationRequest
 
 export interface WorkflowWaitReference {
   original_operation_id: string;
+  consumer_id?: string;
   workflow_id?: string;
   source_run_id?: string;
 }
@@ -2096,6 +2098,7 @@ export class AgyAccountService {
     const original = this.repository.getOperation(originalId);
     return {
       original_operation_id: originalId,
+      consumer_id: saved?.consumer_id ?? original?.consumer_id,
       workflow_id: saved?.workflow_id ?? original?.workflow_id,
       source_run_id: saved?.source_run_id ?? original?.source_run_id,
     };
@@ -2119,6 +2122,13 @@ export class AgyAccountService {
     if (original.cancel_requested || ["completed", "failed", "cancelled"].includes(original.phase))
       return "original_operation_cancelled_or_finished";
     if (original.control_generation !== generation) return "control_generation_stale";
+    const consumerId = ref.consumer_id ?? original.consumer_id;
+    if (consumerId) {
+      const consumer = this.consumers.find(item => this.consumerIds.get(item) === consumerId);
+      // A missing consumer after restart must not authorize an orphaned switch.
+      if (!consumer?.isWaitCurrent?.(ref)) return "consumer_source_invalid";
+      return undefined;
+    }
     if (ref.workflow_id || ref.source_run_id) {
       // Wait until its consumer is attached after startup; absence is not permission to switch.
       if (!this.workflowWaitValidator) return "workflow_validator_unavailable";
@@ -2399,6 +2409,7 @@ export class AgyAccountService {
           allowed_account_ids: trusted?.allowed_account_ids ?? null,
           night_pool: trusted?.night_pool ?? "normal",
           source_event_key: trusted?.source_event_key,
+          consumer_id: trusted?.consumer_id,
           workflow_id: input.workflow_id ?? (trusted as any)?.workflow_id,
           source_run_id: input.source_run_id ?? (trusted as any)?.source_run_id,
           original_operation_id: input.original_operation_id ?? (trusted as any)?.original_operation_id,
@@ -2736,6 +2747,10 @@ export class AgyAccountService {
 
   private assertOperation(op: AgyAccountOperation, signal?: AbortSignal): void {
     const realm = this.repository.getRealm(op.realm_id)!;
+    if (op.consumer_id && this.waitInvalidReason(op.realm_id, op.control_generation, {
+      original_operation_id: op.original_operation_id ?? op.operation_id,
+      consumer_id: op.consumer_id, source_run_id: op.source_run_id,
+    })) throw new AccountServiceError("operation_cancelled");
     const isManualOneShot =
       op.kind === "enroll" ||
       op.kind === "delete" ||
@@ -2805,6 +2820,16 @@ export class AgyAccountService {
       initialRealm?.pending_operation_id !== op.operation_id
     ) {
       return;
+    }
+    if (op.consumer_id && !op.cancel_requested) {
+      const reason = this.waitInvalidReason(op.realm_id, op.control_generation, {
+        original_operation_id: op.original_operation_id ?? op.operation_id,
+        consumer_id: op.consumer_id, source_run_id: op.source_run_id,
+      });
+      if (reason) {
+        op.cancel_requested = true;
+        this.repository.saveOperation(op);
+      }
     }
     this.activeAbort = new AbortController();
     const signal = this.activeAbort.signal;
@@ -3074,6 +3099,7 @@ export class AgyAccountService {
       consumer_id: op.workflow_id ?? op.operation_id,
       opaque_recovery_ref: {
         original_operation_id: origOpId,
+        consumer_id: op.consumer_id,
         workflow_id: op.workflow_id,
         source_run_id: op.source_run_id,
       },

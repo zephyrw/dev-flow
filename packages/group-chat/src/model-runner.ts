@@ -6,44 +6,55 @@ import { createDefaultAdapterRegistry } from "../../adapters/sdk/src/index.js";
 import { resolveAdapterExecutable } from "../../adapters/sdk/src/registry.js";
 import { nativeLaunch } from "../../adapters/sdk/src/launch.js";
 import { selectionCapabilityFromCatalog } from "../../adapters/sdk/src/frozen-invocation.js";
-import { hasAgyPrintTimeout } from "../../adapters/agy/src/failure-fact.js";
+import { confirmAgyQuotaFailure, extractAgyFailureFact, hasAgyPrintTimeout } from "../../adapters/agy/src/failure-fact.js";
+import { classifyCodeBuddyQuotaFailure } from "../../adapters/codebuddy/src/provider-failure.js";
 import type { ModelCatalog } from "../../contracts/src/model-catalog.js";
 import { ProcessManager } from "../../process/src/manager.js";
 import { modelReplyText } from "../../presentation/src/model-reply.js";
 import { observeProcessRecord } from "../../process/src/process-protocol.js";
 import type { AgyAccountService, AgyUsageRequest, UsagePermit } from "../../agy-accounts/src/service.js";
+import { GroupAccountConsumer, GroupAccountFailure, type GroupAccountCall } from "./account-consumer.js";
 import type { Model } from "./contracts.js";
 
 export type RunModel = (input: {
   session: string; member: Model; cwd: string; scratch: string; prompt: string; execute: boolean; structured?: boolean;
-  signal: AbortSignal;
+  signal: AbortSignal; modelWorkspace?: string;
 }) => Promise<string>;
 
 const isAgyProbeTimeout = (error: unknown) =>
   error instanceof Error && ("code" in error ? error.code : error.message) === "agy_model_probe_timeout";
+class GroupCatalogChanged extends Error {}
 
 export async function acquireGroupAgyPermit(
-  accounts: Pick<AgyAccountService, "acquireUsagePermit">, request: AgyUsageRequest, signal: AbortSignal,
+  accounts: Pick<AgyAccountService, "acquireUsagePermit">,
+  request: AgyUsageRequest,
+  signal: AbortSignal,
 ) {
   signal.throwIfAborted();
   try {
     return await accounts.acquireUsagePermit(request);
   } catch (error) {
-    if (!isAgyProbeTimeout(error)) throw error;
-  }
-  // The failed check has already stopped. Ask the account service to validate
-  // the current account again before starting the real reply.
-  signal.throwIfAborted();
-  try {
-    return await accounts.acquireUsagePermit(request);
-  } catch (error) {
-    if (isAgyProbeTimeout(error)) throw new Error("AGY 模型访问核验连续超时，回复尚未开始，可重试本成员", { cause: error });
+    if (isAgyProbeTimeout(error)) {
+      signal.throwIfAborted();
+      try {
+        return await accounts.acquireUsagePermit(request);
+      } catch (err2) {
+        if (isAgyProbeTimeout(err2)) throw new Error("AGY 模型访问核验连续超时，回复尚未开始，可重试本成员", { cause: err2 });
+        throw err2;
+      }
+    }
     throw error;
   }
 }
 
-export function createGroupModelRunner(getCatalog: (tool: string) => ModelCatalog, customCodex?: string, customAgy?: string, accountService?: AgyAccountService) {
+export function createGroupModelRunner(
+  getCatalog: (tool: string, cwd?: string) => ModelCatalog | Promise<ModelCatalog>,
+  customCodex?: string, customAgy?: string, accountService?: AgyAccountService,
+  verifyModel?: (member: Model, cwd: string, catalog: ModelCatalog, signal: AbortSignal) => Promise<void>,
+) {
   const records = new Map<string, { path: string; permit?: UsagePermit }>();
+  const accounts = accountService ? new GroupAccountConsumer(accountService) : undefined;
+
   const manager = new ProcessManager((spec, event) => {
     const record = records.get(spec.id);
     if (!record) return;
@@ -52,13 +63,17 @@ export function createGroupModelRunner(getCatalog: (tool: string) => ModelCatalo
       accountService?.attachUsageProcess(record.permit.permit_id, Number(event.pid));
   });
   const adapters = createDefaultAdapterRegistry();
-  const run: RunModel = async ({ session, member, cwd, scratch, prompt, execute, structured, signal }) => {
-    const catalog = getCatalog(member.tool);
+  const runAttempt = async ({ session, member, cwd, scratch, prompt, execute, structured, signal, modelWorkspace }: Parameters<RunModel>[0], accountCall?: GroupAccountCall) => {
+    const tool = (member.tool as string) === "codebuddy" ? "codebuddy-code" : member.tool;
+    if (tool === "codebuddy-code" && !modelWorkspace) throw new Error("CodeBuddy 需要配置模型工作区，请编辑群配置后同步会话成员");
+    const nativeCwd = tool === "codebuddy-code" ? modelWorkspace! : cwd;
+    const catalog = await getCatalog(tool, nativeCwd);
     const entry = catalog.entries.find(item => item.nativeId === member.model && !item.hidden);
     if (!entry || entry.selectionKind !== "fixed" || entry.availability === "unavailable")
       throw new Error("所选模型不在当前可用目录，请刷新工具模型目录");
-    if (execute && member.tool !== "codex") throw new Error("当前工具未启用隔离执行，可改为仅回答");
-    const executable = resolveAdapterExecutable(member.tool, member.tool === "codex" ? customCodex : member.tool === "agy" ? customAgy : undefined);
+    if (execute && tool !== "codex") throw new Error("当前工具未启用隔离执行，可改为仅回答");
+    signal.throwIfAborted();
+    const executable = resolveAdapterExecutable(tool, tool === "codex" ? customCodex : tool === "agy" ? customAgy : undefined);
     if (!executable) throw new Error("未找到模型工具");
     const runId = randomUUID();
     await assertCallsExited(scratch);
@@ -69,24 +84,30 @@ export function createGroupModelRunner(getCatalog: (tool: string) => ModelCatalo
     let confirmed = true;
     let successful = false;
     try {
-      const invocation = adapters.mustGet(member.tool).buildInvocation({
+      if (tool === "codebuddy-code") await verifyModel?.(member, nativeCwd, catalog, signal);
+      signal.throwIfAborted();
+      const invocation = adapters.mustGet(tool).buildInvocation({
         workflowId: session, runId, stage: "group_chat", epoch: 0,
         purpose: execute ? "implement" : "aside",
-        workspaceRoots: { group: cwd }, allowedPaths: [cwd],
+        workspaceRoots: { group: nativeCwd }, allowedPaths: [nativeCwd],
         toolProfile: {
-          id: member.id, revision: 1, adapterId: member.tool, modelSelection: "explicit",
+          id: member.id, revision: 1, adapterId: tool, modelSelection: "explicit",
           selectionKind: "fixed", modelId: member.model, options: {},
           reasoning: member.effort ? { mode: "explicit", value: member.effort } : undefined,
         },
         catalogEntry: entry, selectionCapability: selectionCapabilityFromCatalog(catalog, entry),
         promptKind: "user", prompt, timeoutMs: 300_000,
-        ...(member.tool === "codex" ? { outputPath } : {}),
+        ...(tool === "codex" ? { outputPath } : {}),
       }, executable);
-      const launch = nativeLaunch(invocation.executable, member.tool);
+      const launch = nativeLaunch(invocation.executable, tool);
       delete invocation.env.DEVFLOW_WORKFLOW_ID;
       delete invocation.env.DEVFLOW_STAGE;
+      if (tool === "codebuddy-code") {
+        delete invocation.env.DEVFLOW_WORKFLOW_ID;
+        delete invocation.env.DEVFLOW_STAGE;
+      }
       // Keep OpenCode's native providers and credentials. Group calls never grant tools.
-      if (member.tool === "opencode") {
+      if (tool === "opencode") {
         const agent = invocation.args.indexOf("--agent");
         delete invocation.env.OPENCODE_CONFIG_CONTENT;
         invocation.env.OPENCODE_PERMISSION = JSON.stringify({ "*": "deny" });
@@ -105,15 +126,16 @@ export function createGroupModelRunner(getCatalog: (tool: string) => ModelCatalo
         const logLevel = catalog.invocationCapability?.opencodeVariantEncoding === "hash" ? "error" : "ERROR";
         invocation.args.splice(1, 0, "--print-logs", "--log-level", logLevel, "--title", "DevFlow 群聊");
       }
-      if (member.tool === "agy") {
+      if (tool === "agy") {
         invocation.args.splice(0, 0, "--disable-slash-commands", "--sandbox");
         if (accountService?.isManaged()) {
           const model = (member.effort ? entry.effort.variants?.[member.effort] : undefined) ?? member.model;
-          permit = await acquireGroupAgyPermit(accountService, {
-            realm_id: "default-agy-realm", consumer_id: runId, usage_kind: "execution",
-            required_pool_ids: [], required_model_ids: [model], model_id: model,
-          }, signal);
+          accountCall!.model = model;
+          permit = await accounts!.acquire(accountCall!, (request, abort) => acquireGroupAgyPermit(accountService, request, abort));
           signal.throwIfAborted();
+          // Admission may have waited for another account. Rebuild model/effort
+          // selection from that account's catalog before starting any process.
+          if ((await getCatalog(tool, nativeCwd)).scopeHash !== catalog.scopeHash) throw new GroupCatalogChanged();
           accountService.markUsageStarted(permit.permit_id);
         }
       }
@@ -132,11 +154,12 @@ export function createGroupModelRunner(getCatalog: (tool: string) => ModelCatalo
       let stderrTail = "";
       let providerError: string | undefined;
       let agyPrintTimedOut = false;
-      if (member.tool === "opencode" || member.tool === "agy") {
+      if (tool === "opencode" || tool === "agy" || tool === "codebuddy-code") {
         task.on("stderr", (chunk: Buffer) => {
           if (providerError || agyPrintTimedOut) return;
           stderrTail = (stderrTail + chunk.toString("utf8")).slice(-8192);
-          if (member.tool === "opencode") providerError = openCodeGroupFailure(stderrTail);
+          if (tool === "opencode") providerError = openCodeGroupFailure(stderrTail);
+          else if (tool === "codebuddy-code") providerError = codeBuddyGroupFailure(stderrTail);
           else agyPrintTimedOut = hasAgyPrintTimeout(stderrTail);
         });
       }
@@ -150,6 +173,20 @@ export function createGroupModelRunner(getCatalog: (tool: string) => ModelCatalo
         signal.throwIfAborted();
         if (failure) throw new Error("模型输出超过运行限制");
         if (agyPrintTimedOut) throw new Error("AGY 模型回复超时，可重试本成员");
+        if (tool === "agy" && permit && !result.termination_reason) {
+          let offset = 0;
+          for (const line of stdout.split("\n")) {
+            let event: Record<string, unknown>;
+            try { event = JSON.parse(line); } catch { offset += line.length + 1; continue; }
+            if (!event || typeof event !== "object") continue;
+            const fact = confirmAgyQuotaFailure(extractAgyFailureFact({
+              realmId: permit.realm_id, accountId: permit.account_id, authEpoch: permit.auth_epoch,
+              runId, event: { ...event, type: event.type ?? event.event }, eventOffset: offset, currentTurn: true,
+            }), { exitCode: result.code, currentTurn: true, stderr: stderrTail, terminationReason: result.termination_reason });
+            if (fact.can_switch_account) throw new GroupAccountFailure(fact);
+            offset += line.length + 1;
+          }
+        }
         if (result.code !== 0 || result.termination_reason)
           throw new Error(providerError ?? (result.termination_reason === "timeout" ? "模型回复超时，可重试本成员"
             : result.code === -1 ? "模型工具未能启动，请检查本机 CLI 安装和可执行路径"
@@ -161,7 +198,7 @@ export function createGroupModelRunner(getCatalog: (tool: string) => ModelCatalo
           } catch {}
         }
         try {
-          const reply = parseGroupReply(member.tool, stdout + decoder.end(), structured);
+          const reply = parseGroupReply(tool, stdout + decoder.end(), structured);
           successful = true;
           return reply;
         } catch (error) {
@@ -183,7 +220,27 @@ export function createGroupModelRunner(getCatalog: (tool: string) => ModelCatalo
       }
     }
   };
-  return { run, close: () => manager.close() };
+  const run: RunModel = async input => {
+    const call = input.member.tool === "agy" ? accounts?.track(input.member.model, input.signal) : undefined;
+    try {
+      for (;;) {
+        try { return await runAttempt(input, call); }
+        catch (error) {
+          if (error instanceof GroupCatalogChanged) continue;
+          if (!(error instanceof GroupAccountFailure) || !call || !accounts) throw error;
+          await accounts.recover(call, error.fact);
+        }
+      }
+    } finally { if (call) accounts!.finish(call); }
+  };
+  return {
+    run,
+    close: async () => {
+      accounts?.close();
+      await manager.close();
+      if (!records.size) accounts?.dispose();
+    },
+  };
 }
 
 export function openCodeGroupFailure(stderr: string): string | undefined {
@@ -194,7 +251,17 @@ export function openCodeGroupFailure(stderr: string): string | undefined {
   return undefined;
 }
 
-export function parseGroupReply(tool: Model["tool"], stdout: string, structured = false): string {
+export function codeBuddyGroupFailure(stderr: string): string | undefined {
+  if (/no available credits|(?:insufficient|exhausted) credits|credits? (?:exhausted|depleted)|quota exhausted|额度已用尽|积分(?:不足|耗尽|已用尽)/i.test(stderr))
+    return "CodeBuddy 额度不足，未返回回复";
+  if (/\brate[ _-]limit(?:ed)?\b|too many requests|(?:请求|调用)(?:频率|速率)(?:超限|受限)|限流/i.test(stderr))
+    return "CodeBuddy 调用频率超限，请稍后重试";
+  if (/\b(?:auth(?:entication)? required|not logged in|unauthorized|登录已过期|未登录)\b/i.test(stderr))
+    return "CodeBuddy 认证未通过或未登录，请先登录后重试";
+  return undefined;
+}
+
+export function parseGroupReply(tool: Model["tool"] | string, stdout: string, structured = false): string {
   // The workflow prose extractor projects summary/notes; group JSON requires every field.
   const reply = (value: unknown) => (structured && typeof value === "string" ? value : modelReplyText(value)) ?? "";
   let answer = "";
@@ -218,6 +285,17 @@ export function parseGroupReply(tool: Model["tool"], stdout: string, structured 
     } else if (tool === "claude-code" && row.type === "result") {
       if (row.is_error) throw new Error("Claude Code 未能完成本次请求");
       answer = reply(row.result);
+    } else if ((tool === "codebuddy-code" || tool === "codebuddy") && (row.type === "result" || row.type === "assistant")) {
+      const quotaFailure = classifyCodeBuddyQuotaFailure(row, false);
+      if (quotaFailure === "MODEL_CREDITS_EXHAUSTED") throw new Error("CodeBuddy 额度不足，未返回回复");
+      if (quotaFailure === "MODEL_RATE_LIMIT") throw new Error("CodeBuddy 调用频率超限，请稍后重试");
+      if (row.type === "result") {
+        if (row.is_error) throw new Error(row.result || (row.errors && row.errors.join("\n")) || "CodeBuddy 未能完成本次请求");
+        if (row.result) answer = reply(row.result);
+      } else if (row.type === "assistant") {
+        const textParts = row.message?.content?.filter((c: any) => c.type === "text" && typeof c.text === "string").map((c: any) => c.text);
+        if (textParts?.length) answer = textParts.join("\n");
+      }
     }
   }
   if (!answer.trim()) throw new Error("工具没有返回可用的模型回复");

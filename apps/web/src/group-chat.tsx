@@ -2,15 +2,15 @@ import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "rea
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { scoreTotal, tools, type Action, type Artifact, type Group, type Message, type Model, type Round, type Session } from "../../../packages/group-chat/src/contracts.js";
-import { buildModelChoices, formatModelName, type ModelChoice } from "../../../packages/presentation/src/model-display.js";
-import { formatApiError, getAdapterModels, modelCatalogNeedsRefresh, refreshAdapterModels } from "./components/model-api.js";
+import { formatModelName, type ModelChoice } from "../../../packages/presentation/src/model-display.js";
+import { formatApiError, toolLabel } from "./components/model-api.js";
+import { fetchToolModelsWithSWR } from "./components/group-model-catalog.js";
 import "./group-chat.css";
 
 type View = { session: Session; round?: Round; messages: (Message & { seq: number })[]; artifacts: Artifact[]; next?: number };
 type Page = { items: Session[]; next?: string };
 type Document = Artifact & { body: string };
 
-const toolNames = { codex: "Codex", agy: "Antigravity CLI", "claude-code": "Claude Code", opencode: "OpenCode" };
 const defaultMembers: Omit<Model, "id">[] = [
   { nickname: "", tool: "codex", model: "gpt-6-astra", effort: "max" },
   { nickname: "", tool: "codex", model: "gpt-6.1-sol", effort: "high" },
@@ -100,66 +100,6 @@ export function GroupAvatar({ members = [], title = "" }: { members?: Pick<Model
   );
 }
 
-// ============================================================================
-// 全局模型目录缓存与 SWR (Stale-While-Revalidate)
-// ============================================================================
-
-const CACHE_STORAGE_KEY = "devflow_cached_models_v2";
-
-function readLocalModelCache(): Partial<Record<Model["tool"], ModelChoice[]>> {
-  try {
-    const raw = typeof localStorage !== "undefined" ? localStorage.getItem(CACHE_STORAGE_KEY) : null;
-    return raw ? JSON.parse(raw) : {};
-  } catch {
-    return {};
-  }
-}
-
-// 内存中常驻的全局单例缓存（初始化同步读取 localStorage）
-export const GLOBAL_MODEL_CACHE: Partial<Record<Model["tool"], ModelChoice[]>> = readLocalModelCache();
-const IN_FLIGHT_PROBES = new Map<Model["tool"], Promise<ModelChoice[]>>();
-
-export async function fetchToolModelsWithSWR(
-  tool: Model["tool"],
-  onUpdate?: (choices: ModelChoice[]) => void
-): Promise<ModelChoice[]> {
-  const cached = GLOBAL_MODEL_CACHE[tool];
-  if (cached && cached.length > 0 && onUpdate) {
-    onUpdate(cached);
-  }
-
-  if (IN_FLIGHT_PROBES.has(tool)) {
-    const p = IN_FLIGHT_PROBES.get(tool)!;
-    p.then(res => { if (res.length > 0 && onUpdate) onUpdate(res); }).catch(() => {});
-    return cached && cached.length > 0 ? cached : p;
-  }
-
-  const promise = (async () => {
-    try {
-      const data = await getAdapterModels(tool);
-      if (data && data.entries && data.entries.length > 0) {
-        const choices = buildModelChoices(data.entries.filter(entry =>
-          entry.adapterId === tool && entry.selectionKind === "fixed" && (tool !== "agy" || entry.availability === "listed")
-        ));
-        if (choices.length > 0) {
-          GLOBAL_MODEL_CACHE[tool] = choices;
-          try { localStorage.setItem(CACHE_STORAGE_KEY, JSON.stringify(GLOBAL_MODEL_CACHE)); } catch {}
-          if (onUpdate) onUpdate(choices);
-          return choices;
-        }
-      }
-    } catch {
-      // 静默处理，不阻塞已有缓存
-    } finally {
-      IN_FLIGHT_PROBES.delete(tool);
-    }
-    return GLOBAL_MODEL_CACHE[tool] ?? [];
-  })();
-
-  IN_FLIGHT_PROBES.set(tool, promise);
-  return cached && cached.length > 0 ? cached : promise;
-}
-
 function modelName(member: Pick<Model, "tool" | "model" | "effort">, catalogLabel?: string) {
   const id = member.model.split("/").at(-1) ?? member.model;
   const catalogName = catalogLabel?.trim();
@@ -235,7 +175,21 @@ function GroupForm({ save, close, group, existingGroups = [] }: { save: (data: u
   const [members, setMembers] = useState<Omit<Model, "id">[]>(() =>
     group ? group.members.map(({ id: _id, ...member }) => member) : defaultMembers,
   );
-  const [catalogs, setCatalogs] = useState<Partial<Record<Model["tool"], ModelChoice[]>>>(GLOBAL_MODEL_CACHE);
+  const [modelWorkspace, setModelWorkspace] = useState(group?.model_workspace ?? "");
+  const [catalogs, setCatalogs] = useState<Partial<Record<Model["tool"], ModelChoice[]>>>({});
+  const [catalogKeys, setCatalogKeys] = useState<Partial<Record<Model["tool"], string>>>({});
+  const [confirmedKeys, setConfirmedKeys] = useState<Partial<Record<Model["tool"], string>>>({});
+  const catalogRequests = useRef<Partial<Record<Model["tool"], { key: string; controller: AbortController }>>>({});
+  const workspaceRef = useRef(modelWorkspace.trim());
+  workspaceRef.current = modelWorkspace.trim();
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      for (const request of Object.values(catalogRequests.current)) request?.controller.abort();
+    };
+  }, []);
   const [loading, setLoading] = useState<Partial<Record<Model["tool"], boolean>>>({});
   const [catalogErrors, setCatalogErrors] = useState<Partial<Record<Model["tool"], string>>>({});
   const [admin, setAdmin] = useState(group?.members.findIndex(member => member.id === group.admin) ?? 0);
@@ -243,32 +197,80 @@ function GroupForm({ save, close, group, existingGroups = [] }: { save: (data: u
   const [pending, setPending] = useState(false);
   const [editor, setEditor] = useState<{ index: number; member: Omit<Model, "id">; admin: boolean }>();
 
-  function load(tool: Model["tool"]) {
-    setLoading(value => ({ ...value, [tool]: !catalogs[tool]?.length }));
+  const isWorkspaceTool = (tool: Model["tool"]) => tool === "codebuddy-code";
+  const keyFor = (tool: Model["tool"]) => JSON.stringify([tool, isWorkspaceTool(tool) ? modelWorkspace.trim() : "default"]);
+  const catalogReady = (tool: Model["tool"]) => confirmedKeys[tool] === keyFor(tool) &&
+    !loading[tool] && !catalogErrors[tool];
+
+  function load(tool: Model["tool"], force = false) {
+    catalogRequests.current[tool]?.controller.abort();
+    const workspace = workspaceRef.current;
+    const key = JSON.stringify([tool, isWorkspaceTool(tool) ? workspace : "default"]);
+    const controller = new AbortController();
+    const request = { key, controller };
+    catalogRequests.current[tool] = request;
+    const current = () => mounted.current && catalogRequests.current[tool] === request &&
+      !controller.signal.aborted && (!isWorkspaceTool(tool) || workspaceRef.current === workspace);
+    setCatalogKeys(value => ({ ...value, [tool]: key }));
+    setConfirmedKeys(value => ({ ...value, [tool]: undefined }));
+    setCatalogErrors(value => ({ ...value, [tool]: "" }));
+    if (catalogKeys[tool] !== key) setCatalogs(value => ({ ...value, [tool]: [] }));
+    if (isWorkspaceTool(tool) && !workspace) {
+      setLoading(value => ({ ...value, [tool]: false }));
+      setCatalogErrors(value => ({ ...value, [tool]: "请先填写 CodeBuddy 工作区。" }));
+      return;
+    }
+    setLoading(value => ({ ...value, [tool]: true }));
     void fetchToolModelsWithSWR(tool, choices => {
-      setCatalogs(value => ({ ...value, [tool]: choices }));
-      setLoading(value => ({ ...value, [tool]: false }));
-    }).catch(err => {
-      setCatalogErrors(value => ({ ...value, [tool]: formatApiError(err) }));
-      setLoading(value => ({ ...value, [tool]: false }));
-    });
+      if (current()) setCatalogs(value => ({ ...value, [tool]: choices }));
+    }, isWorkspaceTool(tool) ? "workspace:" + workspace : undefined, force, controller.signal)
+      .then(choices => {
+        if (!current()) return;
+        setCatalogs(value => ({ ...value, [tool]: choices }));
+        setConfirmedKeys(value => ({ ...value, [tool]: key }));
+      })
+      .catch(err => {
+        if (current()) setCatalogErrors(value => ({ ...value, [tool]: formatApiError(err) }));
+      })
+      .finally(() => {
+        if (current()) setLoading(value => ({ ...value, [tool]: false }));
+      });
   }
 
   const memberTools = [...new Set([...members.map(member => member.tool), ...(editor ? [editor.member.tool] : [])])].join(",");
   useEffect(() => {
-    for (const tool of memberTools.split(",").filter(Boolean) as Model["tool"][]) {
-      load(tool);
-    }
-  }, [memberTools]);
+    const timer = setTimeout(() => {
+      for (const tool of memberTools.split(",").filter(Boolean) as Model["tool"][]) {
+        const key = JSON.stringify([tool, isWorkspaceTool(tool) ? workspaceRef.current : "default"]);
+        if (catalogRequests.current[tool]?.key !== key) load(tool);
+      }
+    }, 200);
+    return () => clearTimeout(timer);
+  }, [memberTools, modelWorkspace]);
+
+  useEffect(() => {
+    const refresh = () => {
+      for (const tool of memberTools.split(",").filter(Boolean) as Model["tool"][]) load(tool);
+    };
+    window.addEventListener("focus", refresh);
+    return () => window.removeEventListener("focus", refresh);
+  }, [memberTools, modelWorkspace]);
 
   function isAvailable(member: Omit<Model, "id">) {
-    if (!member.model) return false;
+    if (!member.model || !catalogReady(member.tool)) return false;
     const choice = memberChoice(member, catalogs[member.tool]);
-    if (!choice) return true;
+    if (!choice) return false;
     return !member.effort || (choice.effortStatus === "supported" && choice.effortValues.includes(member.effort));
   }
 
-  const canSave = members.length > 0 && members.every(m => Boolean(m.model));
+  const canSave = members.length > 0 && members.every(isAvailable);
+
+  const workspaceField = (labelText: string) => <label className="gc-col-span-2">
+    <span className="gc-form-label">{labelText}</span>
+    <input value={modelWorkspace} onChange={event => setModelWorkspace(event.currentTarget.value)}
+      placeholder="填写 CodeBuddy 使用的本机 Git 工作区绝对路径" required />
+    <small>目录读取、模型核验和回复均使用此工作区；已有会话需同步群配置。</small>
+  </label>;
 
   function patch(value: Partial<Omit<Model, "id">>) {
     setEditor(current => current && { ...current, member: { ...current.member, ...value } });
@@ -306,7 +308,7 @@ function GroupForm({ save, close, group, existingGroups = [] }: { save: (data: u
       takenNames.add(normalize(nickname));
       return { ...member, nickname };
     });
-    try { await save({ title, human: humanName, members: namedMembers, admin, version: group?.version }); }
+    try { await save({ title, human: humanName, members: namedMembers, admin, model_workspace: modelWorkspace.trim() || undefined, version: group?.version }); }
     catch (error) { setError(error instanceof Error ? error.message : String(error)); }
     finally { setPending(false); }
   }
@@ -317,6 +319,7 @@ function GroupForm({ save, close, group, existingGroups = [] }: { save: (data: u
         <span className="gc-form-label">群名称</span>
         <input name="title" required maxLength={100} defaultValue={group?.title} placeholder="输入群聊名称（不可重名）" autoFocus />
       </label>
+      {members.some(member => isWorkspaceTool(member.tool)) && workspaceField("模型工作区")}
       <div className="gc-member-section-header">
         <span className="gc-form-label">群内模型成员（{members.length}）</span>
         <small className="gc-text-muted">（当前用户为默认参与者，无需单独添加）</small>
@@ -324,13 +327,13 @@ function GroupForm({ save, close, group, existingGroups = [] }: { save: (data: u
       <ul className="gc-member-list" aria-label="模型成员">
         {members.map((member, index) => {
           const name = modelName(member, memberChoice(member, catalogs[member.tool])?.label);
-          const unavailable = catalogs[member.tool] && !loading[member.tool] && !catalogErrors[member.tool] && !isAvailable(member);
+          const unavailable = catalogReady(member.tool) && !isAvailable(member);
           const abbr = getModelAbbr(member.nickname || member.model);
           return <li key={index} className="gc-member-item">
             <span className="gc-member-mini-avatar">{abbr}</span>
             <div className="gc-member-desc">
               <span className="gc-member-nickname">{member.nickname || name}</span>
-              <small className="gc-member-model-tag">{toolNames[member.tool]} · {name}</small>
+              <small className="gc-member-model-tag">{toolLabel(member.tool)} · {name}</small>
             </div>
             {admin === index && <span className="gc-tag gc-tag-admin">管理员</span>}
             {unavailable && <small role="alert" className="gc-alert-text">当前目录不可用</small>}
@@ -354,6 +357,11 @@ function GroupForm({ save, close, group, existingGroups = [] }: { save: (data: u
           </li>;
         })}
       </ul>
+      {[...new Set(members.map(member => member.tool))].map(tool => catalogErrors[tool] &&
+        <div key={tool} className="gc-error-row">
+          <p role="alert" className="gc-error-tip">{toolLabel(tool)}：{catalogErrors[tool]}</p>
+          <button type="button" disabled={loading[tool]} onClick={() => load(tool, true)}>重试加载</button>
+        </div>)}
       {error && <p role="alert" className="gc-error-tip">{error}</p>}
       <div className="gc-actions gc-form-actions">
         <button type="button" className="gc-btn-add-member" disabled={members.length >= 16} onClick={() => setEditor({
@@ -370,8 +378,8 @@ function GroupForm({ save, close, group, existingGroups = [] }: { save: (data: u
   </Modal>
   {editor && (() => {
         const { member, index } = editor;
-        const ready = !!catalogs[member.tool] && !loading[member.tool] && !catalogErrors[member.tool];
-        const models = ready ? catalogs[member.tool]! : [];
+        const ready = catalogReady(member.tool);
+        const models = catalogKeys[member.tool] === keyFor(member.tool) ? catalogs[member.tool] ?? [] : [];
         const model = memberChoice(member, models);
         const efforts = model?.effortStatus === "supported" ? model.effortValues : [];
         const effort = member.effort ?? Object.entries(model?.variantByEffort ?? {}).find(([, id]) => id === member.model)?.[0] ?? "";
@@ -381,7 +389,7 @@ function GroupForm({ save, close, group, existingGroups = [] }: { save: (data: u
         return <Modal title={adding ? "新增成员" : "编辑成员"} close={() => setEditor(undefined)}>
         <form className="gc-form gc-member-form-pro" onSubmit={event => {
           event.preventDefault();
-          if (!isAvailable(member) || duplicate) return;
+          if (!ready || !isAvailable(member) || duplicate) return;
           setMembers(rows => adding ? [...rows, member] : rows.map((row, i) => i === index ? member : row));
           if (editor.admin) setAdmin(index);
           setEditor(undefined);
@@ -398,14 +406,34 @@ function GroupForm({ save, close, group, existingGroups = [] }: { save: (data: u
               load(nextTool);
               patch({ tool: nextTool, model: "", effort: undefined });
             }}>
-              {tools.map(tool => <option value={tool} key={tool}>{toolNames[tool]}</option>)}
+              {tools.map(tool => <option value={tool} key={tool}>{toolLabel(tool)}</option>)}
             </select>
           </label>
+          {isWorkspaceTool(member.tool) && workspaceField("CodeBuddy 工作区")}
           {/* 模型选择与推理强度同一行，比例合适紧凑 */}
           <div className="gc-col-span-2 gc-model-effort-row">
-            <label className="gc-model-col">
+            <label className={`gc-model-col ${models.length > 0 ? "gc-model-col-adaptive" : "gc-model-col-empty"}`}>
               <span className="gc-form-label">模型选择</span>
-              <select required disabled={!ready} value={model?.nativeId ?? member.model} onChange={e => patch({ model: e.target.value, effort: undefined })}>
+              <select
+                required
+                disabled={!ready}
+                value={model?.nativeId ?? member.model}
+                style={models.length > 0 ? {
+                  width: `${Math.max(
+                    ...models.map(item => {
+                      const text = item.label + (taken(member.tool, item, index) && item !== model ? "（已有成员）" : "");
+                      let len = 0;
+                      for (let i = 0; i < text.length; i++) {
+                        len += text.charCodeAt(i) > 255 ? 15 : 8.5;
+                      }
+                      return len;
+                    }),
+                    140
+                  ) + 48}px`,
+                  maxWidth: "100%",
+                } : undefined}
+                onChange={e => patch({ model: e.target.value, effort: undefined })}
+              >
                 <option value="">{loading[member.tool] && !models.length ? "正在读取模型目录…" : "请选择具体模型"}</option>
                 {member.model && !model && <option value={member.model} disabled>{formatModelName(member.tool, member.model)}（{ready ? "当前目录不可用" : "等待目录确认"}）</option>}
                 {models.map(item => {
@@ -426,7 +454,18 @@ function GroupForm({ save, close, group, existingGroups = [] }: { save: (data: u
               </select>
             </label>
           </div>
-          {catalogErrors[member.tool] && !/process_stop_unconfirmed/i.test(catalogErrors[member.tool]!) && <p role="alert" className="gc-col-span-2 gc-error-tip">{catalogErrors[member.tool]}</p>}
+          {catalogErrors[member.tool] && !/process_stop_unconfirmed/i.test(catalogErrors[member.tool]!) && (
+            <div className="gc-col-span-2 gc-error-row" style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              <p role="alert" className="gc-error-tip" style={{ margin: 0 }}>{catalogErrors[member.tool]}</p>
+              <button type="button" className="gc-btn-retry" style={{ fontSize: "12px", padding: "2px 8px", cursor: "pointer" }} onClick={() => load(member.tool, true)}>重试加载</button>
+            </div>
+          )}
+          {!loading[member.tool] && models.length === 0 && !catalogErrors[member.tool] && (
+            <div className="gc-col-span-2 gc-empty-tip" style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "12px", color: "var(--muted)" }}>
+              <span>当前工具未读取到可用模型</span>
+              <button type="button" className="gc-btn-retry" style={{ fontSize: "12px", padding: "2px 8px", cursor: "pointer" }} onClick={() => load(member.tool, true)}>刷新目录</button>
+            </div>
+          )}
           <div className="gc-col-span-2 gc-admin-switch-row">
             <label className="gc-switch-label">
               <input type="checkbox" checked={editor.admin} disabled={index === admin} onChange={event => {
@@ -449,7 +488,7 @@ function RosterEditor({ row, save, admin, close, error }: { row: Group | Session
     {error}
     <div className="gc-form">
       {[{ id: "human", nickname: row.human, description: "当前用户" }, ...row.members.map(member => ({
-        ...member, description: toolNames[member.tool] + " · " + modelName(member),
+        ...member, description: toolLabel(member.tool) + " · " + modelName(member),
       }))].map(member => <form className="gc-roster-row" key={member.id + member.nickname} onSubmit={event => {
         event.preventDefault();
         const name = String(new FormData(event.currentTarget).get("nickname"));
@@ -584,7 +623,7 @@ export function GroupChatPage() {
   const [groupId, setGroupId] = useState("");
   const [sessions, setSessions] = useState<Page>({ items: [] });
   const [query, setQuery] = useState("");
-  const [sessionId, setSessionId] = useState("");
+  const [sessionId, updateSessionId] = useState("");
   const [view, setView] = useState<View>();
   const [older, setOlder] = useState<View>();
   const [error, setError] = useState("");
@@ -615,20 +654,32 @@ export function GroupChatPage() {
   const [author, setAuthor] = useState("");
   const [base, setBase] = useState("");
   const [removal, setRemoval] = useState(false);
+  const selectionRef = useRef({ id: "", generation: 0 });
+
+  function setSessionId(id: string) {
+    if (selectionRef.current.id !== id) {
+      selectionRef.current = { id, generation: selectionRef.current.generation + 1 };
+      setOlder(undefined);
+      setDocuments([]);
+      setCompare(false);
+      setReading(0);
+    }
+    updateSessionId(id);
+  }
+  const isCurrentSelection = (selection: typeof selectionRef.current) => selectionRef.current === selection;
+  useEffect(() => () => {
+    selectionRef.current = { ...selectionRef.current, generation: selectionRef.current.generation + 1 };
+  }, []);
 
   const group = groups.find(item => item.id === groupId);
   const activeSessionSummary = sessions.items.find(item => item.id === sessionId);
-  const session = (view?.session?.id === sessionId ? view.session : undefined) ?? activeSessionSummary;
-  const round = view?.round;
+  const activeView = view?.session.id === sessionId ? view : undefined;
+  const activeOlder = older?.session.id === sessionId ? older : undefined;
+  const session = activeView?.session ?? activeSessionSummary;
+  const round = activeView?.round;
   const canChange = !session?.archived && !session?.deleting;
   const busy = round?.status === "running" || round?.status === "paused";
   const report = (err: unknown) => setError(err instanceof Error ? err.message : String(err));
-
-  // 服务启动/页面挂载后，静默异步预热所有常用工具的模型目录并持久缓存
-  useEffect(() => {
-    const defaultTools: Model["tool"][] = ["codex", "agy", "opencode", "claude-code"];
-    for (const t of defaultTools) void fetchToolModelsWithSWR(t);
-  }, []);
 
   useEffect(() => {
     let live = true;
@@ -649,6 +700,7 @@ export function GroupChatPage() {
   }, [groupId, query]);
 
   useEffect(() => {
+    const selection = selectionRef.current;
     follow.current = true;
     if (!sessionId) {
       setView(undefined);
@@ -681,16 +733,36 @@ export function GroupChatPage() {
     async function refresh() {
       try {
         const next = await api<View>(sessionUrl(sessionId));
-        if (live) {
-          setView(prior => prior?.session.id === sessionId && prior.session.version >= next.session.version ? prior : next);
+        if (live && isCurrentSelection(selection)) {
+          setView(prior => {
+            if (!isCurrentSelection(selection)) return prior;
+            if (prior?.session.id !== sessionId) return next;
+            const isPriorSkeleton = prior.round === undefined && prior.messages.length === 0 && prior.artifacts.length === 0;
+            if (isPriorSkeleton) return next;
+            if (prior.session.version > next.session.version) return prior;
+            return next;
+          });
           setRefreshError("");
         }
       } catch (error) {
-        if (live) setRefreshError(error instanceof GroupConnectionError
+        if (!live || !isCurrentSelection(selection)) return;
+        const msg = error instanceof Error ? error.message : String(error);
+        if (/会话不存在|404|not found/i.test(msg)) {
+          setView(undefined);
+          setSessionId("");
+          setSessions(prev => ({
+            ...prev,
+            items: prev.items.filter(item => item.id !== sessionId),
+          }));
+          setNotice("会话不存在或已删除");
+          setRefreshError("会话不存在或已删除");
+          return;
+        }
+        setRefreshError(error instanceof GroupConnectionError
           ? "群聊暂时无法连接服务，正在自动重连。"
-          : error instanceof Error ? error.message : String(error));
+          : msg);
       }
-      if (live) timer = setTimeout(() => void refresh(), 950);
+      if (live && isCurrentSelection(selection)) timer = setTimeout(() => void refresh(), 950);
     }
     void refresh();
     return () => { live = false; clearTimeout(timer); };
@@ -710,9 +782,11 @@ export function GroupChatPage() {
 
   async function act(input: Action) {
     if (!session || pending) return;
+    const selection = selectionRef.current;
     await perform(async () => {
       const next = await api<View>(sessionUrl(session.id) + "/actions", "POST", { version: session.version, request: crypto.randomUUID(), input });
-      setView(prior => prior?.session.id === session.id && prior.session.version <= next.session.version ? next : prior);
+      if (!isCurrentSelection(selection)) return;
+      setView(prior => isCurrentSelection(selection) && prior?.session.id === session.id && prior.session.version <= next.session.version ? next : prior);
       if (input.action === "send") { setMessage(""); setTargets([]); setMentions(false); }
       setModal(undefined);
     });
@@ -720,29 +794,42 @@ export function GroupChatPage() {
 
   async function preview(id: string) {
     if (!session) return;
+    const selection = selectionRef.current;
     try {
       const doc = await api<Document>(sessionUrl(session.id) + "/artifacts/" + id);
-      setDocuments(prior => compare && prior[0] ? (prior[0].id === doc.id ? prior : [prior[0], doc]) : [doc]);
+      if (!isCurrentSelection(selection)) return;
+      setDocuments(prior => !isCurrentSelection(selection) ? prior :
+        compare && prior[0] ? (prior[0].id === doc.id ? prior : [prior[0], doc]) : [doc]);
       setReading(compare && documents[0] && documents[0].id !== doc.id ? 1 : 0);
-    } catch (error) { report(error); }
+    } catch (error) { if (isCurrentSelection(selection)) report(error); }
   }
 
   async function loadOlder() {
-    const before = older?.next ?? (older ? undefined : view?.next);
+    const before = activeOlder ? activeOlder.next : activeView?.next;
     if (!session || !before) return;
+    const selection = selectionRef.current;
     await perform(async () => {
-      const page = await api<View>(sessionUrl(session.id) + "?before=" + before);
-      setOlder(prior => ({ ...page, messages: [...page.messages, ...(prior?.messages ?? [])], artifacts: [...page.artifacts, ...(prior?.artifacts ?? [])] }));
+      try {
+        const page = await api<View>(sessionUrl(session.id) + "?before=" + before);
+        if (!isCurrentSelection(selection) || page.session.id !== session.id) return;
+        setOlder(prior => {
+          if (!isCurrentSelection(selection)) return prior;
+          const sameSession = prior?.session.id === session.id ? prior : undefined;
+          return { ...page, messages: [...page.messages, ...(sameSession?.messages ?? [])],
+            artifacts: [...page.artifacts, ...(sameSession?.artifacts ?? [])] };
+        });
+      } catch (error) { if (isCurrentSelection(selection)) throw error; }
     });
   }
 
   function manageRoster(isSession: boolean, field: "nickname" | "admin", member: string, nickname?: string) {
     const row = isSession ? session : group;
     if (!row) return;
+    const selection = selectionRef.current;
     void perform(async () => {
       const route = isSession ? sessionUrl(row.id) : "/api/groups/" + row.id;
       const updated = await api<Group | Session>(route + "/" + field, "PATCH", { version: row.version, member, nickname });
-      if ("scene" in updated) setView(prior => prior ? { ...prior, session: updated } : prior);
+      if ("scene" in updated) setView(prior => isCurrentSelection(selection) && prior?.session.id === updated.id ? { ...prior, session: updated } : prior);
       else setGroups(items => items.map(item => item.id === updated.id ? updated : item));
     });
   }
@@ -857,8 +944,8 @@ export function GroupChatPage() {
     void act({ action: "send", text: message, targets: targeted, all: isBroadcast, mode });
   }
 
-  const messages = [...new Map([...(older?.messages ?? []), ...(view?.messages ?? [])].map(item => [item.id, item])).values()];
-  const artifacts = [...new Map([...(older?.artifacts ?? []), ...(view?.artifacts ?? [])].map(item => [item.id, item])).values()];
+  const messages = [...new Map([...(activeOlder?.messages ?? []), ...(activeView?.messages ?? [])].map(item => [item.id, item])).values()];
+  const artifacts = [...new Map([...(activeOlder?.artifacts ?? []), ...(activeView?.artifacts ?? [])].map(item => [item.id, item])).values()];
   const artifactsById = new Map(artifacts.map(item => [item.id, item]));
   const nextAction = session?.scene === "fiction" ? "整理大纲" : "指定成员成稿";
   const canDraft = !!session?.brief && (session.scene === "fiction" || session.scene === "design") && !busy;
@@ -1121,7 +1208,7 @@ export function GroupChatPage() {
                           <strong>{m.nickname}</strong>
                           {isAdm && <span className="gc-tag-mini-admin">管理员</span>}
                         </div>
-                        <small className="gc-drawer-member-detail">{toolNames[m.tool]} · {modelName(m)}</small>
+                        <small className="gc-drawer-member-detail">{toolLabel(m.tool)} · {modelName(m)}</small>
                       </div>
                       <button type="button" className="gc-drawer-mention-action" aria-label={`@ ${m.nickname}`}>@</button>
                     </div>
@@ -1136,7 +1223,7 @@ export function GroupChatPage() {
             const box = event.currentTarget;
             follow.current = box.scrollHeight - box.scrollTop - box.clientHeight < 72;
           }}>
-            {(older ? older.next : view?.next) && <button className="gc-btn-load-more" onClick={() => void loadOlder()}>加载更早消息</button>}
+            {(activeOlder ? activeOlder.next : activeView?.next) && <button className="gc-btn-load-more" disabled={pending} onClick={() => void loadOlder()}>加载更早消息</button>}
             {!messages.length && <div className="gc-thread-start gc-thread-start-wechat">
               <div className="gc-welcome-chat-icon">
                 <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
@@ -1216,7 +1303,7 @@ export function GroupChatPage() {
               </div>}
             </section>}
 
-            {view && <Results key={round?.id} view={view} preview={id => void preview(id)} act={input => { if (canChange) void act(input); }} />}
+            {activeView && <Results key={round?.id} view={activeView} preview={id => void preview(id)} act={input => { if (canChange) void act(input); }} />}
 
             {canChange && (canDraft || canRestart) && <div className="gc-next">
               <span>{round?.status === "waiting" ? "本轮已结束，您可以决定下一步" : "当前会话"}</span>
@@ -1286,7 +1373,7 @@ export function GroupChatPage() {
                         <span className="gc-mention-item-avatar">{getModelAbbr(member.nickname || member.model)}</span>
                         <div className="gc-mention-item-info">
                           <strong>{member.nickname}</strong>
-                          <small>{toolNames[member.tool]} · {modelName(member)}</small>
+                          <small>{toolLabel(member.tool)} · {modelName(member)}</small>
                         </div>
                       </div>
                     ))}
@@ -1624,7 +1711,7 @@ export function GroupChatPage() {
                     <span>{m.nickname}</span>
                     {isAdm && <span className="gc-tag-mini-admin">管理员</span>}
                   </div>
-                  <small className="gc-popover-tool">{toolNames[m.tool]} · {modelName(m)}</small>
+                  <small className="gc-popover-tool">{toolLabel(m.tool)} · {modelName(m)}</small>
                 </div>
               </div>
             );

@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { z } from "zod";
 import { FlowError } from "../../contracts/src/index.js";
 import type { Store } from "../../store/src/store.js";
@@ -10,6 +10,7 @@ import {
   type Message, type Model, type Roster, type Round, type Session, type Stage,
 } from "./contracts.js";
 import { assertCallsExited, type RunModel } from "./model-runner.js";
+import { resolveProjectLayout } from "../../core/src/project-layout.js";
 
 const kinds = { group: "chat_group", session: "chat_session", round: "chat_round", message: "chat_message", artifact: "chat_artifact", request: "chat_request" };
 const date = () => new Date().toISOString();
@@ -79,16 +80,26 @@ export class GroupChat {
     check(new Set(names).size === names.length && names.every(name => !["全部", "全部模型"].includes(name)), "昵称须唯一，且不能使用系统提及词", 422);
     check(roster.members.some(member => member.id === roster.admin), "请指定群内模型担任管理员", 422);
   }
-  createGroup(title: string, human: string, members: Omit<Model, "id">[], admin: number) {
+  private modelWorkspace(members: Omit<Model, "id">[], workspace?: string) {
+    if (!workspace?.trim()) {
+      check(!members.some(member => member.tool === "codebuddy-code"), "CodeBuddy 需要配置模型工作区，请编辑群配置后同步会话成员", 422);
+      return undefined;
+    }
+    check(isAbsolute(workspace), "模型工作区必须是绝对路径", 422);
+    check(existsSync(workspace) && lstatSync(workspace).isDirectory(), "模型工作区不存在或不是目录", 422);
+    return resolveProjectLayout(this.store, workspace).root;
+  }
+  createGroup(title: string, human: string, members: Omit<Model, "id">[], admin: number, workspace?: string) {
     check(!this.groups().some(g => g.title.trim().toLowerCase() === title.trim().toLowerCase()), "群聊名称已存在，请使用其他名称", 422);
     const assigned = members.map(member => ({ ...member, id: randomUUID() }));
     check(new Set(assigned.map(member => JSON.stringify([member.tool, member.model]))).size === assigned.length, "同一工具中的同一模型只能加入一次", 422);
-    const row: Group = { id: randomUUID(), title, human, members: assigned, admin: assigned[admin]?.id ?? "", version: 1 };
+    const row: Group = { id: randomUUID(), title, human, members: assigned, admin: assigned[admin]?.id ?? "", version: 1,
+      model_workspace: this.modelWorkspace(members, workspace) };
     this.validateRoster(row);
     this.store.put(kinds.group, row.id, row.id, row);
     return row;
   }
-  replaceGroup(id: string, version: number, title: string, human: string, members: Omit<Model, "id">[], admin: number) {
+  replaceGroup(id: string, version: number, title: string, human: string, members: Omit<Model, "id">[], admin: number, workspace?: string) {
     const row = this.group(id);
     check(row.version === version, "群配置已更新，请刷新后重试");
     check(!this.groups().some(g => g.id !== id && g.title.trim().toLowerCase() === title.trim().toLowerCase()), "群聊名称已存在，请使用其他名称", 422);
@@ -96,7 +107,8 @@ export class GroupChat {
       ...member, id: row.members.find(previous => previous.tool === member.tool && previous.model === member.model)?.id ?? randomUUID(),
     }));
     check(new Set(assigned.map(member => JSON.stringify([member.tool, member.model]))).size === assigned.length, "同一工具中的同一模型只能加入一次", 422);
-    const next: Group = { ...row, title, human, members: assigned, admin: assigned[admin]?.id ?? "", version: version + 1 };
+    const next: Group = { ...row, title, human, members: assigned, admin: assigned[admin]?.id ?? "", version: version + 1,
+      model_workspace: this.modelWorkspace(members, workspace) };
     this.validateRoster(next);
     this.store.put(kinds.group, id, id, next);
     return next;
@@ -150,7 +162,7 @@ export class GroupChat {
     const stamp = date();
     const row: Session = {
       id: randomUUID(), group, title, scene, version: 1, created: stamp, updated: stamp, archived: false,
-      human: roster.human, admin: roster.admin, members: roster.members, answers: [],
+      human: roster.human, admin: roster.admin, members: roster.members, answers: [], model_workspace: roster.model_workspace,
     };
     const path = this.directory(row.id);
     mkdirSync(path, { recursive: true });
@@ -349,6 +361,7 @@ export class GroupChat {
         row.members = group.members;
         row.human = group.human;
         row.admin = group.admin;
+        row.model_workspace = group.model_workspace;
         this.save(row);
       } else if (input.action === "cancel") {
         check(round?.status === "paused" && !this.hasActive(id), "请先暂停并等待进程退出");
@@ -663,7 +676,7 @@ export class GroupChat {
       check(Buffer.byteLength(prompt) <= 210_000, "本轮材料超过单次上下文限制，请缩小讨论范围或另建会话", 422);
       signal.throwIfAborted();
       const answer = await this.runModel({
-        session: session.id, member, cwd, scratch, execute: nativeExecution,
+        session: session.id, member, cwd, scratch, modelWorkspace: session.model_workspace, execute: nativeExecution,
         prompt, structured, signal,
       });
       check(answer.trim() && answer.length <= 100_000, "模型正文为空或超过保存限制", 422);

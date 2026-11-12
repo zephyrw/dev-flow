@@ -1385,7 +1385,7 @@ export class ModelCatalogService {
       executablePath,
       cached
         ? cached.nativeConfigProfile
-        : wanted === "default" ? undefined : wanted,
+        : wanted === "default" || wanted.startsWith("workspace:") ? undefined : wanted,
     );
   }
 
