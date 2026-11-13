@@ -177,3 +177,44 @@ it("pending feedback during test completion preserves the frozen test route", as
     expect(s.store.get<any>("pending_dispatch_purpose", w.id)).toMatchObject({ purpose: "executor_test", review_phase: "before_human", source_run_id: "planner-done" });
   } finally { await cleanup(s); }
 });
+
+it("updates business progress back to code review or re-review instead of sticking at human acceptance", async () => {
+  const s = await fixture();
+  try {
+    const w = s.engine.get(s.w.id);
+    s.engine.transition(w.id, [w.state], "HUMAN_PENDING", "accept");
+    expect(readBusinessProgress(s.store, s.engine.get(w.id)).index).toBe(5);
+
+    s.store.put("quality_flow", w.id, w.id, { workflow_id: w.id, phase: "before_human", executor_repair_completed: true, planner_repairs_only: true });
+    s.engine.transition(w.id, ["HUMAN_PENDING"], "REVIEWING", "quality_before_human");
+    expect(readBusinessProgress(s.store, s.engine.get(w.id)).index).toBe(4);
+
+    s.store.put("run", "test-before-human", w.id, {
+      id: "test-before-human", workflow_id: w.id, plan_revision: w.plan_revision,
+      adapter: "agy", purpose: "executor_test", stage: "executor_test", status: "running",
+      dispatch_context: { purpose: "executor_test", review_phase: "before_human" },
+    });
+    s.engine.transition(w.id, ["REVIEWING"], "EXECUTING", "executor_test", { run_id: "test-before-human" });
+    const duringBeforeHumanTest = s.engine.detail(w.id, false).business_progress;
+    expect(duringBeforeHumanTest.index).toBe(4);
+    expect(workflowProgress(s.engine.get(w.id), [], { native: true, businessProgress: duringBeforeHumanTest }).title).toBe("代码审查");
+
+    // Pausing during before-human test keeps index 4 instead of falling back to an older HUMAN_PENDING (5).
+    s.engine.transition(w.id, ["EXECUTING"], "STOPPED", "stopped");
+    expect(readBusinessProgress(s.store, s.engine.get(w.id)).index).toBe(4);
+    s.store.remove("workflow_progress", w.id);
+    expect(readBusinessProgress(s.store, s.engine.get(w.id)).index).toBe(4);
+
+    // After human acceptance, after-human test runs under index 6 (代码复核).
+    s.store.put("quality_flow", w.id, w.id, { workflow_id: w.id, phase: "after_human", executor_repair_completed: true, planner_repairs_only: true });
+    s.store.put("run", "test-after-human", w.id, {
+      id: "test-after-human", workflow_id: w.id, plan_revision: w.plan_revision,
+      adapter: "agy", purpose: "executor_test", stage: "executor_test", status: "running",
+      dispatch_context: { purpose: "executor_test", review_phase: "after_human" },
+    });
+    s.engine.transition(w.id, ["STOPPED"], "EXECUTING", "executor_test", { run_id: "test-after-human" });
+    const duringAfterHumanTest = s.engine.detail(w.id, false).business_progress;
+    expect(duringAfterHumanTest.index).toBe(6);
+    expect(workflowProgress(s.engine.get(w.id), [], { native: true, humanAccepted: true, businessProgress: duringAfterHumanTest }).title).toBe("代码复核");
+  } finally { await cleanup(s); }
+});

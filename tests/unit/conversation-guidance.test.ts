@@ -173,12 +173,13 @@ describe("SA-D23 conversation role recovery guidance", () => {
   it("keeps human-readable planning and original-plan preservation in both initial and resumed planning", () => {
     for (const text of [planningBridgeInstructions(), planningRecoveryGuidance(manifest({ purpose: "planning" }), caps())]) {
       expect(text).toContain("先写背景与现状");
-      expect(text).toContain("从什么状态改到什么状态");
-      expect(text).toContain("可能受影响的其他功能");
-      expect(text).toContain("必要的数据设计");
-      expect(text).toContain("Markdown - [ ] 勾选框");
+      expect(text).toContain("执行模型无需猜测业务行为、数据结构、接口契约、边界处理或验收标准");
+      expect(text).toContain("完整目标结构");
+      expect(text).toContain("HTTP 接口写明方法和路径");
+      expect(text).toContain("布局、样式、动效和组件选型由执行模型决定");
+      expect(text).toContain("Markdown - [ ] 工作项");
       expect(text).toContain("真实完成后才改成 - [x]");
-      expect(text).toContain("不枚举所有待修改代码文件");
+      expect(text).toContain("文件或目录不得作为修改白名单");
       expect(text).toContain("暂停恢复、普通修复和代码复核不授权重写原计划");
       expect(text).toContain("不要另存多份开发计划或递增文档版本");
     }

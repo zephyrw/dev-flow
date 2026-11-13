@@ -31,6 +31,7 @@ export interface ExecutionCompletion {
   run_id: string;
   workflow_id: string;
   intent: "completed";
+  stage_completed?: true;
   assignment_id?: string;
   source_review_id?: string;
   phase?: string;

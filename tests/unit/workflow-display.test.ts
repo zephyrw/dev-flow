@@ -65,3 +65,15 @@ it("uses confirmation data for the human checkmark, including after-human and le
       .title,
   ).toBe("人工验收");
 });
+
+it.each(["planner_takeover", "executor_test"])("distinguishes before-human review and after-human verification for %s", stage => {
+  const beforeHuman = workflowProgress({ id: "w", state: "EXECUTING", stage }, [], { native: true, humanAccepted: false });
+  expect(beforeHuman.index).toBe(4);
+  expect(beforeHuman.title).toBe("代码审查");
+  expect(beforeHuman.done[beforeHuman.stages.indexOf("人工验收")]).toBe(false);
+
+  const afterHuman = workflowProgress({ id: "w", state: "EXECUTING", stage }, [], { native: true, humanAccepted: true });
+  expect(afterHuman.index).toBe(6);
+  expect(afterHuman.title).toBe("代码复核");
+  expect(afterHuman.done[afterHuman.stages.indexOf("人工验收")]).toBe(true);
+});

@@ -180,7 +180,8 @@ export function workflowProgress(
     ? [...stages.slice(0, 4), "代码审查", "人工验收", "代码复核", "提交"]
     : stages;
   const index = display.native && display.businessProgress ? display.businessProgress.index
-    : display.native && ["planner_takeover", "executor_test"].includes(phase) ? 4
+    : display.native && ["planner_takeover", "executor_test"].includes(phase)
+      ? (display.businessProgress?.review_phase === "after_human" || display.humanAccepted ? 6 : 4)
     : display.native && phase === "functional_fix" ? 5
     : phase === "planner_commit"
     ? display.native ? 7 : 6

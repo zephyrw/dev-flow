@@ -169,6 +169,7 @@ import {
   INTENT_CLARIFICATION_INSTRUCTION,
   applyContinuationMaterials,
   applyPlanningHandoffMaterials,
+  normalizeExecutionIntent,
 } from "../../core/src/round-intent.js";
 
 async function adapterForToolProfile(
@@ -407,7 +408,8 @@ export class ProfileRuntime {
     const currentRun = this.engine.store.must<Run>("run", run.id);
     const userInput = this.engine.store.get<SessionInputReceipt>("session_input", run.id)?.user_input;
     const payload = parsed.success
-      ? { ...parsed.data, ...(userInput && parsed.data.status === undefined ? {status: "completed"} : {}) }
+      ? { ...parsed.data, ...(userInput && !normalizeExecutionIntent(parsed.data).provided_intent_field
+        ? { status: "completed" } : {}) }
       : {
           status: userInput ? "completed" : "unclear",
           summary:

@@ -1091,10 +1091,19 @@ export class Engine {
       this.store.enqueue(key, "dispatch_run", { purpose: "functional_fix", guidance_mode: "human_acceptance" });
       return next;
     }
-    if (scope === "within_plan" && w.state === "STOPPED") {
-      // A new user instruction explicitly resumes this stopped task; other
-      // dispatch controls (including unconfirmed processes) remain in force.
-      new CliDispatchManager(this.store).removeControlReason(key, "workflow_pause");
+    if (scope === "within_plan" && ["STOPPED", "BLOCKED", "RECOVERY_REQUIRED"].includes(w.state)) {
+      if (w.state === "STOPPED") {
+        // A new user instruction explicitly resumes this stopped task; other
+        // dispatch controls (including unconfirmed processes) remain in force.
+        new CliDispatchManager(this.store).removeControlReason(key, "workflow_pause");
+      }
+      const clearTransientResumeState = () => {
+        this.store.remove("model_retry", key);
+        this.store.remove("pending_model_retry", key);
+        if (!runtimeFailureResolution(w.blocker?.code, w.blocker?.message))
+          this.store.remove("repair_state", key);
+        new UserInteractionService(this.store).supersedePendingInteractions(key);
+      };
       const stopped = w.run_id ? this.store.get<Run>("run", w.run_id) : undefined;
       const pending = this.store.get<Partial<DispatchContext>>("pending_dispatch_purpose", key);
       const interruption = this.store.get<{ run_id?: string; prior_state?: string; prior_stage?: string }>("interruption", key);
@@ -1108,9 +1117,8 @@ export class Engine {
         ? pending : undefined;
       if (stopped?.workflow_id === key && stopped.plan_revision === w.plan_revision &&
           (queuedContext || (stopped.status !== "completed" && specialized.includes(stopped.purpose ?? "")))) {
-        this.store.remove("model_retry", key);
-        this.store.remove("pending_model_retry", key);
-        new UserInteractionService(this.store).supersedePendingInteractions(key);
+        prepareRepairResume(this, key);
+        clearTransientResumeState();
         if (!queuedContext) {
           saveRunContinuation(this.store, key, key, {
             kind: "runtime_resume", purpose: "execute",
@@ -1128,11 +1136,15 @@ export class Engine {
         this.store.enqueue(key, "dispatch_run", { ...context, expected_version: next.version });
         return next;
       }
-      if (stopped?.dispatch_context?.guidance_mode === "human_acceptance" && stopped.status !== "completed") {
+      if (stopped?.workflow_id === key && stopped.plan_revision === w.plan_revision &&
+          stopped.status !== "completed" &&
+          (stopped.dispatch_context?.guidance_mode === "human_acceptance" || stopped.purpose === "functional_fix")) {
+        clearTransientResumeState();
         saveRunContinuation(this.store, key, key, { kind: "runtime_resume", purpose: "execute", role: "executor",
           source_run_id: stopped.id, conversation_id: stopped.conversation_id });
         this.restoreDispatchContext(key, stopped.id);
-        const next = this.transition(key, [w.state], "QUEUED", "acceptance_guidance", {
+        const stage = stopped.dispatch_context?.guidance_mode === "human_acceptance" ? "acceptance_guidance" : "functional_fix";
+        const next = this.transition(key, [w.state], "QUEUED", stage, {
           feedback: [...w.feedback, text], blocker: undefined,
         });
         this.scheduler.enqueue(key, w.project_id);
@@ -2027,14 +2039,24 @@ export class Engine {
       deliverySubmit ? { deliverySubmit: true } : undefined,
     );
     const userInput = this.store.get<SessionInputReceipt>("session_input", runId)?.user_input === true;
-    if (!userInput) {
-      syncTaskList(this.store, w, runId);
-      recordExecutionTestReport(this.store, w, this.store.must<Run>("run", runId), normalized.payload);
-    }
     const executionRun = this.store.must<Run>("run", runId);
-    const canContinue = !userInput && executionRun.routing_role !== "planner" &&
-      ["implement", "execute", "executor_test"].includes(executionRun.purpose ?? "") &&
-      executionRun.dispatch_context?.guidance_mode !== "human_acceptance";
+    const isExecutorStage = executionRun.routing_role !== "planner" &&
+      ["implement", "execute", "executor_test", "functional_fix"].includes(executionRun.purpose ?? "");
+    // A follow-up can return the current stage result as well as a plain reply.
+    const declaresStageResult = isExecutorStage && (
+      deliverySubmit || normalized.provided_intent_field && (
+        normalizeDeliveredRound(normalized.payload.delivery).provided_intent_field ||
+        executionProgressItems(normalized.payload).length > 0 ||
+        hasUnfinishedExecutionItems(normalized.payload)
+      )
+    );
+    const guidanceOnly = executionRun.dispatch_context?.guidance_mode === "human_acceptance" ||
+      (userInput && !declaresStageResult);
+    if (!guidanceOnly) {
+      syncTaskList(this.store, w, runId);
+      recordExecutionTestReport(this.store, w, executionRun, normalized.payload);
+    }
+    const canContinue = !guidanceOnly && isExecutorStage && executionRun.purpose !== "functional_fix";
     if ((normalized.intent === "incomplete" ||
         normalized.intent === "completed" && hasUnfinishedExecutionItems(normalized.payload)) &&
         hasExecutionUserRequest(normalized.payload)) {
@@ -2080,9 +2102,8 @@ export class Engine {
     if (normalized.intent !== "completed")
       return this.routeExecutionIntent(key, runId, normalized);
 
-    const guidanceRun = this.store.must<Run>("run", runId);
-    if (userInput || guidanceRun.dispatch_context?.guidance_mode === "human_acceptance") {
-      requireCondition(w.state === "EXECUTING" && ["running", "completed"].includes(guidanceRun.status),
+    if (guidanceOnly) {
+      requireCondition(w.state === "EXECUTING" && ["running", "completed"].includes(executionRun.status),
         "INVALID_STATE", "当前指导轮次不能提交结果");
       const result = normalizeOptionalDeliveryManifest(normalized.payload);
       const summary = [result.summary, typeof result.notes === "string" ? result.notes : undefined]
@@ -2090,19 +2111,19 @@ export class Engine {
       recordExecutionCompletion(this.store, { run_id: runId, workflow_id: key, intent: "completed",
         summary, recorded_at: now() });
       this.store.event(key, w.project_id, "UserGuidanceCompleted", { summary }, runId);
-      if (guidanceRun.status === "completed") await this.finalizeNativeDelivery(key, runId);
+      if (executionRun.status === "completed") await this.finalizeNativeDelivery(key, runId);
       return { status: "accepted", state: this.get(key).state, message: "本轮指导回复已记录，原阶段进度已保留。" };
     }
 
     let payload: DeliveryManifest = normalizeOptionalDeliveryManifest(normalized.payload);
 
       // 幂等性检查 (C08 / R11, R12)
-      const runScopedDelivery = guidanceRun.protocol === "lightweight" || usesPolicyV2(w);
+      const runScopedDelivery = executionRun.protocol === "lightweight" || usesPolicyV2(w);
       if (runScopedDelivery) {
         if (payload.run_id && payload.run_id !== runId) {
           const payloadRun = this.store.get<Run>("run", payload.run_id);
-          const sameSessionRun = payloadRun && guidanceRun.conversation_id &&
-            payloadRun.conversation_id === guidanceRun.conversation_id &&
+          const sameSessionRun = payloadRun && executionRun.conversation_id &&
+            payloadRun.conversation_id === executionRun.conversation_id &&
             payloadRun.workflow_id === key;
           if (sameSessionRun) {
             payload.run_id = runId;
@@ -2269,6 +2290,7 @@ export class Engine {
           run_id: run.id,
           workflow_id: key,
           intent: "completed",
+          stage_completed: true,
           assignment_id: assignment?.assignment_id,
           source_review_id: assignment?.source_review_id,
           phase: run.dispatch_context?.review_phase ?? assignment?.phase,
@@ -2596,13 +2618,13 @@ export class Engine {
           ? { repair_kind: "quality" as const, assignment_id: assignment?.assignment_id }
           : purpose === "functional_fix" ? { repair_kind: "functional" as const } : {}),
       };
+      this.store.put("pending_dispatch_purpose", key, key, context);
       this.transition(
         key, [w.state], purpose === "quality_review" ? "REVIEW_QUEUED" : "QUEUED",
         purpose === "quality_review" ? (phase === "before_human" ? BEFORE_HUMAN_REVIEW_STAGE : "review")
           : purpose === "implement" ? "execute" : purpose,
         { blocker: undefined },
       );
-      this.store.put("pending_dispatch_purpose", key, key, context);
       this.scheduler.enqueue(key, w.project_id);
       this.store.enqueue(key, "dispatch_run", { ...context, expected_version: this.get(key).version });
     });
@@ -2673,7 +2695,7 @@ export class Engine {
       await this.completePlannerCommit(key, runId, completion);
       return;
     }
-    if (this.store.get<SessionInputReceipt>("session_input", runId)?.user_input === true) {
+    if (!completion.stage_completed && this.store.get<SessionInputReceipt>("session_input", runId)?.user_input === true) {
       // A reply to user guidance is not completion of the scheduled test/repair
       // stage. Continue that stage in a separate automatic turn.
       this.continueAfterUserGuidance(active);

@@ -232,3 +232,36 @@ it("keeps later pending instructions in the acceptance lane instead of restartin
   expect(s.engine.get(wid)).toMatchObject({ state: "QUEUED", stage: "acceptance_guidance", feedback: [followup] });
   expect(s.store.jobs().filter(job => job.kind === "dispatch_run").map(job => JSON.parse(job.data).purpose)).toEqual(["functional_fix"]);
 });
+
+it("retains acceptance_guidance and human_acceptance mode when resuming from BLOCKED via feedback", () => {
+  const blockedRun: Run = { ...run(), id: "blocked-guidance-run", status: "failed" };
+  s.store.put("run", blockedRun.id, wid, blockedRun);
+  s.store.put("repair_assignment", wid, wid, {
+    assignment_id: "stale-assignment",
+    source: "quality_review",
+    planner: true,
+    phase: "before_human",
+    plan_revision: 1,
+    plan_hash: "approved",
+    source_review_id: "old-review",
+    instructions: "old",
+  });
+  s.store.put("workflow", wid, "p1", {
+    ...s.engine.get(wid),
+    state: "BLOCKED",
+    stage: "blocked",
+    run_id: blockedRun.id,
+    blocker: { code: "AGY_MODEL_PROBE_TIMEOUT", message: "timeout" },
+  });
+  const resumed = s.engine.feedback(wid, "继续", "within_plan");
+  expect(resumed).toMatchObject({ state: "QUEUED", stage: "acceptance_guidance" });
+  expect(s.store.get<any>("pending_dispatch_purpose", wid)).toMatchObject({
+    purpose: "functional_fix",
+    guidance_mode: "human_acceptance",
+  });
+  expect(s.store.get<any>("run_continuation", wid)).toMatchObject({
+    kind: "runtime_resume",
+    source_run_id: blockedRun.id,
+    conversation_id: "existing-native-session",
+  });
+});
