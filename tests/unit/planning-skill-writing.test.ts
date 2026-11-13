@@ -24,15 +24,13 @@ describe("planning Skill output and original-document authority", () => {
     expect(text).not.toMatch(/现有版本\/hash|原文和版本|修订原计划的正式版本/);
   });
 
-  it("describes behavior, impacts and necessary design without prescribing unfinished implementation", () => {
+  it("requires implementation-ready design while leaving page presentation to the executor", () => {
     for (const path of ["devflow-plan/SKILL.md", "devflow-plan/references/plan-contract.md"]) {
       const text = readSkill(path);
-      for (const topic of ["现状", "目标从什么变成什么", "功能与逻辑变化", "关联影响", "数据设计", "技术坑", "细项 checkbox"]) {
+      for (const topic of ["现状", "完整目标结构", "接口契约", "验收", "细项 checkbox", "布局、样式、动效和组件选型由执行模型决定"]) {
         expect(text).toContain(topic);
       }
-      expect(text).toContain("半成品代码");
       expect(text).toContain("只有实际完成才将 `[ ]` 改为 `[x]`");
-      expect(text).toContain("普通实现");
     }
   });
 
