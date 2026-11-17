@@ -3,6 +3,7 @@ import {
   formatToolName,
   formatModelName,
   formatRuntimeDisplay,
+  formatEffortDisplayLabel,
   buildModelChoices,
 } from "../../packages/presentation/src/model-display.js";
 import type { ModelEntry } from "../../packages/contracts/src/model-catalog.js";
@@ -267,6 +268,125 @@ describe("model-display 展示格式化与变体聚合", () => {
       high: "gemini-3.8-flash-high",
       medium: "gemini-3.8-flash-medium",
       low: "gemini-3.8-flash-low",
+    });
+  });
+
+  it("聚合并格式化 Gemini 4 Hydrogen 四档（Low/Medium/High/Extra，默认 High）", () => {
+    expect(formatModelName("agy", "gemini-4-hydrogen-low")).toBe("Gemini 4 Hydrogen");
+    expect(formatModelName("agy", "gemini-4-hydrogen-medium")).toBe("Gemini 4 Hydrogen");
+    expect(formatModelName("agy", "gemini-4-hydrogen-high")).toBe("Gemini 4 Hydrogen");
+    expect(formatModelName("agy", "gemini-4-hydrogen-xhigh")).toBe("Gemini 4 Hydrogen");
+
+    expect(formatEffortDisplayLabel("low", "gemini-4-hydrogen-low")).toBe("Low");
+    expect(formatEffortDisplayLabel("medium", "gemini-4-hydrogen-medium")).toBe("Medium");
+    expect(formatEffortDisplayLabel("high", "gemini-4-hydrogen-high")).toBe("High");
+    expect(formatEffortDisplayLabel("xhigh", "gemini-4-hydrogen-xhigh")).toBe("Extra");
+    expect(formatEffortDisplayLabel("xhigh", "gpt-5.4")).toBe("xhigh");
+
+    expect(
+      formatRuntimeDisplay({
+        adapterId: "agy",
+        modelId: "gemini-4-hydrogen-xhigh",
+        effort: "xhigh",
+      }),
+    ).toBe("AGY · Gemini 4 Hydrogen (Extra)");
+
+    const entries: ModelEntry[] = [
+      {
+        entryId: "agy/gemini-4-hydrogen-xhigh",
+        adapterId: "agy",
+        nativeId: "gemini-4-hydrogen-xhigh",
+        label: "Gemini 4 Hydrogen (Extra)",
+        familyId: "gemini-4-hydrogen",
+        source: "native-live",
+        selectionKind: "fixed",
+        discoveredAt: "2026-11-13T00:00:00.000Z",
+        hidden: false,
+        availability: "listed",
+        capabilityRevision: "1",
+        effort: {
+          status: "supported",
+          transport: "variant-id",
+          values: ["xhigh"],
+          defaultValue: "xhigh",
+          fixedValue: "xhigh",
+        },
+      },
+      {
+        entryId: "agy/gemini-4-hydrogen-low",
+        adapterId: "agy",
+        nativeId: "gemini-4-hydrogen-low",
+        label: "Gemini 4 Hydrogen (Low)",
+        familyId: "gemini-4-hydrogen",
+        source: "native-live",
+        selectionKind: "fixed",
+        discoveredAt: "2026-11-13T00:00:00.000Z",
+        hidden: false,
+        availability: "listed",
+        capabilityRevision: "1",
+        effort: {
+          status: "supported",
+          transport: "variant-id",
+          values: ["low"],
+          defaultValue: "low",
+          fixedValue: "low",
+        },
+      },
+      {
+        entryId: "agy/gemini-4-hydrogen-medium",
+        adapterId: "agy",
+        nativeId: "gemini-4-hydrogen-medium",
+        label: "Gemini 4 Hydrogen (Medium)",
+        familyId: "gemini-4-hydrogen",
+        source: "native-live",
+        selectionKind: "fixed",
+        discoveredAt: "2026-11-13T00:00:00.000Z",
+        hidden: false,
+        availability: "listed",
+        capabilityRevision: "1",
+        effort: {
+          status: "supported",
+          transport: "variant-id",
+          values: ["medium"],
+          defaultValue: "medium",
+          fixedValue: "medium",
+        },
+      },
+      {
+        entryId: "agy/gemini-4-hydrogen-high",
+        adapterId: "agy",
+        nativeId: "gemini-4-hydrogen-high",
+        label: "Gemini 4 Hydrogen (High)",
+        familyId: "gemini-4-hydrogen",
+        source: "native-live",
+        selectionKind: "fixed",
+        discoveredAt: "2026-11-13T00:00:00.000Z",
+        hidden: false,
+        availability: "listed",
+        capabilityRevision: "1",
+        effort: {
+          status: "supported",
+          transport: "variant-id",
+          values: ["high"],
+          defaultValue: "high",
+          fixedValue: "high",
+        },
+      },
+    ];
+
+    const choices = buildModelChoices(entries);
+    expect(choices).toHaveLength(1);
+    const hydrogen = choices[0]!;
+    expect(hydrogen.choiceId).toBe("gemini-4-hydrogen");
+    expect(hydrogen.label).toBe("Gemini 4 Hydrogen");
+    expect(hydrogen.defaultEffort).toBe("high");
+    expect(hydrogen.nativeId).toBe("gemini-4-hydrogen-high");
+    expect(hydrogen.effortValues).toEqual(["low", "medium", "high", "xhigh"]);
+    expect(hydrogen.variantByEffort).toEqual({
+      low: "gemini-4-hydrogen-low",
+      medium: "gemini-4-hydrogen-medium",
+      high: "gemini-4-hydrogen-high",
+      xhigh: "gemini-4-hydrogen-xhigh",
     });
   });
 });

@@ -64,8 +64,14 @@ export class AgyAccountJobRunner
       signal?.removeEventListener("abort", abort);
       if (
         (await this.processes.observe(process.id)).state === "confirmed_exited"
-      )
-        await rm(cwd, { recursive: true, force: true });
+      ) {
+        await rm(cwd, {
+          recursive: true,
+          force: true,
+          maxRetries: 6,
+          retryDelay: 50,
+        }).catch(() => {});
+      }
     });
     void completion.catch(() => {});
     return { process, completion };

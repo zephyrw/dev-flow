@@ -3,7 +3,12 @@ import { AppDialog } from "./AppDialog.js";
 import { ToolModelDialog } from "./ToolModelDialog.js";
 import { getExecutionSpec, formatApiError } from "./model-api.js";
 import type { ToolProfile } from "../../../../packages/contracts/src/index.js";
-import { formatToolName, formatModelName } from "../../../../packages/presentation/src/model-display.js";
+import {
+  formatToolName,
+  formatModelName,
+  formatEffortDisplayLabel,
+  isHydrogenModelDisplayId,
+} from "../../../../packages/presentation/src/model-display.js";
 import "./plan-approval.css";
 import {
   ApprovalTarget,
@@ -360,7 +365,9 @@ export function PlanApprovalDialog({
               <div><dt>工具</dt><dd>{formatToolName(executor.adapterId)}</dd></div>
               <div><dt>模型</dt><dd>{formatModelName(executor.adapterId, executor.modelId) || "工具默认"}</dd></div>
               <div><dt>思考强度</dt><dd>{executor.reasoning?.mode === "explicit"
-                ? ({ low: "低", medium: "中", high: "高", xhigh: "极高" }[executor.reasoning.value] ?? executor.reasoning.value)
+                ? (isHydrogenModelDisplayId(executor.modelId)
+                  ? formatEffortDisplayLabel(executor.reasoning.value, executor.modelId)
+                  : ({ low: "低", medium: "中", high: "高", xhigh: "极高" }[executor.reasoning.value] ?? executor.reasoning.value))
                 : executor.reasoning?.mode === "not-applicable" ? "不适用" : "工具默认"}</dd></div>
             </dl>
           ) : <p role="alert">暂时无法读取执行模型，请重新打开弹窗。</p>}

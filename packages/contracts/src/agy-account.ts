@@ -99,6 +99,7 @@ export const AgyAccountSchema = z.object({
     observed_at: z.string().min(1),
     executable_fingerprint: z.string().min(1),
     cli_version: z.string(),
+    credential_revision: z.number().int().positive().optional(),
   }).optional(),
 });
 export type AgyAccount = z.infer<typeof AgyAccountSchema>;

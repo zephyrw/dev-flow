@@ -5,6 +5,9 @@ import type { AgyAccountService } from "../../../../packages/agy-accounts/src/se
 import type { Engine } from "../../../../packages/core/src/engine.js";
 import type { ModelCatalogService } from "../../../../packages/core/src/model-catalog-service.js";
 import { ModelAccessService } from "../../../../packages/core/src/model-access-service.js";
+import { resolveAgyAccountContext } from "../../../../packages/core/src/model-identity.js";
+import { FlowError } from "../../../../packages/contracts/src/index.js";
+import { isHydrogenModelId } from "../../../../packages/adapters/agy/src/model-configuration.js";
 import { readMaintenanceMarker } from "../../../../packages/installer/src/transaction.js";
 import { actionInput, key, modelInput, nickname, scenes } from "../../../../packages/group-chat/src/contracts.js";
 import { createGroupModelRunner, type RunModel } from "../../../../packages/group-chat/src/model-runner.js";
@@ -17,17 +20,24 @@ const mutation = z.object({ version });
 const groupInput = z.object({ title, human: nickname, members: z.array(modelInput).min(1).max(16), admin: z.number().int().min(0), model_workspace: z.string().trim().min(1).max(4096).optional() });
 export function registerGroupChat(app: FastifyInstance, engine: Engine, catalog: ModelCatalogService, human: (req: FastifyRequest) => unknown, accountService: AgyAccountService, runModel?: RunModel, skillPath?: string, accessService?: ModelAccessService) {
   const access = accessService ?? new ModelAccessService(engine.store, { catalog });
-  const runner = createGroupModelRunner(async (tool, cwd) => {
+  const loadToolCatalog = async (tool: string, cwd?: string) => {
     const scope = tool === "codebuddy-code" && cwd ? "workspace:" + cwd : undefined;
+    if (tool === "agy" && accountService.isManaged()) {
+      await accountService.syncActiveAccountFromHost();
+    }
     let models = catalog.getModels(tool, scope);
-    if (tool === "codebuddy-code" && (models.status !== "fresh" || models.discoveryStatus === "missing")) {
+    if (
+      (tool === "codebuddy-code" || (tool === "agy" && accountService.isManaged())) &&
+      (models.status !== "fresh" || models.discoveryStatus === "missing")
+    ) {
       const { operation } = catalog.refreshModels({ adapter: tool, scope_id: scope, request_id: randomUUID() });
       const result = await catalog.waitForOperation(operation.id);
-      if (result.status !== "committed") throw new Error(result.error_message ?? "CodeBuddy 模型目录读取失败，请刷新后重试");
+      if (result.status !== "committed") throw new Error(result.error_message ?? "模型目录读取失败，请刷新后重试");
       models = catalog.getModels(tool, scope);
     }
     return models;
-  }, engine.config.models.codex_executable, engine.config.models.agy_executable, accountService, async (member, cwd, models, signal) => {
+  };
+  const runner = createGroupModelRunner(loadToolCatalog, engine.config.models.codex_executable, engine.config.models.agy_executable, accountService, async (member, cwd, models, signal) => {
     signal.throwIfAborted();
     const profile = {
       id: member.id, revision: 1, adapterId: member.tool, modelSelection: "explicit" as const,
@@ -65,15 +75,56 @@ export function registerGroupChat(app: FastifyInstance, engine: Engine, catalog:
     human(req);
     return params.parse(req.params).id;
   };
+  const validateGroupMembers = async (members: Array<z.infer<typeof modelInput>>, modelWorkspace?: string) => {
+    const agyManaged = accountService.isManaged();
+    let agyCatalog: Awaited<ReturnType<typeof loadToolCatalog>> | undefined;
+    for (const member of members) {
+      if (member.tool !== "agy") continue;
+      const hydrogen = isHydrogenModelId(member.model);
+      const agyContext = resolveAgyAccountContext(engine.store);
+      if (hydrogen && (!agyContext.verified || !agyContext.contextKey)) {
+        throw new FlowError("AGY_MODEL_CAPABILITY_UNKNOWN", "当前未确认 AGY 真实账号身份与认证上下文，无法保存 Gemini 4 Hydrogen", 409);
+      }
+      if (!hydrogen && !agyManaged) {
+        const peek = catalog.getModels("agy");
+        if (peek.status !== "fresh" || peek.discoveryStatus === "missing") continue;
+      }
+      if (!agyCatalog) agyCatalog = await loadToolCatalog("agy", modelWorkspace);
+      if (
+        agyCatalog.status !== "fresh" ||
+        agyCatalog.discoveryStatus === "missing" ||
+        (hydrogen && (!agyCatalog.accountContextKey || agyCatalog.accountContextKey !== agyContext.contextKey))
+      ) {
+        throw new FlowError("MODEL_NOT_LISTED", "当前 AGY 账号模型目录尚未确认，无法保存群配置", 422);
+      }
+      const entry = agyCatalog.entries.find(
+        item => item.nativeId === member.model && !item.hidden && item.availability === "listed" && item.selectionKind === "fixed",
+      );
+      if (!entry) {
+        throw new FlowError("MODEL_NOT_LISTED", `当前 AGY 账号不支持模型 ${member.model}`, 422);
+      }
+      if (member.effort) {
+        if (entry.effort.status !== "supported" || !entry.effort.values.includes(member.effort)) {
+          throw new FlowError("EFFORT_UNSUPPORTED", `模型 ${member.model} 不支持思考强度 ${member.effort}`, 422);
+        }
+        const expectedVariant = entry.effort.variants?.[member.effort];
+        if (expectedVariant && expectedVariant !== member.model) {
+          throw new FlowError("EFFORT_UNSUPPORTED", `模型 ${member.model} 与思考强度 ${member.effort} 不匹配`, 422);
+        }
+      }
+    }
+  };
   app.get("/api/groups", req => { human(req); return chat.groups(); });
-  app.post("/api/groups", req => {
+  app.post("/api/groups", async req => {
     human(req);
     const input = groupInput.parse(req.body);
+    await validateGroupMembers(input.members, input.model_workspace);
     return chat.createGroup(input.title, input.human, input.members, input.admin, input.model_workspace);
   });
-  app.put("/api/groups/:id", req => {
+  app.put("/api/groups/:id", async req => {
     const group = id(req);
     const input = groupInput.extend({ version }).parse(req.body);
+    await validateGroupMembers(input.members, input.model_workspace);
     return chat.replaceGroup(group, input.version, input.title, input.human, input.members, input.admin, input.model_workspace);
   });
   app.delete("/api/groups/:id", async req => {

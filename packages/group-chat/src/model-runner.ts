@@ -67,10 +67,25 @@ export function createGroupModelRunner(
     const tool = (member.tool as string) === "codebuddy" ? "codebuddy-code" : member.tool;
     if (tool === "codebuddy-code" && !modelWorkspace) throw new Error("CodeBuddy 需要配置模型工作区，请编辑群配置后同步会话成员");
     const nativeCwd = tool === "codebuddy-code" ? modelWorkspace! : cwd;
-    const catalog = await getCatalog(tool, nativeCwd);
-    const entry = catalog.entries.find(item => item.nativeId === member.model && !item.hidden);
-    if (!entry || entry.selectionKind !== "fixed" || entry.availability === "unavailable")
-      throw new Error("所选模型不在当前可用目录，请刷新工具模型目录");
+    const managedAgy = tool === "agy" && Boolean(accountService?.isManaged());
+    const findUsableEntry = (cat: ModelCatalog, targetId: string) =>
+      cat.entries.find(item =>
+        item.nativeId === targetId &&
+        !item.hidden &&
+        item.selectionKind === "fixed" &&
+        item.availability !== "unavailable" &&
+        (tool !== "agy" || item.availability === "listed"));
+
+    let catalog = await getCatalog(tool, nativeCwd);
+    let entry = findUsableEntry(catalog, member.model);
+    if (!managedAgy) {
+      if (!entry) {
+        throw new Error("所选模型不在当前可用目录，请刷新工具模型目录");
+      }
+      if (member.effort && (entry.effort.status !== "supported" || !entry.effort.values.includes(member.effort))) {
+        throw new Error("所选模型不支持当前配置的思考强度");
+      }
+    }
     if (execute && tool !== "codex") throw new Error("当前工具未启用隔离执行，可改为仅回答");
     signal.throwIfAborted();
     const executable = resolveAdapterExecutable(tool, tool === "codex" ? customCodex : tool === "agy" ? customAgy : undefined);
@@ -86,16 +101,38 @@ export function createGroupModelRunner(
     try {
       if (tool === "codebuddy-code") await verifyModel?.(member, nativeCwd, catalog, signal);
       signal.throwIfAborted();
+      if (managedAgy) {
+        const targetModel = (member.effort ? entry?.effort.variants?.[member.effort] : undefined) ?? member.model;
+        accountCall!.model = targetModel;
+        permit = await accounts!.acquire(accountCall!, (request, abort) => acquireGroupAgyPermit(accountService!, request, abort));
+        signal.throwIfAborted();
+        // 基于最终落定账号的实际目录重新核验模型与思考强度（禁止静默降档）
+        catalog = await getCatalog(tool, nativeCwd);
+        if (catalog.status !== "fresh" || catalog.discoveryStatus === "missing") {
+          throw new Error("当前 AGY 账号模型目录尚未确认，请刷新后重试");
+        }
+        entry = findUsableEntry(catalog, targetModel) ?? findUsableEntry(catalog, member.model);
+        if (!entry) {
+          throw new Error("当前落定 AGY 账号不支持所选模型，请切换支持账号或调整成员模型");
+        }
+        if (member.effort && (entry.effort.status !== "supported" || !entry.effort.values.includes(member.effort))) {
+          throw new Error("当前落定 AGY 账号不支持所选思考强度");
+        }
+      }
+      const resolvedModelId = (member.effort ? entry!.effort.variants?.[member.effort] : undefined) ?? member.model;
+      if (tool === "agy" && entry && member.effort && entry.effort.variants?.[member.effort] && entry.effort.variants[member.effort] !== resolvedModelId) {
+        throw new Error("模型变体与思考强度配置不一致");
+      }
       const invocation = adapters.mustGet(tool).buildInvocation({
         workflowId: session, runId, stage: "group_chat", epoch: 0,
         purpose: execute ? "implement" : "aside",
         workspaceRoots: { group: nativeCwd }, allowedPaths: [nativeCwd],
         toolProfile: {
           id: member.id, revision: 1, adapterId: tool, modelSelection: "explicit",
-          selectionKind: "fixed", modelId: member.model, options: {},
+          selectionKind: "fixed", modelId: resolvedModelId, options: {},
           reasoning: member.effort ? { mode: "explicit", value: member.effort } : undefined,
         },
-        catalogEntry: entry, selectionCapability: selectionCapabilityFromCatalog(catalog, entry),
+        catalogEntry: entry!, selectionCapability: selectionCapabilityFromCatalog(catalog, entry!),
         promptKind: "user", prompt, timeoutMs: 300_000,
         ...(tool === "codex" ? { outputPath } : {}),
       }, executable);
@@ -128,15 +165,8 @@ export function createGroupModelRunner(
       }
       if (tool === "agy") {
         invocation.args.splice(0, 0, "--disable-slash-commands", "--sandbox");
-        if (accountService?.isManaged()) {
-          const model = (member.effort ? entry.effort.variants?.[member.effort] : undefined) ?? member.model;
-          accountCall!.model = model;
-          permit = await accounts!.acquire(accountCall!, (request, abort) => acquireGroupAgyPermit(accountService, request, abort));
-          signal.throwIfAborted();
-          // Admission may have waited for another account. Rebuild model/effort
-          // selection from that account's catalog before starting any process.
-          if ((await getCatalog(tool, nativeCwd)).scopeHash !== catalog.scopeHash) throw new GroupCatalogChanged();
-          accountService.markUsageStarted(permit.permit_id);
+        if (permit) {
+          accountService!.markUsageStarted(permit.permit_id);
         }
       }
       signal.throwIfAborted();

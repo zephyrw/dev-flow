@@ -34,6 +34,12 @@ const HEADER_TOKENS = new Set([
 // must not acquire an effort capability just because their name ends in -high.
 // 注意：思考强度严格按家族对齐（例如 Gemini 3.8 Flash 包含 high/medium/low，不存在 xhigh/max/ultra）。
 export const AGY_VARIANTS: Record<string, Record<string, string>> = {
+  "gemini-4-hydrogen": {
+    xhigh: "gemini-4-hydrogen-xhigh",
+    high: "gemini-4-hydrogen-high",
+    medium: "gemini-4-hydrogen-medium",
+    low: "gemini-4-hydrogen-low",
+  },
   "gemini-4-argon": {
     high: "gemini-4-argon-high",
     medium: "gemini-4-argon-medium",
@@ -130,6 +136,12 @@ export function knownAgyEffortFor(nativeId: string): {
     accessModelKey: fixed.family,
     ...(providerId ? { providerId } : {}),
   };
+}
+
+export function isHydrogenModelId(modelId?: string | null): boolean {
+  if (!modelId) return false;
+  const trimmed = modelId.trim().toLowerCase();
+  return trimmed === "gemini-4-hydrogen" || trimmed.startsWith("gemini-4-hydrogen-");
 }
 
 export type AgyModelCategory = "gemini" | "other" | "unknown";
@@ -248,14 +260,49 @@ function parseAgyNativeIds(input: CatalogParseInput): string[] {
   return ids;
 }
 
+function isValidEmptyAgyCatalog(
+  input: CatalogParseInput,
+  lines: string[],
+  overLimit: boolean,
+): boolean {
+  if (input.truncated || overLimit) return false;
+  if (input.allowEmpty) return true;
+  if ((input.stderr ?? "").trim().length > 0) return false;
+  const nonEmpty = lines.map((line) => line.trim()).filter(Boolean);
+  if (nonEmpty.length === 0) return false;
+  return nonEmpty.every((line) => {
+    if (/\b(?:error|failed|failure|unable|exception)\b|失败|异常|错误/i.test(line)) {
+      return false;
+    }
+    const lower = line.toLowerCase();
+    return (
+      HEADER_TOKENS.has(lower) ||
+      /^(?:fetching available models\.{0,3}|available models:?|no (?:available )?models(?: available)?\.?|暂无可用模型)$/i.test(line)
+    );
+  });
+}
+
 export function parseAgyModelCatalog(input: CatalogParseInput): ModelCatalog {
   const classified = discoveryFailureFromInput(input);
   if (classified) {
     return failedModelCatalog(ADAPTER_ID, input, classified.code, classified.message);
   }
   try {
+    const prepared = prepareCatalogText(input.stdout, input.truncated === true);
+    if (prepared.overLimit) {
+      throw new Error("over-limit");
+    }
     const ids = parseAgyNativeIds(input);
+    const clock = input.discoveredAt ?? new Date().toISOString();
     if (ids.length === 0) {
+      if (isValidEmptyAgyCatalog(input, prepared.lines, prepared.overLimit)) {
+        return freshModelCatalog(
+          ADAPTER_ID,
+          { ...input, discoveredAt: clock },
+          [],
+          { discoveryStatus: "complete" },
+        );
+      }
       return failedModelCatalog(
         ADAPTER_ID,
         input,
@@ -263,7 +310,6 @@ export function parseAgyModelCatalog(input: CatalogParseInput): ModelCatalog {
         "agy models 未解析到可调用模型 ID",
       );
     }
-    const clock = input.discoveredAt ?? new Date().toISOString();
     const families = agyFamilyVariants(ids);
     const entries = ids.map((nativeId) => {
       const fixed = fixedEffort(nativeId);

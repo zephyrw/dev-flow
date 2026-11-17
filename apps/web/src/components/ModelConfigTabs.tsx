@@ -77,6 +77,7 @@ export function ModelConfigTabs({
       <div className="ms-tabs-content">
         {activeTab === "planner" && (
           <ModelProfileEditor
+            key="planner"
             profile={plannerProfile}
             catalogScope={catalogScope}
             toolLabel="工具"
@@ -87,6 +88,7 @@ export function ModelConfigTabs({
 
         {activeTab === "executor" && (
           <ModelProfileEditor
+            key="executor"
             profile={executorProfile}
             catalogScope={catalogScope}
             toolLabel="工具"
@@ -138,6 +140,7 @@ export function ModelConfigTabs({
               </div>
             ) : (
               <ModelProfileEditor
+                key={activeTab}
                 catalogScope={catalogScope}
                 profile={
                   currentOverride.mode === "explicit"

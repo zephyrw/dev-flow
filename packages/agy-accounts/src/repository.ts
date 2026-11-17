@@ -34,8 +34,10 @@ import type { z } from "zod";
 
 export class AgyAccountRepository {
   constructor(private store: Store) {}
-  onChange(listener: () => void): () => void {
-    const changed = (change: { kind: string }) => { if (change.kind.startsWith("agy_")) listener(); };
+  onChange(listener: (change: { kind: string; id: string; owner: string }) => void): () => void {
+    const changed = (change: { kind: string; id: string; owner: string }) => {
+      if (change.kind.startsWith("agy_")) listener(change);
+    };
     this.store.on("change", changed);
     return () => this.store.off("change", changed);
   }

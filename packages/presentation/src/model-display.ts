@@ -40,6 +40,7 @@ const KNOWN_MODEL_LABELS: Record<string, string> = {
   "gpt-5.5": "GPT-5.5",
   "gemini-3.8-flash": "Gemini 3.8 Flash",
   "gemini-4-argon": "Gemini 4 Argon",
+  "gemini-4-hydrogen": "Gemini 4 Hydrogen",
   "claude-opus-5-5": "Claude Opus 5.5",
   "claude-sonnet-5-5": "Claude Sonnet 5.5",
   "gpt-oss-120b": "GPT OSS 120B",
@@ -146,21 +147,46 @@ export function formatModelName(
   if (KNOWN_MODEL_LABELS[token]) return KNOWN_MODEL_LABELS[token];
   if (KNOWN_MODEL_LABELS[lower]) return KNOWN_MODEL_LABELS[lower];
 
-  // 针对形如 gemini-3.8-flash-high 或 gemini-3.8-flash-medium 的变体 ID，映射家族名
+  // 针对形如 gemini-3.8-flash-high 或 gemini-4-hydrogen-xhigh 的变体 ID，映射家族名
   for (const [family, label] of Object.entries(KNOWN_MODEL_LABELS)) {
+    const suffixes =
+      family === "gemini-4-hydrogen"
+        ? ["-xhigh", "-high", "-medium", "-low"]
+        : ["-high", "-medium", "-low"];
     if (
-      token === `${family}-high` ||
-      token === `${family}-medium` ||
-      token === `${family}-low` ||
-      lower === `${family}-high` ||
-      lower === `${family}-medium` ||
-      lower === `${family}-low`
+      suffixes.some(
+        (suffix) => token === `${family}${suffix}` || lower === `${family}${suffix}`,
+      )
     ) {
       return label;
     }
   }
 
   return token;
+}
+
+const HYDROGEN_EFFORT_LABELS: Record<string, string> = {
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  xhigh: "Extra",
+};
+
+export function isHydrogenModelDisplayId(modelId?: string | null): boolean {
+  const token = modelId?.trim().split("/").at(-1)?.toLowerCase() ?? "";
+  return token === "gemini-4-hydrogen" || token.startsWith("gemini-4-hydrogen-");
+}
+
+export function formatEffortDisplayLabel(
+  effort: string,
+  modelId?: string | null,
+): string {
+  const trimmed = effort.trim();
+  if (!trimmed) return effort;
+  if (isHydrogenModelDisplayId(modelId)) {
+    return HYDROGEN_EFFORT_LABELS[trimmed.toLowerCase()] ?? trimmed;
+  }
+  return trimmed;
 }
 
 export function formatRuntimeDisplay(
@@ -195,14 +221,15 @@ export function formatRuntimeDisplay(
   if (!tool) return model;
   if (!model) return tool;
 
-  const effortPart =
+  const effortLabel =
     eff &&
     eff !== "default" &&
     eff !== "none" &&
     eff !== "native-default" &&
     eff !== "not-applicable"
-      ? ` (${eff})`
+      ? formatEffortDisplayLabel(eff, modelId)
       : "";
+  const effortPart = effortLabel ? ` (${effortLabel})` : "";
 
   return `${tool} · ${model}${effortPart}`;
 }
@@ -234,7 +261,11 @@ export function buildModelChoices(entries: ModelEntry[]): ModelChoice[] {
       const detected = detectAgyFamily(entry.nativeId);
       if (detected) {
         familyKey = detected;
-        for (const suffix of ["-high", "-medium", "-low"] as const) {
+        const suffixes =
+          detected === "gemini-4-hydrogen"
+            ? (["-xhigh", "-high", "-medium", "-low"] as const)
+            : (["-high", "-medium", "-low"] as const);
+        for (const suffix of suffixes) {
           if (entry.nativeId.endsWith(suffix)) {
             fixedEffort = suffix.slice(1);
             break;
@@ -255,19 +286,28 @@ export function buildModelChoices(entries: ModelEntry[]): ModelChoice[] {
         variants[fixedEffort] = entry.nativeId;
       }
 
-      const effortValues = Array.from(
+      const rawEffortValues = Array.from(
         new Set([
           ...(existing?.effortValues ?? []),
           ...entry.effort.values,
           ...Object.keys(variants),
         ]),
       );
+      const hydrogenOrder = ["low", "medium", "high", "xhigh"];
+      const effortValues =
+        familyKey === "gemini-4-hydrogen"
+          ? [
+              ...hydrogenOrder.filter((v) => rawEffortValues.includes(v)),
+              ...rawEffortValues.filter((v) => !hydrogenOrder.includes(v)),
+            ]
+          : rawEffortValues;
 
       const label = formatModelName(entry.adapterId, familyKey);
       const defaultNative =
         variants["high"] ||
         variants["medium"] ||
         variants["low"] ||
+        variants["xhigh"] ||
         entry.nativeId;
 
       choicesMap.set(scope + familyKey, {
@@ -276,9 +316,13 @@ export function buildModelChoices(entries: ModelEntry[]): ModelChoice[] {
         entryIds: [...(existing?.entryIds ?? []), entry.entryId],
         effortValues,
         defaultEffort:
-          existing?.defaultEffort ??
-          entry.effort.defaultValue ??
-          (effortValues.includes("high") ? "high" : effortValues[0]),
+          familyKey === "gemini-4-hydrogen"
+            ? (effortValues.includes("high")
+              ? "high"
+              : existing?.defaultEffort ?? entry.effort.defaultValue ?? effortValues[0])
+            : existing?.defaultEffort ??
+              entry.effort.defaultValue ??
+              (effortValues.includes("high") ? "high" : effortValues[0]),
         variantByEffort: variants,
         nativeId: defaultNative,
         providerId: entry.providerId,
@@ -326,6 +370,9 @@ export function buildModelChoices(entries: ModelEntry[]): ModelChoice[] {
 }
 
 function detectAgyFamily(nativeId: string): string | undefined {
+  if (nativeId === "gemini-4-hydrogen-xhigh") {
+    return "gemini-4-hydrogen";
+  }
   for (const suffix of ["-high", "-medium", "-low"]) {
     if (nativeId.endsWith(suffix)) {
       return nativeId.slice(0, -suffix.length);

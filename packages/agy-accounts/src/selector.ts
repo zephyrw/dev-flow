@@ -6,6 +6,7 @@ import type {
   AgyQuotaTrigger,
 } from "../../contracts/src/agy-account.js";
 import { compareQuotaRanks, quotaRankingWindows } from "./quota-ranking.js";
+import { isHydrogenModelId } from "../../adapters/agy/src/model-configuration.js";
 
 export interface CandidateEvaluation {
   account_id: string;
@@ -34,6 +35,7 @@ export interface SelectionPolicy {
   refresh_verified_max_age_hours?: number;
   night_end_at?: number;
   required_model_ids?: string[];
+  current_executable_fingerprint?: string;
   active_category?: "gemini" | "other" | "mixed" | "unknown" | null;
   quota_trigger?: AgyQuotaTrigger;
   snapshot_max_age_ms?: number;
@@ -47,6 +49,7 @@ export interface AccountEvaluationInput {
   policy: {
     required_pool_ids: string[];
     required_model_ids?: string[];
+    current_executable_fingerprint?: string;
     active_category?: "gemini" | "other" | "mixed" | "unknown" | null;
     quota_trigger?: AgyQuotaTrigger;
     snapshot_max_age_ms?: number;
@@ -73,6 +76,55 @@ export interface AccountEvaluationOutput {
   is_projected_reset: boolean;
 }
 
+export function isAccountModelsFresh(
+  account: AgyAccount,
+  evaluationTime: number,
+  options: {
+    required_model_ids?: string[];
+    current_executable_fingerprint?: string;
+  } = {},
+): boolean {
+  const models = account.models;
+  if (!models) return false;
+  const observedMs = Date.parse(models.observed_at);
+  if (!Number.isFinite(observedMs) || evaluationTime - observedMs > 15 * 60_000) {
+    return false;
+  }
+  const strictCatalog = Boolean(
+    options.required_model_ids?.some((id) => isHydrogenModelId(id)),
+  );
+  if (strictCatalog) {
+    if (
+      models.credential_revision === undefined ||
+      models.credential_revision !== account.credential_revision
+    ) {
+      return false;
+    }
+    if (
+      options.current_executable_fingerprint &&
+      (!models.executable_fingerprint ||
+        models.executable_fingerprint !== options.current_executable_fingerprint)
+    ) {
+      return false;
+    }
+    return true;
+  }
+  if (
+    models.credential_revision !== undefined &&
+    models.credential_revision !== account.credential_revision
+  ) {
+    return false;
+  }
+  if (
+    options.current_executable_fingerprint &&
+    models.executable_fingerprint &&
+    models.executable_fingerprint !== options.current_executable_fingerprint
+  ) {
+    return false;
+  }
+  return true;
+}
+
 export function evaluateAccountForDemand(
   input: AccountEvaluationInput,
 ): AccountEvaluationOutput {
@@ -86,9 +138,13 @@ export function evaluateAccountForDemand(
   if (account.state === "incompatible") excluded_reasons.push("account_incompatible");
   if (account.state === "reauth_required") excluded_reasons.push("reauth_required");
   if (hasAccountIdentityMismatch(account)) excluded_reasons.push("account_identity_mismatch");
-  if (account.models && evaluationTime - Date.parse(account.models.observed_at) <= 15 * 60_000 &&
-      policy.required_model_ids?.some(id => !account.models!.native_ids.includes(id)))
+  const modelsFresh = isAccountModelsFresh(account, evaluationTime, policy);
+  if (
+    modelsFresh &&
+    policy.required_model_ids?.some((id) => !account.models!.native_ids.includes(id))
+  ) {
     excluded_reasons.push("model_not_supported");
+  }
   // Quota readiness is checked against the demanded pools below. A legacy
   // pending_quota state may have been caused solely by the other category.
 
@@ -153,7 +209,10 @@ export function evaluateAccountForDemand(
   let hasZeroWindowUnreset = false;
   let hasZeroWindowProjected = false;
   let isProjectedExpiredOrZero = false;
-  let needsFreshProbe = false;
+  const requiresStrictModelCatalog = Boolean(
+    policy.required_model_ids?.some((id) => isHydrogenModelId(id)),
+  );
+  let needsFreshProbe = Boolean(requiresStrictModelCatalog && !modelsFresh);
 
   const demandedPools = requiredQuotaPools(
     [...poolSnaps.values()],
@@ -525,6 +584,7 @@ export function selectCandidates(
       policy: {
         required_pool_ids: requiredPoolIds,
         required_model_ids: policy.required_model_ids,
+        current_executable_fingerprint: policy.current_executable_fingerprint,
         active_category: policy.active_category,
         quota_trigger: policy.quota_trigger,
         snapshot_max_age_ms: policy.snapshot_max_age_ms,

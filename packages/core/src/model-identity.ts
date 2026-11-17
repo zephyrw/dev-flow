@@ -38,8 +38,57 @@ export type ManagedAgyModelIdentity = {
   credentialRevision: number;
 };
 
+export type UnmanagedAgyModelIdentity = {
+  accountId: string;
+  contextKey: string;
+  displayLabel?: string;
+};
+
+const UNMANAGED_AGY_IDENTITY_KIND = "unmanaged_agy_identity";
+
 export function managedAgyAccountIdentityId(realmId: string, accountId: string): string {
   return "agy-account:" + JSON.stringify([realmId, accountId]);
+}
+
+export function managedAgyAccountContextKey(managed: ManagedAgyModelIdentity): string {
+  return `agy:${managed.realmId}:${managed.accountId}:e${managed.authEpoch}:c${managed.credentialRevision}`;
+}
+
+export function recordUnmanagedAgyIdentity(
+  store: Store,
+  identity: UnmanagedAgyModelIdentity,
+): UnmanagedAgyModelIdentity {
+  const accountId = identity.accountId.trim();
+  const contextKey = identity.contextKey.trim();
+  if (!accountId || !contextKey) {
+    throw new FlowError("INVALID_REQUEST", "非托管 AGY 身份绑定必须提供非空账号 ID 与认证上下文", 422);
+  }
+  const normalized: UnmanagedAgyModelIdentity = {
+    accountId,
+    contextKey,
+    ...(identity.displayLabel?.trim() ? { displayLabel: identity.displayLabel.trim() } : {}),
+  };
+  store.put(UNMANAGED_AGY_IDENTITY_KIND, "default", "agy", normalized);
+  return normalized;
+}
+
+export function clearUnmanagedAgyIdentity(store: Store): void {
+  store.remove(UNMANAGED_AGY_IDENTITY_KIND, "default");
+}
+
+export function readUnmanagedAgyModelIdentity(store: Store): UnmanagedAgyModelIdentity | undefined {
+  const raw = store.get<UnmanagedAgyModelIdentity>(UNMANAGED_AGY_IDENTITY_KIND, "default");
+  if (!raw) return undefined;
+  const accountId = typeof raw.accountId === "string" ? raw.accountId.trim() : "";
+  const contextKey = typeof raw.contextKey === "string" ? raw.contextKey.trim() : "";
+  if (!accountId || !contextKey) return undefined;
+  return {
+    accountId,
+    contextKey,
+    ...(typeof raw.displayLabel === "string" && raw.displayLabel.trim()
+      ? { displayLabel: raw.displayLabel.trim() }
+      : {}),
+  };
 }
 
 export function readManagedAgyModelIdentity(store: Store): ManagedAgyModelIdentity | undefined {
@@ -59,17 +108,55 @@ export function readManagedAgyModelIdentity(store: Store): ManagedAgyModelIdenti
   };
 }
 
+export function resolveAgyAccountContext(store: Store): {
+  managed?: ManagedAgyModelIdentity;
+  unmanaged?: UnmanagedAgyModelIdentity;
+  contextKey?: string;
+  verified: boolean;
+} {
+  const managed = readManagedAgyModelIdentity(store);
+  if (managed) {
+    return {
+      managed,
+      contextKey: managedAgyAccountContextKey(managed),
+      verified: true,
+    };
+  }
+  const unmanaged = readUnmanagedAgyModelIdentity(store);
+  if (unmanaged) {
+    return {
+      unmanaged,
+      contextKey: unmanaged.contextKey,
+      verified: true,
+    };
+  }
+  return { verified: false };
+}
+
 export function resolveModelIdentityInput(
   store: Store,
   profile: Pick<ToolProfile, "adapterId" | "nativeConfigProfile" | "providerConfigRef" | "modelId">,
   workspaceRoot?: string,
 ): AccessIdentityInput {
-  const managed = profile.adapterId === "agy" ? readManagedAgyModelIdentity(store) : undefined;
-  if (managed) return {
-    nativeConfigScope: `agy-managed:${managed.realmId}`,
-    accountId: managedAgyAccountIdentityId(managed.realmId, managed.accountId),
-    identityConfidence: "account",
-  };
+  if (profile.adapterId === "agy") {
+    const managed = readManagedAgyModelIdentity(store);
+    if (managed) {
+      return {
+        nativeConfigScope: `agy-managed:${managed.realmId}`,
+        accountId: managedAgyAccountIdentityId(managed.realmId, managed.accountId),
+        identityConfidence: "account",
+      };
+    }
+    const unmanaged = readUnmanagedAgyModelIdentity(store);
+    if (unmanaged) {
+      return {
+        nativeConfigScope: `agy-unmanaged:${unmanaged.accountId}`,
+        accountId: `agy-unmanaged:${unmanaged.accountId}`,
+        identityConfidence: "account",
+        displayLabel: unmanaged.displayLabel,
+      };
+    }
+  }
   const identity = identityInputFromProfile(profile);
   if (profile.adapterId !== "codebuddy-code" || !workspaceRoot) return identity;
   const scope = codeBuddyScope(workspaceRoot);

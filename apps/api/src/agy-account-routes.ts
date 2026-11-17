@@ -89,7 +89,9 @@ export function registerAgyAccountRoutes(
       operations: operations.map(publicAccountOperation) };
   };
   let snapshot: { at: number; value: unknown } | undefined;
-  const invalidate = repo.onChange(() => { snapshot = undefined; });
+  const invalidate = repo.onChange((change) => {
+    if (change.kind !== "agy_usage") snapshot = undefined;
+  });
   app.addHook("onClose", async () => invalidate());
   app.get("/api/agy-accounts/snapshot", async req => {
     human(req);
@@ -115,7 +117,9 @@ export function registerAgyAccountRoutes(
   app.get("/api/agy-accounts/notifications", { websocket: true }, (socket, req) => {
     human(req);
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const unsubscribe = repo.onChange(() => {
+    const unsubscribe = repo.onChange((change) => {
+      // 瞬时 probe/usage permit 生命周期变化不触发账号变更广播，避免打断模型下拉选择。
+      if (change.kind === "agy_usage") return;
       if (timer) return;
       timer = setTimeout(() => {
         timer = undefined;

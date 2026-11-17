@@ -373,4 +373,43 @@ describe("model catalog parse", () => {
     expect(unknown.accessModelKey).toBeUndefined();
   });
 
+  it("agy 真实识别 gemini-4-hydrogen 四档（xhigh/high/medium/low）与有效空目录、失败目录区分", async () => {
+    const hydrogenCatalog = await discoverAgyModels({
+      stdout: readFixture("agy", "models-20261113-hydrogen.txt"),
+      discoveredAt: DISCOVERED_AT,
+      scopeHash: "agy-hydrogen",
+      accountContextKey: "acc:supported",
+    });
+    expect(hydrogenCatalog.status).toBe("fresh");
+    expect(hydrogenCatalog.discoveryStatus).toBe("complete");
+    expect(hydrogenCatalog.accountContextKey).toBe("acc:supported");
+
+    for (const tier of ["low", "medium", "high", "xhigh"] as const) {
+      const entry = requireEntry(hydrogenCatalog, `gemini-4-hydrogen-${tier}`);
+      expect(entry.familyId).toBe("gemini-4-hydrogen");
+      expect(entry.availability).toBe("listed");
+      expect(entry.effort.status).toBe("supported");
+      expect(entry.effort.transport).toBe("none");
+      expect(entry.effort.fixedValue).toBe(tier);
+      expect(entry.effort.values).toEqual(["xhigh", "high", "medium", "low"]);
+      expect(entry.effort.variants).toEqual({
+        xhigh: "gemini-4-hydrogen-xhigh",
+        high: "gemini-4-hydrogen-high",
+        medium: "gemini-4-hydrogen-medium",
+        low: "gemini-4-hydrogen-low",
+      });
+    }
+
+    const emptyCatalog = await discoverAgyModels({
+      stdout: readFixture("agy", "models-empty.txt"),
+      discoveredAt: DISCOVERED_AT,
+      scopeHash: "agy-empty",
+      accountContextKey: "acc:empty",
+    });
+    expect(emptyCatalog.status).toBe("fresh");
+    expect(emptyCatalog.discoveryStatus).toBe("complete");
+    expect(emptyCatalog.entries).toEqual([]);
+    expect(emptyCatalog.accountContextKey).toBe("acc:empty");
+  });
+
 });

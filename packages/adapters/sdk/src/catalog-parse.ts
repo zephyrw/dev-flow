@@ -20,6 +20,8 @@ export type CatalogParseInput = {
   cliVersion?: string;
   nativeConfigScope?: string;
   scopeHash?: string;
+  accountContextKey?: string;
+  allowEmpty?: boolean;
   truncated?: boolean;
 };
 
@@ -209,6 +211,7 @@ export function failedModelCatalog(
     cliPath?: string;
     cliVersion?: string;
     nativeConfigScope?: string;
+    accountContextKey?: string;
     status: "failed";
     discoveryStatus: "missing";
     parserRevision: string;
@@ -232,6 +235,7 @@ export function failedModelCatalog(
   if (input.cliPath) catalog.cliPath = input.cliPath;
   if (input.cliVersion) catalog.cliVersion = input.cliVersion;
   if (input.nativeConfigScope) catalog.nativeConfigScope = input.nativeConfigScope;
+  if (input.accountContextKey) catalog.accountContextKey = input.accountContextKey;
   return ModelCatalogSchema.parse(catalog);
 }
 
@@ -256,6 +260,7 @@ export function freshModelCatalog(
     cliPath?: string;
     cliVersion?: string;
     nativeConfigScope?: string;
+    accountContextKey?: string;
     status: "fresh";
     discoveryStatus: ModelDiscoveryStatus;
     parserRevision: string;
@@ -275,6 +280,7 @@ export function freshModelCatalog(
   if (input.cliPath) catalog.cliPath = input.cliPath;
   if (input.cliVersion) catalog.cliVersion = input.cliVersion;
   if (input.nativeConfigScope) catalog.nativeConfigScope = input.nativeConfigScope;
+  if (input.accountContextKey) catalog.accountContextKey = input.accountContextKey;
   return ModelCatalogSchema.parse(catalog);
 }
 

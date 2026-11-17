@@ -101,6 +101,7 @@ export interface AccountIdentityResult {
 }
 
 export interface AccountProbePort {
+  getExecutableFingerprint?(): Promise<string | undefined>;
   probeModels?(options?: AccountProbeOptions): Promise<NonNullable<import("../../contracts/src/agy-account.js").AgyAccount["models"]>>;
   probeIdentity(options?: AccountProbeOptions): Promise<AccountIdentityResult>;
   probeUsage(options?: AccountProbeOptions): Promise<AccountProbeResult>;

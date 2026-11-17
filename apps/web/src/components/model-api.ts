@@ -12,6 +12,10 @@ import {
   type ToolProfile,
   type ToolSummary,
 } from "../../../../packages/contracts/src/index.js";
+import {
+  formatEffortDisplayLabel,
+  isHydrogenModelDisplayId,
+} from "../../../../packages/presentation/src/model-display.js";
 
 export const ROLE_LABELS = {
   planner: "规划",
@@ -171,8 +175,11 @@ export function toolLabel(adapterId: string): string {
   );
 }
 
-export function effortCaption(value?: string): string {
+export function effortCaption(value?: string, modelId?: string): string {
   if (!value) return "";
+  if (isHydrogenModelDisplayId(modelId)) {
+    return formatEffortDisplayLabel(value, modelId);
+  }
   const known = EFFORT_LABELS[value as keyof typeof EFFORT_LABELS];
   return known ? `${known} · ${value}` : value;
 }
@@ -191,7 +198,7 @@ export function profileSummary(
       : "未选择模型");
   const effort =
     profile.reasoning?.mode === "explicit"
-      ? effortCaption(profile.reasoning.value)
+      ? effortCaption(profile.reasoning.value, profile.modelId)
       : profile.reasoning?.mode === "native-default"
         ? "原生默认"
         : profile.reasoning?.mode === "not-applicable"
@@ -386,6 +393,7 @@ export async function getAdapterModels(
   discoveryStatus?: string;
   parserRevision?: string;
   cliVersion?: string;
+  accountContextKey?: string;
 }> {
   const query = scopeId ? `?scope_id=${encodeURIComponent(scopeId)}` : "";
   const data = await requestJson(
@@ -394,6 +402,12 @@ export async function getAdapterModels(
   );
   const catalog = data.catalog ?? data;
   const entries = data.entries ?? catalog?.entries ?? data.models ?? [];
+  const accountContextKey =
+    typeof data.accountContextKey === "string"
+      ? data.accountContextKey
+      : typeof catalog?.accountContextKey === "string"
+        ? catalog.accountContextKey
+        : undefined;
   return {
     entries: Array.isArray(entries) ? entries : [],
     catalog,
@@ -401,6 +415,7 @@ export async function getAdapterModels(
     discoveryStatus: data.discoveryStatus ?? catalog?.discoveryStatus,
     parserRevision: data.parserRevision ?? catalog?.parserRevision,
     cliVersion: typeof catalog?.cliVersion === "string" ? catalog.cliVersion : undefined,
+    accountContextKey,
   };
 }
 

@@ -14,6 +14,8 @@ import {
   isQoderProductIdentity,
 } from "../../packages/adapters/sdk/src/registry.js";
 import { clientInvocation } from "../../packages/adapters/sdk/src/invocation.js";
+import { agyArguments } from "../../packages/adapters/agy/src/session.js";
+import { frozenInvocationFromProfile } from "../../packages/core/src/run-profile.js";
 import { discoverModels as discoverClaudeModels } from "../../packages/adapters/claude/src/model-configuration.js";
 import { discoverModels as discoverGrokModels } from "../../packages/adapters/grok/src/model-configuration.js";
 import { discoverModels as discoverKimiModels } from "../../packages/adapters/kimi/src/model-configuration.js";
@@ -437,5 +439,42 @@ describe("clientInvocation 注入冻结模型选择", () => {
     expect(inv.args[modelAt + 1]).not.toContain("#");
     expect(inv.args).toContain("--variant");
     expect(inv.args).toContain("high");
+  });
+
+  it("AGY Gemini 4 Hydrogen Extra(xhigh) 仅通过 --model gemini-4-hydrogen-xhigh 派发且不被默认 --effort 覆盖", () => {
+    const inv = clientInvocation(
+      "agy",
+      runContext("agy", {
+        purpose: "implement",
+        modelId: "gemini-4-hydrogen-xhigh",
+        effort: "xhigh",
+      }),
+      "C:/agy.exe",
+    );
+    const modelAt = inv.args.indexOf("--model");
+    expect(inv.args[modelAt + 1]).toBe("gemini-4-hydrogen-xhigh");
+    expect(inv.args).not.toContain("--effort");
+    expect(inv.args).not.toContain("high");
+
+    const frozen = frozenInvocationFromProfile(
+      {
+        id: "executor",
+        revision: 1,
+        adapterId: "agy",
+        modelSelection: "explicit",
+        selectionKind: "fixed",
+        modelId: "gemini-4-hydrogen-xhigh",
+        reasoning: { mode: "explicit", value: "xhigh" },
+        options: {},
+      },
+      "profile-native",
+    );
+    expect(frozen.transport).toBe("variant-id");
+    expect(frozen.effortArgs).toEqual([]);
+    expect(frozen.modelToken).toBe("gemini-4-hydrogen-xhigh");
+
+    const fallbackArgs = agyArguments("gemini-4-hydrogen-xhigh", "Reply OK", 5);
+    expect(fallbackArgs).not.toContain("--effort");
+    expect(fallbackArgs[fallbackArgs.indexOf("--model") + 1]).toBe("gemini-4-hydrogen-xhigh");
   });
 });

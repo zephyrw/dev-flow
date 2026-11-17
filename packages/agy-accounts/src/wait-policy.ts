@@ -82,6 +82,7 @@ export function computeDomainWait(
         "reauth_required",
         "pending_quota_initialization",
         "missing_required_quota_pools",
+        "model_not_supported",
         "model_not_supported_in_pool",
         "quota_exhausted_unknown_window",
         "quota_window_unobserved",

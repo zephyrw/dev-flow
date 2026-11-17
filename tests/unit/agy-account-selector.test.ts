@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { selectCandidates, evaluateAccountForDemand } from "../../packages/agy-accounts/src/selector.js";
+import { selectCandidates, evaluateAccountForDemand, isAccountModelsFresh } from "../../packages/agy-accounts/src/selector.js";
 import type { AgyAccount, AgyQuotaSnapshot } from "../../packages/contracts/src/agy-account.js";
 
 describe("AGY Account Selector (AC-U04 & AC-U05)", () => {
@@ -272,5 +272,110 @@ describe("AGY Account Selector (AC-U04 & AC-U05)", () => {
     expect(evalInvalidTime.eligible_for_candidate).toBe(false);
     expect(evalInvalidTime.eligible_for_permit).toBe(false);
     expect(evalInvalidTime.excluded_reasons).toContain("weekly_exhausted_unknown_reset");
+  });
+
+  it("ACC-01: Hydrogen 严格校对 credential_revision 与当前 executable_fingerprint，缺失或变化视为未知进入刷新，非严格模型保持兼容", () => {
+    const base = buildAccount("acc-h", "Hydrogen Acc");
+    base.credential_revision = 2;
+    const snap = buildSnapshot("acc-h", 0.8, null);
+    snap.pool_id = "Gemini Models";
+    snap.model_ids = ["gemini-*"];
+
+    // 1. 缺失 credential_revision -> Hydrogen 视作目录未知 (needsFreshProbe -> permit:false, candidate:true)，不直接按不支持排除
+    const missingRevAcc: AgyAccount = {
+      ...base,
+      models: {
+        native_ids: ["gemini-3.8-flash-high"],
+        observed_at: new Date(now - 60_000).toISOString(),
+        cli_version: "1.5.6",
+        executable_fingerprint: "fp-current",
+      },
+    };
+    expect(
+      isAccountModelsFresh(missingRevAcc, now, {
+        required_model_ids: ["gemini-4-hydrogen-xhigh"],
+        current_executable_fingerprint: "fp-current",
+      }),
+    ).toBe(false);
+    const evalMissingRev = evaluateAccountForDemand({
+      account: missingRevAcc,
+      snapshots: [snap],
+      policy: {
+        required_pool_ids: ["Gemini Models"],
+        required_model_ids: ["gemini-4-hydrogen-xhigh"],
+        current_executable_fingerprint: "fp-current",
+      },
+      evaluationTime: now,
+    });
+    expect(evalMissingRev.excluded_reasons).not.toContain("model_not_supported");
+    expect(evalMissingRev.eligible_for_permit).toBe(false);
+    expect(evalMissingRev.eligible_for_candidate).toBe(true);
+
+    // 2. executable_fingerprint 变化 -> Hydrogen 即使 cached 包含 Hydrogen，也必须要求重新刷新而不直接授予 permit
+    const oldFpAcc: AgyAccount = {
+      ...base,
+      models: {
+        native_ids: ["gemini-4-hydrogen-xhigh"],
+        observed_at: new Date(now - 60_000).toISOString(),
+        cli_version: "1.5.6",
+        credential_revision: 2,
+        executable_fingerprint: "fp-old",
+      },
+    };
+    expect(
+      isAccountModelsFresh(oldFpAcc, now, {
+        required_model_ids: ["gemini-4-hydrogen-xhigh"],
+        current_executable_fingerprint: "fp-new",
+      }),
+    ).toBe(false);
+    const evalFpChanged = evaluateAccountForDemand({
+      account: oldFpAcc,
+      snapshots: [snap],
+      policy: {
+        required_pool_ids: ["Gemini Models"],
+        required_model_ids: ["gemini-4-hydrogen-xhigh"],
+        current_executable_fingerprint: "fp-new",
+      },
+      evaluationTime: now,
+    });
+    expect(evalFpChanged.eligible_for_permit).toBe(false);
+    expect(evalFpChanged.eligible_for_candidate).toBe(true);
+
+    // 3. 当 credential_revision 与 executable_fingerprint 均匹配 -> 放行 permit
+    const matchedAcc: AgyAccount = {
+      ...base,
+      models: {
+        native_ids: ["gemini-4-hydrogen-xhigh"],
+        observed_at: new Date(now - 60_000).toISOString(),
+        cli_version: "1.5.6",
+        credential_revision: 2,
+        executable_fingerprint: "fp-new",
+      },
+    };
+    expect(
+      isAccountModelsFresh(matchedAcc, now, {
+        required_model_ids: ["gemini-4-hydrogen-xhigh"],
+        current_executable_fingerprint: "fp-new",
+      }),
+    ).toBe(true);
+    const evalMatched = evaluateAccountForDemand({
+      account: matchedAcc,
+      snapshots: [snap],
+      policy: {
+        required_pool_ids: ["Gemini Models"],
+        required_model_ids: ["gemini-4-hydrogen-xhigh"],
+        current_executable_fingerprint: "fp-new",
+      },
+      evaluationTime: now,
+    });
+    expect(evalMatched.eligible_for_permit).toBe(true);
+
+    // 4. 非严格型号（普通型号）仍兼容缺少 credential_revision
+    expect(
+      isAccountModelsFresh(missingRevAcc, now, {
+        required_model_ids: ["gemini-3.8-flash-high"],
+        current_executable_fingerprint: "fp-current",
+      }),
+    ).toBe(true);
   });
 });

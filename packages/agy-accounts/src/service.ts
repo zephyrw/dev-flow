@@ -46,7 +46,7 @@ import { AgyReconciler } from "./reconcile.js";
 import { AgyEnrollmentService } from "./enrollment.js";
 import { AgyManualSwitchService } from "./manual-switch.js";
 import { AgyMaintenanceService } from "./maintenance.js";
-import { selectCandidates, evaluateAccountForDemand } from "./selector.js";
+import { selectCandidates, evaluateAccountForDemand, isAccountModelsFresh } from "./selector.js";
 import { computeDomainWait } from "./wait-policy.js";
 import { AgyDomainCoordinator } from "./coordinator.js";
 import { AgyLoginLauncher } from "./login.js";
@@ -202,6 +202,17 @@ export class AgyAccountService {
   private workflowWaitValidator?: (ref: WorkflowWaitReference) => boolean;
   private workflowWaitDiscarded?: (ref: WorkflowWaitReference) => void;
   private lastActiveQuotaProbe = new Map<string, number>();
+  private cachedExecutableFingerprint?: string;
+
+  private async resolveExecutableFingerprint(): Promise<string | undefined> {
+    try {
+      const fp = await this.probe.getExecutableFingerprint?.();
+      if (fp) this.cachedExecutableFingerprint = fp;
+      return fp ?? this.cachedExecutableFingerprint;
+    } catch {
+      return this.cachedExecutableFingerprint;
+    }
+  }
 
   setWorkflowWaitValidator(
     validator: ((ref: WorkflowWaitReference) => boolean) | undefined,
@@ -581,6 +592,9 @@ export class AgyAccountService {
       required_model_ids: context.source === "active_category"
         ? [...new Set(this.getActiveCategory(realmId).activePermits.flatMap(permit => permit.model_id ? [permit.model_id] : []))]
         : context.model_id ? [context.model_id] : [],
+      ...(this.cachedExecutableFingerprint
+        ? { current_executable_fingerprint: this.cachedExecutableFingerprint }
+        : {}),
       reset_clock_skew_seconds: settings.reset_clock_skew_seconds,
       active_category: context.category,
     });
@@ -803,7 +817,7 @@ export class AgyAccountService {
     refresh_scope: "active_only"; refresh_errors: Array<{ account_id: string }>;
   }>>();
   private backgroundProbeAbort?: AbortController;
-  private beginBackgroundProbe(realmId: string) {
+  private beginBackgroundProbe(realmId: string, timeoutMs = 15000) {
     const realm = this.repository.getRealm(realmId);
     if (realm?.last_error === "process_stop_unconfirmed") {
       if (!this.backgroundProbeAbort) {
@@ -816,7 +830,7 @@ export class AgyAccountService {
       }
     }
     const abort = new AbortController(); this.backgroundProbeAbort = abort;
-    const deadline = setTimeout(() => abort.abort(new AccountServiceError("quota_refresh_timeout")), 15000);
+    const deadline = setTimeout(() => abort.abort(new AccountServiceError("quota_refresh_timeout")), timeoutMs);
     return { abort, finish: () => { clearTimeout(deadline); if (this.backgroundProbeAbort === abort) this.backgroundProbeAbort = undefined; } };
   }
   private retainUnconfirmedProbe(realmId: string, error: unknown, release?: () => Promise<void>): boolean {
@@ -848,10 +862,22 @@ export class AgyAccountService {
   }
 
   /** Read the native list under one account identity, never rotate other accounts. */
-  async readActiveModelIds(realmId = "default-agy-realm"): Promise<string[]> {
+  async readActiveModelSnapshot(
+    realmId = "default-agy-realm",
+    expected?: { accountId?: string; authEpoch?: number; credentialRevision?: number },
+  ): Promise<{
+    native_ids: string[];
+    observed_at: string;
+    realm_id: string;
+    account_id: string;
+    auth_epoch: number;
+    credential_revision: number;
+    executable_fingerprint: string;
+    cli_version: string;
+  }> {
     return this.coordinator.enqueue(async () => {
       if (!this.probe.probeModels) throw new AccountServiceError("model_catalog_unavailable");
-      const { abort, finish } = this.beginBackgroundProbe(realmId);
+      const { abort, finish } = this.beginBackgroundProbe(realmId, 45000);
       let release: (() => Promise<void>) | undefined;
       try {
         if (!this.authHost.isDomainLockHeld(realmId)) {
@@ -863,28 +889,66 @@ export class AgyAccountService {
         const realm = this.repository.getRealm(realmId);
         const account = realm?.active_account_id ? this.repository.getAccount(realmId, realm.active_account_id) : undefined;
         if (!realm || !account || realm.pending_operation_id) throw new AccountServiceError("account_identity_unresolved");
-        const models = await this.probe.probeModels({ account_id: account.id, credential_revision: account.credential_revision, timeoutMs: 10000, signal: abort.signal });
+        if (
+          expected &&
+          ((expected.accountId && expected.accountId !== account.id) ||
+            (expected.authEpoch !== undefined && expected.authEpoch !== realm.auth_epoch) ||
+            (expected.credentialRevision !== undefined && expected.credentialRevision !== account.credential_revision))
+        ) {
+          throw new AccountServiceError("account_identity_changed");
+        }
+        const models = await this.probe.probeModels({ account_id: account.id, credential_revision: account.credential_revision, timeoutMs: 30000, signal: abort.signal });
         abort.signal.throwIfAborted();
         const observed = await this.authHost.inspectActive(realmId);
         if (observed.auth?.email?.trim().toLowerCase() !== account.identity.email.trim().toLowerCase() ||
             account.identity.subject && observed.auth?.subject && observed.auth.subject !== account.identity.subject)
           throw new AccountServiceError("account_identity_changed");
+        const preCaptureRealm = this.repository.getRealm(realmId);
+        const preCaptureAccount = this.repository.getAccount(realmId, account.id);
+        if (
+          !preCaptureRealm || !preCaptureAccount ||
+          preCaptureRealm.active_account_id !== account.id ||
+          preCaptureRealm.auth_epoch !== realm.auth_epoch ||
+          preCaptureRealm.pending_operation_id ||
+          (expected?.credentialRevision !== undefined && preCaptureAccount.credential_revision !== expected.credentialRevision)
+        ) {
+          throw new AccountServiceError("account_identity_changed");
+        }
         const captured = await this.captureUsageCredential(realmId, account);
         const current = this.repository.getRealm(realmId);
         if (current?.active_account_id !== account.id || current.auth_epoch !== realm.auth_epoch || current.pending_operation_id)
           throw new AccountServiceError("account_identity_changed");
         this.saveCapture(realmId, account.id, captured);
         const latest = this.repository.getAccount(realmId, account.id)!;
-        this.repository.saveAccount({ ...latest, models, revision: latest.revision + 1 });
+        const storedModels = {
+          ...models,
+          credential_revision: models.credential_revision ?? latest.credential_revision,
+        };
+        this.repository.saveAccount({ ...latest, models: storedModels, revision: latest.revision + 1 });
         current.active_secret_ref = captured.secret_ref;
         current.revision++;
         this.repository.saveRealm(current);
-        return models.native_ids;
+        return {
+          native_ids: storedModels.native_ids,
+          observed_at: storedModels.observed_at,
+          realm_id: realmId,
+          account_id: account.id,
+          auth_epoch: current.auth_epoch,
+          credential_revision: latest.credential_revision,
+          executable_fingerprint: storedModels.executable_fingerprint,
+          cli_version: storedModels.cli_version,
+        };
       } catch (error) {
         if (this.retainUnconfirmedProbe(realmId, error, release)) release = undefined;
         throw error;
       } finally { finish(); await release?.(); }
     }, "background");
+  }
+
+  /** Read the native list under one account identity, never rotate other accounts. */
+  async readActiveModelIds(realmId = "default-agy-realm"): Promise<string[]> {
+    const snapshot = await this.readActiveModelSnapshot(realmId);
+    return snapshot.native_ids;
   }
 
   syncAndRefreshQuotas(realmId = "default-agy-realm") {
@@ -1648,7 +1712,13 @@ export class AgyAccountService {
         capturedRealm.revision++;
         this.repository.saveRealm(capturedRealm);
         const exhausted = isOnlyQuotaExhaustion(evaluateAccountForDemand({ account, snapshots,
-          policy: { required_pool_ids: input.required_pool_ids, required_model_ids: input.required_model_ids },
+          policy: {
+            required_pool_ids: input.required_pool_ids,
+            required_model_ids: input.required_model_ids,
+            ...(this.cachedExecutableFingerprint
+              ? { current_executable_fingerprint: this.cachedExecutableFingerprint }
+              : {}),
+          },
           evaluationTime: this.clock.now() }));
         return exhausted || rejected("quota_not_exhausted");
       } catch (error) {
@@ -1743,12 +1813,91 @@ export class AgyAccountService {
       input.required_pool_ids && input.required_pool_ids.length > 0
         ? input.required_pool_ids
         : ["global"];
+    const currentExecutableFingerprint = await this.resolveExecutableFingerprint();
+    if (input.required_model_ids?.length && this.probe.probeModels) {
+      const modelsFresh = isAccountModelsFresh(activeAccount, this.clock.now(), {
+        required_model_ids: input.required_model_ids,
+        current_executable_fingerprint: currentExecutableFingerprint,
+      });
+      if (!modelsFresh) {
+        try {
+          const settings = this.initializeSettings(input.realm_id);
+          const refreshedModels = await this.probe.probeModels({
+            account_id: activeAccount.id,
+            credential_revision: activeAccount.credential_revision,
+            timeoutMs: settings.probe_timeout_seconds * 1000,
+          });
+          if (refreshedModels.executable_fingerprint) {
+            this.cachedExecutableFingerprint = refreshedModels.executable_fingerprint;
+          }
+          const observedRealm = this.repository.getRealm(input.realm_id);
+          if (
+            observedRealm &&
+            !observedRealm.pending_operation_id &&
+            observedRealm.active_account_id === activeAccount.id &&
+            observedRealm.auth_epoch === realm.auth_epoch
+          ) {
+            const expectedEmail = activeAccount.identity.email.trim().toLowerCase();
+            const activeHost = await this.authHost.inspectActive(input.realm_id);
+            const observedEmail = activeHost.auth?.email?.trim().toLowerCase();
+            if (!activeHost.exists || (observedEmail && observedEmail !== expectedEmail)) {
+              throw new AccountServiceError("external_change");
+            }
+            if (
+              activeAccount.identity.subject &&
+              activeHost.auth?.subject &&
+              activeHost.auth.subject !== activeAccount.identity.subject
+            ) {
+              throw new AccountServiceError("external_change");
+            }
+            // 同账号凭据接续：复用 captureUsageCredential + saveCapture，同步账号、realm 与局部变量后再写入目录修订
+            const capture = await this.captureUsageCredential(input.realm_id, activeAccount);
+            this.saveCapture(input.realm_id, activeAccount.id, capture);
+            const updatedRealm = this.repository.getRealm(input.realm_id);
+            if (updatedRealm) {
+              updatedRealm.active_secret_ref = capture.secret_ref;
+              updatedRealm.last_capture_at = this.clock.toISOString();
+              updatedRealm.revision++;
+              this.repository.saveRealm(updatedRealm);
+              realm = updatedRealm;
+            }
+            const latestAccount = this.repository.getAccount(input.realm_id, activeAccount.id);
+            if (latestAccount) {
+              const storedModels = {
+                ...refreshedModels,
+                credential_revision: latestAccount.credential_revision,
+              };
+              this.repository.saveAccount({
+                ...latestAccount,
+                models: storedModels,
+                revision: latestAccount.revision + 1,
+              });
+              activeAccount = this.repository.getAccount(input.realm_id, activeAccount.id)!;
+            }
+          }
+        } catch (err: any) {
+          if (
+            err?.code === "PROCESS_STOP_UNCONFIRMED" ||
+            err?.name === "ProcessStopUnconfirmedError" ||
+            (err instanceof AccountServiceError &&
+              ["external_change", "identity_unverified", "credential_revision_stale", "active_account_unavailable", "permit_admission_changed"].includes(err.code)) ||
+            err?.code === "external_change" ||
+            err?.message === "external_change"
+          ) {
+            throw err;
+          }
+        }
+      }
+    }
     let evalOutput = evaluateAccountForDemand({
       account: activeAccount,
       snapshots: this.repository.listQuotaSnapshots(input.realm_id),
       policy: {
         required_pool_ids: poolsToEvaluate,
         required_model_ids: input.required_model_ids,
+        ...(currentExecutableFingerprint
+          ? { current_executable_fingerprint: currentExecutableFingerprint }
+          : {}),
         allowed_account_ids: input.allowed_account_ids,
         reset_clock_skew_seconds: this.initializeSettings(input.realm_id).reset_clock_skew_seconds,
       },
@@ -1812,6 +1961,9 @@ export class AgyAccountService {
         policy: {
           required_pool_ids: poolsToEvaluate,
           required_model_ids: input.required_model_ids,
+          ...(currentExecutableFingerprint
+            ? { current_executable_fingerprint: currentExecutableFingerprint }
+            : {}),
           allowed_account_ids: input.allowed_account_ids,
           reset_clock_skew_seconds: this.initializeSettings(input.realm_id).reset_clock_skew_seconds,
         },
@@ -2976,7 +3128,16 @@ export class AgyAccountService {
         }
         await this.rollbackOperation(op);
         if (
-          ["network_wait", "candidate_selection_incomplete", "quota_trigger_unconfirmed", "automatic_switch_policy_conflict"].includes(op.error) &&
+          [
+            "network_wait",
+            "candidate_selection_incomplete",
+            "quota_trigger_unconfirmed",
+            "automatic_switch_policy_conflict",
+            "model_catalog_unavailable",
+            "model_catalog_unverified",
+            "model_access_probe_failed",
+            "agy_model_probe_timeout",
+          ].includes(op.error) &&
           op.trigger.startsWith("workflow") &&
           !op.cancel_requested
         ) {
@@ -3650,6 +3811,9 @@ export class AgyAccountService {
         before.auth?.email?.trim().toLowerCase() === expected &&
         after.auth?.email?.trim().toLowerCase() === expected))
       throw new AccountServiceError("identity_unverified");
+    if (observed.executable_fingerprint) {
+      this.cachedExecutableFingerprint = observed.executable_fingerprint;
+    }
     return observed;
   }
 

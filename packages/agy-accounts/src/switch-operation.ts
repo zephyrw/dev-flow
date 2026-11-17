@@ -195,10 +195,14 @@ export class SwitchOperationExecutor {
     const identityOnly = options.trigger === "manual_explicit" &&
       options.selection.mode === "explicit";
     this.repository.saveOperation(operation);
+    const currentExecutableFingerprint = await this.probe.getExecutableFingerprint?.();
     const selectionPolicy = {
       quota_trigger: operation.quota_trigger,
       snapshot_max_age_ms: settings.local_snapshot_stale_hours * 3600_000,
       required_model_ids: operation.required_model_ids,
+      ...(currentExecutableFingerprint
+        ? { current_executable_fingerprint: currentExecutableFingerprint }
+        : {}),
       allowed_account_ids: operation.allowed_account_ids,
       reset_clock_skew_seconds: settings.reset_clock_skew_seconds,
       ...nightWindow(settings.maintenance, this.clock.now()),
@@ -378,6 +382,9 @@ export class SwitchOperationExecutor {
           reset_clock_skew_seconds: settings.reset_clock_skew_seconds,
           current_active_account_id: beforeAccountId,
           required_model_ids: operation.required_model_ids,
+          ...(currentExecutableFingerprint
+            ? { current_executable_fingerprint: currentExecutableFingerprint }
+            : {}),
           allowed_account_ids: operation.allowed_account_ids,
           ...nightWindow(settings.maintenance, this.clock.now()),
           night_pool: operation.night_pool,
@@ -450,6 +457,52 @@ export class SwitchOperationExecutor {
     const totalCandidateCount = candidateIds.length;
     operation.candidate_ids = candidateIds;
     this.repository.saveOperation(operation);
+    let lastRecoverableModelFailure: string | undefined;
+    const isFatalSwitchError = (error: unknown): boolean => {
+      if (options.signal?.aborted) return true;
+      if (
+        (error as any)?.code === "PROCESS_STOP_UNCONFIRMED" ||
+        (error as any)?.name === "ProcessStopUnconfirmedError"
+      ) {
+        return true;
+      }
+      const msg =
+        (error as { code?: string; message?: string })?.code ??
+        (error as Error)?.message ??
+        "";
+      return (
+        msg === "operation_cancelled" ||
+        msg === "operation_timeout" ||
+        msg === "domain_lock_lost" ||
+        msg === "identity_mismatch" ||
+        msg === "identity_unverified" ||
+        msg === "managed_processes_not_stopped" ||
+        msg.startsWith("external_change")
+      );
+    };
+    const recoverableModelFailureCode = (
+      error: unknown,
+      fallbackCode: "model_catalog_unavailable" | "model_access_probe_failed",
+    ): string => {
+      const code =
+        (error as { code?: string; message?: string })?.code ??
+        (error as Error)?.message ??
+        "";
+      if (
+        [
+          "model_catalog_unavailable",
+          "model_catalog_unverified",
+          "model_access_probe_failed",
+          "agy_model_probe_timeout",
+          "probe_identity_busy",
+          "probe_timeout",
+          "network_error",
+        ].includes(code)
+      ) {
+        return code === "probe_timeout" ? "agy_model_probe_timeout" : code;
+      }
+      return fallbackCode;
+    };
     for (
       let candidateIndex = 0;
       candidateIndex < candidateIds.length;
@@ -622,15 +675,36 @@ export class SwitchOperationExecutor {
       operation.installed_secret_ref = refreshed.secret_ref;
       operation.revision++;
       this.repository.saveOperation(operation);
+      let modelCatalogFailed = false;
       if (!identityOnly && this.probe.probeModels) {
-        const models = await this.probe.probeModels({ signal: options.signal, account_id: targetAcc.id,
-          credential_revision: targetAcc.credential_revision, timeoutMs: settings.probe_timeout_seconds * 1000 });
-        guard();
-        const observedIdentity = (await this.authHost.inspectActive(options.realmId)).auth;
-        if (observedIdentity?.email?.trim().toLowerCase() !== expectedEmail) throw new Error("identity_unverified");
-        targetAcc.models = models;
-        targetAcc.revision++;
-        this.repository.saveAccount(targetAcc);
+        try {
+          const models = await this.probe.probeModels({
+            signal: options.signal,
+            account_id: targetAcc.id,
+            credential_revision: targetAcc.credential_revision,
+            timeoutMs: settings.probe_timeout_seconds * 1000,
+          });
+          guard();
+          const observed = await this.authHost.inspectActive(options.realmId);
+          const observedEmail = observed.auth?.email?.trim().toLowerCase();
+          const identityMatches = observed.exists && (
+            observedEmail
+              ? observedEmail === expectedEmail
+              : observed.account_id === targetAcc.id &&
+                (await this.authHost.compareActive(options.realmId, targetAcc.secret_ref))
+          );
+          if (!identityMatches) throw new Error("identity_unverified");
+          targetAcc.models = {
+            ...models,
+            credential_revision: models.credential_revision ?? targetAcc.credential_revision,
+          };
+          targetAcc.revision++;
+          this.repository.saveAccount(targetAcc);
+        } catch (error) {
+          if (isFatalSwitchError(error)) throw error;
+          modelCatalogFailed = true;
+          lastRecoverableModelFailure = recoverableModelFailureCode(error, "model_catalog_unavailable");
+        }
       }
       const targetPools = requiredQuotaPools(probeRes.pools, options.requiredPoolIds, operation.required_model_ids);
       const complete = probeRes.capability_verified && !!probeRes.executable_fingerprint &&
@@ -669,25 +743,38 @@ export class SwitchOperationExecutor {
       if (!localDefault) targetAcc.state = !complete && !identityOnly || !poolsToCheck.length ? "pending_quota" : zero ? "waiting_quota" : "ready";
       targetAcc.revision++;
       this.repository.saveAccount(targetAcc);
-      let accessible = modelFallback ? !!targetAcc.models?.native_ids.length && poolsToCheck.length > 0 :
-        identityOnly || (complete && !zero && (!targetAcc.models || operation.required_model_ids.every(id => targetAcc.models!.native_ids.includes(id))));
+      let accessible = modelCatalogFailed
+        ? false
+        : modelFallback ? !!targetAcc.models?.native_ids.length && poolsToCheck.length > 0 :
+          identityOnly || (complete && !zero && (
+            targetAcc.models
+              ? operation.required_model_ids.every(id => targetAcc.models!.native_ids.includes(id))
+              : !(this.probe.probeModels && operation.required_model_ids.length > 0)
+          ));
       const verifiedModelIds: string[] = [];
       if (accessible && !modelFallback && !identityOnly)
         for (const modelId of operation.required_model_ids) {
           guard();
-          if (
-            !(await this.probe.probeModelAccess(modelId, {
+          let modelOk = false;
+          try {
+            modelOk = await this.probe.probeModelAccess(modelId, {
               signal: options.signal,
               account_id: targetAcc.id,
               credential_revision: targetAcc.credential_revision,
               model_id: modelId,
               timeoutMs: settings.probe_timeout_seconds * 1000,
-            }).catch(error => {
-              if (error?.code === "agy_model_quota_exhausted" &&
-                  error.account_id === targetAcc.id && error.model_id === modelId) return false;
-              throw error;
-            }))
-          ) {
+            });
+          } catch (error: any) {
+            if (isFatalSwitchError(error)) throw error;
+            if (error?.code === "agy_model_quota_exhausted" &&
+                error.account_id === targetAcc.id && error.model_id === modelId) {
+              modelOk = false;
+            } else {
+              lastRecoverableModelFailure = recoverableModelFailureCode(error, "model_access_probe_failed");
+              modelOk = false;
+            }
+          }
+          if (!modelOk) {
             accessible = false;
             break;
           }
@@ -725,7 +812,12 @@ export class SwitchOperationExecutor {
       if ((!identityOnly && !modelFallback && zero) || !accessible) {
         if (options.selection.mode === "explicit")
           throw new Error("target_unavailable");
-        if (candidateIndex + 1 < candidateIds.length) {
+        const crossingToFallbackWithProbeError =
+          candidateIndex + 1 < candidateIds.length &&
+          !modelFallback &&
+          candidateModes[candidateIndex + 1] === true &&
+          Boolean(lastRecoverableModelFailure);
+        if (candidateIndex + 1 < candidateIds.length && !crossingToFallbackWithProbeError) {
           await this.pause(settings.switch_gap_seconds * 1000, options.signal);
           continue;
         }
@@ -745,7 +837,7 @@ export class SwitchOperationExecutor {
           await this.pause(settings.switch_gap_seconds * 1000, options.signal);
           continue;
         }
-        throw new Error("no_eligible_account");
+        throw new Error(lastRecoverableModelFailure ?? "no_eligible_account");
       }
       const fallbackScore = modelFallback ? rankModelFallbackAccounts([targetAcc], this.repository.listQuotaSnapshots(options.realmId), this.clock.now(), selectionPolicy)[0] : undefined;
       const score = modelFallback ? { weekly: fallbackScore?.weekly ?? 0, five_hour: fallbackScore?.five_hour ?? 0 }

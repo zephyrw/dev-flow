@@ -42,7 +42,13 @@ import {
   ModelCatalogService,
   type CatalogScopeInput,
 } from "../../packages/core/src/model-catalog-service.js";
-import { resolveModelIdentity } from "../../packages/core/src/model-identity.js";
+import {
+  clearUnmanagedAgyIdentity,
+  recordUnmanagedAgyIdentity,
+  resolveAgyAccountContext,
+  resolveModelIdentity,
+} from "../../packages/core/src/model-identity.js";
+import { parseAgyModelCatalog } from "../../packages/adapters/agy/src/model-configuration.js";
 import { setAdapterExecutableResolver } from "../../packages/adapters/sdk/src/registry.js";
 import { ExecutionSpecService } from "../../packages/core/src/execution-spec-service.js";
 import {
@@ -260,6 +266,7 @@ function fixtureCatalogScope(
     adapterId,
     executableRef: PROBE_CLI,
   });
+  const agyContext = adapterId === "agy" ? resolveAgyAccountContext(store) : undefined;
   return {
     adapterId,
     executablePath: native.executablePath,
@@ -267,6 +274,13 @@ function fixtureCatalogScope(
     nativeConfigProfile: native.nativeConfigProfile,
     accountFingerprint: native.accountFingerprint,
     providerFingerprint: native.providerEndpointFingerprint,
+    ...(adapterId === "agy" ? { agyIdentityVerified: agyContext?.verified ?? false } : {}),
+    ...(agyContext?.verified && agyContext.contextKey
+      ? {
+          accountContextKey: agyContext.contextKey,
+          ...(agyContext.managed ? { managedAgy: agyContext.managed } : {}),
+        }
+      : {}),
   };
 }
 
@@ -740,6 +754,181 @@ app.post("/__fixture/review-hold", async (request, reply) => {
   if (!assertFixtureToken(request)) return reply.code(403).send({ ok: false });
   holdFixtureReviews = (request.body as { hold?: boolean }).hold === true;
   return { ok: true, hold: holdFixtureReviews };
+});
+app.post("/__fixture/agy-hydrogen-catalog", async (request, reply) => {
+  if (!assertFixtureToken(request)) return reply.code(403).send({ ok: false });
+  const body = (request.body || {}) as {
+    mode?: "supported" | "empty" | "fail" | "default";
+    stdout?: string;
+    clearVerified?: boolean;
+  };
+  const mode = body.mode ?? "default";
+  const catalogs = new ModelCatalogService(engine.store);
+  if (mode === "supported") {
+    recordUnmanagedAgyIdentity(engine.store, {
+      accountId: "fixture-agy-supported",
+      contextKey: "agy-unmanaged:fixture-agy-supported",
+    });
+  } else if (mode === "empty") {
+    recordUnmanagedAgyIdentity(engine.store, {
+      accountId: "fixture-agy-empty",
+      contextKey: "agy-unmanaged:fixture-agy-empty",
+    });
+  } else {
+    clearUnmanagedAgyIdentity(engine.store);
+  }
+  const scope = fixtureCatalogScope(engine.store, "agy");
+  if (mode === "supported" || mode === "empty") {
+    catalogs.ensureManualCandidate(scope, "gemini-3.8-flash-high");
+  }
+  const seeded = catalogs.loadForSelector(scope);
+  const entityKey = "catalog:" + seeded.scopeHash;
+  const staleAfter = new Date(Date.now() + CATALOG_FRESH_MS).toISOString();
+
+  if (mode === "default") {
+    writeProbeControl(probeLogDir, {
+      adapterId: "codex",
+      behavior: "ok",
+      delayMs: 0,
+      catalogBehavior: "ok",
+      catalogStdout: "",
+      catalogDelayMs: 0,
+    });
+    const agyGroup = CATALOG_MODELS.find((g) => g.adapterId === "agy")!;
+    const discoveredAt = now();
+    engine.store.put("model_catalog", entityKey, "agy", {
+      ...seeded,
+      cliVersion: "fixture-1.0",
+      status: "fresh",
+      discoveryStatus: "complete",
+      parserRevision: PARSER_REVISION,
+      discoveredAt,
+      staleAfter,
+      entries: agyGroup.models.map((m) => catalogEntry("agy", m, discoveredAt)),
+    });
+    return { ok: true, mode };
+  }
+
+  if (mode === "fail") {
+    writeProbeControl(probeLogDir, {
+      adapterId: "agy",
+      behavior: "ok",
+      delayMs: 0,
+      catalogBehavior: "fail",
+      catalogStdout: "",
+      catalogDelayMs: 0,
+    });
+    engine.store.put("model_catalog", entityKey, "agy", {
+      ...seeded,
+      cliVersion: "fixture-1.0",
+      status: "failed",
+      discoveryStatus: "missing",
+      parserRevision: PARSER_REVISION,
+      discoveredAt: now(),
+      staleAfter: new Date(Date.now() - 1000).toISOString(),
+      errorCode: "CATALOG_COMMAND_FAILED",
+      errorMessage: "CATALOG_COMMAND_FAILED: catalog timeout",
+      entries: [],
+    });
+    return { ok: true, mode };
+  }
+
+  if (mode === "empty") {
+    const emptyStdout = readFileSync(
+      resolve("tests/fixtures/model-catalog/agy/models-empty.txt"),
+      "utf8",
+    );
+    writeProbeControl(probeLogDir, {
+      adapterId: "agy",
+      behavior: "ok",
+      delayMs: 0,
+      catalogBehavior: "ok",
+      catalogStdout: emptyStdout,
+      catalogDelayMs: 0,
+    });
+    const parsed = parseAgyModelCatalog({
+      source: "native-live",
+      stdout: emptyStdout,
+      stderr: "",
+      discoveredAt: now(),
+      cliVersion: "fixture-1.0",
+    });
+    engine.store.put("model_catalog", entityKey, "agy", {
+      ...seeded,
+      ...parsed,
+      accountContextKey: scope.accountContextKey,
+      scopeHash: seeded.scopeHash,
+      parserRevision: PARSER_REVISION,
+      staleAfter,
+    });
+    return { ok: true, mode };
+  }
+
+  // mode === "supported": 合并 Hydrogen 目录与原有回归所需的 3.8 Flash，供 A07/A08 真实校验
+  const baseHydrogen = readFileSync(
+    resolve("tests/fixtures/model-catalog/agy/models-20261113-hydrogen.txt"),
+    "utf8",
+  );
+  const stdout =
+    typeof body.stdout === "string"
+      ? body.stdout
+      : `${baseHydrogen}\ngemini-3.8-flash-high\tGemini 3.8 Flash (High)\ngemini-3.8-flash-medium\tGemini 3.8 Flash (Medium)\n`;
+  writeProbeControl(probeLogDir, {
+    adapterId: "agy",
+    behavior: "ok",
+    delayMs: 0,
+    catalogBehavior: "ok",
+    catalogStdout: stdout,
+    catalogDelayMs: 0,
+  });
+  const parsed = parseAgyModelCatalog({
+    source: "native-live",
+    stdout,
+    stderr: "",
+    discoveredAt: now(),
+    cliVersion: "fixture-1.0",
+  });
+  const catalog: ModelCatalog = {
+    ...seeded,
+    ...parsed,
+    accountContextKey: scope.accountContextKey,
+    scopeHash: seeded.scopeHash,
+    parserRevision: PARSER_REVISION,
+    staleAfter,
+  };
+  engine.store.put("model_catalog", entityKey, "agy", catalog);
+  if (body.clearVerified !== true) {
+    const access = new ModelAccessService(engine.store, {
+      catalog: catalogs,
+      withAgyCategoryVerification: (modelId, verify) =>
+        accountEnvironment.service.withCategoryVerification(
+          "default-agy-realm",
+          modelId,
+          verify,
+        ),
+      extraEnv: { MODEL_PROBE_LOG_DIR: probeLogDir },
+      probeRoot: join(dirnameOfStore(engine.store), "model-probe"),
+      verifyTimeoutMs: 30000,
+    });
+    try {
+      await waitVerified(
+        access,
+        verifyProfile("agy", "gemini-4-hydrogen-high", "high"),
+        catalog,
+      );
+    } finally {
+      await access.close();
+      writeProbeControl(probeLogDir, {
+        adapterId: "agy",
+        behavior: "ok",
+        delayMs: 0,
+        catalogBehavior: "ok",
+        catalogStdout: stdout,
+        catalogDelayMs: 0,
+      });
+    }
+  }
+  return { ok: true, mode, entries: catalog.entries.length };
 });
 const LIVE_REVIEW_STATES = new Set([
   "REVIEWING",

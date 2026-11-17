@@ -13,7 +13,7 @@ import {
 import { now, objectHash } from "./util.js";
 import type { ExecutionSpecService } from "./execution-spec-service.js";
 import type { Engine } from "./engine.js";
-import { assertProfilesVerified, collectExplicitProfiles } from "./access-guard.js";
+import { assertProfilesSelectable, assertProfilesVerified, collectExplicitProfiles } from "./access-guard.js";
 import { workflowModelWorkspace } from "./model-identity.js";
 import type { AgyModelCategory } from "../../contracts/src/agy-account.js";
 import { getAgyModelCategory } from "../../adapters/agy/src/model-configuration.js";
@@ -289,6 +289,10 @@ export class ModelSwitchService {
       const workspaceRoot = workflowModelWorkspace(this.store, current.entity_id);
       const profiles = collectExplicitProfiles(req.planner_profile, req.executor_profile, req.role_overrides);
       this.assertAgyCategoryConsistency(req, req.expected_run_id);
+      // 停止当前运行前先做只读目录、账号上下文及档位合法性检查，避免无效选择中断正在运行的任务。
+      if (!current.spec_receipt) {
+        assertProfilesSelectable(this.store, profiles, undefined, workspaceRoot);
+      }
       // Legacy callers without a verifier must retain their verified-only guard.
       if (!this.verifyProfiles) assertProfilesVerified(this.store, profiles, undefined, workspaceRoot);
       current = await this.ensureStopped(engine, current);

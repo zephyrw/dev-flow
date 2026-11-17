@@ -9,6 +9,8 @@ import {
 import {
   formatToolName,
   formatModelName,
+  formatEffortDisplayLabel,
+  isHydrogenModelDisplayId,
   isEquivalentModelName,
   buildModelChoices,
   type ModelChoice,
@@ -57,6 +59,7 @@ export function ModelProfileEditor({
     scope?: string;
     items: ModelEntry[];
     cliVersion?: string;
+    accountContextKey?: string;
   }>({ adapter: "", items: [] });
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -67,6 +70,7 @@ export function ModelProfileEditor({
     reloadToken: number;
     status: "loading" | "ready" | "failed";
     complete?: boolean;
+    accountContextKey?: string;
   }>({ adapter: "", reloadToken, status: "loading" });
   const [access, setAccess] = useState<AccessState | null>(null);
   const generation = useRef(0);
@@ -91,14 +95,22 @@ export function ModelProfileEditor({
   const activeScope = adapter === "codebuddy-code" ? catalogScope : undefined;
   const toolVisible = TOOL_DISPLAY_ORDER.some((item) => item.adapterId === adapter);
 
-  // 严格校验 entries 所属工具，彻底杜绝切换工具时残留上一工具模型（如 Claude Code 显示 Gemini）
-  const matchingCatalog = entriesData.adapter === adapter && entriesData.scope === activeScope ? entriesData : undefined;
+  const matchingCatalog =
+    entriesData.adapter === adapter &&
+    entriesData.scope === activeScope &&
+    (adapter !== "agy" ||
+      (catalogState.adapter === adapter &&
+        catalogState.status === "ready" &&
+        catalogState.accountContextKey === entriesData.accountContextKey))
+      ? entriesData
+      : undefined;
   const entries = matchingCatalog?.items ?? [];
   const catalogReady =
     catalogState.adapter === adapter &&
     catalogState.scope === activeScope &&
     catalogState.reloadToken === reloadToken &&
-    catalogState.status === "ready";
+    catalogState.status === "ready" &&
+    (adapter !== "agy" || catalogState.accountContextKey === entriesData.accountContextKey);
   const catalogComplete = catalogReady && catalogState.complete === true;
 
   const choices = useMemo(() => buildModelChoices(entries), [entries]);
@@ -127,6 +139,20 @@ export function ModelProfileEditor({
     );
   }, [choices, query]);
 
+  const invalidateCatalogForAgy = (scope = activeScope) => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    generation.current += 1;
+    setOpenList(false);
+    setEntriesData({ adapter: "agy", scope, items: [] });
+    setCatalogState({ adapter: "agy", scope, reloadToken, status: "loading" });
+    if (verifyTimer.current) window.clearTimeout(verifyTimer.current);
+    verifyGen.current += 1;
+    verifyAbort.current?.abort();
+    setAccess(null);
+    onAccessChange?.(null);
+  };
+
   const loadCatalog = (nextAdapter: string, doRefresh = false) => {
     const scope = nextAdapter === "codebuddy-code" ? catalogScope : undefined;
     abortRef.current?.abort();
@@ -135,6 +161,10 @@ export function ModelProfileEditor({
     generation.current += 1;
     const token = generation.current;
     const isCurrent = () => token === generation.current && !controller.signal.aborted;
+    if (nextAdapter === "agy") {
+      setOpenList(false);
+      setEntriesData({ adapter: nextAdapter, scope, items: [] });
+    }
     setCatalogState({ adapter: nextAdapter, scope, reloadToken, status: "loading" });
     if (verifyTimer.current) window.clearTimeout(verifyTimer.current);
     verifyGen.current += 1;
@@ -147,19 +177,36 @@ export function ModelProfileEditor({
     const run = async () => {
       let result = await getAdapterModels(nextAdapter, controller.signal, scope);
       if (!isCurrent()) return;
-      if (result.entries.length > 0) {
-        // 先展示缓存或种子条目，loading 只兜住空目录首载
-        setEntriesData({ adapter: nextAdapter, scope, items: result.entries, cliVersion: result.cliVersion });
-        setLoading(false);
-      }
+      const initialAccountContext = result.accountContextKey;
       // 过期目录、缺失目录和全 manual 候补都触发一次真实发现。
       const needsRefresh = !disabled && modelCatalogNeedsRefresh(result);
+      if (result.entries.length > 0 && (nextAdapter !== "agy" || !needsRefresh)) {
+        // 非 AGY 或已就绪条目先展示预览；AGY 待刷新期间不透出旧账号能力
+        setEntriesData({
+          adapter: nextAdapter,
+          scope,
+          items: result.entries,
+          cliVersion: result.cliVersion,
+          accountContextKey: result.accountContextKey,
+        });
+        setLoading(false);
+      }
       if (doRefresh || needsRefresh) {
         setRefreshing(true);
         await refreshAdapterModels(nextAdapter, controller.signal, scope);
         if (!isCurrent()) return;
         result = await getAdapterModels(nextAdapter, controller.signal, scope);
         if (!isCurrent()) return;
+        if (
+          nextAdapter === "agy" &&
+          initialAccountContext &&
+          result.accountContextKey &&
+          result.accountContextKey !== initialAccountContext
+        ) {
+          // 刷新前后账号上下文不一致时，重新取用最新上下文对应目录，防止混入旧上下文
+          result = await getAdapterModels(nextAdapter, controller.signal, scope);
+          if (!isCurrent()) return;
+        }
       }
       if (result.status !== "fresh" || result.discoveryStatus === "missing") {
         throw new Error(result.catalog?.errorMessage || "模型目录尚未完整加载，已保留当前配置，请刷新后重试。");
@@ -170,17 +217,27 @@ export function ModelProfileEditor({
     run()
       .then((result) => {
         if (!isCurrent() || !result) return;
-        setEntriesData({ adapter: nextAdapter, scope, items: result.entries, cliVersion: result.cliVersion });
+        setEntriesData({
+          adapter: nextAdapter,
+          scope,
+          items: result.entries,
+          cliVersion: result.cliVersion,
+          accountContextKey: result.accountContextKey,
+        });
         setCatalogState({
-          adapter: nextAdapter, scope, reloadToken, status: "ready",
+          adapter: nextAdapter,
+          scope,
+          reloadToken,
+          status: "ready",
           // 截断目录仍允许验证自定义模型，但不能据此清除已有强度。
           complete: result.discoveryStatus !== "partial",
+          accountContextKey: result.accountContextKey,
         });
       })
       .catch((error) => {
         if (!isCurrent()) return;
         setEntriesData((prev) =>
-          prev.adapter === nextAdapter && prev.scope === scope && prev.items.length > 0
+          nextAdapter !== "agy" && prev.adapter === nextAdapter && prev.scope === scope && prev.items.length > 0
             ? prev
             : { adapter: nextAdapter, scope, items: [] },
         );
@@ -200,6 +257,72 @@ export function ModelProfileEditor({
     loadCatalog(adapter);
     return () => abortRef.current?.abort();
   }, [adapter, reloadToken, activeScope]);
+
+  // 页面获得焦点时重核最新账号与模型目录
+  useEffect(() => {
+    if (!toolVisible || typeof window === "undefined") return;
+    const onFocus = () => {
+      if (adapter === "agy") invalidateCatalogForAgy();
+      loadCatalog(adapter);
+    };
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [adapter, toolVisible, reloadToken, activeScope]);
+
+  // 订阅 AGY 账号变更通知，收到通知或 WS 连接恢复时立即失效旧目录并重核当前账号模型列表
+  useEffect(() => {
+    if (!toolVisible || adapter !== "agy" || typeof WebSocket === "undefined") return;
+    if (typeof location === "undefined" || !location.host) return;
+    let disposed = false;
+    let socket: WebSocket | undefined;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    let debounceTimer: ReturnType<typeof setTimeout> | undefined;
+    let reconnecting = false;
+    const scheduleReload = () => {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        debounceTimer = undefined;
+        if (!disposed) loadCatalog("agy");
+      }, 80);
+    };
+    const connect = () => {
+      if (disposed) return;
+      try {
+        const protocol = location.protocol === "https:" ? "wss:" : "ws:";
+        socket = new WebSocket(`${protocol}//${location.host}/api/agy-accounts/notifications`);
+        socket.onopen = () => {
+          if (disposed) return;
+          if (reconnecting) {
+            reconnecting = false;
+            invalidateCatalogForAgy();
+            loadCatalog("agy");
+          }
+        };
+        socket.onmessage = () => {
+          if (disposed) return;
+          invalidateCatalogForAgy();
+          scheduleReload();
+        };
+        socket.onclose = () => {
+          if (disposed) return;
+          clearTimeout(debounceTimer);
+          debounceTimer = undefined;
+          invalidateCatalogForAgy();
+          reconnecting = true;
+          retryTimer = setTimeout(connect, 5000);
+        };
+      } catch {
+        // 测试或无 WS 宿主环境静默忽略
+      }
+    };
+    connect();
+    return () => {
+      disposed = true;
+      clearTimeout(retryTimer);
+      clearTimeout(debounceTimer);
+      socket?.close();
+    };
+  }, [adapter, toolVisible, reloadToken, activeScope]);
 
   const runVerify = (candidate: ToolProfile) => {
     verifyGen.current += 1;
@@ -323,6 +446,7 @@ export function ModelProfileEditor({
   };
 
   const changeTool = (next: SupportedAdapterId) => {
+    if (next === adapter) return;
     setQuery("");
     setOpenList(false);
     setAccess(null);
@@ -330,11 +454,16 @@ export function ModelProfileEditor({
     onChange(blankKeepId(profile.id, next));
   };
 
-  const selectChoice = (choice: ModelChoice) => {
+  const selectChoice = (choice: ModelChoice, closeList = true) => {
+    if (disabled || !catalogReady) return;
     // 只有在模型明确支持思考强度且包含有效档位时才保留或设置显式思考强度
     const isSupported = choice.effortStatus === "supported" && choice.effortValues.length > 0;
-    let nextEffort =
-      profile.reasoning && "value" in profile.reasoning
+    const switchingToHydrogen =
+      choice.choiceId === "gemini-4-hydrogen" &&
+      currentChoice?.choiceId !== "gemini-4-hydrogen";
+    let nextEffort = switchingToHydrogen
+      ? choice.defaultEffort
+      : profile.reasoning && "value" in profile.reasoning
         ? profile.reasoning.value
         : undefined;
 
@@ -356,8 +485,10 @@ export function ModelProfileEditor({
           ? { mode: "not-applicable" as const }
           : { mode: "native-default" as const };
 
-    setOpenList(false);
-    setQuery("");
+    if (closeList) {
+      setOpenList(false);
+      setQuery("");
+    }
     update({
       modelSelection: "explicit",
       modelId: targetModelId,
@@ -367,8 +498,10 @@ export function ModelProfileEditor({
   };
 
   const selectCustomModel = (customId: string) => {
+    if (disabled || !catalogReady) return;
     const trimmed = customId.trim();
     if (!trimmed) return;
+    if (adapter === "agy" && isHydrogenModelDisplayId(trimmed)) return;
     setOpenList(false);
     setQuery("");
     update({
@@ -391,11 +524,13 @@ export function ModelProfileEditor({
       ((adapter !== "agy" && /^gemini-/i.test(profile.modelId!)) ||
         (adapter !== "codex" && adapter !== "opencode" && /^gpt-6-astra$/i.test(profile.modelId!)));
     if (choices.length > 0 && (!profile.modelId || isResidual)) {
-      selectChoice(choices[0]!);
+      selectChoice(choices[0]!, false);
       return;
     }
-    // 目录成功完成后，草稿和访问探测共用同一份强度归一化规则。
-    if (effectiveProfile !== profile) update({ reasoning: effectiveProfile.reasoning });
+    // 保留在当前账号目录不存在的 AGY 历史选择，避免切号后静默降档或覆盖原档位。
+    if (effectiveProfile !== profile && !(adapter === "agy" && profile.modelId && !currentChoice)) {
+      update({ reasoning: effectiveProfile.reasoning });
+    }
   }, [choices, currentChoice, profile, effectiveProfile, adapter, disabled, catalogReady, catalogComplete]);
 
   const changeEffort = (effortValue: string) => {
@@ -424,8 +559,9 @@ export function ModelProfileEditor({
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    const canOpenList = adapter !== "agy" || catalogState.status !== "failed";
     if (!openList) {
-      if (e.key === "ArrowDown" || e.key === "Enter") {
+      if ((e.key === "ArrowDown" || e.key === "Enter") && canOpenList) {
         e.preventDefault();
         setOpenList(true);
       }
@@ -444,9 +580,10 @@ export function ModelProfileEditor({
       );
     } else if (e.key === "Enter") {
       e.preventDefault();
+      if (!catalogReady) return;
       if (activeIndex >= 0 && activeIndex < visibleChoices.length) {
         selectChoice(visibleChoices[activeIndex]!);
-      } else if (query.trim()) {
+      } else if (query.trim() && !(adapter === "agy" && isHydrogenModelDisplayId(query.trim()))) {
         selectCustomModel(query.trim());
       }
     } else if (e.key === "Escape") {
@@ -545,14 +682,25 @@ export function ModelProfileEditor({
                   : "点击展开或输入自定义模型"
             }
             onFocus={() => {
+              if (adapter === "agy" && catalogState.status === "failed") return;
               setOpenList(true);
               setQuery("");
               setActiveIndex(-1);
             }}
+            onClick={() => {
+              if (adapter === "agy" && catalogState.status === "failed") return;
+              if (!openList) {
+                setOpenList(true);
+                setQuery("");
+                setActiveIndex(-1);
+              }
+            }}
             onChange={(e) => {
               setQuery(e.target.value);
-              setOpenList(true);
-              setActiveIndex(0);
+              if (adapter !== "agy" || catalogState.status !== "failed") {
+                setOpenList(true);
+                setActiveIndex(0);
+              }
             }}
             onKeyDown={handleKeyDown}
           />
@@ -596,6 +744,7 @@ export function ModelProfileEditor({
                     } ${isFocused ? "is-focused" : ""}`}
                     onMouseDown={(e) => {
                       e.preventDefault();
+                      if (!catalogReady) return;
                       selectChoice(choice);
                     }}
                   >
@@ -630,6 +779,7 @@ export function ModelProfileEditor({
               )}
 
               {query.trim() &&
+                !(adapter === "agy" && isHydrogenModelDisplayId(query.trim())) &&
                 !choices.some(
                   (c) => c.nativeId.toLowerCase() === query.trim().toLowerCase(),
                 ) && (
@@ -639,6 +789,7 @@ export function ModelProfileEditor({
                     className="ms-model-option ms-custom-option"
                     onMouseDown={(e) => {
                       e.preventDefault();
+                      if (!catalogReady) return;
                       selectCustomModel(query.trim());
                     }}
                   >
@@ -650,7 +801,7 @@ export function ModelProfileEditor({
                 )}
 
               {!loading && !refreshing && visibleChoices.length === 0 && !query.trim() && (
-                <li className="ms-empty">没有匹配的模型</li>
+                <li className="ms-empty">{choices.length === 0 ? "当前账号暂无可用模型" : "没有匹配的模型"}</li>
               )}
             </ul>,
             document.body,
@@ -677,7 +828,7 @@ export function ModelProfileEditor({
         <div className="ms-field">
           <label htmlFor={`ms-effort-${profile.id}`}>思考强度</label>
           {availableEfforts.length === 1 ? (
-            <div className="ms-fixed-value">{availableEfforts[0]}</div>
+            <div className="ms-fixed-value">{formatEffortDisplayLabel(availableEfforts[0]!, profile.modelId)}</div>
           ) : (
             <select
               id={`ms-effort-${profile.id}`}
@@ -689,21 +840,40 @@ export function ModelProfileEditor({
               <option value="default">默认</option>
               {availableEfforts.map((effort) => (
                 <option key={effort} value={effort}>
-                  {effort}
+                  {formatEffortDisplayLabel(effort, profile.modelId)}
                 </option>
               ))}
             </select>
           )}
         </div>
       )}
-      {catalogComplete && !disabled && profile.reasoning?.mode === "explicit" &&
+      {catalogComplete && !disabled && profile.modelId && !currentChoice && adapter === "agy" && isHydrogenModelDisplayId(profile.modelId) ? (
+        <>
+          <p className="ms-error" role="alert">
+            当前账号不支持模型 {formatModelName(adapter, profile.modelId)}，请切换到支持的账号或重新选择模型。
+          </p>
+          {profile.reasoning?.mode === "explicit" && profile.reasoning.value && (
+            <p className="ms-muted" role="note" data-testid="preserved-reasoning-summary">
+              已保留当前配置思考强度：{formatEffortDisplayLabel(profile.reasoning.value, profile.modelId)}
+            </p>
+          )}
+        </>
+      ) : catalogComplete && !disabled && profile.reasoning?.mode === "explicit" &&
         (!currentChoice ||
           currentChoice.effortStatus !== "supported" ||
-          !currentChoice.effortValues.includes(profile.reasoning.value)) && (
-          <p className="ms-muted" role="note">
-            当前配置中的思考强度（{profile.reasoning.value}）未获此模型明确支持，将使用原生默认行为。
+          !currentChoice.effortValues.includes(profile.reasoning.value)) ? (
+        <p className="ms-muted" role="note">
+          当前配置中的思考强度（{formatEffortDisplayLabel(profile.reasoning.value, profile.modelId)}）未获此模型明确支持，将使用原生默认行为。
+        </p>
+      ) : (
+        profile.reasoning?.mode === "explicit" &&
+        profile.reasoning.value &&
+        (availableEfforts.length === 0 || !availableEfforts.includes(profile.reasoning.value)) && (
+          <p className="ms-muted" role="note" data-testid="preserved-reasoning-summary">
+            已保留当前配置思考强度：{formatEffortDisplayLabel(profile.reasoning.value, profile.modelId)}
           </p>
-        )}
+        )
+      )}
 
       {access && !["verified", "checking", "queued"].includes(access.status) && (
         <p className="ms-error" role="alert">{access.message}</p>

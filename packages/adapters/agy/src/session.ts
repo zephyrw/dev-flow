@@ -7,6 +7,7 @@ import { requireCondition, FlowError } from "../../../contracts/src/index.js";
 import { classifyFailure } from "../../../runtime/src/errors.js";
 import { CurrentTurn } from "./current-turn.js";
 import { BufferedEventSink } from "../../../core/src/buffered-sink.js";
+import { isHydrogenModelId } from "./model-configuration.js";
 export function writeAgyConfiguration(
   directory: string,
   node: string,
@@ -63,7 +64,8 @@ export function agyArguments(
   effortArgs?: string[],
   logFile?: string,
 ) {
-  const effort = effortArgs ?? ["--effort", "high"];
+  const isVariantModel = isHydrogenModelId(model) || /-(low|medium|high|xhigh)$/i.test(model);
+  const effort = effortArgs ?? (isVariantModel ? [] : ["--effort", "high"]);
   return [
     "--model",
     model,

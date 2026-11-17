@@ -2,7 +2,7 @@ import { spawn, execFileSync, type ChildProcess } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { z } from "zod";
 import type { Store } from "../../store/src/store.js";
 import {
@@ -46,6 +46,7 @@ import {
 import {
   parseAgyModelCatalog,
   knownAgyEffortFor,
+  isHydrogenModelId,
 } from "../../adapters/agy/src/model-configuration.js";
 import { parseCursorModelCatalog } from "../../adapters/cursor/src/model-configuration.js";
 import {
@@ -62,7 +63,16 @@ import {
   detectMimoVariantEncoding,
 } from "../../adapters/mimo/src/model-configuration.js";
 import { now, objectHash } from "./util.js";
-import { resolveModelIdentity, resolveModelIdentityInput } from "./model-identity.js";
+import {
+  managedAgyAccountContextKey,
+  readManagedAgyModelIdentity,
+  resolveAgyAccountContext,
+  resolveModelIdentity,
+  resolveModelIdentityInput,
+  type ManagedAgyModelIdentity,
+} from "./model-identity.js";
+
+export const AGY_CATALOG_FRESH_MS = Math.min(CATALOG_FRESH_MS, 15 * 60_000);
 
 const OPERATION_KIND = "model_config_operation";
 const CATALOG_KIND = "model_catalog";
@@ -113,7 +123,23 @@ export type CatalogScopeInput = {
   nativeConfigProfile?: string;
   accountFingerprint?: string;
   providerFingerprint?: string;
+  accountContextKey?: string;
+  managedAgy?: ManagedAgyModelIdentity;
+  agyIdentityVerified?: boolean;
 };
+
+export type AgyModelsSnapshot = {
+  native_ids: string[];
+  observed_at?: string;
+  realm_id?: string;
+  account_id?: string;
+  auth_epoch?: number;
+  credential_revision?: number;
+};
+
+export type AgyModelsReader = (
+  expected?: ManagedAgyModelIdentity,
+) => Promise<string[] | AgyModelsSnapshot | undefined>;
 
 export type LimitedCliRequest = {
   adapterId: SupportedAdapterId;
@@ -135,6 +161,7 @@ export type LimitedCliResult = {
   truncated: boolean;
   pid?: number;
   spawnError?: NodeJS.ErrnoException;
+  allowEmpty?: boolean;
 };
 
 export type LimitedCliHandle = {
@@ -144,7 +171,7 @@ export type LimitedCliHandle = {
 };
 
 export type ModelCatalogServiceOptions = {
-  readAgyModels?: () => Promise<string[] | undefined>;
+  readAgyModels?: AgyModelsReader;
   extraEnv?: Record<string, string>;
   versionHelpTimeoutMs?: number;
   catalogTimeoutMs?: number;
@@ -620,10 +647,18 @@ function operationId(type: string, requestId: string, entity: string): string {
   return ("op-" + objectHash({ type, requestId, entity })).slice(0, 80);
 }
 
+function normalizeScopeExecutablePath(executablePath: string): string {
+  const trimmed = executablePath.trim();
+  if (!trimmed) return "";
+  if (!/[\\/]/.test(trimmed)) return trimmed;
+  const normalized = resolve(trimmed);
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+
 function pointerId(scope: CatalogScopeInput): string {
   return "ptr-" + objectHash({
     adapterId: scope.adapterId,
-    executablePath: scope.executablePath,
+    executablePath: normalizeScopeExecutablePath(scope.executablePath),
     nativeConfigScope: scope.nativeConfigScope ?? "default",
     accountFingerprint: scope.accountFingerprint ?? "none",
     providerFingerprint: scope.providerFingerprint ?? "none",
@@ -633,7 +668,7 @@ function pointerId(scope: CatalogScopeInput): string {
 function catalogEntityId(scope: CatalogScopeInput): string {
   return "catalog:" + objectHash({
     adapterId: scope.adapterId,
-    executablePath: scope.executablePath,
+    executablePath: normalizeScopeExecutablePath(scope.executablePath),
     nativeConfigScope: scope.nativeConfigScope ?? "default",
     accountFingerprint: scope.accountFingerprint ?? "none",
     providerFingerprint: scope.providerFingerprint ?? "none",
@@ -650,6 +685,7 @@ function parseAdapterCatalog(
   cliVersion: string,
   nativeConfigScope: string,
   source?: ModelSource,
+  options?: { accountContextKey?: string; allowEmpty?: boolean },
 ): ModelCatalog {
   const input = {
     stdout,
@@ -661,6 +697,8 @@ function parseAdapterCatalog(
     nativeConfigScope,
     discoveredAt: now(),
     ...(source ? { source } : {}),
+    ...(options?.accountContextKey ? { accountContextKey: options.accountContextKey } : {}),
+    ...(options?.allowEmpty ? { allowEmpty: true } : {}),
   };
   if (adapterId === "codex") return parseCodexModelCatalog(input);
   if (adapterId === "agy") return parseAgyModelCatalog(input);
@@ -734,17 +772,31 @@ function classifySpawnOrOutput(
   return undefined;
 }
 
-function withFreshness(catalog: ModelCatalog): ModelCatalog {
+function withFreshness(
+  catalog: ModelCatalog,
+  expectedAccountContextKey?: string,
+): ModelCatalog {
   // 缺失或过期的 parserRevision 表示条目由旧解析器产物写入，必须重发现；
   // 不得回填为当前值，否则「需要重发现」的信号会被抹掉。
   const parserStale =
     catalog.parserRevision === undefined ||
     catalog.parserRevision !== PARSER_REVISION;
-  const discoveryStatus: ModelDiscoveryStatus = parserStale
+  const contextMismatch =
+    catalog.adapterId === "agy" &&
+    expectedAccountContextKey !== undefined &&
+    catalog.accountContextKey !== expectedAccountContextKey;
+  const discoveryStatus: ModelDiscoveryStatus = parserStale || contextMismatch
     ? "missing"
     : (catalog.discoveryStatus ?? inferDiscoveryStatus(catalog));
-  const isStale = catalog.status === "fresh" && Date.parse(catalog.staleAfter) <= Date.now();
-  const status = isStale ? "stale" : catalog.status;
+  const nowMs = Date.now();
+  const agyExpired =
+    catalog.adapterId === "agy" &&
+    Number.isFinite(Date.parse(catalog.discoveredAt)) &&
+    Date.parse(catalog.discoveredAt) + AGY_CATALOG_FRESH_MS <= nowMs;
+  const isStale =
+    contextMismatch ||
+    (catalog.status === "fresh" && (Date.parse(catalog.staleAfter) <= nowMs || agyExpired));
+  const status = contextMismatch ? "stale" : (isStale ? "stale" : catalog.status);
 
   if (catalog.status === status && catalog.discoveryStatus === discoveryStatus) {
     return catalog;
@@ -887,19 +939,87 @@ function manualCandidateEntry(
   return enrichManualEntry(base);
 }
 
+export function previewManualCandidateEntry(
+  adapterId: SupportedAdapterId,
+  nativeId: string,
+): ModelEntry {
+  const id = assertManualNativeId(adapterId, nativeId);
+  if (adapterId === "agy" && isHydrogenModelId(id)) {
+    throw new FlowError(
+      "MODEL_NOT_LISTED",
+      "Gemini 4 Hydrogen 仅在当前账号真实目录明确列出时可用，不能手工添加",
+      422,
+    );
+  }
+  return manualCandidateEntry(adapterId, id);
+}
+
+function isScopeAgyIdentityVerified(
+  store: Store,
+  scope?: CatalogScopeInput,
+): { verified: boolean; contextKey?: string } {
+  try {
+    const live = resolveAgyAccountContext(store);
+    if (live.verified && live.contextKey) {
+      if (scope?.accountContextKey && scope.accountContextKey !== live.contextKey) {
+        return { verified: false };
+      }
+      return { verified: true, contextKey: live.contextKey };
+    }
+  } catch {
+    return { verified: false };
+  }
+  if (scope?.agyIdentityVerified && scope.accountContextKey?.trim()) {
+    return { verified: true, contextKey: scope.accountContextKey.trim() };
+  }
+  if (scope?.managedAgy && scope.accountContextKey?.trim()) {
+    return { verified: true, contextKey: scope.accountContextKey.trim() };
+  }
+  return { verified: false };
+}
+
+function filterHydrogenEntriesForContext(
+  catalog: ModelCatalog,
+  verifiedContext: { verified: boolean; contextKey?: string },
+): ModelCatalog {
+  if (catalog.adapterId !== "agy") return catalog;
+  const allowHydrogen =
+    verifiedContext.verified &&
+    Boolean(verifiedContext.contextKey) &&
+    catalog.accountContextKey === verifiedContext.contextKey;
+  if (allowHydrogen) return catalog;
+  const filtered = catalog.entries.filter((entry) => !isHydrogenModelId(entry.nativeId));
+  if (filtered.length === catalog.entries.length) return catalog;
+  return ModelCatalogSchema.parse({
+    ...catalog,
+    entries: filtered,
+  });
+}
+
 function mergeManualEntries(
   discovered: ModelEntry[],
   previous: ModelCatalog | undefined,
+  scope?: CatalogScopeInput,
 ): ModelEntry[] {
+  if (
+    scope?.accountContextKey &&
+    previous?.accountContextKey &&
+    previous.accountContextKey !== scope.accountContextKey
+  ) {
+    return discovered;
+  }
   const listed = new Set(discovered.map((entry) => entry.nativeId));
   const manuals = (previous?.entries ?? []).filter(
-    (entry) => entry.source === "manual" && !listed.has(entry.nativeId),
+    (entry) =>
+      entry.source === "manual" &&
+      !listed.has(entry.nativeId) &&
+      !(scope?.adapterId === "agy" && isHydrogenModelId(entry.nativeId)),
   );
   return [...discovered, ...manuals];
 }
 
 type CatalogWork = {
-  readAgyModels?: () => Promise<string[] | undefined>;
+  readAgyModels?: AgyModelsReader;
   scanLimit: Semaphore;
   queryLimit: Semaphore;
   inflight: Map<string, Promise<ModelCatalog>>;
@@ -991,11 +1111,12 @@ export class ModelCatalogService {
     const adapterId = asAdapter(adapter);
     const wanted = scopeId?.trim() ? scopeId.trim() : "default";
     const scope = this.scopeForRefresh(adapterId, wanted);
+    const agyVerified = adapterId === "agy" ? isScopeAgyIdentityVerified(this.store, scope) : { verified: true };
     const cached = scope ? this.readCached(scope) : undefined;
-    const freshCached = cached ? withFreshness(cached) : undefined;
+    const freshCached = cached ? withFreshness(cached, scope?.accountContextKey) : undefined;
     if (
       freshCached &&
-      freshCached.entries.length > 0 &&
+      (freshCached.entries.length > 0 || freshCached.discoveryStatus === "complete") &&
       freshCached.discoveryStatus !== "missing" &&
       adapterId !== "claude-code"
     ) {
@@ -1004,7 +1125,7 @@ export class ModelCatalogService {
         // account/provider scope. discover() shares work across service instances.
         void this.discover(scope).catch(() => {});
       }
-      return freshCached;
+      return filterHydrogenEntriesForContext(freshCached, agyVerified);
     }
     try {
       const rawInput = adapterId === "claude-code" ? claudeCatalogStdout() : "";
@@ -1020,14 +1141,14 @@ export class ModelCatalogService {
       );
       if (seedCatalog.status === "fresh" && seedCatalog.entries.length > 0) {
         if (scope) {
-          this.persistCatalog(scope, "seed", seedCatalog);
+          return this.persistCatalog(scope, "seed", seedCatalog);
         }
-        return withFreshness(seedCatalog);
+        return filterHydrogenEntriesForContext(withFreshness(seedCatalog), agyVerified);
       }
     } catch {
       // ignore
     }
-    if (freshCached) return freshCached;
+    if (freshCached) return filterHydrogenEntriesForContext(freshCached, agyVerified);
     return missingCatalog(adapterId, wanted);
   }
 
@@ -1089,6 +1210,13 @@ export class ModelCatalogService {
 
   ensureManualCandidate(scope: CatalogScopeInput, nativeId: string): ModelEntry {
     const id = assertManualNativeId(scope.adapterId, nativeId);
+    if (scope.adapterId === "agy" && isHydrogenModelId(id)) {
+      throw new FlowError(
+        "MODEL_NOT_LISTED",
+        "Gemini 4 Hydrogen 仅在当前账号真实目录明确列出时可用，不能手工添加",
+        422,
+      );
+    }
     const previous = this.readCached(scope);
     const existing = previous?.entries.find((entry) => entry.nativeId === id);
     if (existing) {
@@ -1108,14 +1236,16 @@ export class ModelCatalogService {
     const entry = manualCandidateEntry(scope.adapterId, id);
     const clock = now();
     const hasNonManual = previous?.entries.some((e) => e.source !== "manual") ?? false;
+    // 有效空目录已完成过真实发现，仅追加非 Hydrogen 手工候选时不得把目录状态降格为 missing。
+    const preserveDiscovered = hasNonManual || previous?.discoveryStatus === "complete";
     const catalog = previous
       ? ModelCatalogSchema.parse({
           ...previous,
           entries: [...previous.entries, entry],
-          // 全 manual 目录不算已发现；同时保留 previous.parserRevision（可能是旧值），
+          // 全 manual 且未曾完成过真实发现的目录不算已发现；同时保留 previous.parserRevision（可能是旧值），
           // 让 withFreshness 仍能判定需重发现，不得回填当前 PARSER_REVISION。
-          status: hasNonManual ? previous.status : "missing",
-          discoveryStatus: hasNonManual ? (previous.discoveryStatus ?? "complete") : "missing",
+          status: preserveDiscovered ? previous.status : "missing",
+          discoveryStatus: preserveDiscovered ? (previous.discoveryStatus ?? "complete") : "missing",
           parserRevision: previous.parserRevision,
         })
       : ModelCatalogSchema.parse({
@@ -1149,16 +1279,28 @@ export class ModelCatalogService {
     const raw = this.store.get<ModelCatalog>(CATALOG_KIND, pointer.catalogId);
     if (!raw) return undefined;
     const parsed = ModelCatalogSchema.parse(raw);
-    return withFreshness({
+    const agyVerified =
+      parsed.adapterId === "agy"
+        ? isScopeAgyIdentityVerified(this.store, scope)
+        : { verified: true };
+    const expectedContextKey =
+      parsed.adapterId === "agy"
+        ? scope.accountContextKey ?? agyVerified.contextKey
+        : scope.accountContextKey;
+    const withEntries = withFreshness({
       ...parsed,
       // Retire only the automatically injected, incorrect 5.5 suggestions.
       // Explicit manual entries and frozen task/session selections remain intact.
       entries: parsed.entries.filter((entry) => !(
         parsed.adapterId === "agy" && entry.source === "manual" &&
-        ["claude-opus-5-5", "claude-sonnet-5-5"].includes(entry.nativeId) &&
-        entry.capabilityRevision === `${entry.nativeId}:candidate:unknown`
+        ((["claude-opus-5-5", "claude-sonnet-5-5"].includes(entry.nativeId) &&
+          entry.capabilityRevision === `${entry.nativeId}:candidate:unknown`) ||
+          isHydrogenModelId(entry.nativeId))
       )).map(enrichManualEntry),
-    });
+    }, expectedContextKey);
+    return parsed.adapterId === "agy"
+      ? filterHydrogenEntriesForContext(withEntries, agyVerified)
+      : withEntries;
   }
 
   loadForSelector(scope: CatalogScopeInput): ModelCatalog {
@@ -1174,7 +1316,9 @@ export class ModelCatalogService {
   }
 
   async discover(scope: CatalogScopeInput): Promise<ModelCatalog> {
-    const key = pointerId(scope);
+    const key = scope.accountContextKey
+      ? `${pointerId(scope)}::${scope.accountContextKey}`
+      : pointerId(scope);
     const pending = this.inflight.get(key);
     if (pending) return pending;
     const work = this.queryLimit
@@ -1407,6 +1551,14 @@ export class ModelCatalogService {
     if (nativeConfigProfile && nativeConfigProfile !== "default" && !native.profileSelectionSupported) {
       throw new FlowError("CLI_PARAMETER_UNSUPPORTED", "当前工具不支持命名原生配置", 422);
     }
+    let agyContext: ReturnType<typeof resolveAgyAccountContext> = { verified: false };
+    if (adapterId === "agy") {
+      try {
+        agyContext = resolveAgyAccountContext(this.store);
+      } catch {
+        agyContext = { verified: false };
+      }
+    }
     return {
       adapterId,
       executablePath: native.executablePath,
@@ -1415,6 +1567,13 @@ export class ModelCatalogService {
       nativeConfigProfile: native.nativeConfigProfile,
       accountFingerprint: native.accountFingerprint,
       providerFingerprint: native.providerEndpointFingerprint,
+      ...(adapterId === "agy" ? { agyIdentityVerified: agyContext.verified } : {}),
+      ...(agyContext.verified && agyContext.contextKey
+        ? {
+            accountContextKey: agyContext.contextKey,
+            ...(agyContext.managed ? { managedAgy: agyContext.managed } : {}),
+          }
+        : {}),
     };
   }
 
@@ -1559,9 +1718,15 @@ export class ModelCatalogService {
       if (current.accountFingerprint !== scope.accountFingerprint || current.nativeConfigScope !== scope.nativeConfigScope)
         throw new FlowError("ACCOUNT_CHANGED_DURING_DISCOVERY", "CodeBuddy 账号或项目配置在读取目录期间发生变化，请重试", 409);
     }
-    if (scope.adapterId === "agy" &&
-        this.resolveScope("agy", scope.executablePath, scope.nativeConfigProfile).accountFingerprint !== scope.accountFingerprint)
-      throw new FlowError("ACCOUNT_CHANGED_DURING_DISCOVERY", "账号在模型目录读取期间发生变化，请重试", 409);
+    if (scope.adapterId === "agy") {
+      const liveScope = this.resolveScope("agy", scope.executablePath, scope.nativeConfigProfile);
+      if (
+        liveScope.accountFingerprint !== scope.accountFingerprint ||
+        (scope.accountContextKey && liveScope.accountContextKey !== scope.accountContextKey)
+      ) {
+        throw new FlowError("ACCOUNT_CHANGED_DURING_DISCOVERY", "账号在模型目录读取期间发生变化，请重试", 409);
+      }
+    }
     return this.persistCatalog(scope, cliVersion, {
       ...parsed,
       ...(capability ? { invocationCapability: capability } : {}),
@@ -1593,17 +1758,41 @@ export class ModelCatalogService {
   ): ModelCatalog {
     const previous = this.readCached(scope);
     const entityId = catalogEntityId(scope);
+    const maxAgyStale =
+      scope.adapterId === "agy"
+        ? new Date(Date.parse(parsed.discoveredAt) + AGY_CATALOG_FRESH_MS).toISOString()
+        : parsed.staleAfter;
+    const staleAfter =
+      scope.adapterId === "agy" && Date.parse(maxAgyStale) < Date.parse(parsed.staleAfter)
+        ? maxAgyStale
+        : parsed.staleAfter;
+    const agyVerified =
+      scope.adapterId === "agy"
+        ? isScopeAgyIdentityVerified(this.store, scope)
+        : { verified: true };
+    const allowHydrogen =
+      scope.adapterId !== "agy" ||
+      (agyVerified.verified && Boolean(scope.accountContextKey ?? agyVerified.contextKey));
+    const filteredEntries = allowHydrogen
+      ? parsed.entries
+      : parsed.entries.filter((entry) => !isHydrogenModelId(entry.nativeId));
+    const accountContextKey =
+      scope.adapterId === "agy"
+        ? (agyVerified.verified ? (scope.accountContextKey ?? agyVerified.contextKey) : undefined)
+        : scope.accountContextKey;
     const stored = ModelCatalogSchema.parse({
       ...parsed,
-      entries: mergeManualEntries(parsed.entries, previous),
+      entries: mergeManualEntries(filteredEntries, previous, scope),
       scopeHash: entityId.slice(8),
       cliPath: scope.executablePath,
       cliVersion,
       nativeConfigScope: scope.nativeConfigScope ?? "default",
       nativeConfigProfile: scope.nativeConfigProfile,
+      ...(accountContextKey ? { accountContextKey } : {}),
       status: "fresh",
+      staleAfter,
       discoveryStatus:
-        parsed.discoveryStatus ?? (parsed.entries.length > 0 ? "complete" : "missing"),
+        parsed.discoveryStatus ?? (filteredEntries.length > 0 ? "complete" : "missing"),
       parserRevision: parsed.parserRevision ?? PARSER_REVISION,
     });
     this.writeCatalog(scope, entityId, stored);
@@ -1625,6 +1814,7 @@ export class ModelCatalogService {
         scope.adapterId, query.stdout, query.stderr, query.truncated,
         catalogEntityId(scope).slice(8), scope.executablePath, cliVersion,
         scope.nativeConfigScope ?? "default", source,
+        { accountContextKey: scope.accountContextKey, allowEmpty: query.allowEmpty },
       )
       : undefined;
     if (structured?.status === "fresh" && structured.entries.length > 0) return structured;
@@ -1640,6 +1830,7 @@ export class ModelCatalogService {
           cliPath: scope.executablePath,
           cliVersion,
           nativeConfigScope: scope.nativeConfigScope ?? "default",
+          ...(scope.accountContextKey ? { accountContextKey: scope.accountContextKey } : {}),
           discoveredAt: now(),
         },
         classified.code,
@@ -1656,6 +1847,7 @@ export class ModelCatalogService {
       cliVersion,
       scope.nativeConfigScope ?? "default",
       source,
+      { accountContextKey: scope.accountContextKey, allowEmpty: query.allowEmpty },
     );
   }
 
@@ -1696,9 +1888,38 @@ export class ModelCatalogService {
       });
     }
     const reader = scope.adapterId === "agy" ? catalogWorkByStore.get(this.store)?.readAgyModels : undefined;
-    const managedModels = await reader?.();
-    if (managedModels !== undefined)
-      return { stdout: managedModels.join("\n"), stderr: "", exitCode: 0, timedOut: false, cancelled: false, truncated: false };
+    const managedResult = await reader?.(scope.managedAgy);
+    if (managedResult !== undefined) {
+      if (Array.isArray(managedResult)) {
+        return {
+          stdout: managedResult.join("\n"),
+          stderr: "",
+          exitCode: 0,
+          timedOut: false,
+          cancelled: false,
+          truncated: false,
+          allowEmpty: managedResult.length === 0,
+        };
+      }
+      if (scope.managedAgy) {
+        if (
+          (managedResult.account_id && managedResult.account_id !== scope.managedAgy.accountId) ||
+          (managedResult.auth_epoch !== undefined && managedResult.auth_epoch !== scope.managedAgy.authEpoch) ||
+          (managedResult.credential_revision !== undefined && managedResult.credential_revision !== scope.managedAgy.credentialRevision)
+        ) {
+          throw new FlowError("ACCOUNT_CHANGED_DURING_DISCOVERY", "账号在模型目录读取期间发生变化，请重试", 409);
+        }
+      }
+      return {
+        stdout: managedResult.native_ids.join("\n"),
+        stderr: "",
+        exitCode: 0,
+        timedOut: false,
+        cancelled: false,
+        truncated: false,
+        allowEmpty: managedResult.native_ids.length === 0,
+      };
+    }
     if (scope.adapterId === "claude-code") {
       return {
         stdout: claudeCatalogStdout(),
@@ -1794,7 +2015,15 @@ export class ModelCatalogService {
     errorMessage: string,
     cliVersion: string,
   ): ModelCatalog {
-    if (previous && previous.entries.length > 0 && !(scope.adapterId === "codebuddy-code" && errorCode === "AUTH_REQUIRED")) {
+    const contextMismatch =
+      Boolean(scope.accountContextKey) &&
+      previous?.accountContextKey !== scope.accountContextKey;
+    if (
+      previous &&
+      !contextMismatch &&
+      (previous.entries.length > 0 || previous.discoveryStatus === "complete") &&
+      !(scope.adapterId === "codebuddy-code" && errorCode === "AUTH_REQUIRED")
+    ) {
       const kept = ModelCatalogSchema.parse({
         ...previous,
         status: "failed",
@@ -1833,6 +2062,7 @@ export class ModelCatalogService {
         cliPath: scope.executablePath,
         cliVersion,
         nativeConfigScope: scope.nativeConfigScope ?? "default",
+        ...(scope.accountContextKey ? { accountContextKey: scope.accountContextKey } : {}),
         discoveredAt: now(),
       },
       errorCode,

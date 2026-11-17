@@ -102,7 +102,7 @@ export const ModelDiscoveryStatusSchema = z.enum([
 ]);
 export type ModelDiscoveryStatus = z.infer<typeof ModelDiscoveryStatusSchema>;
 
-export const PARSER_REVISION = "20260924-v3";
+export const PARSER_REVISION = "20261113-v4";
 
 export const ModelCatalogSchema = z
   .object({
@@ -112,6 +112,7 @@ export const ModelCatalogSchema = z
     cliVersion: z.string().optional(),
     nativeConfigScope: z.string().optional(),
     nativeConfigProfile: z.string().optional(),
+    accountContextKey: z.string().min(1).optional(),
     invocationCapability: ModelInvocationCapabilitySchema.optional(),
     status: ModelCatalogStatusSchema,
     discoveryStatus: ModelDiscoveryStatusSchema.optional(),

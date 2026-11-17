@@ -33,6 +33,7 @@ import type {
 } from "../../contracts/src/model-routing.js";
 import type { ModelCatalog, ModelEntry } from "../../contracts/src/model-catalog.js";
 import { buildFrozenInvocation, selectionCapabilityFromCatalog } from "../../adapters/sdk/src/frozen-invocation.js";
+import { isHydrogenModelId } from "../../adapters/agy/src/model-configuration.js";
 import { ModelCatalogService } from "./model-catalog-service.js";
 import { ModelAccessService } from "./model-access-service.js";
 import { workflowModelWorkspace } from "./model-identity.js";
@@ -1037,13 +1038,25 @@ function effortPartsFromProfile(
   }
   switch (profile.adapterId) {
     case "agy":
+      if (
+        isHydrogenModelId(profile.modelId) ||
+        (profile.modelId && /-(low|medium|high|xhigh)$/i.test(profile.modelId))
+      ) {
+        return {
+          effortArgs: [],
+          effortEnv: {},
+          transport: "variant-id",
+        };
+      }
+      return {
+        effortArgs: ["--effort", explicit],
+        effortEnv: {},
+        transport: "flag",
+      };
     case "claude-code":
       return {
         effortArgs: ["--effort", explicit],
-        effortEnv:
-          profile.adapterId === "claude-code"
-            ? { CLAUDE_CODE_EFFORT_LEVEL: explicit }
-            : {},
+        effortEnv: { CLAUDE_CODE_EFFORT_LEVEL: explicit },
         transport: "flag",
       };
     case "codex":

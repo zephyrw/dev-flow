@@ -61,7 +61,7 @@ export function DefaultModelsPanel({
     mode: "inherit",
   });
   const [revision, setRevision] = useState(0);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [hasConflict, setHasConflict] = useState(false);

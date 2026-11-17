@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Store } from "../../packages/store/src/store.js";
 import {
@@ -16,20 +16,24 @@ import * as modelIdentity from "../../packages/core/src/model-identity.js";
 import { buildAgyCandidateEntry } from "../../packages/adapters/agy/src/model-configuration.js";
 
 // Catalog tests exercise only the fixture CLI and a deterministic non-secret scope.
-vi.mock("../../packages/core/src/model-identity.js", () => ({
-  resolveModelIdentity: (_store: unknown, profile: {
-    adapterId: string; executableRef: string; nativeConfigProfile?: string;
-  }) => ({
-    adapterId: profile.adapterId,
-    executablePath: profile.executableRef,
-    nativeConfigScope: profile.nativeConfigProfile ?? "default",
-    nativeConfigProfile: profile.nativeConfigProfile,
-    accountFingerprint: "test-account",
-    providerEndpointFingerprint: "test-endpoint",
-    identityConfidence: "profile-scope",
-    profileSelectionSupported: profile.adapterId === "codex",
-  }),
-}));
+vi.mock("../../packages/core/src/model-identity.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../packages/core/src/model-identity.js")>();
+  return {
+    ...actual,
+    resolveModelIdentity: (_store: unknown, profile: {
+      adapterId: string; executableRef: string; nativeConfigProfile?: string;
+    }) => ({
+      adapterId: profile.adapterId,
+      executablePath: profile.executableRef,
+      nativeConfigScope: profile.nativeConfigProfile ?? "default",
+      nativeConfigProfile: profile.nativeConfigProfile,
+      accountFingerprint: "test-account",
+      providerEndpointFingerprint: "test-endpoint",
+      identityConfidence: "profile-scope",
+      profileSelectionSupported: profile.adapterId === "codex",
+    }),
+  };
+});
 
 const FIXTURE = join(
   dirname(fileURLToPath(import.meta.url)),
@@ -499,4 +503,35 @@ it.each([undefined, "work"])("opaque native scope never becomes the Codex profil
   resolver.mockClear();
   expect(env.catalog.getModels("codex", "codex-config:unknown").status).toBe("missing");
   expect(resolver).not.toHaveBeenCalled();
+});
+
+it("不同路径写法的同一可执行文件路径复用同一目录缓存与 scopeHash", async () => {
+  const canonical = FIXTURE.replace(/\\/g, "/");
+  const variant = process.platform === "win32"
+    ? FIXTURE.replace(/\//g, "\\")
+    : `${dirname(FIXTURE)}/./${basename(FIXTURE)}`;
+  const env = openCatalog({ catalogStdout: "gemini-3.8-flash-high\tGemini 3.8 Flash (High)\n" }, canonical);
+  const op = env.catalog.refreshModels({ adapter: "agy", request_id: randomUUID() });
+  const done = await waitDone(env.catalog, op.operation.id);
+  expect(done.status).toBe("committed");
+
+  const fromCanonical = env.catalog.readCached({
+    adapterId: "agy",
+    executablePath: canonical,
+    nativeConfigScope: "default",
+    accountFingerprint: "test-account",
+    providerFingerprint: "test-endpoint",
+  });
+  const fromVariant = env.catalog.readCached({
+    adapterId: "agy",
+    executablePath: variant,
+    nativeConfigScope: "default",
+    accountFingerprint: "test-account",
+    providerFingerprint: "test-endpoint",
+  });
+
+  expect(fromCanonical?.status).toBe("fresh");
+  expect(fromVariant?.status).toBe("fresh");
+  expect(fromVariant?.scopeHash).toBe(fromCanonical?.scopeHash);
+  expect(fromVariant?.entries.map((e) => e.nativeId)).toContain("gemini-3.8-flash-high");
 });

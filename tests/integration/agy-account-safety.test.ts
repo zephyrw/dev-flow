@@ -534,4 +534,210 @@ describe("AGY durable safety boundary", () => {
     expect(view.snapshots.some(s => s.account_id === "B")).toBe(false);
     expect(view.candidates.some(c => c.account_id === "B")).toBe(false);
   });
+
+  it("ACC-02: 单候选 probeModels/probeModelAccess 可恢复失败不中断循环并续查后继候选，全部耗尽按原目标进入等待", async () => {
+    const consumer: AccountConsumerPort = {
+      listOccupancy: async () => [],
+      prepareSwitch: async () => ({ savedRef: { runs: [{ run_id: "failed" }] } }),
+      quiesce: async () => {},
+      confirmStopped: async () => true,
+      onAccountCommitted: async () => {},
+    };
+    // 场景 1: 候选 B 目录探测失败 (model_catalog_unavailable)，续查支持候选 C 并成功完成
+    {
+      const f = await fixture();
+      f.service.registerConsumer(consumer);
+      f.state.actual.A = 0;
+      f.repo.saveQuotaSnapshot({
+        id: "quota_A",
+        realm_id: realmId,
+        account_id: "A",
+        auth_epoch: 1,
+        pool_id: pool,
+        model_ids: [model],
+        source: "official_cli_usage",
+        cli_version: "fixture",
+        parser_revision: 1,
+        observed_at: timestamp,
+        executable_fingerprint: "isolated-fixture",
+        capability_verified: true,
+        windows: windows(0, 0),
+      });
+      await f.service.start({ realmId, requestId: "start-acc02-1" });
+      f.probe.probeModels = async (opts) => {
+        if (opts?.account_id === "B") throw new Error("model_catalog_unavailable");
+        return {
+          native_ids: [model],
+          observed_at: timestamp,
+          cli_version: "fixture",
+          executable_fingerprint: "isolated-fixture",
+          credential_revision: opts?.credential_revision ?? 1,
+        };
+      };
+      const receipt = await f.service.requestWorkflowOperation({
+        realm_id: realmId,
+        kind: "switch",
+        request_id: "wf-sw-1",
+        selection: { mode: "auto" },
+        trigger: "workflow_quota",
+        source_event_key: "ev-acc02-1",
+        workflow_id: "wf-1",
+        source_run_id: "run-1",
+        expected_epoch: 1,
+        quota_window: "weekly",
+        model_id: model,
+        required_pool_ids: [pool],
+        required_model_ids: [model],
+      });
+      await f.service.tick(now);
+      expect(f.state.active).toBe("saved_C");
+      expect(f.repo.getAccount(realmId, "B")?.models).toBeUndefined();
+      expect(f.repo.getOperation(receipt.operation_id)?.phase).toBe("completed");
+    }
+
+    // 场景 2: 全部候选在 probeModelAccess 发生可恢复超时 -> 不改换模型，保留原目标进入 waiting 等待重试
+    {
+      const f = await fixture();
+      f.service.registerConsumer(consumer);
+      f.state.actual.A = 0;
+      f.repo.saveQuotaSnapshot({
+        id: "quota_A",
+        realm_id: realmId,
+        account_id: "A",
+        auth_epoch: 1,
+        pool_id: pool,
+        model_ids: [model],
+        source: "official_cli_usage",
+        cli_version: "fixture",
+        parser_revision: 1,
+        observed_at: timestamp,
+        executable_fingerprint: "isolated-fixture",
+        capability_verified: true,
+        windows: windows(0, 0),
+      });
+      await f.service.start({ realmId, requestId: "start-acc02-2" });
+      f.probe.probeModels = async (opts) => ({
+        native_ids: [model],
+        observed_at: timestamp,
+        cli_version: "fixture",
+        executable_fingerprint: "isolated-fixture",
+        credential_revision: opts?.credential_revision ?? 1,
+      });
+      f.probe.probeModelAccess = async () => {
+        throw new Error("agy_model_probe_timeout");
+      };
+      const receipt = await f.service.requestWorkflowOperation({
+        realm_id: realmId,
+        kind: "switch",
+        request_id: "wf-sw-2",
+        selection: { mode: "auto" },
+        trigger: "workflow_quota",
+        source_event_key: "ev-acc02-2",
+        workflow_id: "wf-2",
+        source_run_id: "run-2",
+        expected_epoch: 1,
+        quota_window: "weekly",
+        model_id: model,
+        required_pool_ids: [pool],
+        required_model_ids: [model],
+      });
+      await f.service.tick(now);
+      const op = f.repo.getOperation(receipt.operation_id);
+      expect(op?.phase).toBe("waiting");
+      expect(op?.required_model_ids).toEqual([model]);
+      expect(f.repo.getDomainWait(realmId)?.reason).toBe("agy_model_probe_timeout");
+    }
+  });
+
+  it("ACC-03: 许可阶段刷新目录期间同账号凭据轮换时接续账号与 realm 不误报 external_change，真换号继续拒绝", async () => {
+    // 场景 1: 同账号令牌在 probeModels 期间正常续期（compareActive 失效但 inspectActive 仍为 A）
+    {
+      const f = await fixture();
+      await f.service.start({ realmId, requestId: "start-acc03-1" });
+      const accA = f.repo.getAccount(realmId, "A")!;
+      // 使 A 缺失 models.credential_revision 触发许可阶段目录刷新
+      f.repo.saveAccount({
+        ...accA,
+        models: {
+          native_ids: [model],
+          observed_at: timestamp,
+          cli_version: "fixture",
+          executable_fingerprint: "isolated-fixture",
+        },
+      });
+      f.probe.getExecutableFingerprint = async () => "isolated-fixture";
+      f.probe.probeModels = async () => {
+        f.state.active = "renewed_A";
+        return {
+          native_ids: ["gemini-4-hydrogen-xhigh"],
+          observed_at: timestamp,
+          cli_version: "fixture",
+          executable_fingerprint: "isolated-fixture",
+          credential_revision: 1,
+        };
+      };
+      f.auth.inspectActive = async () => ({ exists: true, auth: { email: "A@example.test" } });
+      f.auth.captureActive = async () => ({
+        secret_ref: "renewed_A",
+        credential_revision: 2,
+        auth: { email: "A@example.test" },
+      });
+      // 加入 Gemini Models 配额，触发 gemini-4-hydrogen-xhigh 严格刷新
+      f.repo.saveQuotaSnapshot({
+        id: "quota_A_gemini",
+        realm_id: realmId,
+        account_id: "A",
+        auth_epoch: 1,
+        pool_id: "Gemini Models",
+        model_ids: ["gemini-*"],
+        source: "official_cli_usage",
+        cli_version: "fixture",
+        parser_revision: 1,
+        observed_at: timestamp,
+        executable_fingerprint: "isolated-fixture",
+        capability_verified: true,
+        windows: windows(0.8),
+      });
+
+      const permit = await f.service.acquireUsagePermit({
+        realm_id: realmId,
+        consumer_id: "run-acc03-ok",
+        usage_kind: "execution",
+        required_pool_ids: ["Gemini Models"],
+        required_model_ids: ["gemini-4-hydrogen-xhigh"],
+      });
+      expect(permit.account_id).toBe("A");
+      expect(f.repo.getRealm(realmId)?.active_secret_ref).toBe("renewed_A");
+      expect(f.repo.getAccount(realmId, "A")?.credential_revision).toBe(2);
+      expect(f.repo.getAccount(realmId, "A")?.models?.credential_revision).toBe(2);
+      await f.service.releaseUsagePermit(permit.permit_id, { permit_id: permit.permit_id, success: true });
+    }
+
+    // 场景 2: 目录刷新期间真实切换到另一账号 C -> 立刻拒绝（抛 external_change，不被吞掉）
+    {
+      const f = await fixture();
+      await f.service.start({ realmId, requestId: "start-acc03-2" });
+      f.probe.getExecutableFingerprint = async () => "isolated-fixture";
+      f.probe.probeModels = async () => {
+        f.state.active = "saved_C";
+        return {
+          native_ids: ["gemini-4-hydrogen-xhigh"],
+          observed_at: timestamp,
+          cli_version: "fixture",
+          executable_fingerprint: "isolated-fixture",
+          credential_revision: 1,
+        };
+      };
+      f.auth.inspectActive = async () => ({ exists: true, auth: { email: "C@example.test" } });
+      await expect(
+        f.service.acquireUsagePermit({
+          realm_id: realmId,
+          consumer_id: "run-acc03-reject",
+          usage_kind: "execution",
+          required_pool_ids: [pool],
+          required_model_ids: ["gemini-4-hydrogen-xhigh"],
+        }),
+      ).rejects.toThrow("external_change");
+    }
+  });
 });

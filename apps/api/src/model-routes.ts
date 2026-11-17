@@ -33,7 +33,8 @@ import { ModelAccessService } from "../../../packages/core/src/model-access-serv
 import { ModelSwitchService } from "../../../packages/core/src/model-switch-service.js";
 import { RepairModelService } from "../../../packages/core/src/repair-model-service.js";
 import { assertProfilesVerified } from "../../../packages/core/src/access-guard.js";
-import { workflowModelWorkspace } from "../../../packages/core/src/model-identity.js";
+import { isHydrogenModelId } from "../../../packages/adapters/agy/src/model-configuration.js";
+import { resolveAgyAccountContext, workflowModelWorkspace } from "../../../packages/core/src/model-identity.js";
 import type { AgyAccountService } from "../../../packages/agy-accounts/src/service.js";
 import {
   buildExecutionSpecResponse,
@@ -211,7 +212,7 @@ export function registerModelRoutes(
   const specs = new ExecutionSpecService(engine.store, engine.config, getActiveCategory);
   const defaults = new ModelDefaultsService(engine.store);
   const catalog = new ModelCatalogService(engine.store, accountService
-    ? { readAgyModels: async () => accountService.isManaged() ? accountService.readActiveModelIds() : undefined } : {});
+    ? { readAgyModels: async (expected) => accountService.isManaged() ? accountService.readActiveModelSnapshot("default-agy-realm", expected) : undefined } : {});
   const access = modelAccess ?? new ModelAccessService(engine.store, {
     catalog,
     ...(accountService ? {
@@ -266,9 +267,38 @@ export function registerModelRoutes(
       .string()
       .parse((req.params as { adapter: string }).adapter);
     const scopeId = await modelScope(adapter, (req.query as { scope_id?: string }).scope_id);
-    if (adapter === "agy" && accountService?.isManaged()) await accountService.syncActiveAccountFromHost();
+    if (adapter === "agy" && accountService?.isManaged()) {
+      const realm = accountService.getRepository().getRealm("default-agy-realm");
+      if (realm?.pending_operation_id) {
+        return {
+          adapterId: "agy",
+          scopeId,
+          status: "refreshing",
+          discoveryStatus: "missing",
+          entries: [],
+          errorMessage: "AGY 账号切换进行中，请等待完成",
+        };
+      }
+      await accountService.syncActiveAccountFromHost();
+    }
     const result = catalog.getModels(adapter, scopeId);
-    return adapter === "agy" ? { ...result, entries: result.entries.filter(entry => entry.availability === "listed") } : result;
+    if (adapter !== "agy") return result;
+    let agyContext: ReturnType<typeof resolveAgyAccountContext> = { verified: false };
+    try {
+      agyContext = resolveAgyAccountContext(engine.store);
+    } catch {
+      agyContext = { verified: false };
+    }
+    const allowHydrogen =
+      agyContext.verified &&
+      Boolean(agyContext.contextKey) &&
+      result.accountContextKey === agyContext.contextKey;
+    return {
+      ...result,
+      entries: result.entries.filter(
+        (entry) => entry.availability === "listed" && (allowHydrogen || !isHydrogenModelId(entry.nativeId)),
+      ),
+    };
   });
 
   app.post("/api/model-tools/:adapter/models/refresh", async (req, reply) => {

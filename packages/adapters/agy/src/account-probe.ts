@@ -295,18 +295,36 @@ export class AgyAccountProbe implements AccountProbePort {
     this.inFlight = { key, promise };
     return promise;
   }
+  async getExecutableFingerprint(): Promise<string | undefined> {
+    try {
+      const executable = await resolveFingerprintedAgyExecutable(this.cliPath);
+      return executable.fingerprint || undefined;
+    } catch {
+      return undefined;
+    }
+  }
   async probeModels(options: ProbeOptions = {}) {
     options.signal?.throwIfAborted();
     const executable = await resolveFingerprintedAgyExecutable(this.cliPath);
     const fingerprint = executable.fingerprint ?? "";
     const adapter = await this.getAdapter(fingerprint, executable);
     if (!fingerprint || !adapter) throw new Error("model_catalog_unverified");
-    const result = await this.execute(["models"], { ...options, timeoutMs: options.timeoutMs ?? 15000 }, executable);
+    const result = await this.execute(["models"], { ...options, timeoutMs: options.timeoutMs ?? 30000 }, executable);
     if (result.code !== 0) throw new Error("model_catalog_unavailable");
-    const catalog = parseAgyModelCatalog({ stdout: result.stdout, cliVersion: adapter.cli_version });
-    if (catalog.status !== "fresh" || !catalog.entries.length) throw new Error("model_catalog_unavailable");
-    return { native_ids: catalog.entries.filter(entry => entry.availability === "listed" && !entry.hidden).map(entry => entry.nativeId),
-      observed_at: new Date().toISOString(), executable_fingerprint: fingerprint, cli_version: adapter.cli_version };
+    const catalog = parseAgyModelCatalog({
+      stdout: result.stdout,
+      stderr: result.stderr,
+      cliVersion: adapter.cli_version,
+      allowEmpty: result.stdout.trim().length === 0 && !result.stderr.trim(),
+    });
+    if (catalog.status !== "fresh") throw new Error("model_catalog_unavailable");
+    return {
+      native_ids: catalog.entries.filter(entry => entry.availability === "listed" && !entry.hidden).map(entry => entry.nativeId),
+      observed_at: new Date().toISOString(),
+      executable_fingerprint: fingerprint,
+      cli_version: adapter.cli_version,
+      ...(options.credential_revision !== undefined ? { credential_revision: options.credential_revision } : {}),
+    };
   }
   async probeModelAccess(
     modelId: string,

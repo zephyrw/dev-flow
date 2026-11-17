@@ -10,6 +10,8 @@ import {
 } from "../../packages/contracts/src/index.js";
 import { ExecutionSpecService } from "../../packages/core/src/execution-spec-service.js";
 import { ModelSwitchService } from "../../packages/core/src/model-switch-service.js";
+import { ModelAccessService } from "../../packages/core/src/model-access-service.js";
+import { ModelCatalogService } from "../../packages/core/src/model-catalog-service.js";
 import { seedVerifiedAccess } from "../../packages/core/src/access-guard.js";
 import {
   invocationFingerprintFromProfile,
@@ -940,4 +942,150 @@ it("AGY-05: another consumer's Gemini model does not block switching this task t
   expect(receipt.status).toBe("committed");
   expect(probed).toBe(true);
   expect(s.engine.get(s.workflow.id).state).toBe("STOPPED");
+});
+
+it("CA01: 停止运行前拦截无效档位、未绑定或不在目录中的 Hydrogen，不中断健康运行且不调用 verifyProfiles", async () => {
+  const s = openSwitch("wf-ca01-preflight");
+  let stopCalled = false;
+  let verifyCalled = false;
+  const runtime = s.engine.runtime!;
+  const origStop = runtime.stop.bind(runtime);
+  runtime.stop = async (runId: string) => {
+    stopCalled = true;
+    return origStop(runId);
+  };
+  const category = () => "gemini" as const;
+  const switches = new ModelSwitchService(
+    s.store,
+    new ExecutionSpecService(s.store, s.config, category),
+    category,
+    async () => {
+      verifyCalled = true;
+    },
+  );
+
+  // 1. 提交 Hydrogen 但既无受管也无非托管绑定身份 -> 停止运行前即抛 409 AGY_MODEL_CAPABILITY_UNKNOWN，run-test 未被打断
+  await expect(
+    switches.applyAfterPause(s.engine, s.workflow.id, {
+      request_id: randomUUID(),
+      expected_spec_revision: 1,
+      planner_profile: planner(),
+      executor_profile: executor("gemini-4-hydrogen-xhigh", {
+        reasoning: { mode: "explicit", value: "xhigh" },
+      }),
+      role_overrides: inheritRoleOverrides(),
+      expected_workflow_version: s.engine.get(s.workflow.id).version,
+      expected_run_id: "run-test",
+    }),
+  ).rejects.toMatchObject({ code: "AGY_MODEL_CAPABILITY_UNKNOWN" });
+  expect(stopCalled).toBe(false);
+  expect(verifyCalled).toBe(false);
+  expect(s.engine.get(s.workflow.id).state).toBe("EXECUTING");
+
+  // 2. 提交不匹配的思考强度档位（例如 Codex 已知型号传不存在的档位/不支持配置）-> 停止运行前拦截
+  await expect(
+    switches.applyAfterPause(s.engine, s.workflow.id, {
+      request_id: randomUUID(),
+      expected_spec_revision: 1,
+      planner_profile: planner("gpt-6-astra"),
+      executor_profile: executor("gemini-3.8-flash-high", {
+        reasoning: { mode: "explicit", value: "xhigh" },
+      }),
+      role_overrides: inheritRoleOverrides(),
+      expected_workflow_version: s.engine.get(s.workflow.id).version,
+      expected_run_id: "run-test",
+    }),
+  ).rejects.toThrow();
+  expect(stopCalled).toBe(false);
+  expect(verifyCalled).toBe(false);
+  expect(s.engine.get(s.workflow.id).state).toBe("EXECUTING");
+});
+
+function cacheManualSwitchModel(store: ReturnType<typeof setup>["store"], profile: ToolProfile) {
+  const catalog = new ModelCatalogService(store);
+  const access = new ModelAccessService(store, { catalog });
+  const native = access.resolveNativeConfig(profile);
+  const scope = {
+    adapterId: profile.adapterId,
+    executablePath: native.executablePath,
+    nativeConfigScope: native.nativeConfigScope,
+    accountFingerprint: native.accountFingerprint,
+    providerFingerprint: native.providerEndpointFingerprint,
+  };
+  catalog.ensureManualCandidate(scope, profile.modelId!);
+  return { access, catalog, scope };
+}
+
+it.each([false, true])("CA03: 已授权手工模型可切换，保留手工执行模型时也可切换规划模型（保留执行模型=%s）", async (keepExecutor) => {
+  const s = openSwitch(`wf-ca03-verified-${keepExecutor}`);
+  const target = executor("gemini-3.8-flash-high");
+  const { catalog, scope } = cacheManualSwitchModel(s.store, target);
+  seedVerifiedAccess(s.store, target);
+  if (keepExecutor) putSpec(s.store, s.workflow.id, 1, target);
+  const targetPlanner = keepExecutor ? planner("gpt-6.1-sol") : planner();
+  seedVerifiedAccess(s.store, targetPlanner);
+  let verifications = 0;
+  const switches = new ModelSwitchService(
+    s.store,
+    new ExecutionSpecService(s.store, s.config),
+    undefined,
+    async () => {
+      expect(s.engine.get(s.workflow.id).state).toBe("STOPPED");
+      verifications++;
+    },
+  );
+  const req = {
+    request_id: randomUUID(),
+    expected_spec_revision: 1,
+    planner_profile: targetPlanner,
+    executor_profile: target,
+    role_overrides: inheritRoleOverrides(),
+    expected_workflow_version: s.workflow.version,
+    expected_run_id: "run-test",
+  };
+
+  const receipt = await switches.applyAfterPause(s.engine, s.workflow.id, req);
+  expect(receipt.status).toBe("committed");
+  expect(verifications).toBe(1);
+  const saved = new ExecutionSpecService(s.store, s.config).readView(s.workflow.id).spec;
+  expect(saved.executorProfile.modelId).toBe(target.modelId);
+  expect(saved.plannerProfile.modelId).toBe(targetPlanner.modelId);
+  expect(catalog.readCached(scope)?.entries.find(entry => entry.nativeId === target.modelId)).toMatchObject({
+    source: "manual", availability: "candidate",
+  });
+  expect(await switches.applyAfterPause(s.engine, s.workflow.id, req)).toEqual(receipt);
+  expect(verifications).toBe(1);
+});
+
+it("CA03: 手工候选不会绕过授权，明确不可用的已授权手工条目仍在停止前拒绝", async () => {
+  const s = openSwitch("wf-ca03-access-boundaries");
+  const target = executor("gemini-3.8-flash-high");
+  const { catalog, scope } = cacheManualSwitchModel(s.store, target);
+  const req = {
+    request_id: randomUUID(),
+    expected_spec_revision: 1,
+    planner_profile: planner(),
+    executor_profile: target,
+    role_overrides: inheritRoleOverrides(),
+    expected_workflow_version: s.workflow.version,
+    expected_run_id: "run-test",
+  };
+
+  await expect(s.switches.applyAfterPause(s.engine, s.workflow.id, req)).rejects.toMatchObject({
+    code: "MODEL_ACCESS_REQUIRED",
+  });
+  expect(s.engine.get(s.workflow.id).state).toBe("EXECUTING");
+  seedVerifiedAccess(s.store, target);
+  const cached = catalog.readCached(scope)!;
+  s.store.put("model_catalog", "catalog:" + cached.scopeHash, "agy", {
+    ...cached,
+    entries: cached.entries.map(entry => entry.nativeId === target.modelId
+      ? { ...entry, availability: "unavailable" }
+      : entry),
+  });
+  await expect(s.switches.applyAfterPause(s.engine, s.workflow.id, {
+    ...req, request_id: randomUUID(),
+  })).rejects.toMatchObject({ code: "MODEL_NOT_LISTED" });
+  expect(s.engine.get(s.workflow.id).state).toBe("EXECUTING");
+  expect(new ExecutionSpecService(s.store, s.config).readView(s.workflow.id).spec.revision).toBe(1);
 });

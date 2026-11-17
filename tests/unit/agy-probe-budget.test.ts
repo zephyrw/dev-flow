@@ -25,3 +25,11 @@ it("forces a real model check after an auth failure and discards the previous po
   expect(await probe.probeModelAccess("gemini-3.8-flash", options)).toBe(false);
   expect(run).toHaveBeenCalledTimes(3);
 });
+
+it("grants at least a 30s timeout budget by default for slow CLI model catalog reads", async () => {
+  const run = vi.fn(async () => ({ code: 0, stdout: "gemini-4-hydrogen-high\n", stderr: "" }));
+  const probe = new AgyAccountProbe("C:/fixture/agy.exe", createVerifiedUsageAdapter("fixture"), { runAuxiliaryProbe: run });
+  const models = await probe.probeModels();
+  expect(run).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: 30000, args: ["models"] }));
+  expect(models.native_ids).toContain("gemini-4-hydrogen-high");
+});

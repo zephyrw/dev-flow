@@ -2,9 +2,13 @@ import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "rea
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { scoreTotal, tools, type Action, type Artifact, type Group, type Message, type Model, type Round, type Session } from "../../../packages/group-chat/src/contracts.js";
-import { formatModelName, type ModelChoice } from "../../../packages/presentation/src/model-display.js";
+import {
+  formatModelName,
+  formatEffortDisplayLabel,
+  type ModelChoice,
+} from "../../../packages/presentation/src/model-display.js";
 import { formatApiError, toolLabel } from "./components/model-api.js";
-import { fetchToolModelsWithSWR } from "./components/group-model-catalog.js";
+import { fetchToolModelsWithContext } from "./components/group-model-catalog.js";
 import "./group-chat.css";
 
 type View = { session: Session; round?: Round; messages: (Message & { seq: number })[]; artifacts: Artifact[]; next?: number };
@@ -104,8 +108,9 @@ function modelName(member: Pick<Model, "tool" | "model" | "effort">, catalogLabe
   const id = member.model.split("/").at(-1) ?? member.model;
   const catalogName = catalogLabel?.trim();
   const name = catalogName && catalogName !== member.model && catalogName !== id ? catalogName : formatModelName(member.tool, id);
-  const effort = member.effort ?? (member.tool === "agy" ? id.match(/-(low|medium|high|max)$/i)?.[1] : undefined);
-  return effort && !name.toLowerCase().endsWith(effort.toLowerCase()) ? name + " " + effort : name;
+  const effort = member.effort ?? (member.tool === "agy" ? id.match(/-(low|medium|high|xhigh|max)$/i)?.[1] : undefined);
+  const effortLabel = effort ? formatEffortDisplayLabel(effort, member.model) : undefined;
+  return effortLabel && !name.toLowerCase().endsWith(effortLabel.toLowerCase()) ? name + " " + effortLabel : name;
 }
 
 const messageTime = new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", hour: "2-digit", minute: "2-digit", hour12: false });
@@ -179,6 +184,8 @@ function GroupForm({ save, close, group, existingGroups = [] }: { save: (data: u
   const [catalogs, setCatalogs] = useState<Partial<Record<Model["tool"], ModelChoice[]>>>({});
   const [catalogKeys, setCatalogKeys] = useState<Partial<Record<Model["tool"], string>>>({});
   const [confirmedKeys, setConfirmedKeys] = useState<Partial<Record<Model["tool"], string>>>({});
+  const [catalogContexts, setCatalogContexts] = useState<Partial<Record<Model["tool"], string | undefined>>>({});
+  const confirmedContexts = useRef<Partial<Record<Model["tool"], string | undefined>>>({});
   const catalogRequests = useRef<Partial<Record<Model["tool"], { key: string; controller: AbortController }>>>({});
   const workspaceRef = useRef(modelWorkspace.trim());
   workspaceRef.current = modelWorkspace.trim();
@@ -200,7 +207,17 @@ function GroupForm({ save, close, group, existingGroups = [] }: { save: (data: u
   const isWorkspaceTool = (tool: Model["tool"]) => tool === "codebuddy-code";
   const keyFor = (tool: Model["tool"]) => JSON.stringify([tool, isWorkspaceTool(tool) ? modelWorkspace.trim() : "default"]);
   const catalogReady = (tool: Model["tool"]) => confirmedKeys[tool] === keyFor(tool) &&
+    (tool !== "agy" || confirmedContexts.current[tool] === catalogContexts[tool]) &&
     !loading[tool] && !catalogErrors[tool];
+
+  function invalidateAgyCatalog() {
+    catalogRequests.current.agy?.controller.abort();
+    catalogRequests.current.agy = undefined;
+    confirmedContexts.current.agy = undefined;
+    setConfirmedKeys(value => ({ ...value, agy: undefined }));
+    setCatalogContexts(value => ({ ...value, agy: undefined }));
+    setCatalogs(value => ({ ...value, agy: [] }));
+  }
 
   function load(tool: Model["tool"], force = false) {
     catalogRequests.current[tool]?.controller.abort();
@@ -214,23 +231,36 @@ function GroupForm({ save, close, group, existingGroups = [] }: { save: (data: u
     setCatalogKeys(value => ({ ...value, [tool]: key }));
     setConfirmedKeys(value => ({ ...value, [tool]: undefined }));
     setCatalogErrors(value => ({ ...value, [tool]: "" }));
-    if (catalogKeys[tool] !== key) setCatalogs(value => ({ ...value, [tool]: [] }));
+    // AGY 账号可能已切换或尚待重核：加载开始立刻清除旧目录，避免短暂透出上一账号的 Hydrogen 能力
+    if (tool === "agy" || catalogKeys[tool] !== key) {
+      confirmedContexts.current[tool] = undefined;
+      setCatalogContexts(value => ({ ...value, [tool]: undefined }));
+      setCatalogs(value => ({ ...value, [tool]: [] }));
+    }
     if (isWorkspaceTool(tool) && !workspace) {
       setLoading(value => ({ ...value, [tool]: false }));
       setCatalogErrors(value => ({ ...value, [tool]: "请先填写 CodeBuddy 工作区。" }));
       return;
     }
     setLoading(value => ({ ...value, [tool]: true }));
-    void fetchToolModelsWithSWR(tool, choices => {
-      if (current()) setCatalogs(value => ({ ...value, [tool]: choices }));
+    void fetchToolModelsWithContext(tool, choices => {
+      if (current() && tool !== "agy") setCatalogs(value => ({ ...value, [tool]: choices }));
     }, isWorkspaceTool(tool) ? "workspace:" + workspace : undefined, force, controller.signal)
-      .then(choices => {
+      .then(result => {
         if (!current()) return;
-        setCatalogs(value => ({ ...value, [tool]: choices }));
+        confirmedContexts.current[tool] = result.accountContextKey;
+        setCatalogContexts(value => ({ ...value, [tool]: result.accountContextKey }));
+        setCatalogs(value => ({ ...value, [tool]: result.choices }));
         setConfirmedKeys(value => ({ ...value, [tool]: key }));
       })
       .catch(err => {
-        if (current()) setCatalogErrors(value => ({ ...value, [tool]: formatApiError(err) }));
+        if (!current()) return;
+        if (tool === "agy") {
+          confirmedContexts.current.agy = undefined;
+          setCatalogContexts(value => ({ ...value, agy: undefined }));
+          setCatalogs(value => ({ ...value, agy: [] }));
+        }
+        setCatalogErrors(value => ({ ...value, [tool]: formatApiError(err) }));
       })
       .finally(() => {
         if (current()) setLoading(value => ({ ...value, [tool]: false }));
@@ -255,6 +285,61 @@ function GroupForm({ save, close, group, existingGroups = [] }: { save: (data: u
     window.addEventListener("focus", refresh);
     return () => window.removeEventListener("focus", refresh);
   }, [memberTools, modelWorkspace]);
+
+  // 订阅 AGY 账号变更通知，切号/刷新后同步刷新群聊内的 AGY 可用模型列表
+  useEffect(() => {
+    const hasAgy = memberTools.split(",").includes("agy");
+    if (!hasAgy || typeof WebSocket === "undefined" || typeof location === "undefined" || !location.host) return;
+    let disposed = false;
+    let socket: WebSocket | undefined;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    let debounceTimer: ReturnType<typeof setTimeout> | undefined;
+    let reconnecting = false;
+    const triggerAgyRefresh = () => {
+      invalidateAgyCatalog();
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        debounceTimer = undefined;
+        if (!disposed) load("agy");
+      }, 80);
+    };
+    const connect = () => {
+      if (disposed) return;
+      try {
+        const protocol = location.protocol === "https:" ? "wss:" : "ws:";
+        socket = new WebSocket(`${protocol}//${location.host}/api/agy-accounts/notifications`);
+        socket.onopen = () => {
+          if (disposed) return;
+          if (reconnecting) {
+            reconnecting = false;
+            invalidateAgyCatalog();
+            load("agy");
+          }
+        };
+        socket.onmessage = () => {
+          if (disposed) return;
+          triggerAgyRefresh();
+        };
+        socket.onclose = () => {
+          if (disposed) return;
+          clearTimeout(debounceTimer);
+          debounceTimer = undefined;
+          invalidateAgyCatalog();
+          reconnecting = true;
+          retryTimer = setTimeout(connect, 5000);
+        };
+      } catch {
+        // 测试或无 WS 宿主环境静默忽略
+      }
+    };
+    connect();
+    return () => {
+      disposed = true;
+      clearTimeout(retryTimer);
+      clearTimeout(debounceTimer);
+      socket?.close();
+    };
+  }, [memberTools]);
 
   function isAvailable(member: Omit<Model, "id">) {
     if (!member.model || !catalogReady(member.tool)) return false;
@@ -336,7 +421,7 @@ function GroupForm({ save, close, group, existingGroups = [] }: { save: (data: u
               <small className="gc-member-model-tag">{toolLabel(member.tool)} · {name}</small>
             </div>
             {admin === index && <span className="gc-tag gc-tag-admin">管理员</span>}
-            {unavailable && <small role="alert" className="gc-alert-text">当前目录不可用</small>}
+            {unavailable && <small role="alert" className="gc-alert-text">当前账号或目录不可用</small>}
             <div className="gc-member-controls">
               <button type="button" title="编辑成员" aria-label={`编辑成员 ${name}`}
                 onClick={() => setEditor({ index, member, admin: admin === index })}>
@@ -432,7 +517,17 @@ function GroupForm({ save, close, group, existingGroups = [] }: { save: (data: u
                   ) + 48}px`,
                   maxWidth: "100%",
                 } : undefined}
-                onChange={e => patch({ model: e.target.value, effort: undefined })}
+                onChange={e => {
+                  const selectedId = e.target.value;
+                  const nextChoice = models.find(item => item.nativeId === selectedId);
+                  if (nextChoice?.choiceId === "gemini-4-hydrogen") {
+                    const defaultEffort = nextChoice.defaultEffort || (nextChoice.effortValues.includes("high") ? "high" : nextChoice.effortValues[0]);
+                    const mappedModel = defaultEffort ? (nextChoice.variantByEffort[defaultEffort] ?? selectedId) : selectedId;
+                    patch({ model: mappedModel, effort: defaultEffort });
+                    return;
+                  }
+                  patch({ model: selectedId, effort: undefined });
+                }}
               >
                 <option value="">{loading[member.tool] && !models.length ? "正在读取模型目录…" : "请选择具体模型"}</option>
                 {member.model && !model && <option value={member.model} disabled>{formatModelName(member.tool, member.model)}（{ready ? "当前目录不可用" : "等待目录确认"}）</option>}
@@ -449,8 +544,8 @@ function GroupForm({ save, close, group, existingGroups = [] }: { save: (data: u
                 patch({ model: model?.variantByEffort[value] ?? model?.nativeId ?? member.model, effort: value || undefined });
               }}>
                 <option value="">模型默认</option>
-                {effort && !efforts.includes(effort) && <option value={effort} disabled>{effort}{model && "（当前模型不支持）"}</option>}
-                {efforts.map(value => <option key={value}>{value}</option>)}
+                {effort && !efforts.includes(effort) && <option value={effort} disabled>{formatEffortDisplayLabel(effort, member.model)}{model && "（当前模型不支持）"}</option>}
+                {efforts.map(value => <option key={value} value={value}>{formatEffortDisplayLabel(value, member.model)}</option>)}
               </select>
             </label>
           </div>

@@ -31,7 +31,8 @@ import { resolveModelSelection } from "../../adapters/sdk/src/model-selection.js
 import { selectionCapabilityFromCatalog } from "../../adapters/sdk/src/frozen-invocation.js";
 import { parseStructuredProbeTerminal } from "../../adapters/sdk/src/probe-terminal.js";
 import { nativeProfileSupported } from "../../adapters/sdk/src/native-identity.js";
-import { fingerprintModelIdentity, modelIdentityKey, resolveModelIdentity, resolveModelIdentityInput, readManagedAgyModelIdentity, resolveModelExecutable, managedAgyAccountIdentityId, type AccessIdentityInput, type ManagedAgyModelIdentity, type VerifiedCandidateIdentity } from "./model-identity.js";
+import { fingerprintModelIdentity, modelIdentityKey, resolveModelIdentity, resolveModelIdentityInput, readManagedAgyModelIdentity, resolveAgyAccountContext, resolveModelExecutable, managedAgyAccountIdentityId, managedAgyAccountContextKey, type AccessIdentityInput, type ManagedAgyModelIdentity, type VerifiedCandidateIdentity } from "./model-identity.js";
+import { isHydrogenModelId, knownAgyEffortFor } from "../../adapters/agy/src/model-configuration.js";
 export type { AccessIdentityInput, VerifiedCandidateIdentity } from "./model-identity.js";
 import type {
   PreparedInvocation,
@@ -43,6 +44,7 @@ import { isDiscoveryEnvironmentError } from "../../adapters/sdk/src/catalog-pars
 import {
   ModelCatalogService,
   collectSafeEnv,
+  previewManualCandidateEntry,
   startLimitedCli,
   type CatalogScopeInput,
   type LimitedCliHandle,
@@ -744,6 +746,7 @@ export class ModelAccessService {
     );
     const resolvedCatalog =
       catalog ?? this.cachedCatalogFromFingerprints(parsedProfile, identity);
+    this.assertHydrogenCatalogAccess(parsedProfile, resolvedCatalog, true, identity);
     const accessModelKey = this.resolvePublishAccessModelKey(
       parsedProfile,
       resolvedCatalog,
@@ -756,6 +759,106 @@ export class ModelAccessService {
       accessModelKey,
     });
     return this.requireVerifiedRecord(accessKey);
+  }
+
+  /**
+   * 纯只读预检：在不触发任何外部验证或写入的前提下，校验档位、账号上下文及目录合法性。
+   */
+  assertSelectable(
+    profile: ToolProfile,
+    identityInput?: AccessIdentityInput,
+    catalog?: ModelCatalog,
+  ): void {
+    const parsedProfile = ToolProfileSchema.parse(profile);
+    this.assertProfileSupported(parsedProfile);
+    const effectiveIdentity = identityInput ?? this.identityFromProfile(parsedProfile);
+    const native = this.resolveNativeConfig(parsedProfile, effectiveIdentity);
+    const identity = this.fingerprintIdentity(
+      this.identityFromNative(native, effectiveIdentity),
+    );
+    const resolvedCatalog =
+      catalog ?? this.cachedCatalogFromFingerprints(parsedProfile, identity);
+    const nativeId = parsedProfile.modelId?.trim();
+    if (parsedProfile.modelSelection === "explicit" && !nativeId) {
+      throw new FlowError("MODEL_NOT_LISTED", "显式选择模型时必须填写 modelId", 422);
+    }
+    if (parsedProfile.adapterId === "agy" && isHydrogenModelId(nativeId)) {
+      this.assertHydrogenCatalogAccess(parsedProfile, resolvedCatalog, true, identity);
+      return;
+    }
+    if (parsedProfile.adapterId === "agy") {
+      const agyContext = resolveAgyAccountContext(this.store);
+      if (
+        agyContext.verified &&
+        agyContext.contextKey &&
+        resolvedCatalog?.accountContextKey &&
+        resolvedCatalog.accountContextKey !== agyContext.contextKey
+      ) {
+        throw new FlowError(
+          "AGY_MODEL_CAPABILITY_UNKNOWN",
+          "模型目录不属于当前激活 AGY 账号，请刷新目录后重试",
+          409,
+        );
+      }
+    }
+    const listed = findCatalogEntry(resolvedCatalog, parsedProfile);
+    if (listed) {
+      const manualCandidate = listed.source === "manual" && listed.availability === "candidate";
+      // 手工候选的访问资格仍由后续验证确认；candidate 本身不表示不可用。
+      // Hydrogen 已在上方按当前账号真实目录单独校验，不能进入此兼容路径。
+      if (listed.availability !== "listed" && !manualCandidate) {
+        throw new FlowError("MODEL_NOT_LISTED", "所选模型在当前目录中不可用", 422);
+      }
+      if (
+        parsedProfile.reasoning?.mode === "explicit" &&
+        listed.effort.fixedValue &&
+        listed.effort.fixedValue !== parsedProfile.reasoning.value
+      ) {
+        throw new FlowError(
+          "EFFORT_UNSUPPORTED",
+          "所选模型变体与思考强度不匹配",
+          422,
+        );
+      }
+      resolveModelSelection(
+        parsedProfile,
+        listed,
+        selectionCapabilityFromCatalog(resolvedCatalog, listed),
+      );
+      return;
+    }
+    if (nativeId) {
+      const manualEntry = previewManualCandidateEntry(parsedProfile.adapterId, nativeId);
+      if (manualEntry.effort.status !== "unknown") {
+        if (
+          parsedProfile.reasoning?.mode === "explicit" &&
+          manualEntry.effort.fixedValue &&
+          manualEntry.effort.fixedValue !== parsedProfile.reasoning.value
+        ) {
+          throw new FlowError(
+            "EFFORT_UNSUPPORTED",
+            "所选模型变体与思考强度不匹配",
+            422,
+          );
+        }
+        resolveModelSelection(parsedProfile, manualEntry);
+      } else if (
+        parsedProfile.reasoning?.mode === "explicit" &&
+        ["opusplan", "ultracode"].includes(parsedProfile.reasoning.value)
+      ) {
+        throw new FlowError(
+          "EFFORT_UNSUPPORTED",
+          "不允许把复合行为当作纯思考强度",
+          422,
+        );
+      } else if (
+        !["agy", "cursor-agent", "codebuddy-code", "opencode", "mimo-code"].includes(
+          parsedProfile.adapterId,
+        )
+      ) {
+        resolveModelSelection(parsedProfile, undefined);
+      }
+    }
   }
 
   identityFromProfile(profile: ToolProfile, workspaceRoot?: string): AccessIdentityInput {
@@ -1018,6 +1121,7 @@ export class ModelAccessService {
     ));
     const resolvedCatalog =
       catalog ?? this.cachedCatalogFromFingerprints(parsedProfile, identity);
+    this.assertHydrogenCatalogAccess(parsedProfile, resolvedCatalog, true, identity);
     const accessModelKey = this.resolvePublishAccessModelKey(
       parsedProfile,
       resolvedCatalog,
@@ -1239,7 +1343,12 @@ export class ModelAccessService {
         selection.modelToken ?? entry.nativeId,
       );
     }
-    return profile.modelId.trim();
+    const nativeId = profile.modelId.trim();
+    if (profile.adapterId === "agy") {
+      const known = knownAgyEffortFor(nativeId);
+      if (known?.accessModelKey?.trim()) return known.accessModelKey.trim();
+    }
+    return nativeId;
   }
 
   private lookupRecord(
@@ -1284,11 +1393,72 @@ export class ModelAccessService {
     );
   }
 
+  private assertHydrogenCatalogAccess(
+    profile: ToolProfile,
+    catalog: ModelCatalog | undefined,
+    _enforceWithoutService = false,
+    resolvedIdentity?: { identityConfidence?: IdentityConfidence },
+  ): ModelEntry | undefined {
+    if (profile.adapterId !== "agy" || !isHydrogenModelId(profile.modelId)) return undefined;
+    const agyContext = resolveAgyAccountContext(this.store);
+    if (
+      !agyContext.verified ||
+      !agyContext.contextKey ||
+      (resolvedIdentity && resolvedIdentity.identityConfidence !== "account")
+    ) {
+      throw new FlowError(
+        "AGY_MODEL_CAPABILITY_UNKNOWN",
+        "当前未确认 AGY 真实账号身份与认证上下文，不能开放 Gemini 4 Hydrogen；请先同步账号或启用账号管理",
+        409,
+      );
+    }
+    const expectedContext = agyContext.contextKey;
+    if (
+      !catalog ||
+      catalog.status !== "fresh" ||
+      catalog.discoveryStatus === "missing" ||
+      !catalog.accountContextKey ||
+      catalog.accountContextKey !== expectedContext
+    ) {
+      throw new FlowError(
+        "AGY_MODEL_CAPABILITY_UNKNOWN",
+        "当前 AGY 账号未完成 Gemini 4 Hydrogen 目录确认，请刷新目录并重试核验",
+        409,
+      );
+    }
+    const listedEntry = findCatalogEntry(catalog, profile);
+    if (!listedEntry || listedEntry.availability !== "listed") {
+      throw new FlowError(
+        "MODEL_NOT_LISTED",
+        "当前账号不支持 Gemini 4 Hydrogen 或所选思考强度变体",
+        422,
+      );
+    }
+    if (
+      profile.reasoning?.mode === "explicit" &&
+      listedEntry.effort.fixedValue &&
+      listedEntry.effort.fixedValue !== profile.reasoning.value
+    ) {
+      throw new FlowError(
+        "EFFORT_UNSUPPORTED",
+        "Gemini 4 Hydrogen 模型变体与所选思考强度不匹配",
+        422,
+      );
+    }
+    resolveModelSelection(
+      profile,
+      listedEntry,
+      selectionCapabilityFromCatalog(catalog, listedEntry),
+    );
+    return listedEntry;
+  }
+
   private cachedCatalogFromFingerprints(
     profile: ToolProfile,
     identity: FingerprintedIdentity,
   ): ModelCatalog | undefined {
     if (!this.options.catalog) return undefined;
+    const agyContext = profile.adapterId === "agy" ? resolveAgyAccountContext(this.store) : undefined;
     const scope: CatalogScopeInput = {
       adapterId: profile.adapterId,
       executablePath: resolveModelExecutable(profile),
@@ -1296,6 +1466,13 @@ export class ModelAccessService {
       nativeConfigScope: identity.nativeConfigScope,
       accountFingerprint: identity.accountFingerprint,
       providerFingerprint: identity.providerEndpointFingerprint,
+      ...(agyContext?.verified && agyContext.contextKey
+        ? {
+            accountContextKey: agyContext.contextKey,
+            agyIdentityVerified: true,
+            ...(agyContext.managed ? { managedAgy: agyContext.managed } : {}),
+          }
+        : {}),
     };
     return this.options.catalog.readCached(scope);
   }
@@ -1308,6 +1485,18 @@ export class ModelAccessService {
     const nativeId = profile.modelId?.trim();
     if (profile.modelSelection === "explicit" && !nativeId) {
       throw new FlowError("MODEL_NOT_LISTED", "显式选择模型时必须填写 modelId", 422);
+    }
+    const agyContext = profile.adapterId === "agy" ? resolveAgyAccountContext(this.store) : undefined;
+    const expectedContext = agyContext?.verified ? agyContext.contextKey : undefined;
+    if (expectedContext && catalog?.accountContextKey && catalog.accountContextKey !== expectedContext) {
+      throw new FlowError(
+        "AGY_MODEL_CAPABILITY_UNKNOWN",
+        "模型目录不属于当前激活 AGY 账号，请刷新目录后重试",
+        409,
+      );
+    }
+    if (profile.adapterId === "agy" && isHydrogenModelId(nativeId)) {
+      return this.assertHydrogenCatalogAccess(profile, catalog, true, identity)!;
     }
     const listed = findCatalogEntry(catalog, profile);
     if (listed) return listed;
@@ -1323,9 +1512,11 @@ export class ModelAccessService {
     const catalog = this.options.catalog;
     const nativeId = profile.modelId?.trim();
     if (!catalog || !nativeId) return undefined;
+    if (profile.adapterId === "agy" && isHydrogenModelId(nativeId)) return undefined;
     const resolved =
       identity ??
       this.fingerprintIdentity(this.identityFromProfile(profile));
+    const agyContext = profile.adapterId === "agy" ? resolveAgyAccountContext(this.store) : undefined;
     const scope: CatalogScopeInput = {
       adapterId: profile.adapterId,
       executablePath: resolveModelExecutable(profile),
@@ -1333,6 +1524,13 @@ export class ModelAccessService {
       nativeConfigScope: resolved.nativeConfigScope,
       accountFingerprint: resolved.accountFingerprint,
       providerFingerprint: resolved.providerEndpointFingerprint,
+      ...(agyContext?.verified && agyContext.contextKey
+        ? {
+            accountContextKey: agyContext.contextKey,
+            agyIdentityVerified: true,
+            ...(agyContext.managed ? { managedAgy: agyContext.managed } : {}),
+          }
+        : {}),
     };
     return catalog.ensureManualCandidate(scope, nativeId);
   }

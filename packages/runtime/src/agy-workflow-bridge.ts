@@ -23,7 +23,11 @@ import { resumeApproved } from "./recovery.js";
 import { assertAccountModelRetryAccess, buildAccountModelRunRetry, stageAccountModelRunRetry } from "../../core/src/model-retry.js";
 import type { AsideSession } from "../../contracts/src/feedback.js";
 import { ModelAccessService, accessRecordId } from "../../core/src/model-access-service.js";
-import { managedAgyAccountIdentityId, readManagedAgyModelIdentity } from "../../core/src/model-identity.js";
+import { managedAgyAccountIdentityId, managedAgyAccountContextKey, readManagedAgyModelIdentity } from "../../core/src/model-identity.js";
+import { ModelCatalogService } from "../../core/src/model-catalog-service.js";
+import { buildFrozenInvocation, selectionCapabilityFromCatalog } from "../../adapters/sdk/src/frozen-invocation.js";
+import { resolveModelSelection } from "../../adapters/sdk/src/model-selection.js";
+import { getAgyModelCategory, isHydrogenModelId } from "../../adapters/agy/src/model-configuration.js";
 import { AgySubagentObserver } from "../../adapters/agy/src/subagent-observer.js";
 import {
   AgyRecoveryCheckpointManager,
@@ -37,7 +41,6 @@ import { AgyWorkflowRecoveryCoordinator } from "./agy-workflow-recovery.js";
 import { AsideSessionService } from "../../asides/src/service.js";
 import type { RunTelemetry } from "./run-telemetry.js";
 import type { QuotaBucket } from "../../contracts/src/run-observation.js";
-import { getAgyModelCategory } from "../../adapters/agy/src/model-configuration.js";
 import { computeEffectiveWeeklyQuota, quotaPoolCoversModel, resolveEffectiveQuotaWindows } from "../../agy-accounts/src/quota.js";
 
 export interface FrozenAgyRunRequest {
@@ -282,26 +285,12 @@ export class AgyWorkflowBridge implements AccountConsumerPort {
 
     const access = new ModelAccessService(this.engine.store);
     const syncedNative = access.resolveNativeConfig(run.profile);
-    if (frozen.accountScope !== syncedNative.accountFingerprint) {
-      frozen = {
-        ...frozen,
-        accountScope: syncedNative.accountFingerprint,
-      };
-      if (run.frozen_invocation) run.frozen_invocation = frozen;
-      if (run.model_binding?.frozen_invocation) {
-        run.model_binding = {
-          ...run.model_binding,
-          frozen_invocation: frozen,
-        };
-      }
-      this.engine.store.put("run", run.id, workflowId, run);
-    }
     let needsAccessRecord = false;
     let forceModelProbe = false;
-    const accessKey = accessRecordId({ adapterId: frozen.adapterId, nativeConfigScope: syncedNative.nativeConfigScope,
-      accountFingerprint: frozen.accountScope, providerEndpointFingerprint: frozen.providerScope,
+    const initialAccessKey = accessRecordId({ adapterId: frozen.adapterId, nativeConfigScope: syncedNative.nativeConfigScope,
+      accountFingerprint: syncedNative.accountFingerprint, providerEndpointFingerprint: syncedNative.providerEndpointFingerprint ?? "",
       accessModelKey: frozen.accessModelKey });
-    const priorAccess = access.getAccess(accessKey);
+    const priorAccess = access.getAccess(initialAccessKey);
     try {
       access.assertFrozenAccess(run.profile, frozen);
     } catch (err: any) {
@@ -372,19 +361,95 @@ export class AgyWorkflowBridge implements AccountConsumerPort {
       const native = access.resolveNativeConfig(run.profile);
       if (!current || current.realmId !== binding.realm_id || current.accountId !== binding.account_id ||
           current.authEpoch !== binding.auth_epoch ||
-          native.accountId !== managedAgyAccountIdentityId(binding.realm_id, binding.account_id) ||
-          native.accountFingerprint !== frozen.accountScope ||
-          native.providerEndpointFingerprint !== frozen.providerScope)
+          native.accountId !== managedAgyAccountIdentityId(binding.realm_id, binding.account_id))
         throw new FlowError("AGY_ACCOUNT_BINDING_STALE", "账号身份在取得执行许可期间已变化，请重新继续任务", 409);
-      if (needsAccessRecord) {
+
+      // 核对最终落定账号是否真实支持目标模型及思考强度，并基于最终账号重新冻结执行参数（禁止直接覆写旧 accountScope 蒙混过关）
+      const finalContextKey = managedAgyAccountContextKey(current);
+      const catalogService = new ModelCatalogService(this.engine.store, {
+        readAgyModels: async (expected) => this.accountService!.readActiveModelSnapshot(
+          binding.realm_id,
+          expected ?? { accountId: binding.account_id, authEpoch: binding.auth_epoch },
+        ),
+      });
+      const finalNativeScope = {
+        adapterId: "agy" as const,
+        executablePath: native.executablePath,
+        nativeConfigProfile: run.profile.nativeConfigProfile,
+        nativeConfigScope: native.nativeConfigScope,
+        accountFingerprint: native.accountFingerprint,
+        providerFingerprint: native.providerEndpointFingerprint,
+        accountContextKey: finalContextKey,
+        managedAgy: current,
+      };
+      let finalCatalog = catalogService.readCached(finalNativeScope);
+      if (
+        (!finalCatalog || finalCatalog.status !== "fresh" || finalCatalog.discoveryStatus === "missing") &&
+        this.accountService.getRepository().getAccount(binding.realm_id, binding.account_id)?.models
+      ) {
+        await catalogService.discover(finalNativeScope).catch(() => {});
+        finalCatalog = catalogService.readCached(finalNativeScope);
+      }
+      const catalogEntry = finalCatalog?.entries.find(
+        (entry) =>
+          !entry.hidden &&
+          entry.availability === "listed" &&
+          (entry.nativeId === run.profile!.modelId || entry.nativeId === frozen!.modelToken),
+      );
+      const accountSnapshot = this.accountService.getRepository().getAccount(binding.realm_id, binding.account_id);
+      if (isHydrogenModelId(modelId) || accountSnapshot?.models) {
+        if (!finalCatalog || finalCatalog.status !== "fresh" || finalCatalog.discoveryStatus === "missing") {
+          throw new FlowError("AGY_MODEL_CAPABILITY_UNKNOWN", "最终落定账号尚未完成模型目录核验，无法执行", 409);
+        }
+        if (!catalogEntry) {
+          throw new FlowError("MODEL_NOT_LISTED", "最终落定账号不支持当前配置模型", 422);
+        }
+        resolveModelSelection(run.profile, catalogEntry, selectionCapabilityFromCatalog(finalCatalog, catalogEntry));
+      }
+      const rebuiltFrozen = catalogEntry && finalCatalog
+        ? buildFrozenInvocation(
+            run.profile,
+            catalogEntry,
+            selectionCapabilityFromCatalog(finalCatalog, catalogEntry),
+            native,
+            frozen.runtimeFlavor,
+          )
+        : frozen.accountScope !== native.accountFingerprint || frozen.providerScope !== (native.providerEndpointFingerprint ?? frozen.providerScope)
+          ? {
+              ...frozen,
+              accountScope: native.accountFingerprint,
+              providerScope: native.providerEndpointFingerprint ?? frozen.providerScope,
+            }
+          : frozen;
+      const latestRun = this.engine.store.get<Run>("run", run.id) ?? run;
+      if (JSON.stringify(rebuiltFrozen) !== JSON.stringify(frozen)) {
+        frozen = rebuiltFrozen;
+        if (latestRun.frozen_invocation) latestRun.frozen_invocation = rebuiltFrozen;
+        if (latestRun.model_binding?.frozen_invocation) {
+          latestRun.model_binding = {
+            ...latestRun.model_binding,
+            frozen_invocation: rebuiltFrozen,
+          };
+        }
+        latestRun.invocation_fingerprint = objectHash(rebuiltFrozen);
+        run.frozen_invocation = latestRun.frozen_invocation;
+        run.model_binding = latestRun.model_binding;
+        run.invocation_fingerprint = latestRun.invocation_fingerprint;
+        this.engine.store.put("run", run.id, workflowId, latestRun);
+      }
+      if (native.accountFingerprint !== frozen.accountScope ||
+          (native.providerEndpointFingerprint ?? frozen.providerScope) !== frozen.providerScope)
+        throw new FlowError("AGY_ACCOUNT_BINDING_STALE", "账号身份在取得执行许可期间已变化，请重新继续任务", 409);
+      const accessKey = accessRecordId({ adapterId: frozen.adapterId, nativeConfigScope: native.nativeConfigScope,
+        accountFingerprint: frozen.accountScope, providerEndpointFingerprint: frozen.providerScope,
+        accessModelKey: frozen.accessModelKey });
+      if (needsAccessRecord || frozen.accountScope !== syncedNative.accountFingerprint) {
         const latest = access.getAccess(accessKey);
         if (latest && latest.status !== "verified" && JSON.stringify(latest) !== JSON.stringify(priorAccess))
           access.assertFrozenAccess(run.profile, frozen);
         const checked = new Date().toISOString();
         access.putAccess(ModelAccessRecordSchema.parse({
-          key: accessRecordId({ adapterId: frozen.adapterId, nativeConfigScope: native.nativeConfigScope,
-            accountFingerprint: frozen.accountScope, providerEndpointFingerprint: frozen.providerScope,
-            accessModelKey: frozen.accessModelKey }),
+          key: accessKey,
           status: "verified", checked_at: checked, adapterId: frozen.adapterId,
           cliFingerprint: objectHash({ executable: frozen.executable, capabilityRevision: frozen.capabilityRevision }),
           accountScope: frozen.accountScope, providerScope: frozen.providerScope,
@@ -394,7 +459,7 @@ export class AgyWorkflowBridge implements AccountConsumerPort {
       }
       access.assertFrozenAccess(run.profile, frozen);
       this.engine.store.put("run", run.id, workflowId, {
-        ...(this.engine.store.get<Run>("run", run.id) ?? run),
+        ...(this.engine.store.get<Run>("run", run.id) ?? latestRun),
         agy_account: binding,
       });
     } catch (error) {
