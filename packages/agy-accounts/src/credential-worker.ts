@@ -179,6 +179,11 @@ async function handle(
   if (action === "activate-saved" || restore) {
     if (!restore && saved.AccountID !== stringArg(args, "account_id"))
       throw new Error("account_reference_mismatch");
+    if (args.expected_active_ref !== undefined) {
+      const expected = vault.load(realm, stringArg(args, "expected_active_ref"));
+      if (!equalCredential(win.readCredential(TARGET), expected.Credential))
+        throw new Error("external_change");
+    }
     win.writeCredential(TARGET, saved.Credential);
     if (!equalCredential(win.readCredential(TARGET), saved.Credential))
       throw new Error("credential_readback_failed");

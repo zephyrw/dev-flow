@@ -2,6 +2,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { Store } from "../../packages/store/src/store.js";
 import { accountFixture } from "../fixtures/agy-accounts/service-fixture.js";
 import { AgyDomainCoordinator } from "../../packages/agy-accounts/src/coordinator.js";
+import { AgyAccountOperationSchema } from "../../packages/contracts/src/agy-account.js";
 
 const realm = "default-agy-realm";
 const cleanups: Array<() => Promise<void>> = [];
@@ -13,6 +14,56 @@ async function setup() {
     await f.service.close(); store.close(); });
   return f;
 }
+
+it("settles a blocked cancellation against the current managed login without overwriting it", async () => {
+  const f = await setup();
+  const initial = f.repository.getRealm(realm)!;
+  const backup = await f.authHost.captureActive(realm, "a");
+  await f.authHost.activateSaved(realm, "c", "saved-c");
+  vi.spyOn(f.authHost, "inspectActive").mockImplementation(async () => ({
+    exists: true, auth: { email: `${f.active()}@example.com` },
+  }));
+  const restore = vi.spyOn(f.authHost, "restoreBackup");
+  const op = AgyAccountOperationSchema.parse({
+    operation_id: "stuck", realm_id: realm, revision: 10, kind: "switch", trigger: "workflow_quota",
+    selection: { mode: "auto" },
+    phase: "blocked", request_id: "switch-request", request_digest: "test",
+    before_account_id: "a", before_auth_epoch: initial.auth_epoch, before_secret_ref: backup.secret_ref,
+    install_target_account_id: "b", install_target_ref: "saved-b", installed_secret_ref: "saved-b",
+    install_epoch: initial.auth_epoch + 1, cancel_requested: true,
+    created_at: new Date().toISOString(), control_generation: initial.control_generation,
+    expected_settings_revision: f.repository.getSettings(realm)!.revision,
+  });
+  f.repository.saveOperation(op);
+  f.repository.saveRealm({ ...initial, pending_operation_id: op.operation_id, phase: "blocked",
+    service_state: "blocked", last_error: "external_change" });
+  expect(await f.service.reconcileCancelledSwitch(realm, op.operation_id)).toMatchObject({ phase: "cancelled" });
+  expect(await f.service.reconcileCancelledSwitch(realm, op.operation_id)).toMatchObject({ phase: "cancelled" });
+  expect(restore).not.toHaveBeenCalled();
+  expect(f.active()).toBe("c");
+  expect(f.repository.getRealm(realm)).toMatchObject({ active_account_id: "c", pending_operation_id: null,
+    phase: "idle", service_state: "running", auth_epoch: initial.auth_epoch + 2 });
+  expect(f.repository.getOperation(op.operation_id)?.result).toMatchObject({ outcome: "current_login_synced" });
+  const manual = await f.service.requestOperation({ realm_id: realm, request_id: "manual-after-cancel",
+    kind: "switch", selection: { mode: "explicit", account_id: "a" } });
+  await vi.waitFor(() => expect(f.repository.getOperation(manual.operation_id)?.phase).toBe("completed"));
+  expect(f.active()).toBe("a");
+});
+
+it("queries the full pool serially and restores the selected account", async () => {
+  const f = await setup();
+  const activeAccounts: string[] = [];
+  const probe = f.probe.probeUsage;
+  vi.spyOn(f.probe, "probeUsage").mockImplementation(options => {
+    activeAccounts.push(f.active());
+    return probe(options);
+  });
+  const refreshed = await f.service.syncAndRefreshQuotas(realm, "all");
+  expect(refreshed.refresh_errors).toEqual([]);
+  expect(activeAccounts).toEqual(["a", "b", "c"]);
+  expect(f.active()).toBe("a");
+  expect(f.repository.getRealm(realm)?.pending_operation_id).toBeNull();
+});
 it("keeps two running permits and processes on their old identity, admits future commands on the committed identity", async () => {
   const f = await setup();
   const old: Awaited<ReturnType<typeof f.service.acquireUsagePermit>>[] = [];

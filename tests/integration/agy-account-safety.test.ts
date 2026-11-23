@@ -427,6 +427,39 @@ describe("AGY durable safety boundary", () => {
     expect(f.state.active).toBe("saved_A");
   });
 
+  it("preserves saved quotas and identifies the already-managed desktop login when reimporting", async () => {
+    const f = await fixture();
+    f.state.external = true;
+    f.state.active = "saved_B";
+    f.auth.captureActive = async () => ({
+      secret_ref: f.state.active, credential_revision: 2, auth: { email: "B@example.test" },
+    });
+    f.probe.probeIdentity = async () => ({ email: "A@example.test", cli_version: "fixture", raw_output: "" });
+    const history = f.repo.listQuotaSnapshots(realmId, "B");
+    const receipt = await f.service.requestOperation({ realm_id: realmId, request_id: "import-b", kind: "enroll", mode: "capture_current" });
+    await f.service.tick(now);
+    expect(f.repo.getOperation(receipt.operation_id)).toMatchObject({
+      phase: "completed", result: { account_id: "B", already_managed: true },
+    });
+    expect(f.repo.getRealm(realmId)?.active_account_id).toBe("B");
+    expect(f.repo.listQuotaSnapshots(realmId, "B")).toEqual(history);
+    expect(f.state.writes).toEqual([]);
+    expect(f.state.probes).toEqual([]);
+  });
+
+  it("defers inactive quota refresh while the desktop is using the local credential", async () => {
+    const f = await fixture();
+    f.state.external = true;
+    const view = await f.service.syncAndRefreshQuotas(realmId, "all");
+    expect(view.refresh_errors).toEqual([
+      { account_id: "B", error: "account_identity_in_use" },
+      { account_id: "C", error: "account_identity_in_use" },
+    ]);
+    expect(f.state.probes).toEqual(["A"]);
+    expect(f.state.writes).toEqual([]);
+    expect(f.state.active).toBe("saved_A");
+  });
+
   it("rejects an identity change between the quota query and credential capture", async () => {
     const f = await quotaOnlyFixture();
     const original = f.repo.getAccount(realmId, "A");

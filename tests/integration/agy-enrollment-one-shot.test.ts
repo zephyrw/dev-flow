@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -176,7 +176,14 @@ describe("W03 D03修复验证：关闭自动调度时手动录入one-shot闭环�
     };
     service.registerConsumer(mockWorkflowConsumer, "workflow");
 
-    // 发起录入当前账号操作
+    const probeUsage = vi.spyOn(mockProbe, "probeUsage").mockRejectedValue(new Error("offline"));
+    const restore = vi.spyOn(mockAuthHost, "restoreBackup");
+    const quiesce = vi.spyOn(mockWorkflowConsumer, "quiesce");
+    mockWorkflowConsumer.listOccupancy = async () => [{
+      can_pause: false, consumer_id: "busy-workflow", permit_ids: [],
+      required_pool_ids: [], allowed_account_ids: null,
+    }];
+
     const enrollResult = await service.requestOperation({
       realm_id: realmId,
       kind: "enroll",
@@ -201,12 +208,16 @@ describe("W03 D03修复验证：关闭自动调度时手动录入one-shot闭环�
     expect(updatedRealm.service_state).toBe("stopped");
     expect(updatedRealm.desired_enabled).toBe(false);
 
-    // 验证账号已保存且双额度均完成
+    // 导入只保存当前凭据，已有运行和后续额度查询不影响保存。
     const accounts = repo.listAccounts(realmId);
     expect(accounts.length).toBeGreaterThan(0);
     const enrolled = accounts.find((a) => a.identity.email === "user@example.com");
     expect(enrolled).toBeDefined();
-    expect(enrolled?.state).toBe("ready");
-    expect(enrolled?.enrollment_completed_at).toBeDefined();
+    expect(enrolled?.state).toBe("pending_quota");
+    expect(updatedRealm.active_account_id).toBe(enrolled?.id);
+    expect(op.result).toMatchObject({ email: "user@example.com", already_managed: false });
+    expect(probeUsage).not.toHaveBeenCalled();
+    expect(restore).not.toHaveBeenCalled();
+    expect(quiesce).not.toHaveBeenCalled();
   });
 });

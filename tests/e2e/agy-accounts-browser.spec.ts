@@ -90,6 +90,57 @@ test("主动取消不显示失败警报", async ({ page }) => {
   await expect(page.getByRole("alert")).toHaveCount(0);
 });
 
+test("重复导入显示保存的账号，并且只请求刷新当前账号额度", async ({ page }) => {
+  const facts = await (await page.request.get("/api/account-fixture/facts")).json();
+  const refreshScopes: string[] = [];
+  page.on("request", request => {
+    if (request.method() === "POST" && request.url().endsWith("/api/agy-accounts/refresh"))
+      refreshScopes.push(request.postDataJSON().scope);
+  });
+  await page.goto("/");
+  await expect(row(page, facts.active)).toBeVisible();
+  await expect.poll(() => refreshScopes).toContain("active_only");
+  refreshScopes.length = 0;
+  await page.getByRole("button", { name: "+ 导入当前账号" }).click();
+  const dialog = page.getByRole("dialog", { name: "导入本机当前活动账号" });
+  await dialog.getByRole("button", { name: "开始导入" }).click();
+  await expect(dialog.getByRole("heading", { name: "已更新列表中的账号" })).toBeVisible();
+  await expect(dialog.getByText(`${facts.active}@example.com 已保存为当前账号。`, { exact: false })).toBeVisible();
+  await dialog.getByRole("button", { name: "完成" }).click();
+  await expect(dialog).toBeHidden();
+  await expect(row(page, facts.active)).toHaveCount(1);
+  await expect.poll(() => refreshScopes).toEqual(["active_only"]);
+});
+
+test("卡住的取消操作显示核验入口，收尾后可再次手动切换", async ({ page }) => {
+  let blocked = true;
+  const operationId = "blocked-cancel";
+  await page.route(snapshot, async route => {
+    const response = await route.fetch();
+    const body = await response.json();
+    body.service.active_account_id = blocked ? "a" : "c";
+    body.service.pending_operation_id = blocked ? operationId : null;
+    body.service.last_error = blocked ? "external_change" : undefined;
+    body.service.operations = blocked ? [{ operation_id: operationId, revision: 10, phase: "blocked",
+      kind: "switch", cancel_requested: true, error: "operation_cancelled" }] : [];
+    await route.fulfill({ response, json: body });
+  });
+  await page.route("**/api/agy-accounts/verify-active", route => route.fulfill({
+    json: blocked ? { status: "unconfirmed" } : { status: "verified", account_id: "c" },
+  }));
+  await page.route(`**/api/agy-accounts/operations/${operationId}/reconcile`, async route => {
+    blocked = false;
+    await route.fulfill({ json: { operation_id: operationId, revision: 11, phase: "cancelled" } });
+  });
+  await page.goto("/");
+  await expect(row(page, "a").getByText("上次确认")).toBeVisible();
+  const manual = row(page, "b").getByRole("button", { name: "设为活动" });
+  await expect(manual).toBeDisabled();
+  await page.getByRole("button", { name: "重新核验" }).click();
+  await expect(row(page, "c").getByText("当前使用中")).toBeVisible();
+  await expect(manual).toBeEnabled();
+});
+
 test("切号立即提交、禁止重复点击并复用网络失败请求的意图", async ({ page }) => {
   let requests = 0, requestId = "", release!: () => void;
   const gate = new Promise<void>(resolve => { release = resolve; });

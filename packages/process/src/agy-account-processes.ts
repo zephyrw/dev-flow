@@ -36,6 +36,8 @@ type ProcessEntry = {
   creation_time?: string;
 };
 
+const isAgyDesktopProcess = (name: string) => /^antigravity(?: ide)?(?:\.exe)?$/i.test(name);
+
 /**
  * R03 修复：四态确认模型
  * - running:        进程仍在运行
@@ -156,7 +158,8 @@ export class AgyAccountProcessHost implements ProcessHostPort {
     if (process.platform === "darwin") {
       const configured = basename(this.options.agyExecutable);
       return listDarwinProcesses().map((info) => {
-        const candidate = info.uid === process.getuid!() && (info.name === configured.slice(0, 31) || info.name === "agy");
+        const candidate = info.uid === process.getuid!() &&
+          (info.name === configured.slice(0, 31) || info.name === "agy" || isAgyDesktopProcess(info.name));
         if (!candidate) return { ...info, exe_path: "" };
         try {
           const exe_path = darwinProcessPath(info.pid);
@@ -183,7 +186,7 @@ export class AgyAccountProcessHost implements ProcessHostPort {
     );
     const program = script.replace(
       "$p.Name -match '(?i)^agy(?:\\.exe)?$'",
-      () => `($p.Name -match '(?i)^agy(?:\\.exe)?$' -or $p.Name -eq '${configuredName}')`,
+      () => `($p.Name -match '(?i)^(?:agy|antigravity(?: ide)?)(?:\\.exe)?$' -or $p.Name -eq '${configuredName}')`,
     );
     const { stdout } = await execFileAsync(
       "powershell.exe",
@@ -273,7 +276,7 @@ export class AgyAccountProcessHost implements ProcessHostPort {
       .filter(
         (r) =>
           !owned.has(r.pid) &&
-          isAgyCliProcess(r.name) &&
+          (isAgyCliProcess(r.name) || isAgyDesktopProcess(r.name)) &&
           !!r.sid,
       )
       .map((r) => {

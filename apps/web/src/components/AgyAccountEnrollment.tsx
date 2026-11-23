@@ -8,7 +8,6 @@ import {
 
 interface Props {
   isOpen: boolean;
-  realmRevision: number;
   onClose: () => void;
   onOperation: (op: AccountOperationView) => void;
 }
@@ -33,6 +32,7 @@ const FRIENDLY_ERRORS: Record<string, string> = {
   identity_mismatch: "切换期间检测到账号身份变化，请同步当前账号后重试；已有任务保持运行",
   identity_unverified: "当前账号身份暂未核对成功，不能据此判定登录失效；请刷新账号后重试",
   operation_in_progress: "当前已有另一项账号操作正在进行中，请稍候",
+  account_identity_in_use: "Antigravity 正在使用本机凭据，已暂缓核验其他账号的额度",
   no_eligible_account: "暂无满足全部模型和配额要求的账号，任务进度已保留",
   quota_trigger_unconfirmed: "尚未确认耗尽的模型池或配额窗口，任务已保留，等待额度核验",
   automatic_switch_policy_conflict: "受影响任务中有任务关闭自动切换，已保留任务等待处理",
@@ -51,7 +51,6 @@ export function formatFriendlyError(raw: string): string {
 
 export function AgyAccountEnrollment({
   isOpen,
-  realmRevision,
   onClose,
   onOperation,
 }: Props) {
@@ -119,7 +118,6 @@ export function AgyAccountEnrollment({
         body: requestBody({
           alias: "",
           mode: "capture_current",
-          expected_realm_revision: realmRevision,
         }),
       });
       setCurrentOp(op);
@@ -180,8 +178,8 @@ export function AgyAccountEnrollment({
           <div className="agy-wizard-result-card is-success">
             <div className="agy-wizard-result-icon success">✓</div>
             <div className="agy-wizard-result-body">
-              <h4>账号导入成功</h4>
-              <p>已成功读取本地 CLI 登录凭据并同步官方双额度，当前工作流已切换至该账号。</p>
+              <h4>{currentOp.result?.already_managed ? "已更新列表中的账号" : "账号导入成功"}</h4>
+              <p>{currentOp.result?.email ? `${currentOp.result.email} 已保存为当前账号。` : "本机登录账号已保存。"}额度会单独刷新。</p>
             </div>
           </div>
           <div className="agy-modal-footer">
@@ -204,7 +202,7 @@ export function AgyAccountEnrollment({
             <div className="agy-wizard-result-icon error">!</div>
             <div className="agy-wizard-result-body">
               <h4>{phase === "cancelled" ? "操作已取消" : "账号导入未完成"}</h4>
-              <p>{opError || (phase === "cancelled" ? "您已取消本次账号导入操作。" : "未能完成账号凭据核验，请确认已在 agy CLI 完成登录后重试。")}</p>
+              <p>{opError || (phase === "cancelled" ? "您已取消本次账号导入操作。" : "未能完成账号凭据核验，请确认已在 Antigravity 完成登录后重试。")}</p>
             </div>
           </div>
           <div className="agy-modal-footer">
@@ -237,7 +235,7 @@ export function AgyAccountEnrollment({
             <span className="agy-wizard-spinner" />
             <div className="agy-wizard-progress-title">
               <h4>{label}</h4>
-              <span>正在提取本机 agy CLI 当前登录凭据并同步额度，请稍候…</span>
+              <span>正在读取 Antigravity 的本机登录凭据…</span>
             </div>
           </div>
 
@@ -249,7 +247,7 @@ export function AgyAccountEnrollment({
             <div className="agy-wizard-step-line" />
             <div className={`agy-wizard-step ${step >= 2 ? "is-active" : ""} ${step > 2 ? "is-done" : ""}`}>
               <span className="agy-wizard-step-dot">{step > 2 ? "✓" : "2"}</span>
-              <span className="agy-wizard-step-text">核验身份与额度</span>
+              <span className="agy-wizard-step-text">核验账号身份</span>
             </div>
             <div className="agy-wizard-step-line" />
             <div className={`agy-wizard-step ${step >= 3 ? "is-active" : ""}`}>
@@ -301,9 +299,9 @@ export function AgyAccountEnrollment({
 
             <div className="agy-radio-card is-selected" style={{ cursor: "default" }}>
               <div className="agy-radio-meta">
-                <strong>导入本机 AGY CLI 当前登录账号</strong>
+                <strong>导入 Antigravity 当前登录账号</strong>
                 <span>
-                  直接提取本机已通过 agy CLI 登录的账号凭据并同步周额度与五小时额度，导入后自动设为当前使用中账号
+                  读取系统中的 Antigravity 登录凭据，保存到账号列表并同步当前账号。
                 </span>
               </div>
             </div>

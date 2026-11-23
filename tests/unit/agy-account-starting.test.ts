@@ -93,6 +93,16 @@ it("external inventory includes an unrelated AGY process appearing while owned s
   } finally { native.isProcessInJob.mockImplementation(() => true); }
 });
 
+it("includes the Antigravity desktop as a same-user external credential consumer", async () => {
+  const f = fixture();
+  f.removeRecord();
+  vi.spyOn(f.host as any, "inventory").mockResolvedValue([
+    { pid: 456, name: "Antigravity.exe", exe_path: "C:/fixture/Antigravity.exe", sid: "fixture-user" },
+    { pid: 789, name: "Antigravity.exe", exe_path: "", sid: undefined },
+  ]);
+  expect(await f.host.findExternalAgyProcesses()).toEqual([expect.objectContaining({ pid: 456 })]);
+});
+
 for (const kind of ["managed", "external"] as const) {
   const inspect = (f: ReturnType<typeof fixture>) => kind === "managed"
     ? f.host.listManagedProcesses(realm) : f.host.findExternalAgyProcesses();

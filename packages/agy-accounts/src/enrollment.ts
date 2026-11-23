@@ -20,6 +20,7 @@ export interface EnrollmentContext {
   auth_epoch: number;
   signal: AbortSignal;
   model_id?: string;
+  onCurrentSaved?: (account: AgyAccount, alreadyManaged: boolean) => void;
   onCaptured?: (data: {
     account: Pick<AgyAccount, "id" | "state">;
     secret_ref: string;
@@ -53,7 +54,7 @@ export class AgyEnrollmentService {
     alias: string,
     context: EnrollmentContext,
   ): Promise<EnrollmentResult> {
-    return this.capture(realmId, alias, context);
+    return this.capture(realmId, alias, context, undefined, true);
   }
   async enrollNewAccount(
     realmId: string,
@@ -104,6 +105,7 @@ export class AgyEnrollmentService {
     alias: string,
     context: EnrollmentContext,
     expected?: AgyAccount,
+    currentOnly = false,
   ): Promise<EnrollmentResult> {
     this.requireContext(realmId, context);
     const active = await this.authHost.inspectActive(realmId);
@@ -122,7 +124,7 @@ export class AgyEnrollmentService {
       status: "pending_identity",
       created_at: new Date().toISOString(),
     };
-    this.repository.transaction(() => {
+    if (!currentOnly) this.repository.transaction(() => {
       this.repository.putRecord("agy_pending_enrollment", context.operation_id, realmId, pending);
       context.onCaptured?.({
         account: { id: candidateId, state: "pending_quota" },
@@ -132,15 +134,17 @@ export class AgyEnrollmentService {
     });
     this.requireContext(realmId, context);
 
-    let identity: { email: string; subject?: string; cli_version?: string; raw_output?: string } | undefined;
+    let identity: { email: string; subject?: string };
     try {
-      identity = await this.probe.probeIdentity({ signal: context.signal });
+      identity = currentOnly && captured.auth?.email
+        ? { email: captured.auth.email, subject: captured.auth.subject }
+        : await this.probe.probeIdentity({ signal: context.signal });
     } catch (error: any) {
       if (error?.code === "PROCESS_STOP_UNCONFIRMED" || error?.name === "ProcessStopUnconfirmedError") throw error;
       const activeAuth = captured.auth?.email ? captured.auth : (await this.authHost.inspectActive(realmId)).auth;
       const fallbackEmail = activeAuth?.email;
       if (fallbackEmail) {
-        identity = { email: fallbackEmail, subject: activeAuth?.subject, cli_version: "verified", raw_output: "" };
+        identity = { email: fallbackEmail, subject: activeAuth?.subject };
       } else {
         this.requireContext(realmId, context);
         return { success: false, error: "account_identity_unverified" };
@@ -153,7 +157,7 @@ export class AgyEnrollmentService {
     const existing = expected ?? this.repository.listAccounts(realmId)
       .find((account) => account.identity.email.toLowerCase() === email);
     let observation: AccountProbeResult | undefined;
-    try {
+    if (!currentOnly) try {
       observation = await this.probe.probeUsage({
         signal: context.signal,
         model_id: context.model_id,
@@ -169,7 +173,7 @@ export class AgyEnrollmentService {
     }
     const verified = Boolean(observation?.capability_verified && observation.executable_fingerprint);
     // 已有账号在远端核验失败时保持原样，候选包与操作记录保留用于后续处理。
-    if (existing && !verified) {
+    if (existing && !currentOnly && !verified) {
       return { success: false, error: "quota_capability_unavailable" };
     }
     const pools = verified ? observation!.pools : [];
@@ -178,14 +182,29 @@ export class AgyEnrollmentService {
     const complete = context.model_id
       ? targetPools.length > 0 && targetPools.every(pool => isQuotaPoolVerified(observation!, pool))
       : validPools.length > 0;
-    if (existing && !complete) return { success: false, error: "quota_capability_unavailable" };
+    if (existing && !currentOnly && !complete) return { success: false, error: "quota_capability_unavailable" };
 
     const accountId = existing?.id ?? candidateId;
     // 只在身份核验后将保存包绑定到最终账号 ID，旧 secret_ref 尚未改变。
-    const accepted = await this.authHost.captureActive(realmId, accountId);
+    const accepted = currentOnly && !existing ? captured : await this.authHost.captureActive(realmId, accountId);
+    if (currentOnly) {
+      const latest = await this.authHost.inspectActive(realmId);
+      if (!latest.exists) return { success: false, error: "active_credential_missing" };
+      if ((existing?.identity.subject && identity.subject && existing.identity.subject !== identity.subject) ||
+          [accepted.auth, latest.auth].some(auth =>
+            (auth?.email && auth.email.trim().toLowerCase() !== email) ||
+            (auth?.subject && identity.subject && auth.subject !== identity.subject)) ||
+          !(await this.authHost.compareActive(realmId, captured.secret_ref)) ||
+          (accepted !== captured && !(await this.authHost.compareActive(realmId, accepted.secret_ref))))
+        return { success: false, error: "external_change" };
+    }
     this.requireContext(realmId, context);
     const timestamp = new Date().toISOString();
-    const state: AccountState = !complete ? "pending_quota" :
+    const subject = identity.subject ?? (currentOnly ? existing?.identity.subject : undefined);
+    const state: AccountState = currentOnly
+      ? existing?.state === "disabled" ? existing.state_before_disabled ?? "pending_quota"
+        : existing?.state === "ready" || existing?.state === "waiting_quota" ? existing.state : "pending_quota"
+      : !complete ? "pending_quota" :
       validPools.every((pool) => pool.windows.some((window) => window.remaining_fraction === 0))
         ? "waiting_quota" : "ready";
     const account: AgyAccount = {
@@ -194,22 +213,22 @@ export class AgyEnrollmentService {
       realm_id: realmId,
       revision: (existing?.revision ?? 0) + 1,
       alias: alias || existing?.alias || email.split("@")[0]!,
-      identity: { email, ...(identity.subject ? { subject: identity.subject } : {}), verified_at: timestamp },
+      identity: { email, ...(subject ? { subject } : {}), verified_at: timestamp },
       secret_ref: accepted.secret_ref,
       credential_revision: accepted.credential_revision,
       state: existing?.state === "disabled" ? "disabled" : state,
       state_before_disabled: existing?.state === "disabled" ? state : existing?.state_before_disabled,
       enrolled_at: existing?.enrolled_at ?? timestamp,
-      enrollment_completed_at: complete ? timestamp : undefined,
+      enrollment_completed_at: currentOnly ? existing?.enrollment_completed_at : complete ? timestamp : undefined,
       auth: {
         has_refresh_credential: accepted.auth?.has_refresh_credential ?? null,
         refresh_expiry_source: accepted.auth?.refresh_expiry_source ?? "not_provided",
         access_expires_at: accepted.auth?.access_expires_at,
         refresh_expires_at: accepted.auth?.refresh_expires_at,
         metadata_status: "unverified",
-        last_authenticated_request_at: timestamp,
+        last_authenticated_request_at: currentOnly ? existing?.auth.last_authenticated_request_at : timestamp,
         email,
-        ...(identity.subject ? { subject: identity.subject } : {}),
+        ...(subject ? { subject } : {}),
       },
     };
     const snapshots: AgyQuotaSnapshot[] = pools.map((pool) => ({
@@ -222,6 +241,11 @@ export class AgyEnrollmentService {
     this.repository.transaction(() => {
       if (existing && this.repository.getAccount(realmId, existing.id)?.revision !== existing.revision)
         throw new Error("account_revision_conflict");
+      if (currentOnly) {
+        this.repository.saveAccount(account);
+        context.onCurrentSaved?.(account, Boolean(existing));
+        return;
+      }
       this.repository.retainQuotaPools(realmId, accountId, pools.map((pool) => pool.pool_id));
       for (const snapshot of snapshots) this.repository.saveQuotaSnapshot(snapshot);
       this.repository.saveAccount(account);

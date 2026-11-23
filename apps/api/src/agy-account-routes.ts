@@ -39,6 +39,7 @@ export function publicAccountOperation(operation: AgyAccountOperation) {
     created_at,
     completed_at,
     error,
+    cancel_requested,
   } = operation;
   return {
     operation_id,
@@ -53,12 +54,16 @@ export function publicAccountOperation(operation: AgyAccountOperation) {
     created_at,
     completed_at,
     error,
+    cancel_requested,
     result: operation.result
       ? {
           status: operation.result.status,
           message: operation.result.message,
           active_account_id: operation.result.active_account_id,
           outcome: operation.result.outcome,
+          ...(operation.kind === "enroll" && operation.mode === "capture_current"
+            ? { email: operation.result.email, already_managed: operation.result.already_managed }
+            : {}),
         }
       : undefined,
     quota_trigger: operation.quota_trigger,
@@ -86,7 +91,8 @@ export function registerAgyAccountRoutes(
       revision: 0, control_generation: 0, ...view.realm,
       automation: { enabled: Boolean(realm?.desired_enabled && settings?.workflow_auto_switch),
         service_state: realm?.service_state ?? "stopped", can_toggle: true, actions_available: { enroll: true, switch: true } },
-      operations: operations.map(publicAccountOperation) };
+      operations: operations.map(publicAccountOperation),
+      quota_probe_operation: Boolean(active && service.isBackgroundQuotaOperation(active.operation_id)) };
   };
   let snapshot: { at: number; value: unknown } | undefined;
   const invalidate = repo.onChange((change) => {
@@ -104,15 +110,17 @@ export function registerAgyAccountRoutes(
       realm: view.realm, settings: { revision: view.settings.revision },
       selection_context: view.selection_context,
       capability: { supported: view.capability.supported, reason: view.capability.reason },
-      service: serviceView(view, 4), refresh: service.getQuotaRefresh(realmId),
+      service: serviceView(view, 4),
+      refresh: service.getQuotaRefresh(realmId),
     };
     snapshot = { at: Date.now(), value };
     return value;
   });
   app.post("/api/agy-accounts/refresh", async (req, reply) => {
     human(req);
-    const body = z.object({ request_id: requestId.optional(), force: z.boolean().default(false) }).strict().parse(req.body ?? {});
-    return reply.code(202).send(service.requestQuotaRefresh(realmId, body.force));
+    const body = z.object({ request_id: requestId.optional(), force: z.boolean().default(false),
+      scope: z.enum(["active_only", "all"]).default("active_only") }).strict().parse(req.body ?? {});
+    return reply.code(202).send(service.requestQuotaRefresh(realmId, body.force, body.scope));
   });
   app.get("/api/agy-accounts/notifications", { websocket: true }, (socket, req) => {
     human(req);
@@ -148,6 +156,10 @@ export function registerAgyAccountRoutes(
       accounts: view.accounts.map((a) => AgyAccountDtoSchema.parse(a)),
       settings: publicSettings(view.settings),
     });
+  });
+  app.post("/api/agy-accounts/verify-active", async req => {
+    human(req);
+    return service.checkActiveAccount(realmId);
   });
   app.post("/api/agy-accounts/sync-refresh", async (req, reply) => {
     human(req);
@@ -334,6 +346,11 @@ export function registerAgyAccountRoutes(
           ...body,
         }),
       );
+  });
+  app.post("/api/agy-accounts/operations/:id/reconcile", async req => {
+    human(req);
+    const { id } = z.object({ id: ref }).parse(req.params);
+    return service.reconcileCancelledSwitch(realmId, id);
   });
   app.get("/api/agy-accounts/:id/history", async (req) => {
     human(req);

@@ -56,6 +56,27 @@ export class AgyReconciler {
 
     await this.reconcilePermits(realmId);
     this.reconcileExternalOwnerBlock(realmId);
+    const pending = realm.pending_operation_id ? this.repository.getOperation(realm.pending_operation_id) : undefined;
+    // Older current-account imports recorded a backup even though they never installed a credential.
+    if (pending?.kind === "enroll" && pending.mode === "capture_current" && pending.before_secret_ref) {
+      this.repository.transaction(() => {
+        const saved = this.repository.getRecord<{ status: string }>("agy_pending_enrollment", pending.operation_id);
+        const completed = saved?.status === "committed" &&
+          pending.result?.account_id === realm.active_account_id &&
+          pending.installed_secret_ref === realm.active_secret_ref;
+        pending.phase = completed ? "completed" : "cancelled";
+        pending.completed_at = new Date().toISOString();
+        pending.revision++;
+        this.repository.saveOperation(pending);
+        realm.pending_operation_id = null;
+        realm.phase = realm.desired_enabled ? "idle" : "stopped";
+        realm.service_state = realm.desired_enabled ? "running" : "stopped";
+        realm.last_error = undefined;
+        realm.revision++;
+        this.repository.saveRealm(realm);
+      });
+      return;
+    }
 
     // desired_enabled=false 现场处理 (AGF-D06, CR11)
     if (!realm.desired_enabled) {
@@ -90,14 +111,14 @@ export class AgyReconciler {
 
         if (op.before_secret_ref) {
           // 检查凭据归属：必须匹配当前操作相关的凭据引用，外部已改动时禁止覆盖 (Q08)
-          let matched = false;
+          let matched: string | undefined;
           for (const ref of [
             op.before_secret_ref,
             op.installed_secret_ref,
             op.install_target_ref,
           ]) {
             if (ref && (await this.authHost.compareActive(realmId, ref))) {
-              matched = true;
+              matched = ref;
               break;
             }
           }
@@ -113,10 +134,12 @@ export class AgyReconciler {
             return;
           }
 
-          const alreadyBefore = await this.authHost.compareActive(realmId, op.before_secret_ref);
-          if (!alreadyBefore) {
+          if (matched !== op.before_secret_ref) {
             try {
-              await this.authHost.restoreBackup(realmId, op.before_secret_ref);
+              if ((op.kind === "probe" || op.kind === "maintenance") &&
+                  (await this.processHost.findExternalAgyProcesses()).length)
+                throw new Error("account_identity_in_use");
+              await this.authHost.restoreBackup(realmId, op.before_secret_ref, matched);
               const matches = await this.authHost.compareActive(realmId, op.before_secret_ref);
               if (!matches) {
                 op.phase = "blocked";
@@ -133,9 +156,10 @@ export class AgyReconciler {
               realm.auth_epoch = Math.max(realm.auth_epoch, op.install_epoch ?? 0) + 1;
               realm.active_account_id = op.before_account_id ?? null;
               realm.active_secret_ref = op.before_secret_ref;
-            } catch {
+            } catch (error) {
               op.phase = "blocked";
-              op.error = "cleanup_rollback_failed";
+              op.error = error instanceof Error && ["account_identity_in_use", "external_change"].includes(error.message)
+                ? error.message : "cleanup_rollback_failed";
               op.revision++;
               this.repository.saveOperation(op);
               realm.phase = "blocked";
@@ -233,14 +257,14 @@ export class AgyReconciler {
       }
       throw new Error("operation_backup_missing");
     }
-    let matched = false;
+    let matched: string | undefined;
     for (const ref of [
       op.before_secret_ref,
       op.installed_secret_ref,
       op.install_target_ref,
     ])
       if (ref && (await this.authHost.compareActive(realmId, ref))) {
-        matched = true;
+        matched = ref;
         break;
       }
     if (!matched) {
@@ -254,11 +278,24 @@ export class AgyReconciler {
       this.repository.saveRealm(realm);
       return;
     }
-    if (!(await this.authHost.compareActive(realmId, op.before_secret_ref))) {
+    if (matched !== op.before_secret_ref) {
+      if ((op.kind === "probe" || op.kind === "maintenance") &&
+          (await this.processHost.findExternalAgyProcesses()).length) {
+        op.phase = "blocked";
+        op.error = "account_identity_in_use";
+        op.revision++;
+        this.repository.saveOperation(op);
+        realm.phase = "blocked";
+        realm.service_state = "blocked";
+        realm.last_error = op.error;
+        realm.revision++;
+        this.repository.saveRealm(realm);
+        return;
+      }
       op.phase = "rollback_required";
       op.revision++;
       this.repository.saveOperation(op);
-      await this.authHost.restoreBackup(realmId, op.before_secret_ref);
+      await this.authHost.restoreBackup(realmId, op.before_secret_ref, matched);
       if (!(await this.authHost.compareActive(realmId, op.before_secret_ref)))
         throw new Error("rollback_verification_failed");
       realm.auth_epoch = Math.max(realm.auth_epoch, op.install_epoch ?? 0) + 1;

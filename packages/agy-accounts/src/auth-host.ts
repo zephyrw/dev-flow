@@ -349,17 +349,19 @@ export class DevFlowAuthHost implements AuthHostPort {
       auth?: Partial<AgyAccountAuth>;
     }>("capture-active", { realm_id: realmId, account_id: accountId });
   }
-  activateSaved(realmId: string, accountId: string, secretRef: string) {
+  activateSaved(realmId: string, accountId: string, secretRef: string, expectedActiveRef?: string) {
     return this.call<{ credential_revision: number }>("activate-saved", {
       realm_id: realmId,
       account_id: accountId,
       secret_ref: secretRef,
+      ...(expectedActiveRef ? { expected_active_ref: expectedActiveRef } : {}),
     });
   }
-  async restoreBackup(realmId: string, backupRef: string) {
+  async restoreBackup(realmId: string, backupRef: string, expectedActiveRef?: string) {
     await this.call("restore-backup", {
       realm_id: realmId,
       backup_ref: backupRef,
+      ...(expectedActiveRef ? { expected_active_ref: expectedActiveRef } : {}),
     });
   }
   async clearActiveForLogin(realmId: string) {

@@ -63,7 +63,7 @@ describe("persisted five-hour reset and failed refresh", () => {
     const before = fixture.repository.listQuotaSnapshots("default-agy-realm", "a");
     fixture.probe.probeUsage = async () => { throw new Error("official_usage_probe_failed"); };
     const view = await fixture.service.syncAndRefreshQuotas();
-    expect(view.refresh_errors).toEqual([{ account_id: "a" }]);
+    expect(view.refresh_errors).toEqual([{ account_id: "a", error: "quota_probe_failed" }]);
     expect(fixture.service.getQuotaRefresh()?.status).toBe("failed");
     expect(fixture.repository.listQuotaSnapshots("default-agy-realm", "a")).toEqual(before);
     expect(fixture.active()).toBe("a");

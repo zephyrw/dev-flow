@@ -51,8 +51,9 @@ export interface AuthHostPort {
     realmId: string,
     accountId: string,
     secretRef: string,
+    expectedActiveRef?: string,
   ): Promise<{ credential_revision: number }>;
-  restoreBackup(realmId: string, backupRef: string): Promise<void>;
+  restoreBackup(realmId: string, backupRef: string, expectedActiveRef?: string): Promise<void>;
   clearActiveForLogin(realmId: string): Promise<{ backupRef?: string }>;
   deleteSaved(realmId: string, secretRef: string): Promise<void>;
   acquireDomainLock(

@@ -93,6 +93,8 @@ export interface OperationReceipt {
   error?: string;
 }
 
+type QuotaRefreshFailure = { account_id: string; error?: string };
+
 export interface AgyUsageRequest {
   force_model_probe?: boolean;
   realm_id: string;
@@ -625,6 +627,90 @@ export class AgyAccountService {
     return this.coordinator.enqueue(() => this.syncActiveAccountFromHostLocked(realmId));
   }
 
+  async checkActiveAccount(realmId = "default-agy-realm") {
+    return this.coordinator.enqueue(async () => {
+      const current = this.repository.getRealm(realmId);
+      if (current?.pending_operation_id || current?.phase === "blocked")
+        return { status: "unconfirmed" as const, account_id: current.active_account_id };
+      const result = await this.syncActiveAccountFromHostLocked(realmId);
+      return { status: result.matched ? "verified" as const : "unconfirmed" as const,
+        account_id: result.active_account_id };
+    }, "background");
+  }
+
+  async reconcileCancelledSwitch(realmId: string, operationId: string): Promise<OperationReceipt> {
+    return this.coordinator.enqueue(async () => {
+      const op = this.repository.getOperation(operationId);
+      const realm = this.repository.getRealm(realmId);
+      if (!op || op.realm_id !== realmId) throw new AccountServiceError("operation_not_found", 404);
+      if (op.completed_at) return { operation_id: op.operation_id, revision: op.revision, phase: op.phase };
+      if (this.closing || !realm || realm.pending_operation_id !== operationId ||
+          !["switch", "probe"].includes(op.kind) || !op.cancel_requested || op.phase !== "blocked" ||
+          realm.last_error !== "external_change" || !op.before_secret_ref ||
+          this.repository.getFinalAccountCommit(operationId))
+        throw new AccountServiceError("operation_not_recoverable");
+      if (!this.authHost.isDomainLockHeld(realmId)) throw new AccountServiceError("domain_lock_lost");
+      await this.reconciler.reconcilePermits(realmId);
+      if (this.repository.listPermits(realmId).some(p => p.status !== "released") ||
+          (await this.processHost.listManagedProcesses(realmId)).length ||
+          (await this.processHost.findExternalAgyProcesses()).length)
+        throw new AccountServiceError("account_identity_in_use");
+
+      const inspection = await this.authHost.inspectActive(realmId);
+      const email = inspection.auth?.email?.trim().toLowerCase();
+      const matches = this.repository.listAccounts(realmId).filter(account =>
+        inspection.exists && email && account.identity.email.trim().toLowerCase() === email &&
+        (!account.identity.subject || !inspection.auth?.subject || account.identity.subject === inspection.auth.subject));
+      if (matches.length !== 1) throw new AccountServiceError("identity_unverified");
+      let account = matches[0]!;
+      let capture = await this.captureUsageCredential(realmId, account);
+      const isCandidate = account.id !== op.before_account_id && account.id === op.install_target_account_id;
+      if (isCandidate) {
+        const before = op.before_account_id && this.repository.getAccount(realmId, op.before_account_id);
+        if (!before) throw new AccountServiceError("identity_unverified");
+        if (!this.authHost.isDomainLockHeld(realmId) ||
+            (await this.processHost.findExternalAgyProcesses()).length ||
+            this.repository.listPermits(realmId).some(p => p.status !== "released") ||
+            !(await this.authHost.compareActive(realmId, capture.secret_ref)))
+          throw new AccountServiceError("external_change");
+        await this.authHost.restoreBackup(realmId, op.before_secret_ref, capture.secret_ref);
+        if (!(await this.authHost.compareActive(realmId, op.before_secret_ref)))
+          throw new AccountServiceError("rollback_verification_failed");
+        account = before;
+        capture = await this.captureUsageCredential(realmId, before);
+      }
+      if (!this.authHost.isDomainLockHeld(realmId) ||
+          !(await this.authHost.compareActive(realmId, capture.secret_ref)))
+        throw new AccountServiceError("external_change");
+      const current = this.repository.getRealm(realmId);
+      const latest = this.repository.getOperation(operationId);
+      if (!current || current.pending_operation_id !== operationId ||
+          latest?.phase !== "blocked" || !latest.cancel_requested)
+        throw new AccountServiceError("operation_not_recoverable");
+      this.repository.transaction(() => {
+        this.saveCapture(realmId, account.id, capture);
+        current.active_account_id = account.id;
+        current.active_secret_ref = capture.secret_ref;
+        current.auth_epoch = Math.max(current.auth_epoch, latest.install_epoch ?? 0) + 1;
+        current.last_capture_at = this.clock.toISOString();
+        current.last_error = undefined;
+        current.service_state = current.desired_enabled ? "running" : "stopping";
+        current.phase = "idle";
+        current.revision++;
+        this.repository.saveRealm(current);
+        this.discardCancelledSwitchRetries(latest);
+        latest.retry_at = undefined;
+        latest.result = {
+          ...latest.result, active_account_id: account.id, auth_epoch: current.auth_epoch,
+          outcome: account.id === latest.before_account_id ? "restored" : "current_login_synced",
+        };
+        this.finishOperation(latest, "cancelled");
+      });
+      this.discardOperationWait(latest);
+      return { operation_id: latest.operation_id, revision: latest.revision, phase: latest.phase };
+    }, "interactive");
+  }
+
   private async syncActiveAccountFromHostLocked(realmId = "default-agy-realm"): Promise<{
     active_account_id: string | null;
     matched: boolean;
@@ -814,8 +900,14 @@ export class AgyAccountService {
   }
 
   private quotaRefreshes = new Map<string, Promise<ReturnType<AgyAccountService["getPresentation"]> & {
-    refresh_scope: "active_only"; refresh_errors: Array<{ account_id: string }>;
+    refresh_scope: "active_only" | "all"; refresh_errors: QuotaRefreshFailure[];
   }>>();
+  private backgroundQuotaOperationId?: string;
+  private nextQuotaCheck = new Map<string, number>();
+  isBackgroundQuotaOperation(operationId: string): boolean {
+    return this.backgroundQuotaOperationId === operationId &&
+      this.repository.getOperation(operationId)?.phase !== "blocked";
+  }
   private backgroundProbeAbort?: AbortController;
   private beginBackgroundProbe(realmId: string, timeoutMs = 15000) {
     const realm = this.repository.getRealm(realmId);
@@ -847,17 +939,25 @@ export class AgyAccountService {
   }
   getQuotaRefresh(realmId = "default-agy-realm") {
     const state = this.repository.getRecord<{ id: string; status: "running" | "succeeded" | "failed" | "cancelled";
-      account_id?: string; started_at: string; finished_at?: string; error?: string }>("agy_quota_refresh", realmId) ?? null;
+      account_id?: string; scope?: "active_only" | "all"; started_at: string; finished_at?: string;
+      error?: string; refresh_errors?: QuotaRefreshFailure[] }>("agy_quota_refresh", realmId) ?? null;
     return state?.status === "running" && !this.quotaRefreshes.has(realmId)
       ? { ...state, status: "failed" as const, error: "refresh_interrupted" } : state;
   }
-  requestQuotaRefresh(realmId = "default-agy-realm", force = false) {
-    if (this.quotaRefreshes.has(realmId)) return this.getQuotaRefresh(realmId);
+  requestQuotaRefresh(realmId = "default-agy-realm", force = false, scope: "active_only" | "all" = "active_only") {
+    const pending = this.quotaRefreshes.get(realmId);
+    if (pending) {
+      const refresh = this.getQuotaRefresh(realmId);
+      if (scope === "all" && refresh?.scope !== "all")
+        void pending.catch(() => {}).then(() => this.requestQuotaRefresh(realmId, force, scope));
+      return refresh;
+    }
     const account = this.repository.getRealm(realmId)?.active_account_id;
     const snapshots = account ? this.repository.listQuotaSnapshots(realmId, account) : [];
-    if (!force && snapshots.some(snapshot => snapshot.capability_verified && this.clock.now() - Date.parse(snapshot.observed_at) < 60000))
+    if (scope === "active_only" && !force && snapshots.length > 0 &&
+        snapshots.every(snapshot => snapshot.capability_verified && this.clock.now() - Date.parse(snapshot.observed_at) < 60000))
       return { status: "fresh" as const, account_id: account };
-    void this.syncAndRefreshQuotas(realmId).catch(() => {});
+    void this.syncAndRefreshQuotas(realmId, scope).catch(() => {});
     return this.getQuotaRefresh(realmId);
   }
 
@@ -951,25 +1051,81 @@ export class AgyAccountService {
     return snapshot.native_ids;
   }
 
-  syncAndRefreshQuotas(realmId = "default-agy-realm") {
+  syncAndRefreshQuotas(realmId = "default-agy-realm", scope: "active_only" | "all" = "active_only") {
     const existing = this.quotaRefreshes.get(realmId);
     if (existing) return existing;
-    const state = { id: randomUUID(), status: "running", account_id: this.repository.getRealm(realmId)?.active_account_id,
+    const state = { id: randomUUID(), status: "running", scope, account_id: this.repository.getRealm(realmId)?.active_account_id,
       started_at: this.clock.toISOString() };
     this.repository.putRecord("agy_quota_refresh", realmId, realmId, state);
-    const pending = this.refreshActiveQuota(realmId).then(result => {
+    const pending = this.refreshActiveQuota(realmId).then(async result => {
+      const failures: QuotaRefreshFailure[] = result.refresh_errors;
+      if (scope === "all") {
+        const activeId = "active_account_id" in result.realm ? result.realm.active_account_id : null;
+        for (const account of this.repository.listAccounts(realmId)) {
+          if (account.id === activeId || ["disabled", "incompatible", "reauth_required"].includes(account.state)) continue;
+          this.repository.putRecord("agy_quota_refresh", realmId, realmId, { ...state, account_id: account.id });
+          try {
+            const error = await this.refreshInactiveAccount(realmId, account.id, activeId);
+            if (error) failures.push({ account_id: account.id, error });
+            if (error === "operation_cancelled") break;
+          } catch {
+            failures.push({ account_id: account.id, error: "quota_probe_failed" });
+          }
+        }
+      }
+      return { ...this.getPresentation(realmId), refresh_scope: scope, refresh_errors: failures };
+    }).then(result => {
       this.repository.putRecord("agy_quota_refresh", realmId, realmId, { ...state,
-        status: result.refresh_errors.length ? "failed" : "succeeded", finished_at: this.clock.toISOString() });
+        status: result.refresh_errors.length ? "failed" : "succeeded", refresh_errors: result.refresh_errors,
+        finished_at: this.clock.toISOString() });
       return result;
     }, error => {
       this.repository.putRecord("agy_quota_refresh", realmId, realmId, { ...state,
         status: error?.name === "AbortError" ? "cancelled" : "failed",
-        error: error?.name === "AbortError" ? undefined : "quota_refresh_failed", finished_at: this.clock.toISOString() });
-      if (error?.name === "AbortError") return { ...this.getPresentation(realmId), refresh_scope: "active_only" as const, refresh_errors: [] };
+        error: error?.name === "AbortError" ? undefined : error instanceof AccountServiceError ? error.code : "quota_refresh_failed",
+        finished_at: this.clock.toISOString() });
+      if (error?.name === "AbortError") return { ...this.getPresentation(realmId), refresh_scope: scope, refresh_errors: [] };
       throw error;
     }).finally(() => this.quotaRefreshes.delete(realmId));
     this.quotaRefreshes.set(realmId, pending);
     return pending;
+  }
+
+  private refreshInactiveAccount(realmId: string, accountId: string, expectedActiveId?: string | null) {
+    return this.coordinator.enqueue(async () => {
+      const current = this.repository.getRealm(realmId);
+      if (this.closing || !current || current.phase === "blocked" || current.pending_operation_id ||
+          (expectedActiveId !== undefined && current.active_account_id !== expectedActiveId) ||
+          await this.quotaRotationBusy(realmId)) return "account_identity_in_use";
+      const latest = this.repository.getRealm(realmId);
+      if (!latest || latest.revision !== current.revision) return "account_identity_in_use";
+      const account = this.repository.getAccount(realmId, accountId);
+      if (!account || ["disabled", "incompatible", "reauth_required"].includes(account.state))
+        return "account_unavailable";
+      if (latest.active_account_id === accountId) return;
+      const receipt = this.acceptOperation({ realm_id: realmId, request_id: randomUUID(),
+        kind: "probe", account_id: accountId, expected_epoch: latest.auth_epoch });
+      this.backgroundQuotaOperationId = receipt.operation_id;
+      try {
+        await this.driveOperation(this.repository.getOperation(receipt.operation_id)!);
+        const result = this.repository.getOperation(receipt.operation_id);
+        const checks = result?.result?.checked_accounts as Array<{ ok: boolean; error?: string }> | undefined;
+        if (result?.phase === "cancelled") return "operation_cancelled";
+        return result?.phase === "completed" && checks?.[0]?.ok
+          ? undefined : checks?.[0]?.error ?? result?.error ?? "quota_probe_failed";
+      } finally {
+        this.backgroundQuotaOperationId = undefined;
+      }
+    }, "background");
+  }
+
+  private async quotaRotationBusy(realmId: string): Promise<boolean> {
+    if (this.repository.listPermits(realmId).some(permit => permit.status !== "released")) return true;
+    if ((await this.processHost.listManagedProcesses(realmId)).length ||
+        (await this.processHost.findExternalAgyProcesses()).length) return true;
+    const occupancy = await Promise.all(this.consumers.map(consumer => consumer.listOccupancy()));
+    return occupancy.some(items => items.length > 0) ||
+      this.repository.listPermits(realmId).some(permit => permit.status !== "released");
   }
 
   private refreshActiveQuota(realmId: string) {
@@ -977,7 +1133,8 @@ export class AgyAccountService {
     return this.coordinator.enqueue(async () => {
       const started = Date.now();
       this.cleanStalePendingOperationLocked(realmId);
-      const { abort, finish } = this.beginBackgroundProbe(realmId);
+      const timeoutMs = this.initializeSettings(realmId).probe_timeout_seconds * 1000;
+      const { abort, finish } = this.beginBackgroundProbe(realmId, timeoutMs + 15000);
 
       // 确保持有 domainLock 以便切换凭据与执行 probe
       let temporaryLockRelease: (() => Promise<void>) | undefined;
@@ -997,7 +1154,7 @@ export class AgyAccountService {
       let origActiveAcc = origActiveId
         ? this.repository.getAccount(realmId, origActiveId)
         : null;
-      const refreshErrors: Array<{ account_id: string }> = [];
+      const refreshErrors: QuotaRefreshFailure[] = [];
 
       try {
         if (!this.authHost.isDomainLockHeld(realmId))
@@ -1016,7 +1173,7 @@ export class AgyAccountService {
 
         const probeSingleAccount = async (acc: AgyAccount) => {
           try {
-            const probeResult = await this.probeAccountUsage(realmId, acc, Math.min(10000, (this.repository.getSettings(realmId)?.probe_timeout_seconds ?? 10) * 1000), abort.signal);
+            const probeResult = await this.probeAccountUsage(realmId, acc, timeoutMs, abort.signal);
             abort.signal.throwIfAborted();
             if (probeResult.capability_verified && probeResult.pools.length > 0) {
               const captured = await this.captureUsageCredential(realmId, acc);
@@ -1028,8 +1185,7 @@ export class AgyAccountService {
               acc = this.repository.getAccount(realmId, acc.id) ?? acc;
               const validPools = probeResult.pools.filter(pool => isQuotaPoolVerified(probeResult, pool));
               const complete = validPools.length > 0;
-              this.repository.retainQuotaPools(realmId, acc.id, probeResult.pools.map((p) => p.pool_id));
-              for (const pool of probeResult.pools) {
+              for (const pool of validPools) {
                 this.repository.saveQuotaSnapshot({
                   id: randomUUID(),
                   realm_id: realmId,
@@ -1085,7 +1241,8 @@ export class AgyAccountService {
               this.repository.saveAccount(acc);
             }
           }
-          refreshErrors.push({ account_id: acc.id });
+          refreshErrors.push({ account_id: acc.id,
+            error: acc.state === "reauth_required" ? "authentication_required" : "quota_probe_failed" });
           return false;
         };
 
@@ -2203,8 +2360,38 @@ export class AgyAccountService {
   ): Promise<OperationReceipt> {
     if (input.required_pool_ids !== undefined)
       throw new AccountServiceError("client_pool_forbidden", 400);
+    const importsCurrent = input.kind === "enroll" && input.mode === "capture_current";
+    if ((input.kind === "switch" || importsCurrent) && this.backgroundQuotaOperationId &&
+        this.repository.getRealm(input.realm_id)?.pending_operation_id === this.backgroundQuotaOperationId) {
+      const settings = this.repository.getSettings(input.realm_id);
+      const before = this.repository.getRealm(input.realm_id)!;
+      const operation = this.repository.getOperation(this.backgroundQuotaOperationId);
+      if (input.expected_epoch !== undefined && input.expected_epoch !== before.auth_epoch &&
+          input.expected_epoch !== operation?.before_auth_epoch)
+        throw new AccountServiceError("epoch_conflict");
+      if (input.expected_settings_revision !== undefined && input.expected_settings_revision !== settings?.revision)
+        throw new AccountServiceError("settings_revision_conflict");
+      if (operation && !operation.cancel_requested) {
+        this.repository.saveOperation({ ...operation, cancel_requested: true, revision: operation.revision + 1 });
+        this.activeAbort?.abort();
+      }
+      // Give the probe time to release its credential lease before reading or switching.
+      return this.coordinator.enqueue(async () => {
+        const realm = this.repository.getRealm(input.realm_id);
+        if (realm?.active_account_id !== before.active_account_id || realm?.phase === "blocked")
+          throw new AccountServiceError("external_change");
+        return this.requestOperation({ ...input,
+          expected_epoch: input.expected_epoch === undefined ? undefined : realm?.auth_epoch,
+        });
+      }, "interactive");
+    }
     const result = await this.acceptOperation(input);
+    if (input.kind === "cancel") {
+      const op = this.repository.getOperation(result.operation_id);
+      if (op) return { operation_id: op.operation_id, revision: op.revision, phase: op.phase };
+    }
     if (input.kind === "switch" && result.phase === "queued") this.backgroundProbeAbort?.abort();
+    if (importsCurrent && result.phase === "queued") this.backgroundProbeAbort?.abort();
     if (result.phase === "queued") this.triggerOperationImmediate(result.operation_id);
     return result;
   }
@@ -2262,6 +2449,15 @@ export class AgyAccountService {
       workflow_id: operation.workflow_id,
       source_run_id: operation.source_run_id,
     });
+  }
+
+  private discardCancelledSwitchRetries(operation: AgyAccountOperation): void {
+    const originalId = operation.original_operation_id ?? operation.operation_id;
+    for (const demand of this.repository.listDemands(operation.realm_id)) {
+      if (this.demandWaitReference(demand).original_operation_id === originalId &&
+          ["waiting", "deferred", "selected"].includes(demand.status))
+        this.cancelWaitingDemand(operation.realm_id, demand, "operation_cancelled");
+    }
   }
 
   private waitInvalidReason(
@@ -2370,22 +2566,22 @@ export class AgyAccountService {
             : undefined;
           if (!op || op.realm_id !== input.realm_id)
             throw new AccountServiceError("operation_not_found", 404);
+          const receipt = () => ({ operation_id: op.operation_id, revision: op.revision, phase: op.phase });
+          if (op.cancel_requested || op.completed_at || ["completed", "failed", "cancelled"].includes(op.phase) ||
+              this.repository.getFinalAccountCommit(op.operation_id))
+            return receipt();
           if (
             input.expected_revision !== undefined &&
-            input.expected_revision !== op.revision
+            input.expected_revision > op.revision
           )
             throw new AccountServiceError("operation_revision_conflict");
           const originalId = op.original_operation_id ?? op.operation_id;
-          for (const demand of this.repository.listDemands(input.realm_id)) {
-            if (
-              this.demandWaitReference(demand).original_operation_id === originalId &&
-              ["waiting", "deferred", "selected"].includes(demand.status)
-            ) this.cancelWaitingDemand(input.realm_id, demand, "operation_cancelled");
-          }
+          this.discardCancelledSwitchRetries(op);
           for (const related of this.repository.listOperations(input.realm_id)) {
             if (
               (related.original_operation_id ?? related.operation_id) !== originalId ||
-              ["completed", "failed", "cancelled"].includes(related.phase)
+              ["completed", "failed", "cancelled"].includes(related.phase) ||
+              this.repository.getFinalAccountCommit(related.operation_id)
             ) continue;
             related.cancel_requested = true;
             // 未在活动执行器中深层运行的操作（如脱钩等待、queued排队）直接收敛为 cancelled
@@ -2394,7 +2590,7 @@ export class AgyAccountService {
               related.completed_at = this.clock.toISOString();
               if (realm.pending_operation_id === related.operation_id) {
                 realm.pending_operation_id = null;
-                realm.phase = "idle";
+                realm.phase = realm.service_state === "blocked" ? "blocked" : "idle";
                 realm.revision++;
                 this.repository.saveRealm(realm);
               }
@@ -2692,6 +2888,28 @@ export class AgyAccountService {
     if (trigger) for (const consumer of listeners) await consumer.onQuotaExhausted!(trigger);
   }
 
+  private refreshExpiredQuota(realmId: string, now: number): void {
+    const realm = this.repository.getRealm(realmId);
+    if (this.quotaRefreshes.has(realmId) || this.coordinator.isBusy() || realm?.phase !== "idle" ||
+        realm.pending_operation_id || !realm.active_account_id ||
+        this.repository.listPermits(realmId).some(permit => permit.status !== "released")) return;
+    const skew = this.initializeSettings(realmId).reset_clock_skew_seconds * 1000;
+    const due = this.repository.listQuotaSnapshots(realmId).find(snapshot => {
+      const account = this.repository.getAccount(realmId, snapshot.account_id);
+      return account && ["ready", "waiting_quota", "pending_quota"].includes(account.state) &&
+        now >= (this.nextQuotaCheck.get(account.id) ?? 0) && snapshot.windows.some(window =>
+          window.kind === "five_hour" && window.remaining_fraction !== null && window.remaining_fraction < 1 &&
+          window.reset_at && now >= Date.parse(window.reset_at) + skew);
+    });
+    if (!due) return;
+    this.nextQuotaCheck.set(due.account_id, now + 5 * 60_000);
+    if (due.account_id === realm.active_account_id) {
+      this.requestQuotaRefresh(realmId, true);
+    } else {
+      void this.refreshInactiveAccount(realmId, due.account_id, realm.active_account_id).catch(() => {});
+    }
+  }
+
   // 定时驱动 tick（5 秒调用一次，无任务无网络请求）
   async tick(now: number): Promise<void> {
     if (this.closing || this.isTicking) return;
@@ -2891,6 +3109,7 @@ export class AgyAccountService {
               this.repository.saveOperation(op);
             }
         }
+        if (current.service_state === "running") this.refreshExpiredQuota(realm.realm_id, now);
       }
     } finally {
       this.isTicking = false;
@@ -3450,7 +3669,39 @@ export class AgyAccountService {
       this.saveStep(op, "committed");
       return;
     }
+    if (op.kind === "enroll" && op.mode === "capture_current") {
+      this.saveStep(op, "capturing");
+      const result = await this.enrollmentService.enrollCurrentAccount(op.realm_id, op.alias ?? "", {
+        operation_id: op.operation_id,
+        auth_epoch: Math.max(1, op.before_auth_epoch ?? 0),
+        signal,
+        onCurrentSaved: (account, alreadyManaged) => {
+          this.assertOperation(op, signal);
+          const current = this.repository.getRealm(op.realm_id)!;
+          if (current.active_account_id !== account.id) current.auth_epoch++;
+          current.active_account_id = account.id;
+          current.active_secret_ref = account.secret_ref;
+          current.last_capture_at = this.clock.toISOString();
+          if (current.service_state !== "blocked") current.last_error = undefined;
+          current.revision++;
+          this.repository.saveRealm(current);
+          op.result = {
+            account_id: account.id, active_account_id: account.id, email: account.identity.email,
+            already_managed: alreadyManaged, auth_epoch: current.auth_epoch, outcome: "current_login_synced",
+          };
+          this.saveStep(op, "committed");
+        },
+      });
+      if (!result.success) throw new AccountServiceError(result.error ?? "enrollment_failed");
+      return;
+    }
     { // 身份探测也可能刷新凭据，全部经过同一排他流程。
+      if (op.operation_id === this.backgroundQuotaOperationId && await this.quotaRotationBusy(op.realm_id))
+        throw new AccountServiceError("account_identity_in_use");
+      if ((op.kind === "probe" || op.kind === "maintenance") &&
+          op.operation_id !== this.backgroundQuotaOperationId &&
+          (await this.processHost.findExternalAgyProcesses()).length)
+        throw new AccountServiceError("account_identity_in_use");
       const occupancy = (
         await Promise.all(this.consumers.map((c) => c.listOccupancy()))
       ).flat();
@@ -3487,8 +3738,7 @@ export class AgyAccountService {
       const checkRealm = this.repository.getRealm(op.realm_id)!;
       if (checkRealm.active_secret_ref &&
           !(await this.authHost.compareActive(op.realm_id, checkRealm.active_secret_ref))) {
-        if (op.kind !== "enroll" || op.mode !== "capture_current") throw new AccountServiceError("external_change");
-        op.before_account_id = undefined;
+        throw new AccountServiceError("external_change");
       }
     }
     const realm = this.repository.getRealm(op.realm_id)!;
@@ -3512,27 +3762,21 @@ export class AgyAccountService {
     );
     op.before_secret_ref = backup.secret_ref;
     this.saveStep(op, "prepared");
-    if (op.before_account_id && activeMatchesBefore && op.mode !== "capture_current")
+    if (op.before_account_id && activeMatchesBefore)
       this.saveCapture(op.realm_id, op.before_account_id, backup);
     this.assertOperation(op, signal);
     if (op.kind === "enroll" || op.kind === "reauth") {
-      if (
-        (op.kind === "reauth" || op.mode !== "capture_current") &&
-        !this.enrollmentService.isLoginAvailable()
-      )
+      if (!this.enrollmentService.isLoginAvailable())
         throw new AccountServiceError(
           "interactive_login_capability_unverified",
         );
       const context = {
         operation_id: op.operation_id,
-        auth_epoch: Math.max(
-          1,
-          realm.auth_epoch + (op.mode === "capture_current" ? 0 : 1),
-        ),
+        auth_epoch: Math.max(1, realm.auth_epoch + 1),
         signal,
         model_id: op.model_id,
       };
-      if (op.kind === "reauth" || op.mode !== "capture_current") {
+      {
         this.saveStep(op, "login_intent");
         await this.authHost.clearActiveForLogin(op.realm_id);
         const empty = await this.authHost.captureActive(
@@ -3568,13 +3812,7 @@ export class AgyAccountService {
                 .email,
               enrollmentContext,
             )
-          : op.mode === "capture_current"
-            ? await this.enrollmentService.enrollCurrentAccount(
-                op.realm_id,
-                op.alias ?? "",
-                enrollmentContext,
-              )
-            : await this.enrollmentService.enrollNewAccount(
+          : await this.enrollmentService.enrollNewAccount(
                 op.realm_id,
                 op.alias ?? "",
                 enrollmentContext,
@@ -3590,16 +3828,7 @@ export class AgyAccountService {
         state: result.account.state,
       };
       this.saveStep(op, "enrollment_saved");
-      if (op.mode === "capture_current") {
-        const current = this.repository.getRealm(op.realm_id)!;
-        current.active_account_id = result.account.id;
-        current.active_secret_ref = result.account.secret_ref;
-        current.auth_epoch++;
-        current.revision++;
-        this.repository.saveRealm(current);
-        op.before_account_id = result.account.id;
-        op.before_secret_ref = result.account.secret_ref;
-      } else if (op.before_account_id === result.account.id)
+      if (op.before_account_id === result.account.id)
         op.before_secret_ref = result.account.secret_ref;
     } else if (op.kind === "probe" || op.kind === "maintenance") {
       const ids =
@@ -3608,6 +3837,9 @@ export class AgyAccountService {
           : [...new Set(op.selected_account_ids)];
       const results: Array<{ id: string; ok: boolean; error?: string }> = [];
       for (const id of ids) {
+        this.assertOperation(op, signal);
+        if (op.operation_id === this.backgroundQuotaOperationId && await this.quotaRotationBusy(op.realm_id))
+          throw new AccountServiceError("account_identity_in_use");
         this.assertOperation(op, signal);
         const account = this.repository.getAccount(op.realm_id, id);
         if (!account) {
@@ -3620,13 +3852,15 @@ export class AgyAccountService {
           !(await this.authHost.compareActive(op.realm_id, expected))
         )
           throw new AccountServiceError("external_change");
+        if ((await this.processHost.findExternalAgyProcesses()).length)
+          throw new AccountServiceError("account_identity_in_use");
         this.assertOperation(op, signal);
         op.install_target_ref = account.secret_ref;
         op.install_target_account_id = id;
         op.install_epoch =
           this.repository.getRealm(op.realm_id)!.auth_epoch + 1;
         this.saveStep(op, "install_intent");
-        await this.authHost.activateSaved(op.realm_id, id, account.secret_ref);
+        await this.authHost.activateSaved(op.realm_id, id, account.secret_ref, expected);
         this.assertOperation(op, signal);
         if (
           !(await this.authHost.compareActive(op.realm_id, account.secret_ref))
@@ -3639,16 +3873,13 @@ export class AgyAccountService {
         op.installed_secret_ref = account.secret_ref;
         this.saveStep(op, "verifying");
         try {
-          const result = await this.probe.probeUsage({
-            signal,
-            account_id: id,
-            credential_revision: account.credential_revision,
-            model_id: op.model_id,
-            timeoutMs:
-              this.initializeSettings(op.realm_id).probe_timeout_seconds * 1000,
-          });
+          const timeoutMs = this.initializeSettings(op.realm_id).probe_timeout_seconds * 1000;
+          const background = op.operation_id === this.backgroundQuotaOperationId;
+          const result = background ? await this.probeAccountUsage(op.realm_id, account, timeoutMs, signal)
+            : await this.probe.probeUsage({ signal, account_id: id, credential_revision: account.credential_revision,
+              model_id: op.model_id, timeoutMs });
           this.assertOperation(op, signal);
-          let observedEmail = result.email?.toLowerCase();
+          let observedEmail = background ? account.identity.email.toLowerCase() : result.email?.toLowerCase();
           if (!observedEmail) {
             try {
               const probed = await this.probe.probeIdentity({ signal });
@@ -3663,17 +3894,19 @@ export class AgyAccountService {
             observedEmail !== account.identity.email.toLowerCase()
           )
             throw new AccountServiceError("identity_mismatch");
-          const capture = await this.authHost.captureActive(op.realm_id, id);
+          const capture = background ? await this.captureUsageCredential(op.realm_id, account)
+            : await this.authHost.captureActive(op.realm_id, id);
           this.saveCapture(op.realm_id, id, capture);
           op.installed_secret_ref = capture.secret_ref;
           if (op.before_account_id === id) op.before_secret_ref = capture.secret_ref;
+          this.saveStep(op, "verifying");
           const pools = result.pools.filter((pool) => !op.model_id || quotaPoolCoversModel(pool, op.model_id));
           const validPools = result.pools.filter(pool => isQuotaPoolVerified(result, pool));
           const complete = op.model_id
             ? pools.length > 0 && pools.every(pool => isQuotaPoolVerified(result, pool))
             : validPools.length > 0;
-          this.repository.retainQuotaPools(op.realm_id, id, result.pools.map((pool) => pool.pool_id));
-          for (const pool of result.pools) {
+          if (!background) this.repository.retainQuotaPools(op.realm_id, id, result.pools.map((pool) => pool.pool_id));
+          for (const pool of background ? validPools : result.pools) {
             const poolVerified = isQuotaPoolVerified(result, pool);
             this.repository.saveQuotaSnapshot({
               id: randomUUID(),
@@ -3721,7 +3954,14 @@ export class AgyAccountService {
               error.code === "identity_mismatch")
           )
             throw error;
-          results.push({ id, ok: false, error: "probe_failed" });
+          const code = (error as { code?: string; message?: string })?.code ??
+            (error as { message?: string })?.message ?? "";
+          const authFailed = /^(authentication_required|invalid_grant|unauthenticated|auth_invalid|login_required|HTTP_401)$/i.test(code);
+          if (authFailed && account.state !== "disabled") {
+            const latest = this.repository.getAccount(op.realm_id, id);
+            if (latest) this.repository.saveAccount({ ...latest, state: "reauth_required", revision: latest.revision + 1 });
+          }
+          results.push({ id, ok: false, error: authFailed ? "authentication_required" : "probe_failed" });
           if (signal.aborted)
             throw new AccountServiceError("operation_cancelled");
           break; // A network failure must not turn into whole-pool probing.
@@ -3840,25 +4080,45 @@ export class AgyAccountService {
   }
 
   private async rollbackOperation(op: AgyAccountOperation): Promise<void> {
-    if (!op.before_secret_ref) return;
+    if (!op.before_secret_ref || (op.kind === "enroll" && op.mode === "capture_current")) return;
     if (!this.authHost.isDomainLockHeld(op.realm_id))
       throw new AccountServiceError("domain_lock_lost");
-    let known = false;
+    let activeRef: string | undefined;
     for (const ref of [
+      op.before_secret_ref,
       op.installed_secret_ref,
       op.install_target_ref,
-      op.before_secret_ref,
     ])
       if (ref && (await this.authHost.compareActive(op.realm_id, ref))) {
-        known = true;
+        activeRef = ref;
         break;
       }
-    if (!known) throw new AccountServiceError("external_change");
+    const rotatesForQuota = op.kind === "probe" || op.kind === "maintenance";
+    if (rotatesForQuota && activeRef !== op.before_secret_ref &&
+        (await this.processHost.findExternalAgyProcesses()).length)
+      throw new AccountServiceError("account_identity_in_use");
+    if (!activeRef && op.install_target_account_id &&
+        (op.cancel_requested || op.operation_id === this.backgroundQuotaOperationId)) {
+      const target = this.repository.getAccount(op.realm_id, op.install_target_account_id);
+      if (target) {
+        try {
+          const capture = await this.captureUsageCredential(op.realm_id, target);
+          if (await this.authHost.compareActive(op.realm_id, capture.secret_ref)) {
+            activeRef = capture.secret_ref;
+            op.installed_secret_ref = capture.secret_ref;
+            this.saveCapture(op.realm_id, target.id, capture);
+          }
+        } catch {
+          // The current credential could belong to an external login.
+        }
+      }
+    }
+    if (!activeRef) throw new AccountServiceError("external_change");
     this.saveStep(op, "rollback_required");
     if (
       !(await this.authHost.compareActive(op.realm_id, op.before_secret_ref))
     ) {
-      await this.authHost.restoreBackup(op.realm_id, op.before_secret_ref);
+      await this.authHost.restoreBackup(op.realm_id, op.before_secret_ref, activeRef);
       if (
         !(await this.authHost.compareActive(op.realm_id, op.before_secret_ref))
       )
@@ -3882,7 +4142,8 @@ export class AgyAccountService {
 
     // CR17: 维护后安全恢复凭据后，核查原账号资格（enroll 操作不因待验额度标记失败）
     let beforeEligible = true;
-    if (op.before_account_id && op.kind !== "enroll" &&
+    if (!op.cancel_requested && op.operation_id !== this.backgroundQuotaOperationId &&
+        op.before_account_id && op.kind !== "enroll" &&
         (op.kind !== "probe" || op.consumer_refs.length > 0)) {
       const beforeAcc = this.repository.getAccount(op.realm_id, op.before_account_id);
       if (!beforeAcc || beforeAcc.state !== "ready") {
