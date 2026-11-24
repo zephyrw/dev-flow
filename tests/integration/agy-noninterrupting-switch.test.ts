@@ -50,7 +50,7 @@ it("settles a blocked cancellation against the current managed login without ove
   expect(f.active()).toBe("a");
 });
 
-it("queries the full pool serially and restores the selected account", async () => {
+it("uses only the selected credential for the legacy full-refresh request", async () => {
   const f = await setup();
   const activeAccounts: string[] = [];
   const probe = f.probe.probeUsage;
@@ -59,10 +59,11 @@ it("queries the full pool serially and restores the selected account", async () 
     return probe(options);
   });
   const refreshed = await f.service.syncAndRefreshQuotas(realm, "all");
+  expect(refreshed.refresh_scope).toBe("active_only");
   expect(refreshed.refresh_errors).toEqual([]);
-  expect(activeAccounts).toEqual(["a", "b", "c"]);
+  expect(activeAccounts).toEqual(["a"]);
   expect(f.active()).toBe("a");
-  expect(f.repository.getRealm(realm)?.pending_operation_id).toBeNull();
+  expect(f.repository.getRealm(realm)?.pending_operation_id).toBeFalsy();
 });
 it("keeps two running permits and processes on their old identity, admits future commands on the committed identity", async () => {
   const f = await setup();

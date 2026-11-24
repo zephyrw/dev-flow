@@ -1,17 +1,19 @@
 import { describe, it, expect, vi } from "vitest";
 import { AgyEnrollmentService } from "../../packages/agy-accounts/src/enrollment.js";
+import { AgyLoginLauncher } from "../../packages/agy-accounts/src/login.js";
 import type { AgyAccountRepository } from "../../packages/agy-accounts/src/repository.js";
 import type { AuthHostPort, AccountProbePort, AccountProbeResult } from "../../packages/agy-accounts/src/ports.js";
 import type { AgyAccount } from "../../packages/contracts/src/agy-account.js";
 
 const context = { operation_id: "operation", auth_epoch: 4, signal: new AbortController().signal, model_id: "m" };
-function setup(observation: Partial<AccountProbeResult> = {}) {
+function setup(observation: Partial<AccountProbeResult> = {}, loggedIn = false) {
   const stored: AgyAccount[] = [];
   const repository = { getAccount: (_realm: string, id: string) => stored.find(account => account.id === id),
     listAccounts: () => stored, saveAccount: vi.fn((account: AgyAccount) => stored.push(account)),
     saveQuotaSnapshot: vi.fn(), transaction: <T>(fn: () => T) => fn(),
     putRecord: vi.fn(), getRecord: vi.fn(), retainQuotaPools: vi.fn() };
   const auth = { isDomainLockHeld: () => true, inspectActive: async () => ({ exists: true }),
+    compareActive: async () => true,
     captureActive: vi.fn(async () => ({ secret_ref: "sec_saved", credential_revision: 3 })),
     clearActiveForLogin: vi.fn(), restoreBackup: vi.fn() };
   const probe = {
@@ -19,8 +21,12 @@ function setup(observation: Partial<AccountProbeResult> = {}) {
     probeUsage: vi.fn(async (): Promise<AccountProbeResult> => ({ email: "a@example.com", cli_version: "unknown",
       windows: [], pools: [], executable_fingerprint: "", capability_verified: false, raw_output: "", ...observation })),
   };
+  const login = new AgyLoginLauncher();
+  if (loggedIn) vi.spyOn(login, "startInteractiveLogin").mockResolvedValue({
+    completed: true, fully_stopped: true, cancelled: false, timed_out: false, exit_code: 0,
+  });
   const service = new AgyEnrollmentService(repository as unknown as AgyAccountRepository,
-    auth as unknown as AuthHostPort, probe as unknown as AccountProbePort);
+    auth as unknown as AuthHostPort, probe as unknown as AccountProbePort, login);
   return { service, auth, repository, stored };
 }
 describe("enrollment safety under a durable operation", () => {
@@ -32,8 +38,8 @@ describe("enrollment safety under a durable operation", () => {
     ] }],
   };
   it("preserves observed capability and executable fingerprint in the first completed enrollment snapshot", async () => {
-    const { service, repository } = setup(verifiedObservation);
-    const result = await service.enrollCurrentAccount("realm", "alias", context);
+    const { service, repository } = setup(verifiedObservation, true);
+    const result = await service.enrollNewAccount("realm", "alias", context);
     expect(result.account?.state).toBe("ready");
     expect(repository.saveQuotaSnapshot).toHaveBeenCalledWith(expect.objectContaining({
       executable_fingerprint: verifiedObservation.executable_fingerprint, capability_verified: true,
@@ -41,8 +47,8 @@ describe("enrollment safety under a durable operation", () => {
     }));
   });
   it("does not complete enrollment without the observed executable binding", async () => {
-    const { service, repository } = setup({ ...verifiedObservation, executable_fingerprint: "" });
-    const result = await service.enrollCurrentAccount("realm", "alias", context);
+    const { service, repository } = setup({ ...verifiedObservation, executable_fingerprint: "" }, true);
+    const result = await service.enrollNewAccount("realm", "alias", context);
     expect(result.account?.state).toBe("pending_quota");
     expect(repository.saveQuotaSnapshot).not.toHaveBeenCalled();
   });

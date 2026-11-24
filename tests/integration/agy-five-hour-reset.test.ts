@@ -68,4 +68,35 @@ describe("persisted five-hour reset and failed refresh", () => {
     expect(fixture.repository.listQuotaSnapshots("default-agy-realm", "a")).toEqual(before);
     expect(fixture.active()).toBe("a");
   });
+
+  it("records a revoked login and skips probing the same saved credential again", async () => {
+    const realmId = "default-agy-realm";
+    const before = fixture.repository.listQuotaSnapshots(realmId, "a");
+    let probes = 0;
+    fixture.probe.probeUsage = async () => {
+      probes++;
+      throw Object.assign(new Error("authentication_required"), { code: "authentication_required" });
+    };
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const view = await fixture.service.syncAndRefreshQuotas(realmId);
+      expect(view.refresh_errors).toEqual([{ account_id: "a", error: "authentication_required" }]);
+    }
+    expect(probes).toBe(1);
+    expect(fixture.repository.getAccount(realmId, "a")).toMatchObject({
+      state: "reauth_required", auth: { last_auth_error: "authentication_required", last_local_auth_failure_revision: 1 },
+    });
+    expect(fixture.repository.listQuotaSnapshots(realmId, "a")).toEqual(before);
+  });
+
+  it("can revalidate the current login after a historical authentication result", async () => {
+    const realmId = "default-agy-realm";
+    const account = fixture.repository.getAccount(realmId, "a")!;
+    fixture.repository.saveAccount({ ...account, state: "reauth_required",
+      auth: { ...account.auth, last_auth_error: "authentication_required" } });
+    expect(fixture.service.getPresentation(realmId).accounts.find(a => a.id === "a")?.saved_credential_status)
+      .toBe("unverified");
+    const result = await fixture.service.syncAndRefreshQuotas(realmId);
+    expect(result.refresh_errors).toEqual([]);
+    expect(fixture.repository.getAccount(realmId, "a")?.state).toBe("ready");
+  });
 });

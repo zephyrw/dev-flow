@@ -33,3 +33,13 @@ it("grants at least a 30s timeout budget by default for slow CLI model catalog r
   expect(run).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: 30000, args: ["models"] }));
   expect(models.native_ids).toContain("gemini-4-hydrogen-high");
 });
+
+it("reports a headless authentication failure without returning the sign-in URL", async () => {
+  const runAuxiliaryProbe = vi.fn(async () => ({
+    code: 1, stdout: "", stderr: "Error: authentication required. Run 'agy' to log in. https://example.test/sign-in",
+  }));
+  const probe = new AgyAccountProbe("C:/fixture/agy.exe", createVerifiedUsageAdapter("fixture"), { runAuxiliaryProbe });
+  await expect(probe.probeUsage()).rejects.toMatchObject({
+    code: "authentication_required", message: "authentication_required",
+  });
+});

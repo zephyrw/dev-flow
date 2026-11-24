@@ -27,8 +27,8 @@ export function AgyAccountsDialog({ isOpen, onClose }: AgyAccountsDialogProps) {
       type="button"
       className={`agy-header-refresh-btn ${syncing ? "is-spinning" : ""}`}
       onClick={handleSyncRefresh}
-      title="刷新全部账号额度"
-      aria-label="刷新全部账号额度"
+      title="刷新当前账号额度"
+      aria-label="刷新当前账号额度"
       disabled={syncing}
     >
       <svg

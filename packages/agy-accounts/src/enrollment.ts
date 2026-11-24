@@ -110,6 +110,7 @@ export class AgyEnrollmentService {
     this.requireContext(realmId, context);
     const active = await this.authHost.inspectActive(realmId);
     if (!active.exists) return { success: false, error: "active_credential_missing" };
+    const identityOnly = currentOnly || Boolean(expected);
 
     // 先独立保存候选凭据；本地 claim 不会覆盖任何现有账号。
     const candidateId = "acc_" + randomUUID();
@@ -126,7 +127,7 @@ export class AgyEnrollmentService {
     };
     if (!currentOnly) this.repository.transaction(() => {
       this.repository.putRecord("agy_pending_enrollment", context.operation_id, realmId, pending);
-      context.onCaptured?.({
+      if (!expected) context.onCaptured?.({
         account: { id: candidateId, state: "pending_quota" },
         secret_ref: captured.secret_ref,
         credential_revision: captured.credential_revision,
@@ -136,7 +137,7 @@ export class AgyEnrollmentService {
 
     let identity: { email: string; subject?: string };
     try {
-      identity = currentOnly && captured.auth?.email
+      identity = identityOnly && captured.auth?.email
         ? { email: captured.auth.email, subject: captured.auth.subject }
         : await this.probe.probeIdentity({ signal: context.signal });
     } catch (error: any) {
@@ -157,7 +158,7 @@ export class AgyEnrollmentService {
     const existing = expected ?? this.repository.listAccounts(realmId)
       .find((account) => account.identity.email.toLowerCase() === email);
     let observation: AccountProbeResult | undefined;
-    if (!currentOnly) try {
+    if (!identityOnly) try {
       observation = await this.probe.probeUsage({
         signal: context.signal,
         model_id: context.model_id,
@@ -173,7 +174,7 @@ export class AgyEnrollmentService {
     }
     const verified = Boolean(observation?.capability_verified && observation.executable_fingerprint);
     // 已有账号在远端核验失败时保持原样，候选包与操作记录保留用于后续处理。
-    if (existing && !currentOnly && !verified) {
+    if (existing && !identityOnly && !verified) {
       return { success: false, error: "quota_capability_unavailable" };
     }
     const pools = verified ? observation!.pools : [];
@@ -182,12 +183,12 @@ export class AgyEnrollmentService {
     const complete = context.model_id
       ? targetPools.length > 0 && targetPools.every(pool => isQuotaPoolVerified(observation!, pool))
       : validPools.length > 0;
-    if (existing && !currentOnly && !complete) return { success: false, error: "quota_capability_unavailable" };
+    if (existing && !identityOnly && !complete) return { success: false, error: "quota_capability_unavailable" };
 
     const accountId = existing?.id ?? candidateId;
     // 只在身份核验后将保存包绑定到最终账号 ID，旧 secret_ref 尚未改变。
     const accepted = currentOnly && !existing ? captured : await this.authHost.captureActive(realmId, accountId);
-    if (currentOnly) {
+    if (identityOnly) {
       const latest = await this.authHost.inspectActive(realmId);
       if (!latest.exists) return { success: false, error: "active_credential_missing" };
       if ((existing?.identity.subject && identity.subject && existing.identity.subject !== identity.subject) ||
@@ -200,8 +201,8 @@ export class AgyEnrollmentService {
     }
     this.requireContext(realmId, context);
     const timestamp = new Date().toISOString();
-    const subject = identity.subject ?? (currentOnly ? existing?.identity.subject : undefined);
-    const state: AccountState = currentOnly
+    const subject = identity.subject ?? (identityOnly ? existing?.identity.subject : undefined);
+    const state: AccountState = expected ? "pending_quota" : identityOnly
       ? existing?.state === "disabled" ? existing.state_before_disabled ?? "pending_quota"
         : existing?.state === "ready" || existing?.state === "waiting_quota" ? existing.state : "pending_quota"
       : !complete ? "pending_quota" :
@@ -219,14 +220,15 @@ export class AgyEnrollmentService {
       state: existing?.state === "disabled" ? "disabled" : state,
       state_before_disabled: existing?.state === "disabled" ? state : existing?.state_before_disabled,
       enrolled_at: existing?.enrolled_at ?? timestamp,
-      enrollment_completed_at: currentOnly ? existing?.enrollment_completed_at : complete ? timestamp : undefined,
+      enrollment_completed_at: identityOnly ? existing?.enrollment_completed_at : complete ? timestamp : undefined,
       auth: {
         has_refresh_credential: accepted.auth?.has_refresh_credential ?? null,
         refresh_expiry_source: accepted.auth?.refresh_expiry_source ?? "not_provided",
         access_expires_at: accepted.auth?.access_expires_at,
         refresh_expires_at: accepted.auth?.refresh_expires_at,
         metadata_status: "unverified",
-        last_authenticated_request_at: currentOnly ? existing?.auth.last_authenticated_request_at : timestamp,
+        last_authenticated_request_at: identityOnly ? existing?.auth.last_authenticated_request_at : timestamp,
+        ...(identityOnly ? { quota_verification_pending: true } : {}),
         email,
         ...(subject ? { subject } : {}),
       },
@@ -246,13 +248,14 @@ export class AgyEnrollmentService {
         context.onCurrentSaved?.(account, Boolean(existing));
         return;
       }
-      this.repository.retainQuotaPools(realmId, accountId, pools.map((pool) => pool.pool_id));
+      if (!identityOnly) this.repository.retainQuotaPools(realmId, accountId, pools.map((pool) => pool.pool_id));
       for (const snapshot of snapshots) this.repository.saveQuotaSnapshot(snapshot);
       this.repository.saveAccount(account);
       this.repository.putRecord("agy_pending_enrollment", context.operation_id, realmId, {
         ...pending, status: "committed", committed_account_id: accountId,
       });
       context.onCaptured?.({ account, secret_ref: accepted.secret_ref, credential_revision: accepted.credential_revision });
+      if (expected) context.onCurrentSaved?.(account, true);
     });
     return { success: true, account, snapshot: snapshots[0] };
   }

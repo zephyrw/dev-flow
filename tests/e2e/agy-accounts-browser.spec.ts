@@ -141,6 +141,53 @@ test("卡住的取消操作显示核验入口，收尾后可再次手动切换",
   await expect(manual).toBeEnabled();
 });
 
+test("保留当前登录结束阻塞探测，并明确选择重新登录的最终账号", async ({ page }) => {
+  let blocked = true;
+  const operationId = "blocked-quota-probe";
+  await page.route(snapshot, async route => {
+    const response = await route.fetch();
+    const body = await response.json();
+    const account = body.accounts.find((item: { id: string }) => item.id === "b");
+    account.state = "reauth_required";
+    account.saved_credential_status = "unverified";
+    const liveAccount = body.accounts.find((item: { id: string }) => item.id === "c");
+    liveAccount.state = "reauth_required";
+    liveAccount.saved_credential_status = "needs_update";
+    body.service.active_account_id = blocked ? "a" : "c";
+    body.service.pending_operation_id = blocked ? operationId : null;
+    body.service.last_error = blocked ? "account_identity_in_use" : undefined;
+    body.service.can_preserve_current_login = blocked;
+    body.service.operations = blocked ? [{ operation_id: operationId, revision: 8,
+      phase: "blocked", kind: "probe", error: "account_identity_in_use" }] : [];
+    await route.fulfill({ response, json: body });
+  });
+  await page.route("**/api/agy-accounts/verify-active", route => route.fulfill({
+    json: blocked ? { status: "unconfirmed" } : { status: "verified", account_id: "c" },
+  }));
+  await page.route(`**/api/agy-accounts/operations/${operationId}/reconcile`, async route => {
+    blocked = false;
+    await route.fulfill({ json: { operation_id: operationId, revision: 9, phase: "cancelled" } });
+  });
+  await page.route("**/api/agy-accounts/b/reauth", route => {
+    expect(route.request().postDataJSON().reauth_disposition).toBe("save_only");
+    return route.fulfill({ status: 202, json: { operation_id: "reauth", revision: 1, phase: "queued" } });
+  });
+  await page.goto("/");
+  await expect(page.getByText("额度探测已停止，需确认保留当前登录")).toBeVisible();
+  await expect(page.locator(".agy-active-op-card .agy-op-spinner")).toHaveCount(0);
+  await page.getByRole("button", { name: "保留当前登录并结束操作" }).click();
+  await expect(row(page, "c").getByText("当前使用中")).toBeVisible();
+  await expect(row(page, "c").getByRole("button", { name: "更新查询凭据" })).toBeVisible();
+  await expect(row(page, "b").getByText("保存凭据待核验")).toBeVisible();
+  await row(page, "b").getByRole("button", { name: "重新登录" }).click();
+  const dialog = page.getByRole("dialog", { name: "重新登录 AGY 账号" });
+  await expect(dialog.getByRole("button", { name: "更新并设为活动" })).toBeVisible();
+  const sent = page.waitForRequest(request => request.url().endsWith("/b/reauth"));
+  await dialog.getByRole("button", { name: "仅更新保存凭据" }).click();
+  await sent;
+  await expect(dialog).toBeHidden();
+});
+
 test("切号立即提交、禁止重复点击并复用网络失败请求的意图", async ({ page }) => {
   let requests = 0, requestId = "", release!: () => void;
   const gate = new Promise<void>(resolve => { release = resolve; });

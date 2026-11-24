@@ -148,6 +148,12 @@ async function handle(
     if (!equalCredential(vault.load(realm, ref).Credential, credential))
       throw new Error("vault_readback_failed");
     if (backup) {
+      if (args.expected_active_ref !== undefined) {
+        const expected = vault.load(realm, stringArg(args, "expected_active_ref"));
+        if (!equalCredential(win.readCredential(TARGET), expected.Credential) ||
+            !equalCredential(credential, expected.Credential))
+          throw new Error("external_change");
+      }
       win.deleteCredential(TARGET);
       if (win.readCredential(TARGET).Exists)
         throw new Error("credential_readback_failed");

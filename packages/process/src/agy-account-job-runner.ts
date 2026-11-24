@@ -47,7 +47,8 @@ export class AgyAccountJobRunner
         executable,
         args,
         cwd,
-        env: {},
+        // Use a manual code prompt if auth fails, while keeping the local keyring.
+        env: interactive ? {} : { ANTIGRAVITY_REMOTE_OOB_AUTH: "1" },
         timeout_ms: timeoutMs,
         interactive,
       });
@@ -129,20 +130,33 @@ export class AgyAccountJobRunner
     const stdout: Buffer[] = [],
       stderr: Buffer[] = [];
     let size = 0,
-      overflow = false;
-    const collect = (chunks: Buffer[]) => (value: Buffer) => {
-      size += value.length;
-      if (size > 1024 * 1024) {
-        overflow = true;
-        void process.stop().catch(() => {});
-        return;
-      }
-      chunks.push(value);
+      overflow = false,
+      authenticationRequired = false;
+    const collect = (chunks: Buffer[]) => {
+      let tail = "";
+      return (value: Buffer) => {
+        size += value.length;
+        if (size > 1024 * 1024) {
+          overflow = true;
+          void process.stop().catch(() => {});
+          return;
+        }
+        chunks.push(value);
+        const text = tail + value.toString("utf8");
+        if (!authenticationRequired && /(?:^|\r?\n)(?:Error:\s*)?Authentication required\./i.test(text)) {
+          authenticationRequired = true;
+          void process.stop().catch(() => {});
+        }
+        tail = text.slice(-96);
+      };
     };
     process.on("stdout", collect(stdout));
     process.on("stderr", collect(stderr));
     const result = await completion;
     if (overflow) throw new Error("AGY_PROBE_OUTPUT_LIMIT");
+    options.signal?.throwIfAborted();
+    if (authenticationRequired)
+      throw Object.assign(new Error("authentication_required"), { code: "authentication_required" });
     return {
       code:
         options.signal?.aborted || result.termination_reason ? -1 : result.code,

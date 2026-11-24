@@ -364,10 +364,10 @@ export class DevFlowAuthHost implements AuthHostPort {
       ...(expectedActiveRef ? { expected_active_ref: expectedActiveRef } : {}),
     });
   }
-  async clearActiveForLogin(realmId: string) {
+  async clearActiveForLogin(realmId: string, expectedActiveRef?: string) {
     const result = await this.call<{ backup_ref: string }>(
       "clear-active-for-login",
-      { realm_id: realmId },
+      { realm_id: realmId, ...(expectedActiveRef ? { expected_active_ref: expectedActiveRef } : {}) },
     );
     return { backupRef: result.backup_ref };
   }

@@ -1,4 +1,5 @@
 import type { AgyAccountRepository } from "./repository.js";
+import { isExternalAgyDesktopProcess } from "./ports.js";
 import type {
   AuthHostPort,
   AccountProbePort,
@@ -136,8 +137,9 @@ export class AgyReconciler {
 
           if (matched !== op.before_secret_ref) {
             try {
-              if ((op.kind === "probe" || op.kind === "maintenance") &&
-                  (await this.processHost.findExternalAgyProcesses()).length)
+              const external = await this.processHost.findExternalAgyProcesses();
+              if (external.some(isExternalAgyDesktopProcess) ||
+                  (["probe", "maintenance", "reauth"].includes(op.kind) && external.length))
                 throw new Error("account_identity_in_use");
               await this.authHost.restoreBackup(realmId, op.before_secret_ref, matched);
               const matches = await this.authHost.compareActive(realmId, op.before_secret_ref);
@@ -279,8 +281,9 @@ export class AgyReconciler {
       return;
     }
     if (matched !== op.before_secret_ref) {
-      if ((op.kind === "probe" || op.kind === "maintenance") &&
-          (await this.processHost.findExternalAgyProcesses()).length) {
+      const external = await this.processHost.findExternalAgyProcesses();
+      if (external.some(isExternalAgyDesktopProcess) ||
+          (["probe", "maintenance", "reauth"].includes(op.kind) && external.length)) {
         op.phase = "blocked";
         op.error = "account_identity_in_use";
         op.revision++;

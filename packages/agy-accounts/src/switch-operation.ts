@@ -9,6 +9,7 @@ import type {
   QuotaWindow,
 } from "../../contracts/src/agy-account.js";
 import type { AgyAccountRepository } from "./repository.js";
+import { isExternalAgyDesktopProcess } from "./ports.js";
 import type {
   AuthHostPort,
   AccountProbePort,
@@ -114,6 +115,10 @@ export class SwitchOperationExecutor {
       )
         throw new Error("settings_revision_changed");
     };
+    guard();
+    if ((options.selection.mode !== "explicit" || options.selection.account_id !== realm.active_account_id) &&
+        (await this.processHost.findExternalAgyProcesses()).some(isExternalAgyDesktopProcess))
+      return { success: false, status: "error", message: "account_identity_in_use" };
     guard();
 
     const settings = this.repository.getSettings(options.realmId) ?? {
@@ -522,6 +527,8 @@ export class SwitchOperationExecutor {
       if (!expectedRef || !compareActiveMatches) {
         throw new Error("external_change:step7_compare_active_failed");
       }
+      if ((await this.processHost.findExternalAgyProcesses()).some(isExternalAgyDesktopProcess))
+        throw new Error("account_identity_in_use");
       guard();
       operation.install_target_ref = targetAcc.secret_ref;
       operation.install_target_account_id = targetAcc.id;
@@ -536,6 +543,7 @@ export class SwitchOperationExecutor {
           options.realmId,
           targetAcc.id,
           targetAcc.secret_ref,
+          expectedRef,
         );
         guard();
         if (
@@ -616,6 +624,7 @@ export class SwitchOperationExecutor {
       if (authFailed) {
         targetAcc.state = "reauth_required";
         targetAcc.auth.last_auth_error = "authentication_required";
+        targetAcc.auth.last_local_auth_failure_revision = targetAcc.credential_revision;
         targetAcc.revision++;
         this.repository.saveAccount(targetAcc);
         if (options.selection.mode === "explicit")

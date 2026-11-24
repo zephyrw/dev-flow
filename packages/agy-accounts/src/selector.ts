@@ -137,6 +137,7 @@ export function evaluateAccountForDemand(
   if (account.state === "disabled") excluded_reasons.push("account_disabled");
   if (account.state === "incompatible") excluded_reasons.push("account_incompatible");
   if (account.state === "reauth_required") excluded_reasons.push("reauth_required");
+  if (account.auth.quota_verification_pending) excluded_reasons.push("quota_unverified");
   if (hasAccountIdentityMismatch(account)) excluded_reasons.push("account_identity_mismatch");
   const modelsFresh = isAccountModelsFresh(account, evaluationTime, policy);
   if (

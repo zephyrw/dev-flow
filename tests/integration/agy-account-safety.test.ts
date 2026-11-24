@@ -1,10 +1,11 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Store } from "../../packages/store/src/store.js";
 import { AgyAccountRepository } from "../../packages/agy-accounts/src/repository.js";
 import { AgyAccountService } from "../../packages/agy-accounts/src/service.js";
+import { AgyLoginLauncher } from "../../packages/agy-accounts/src/login.js";
 import type { AuthHostPort, AccountProbePort, ProcessHostPort, AccountConsumerPort } from "../../packages/agy-accounts/src/ports.js";
 import type { QuotaWindow } from "../../packages/contracts/src/agy-account.js";
 
@@ -45,7 +46,8 @@ async function fixture() {
   };
   const processes: ProcessHostPort = { listManagedProcesses: async () => [], findExternalAgyProcesses: async () => state.external ? [{ pid: 42, exe_path: "fixture-agy" }] : [], stopProcess: async () => true, confirmProcessesStopped: async () => true };
   const clock = { now: () => now, toISOString: () => timestamp };
-  const service = new AgyAccountService(repo, auth, probe, processes, clock);
+  const login = new AgyLoginLauncher();
+  const service = new AgyAccountService(repo, auth, probe, processes, clock, undefined, login);
   service.initializeSettings(realmId, { standalone_model_id: model, switch_gap_seconds: 1 });
   repo.saveRealm({ realm_id: realmId, owner: "fixture", active_account_id: "A", active_secret_ref: "saved_A", auth_epoch: 1, phase: "idle", revision: 1, service_state: "stopped", desired_enabled: false, control_generation: 0 });
   for (const [id, balance] of Object.entries(state.actual)) {
@@ -53,7 +55,7 @@ async function fixture() {
     repo.saveQuotaSnapshot({ id: `quota_${id}`, realm_id: realmId, account_id: id, auth_epoch: 1, pool_id: pool, model_ids: [model], source: "official_cli_usage", cli_version: "fixture", parser_revision: 1, observed_at: timestamp, executable_fingerprint: "isolated-fixture", capability_verified: true, windows: windows(balance) });
   }
   cleanup.push(async () => { await service.close(); store.close(); rmSync(dir, { recursive: true, force: true }); });
-  return { state, auth, probe, processes, clock, repo, service, store };
+  return { state, auth, probe, processes, clock, repo, service, store, login };
 }
 
 describe("AGY durable safety boundary", () => {
@@ -447,17 +449,92 @@ describe("AGY durable safety boundary", () => {
     expect(f.state.probes).toEqual([]);
   });
 
-  it("defers inactive quota refresh while the desktop is using the local credential", async () => {
+  it("treats a legacy full refresh as current-account only", async () => {
     const f = await fixture();
     f.state.external = true;
     const view = await f.service.syncAndRefreshQuotas(realmId, "all");
-    expect(view.refresh_errors).toEqual([
-      { account_id: "B", error: "account_identity_in_use" },
-      { account_id: "C", error: "account_identity_in_use" },
-    ]);
+    expect(view.refresh_scope).toBe("active_only");
+    expect(view.refresh_errors).toEqual([]);
     expect(f.state.probes).toEqual(["A"]);
     expect(f.state.writes).toEqual([]);
     expect(f.state.active).toBe("saved_A");
+  });
+
+  it("settles a blocked quota rotation by preserving a newer desktop login", async () => {
+    const f = await fixture();
+    await f.service.start({ realmId, requestId: "start" });
+    const old = f.repo.getAccount(realmId, "C")!;
+    const history = f.repo.listQuotaSnapshots(realmId, "C");
+    f.repo.saveAccount({ ...old, state: "reauth_required" });
+    f.auth.inspectActive = async () => ({ exists: true, auth: { email: `${f.state.active.at(-1)}@example.test` } });
+    f.auth.captureActive = async () => ({ secret_ref: f.state.active, credential_revision: 2,
+      auth: { email: `${f.state.active.at(-1)}@example.test` } });
+    const quota = f.probe.probeUsage;
+    f.probe.probeUsage = async options => {
+      const observation = await quota(options);
+      f.state.active = "renewed_C";
+      f.state.external = true;
+      return observation;
+    };
+    const receipt = await f.service.requestOperation({ realm_id: realmId, request_id: "probe", kind: "probe", account_id: "B" });
+    await f.service.tick(now);
+    expect(f.repo.getOperation(receipt.operation_id)?.phase).toBe("blocked");
+    expect((await f.service.reconcileCancelledSwitch(realmId, receipt.operation_id)).phase).toBe("cancelled");
+    expect(f.state.writes).toEqual(["B"]);
+    expect(f.repo.getRealm(realmId)).toMatchObject({ active_account_id: "C", pending_operation_id: null, phase: "idle" });
+    expect(f.repo.getAccount(realmId, "C")).toMatchObject({ secret_ref: "renewed_C", state: "pending_quota" });
+    expect(f.repo.listQuotaSnapshots(realmId, "C")).toEqual(history);
+  });
+
+  it.each([
+    ["save_only", "B", "B", "A"],
+    ["activate", "B", "B", "B"],
+    ["save_only", "A", "A", "A"],
+    ["activate", "B", "C", "A"],
+  ] as const)("reauthentication preserves the intended login (%s, %s, %s)", async (disposition, target, signedIn, active) => {
+    const f = await fixture();
+    await f.service.start({ realmId, requestId: "start" });
+    const before = f.repo.listQuotaSnapshots(realmId, target);
+    f.auth.inspectActive = async () => ({ exists: f.state.active !== "absent",
+      auth: { email: `${f.state.active.at(-1)}@example.test` } });
+    f.auth.captureActive = async () => ({ secret_ref: f.state.active, credential_revision: 2,
+      auth: { email: `${f.state.active.at(-1)}@example.test` } });
+    const quota = vi.fn(async () => { throw new Error("quota offline"); });
+    f.probe.probeUsage = quota;
+    vi.spyOn(f.login, "available", "get").mockReturnValue(true);
+    vi.spyOn(f.login, "startInteractiveLogin").mockImplementation(async () => {
+      f.state.active = `renewed_${signedIn}`;
+      return { completed: true, fully_stopped: true, cancelled: false, timed_out: false, exit_code: 0 };
+    });
+    const receipt = await f.service.requestOperation({ realm_id: realmId, request_id: "reauth",
+      kind: "reauth", account_id: target, expected_identity: `${target}@example.test`, reauth_disposition: disposition });
+    await f.service.tick(now);
+    expect(f.repo.getRealm(realmId)?.active_account_id).toBe(active);
+    if (target !== signedIn) {
+      expect(f.repo.getOperation(receipt.operation_id)).toMatchObject({ phase: "blocked", error: "account_identity_mismatch" });
+      expect(f.state.active).toBe(`renewed_${signedIn}`);
+      expect(f.repo.getAccount(realmId, target)?.secret_ref).toBe(`saved_${target}`);
+      expect(f.state.writes).toEqual([]);
+    } else {
+      expect(f.repo.getOperation(receipt.operation_id)?.phase).toBe("completed");
+      expect(f.state.active).toBe(active === target ? `renewed_${target}` : `saved_${active}`);
+      expect(f.repo.getAccount(realmId, target)).toMatchObject({
+        secret_ref: `renewed_${target}`, state: "pending_quota", auth: { quota_verification_pending: true },
+      });
+    }
+    expect(f.repo.listQuotaSnapshots(realmId, target)).toEqual(before);
+    expect(quota).not.toHaveBeenCalled();
+  });
+
+  it("waits for the desktop before writing a replacement identity", async () => {
+    const f = await fixture();
+    await f.service.start({ realmId, requestId: "start" });
+    f.processes.findExternalAgyProcesses = async () => [{ pid: 42, exe_path: "C:/fixture/Antigravity.exe" }];
+    const receipt = await f.service.requestOperation({ realm_id: realmId, request_id: "switch", kind: "switch",
+      selection: { mode: "explicit", account_id: "B" } });
+    await f.service.tick(now);
+    expect(f.state.writes).toEqual([]);
+    expect(f.repo.getOperation(receipt.operation_id)).toMatchObject({ phase: "failed", error: "account_identity_in_use" });
   });
 
   it("rejects an identity change between the quota query and credential capture", async () => {

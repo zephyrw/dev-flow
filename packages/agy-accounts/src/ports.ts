@@ -54,7 +54,7 @@ export interface AuthHostPort {
     expectedActiveRef?: string,
   ): Promise<{ credential_revision: number }>;
   restoreBackup(realmId: string, backupRef: string, expectedActiveRef?: string): Promise<void>;
-  clearActiveForLogin(realmId: string): Promise<{ backupRef?: string }>;
+  clearActiveForLogin(realmId: string, expectedActiveRef?: string): Promise<{ backupRef?: string }>;
   deleteSaved(realmId: string, secretRef: string): Promise<void>;
   acquireDomainLock(
     realmId: string,
@@ -137,6 +137,10 @@ export interface ExternalProcessInfo {
   exe_path: string;
   sid?: string;
   create_time?: number;
+}
+
+export function isExternalAgyDesktopProcess(process: ExternalProcessInfo): boolean {
+  return /(?:^|[\\/])antigravity(?: ide)?(?:\.exe)?$/i.test(process.exe_path);
 }
 
 export interface ProcessHostPort {

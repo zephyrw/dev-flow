@@ -48,7 +48,9 @@ interface AccountView {
   model_id?: string | null;
   active_category?: "gemini" | "other" | "mixed" | "unknown" | null;
   selection_context?: AgyManagementSelectionContext;
-  accounts: Array<Pick<AgyAccountDto, "id" | "revision" | "identity" | "state">>;
+  accounts: Array<Pick<AgyAccountDto, "id" | "revision" | "identity" | "state"> & {
+    saved_credential_status?: "available" | "unverified" | "needs_update";
+  }>;
   snapshots: Array<Pick<AgyQuotaSnapshot, "account_id" | "pool_id" | "windows" | "observed_at" | "capability_verified">>;
   realm: Realm | null;
   settings?: { revision: number };
@@ -70,7 +72,7 @@ interface ManagementSnapshot extends AccountView {
 
 interface ServiceView extends Realm {
   operations: AccountOperationView[];
-  quota_probe_operation?: boolean;
+  can_preserve_current_login?: boolean;
   automation?: {
     enabled: boolean;
     service_state: string;
@@ -145,6 +147,9 @@ export const AgyAccountsPanel = forwardRef<
   const [dismissedOperationId, setDismissedOperationId] = useState("");
   const [notice, setNotice] = useState("");
   const [enrollOpen, setEnrollOpen] = useState(false);
+  const [reauthAccount, setReauthAccount] = useState<AccountView["accounts"][number] | null>(null);
+  const [reauthSubmitting, setReauthSubmitting] = useState(false);
+  const reauthOperationId = useRef("");
   const [togglingAutomation, setTogglingAutomation] = useState(false);
   const [activeOperation, setActiveOperation] = useState<AccountOperationView | null>(null);
   const [checkingOperation, setCheckingOperation] = useState(false);
@@ -219,7 +224,7 @@ export const AgyAccountsPanel = forwardRef<
     }
   }, []);
 
-  const syncAndRefresh = useCallback((force = true, scope = force ? "all" : "active_only"): Promise<void> => {
+  const syncAndRefresh = useCallback((force = true): Promise<void> => {
     if (quotaRequest.current) return quotaRequest.current;
     const controller = lifecycle.current;
     if (!controller || controller.signal.aborted) return Promise.resolve();
@@ -227,7 +232,7 @@ export const AgyAccountsPanel = forwardRef<
     const pending = (async () => {
       try {
         await agyApi("/refresh", {
-          method: "POST", body: requestBody({ force, scope }), signal: controller.signal,
+          method: "POST", body: requestBody({ force, scope: "active_only" }), signal: controller.signal,
         });
         if (controller.signal.aborted) return;
         await refresh(true);
@@ -271,7 +276,7 @@ export const AgyAccountsPanel = forwardRef<
     const visibility = () => { if (visible()) { void refresh(true); verify(); } schedule(); };
     document.addEventListener("visibilitychange", visibility);
     const identityTimer = setInterval(() => { setNow(Date.now()); verify(); }, 30000);
-    void refresh().then(() => { if (!controller.signal.aborted && visible()) void syncAndRefresh(false); });
+    void refresh().then(() => { if (!controller.signal.aborted && visible() && !busy.current) void syncAndRefresh(false); });
     connect(); schedule();
     return () => {
       controller.abort(); readAbort.current?.abort(); socket?.close();
@@ -322,7 +327,7 @@ export const AgyAccountsPanel = forwardRef<
   };
 
   const handleSwitchTo = async (accountId: string) => {
-    if (submitting.current || (activeOperation && !service?.quota_probe_operation) || !serviceFresh) return;
+    if (submitting.current || activeOperation || !serviceFresh) return;
     submitting.current = true;
     setSubmittingAccount(accountId);
     setError("");
@@ -353,7 +358,10 @@ export const AgyAccountsPanel = forwardRef<
     }
   };
 
-  const handleReauth = async (account: AccountView["accounts"][number]) => {
+  const handleReauth = async (disposition: "save_only" | "activate") => {
+    if (!reauthAccount || reauthSubmitting) return;
+    const account = reauthAccount;
+    setReauthSubmitting(true);
     setError("");
     try {
       const op = await agyApi<AccountOperationView>(`/${encodeURIComponent(account.id)}/reauth`, {
@@ -361,12 +369,32 @@ export const AgyAccountsPanel = forwardRef<
         body: requestBody({
           expected_account_revision: account.revision,
           expected_identity: account.identity.email,
+          reauth_disposition: disposition,
         }),
       });
       setActiveOperation(op);
+      reauthOperationId.current = op.operation_id;
+      setReauthAccount(null);
       await refresh();
     } catch (e) {
       setError(formatErrorMsg(e, "重新认证失败"));
+      setReauthAccount(null);
+    } finally {
+      setReauthSubmitting(false);
+    }
+  };
+
+  const handleProbeAccount = async (account: AccountView["accounts"][number]) => {
+    if (activeOperation || !serviceFresh) return;
+    setError("");
+    try {
+      const op = await agyApi<AccountOperationView>(`/${encodeURIComponent(account.id)}/probe`, {
+        method: "POST", body: requestBody({ expected_account_revision: account.revision }),
+      });
+      setActiveOperation(op);
+      await refresh(true);
+    } catch (e) {
+      setError(formatErrorMsg(e, "未能核验此账号额度"));
     }
   };
 
@@ -397,12 +425,15 @@ export const AgyAccountsPanel = forwardRef<
     setError("");
     setNotice("");
     try {
-      const reconciling = op.phase === "blocked" && op.cancel_requested;
+      const reconciling = op.phase === "blocked";
       const result = await agyApi<AccountOperationView>(`/operations/${encodeURIComponent(op.operation_id)}/${reconciling ? "reconcile" : "cancel"}`, {
         method: "POST",
         body: reconciling ? undefined : requestBody({ expected_revision: op.revision }),
       });
-      if (result.phase === "cancelled") setNotice(reconciling ? "已取消，当前登录已同步" : "已取消");
+      if (result.phase === "cancelled") {
+        setNotice(reconciling ? "已结束操作并同步当前登录" : "已取消");
+        if (reconciling) void syncAndRefresh();
+      }
       else if (result.phase === "completed") setNotice("切换已完成");
     } catch (e) {
       setError(formatErrorMsg(e, "账号操作收尾失败"));
@@ -419,14 +450,26 @@ export const AgyAccountsPanel = forwardRef<
 
   const accounts = view?.accounts ?? [];
   const latestOperation = service?.operations[0];
+  useEffect(() => {
+    const op = service?.operations.find(item => item.operation_id === reauthOperationId.current);
+    if (!op || !terminalOperation(op.phase)) return;
+    reauthOperationId.current = "";
+    if (op.phase === "completed") {
+      const active = op.result?.outcome === "current_login_synced";
+      setNotice(active ? "新凭据已保存为当前登录，正在核验额度" : "已更新保存凭据，当前登录已恢复");
+      if (active) void syncAndRefresh();
+    }
+  }, [service, syncAndRefresh]);
   const operationError = latestOperation && latestOperation.operation_id !== dismissedOperationId &&
     ["failed", "blocked", "cancelled"].includes(latestOperation.phase) && latestOperation.error &&
     latestOperation.error !== "operation_cancelled"
     ? formatFriendlyError(latestOperation.error) : "";
   const activeAccountId = serviceFresh ? service?.active_account_id : view?.realm?.active_account_id;
   const identityVerified = serviceFresh && !activeOperation && !service?.last_error && verifiedAccountId === activeAccountId;
-  const canReconcile = activeOperation?.phase === "blocked" && ["switch", "probe"].includes(activeOperation.kind ?? "") &&
-    activeOperation.cancel_requested && service?.last_error === "external_change";
+  const preserveCurrent = Boolean(service?.can_preserve_current_login);
+  const canReconcile = activeOperation?.phase === "blocked" && (preserveCurrent ||
+    (["switch", "probe"].includes(activeOperation.kind ?? "") &&
+      activeOperation.cancel_requested && service?.last_error === "external_change"));
 
   return (
     <div className="agy-minimal-panel">
@@ -481,11 +524,13 @@ export const AgyAccountsPanel = forwardRef<
       {activeOperation && !enrollOpen && (
         <div className="agy-active-op-card">
           <div className="agy-active-op-info">
-            <span className="agy-op-spinner" />
+            {activeOperation.phase !== "blocked" && <span className="agy-op-spinner" />}
             <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
               <span>
                 {activeOperation.phase === "blocked"
-                  ? "操作未收尾，需核对 AGY 当前登录"
+                  ? preserveCurrent && ["probe", "maintenance"].includes(activeOperation.kind ?? "")
+                    ? "额度探测已停止，需确认保留当前登录"
+                    : "操作未收尾，需核对 AGY 当前登录"
                   : activeOperation.cancel_requested ? "正在取消并核对凭据"
                   : `正在执行：${operationLabels[activeOperation.phase] ?? activeOperation.phase}`}
               </span>
@@ -528,7 +573,7 @@ export const AgyAccountsPanel = forwardRef<
             disabled={checkingOperation}
             onClick={() => handleCancelOperation(activeOperation)}
           >
-            {canReconcile ? "重新核验" : "取消操作"}
+            {canReconcile ? preserveCurrent ? "保留当前登录并结束操作" : "重新核验" : "取消操作"}
           </button>}
         </div>
       )}
@@ -622,14 +667,16 @@ export const AgyAccountsPanel = forwardRef<
                         </span>
                       ) : (
                         <span className="agy-badge ready">
-                          {formatAccountStateLabel(account.state)}
+                          {account.saved_credential_status === "unverified" ? "保存凭据待核验"
+                            : account.saved_credential_status === "needs_update" ? "保存凭据需更新"
+                            : formatAccountStateLabel(account.state)}
                         </span>
                       )}
                     </div>
 
                     <span style={{ fontSize: "12px", color: "#64748b" }}>额度查询时间：{accountSnapshots[0]?.observed_at ? new Date(accountSnapshots[0].observed_at).toLocaleString() : "尚未查询"}</span>
                     {quotaError && <span className="agy-no-quota">{quotaError === "account_identity_in_use" ? "等待 AGY 空闲后核验"
-                      : quotaError === "authentication_required" ? "需重新认证后查询额度" : "额度查询失败，显示上次结果"}</span>}
+                      : quotaError === "authentication_required" ? "DevFlow 额度查询凭据需更新" : "额度查询失败，显示上次结果"}</span>}
                     {/* Show the provider's actual quota groups. Argon has no five-hour window. */}
                     <div className="agy-account-quotas-dual">
                       {/* 上方：Gemini 额度 */}
@@ -675,27 +722,31 @@ export const AgyAccountsPanel = forwardRef<
                   </div>
 
                   <div className="agy-account-actions">
-                    {account.state === "reauth_required" ? (
+                    {(account.state === "reauth_required" || account.saved_credential_status === "needs_update") && (
                       <button
                         type="button"
                         className="agy-icon-btn"
-                        onClick={() => handleReauth(account)}
-                        title="重新登录验证"
+                        disabled={!!activeOperation || !serviceFresh}
+                        onClick={() => setReauthAccount(account)}
+                        title={isActive && identityVerified ? "更新查询凭据" : "重新登录验证"}
                       >
-                        重新登录
+                        {isActive && identityVerified ? "更新查询凭据" : "重新登录"}
                       </button>
-                    ) : (
-                      !isActive && (
+                    )}
+                    {!isActive && account.saved_credential_status !== "needs_update" && account.state !== "disabled" && (
+                      <button type="button" className="agy-icon-btn" disabled={!!activeOperation || !serviceFresh}
+                        onClick={() => handleProbeAccount(account)}>核验额度</button>
+                    )}
+                    {!isActive && account.state !== "reauth_required" && account.saved_credential_status !== "needs_update" && (
                         <button
                           type="button"
                           className="agy-secondary-btn"
-                          disabled={!!submittingAccount || (!!activeOperation && !service?.quota_probe_operation) || !serviceFresh}
+                          disabled={!!submittingAccount || !!activeOperation || !serviceFresh}
                           onClick={() => handleSwitchTo(account.id)}
                           title="切换后新命令使用此账号，已启动的命令继续运行"
                         >
                           设为活动
                         </button>
-                      )
                     )}
                     <button
                       type="button"
@@ -713,7 +764,31 @@ export const AgyAccountsPanel = forwardRef<
         )}
       </div>
 
-      {/* 添加账号弹窗 */}
+      {reauthAccount && (
+        <div className="agy-modal-overlay">
+          <div className="agy-modal-content" role="dialog" aria-modal="true" aria-label="重新登录 AGY 账号">
+            <div className="agy-modal-header"><h3>重新登录 {reauthAccount.identity.email}</h3></div>
+            <div className="agy-enroll-form">
+              <p>{reauthAccount.id === activeAccountId
+                ? "核对身份后保存当前账号的新凭据。额度随后查询。"
+                : "重新登录会临时占用本机登录位。仅更新保存凭据时，操作结束后恢复原登录。"}</p>
+              <p>请先退出正在使用凭据的 Antigravity 桌面端或 AGY 会话。</p>
+              <div className="agy-modal-footer">
+                <button type="button" className="agy-secondary-btn" disabled={reauthSubmitting}
+                  onClick={() => setReauthAccount(null)}>取消</button>
+                {reauthAccount.id !== activeAccountId && (
+                  <button type="button" className="agy-secondary-btn" disabled={reauthSubmitting}
+                    onClick={() => handleReauth("save_only")}>仅更新保存凭据</button>
+                )}
+                <button type="button" className="agy-primary-btn" disabled={reauthSubmitting}
+                  onClick={() => handleReauth("activate")}>
+                  {reauthAccount.id === activeAccountId ? "更新当前登录" : "更新并设为活动"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
       <AgyAccountEnrollment
         isOpen={enrollOpen}
         onClose={() => {
@@ -722,7 +797,7 @@ export const AgyAccountsPanel = forwardRef<
         onOperation={(op) => {
           setActiveOperation(op);
           void refresh(op.phase === "completed");
-          if (op.phase === "completed") void syncAndRefresh(true, "active_only");
+          if (op.phase === "completed") void syncAndRefresh();
         }}
       />
     </div>

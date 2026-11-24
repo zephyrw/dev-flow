@@ -74,6 +74,8 @@ export const AgyAccountAuthSchema = z.object({
   last_authenticated_request_at: z.string().optional(),
   last_refresh_verified_at: z.string().optional(),
   last_auth_error: z.string().optional(),
+  last_local_auth_failure_revision: z.number().int().positive().optional(),
+  quota_verification_pending: z.boolean().optional(),
   email: z.string().optional(),
   subject: z.string().optional(),
 });
@@ -318,6 +320,7 @@ export const AgyAccountOperationSchema = z.object({
   account_id: Id.optional(),
   alias: z.string().optional(),
   mode: z.enum(["login", "capture_current"]).optional(),
+  reauth_disposition: z.enum(["save_only", "activate"]).optional(),
   expected_identity: z.string().optional(),
   selected_account_ids: z.array(Id).default([]),
   allowed_account_ids: z.array(Id).nullable().default(null),
@@ -405,6 +408,8 @@ export type AgyAccountAudit = z.infer<typeof AgyAccountAuditSchema>;
 // 安全 DTO（严格不含 secret_ref 等凭据信息）
 export const AgyAccountDtoSchema = AgyAccountSchema.omit({
   secret_ref: true,
+}).extend({
+  saved_credential_status: z.enum(["available", "unverified", "needs_update"]).optional(),
 });
 export type AgyAccountDto = z.infer<typeof AgyAccountDtoSchema>;
 

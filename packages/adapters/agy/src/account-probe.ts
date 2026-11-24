@@ -474,6 +474,11 @@ export class AgyAccountProbe implements AccountProbePort {
       timeoutMs: hostTimeoutMs,
       signal: options.signal,
     });
+    options.signal?.throwIfAborted();
+    if (res.code !== 0 &&
+        /\bauthentication required\b|\binvalid_grant\b|you are not logged into antigravity/i.test(res.stderr)) {
+      throw Object.assign(new Error("authentication_required"), { code: "authentication_required" });
+    }
     return { code: res.code, stdout: res.stdout, stderr: res.stderr,
       ...(res.termination_reason ? { termination_reason: res.termination_reason } : {}) };
   }

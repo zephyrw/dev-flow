@@ -92,7 +92,7 @@ export function registerAgyAccountRoutes(
       automation: { enabled: Boolean(realm?.desired_enabled && settings?.workflow_auto_switch),
         service_state: realm?.service_state ?? "stopped", can_toggle: true, actions_available: { enroll: true, switch: true } },
       operations: operations.map(publicAccountOperation),
-      quota_probe_operation: Boolean(active && service.isBackgroundQuotaOperation(active.operation_id)) };
+      can_preserve_current_login: Boolean(active && service.canPreserveCurrentLogin(realm, active)) };
   };
   let snapshot: { at: number; value: unknown } | undefined;
   const invalidate = repo.onChange((change) => {
@@ -104,7 +104,8 @@ export function registerAgyAccountRoutes(
     if (snapshot && Date.now() - snapshot.at < 5000) return snapshot.value;
     const view = service.getPresentation(realmId);
     const value = {
-      accounts: view.accounts.map(({ id, revision, identity, state }) => ({ id, revision, identity, state })),
+      accounts: view.accounts.map(({ id, revision, identity, state, saved_credential_status }) =>
+        ({ id, revision, identity, state, saved_credential_status })),
       snapshots: view.snapshots.map(({ account_id, pool_id, windows, observed_at, capability_verified }) =>
         ({ account_id, pool_id, windows, observed_at, capability_verified })),
       realm: view.realm, settings: { revision: view.settings.revision },
@@ -381,6 +382,7 @@ export function registerAgyAccountRoutes(
         request_id: requestId,
         expected_account_revision: revision,
         expected_identity: z.string().email(),
+        reauth_disposition: z.enum(["save_only", "activate"]).default("save_only"),
       })
       .strict()
       .parse(req.body);

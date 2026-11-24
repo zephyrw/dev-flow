@@ -13,7 +13,7 @@ export interface AccountOperationView {
   trigger?: string;
   error?: string;
   cancel_requested?: boolean;
-  result?: { status?: string; message?: string; email?: string; already_managed?: boolean };
+  result?: { status?: string; message?: string; email?: string; already_managed?: boolean; outcome?: string };
   deadline_at?: string;
   external_processes?: Array<{
     pid: number;
