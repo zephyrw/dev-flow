@@ -246,7 +246,7 @@ test("切号立即提交、禁止重复点击并复用网络失败请求的意�
   await page.goto("/");
   const button = row(page, "b").getByRole("button", { name: "设为当前使用" });
   await button.hover();
-  await expect(button).toHaveAttribute("title", "设为当前使用");
+  await expect(button).toHaveAttribute("title", "切换到此账号");
   try {
     await expect(button).toBeEnabled(); await button.click();
     await expect(button).toBeDisabled(); expect(requests).toBe(1);

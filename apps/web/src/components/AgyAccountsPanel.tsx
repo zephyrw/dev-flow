@@ -1105,7 +1105,7 @@ export const AgyAccountsPanel = forwardRef<
                         className="agy-icon-btn agy-account-icon-btn"
                         disabled={!!submittingAccount || !!activeOperation || !serviceFresh}
                         onClick={() => handleSwitchTo(account.id)}
-                        title="设为当前使用"
+                        title="切换到此账号"
                         aria-label="设为当前使用"
                       >
                         <svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
