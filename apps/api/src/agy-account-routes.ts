@@ -1,9 +1,11 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import type { AgyAccountService } from "../../../packages/agy-accounts/src/service.js";
+import { getObservedFiveHourResetAt } from "../../../packages/agy-accounts/src/quota.js";
 import {
   AgyAccountDtoSchema,
   AgyAccountSettingsPatchSchema,
+  AgyAccountUiPreferencesPatchSchema,
   type AgyAccountOperation,
   type AgyAccountSettings,
 } from "../../../packages/contracts/src/agy-account.js";
@@ -94,27 +96,47 @@ export function registerAgyAccountRoutes(
       operations: operations.map(publicAccountOperation),
       can_preserve_current_login: Boolean(active && service.canPreserveCurrentLogin(realm, active)) };
   };
-  let snapshot: { at: number; value: unknown } | undefined;
+  let snapshot: { expiresAt: number; value: unknown } | undefined;
   const invalidate = repo.onChange((change) => {
     if (change.kind !== "agy_usage") snapshot = undefined;
   });
   app.addHook("onClose", async () => invalidate());
   app.get("/api/agy-accounts/snapshot", async req => {
     human(req);
-    if (snapshot && Date.now() - snapshot.at < 5000) return snapshot.value;
+    const now = Date.now();
+    if (snapshot && now < snapshot.expiresAt) return snapshot.value;
     const view = service.getPresentation(realmId);
+    const refresh = service.getQuotaRefresh(realmId);
+    const pendingIds = new Set<string>(refresh?.pending_account_ids ?? []);
+    if (refresh?.status === "running" && refresh.account_id) pendingIds.add(refresh.account_id);
+    for (const op of repo.listOperations(realmId, 8)) {
+      if (op.kind === "probe" && !op.completed_at) {
+        const targetId = op.account_id ?? op.target_account_id;
+        if (targetId) pendingIds.add(targetId);
+      }
+    }
     const value = {
-      accounts: view.accounts.map(({ id, revision, identity, state, saved_credential_status }) =>
-        ({ id, revision, identity, state, saved_credential_status })),
+      accounts: view.accounts.map(({ id, revision, identity, state, saved_credential_status, last_used_at, enrolled_at }) =>
+        ({ id, revision, identity, state, saved_credential_status, last_used_at, enrolled_at })),
       snapshots: view.snapshots.map(({ account_id, pool_id, windows, observed_at, capability_verified }) =>
         ({ account_id, pool_id, windows, observed_at, capability_verified })),
       realm: view.realm, settings: { revision: view.settings.revision },
+      ui_preferences: view.ui_preferences,
       selection_context: view.selection_context,
       capability: { supported: view.capability.supported, reason: view.capability.reason },
       service: serviceView(view, 4),
-      refresh: service.getQuotaRefresh(realmId),
+      refresh: refresh
+        ? { ...refresh, pending_account_ids: [...pendingIds] }
+        : pendingIds.size
+          ? { id: "probe", status: "running" as const, pending_account_ids: [...pendingIds], started_at: new Date().toISOString() }
+          : null,
     };
-    snapshot = { at: Date.now(), value };
+    let expiresAt = now + 5000;
+    for (const quota of view.snapshots) {
+      const resetAt = getObservedFiveHourResetAt(quota);
+      if (resetAt !== undefined && resetAt > now) expiresAt = Math.min(expiresAt, resetAt);
+    }
+    snapshot = { expiresAt, value };
     return value;
   });
   app.post("/api/agy-accounts/refresh", async (req, reply) => {
@@ -239,6 +261,13 @@ export function registerAgyAccountRoutes(
     return publicSettings(
       service.updateSettings(realmId, patch, expected_revision, request_id),
     );
+  });
+  app.put("/api/agy-accounts/sort", async (req) => {
+    human(req);
+    const patch = AgyAccountUiPreferencesPatchSchema.parse(req.body ?? {});
+    const updated = service.updateUiPreferences(realmId, patch);
+    snapshot = undefined;
+    return updated;
   });
   app.post("/api/agy-accounts/switch", async (req, reply) => {
     human(req);

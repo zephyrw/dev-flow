@@ -13,9 +13,13 @@ import {
 } from "../../../../packages/presentation/src/agy-accounts.js";
 import type {
   AgyAccountDto,
+  AgyAccountSortDirection,
+  AgyAccountSortMode,
+  AgyAccountUiPreferences,
   AgyQuotaSnapshot,
   AgyManagementSelectionContext,
 } from "../../../../packages/contracts/src/agy-account.js";
+import { getObservedFiveHourResetAt, isArgonQuotaPool } from "../../../../packages/agy-accounts/src/quota.js";
 import { AgyAccountEnrollment, formatFriendlyError } from "./AgyAccountEnrollment.js";
 import {
   agyApi,
@@ -48,12 +52,13 @@ interface AccountView {
   model_id?: string | null;
   active_category?: "gemini" | "other" | "mixed" | "unknown" | null;
   selection_context?: AgyManagementSelectionContext;
-  accounts: Array<Pick<AgyAccountDto, "id" | "revision" | "identity" | "state"> & {
+  accounts: Array<Pick<AgyAccountDto, "id" | "revision" | "identity" | "state" | "last_used_at" | "enrolled_at"> & {
     saved_credential_status?: "available" | "unverified" | "needs_update";
   }>;
   snapshots: Array<Pick<AgyQuotaSnapshot, "account_id" | "pool_id" | "windows" | "observed_at" | "capability_verified">>;
   realm: Realm | null;
   settings?: { revision: number };
+  ui_preferences?: AgyAccountUiPreferences;
   automation?: {
     enabled: boolean;
     service_state: string;
@@ -67,6 +72,7 @@ interface AccountView {
 interface ManagementSnapshot extends AccountView {
   service: ServiceView;
   refresh: { status: "running" | "succeeded" | "failed" | "cancelled"; account_id?: string;
+    pending_account_ids?: string[];
     refresh_errors?: Array<{ account_id: string; error?: string }>; error?: string } | null;
 }
 
@@ -85,6 +91,96 @@ interface ServiceView extends Realm {
 let accountSnapshot: { value: ManagementSnapshot; observedAt: number } | null = null;
 let serviceSnapshot: ServiceView | null = null;
 let switchIntent: { accountId: string; body: string } | null = null;
+
+function parseTimeMs(value?: string): number | null {
+  if (!value) return null;
+  const ms = Date.parse(value);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+function resolveAccountPoolMetrics(
+  snapshots: AccountView["snapshots"],
+  accountId: string,
+  now: number,
+): number[] {
+  const pools = snapshots.filter(s => s.account_id === accountId && !isArgonQuotaPool(s.pool_id) &&
+    /^(gemini models|global)$|claude|gpt/i.test(s.pool_id) && s.capability_verified);
+  const scores: number[] = [], weekly: number[] = [], fiveHour: number[] = [];
+  for (const pool of pools) {
+    const long = formatSnapshotQuotaWindow(pool, "weekly", now).fraction;
+    if (long === null) continue;
+    const short = formatSnapshotQuotaWindow(pool, "five_hour", now).fraction;
+    weekly.push(long);
+    if (short !== null) fiveHour.push(short);
+    scores.push(short === null ? long : 0.7 * long + 0.3 * short);
+  }
+  if (!scores.length) return [];
+  const average = (values: number[]) => values.reduce((sum, value) => sum + value, 0) / values.length;
+  return [average(scores), Math.min(...weekly), average(weekly),
+    fiveHour.length ? Math.min(...fiveHour) : -1, fiveHour.length ? average(fiveHour) : -1];
+}
+
+function compareAccountsRecentAsc(
+  a: AccountView["accounts"][number],
+  b: AccountView["accounts"][number],
+): number {
+  const aUsed = parseTimeMs(a.last_used_at);
+  const bUsed = parseTimeMs(b.last_used_at);
+  if (aUsed !== null || bUsed !== null) {
+    if (aUsed === null) return 1;
+    if (bUsed === null) return -1;
+    if (aUsed !== bUsed) return bUsed - aUsed;
+  }
+  const aEnrolled = parseTimeMs(a.enrolled_at);
+  const bEnrolled = parseTimeMs(b.enrolled_at);
+  if (aEnrolled !== null && bEnrolled !== null && aEnrolled !== bEnrolled) {
+    return bEnrolled - aEnrolled;
+  }
+  return a.id.localeCompare(b.id);
+}
+
+export function sortDisplayAccounts(
+  accounts: AccountView["accounts"],
+  snapshots: AccountView["snapshots"],
+  mode: AgyAccountSortMode,
+  direction: AgyAccountSortDirection,
+  customOrder: string[],
+  now: number = Date.now(),
+): AccountView["accounts"] {
+  const list = [...accounts];
+  if (mode === "custom") {
+    const rank = new Map<string, number>();
+    customOrder.forEach((id, index) => {
+      if (!rank.has(id)) rank.set(id, index);
+    });
+    return list.sort((a, b) => {
+      const ra = rank.get(a.id);
+      const rb = rank.get(b.id);
+      if (ra !== undefined && rb !== undefined) return ra - rb;
+      if (ra !== undefined) return -1;
+      if (rb !== undefined) return 1;
+      return compareAccountsRecentAsc(a, b);
+    });
+  }
+  if (mode === "quota") {
+    const metrics = new Map(list.map((a) => [a.id, resolveAccountPoolMetrics(snapshots, a.id, now)]));
+    return list.sort((a, b) => {
+      const ma = metrics.get(a.id)!;
+      const mb = metrics.get(b.id)!;
+      // 未知额度账号始终排在有实测额度之后
+      if (Boolean(ma.length) !== Boolean(mb.length)) return ma.length ? -1 : 1;
+      for (let i = 0; i < ma.length; i++) {
+        const delta = ma[i]! - mb[i]!;
+        if (delta !== 0) return direction === "desc" ? -delta : delta;
+      }
+      return compareAccountsRecentAsc(a, b);
+    });
+  }
+  return list.sort((a, b) => {
+    const cmp = compareAccountsRecentAsc(a, b);
+    return direction === "asc" ? cmp : -cmp;
+  });
+}
 
 function CompactQuotaBar({
   snapshot,
@@ -114,7 +210,7 @@ function CompactQuotaBar({
     : `${value.label}：${value.percentageText}`;
 
   return (
-    <div className="agy-compact-quota" title={`${quotaTooltip}；查询于 ${snapshot?.observed_at ? new Date(snapshot.observed_at).toLocaleString() : "未知"}`}>
+    <div className="agy-compact-quota" title={quotaTooltip}>
       <span className="agy-quota-lbl">{value.label}</span>
       <div className="agy-quota-track">
         <div
@@ -161,10 +257,30 @@ export const AgyAccountsPanel = forwardRef<
   const [observedAt, setObservedAt] = useState(accountSnapshot?.observedAt ?? 0);
   const [serviceFresh, setServiceFresh] = useState(Boolean(serviceSnapshot));
   const [submittingAccount, setSubmittingAccount] = useState<string | null>(null);
+  const [sortPrefs, setSortPrefs] = useState<{
+    mode: AgyAccountSortMode;
+    direction: AgyAccountSortDirection;
+    custom_order: string[];
+  }>(() => ({
+    mode: accountSnapshot?.value?.ui_preferences?.mode ?? "recent",
+    direction: accountSnapshot?.value?.ui_preferences?.direction ?? "asc",
+    custom_order: accountSnapshot?.value?.ui_preferences?.custom_order ?? [],
+  }));
+  const [probingAccountIds, setProbingAccountIds] = useState<string[]>([]);
+  const [unupdatedAccountIds, setUnupdatedAccountIds] = useState<string[]>([]);
+  const [draggedAccountId, setDraggedAccountId] = useState<string | null>(null);
+  const [dropTargetAccountId, setDropTargetAccountId] = useState<string | null>(null);
   const lifecycle = useRef<AbortController | null>(null);
   const reading = useRef<Promise<void> | null>(null);
   const submitting = useRef(false);
   const revision = useRef(0);
+  const savingSortCount = useRef(0);
+  const sortWrites = useRef(Promise.resolve());
+  const sortGeneration = useRef(0);
+  const activeAccountIdRef = useRef<string | null>(
+    serviceSnapshot?.active_account_id ?? accountSnapshot?.value?.realm?.active_account_id ?? null,
+  );
+  const probeOperationIdsRef = useRef<Map<string, string>>(new Map());
   const quotaRequest = useRef<Promise<void> | null>(null);
   const readAbort = useRef<AbortController | null>(null);
   const busy = useRef(false);
@@ -185,21 +301,55 @@ export const AgyAccountsPanel = forwardRef<
         if (controller.signal.aborted || version !== revision.current) return;
         accountSnapshot = { value: next, observedAt: Date.now() };
         serviceSnapshot = next.service;
+        activeAccountIdRef.current = next.service.active_account_id ?? next.realm?.active_account_id ?? null;
         setView(next); setService(next.service);
+        if (savingSortCount.current === 0 && next.ui_preferences) {
+          setSortPrefs({
+            mode: next.ui_preferences.mode,
+            direction: next.ui_preferences.direction,
+            custom_order: next.ui_preferences.custom_order,
+          });
+        }
         setObservedAt(accountSnapshot.observedAt);
         setNow(accountSnapshot.observedAt);
         const operation = next.service.pending_operation_id === undefined
           ? next.service.operations.find(op => !terminalOperation(op.phase)) ?? null
           : next.service.operations.find(op => op.operation_id === next.service.pending_operation_id) ?? null;
         setActiveOperation(operation);
+        // 核对单账号探测与全局刷新终态
+        for (const [opId, targetAccountId] of probeOperationIdsRef.current.entries()) {
+          const matchedOp = next.service.operations.find((op) => op.operation_id === opId);
+          if (matchedOp && terminalOperation(matchedOp.phase)) {
+            probeOperationIdsRef.current.delete(opId);
+            setProbingAccountIds((prev) => prev.filter((id) => id !== targetAccountId));
+            if (matchedOp.phase === "completed") {
+              setUnupdatedAccountIds((prev) => prev.filter((id) => id !== targetAccountId));
+            } else {
+              setUnupdatedAccountIds((prev) => (prev.includes(targetAccountId) ? prev : [...prev, targetAccountId]));
+            }
+          }
+        }
         const running = next.refresh?.status === "running";
+        if (!running && next.refresh?.account_id) {
+          const targetId = next.refresh.account_id;
+          const hasFailure =
+            next.refresh.status === "failed" ||
+            next.refresh.status === "cancelled" ||
+            Boolean(next.refresh.refresh_errors?.some((e) => e.account_id === targetId));
+          setProbingAccountIds((prev) => prev.filter((id) => id !== targetId));
+          if (hasFailure) {
+            setUnupdatedAccountIds((prev) => (prev.includes(targetId) ? prev : [...prev, targetId]));
+          } else if (next.refresh.status === "succeeded") {
+            setUnupdatedAccountIds((prev) => prev.filter((id) => id !== targetId));
+          }
+        }
         busy.current = running || !!operation;
         readFailed.current = false;
         scheduleFallback.current();
         setRefreshing(running);
-        setQuotaWarning(next.refresh?.status === "failed"
+        setQuotaWarning(next.refresh?.status === "failed" && !next.refresh.refresh_errors?.length
           ? next.refresh.error === "operation_in_progress" ? "账号操作收尾后才能刷新额度"
-          : "部分额度未能更新，已保留上次查询结果" : "");
+          : "当前账号额度刷新失败，已保留上次查询结果" : "");
         setServiceFresh(true); setReadErrors({ accounts: "", service: "" });
       } catch {
         if (controller.signal.aborted || request.signal.aborted || version !== revision.current) return;
@@ -228,17 +378,30 @@ export const AgyAccountsPanel = forwardRef<
     if (quotaRequest.current) return quotaRequest.current;
     const controller = lifecycle.current;
     if (!controller || controller.signal.aborted) return Promise.resolve();
+    const targetActiveId = activeAccountIdRef.current;
+    if (targetActiveId && force) {
+      setProbingAccountIds((prev) => (prev.includes(targetActiveId) ? prev : [...prev, targetActiveId]));
+    }
     setRefreshing(true);
     const pending = (async () => {
       try {
-        await agyApi("/refresh", {
+        const res = await agyApi<{ status?: string; account_id?: string }>("/refresh", {
           method: "POST", body: requestBody({ force, scope: "active_only" }), signal: controller.signal,
         });
         if (controller.signal.aborted) return;
+        if (res.status === "fresh" && res.account_id) {
+          setProbingAccountIds((prev) => prev.filter((id) => id !== res.account_id));
+        }
         await refresh(true);
       } catch {
-        if (!controller.signal.aborted) setQuotaWarning("额度查询暂时失败，已保留上次结果（可能已过期）");
-        if (!controller.signal.aborted) setRefreshing(false);
+        if (!controller.signal.aborted) {
+          if (targetActiveId) {
+            setProbingAccountIds((prev) => prev.filter((id) => id !== targetActiveId));
+            setUnupdatedAccountIds((prev) => (prev.includes(targetActiveId) ? prev : [...prev, targetActiveId]));
+          }
+          setQuotaWarning("额度查询暂时失败，已保留上次结果（可能已过期）");
+          setRefreshing(false);
+        }
       }
     })().finally(() => { if (quotaRequest.current === pending) quotaRequest.current = null; });
     quotaRequest.current = pending;
@@ -285,6 +448,22 @@ export const AgyAccountsPanel = forwardRef<
       document.removeEventListener("visibilitychange", visibility);
     };
   }, [refresh, syncAndRefresh, verifyIdentity]);
+
+  useEffect(() => {
+    if (!view) return;
+    let nextReset = Infinity;
+    for (const snapshot of view.snapshots) {
+      const resetAt = getObservedFiveHourResetAt(snapshot);
+      if (resetAt !== undefined && resetAt > now) nextReset = Math.min(nextReset, resetAt);
+    }
+    // The regular clock update handles resets farther out.
+    if (nextReset - now > 30_000) return;
+    const timer = setTimeout(() => {
+      setNow(Date.now());
+      if (document.visibilityState !== "hidden") void refresh(true);
+    }, Math.max(0, nextReset - Date.now()));
+    return () => clearTimeout(timer);
+  }, [view, now, refresh]);
 
   useEffect(() => {
     if (activeOperation || service?.last_error || !serviceFresh) {
@@ -387,13 +566,17 @@ export const AgyAccountsPanel = forwardRef<
   const handleProbeAccount = async (account: AccountView["accounts"][number]) => {
     if (activeOperation || !serviceFresh) return;
     setError("");
+    setProbingAccountIds((prev) => (prev.includes(account.id) ? prev : [...prev, account.id]));
     try {
       const op = await agyApi<AccountOperationView>(`/${encodeURIComponent(account.id)}/probe`, {
         method: "POST", body: requestBody({ expected_account_revision: account.revision }),
       });
+      probeOperationIdsRef.current.set(op.operation_id, account.id);
       setActiveOperation(op);
       await refresh(true);
     } catch (e) {
+      setProbingAccountIds((prev) => prev.filter((id) => id !== account.id));
+      setUnupdatedAccountIds((prev) => (prev.includes(account.id) ? prev : [...prev, account.id]));
       setError(formatErrorMsg(e, "未能核验此账号额度"));
     }
   };
@@ -448,7 +631,130 @@ export const AgyAccountsPanel = forwardRef<
     (service?.service_state === "running" || service?.desired_enabled)
   );
 
-  const accounts = view?.accounts ?? [];
+  const rawAccounts = view?.accounts ?? [];
+  const sortedAccounts = sortDisplayAccounts(
+    rawAccounts,
+    view?.snapshots ?? [],
+    sortPrefs.mode,
+    sortPrefs.direction,
+    sortPrefs.custom_order,
+    now,
+  );
+
+  const saveSortPreferences = async (patch: {
+    mode?: AgyAccountSortMode;
+    direction?: AgyAccountSortDirection;
+    custom_order?: string[];
+  }) => {
+    const nextMode = patch.mode ?? sortPrefs.mode;
+    const nextDirection =
+      patch.direction ??
+      (patch.mode && patch.mode !== sortPrefs.mode
+        ? patch.mode === "quota"
+          ? "desc"
+          : "asc"
+        : sortPrefs.direction);
+    const nextOrder = patch.custom_order ?? sortPrefs.custom_order;
+    setSortPrefs({ mode: nextMode, direction: nextDirection, custom_order: nextOrder });
+    const controller = lifecycle.current;
+    if (!controller || controller.signal.aborted) return;
+    const generation = ++sortGeneration.current;
+    savingSortCount.current++;
+    const save = sortWrites.current.then(() => agyApi<AgyAccountUiPreferences>("/sort", {
+      method: "PUT",
+      body: JSON.stringify(patch),
+      signal: controller.signal,
+    }));
+    sortWrites.current = save.then(() => {}, () => {});
+    try {
+      const saved = await save;
+      if (!controller.signal.aborted && generation === sortGeneration.current) {
+        setSortPrefs({
+          mode: saved.mode,
+          direction: saved.direction,
+          custom_order: saved.custom_order,
+        });
+      }
+    } catch (e) {
+      if (!controller.signal.aborted) {
+        setError(formatErrorMsg(e, "保存排序偏好失败"));
+      }
+    } finally {
+      savingSortCount.current = Math.max(0, savingSortCount.current - 1);
+      if (!controller.signal.aborted && savingSortCount.current === 0) void refresh(true);
+    }
+  };
+
+  const handleSortModeChange = (nextMode: AgyAccountSortMode) => {
+    if (nextMode === sortPrefs.mode) return;
+    if (nextMode === "custom") {
+      const initialOrder =
+        sortPrefs.custom_order.length > 0
+          ? sortPrefs.custom_order
+          : sortedAccounts.map((a) => a.id);
+      void saveSortPreferences({ mode: "custom", custom_order: initialOrder });
+      return;
+    }
+    void saveSortPreferences({
+      mode: nextMode,
+      direction: nextMode === "quota" ? "desc" : "asc",
+    });
+  };
+
+  const handleToggleSortDirection = () => {
+    if (sortPrefs.mode === "custom") return;
+    const nextDir: AgyAccountSortDirection = sortPrefs.direction === "asc" ? "desc" : "asc";
+    void saveSortPreferences({ mode: sortPrefs.mode, direction: nextDir });
+  };
+
+  const applyCustomOrder = (nextOrder: string[]) => {
+    void saveSortPreferences({ mode: "custom", custom_order: nextOrder });
+  };
+
+  const handleMoveAccount = (index: number, delta: -1 | 1) => {
+    const nextIndex = index + delta;
+    if (nextIndex < 0 || nextIndex >= sortedAccounts.length) return;
+    const ids = sortedAccounts.map((a) => a.id);
+    const [item] = ids.splice(index, 1);
+    if (!item) return;
+    ids.splice(nextIndex, 0, item);
+    applyCustomOrder(ids);
+  };
+
+  const handleDropAccount = (sourceId: string | null, targetId: string) => {
+    setDraggedAccountId(null);
+    setDropTargetAccountId(null);
+    if (!sourceId || sourceId === targetId) return;
+    const ids = sortedAccounts.map((a) => a.id);
+    const fromIndex = ids.indexOf(sourceId);
+    const toIndex = ids.indexOf(targetId);
+    if (fromIndex === -1 || toIndex === -1) return;
+    const [moved] = ids.splice(fromIndex, 1);
+    if (!moved) return;
+    ids.splice(toIndex, 0, moved);
+    applyCustomOrder(ids);
+  };
+
+  const refreshingAccountIds = new Set<string>(probingAccountIds);
+  for (const id of view?.refresh?.pending_account_ids ?? []) {
+    refreshingAccountIds.add(id);
+  }
+  if (view?.refresh?.status === "running" && view.refresh.account_id) {
+    refreshingAccountIds.add(view.refresh.account_id);
+  }
+  for (const op of service?.operations ?? []) {
+    if (op.kind === "probe" && !terminalOperation(op.phase) && op.target_account_id) {
+      refreshingAccountIds.add(op.target_account_id);
+    }
+  }
+  if (
+    activeOperation?.kind === "probe" &&
+    !terminalOperation(activeOperation.phase) &&
+    activeOperation.target_account_id
+  ) {
+    refreshingAccountIds.add(activeOperation.target_account_id);
+  }
+
   const latestOperation = service?.operations[0];
   useEffect(() => {
     const op = service?.operations.find(item => item.operation_id === reauthOperationId.current);
@@ -490,25 +796,6 @@ export const AgyAccountsPanel = forwardRef<
           <span className="agy-switch-desc">
             {!serviceFresh ? "自动切换状态待确认" : isAutomationOn ? "额度耗尽时自动选择最佳账号" : "已停用自动切换，当前仅执行手动切换"}
           </span>
-          {isAutomationOn && (
-            <span
-              className="agy-selection-basis-desc"
-              style={{ fontSize: "12px", color: "#475569", marginTop: "4px" }}
-            >
-              当前自动选择依据：
-              {view?.selection_context?.source === "standalone_model"
-                ? `指定独立模型额度池（${view.selection_context.model_id}）`
-                : view?.selection_context?.category === "gemini"
-                ? "当前活跃 Gemini 任务所属额度池"
-                : view?.selection_context?.category === "other"
-                  ? "当前活跃其他模型任务所属额度池（Claude / GPT）"
-                  : view?.selection_context?.category === "mixed"
-                    ? "Gemini 与 Claude/GPT 任务同时运行；切换时按首个归零配额排序"
-                   : view?.selection_context?.category === "unknown"
-                     ? "当前类别尚未确认，等待恢复核对"
-                     : "等待任务启动后按所属类别匹配（当前无活跃类别占用）"}
-            </span>
-          )}
         </div>
 
         <button
@@ -534,7 +821,7 @@ export const AgyAccountsPanel = forwardRef<
                   : activeOperation.cancel_requested ? "正在取消并核对凭据"
                   : `正在执行：${operationLabels[activeOperation.phase] ?? activeOperation.phase}`}
               </span>
-              {activeOperation.quota_trigger && (
+              {activeOperation.quota_trigger && !isArgonQuotaPool(activeOperation.quota_trigger.pool_id) && (
                 <span>
                   {activeOperation.quota_trigger.pool_id === "Claude and GPT models" ? "Claude/GPT" :
                     activeOperation.quota_trigger.pool_id === "Gemini Models" ? "Gemini" : activeOperation.quota_trigger.pool_id}
@@ -546,6 +833,9 @@ export const AgyAccountsPanel = forwardRef<
               )}
               {activeOperation.phase === "waiting" && activeOperation.error && (
                 <span>{formatFriendlyError(activeOperation.error)}</span>
+              )}
+              {activeOperation.kind === "reauth" && activeOperation.phase === "login_waiting" && (
+                <span>请按 AGY 登录窗口提示完成授权，登录保存后会自动显示成功。</span>
               )}
               {activeOperation.phase === "waiting_external_exit" && (
                 <div style={{ fontSize: "12px", color: "#64748b" }}>
@@ -595,7 +885,7 @@ export const AgyAccountsPanel = forwardRef<
           {view && readErrors.accounts && observedAt ? `；显示 ${new Date(observedAt).toLocaleTimeString()} 的账号快照` : ""}
         </div>
       )}
-      {submittingAccount && <div role="status">正在提交切换：{accounts.find(a => a.id === submittingAccount)?.identity.email ?? submittingAccount}</div>}
+      {submittingAccount && <div role="status">正在提交切换：{rawAccounts.find(a => a.id === submittingAccount)?.identity.email ?? submittingAccount}</div>}
       {/* 成功反馈 */}
       {notice && (
         <div className="agy-alert-success" role="status">
@@ -606,11 +896,46 @@ export const AgyAccountsPanel = forwardRef<
       {/* 账号列表 */}
       <div className="agy-accounts-list-wrap">
         <div className="agy-list-header">
-          <span>已管理账号 {!view ? "（待读取）" : `(${accounts.length})`}</span>
-          {refreshing && (
-            <span style={{ marginLeft: "8px", fontSize: "12px", color: "#2563eb", fontWeight: "normal" }}>
-              正在刷新额度...
-            </span>
+          <div className="agy-list-title-wrap">
+            <span>已管理账号 {!view ? "（待读取）" : `(${rawAccounts.length})`}</span>
+            {refreshing && (
+              <span style={{ fontSize: "12px", color: "#2563eb", fontWeight: "normal" }}>
+                正在刷新额度...
+              </span>
+            )}
+          </div>
+          {rawAccounts.length > 0 && (
+            <div className="agy-sort-controls">
+              <select
+                className="agy-sort-select"
+                aria-label="排序方式"
+                value={sortPrefs.mode}
+                onChange={(e) => handleSortModeChange(e.target.value as AgyAccountSortMode)}
+              >
+                <option value="recent">最近使用</option>
+                <option value="quota">额度</option>
+                <option value="custom">自定义</option>
+              </select>
+              {sortPrefs.mode !== "custom" && (
+                <button
+                  type="button"
+                  className="agy-sort-dir-btn"
+                  onClick={handleToggleSortDirection}
+                  aria-label={sortPrefs.direction === "asc" ? "当前升序，点击切换降序" : "当前降序，点击切换升序"}
+                  title={
+                    sortPrefs.mode === "recent"
+                      ? sortPrefs.direction === "asc"
+                        ? "最近使用的排在前面（点击切换降序）"
+                        : "最久未用的排在前面（点击切换升序）"
+                      : sortPrefs.direction === "desc"
+                        ? "额度最多的排在前面（点击切换升序）"
+                        : "额度最少的排在前面（点击切换降序）"
+                  }
+                >
+                  {sortPrefs.direction === "asc" ? "↑ 升序" : "↓ 降序"}
+                </button>
+              )}
+            </div>
           )}
         </div>
 
@@ -621,7 +946,7 @@ export const AgyAccountsPanel = forwardRef<
           </div>
         ) : !view ? (
           <div className="agy-empty-state"><p>暂时无法读取账号，连接恢复后会自动重试</p><button type="button" onClick={() => void refresh()}>重试</button></div>
-        ) : accounts.length === 0 ? (
+        ) : rawAccounts.length === 0 ? (
           <div className="agy-empty-state">
             <span className="agy-empty-icon">👥</span>
             <p>暂无管理的 AGY 账号</p>
@@ -635,13 +960,14 @@ export const AgyAccountsPanel = forwardRef<
           </div>
         ) : (
           <div className="agy-accounts-grid">
-            {accounts.map((account) => {
+            {sortedAccounts.map((account, index) => {
               const isActive = account.id === activeAccountId;
+              const isAccountRefreshing = refreshingAccountIds.has(account.id);
+              const isAccountUnupdated = unupdatedAccountIds.includes(account.id);
               const quotaError = view?.refresh?.refresh_errors?.find(item => item.account_id === account.id)?.error;
-              const accountSnapshots =
-                view?.snapshots.filter((s) => s.account_id === account.id) ?? [];
-              
-              // Each pool is independent; Argon must never fill the Gemini row.
+              const accountSnapshots = view?.snapshots.filter(s =>
+                s.account_id === account.id && !isArgonQuotaPool(s.pool_id)) ?? [];
+
               const geminiSnapshot = accountSnapshots.find(
                 (s) => s.pool_id.toLowerCase() === "gemini models",
               );
@@ -651,21 +977,54 @@ export const AgyAccountsPanel = forwardRef<
                   s.pool_id.toLowerCase().includes("claude") ||
                   s.pool_id.toLowerCase().includes("gpt"),
               );
-              const argonSnapshot = accountSnapshots.find(s => s.pool_id.toLowerCase() === "gemini 4 argon");
+              const needsStatusBadge =
+                account.saved_credential_status === "unverified" ||
+                account.saved_credential_status === "needs_update" ||
+                account.state !== "ready";
 
               return (
                 <div
                   key={account.id}
-                  className={`agy-account-row ${isActive ? "is-active-account" : ""}`}
+                  data-account-id={account.id}
+                  draggable
+                  onDragStart={(e) => {
+                    setDraggedAccountId(account.id);
+                    e.dataTransfer.effectAllowed = "move";
+                    e.dataTransfer.setData("text/plain", account.id);
+                  }}
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    e.dataTransfer.dropEffect = "move";
+                    if (draggedAccountId && draggedAccountId !== account.id) {
+                      setDropTargetAccountId(account.id);
+                    }
+                  }}
+                  onDragLeave={() => {
+                    if (dropTargetAccountId === account.id) setDropTargetAccountId(null);
+                  }}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    const sourceId = draggedAccountId || e.dataTransfer.getData("text/plain") || null;
+                    handleDropAccount(sourceId, account.id);
+                  }}
+                  onDragEnd={() => {
+                    setDraggedAccountId(null);
+                    setDropTargetAccountId(null);
+                  }}
+                  className={`agy-account-row ${isActive ? "is-active-account" : ""} ${draggedAccountId === account.id ? "is-dragging" : ""} ${dropTargetAccountId === account.id ? "is-drop-target" : ""}`}
                 >
                   <div className="agy-account-main-info">
                     <div className="agy-account-title-line">
+                      <span className="agy-account-drag-handle" title="拖动调整排序" aria-hidden="true">
+                        ⋮⋮
+                      </span>
                       <span className="agy-account-email">{account.identity.email}</span>
-                      {isActive ? (
+                      {isActive && (
                         <span className={identityVerified ? "agy-badge active" : "agy-badge ready"}>
                           {identityVerified ? "当前使用中" : "上次确认"}
                         </span>
-                      ) : (
+                      )}
+                      {needsStatusBadge && (
                         <span className="agy-badge ready">
                           {account.saved_credential_status === "unverified" ? "保存凭据待核验"
                             : account.saved_credential_status === "needs_update" ? "保存凭据需更新"
@@ -674,24 +1033,33 @@ export const AgyAccountsPanel = forwardRef<
                       )}
                     </div>
 
-                    <span style={{ fontSize: "12px", color: "#64748b" }}>额度查询时间：{accountSnapshots[0]?.observed_at ? new Date(accountSnapshots[0].observed_at).toLocaleString() : "尚未查询"}</span>
-                    {quotaError && <span className="agy-no-quota">{quotaError === "account_identity_in_use" ? "等待 AGY 空闲后核验"
-                      : quotaError === "authentication_required" ? "DevFlow 额度查询凭据需更新" : "额度查询失败，显示上次结果"}</span>}
-                    {/* Show the provider's actual quota groups. Argon has no five-hour window. */}
+                    {!isAccountRefreshing && (quotaError || isAccountUnupdated) && (
+                      <span className="agy-no-quota" role="status">
+                        {quotaError === "account_identity_in_use"
+                          ? "等待 AGY 空闲后核验（本次额度未更新）"
+                          : quotaError === "authentication_required"
+                            ? "DevFlow 额度查询凭据需更新（本次额度未更新）"
+                            : "本次额度未更新，已恢复显示上次实测结果"}
+                      </span>
+                    )}
                     <div className="agy-account-quotas-dual">
                       {/* 上方：Gemini 额度 */}
                       <div className="agy-quota-group" data-category="gemini">
                         <span className="agy-quota-group-label gemini">Gemini 额度</span>
                         <div className="agy-quota-bars">
-                          {geminiSnapshot ? (
+                          {isAccountRefreshing ? (
+                            <div className="agy-quota-loading-line" aria-label="正在更新 Gemini 额度">
+                              <span className="agy-quota-skeleton wide" />
+                              <span className="agy-quota-skeleton short" />
+                              <span className="agy-quota-loading-text">正在更新额度...</span>
+                            </div>
+                          ) : geminiSnapshot ? (
                             <>
-                                <CompactQuotaBar snapshot={geminiSnapshot} kind="weekly" now={now} />
-                                <CompactQuotaBar snapshot={geminiSnapshot} kind="five_hour" now={now} />
+                              <CompactQuotaBar snapshot={geminiSnapshot} kind="weekly" now={now} />
+                              <CompactQuotaBar snapshot={geminiSnapshot} kind="five_hour" now={now} />
                             </>
                           ) : (
-                            <span className="agy-no-quota">
-                              {refreshing ? "额度探测中..." : "待实测/不可用"}
-                            </span>
+                            <span className="agy-no-quota">待实测/不可用</span>
                           )}
                         </div>
                       </div>
@@ -700,24 +1068,22 @@ export const AgyAccountsPanel = forwardRef<
                       <div className="agy-quota-group" data-category="other">
                         <span className="agy-quota-group-label other">Claude / GPT 额度</span>
                         <div className="agy-quota-bars">
-                          {otherSnapshot ? (
+                          {isAccountRefreshing ? (
+                            <div className="agy-quota-loading-line" aria-label="正在更新 Claude / GPT 额度">
+                              <span className="agy-quota-skeleton wide" />
+                              <span className="agy-quota-skeleton short" />
+                              <span className="agy-quota-loading-text">正在更新额度...</span>
+                            </div>
+                          ) : otherSnapshot ? (
                             <>
-                                <CompactQuotaBar snapshot={otherSnapshot} kind="weekly" now={now} />
-                                <CompactQuotaBar snapshot={otherSnapshot} kind="five_hour" now={now} />
+                              <CompactQuotaBar snapshot={otherSnapshot} kind="weekly" now={now} />
+                              <CompactQuotaBar snapshot={otherSnapshot} kind="five_hour" now={now} />
                             </>
                           ) : (
-                            <span className="agy-no-quota">
-                              {refreshing ? "额度探测中..." : "待实测/不可用"}
-                            </span>
+                            <span className="agy-no-quota">待实测/不可用</span>
                           )}
                         </div>
                       </div>
-                      {argonSnapshot && <div className="agy-quota-group" data-category="argon">
-                        <span className="agy-quota-group-label gemini">Gemini 4 Argon</span>
-                        <div className="agy-quota-bars">
-                          <CompactQuotaBar snapshot={argonSnapshot} kind="weekly" now={now} />
-                        </div>
-                      </div>}
                     </div>
                   </div>
 
@@ -733,28 +1099,78 @@ export const AgyAccountsPanel = forwardRef<
                         {isActive && identityVerified ? "更新查询凭据" : "重新登录"}
                       </button>
                     )}
-                    {!isActive && account.saved_credential_status !== "needs_update" && account.state !== "disabled" && (
-                      <button type="button" className="agy-icon-btn" disabled={!!activeOperation || !serviceFresh}
-                        onClick={() => handleProbeAccount(account)}>核验额度</button>
-                    )}
                     {!isActive && account.state !== "reauth_required" && account.saved_credential_status !== "needs_update" && (
-                        <button
-                          type="button"
-                          className="agy-secondary-btn"
-                          disabled={!!submittingAccount || !!activeOperation || !serviceFresh}
-                          onClick={() => handleSwitchTo(account.id)}
-                          title="切换后新命令使用此账号，已启动的命令继续运行"
-                        >
-                          设为活动
-                        </button>
+                      <button
+                        type="button"
+                        className="agy-icon-btn agy-account-icon-btn"
+                        disabled={!!submittingAccount || !!activeOperation || !serviceFresh}
+                        onClick={() => handleSwitchTo(account.id)}
+                        title="设为当前使用"
+                        aria-label="设为当前使用"
+                      >
+                        <svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
+                          <polygon points="13.5 2 3.5 14 11 14 9.5 22 20.5 10 13.5 10" />
+                        </svg>
+                      </button>
                     )}
                     <button
                       type="button"
-                      className="agy-icon-btn danger"
-                      onClick={() => handleDeleteAccount(account)}
-                      title="移除账号"
+                      className="agy-icon-btn agy-account-icon-btn"
+                      title="上移"
+                      aria-label="上移账号"
+                      disabled={index === 0}
+                      onClick={() => handleMoveAccount(index, -1)}
                     >
-                      移除
+                      <svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none"
+                        stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                        <polyline points="4 16 12 8 20 16" />
+                      </svg>
+                    </button>
+                    <button
+                      type="button"
+                      className="agy-icon-btn agy-account-icon-btn"
+                      title="下移"
+                      aria-label="下移账号"
+                      disabled={index === sortedAccounts.length - 1}
+                      onClick={() => handleMoveAccount(index, 1)}
+                    >
+                      <svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none"
+                        stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                        <polyline points="4 8 12 16 20 8" />
+                      </svg>
+                    </button>
+                    {account.saved_credential_status !== "needs_update" && account.state !== "disabled" && (
+                      <button
+                        type="button"
+                        className={`agy-icon-btn agy-account-icon-btn ${isAccountRefreshing ? "agy-header-refresh-btn is-spinning" : ""}`}
+                        title="刷新"
+                        aria-label="刷新"
+                        disabled={isAccountRefreshing || (!isActive && !!activeOperation) || !serviceFresh}
+                        onClick={() => {
+                          if (isActive) {
+                            void syncAndRefresh(true);
+                          } else {
+                            void handleProbeAccount(account);
+                          }
+                        }}
+                      >
+                        <svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none"
+                          stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.85.83 6.72 2.24L21 8M21 3v5h-5" />
+                        </svg>
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      className="agy-icon-btn agy-account-icon-btn danger"
+                      onClick={() => handleDeleteAccount(account)}
+                      title="移除"
+                      aria-label="移除账号"
+                    >
+                      <svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none"
+                        stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M3 6h18M8 6V4h8v2m3 0-1 15H6L5 6m5 4v7m4-7v7" />
+                      </svg>
                     </button>
                   </div>
                 </div>
@@ -770,8 +1186,8 @@ export const AgyAccountsPanel = forwardRef<
             <div className="agy-modal-header"><h3>重新登录 {reauthAccount.identity.email}</h3></div>
             <div className="agy-enroll-form">
               <p>{reauthAccount.id === activeAccountId
-                ? "核对身份后保存当前账号的新凭据。额度随后查询。"
-                : "重新登录会临时占用本机登录位。仅更新保存凭据时，操作结束后恢复原登录。"}</p>
+                ? "核对身份后自动保存当前账号新凭据并保留 AGY 会话，无需关闭终端。"
+                : "重新登录会临时占用本机登录位。仅更新保存凭据时，操作结束后自动恢复原登录。"}</p>
               <p>请先退出正在使用凭据的 Antigravity 桌面端或 AGY 会话。</p>
               <div className="agy-modal-footer">
                 <button type="button" className="agy-secondary-btn" disabled={reauthSubmitting}
@@ -782,7 +1198,7 @@ export const AgyAccountsPanel = forwardRef<
                 )}
                 <button type="button" className="agy-primary-btn" disabled={reauthSubmitting}
                   onClick={() => handleReauth("activate")}>
-                  {reauthAccount.id === activeAccountId ? "更新当前登录" : "更新并设为活动"}
+                  {reauthAccount.id === activeAccountId ? "更新当前登录" : "更新并设为当前使用"}
                 </button>
               </div>
             </div>

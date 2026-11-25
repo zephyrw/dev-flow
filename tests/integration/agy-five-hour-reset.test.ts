@@ -18,8 +18,11 @@ describe("persisted five-hour reset and failed refresh", () => {
     const account = fixture.repository.getAccount("default-agy-realm", "b")!;
     fixture.repository.saveAccount({ ...account, state: "waiting_quota" });
     const snap = fixture.repository.listQuotaSnapshots("default-agy-realm", "b")[0]!;
-    fixture.repository.saveQuotaSnapshot({ ...snap, id: "expired-b", observed_at: new Date().toISOString(),
+    fixture.repository.retainQuotaPools("default-agy-realm", "b", []);
+    const observedAt = new Date(Date.now() - 2 * 3600_000).toISOString();
+    fixture.repository.saveQuotaSnapshot({ ...snap, observed_at: observedAt,
       windows: snap.windows.map(window => ({ ...window,
+        observed_at: observedAt,
         remaining_fraction: window.kind === "five_hour" ? 0 : 1,
         reset_at: window.kind === "five_hour" ? new Date(Date.now() - 3600_000).toISOString() : null,
       })),
@@ -31,13 +34,13 @@ describe("persisted five-hour reset and failed refresh", () => {
     rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
 
-  it("API retains an elapsed zero observation and requires verification without changing identity", async () => {
+  it("API retains the elapsed zero observation and projects the display state without changing identity", async () => {
     const app = buildAccountsServer(fixture.service, { port: 14951, humanOrigin: "http://127.0.0.1:14951", storageInstance: root });
     try {
       const response = await app.inject({ method: "GET", url: "/api/agy-accounts", headers: { host: "127.0.0.1:14951", origin: "http://127.0.0.1:14951", "sec-fetch-site": "same-origin" } });
       expect(response.statusCode).toBe(200);
       const view = response.json();
-      expect(view.accounts.find((account: { id: string }) => account.id === "b").state).toBe("pending_quota");
+      expect(view.accounts.find((account: { id: string }) => account.id === "b").state).toBe("ready");
       expect(view.snapshots.find((snap: { account_id: string }) => snap.account_id === "b").windows[1].remaining_fraction).toBe(0);
       expect(fixture.repository.getAccount("default-agy-realm", "b")!.state).toBe("waiting_quota");
       expect(fixture.repository.listQuotaSnapshots("default-agy-realm", "b")[0]!.windows[1]!.remaining_fraction).toBe(0);
@@ -46,6 +49,7 @@ describe("persisted five-hour reset and failed refresh", () => {
   });
 
   it("refreshes only the active account and retains an inactive account's expired observation", async () => {
+    const before = fixture.repository.listQuotaSnapshots("default-agy-realm", "b");
     const original = fixture.probe.probeUsage;
     fixture.probe.probeUsage = async options => {
       if (fixture.active() === "b") throw new Error("official_usage_probe_failed");
@@ -54,8 +58,24 @@ describe("persisted five-hour reset and failed refresh", () => {
     const view = await fixture.service.syncAndRefreshQuotas();
     expect(view.refresh_scope).toBe("active_only");
     expect(view.refresh_errors).toEqual([]);
-    expect(view.accounts.find(account => account.id === "b")!.state).toBe("pending_quota");
-    expect(fixture.repository.listQuotaSnapshots("default-agy-realm", "b")[0]!.id).toBe("expired-b");
+    expect(view.accounts.find(account => account.id === "b")!.state).toBe("ready");
+    expect(fixture.repository.listQuotaSnapshots("default-agy-realm", "b")).toEqual(before);
+    expect(fixture.active()).toBe("a");
+  });
+
+  it("automatically samples an elapsed current-account window with switching disabled", async () => {
+    const realmId = "default-agy-realm";
+    await fixture.service.syncAndRefreshQuotas();
+    const priorRefresh = fixture.service.getQuotaRefresh()!.id;
+    const active = fixture.repository.getQuotaSnapshot(realmId, "a", "fixture-pool")!;
+    const expired = fixture.repository.getQuotaSnapshot(realmId, "b", "fixture-pool")!;
+    fixture.repository.saveQuotaSnapshot({ ...active, windows: expired.windows });
+    await fixture.service.tick(Date.now());
+    expect(fixture.service.getQuotaRefresh()?.id).not.toBe(priorRefresh);
+    await fixture.service.syncAndRefreshQuotas();
+    expect(fixture.service.getQuotaRefresh()?.status).toBe("succeeded");
+    expect(fixture.repository.getQuotaSnapshot(realmId, "a", "fixture-pool")?.windows[1]?.remaining_fraction).toBe(0.7);
+    expect(fixture.repository.getQuotaSnapshot(realmId, "b", "fixture-pool")).toEqual(expired);
     expect(fixture.active()).toBe("a");
   });
 
@@ -67,6 +87,18 @@ describe("persisted five-hour reset and failed refresh", () => {
     expect(fixture.service.getQuotaRefresh()?.status).toBe("failed");
     expect(fixture.repository.listQuotaSnapshots("default-agy-realm", "a")).toEqual(before);
     expect(fixture.active()).toBe("a");
+  });
+
+  it("omits historical Argon quota from account presentation", () => {
+    const realmId = "default-agy-realm";
+    const current = fixture.repository.getQuotaSnapshot(realmId, "a", "fixture-pool")!;
+    const argon = { ...current, id: "legacy-argon", pool_id: "Gemini 4 Argon",
+      windows: [{ ...current.windows[0]!, remaining_fraction: 0 }] };
+    fixture.repository.saveQuotaSnapshot(argon);
+    const view = fixture.service.getPresentation(realmId);
+    expect(view.snapshots).not.toContainEqual(argon);
+    expect(view.accounts.find(account => account.id === "a")?.state).toBe("ready");
+    expect(fixture.repository.getQuotaSnapshot(realmId, "a", argon.pool_id)).toEqual(argon);
   });
 
   it("records a revoked login and skips probing the same saved credential again", async () => {

@@ -53,8 +53,8 @@ export function AgyAccountsDialog({ isOpen, onClose }: AgyAccountsDialogProps) {
       onClose={onClose}
       title="AGY 账号管理"
       titleExtra={refreshButton}
-      subtitle="管理 Antigravity 账号及自动切换设置"
       width="680px"
+      className="agy-accounts-dialog"
     >
       <AgyAccountsPanel ref={panelRef} onDismiss={onClose} onRefreshingChange={setSyncing} />
     </AppDialog>

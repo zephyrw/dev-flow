@@ -12,6 +12,7 @@ import {
   type FinalAccountCommit,
   type AgyPendingDemand,
   type RefreshEvidence,
+  type AgyAccountUiPreferences,
   AgyAccountSchema,
   AgyQuotaSnapshotSchema,
   AgyRealmSchema,
@@ -26,6 +27,7 @@ import {
   FinalAccountCommitSchema,
   RefreshEvidenceSchema,
   AgyQuotaTriggerSchema,
+  AgyAccountUiPreferencesSchema,
   type AgyQuotaTrigger,
 } from "../../contracts/src/agy-account.js";
 import { hasRequiredQuotaWindows } from "./quota.js";
@@ -86,6 +88,22 @@ export class AgyAccountRepository {
     const validated = AgyAccountSettingsSchema.parse(settings);
     this.store.put(
       "agy_account_settings",
+      validated.realm_id,
+      validated.realm_id,
+      validated,
+    );
+  }
+
+  getUiPreferences(realmId: string): AgyAccountUiPreferences | undefined {
+    const raw = this.store.get<unknown>("agy_account_ui_preferences", realmId);
+    if (!raw) return undefined;
+    return AgyAccountUiPreferencesSchema.parse(raw);
+  }
+
+  saveUiPreferences(preferences: AgyAccountUiPreferences): void {
+    const validated = AgyAccountUiPreferencesSchema.parse(preferences);
+    this.store.put(
+      "agy_account_ui_preferences",
       validated.realm_id,
       validated.realm_id,
       validated,

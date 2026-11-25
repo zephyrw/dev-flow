@@ -131,7 +131,7 @@ describe("AuthHost managed channel loss without a real credential worker", () =>
     expect(current.child.stop).not.toHaveBeenCalled();
     await value.close();
   });
-  it("settles concurrent capability requests when releasing the owner", async () => {
+  it("reuses the persistent worker across lock release and settles concurrent capabilities on close", async () => {
     const value = new DevFlowAuthHost(),
       instance = daemon();
     const lock = await acquire(value, instance);
@@ -140,8 +140,10 @@ describe("AuthHost managed channel loss without a real credential worker", () =>
     await vi.waitFor(() => expect(instance.requests.length).toBe(3));
     reply(instance, 1, {});
     await released;
-    expect((await capability).supported).toBe(false);
+    expect(instance.child.stop).not.toHaveBeenCalled();
     expect(value.isDomainLockHeld("realm")).toBe(false);
     await value.close();
+    expect((await capability).supported).toBe(false);
+    expect(instance.child.stop).toHaveBeenCalledTimes(1);
   });
 });

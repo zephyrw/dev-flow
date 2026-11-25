@@ -3,7 +3,7 @@ import type {
   AgyQuotaSnapshot,
   QuotaWindow,
 } from "../../contracts/src/agy-account.js";
-import { hasDualQuotaWindows, hasRequiredQuotaWindows, computeEffectiveWeeklyQuota, computeEffectiveFiveHourQuota, resolveEffectiveQuotaWindows } from "../../agy-accounts/src/quota.js";
+import { computeEffectiveWeeklyQuota, computeEffectiveFiveHourQuota, getObservedFiveHourResetAt } from "../../agy-accounts/src/quota.js";
 import type { QuotaBucket } from "../../contracts/src/run-observation.js";
 
 /** Keep provider observations; scheduling estimates do not become displayed balances. */
@@ -248,7 +248,12 @@ export function formatSnapshotQuotaWindow(
   nowMs: number = Date.now(),
 ): QuotaWindowDisplay {
   const window = snapshot?.windows.find((w) => w.kind === kind);
-  // 与服务公开视图采用同一完整性边界，防止原始窗口在页面再次投影满额。
+  if (kind === "five_hour" && snapshot) {
+    const resetAt = getObservedFiveHourResetAt(snapshot);
+    if (resetAt !== undefined && nowMs >= resetAt) {
+      return { ...formatQuotaWindow(window, nowMs), resetText: "按上次查询的重置时间计算" };
+    }
+  }
   return formatQuotaWindow(window, nowMs, false);
 }
 

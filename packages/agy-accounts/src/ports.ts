@@ -19,6 +19,7 @@ export interface ActiveCredentialInspection {
   last_modified?: string;
   account_id?: string;
   secret_ref?: string;
+  matches_expected_ref?: boolean;
   auth?: Partial<AgyAccountAuth>;
 }
 
@@ -38,7 +39,7 @@ export interface AuthHostPort {
   isDomainLockHeld(realmId: string): boolean;
   compareActive(realmId: string, secretRef: string): Promise<boolean>;
   capabilities(): Promise<AuthHostCapabilities>;
-  inspectActive(realmId: string): Promise<ActiveCredentialInspection>;
+  inspectActive(realmId: string, expectedSecretRef?: string): Promise<ActiveCredentialInspection>;
   captureActive(
     realmId: string,
     accountId: string,

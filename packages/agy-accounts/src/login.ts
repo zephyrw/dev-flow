@@ -1,13 +1,23 @@
+import { resolveFingerprintedAgyExecutable } from "../../adapters/agy/src/executable-resolver.js";
+
 export interface InteractiveLoginJobPort {
   /** The implementation must create the official CLI suspended, assign its Job, then show/resume it.
-   * Resolves only after the Job (including descendants) is confirmed idle. */
+   * Resolves after the Job is confirmed idle or (when keepSessionOnSuccess is set) after verified credential capture. */
   start(input: {
     executable: string;
     args: readonly string[];
     signal: AbortSignal;
+    keepSessionOnSuccess?: boolean;
+    saveBeforeDetach?: () => Promise<void>;
+    checkCredentialReady?: () => Promise<{
+      status: "waiting" | "ready" | "mismatch";
+      error?: string;
+    }>;
   }): Promise<{
     exit_code: number | null;
     fully_stopped: boolean;
+    session_kept?: boolean;
+    error?: string;
   }>;
 }
 export interface VerifiedLoginCommand {
@@ -18,12 +28,19 @@ export interface VerifiedLoginCommand {
 export interface InteractiveLoginOptions {
   timeoutMs?: number;
   signal?: AbortSignal;
+  keepSessionOnSuccess?: boolean;
+  saveBeforeDetach?: () => Promise<void>;
+  checkCredentialReady?: () => Promise<{
+    status: "waiting" | "ready" | "mismatch";
+    error?: string;
+  }>;
 }
 export interface InteractiveLoginResult {
   completed: boolean;
   cancelled: boolean;
   timed_out: boolean;
   fully_stopped: boolean;
+  session_kept?: boolean;
   exit_code?: number | null;
   error?: string;
 }
@@ -49,12 +66,10 @@ export class AgyLoginLauncher {
         error: "interactive_login_capability_unverified",
       };
     if (this.active) throw new Error("login_already_running");
-    const { createHash } = await import("node:crypto");
-    const { readFile } = await import("node:fs/promises");
-    const bytes = await readFile(this.command.executable);
+    const resolved = await resolveFingerprintedAgyExecutable(this.command.executable);
     if (
-      createHash("sha256").update(bytes).digest("hex") !==
-      this.command.executable_fingerprint
+      !resolved.fingerprint ||
+      resolved.fingerprint !== this.command.executable_fingerprint
     )
       return {
         completed: false,
@@ -77,8 +92,23 @@ export class AgyLoginLauncher {
       const result = await this.job.start({
         ...this.command,
         signal: controller.signal,
+        ...(options.keepSessionOnSuccess ? { keepSessionOnSuccess: true } : {}),
+        saveBeforeDetach: options.saveBeforeDetach,
+        ...(options.checkCredentialReady
+          ? { checkCredentialReady: options.checkCredentialReady }
+          : {}),
       });
-      if (!result.fully_stopped)
+      if (result.error) {
+        return {
+          completed: false,
+          cancelled: controller.signal.aborted && !timedOut,
+          timed_out: timedOut,
+          fully_stopped: result.fully_stopped,
+          session_kept: result.session_kept,
+          error: result.error,
+        };
+      }
+      if (!result.fully_stopped && !result.session_kept)
         return {
           completed: false,
           cancelled: controller.signal.aborted && !timedOut,
@@ -90,7 +120,8 @@ export class AgyLoginLauncher {
         completed: result.exit_code === 0 && !controller.signal.aborted,
         cancelled: controller.signal.aborted && !timedOut,
         timed_out: timedOut,
-        fully_stopped: true,
+        fully_stopped: result.fully_stopped,
+        session_kept: result.session_kept,
         exit_code: result.exit_code,
       };
     } catch {

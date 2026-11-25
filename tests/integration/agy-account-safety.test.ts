@@ -460,6 +460,39 @@ describe("AGY durable safety boundary", () => {
     expect(f.state.active).toBe("saved_A");
   });
 
+  it.each(["A", "C"])("backs up a renewed current login and refuses a different identity (%s)", async identity => {
+    const f = await fixture();
+    f.state.active = `renewed_${identity}`;
+    f.auth.inspectActive = async () => ({ exists: true, auth: { email: `${f.state.active.at(-1)}@example.test` } });
+    f.auth.captureActive = async () => ({ secret_ref: f.state.active, credential_revision: 2,
+      auth: { email: `${f.state.active.at(-1)}@example.test` } });
+    const receipt = await f.service.requestOperation({ realm_id: realmId, request_id: "probe-renewed", kind: "probe", account_id: "B" });
+    await f.service.tick(now);
+    expect(f.state.active).toBe(`renewed_${identity}`);
+    if (identity === "A") {
+      expect(f.repo.getOperation(receipt.operation_id)).toMatchObject({ phase: "completed", result: { outcome: "restored" } });
+      expect(f.repo.getRealm(realmId)).toMatchObject({ active_account_id: "A", active_secret_ref: "renewed_A" });
+      expect(f.repo.getAccount(realmId, "A")?.secret_ref).toBe("renewed_A");
+      expect(f.state.writes).toEqual(["B", "restore"]);
+      expect(f.state.probes).toEqual(["B"]);
+    } else {
+      expect(f.repo.getOperation(receipt.operation_id)).toMatchObject({ phase: "failed", error: "external_change" });
+      expect(f.state.writes).toEqual([]);
+      expect(f.state.probes).toEqual([]);
+    }
+  });
+
+  it("reports a failed individual quota refresh after restoring the current login", async () => {
+    const f = await fixture();
+    const previous = f.repo.getQuotaSnapshot(realmId, "B", pool);
+    f.probe.probeUsage = async () => { throw new Error("official_usage_probe_failed"); };
+    const receipt = await f.service.requestOperation({ realm_id: realmId, request_id: "probe-failed", kind: "probe", account_id: "B" });
+    await f.service.tick(now);
+    expect(f.repo.getOperation(receipt.operation_id)).toMatchObject({ phase: "failed", error: "probe_failed", result: { outcome: "restored" } });
+    expect(f.repo.getQuotaSnapshot(realmId, "B", pool)).toEqual(previous);
+    expect(f.state.active).toBe("saved_A");
+  });
+
   it("settles a blocked quota rotation by preserving a newer desktop login", async () => {
     const f = await fixture();
     await f.service.start({ realmId, requestId: "start" });
@@ -633,6 +666,20 @@ describe("AGY durable safety boundary", () => {
     await f.service.syncAndRefreshQuotas(realmId);
     expect(f.repo.getRealm(realmId)?.phase).toBe("idle");
     expect(f.repo.getRealm(realmId)?.last_error).toBeUndefined();
+  });
+
+  it("clears an old credential host error after refreshing verified quotas", async () => {
+    const f = await quotaOnlyFixture();
+    f.repo.saveRealm({ ...f.repo.getRealm(realmId)!, last_error: "auth_host_capability_unavailable" });
+    const probeUsage = f.probe.probeUsage;
+    f.probe.probeUsage = async () => { throw new Error("probe_failed"); };
+    await f.service.syncAndRefreshQuotas(realmId);
+    expect(f.repo.getRealm(realmId)?.last_error).toBe("auth_host_capability_unavailable");
+
+    f.probe.probeUsage = probeUsage;
+    await f.service.syncAndRefreshQuotas(realmId);
+    expect(f.repo.getRealm(realmId)?.last_error).toBeUndefined();
+    expect(f.state.writes).toEqual([]);
   });
 
   it("hides known misattributed quota and excludes that account from automatic selection", async () => {
@@ -849,5 +896,116 @@ describe("AGY durable safety boundary", () => {
         }),
       ).rejects.toThrow("external_change");
     }
+  });
+
+  it("删除账号先删库再删凭据并支持崩溃恢复，且不污染设置版本与使用时间", async () => {
+    // 1. 删除时顺序应为先从 SQLite 移除记录，再删 Vault 凭据；若崩溃重启可补删
+    const f = await fixture();
+    await f.service.start({ realmId, requestId: "start-del" });
+    const events: string[] = [];
+    const origDeleteAccount = f.repo.deleteAccount.bind(f.repo);
+    f.repo.deleteAccount = (id: string) => {
+      events.push(`repo:${id}`);
+      return origDeleteAccount(id);
+    };
+    f.auth.deleteSaved = async (_realm, ref) => {
+      events.push(`vault:${ref}`);
+      throw new Error("simulated_crash_before_vault_delete");
+    };
+    const receipt = await f.service.requestOperation({
+      realm_id: realmId,
+      request_id: "delete-b",
+      kind: "delete",
+      account_id: "B",
+    });
+    await f.service.tick(now);
+    expect(events).toEqual(["repo:B", "vault:saved_B"]);
+    expect(f.repo.getAccount(realmId, "B")).toBeUndefined();
+    const pending = f.repo.getOperation(receipt.operation_id);
+    expect(pending).toMatchObject({ phase: "blocked", before_secret_ref: "saved_B" });
+
+    // 重启恢复（无论是 blocked 还是崩溃停在 deleting）应补删残留 Vault 引用并收敛操作
+    const cleanedRefs: string[] = [];
+    f.auth.deleteSaved = async (_realm, ref) => {
+      cleanedRefs.push(ref);
+    };
+    await f.service.reconcileStartup();
+    expect(cleanedRefs).toEqual(["saved_B"]);
+    expect(f.repo.getRealm(realmId)?.pending_operation_id).toBeNull();
+    expect(f.repo.getOperation(receipt.operation_id)?.phase).toBe("completed");
+
+    // 额外验证停在 deleting 硬崩溃状态的恢复路径
+    f.repo.saveOperation({
+      operation_id: "crash-del-op",
+      realm_id: realmId,
+      kind: "delete",
+      trigger: "manual_explicit",
+      selection: { mode: "explicit", account_id: "C" },
+      request_id: "crash-del-req",
+      phase: "deleting",
+      revision: 1,
+      before_secret_ref: "saved_crash_ref",
+      created_at: timestamp,
+    });
+    const crashRealm = f.repo.getRealm(realmId)!;
+    f.repo.saveRealm({ ...crashRealm, pending_operation_id: "crash-del-op", phase: "deleting" });
+    await f.service.reconcileStartup();
+    expect(cleanedRefs).toEqual(["saved_B", "saved_crash_ref"]);
+    expect(f.repo.getOperation("crash-del-op")?.phase).toBe("completed");
+
+    // 2. 刷新当前账号额度不写入 last_used_at；排序偏好修改不递增 settings.revision
+    const settingsBefore = f.repo.getSettings(realmId)!.revision;
+    const beforeA = f.repo.getAccount(realmId, "A")!.last_used_at;
+    await f.service.syncAndRefreshQuotas(realmId);
+    expect(f.repo.getAccount(realmId, "A")?.last_used_at).toBe(beforeA);
+    const updatedUi = f.service.updateUiPreferences(realmId, { mode: "custom", custom_order: ["C", "A"] });
+    expect(updatedUi).toMatchObject({ mode: "custom", custom_order: ["C", "A"] });
+    expect(f.repo.getSettings(realmId)!.revision).toBe(settingsBefore);
+
+    // 3. reauth 传递 keep_session_on_success 区分是否保留当前会话
+    vi.spyOn(f.login, "available", "get").mockReturnValue(true);
+    const seenKeep: boolean[] = [];
+    vi.spyOn(f.login, "startInteractiveLogin").mockImplementation(async (options) => {
+      seenKeep.push(Boolean(options?.keepSessionOnSuccess));
+      f.state.active = "renewed_C";
+      return {
+        completed: true,
+        fully_stopped: !options?.keepSessionOnSuccess,
+        session_kept: Boolean(options?.keepSessionOnSuccess),
+        cancelled: false,
+        timed_out: false,
+        exit_code: options?.keepSessionOnSuccess ? 0 : 0,
+      };
+    });
+    f.auth.inspectActive = async () => ({
+      exists: f.state.active !== "absent",
+      auth: { email: `${f.state.active.at(-1)}@example.test` },
+    });
+    f.auth.captureActive = async () => ({
+      secret_ref: f.state.active,
+      credential_revision: 2,
+      auth: { email: `${f.state.active.at(-1)}@example.test` },
+    });
+
+    await f.service.requestOperation({
+      realm_id: realmId,
+      request_id: "reauth-save-only",
+      kind: "reauth",
+      account_id: "C",
+      expected_identity: "C@example.test",
+      reauth_disposition: "save_only",
+    });
+    await f.service.tick(now);
+    await f.service.requestOperation({
+      realm_id: realmId,
+      request_id: "reauth-activate",
+      kind: "reauth",
+      account_id: "C",
+      expected_identity: "C@example.test",
+      reauth_disposition: "activate",
+    });
+    await f.service.tick(now);
+    expect(seenKeep).toEqual([false, true]);
+    expect(f.repo.getRealm(realmId)?.active_account_id).toBe("C");
   });
 });

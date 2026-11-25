@@ -58,6 +58,35 @@ export class AgyReconciler {
     await this.reconcilePermits(realmId);
     this.reconcileExternalOwnerBlock(realmId);
     const pending = realm.pending_operation_id ? this.repository.getOperation(realm.pending_operation_id) : undefined;
+    if (pending?.kind === "delete" && ["deleting", "blocked"].includes(pending.phase)) {
+      const secretRef =
+        pending.before_secret_ref ??
+        (typeof pending.result?.deleting_secret_ref === "string"
+          ? pending.result.deleting_secret_ref
+          : undefined);
+      if ((pending.account_id && pending.account_id === realm.active_account_id) ||
+          (secretRef && (secretRef === realm.active_secret_ref || await this.authHost.compareActive(realmId, secretRef))))
+        throw new Error("account_in_use");
+      if (secretRef) await this.authHost.deleteSaved(realmId, secretRef);
+      this.repository.transaction(() => {
+        if (pending.account_id && this.repository.getAccount(realmId, pending.account_id)) {
+          this.repository.deleteAccount(pending.account_id);
+        }
+        pending.phase = "completed";
+        pending.completed_at = new Date().toISOString();
+        pending.result = { deleted: true };
+        pending.error = undefined;
+        pending.revision++;
+        this.repository.saveOperation(pending);
+        realm.pending_operation_id = null;
+        realm.phase = realm.desired_enabled ? "idle" : "stopped";
+        realm.service_state = realm.desired_enabled ? "running" : "stopped";
+        realm.last_error = undefined;
+        realm.revision++;
+        this.repository.saveRealm(realm);
+      });
+      return;
+    }
     // Older current-account imports recorded a backup even though they never installed a credential.
     if (pending?.kind === "enroll" && pending.mode === "capture_current" && pending.before_secret_ref) {
       this.repository.transaction(() => {

@@ -2,6 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
+import { setTimeout as wait } from "node:timers/promises";
 import { ProcessManager, type ManagedProcess } from "./manager.js";
 import type { OwnedLoginJobPort } from "../../agy-accounts/src/ports.js";
 import type { InteractiveLoginJobPort } from "../../agy-accounts/src/login.js";
@@ -34,6 +35,7 @@ export class AgyAccountJobRunner
     interactive: boolean,
     timeoutMs: number,
     signal?: AbortSignal,
+    keepAliveOnDetach = false,
   ) {
     signal?.throwIfAborted();
     const cwd = await mkdtemp(
@@ -51,6 +53,7 @@ export class AgyAccountJobRunner
         env: interactive ? {} : { ANTIGRAVITY_REMOTE_OOB_AUTH: "1" },
         timeout_ms: timeoutMs,
         interactive,
+        ...(keepAliveOnDetach ? { keep_alive_on_detach: true } : {}),
       });
     } catch (error) {
       await rm(cwd, { recursive: true, force: true });
@@ -75,7 +78,7 @@ export class AgyAccountJobRunner
       }
     });
     void completion.catch(() => {});
-    return { process, completion };
+    return { process, completion, detachAbort: () => signal?.removeEventListener("abort", abort) };
   }
   async startLoginJob(options: {
     realmId: string;
@@ -169,20 +172,156 @@ export class AgyAccountJobRunner
     executable: string;
     args: readonly string[];
     signal: AbortSignal;
-  }): Promise<{ exit_code: number | null; fully_stopped: boolean }> {
-    const { process, completion } = await this.create(
+    keepSessionOnSuccess?: boolean;
+    saveBeforeDetach?: () => Promise<void>;
+    checkCredentialReady?: () => Promise<{
+      status: "waiting" | "ready" | "mismatch";
+      error?: string;
+    }>;
+  }): Promise<{
+    exit_code: number | null;
+    fully_stopped: boolean;
+    session_kept?: boolean;
+    error?: string;
+  }> {
+    const { process, completion, detachAbort } = await this.create(
       input.executable,
       [...input.args],
       true,
       900000,
       input.signal,
+      Boolean(input.keepSessionOnSuccess && input.saveBeforeDetach),
     );
+    const credAbort = new AbortController();
+    const onInputAbort = () => credAbort.abort();
+    input.signal.addEventListener("abort", onInputAbort, { once: true });
+    if (input.signal.aborted) credAbort.abort();
+
+    const pollCredential = async (): Promise<
+      | { kind: "cred"; status: "ready" | "mismatch"; error?: string }
+      | { kind: "aborted" }
+    > => {
+      if (!input.checkCredentialReady) {
+        return new Promise((resolve) => {
+          credAbort.signal.addEventListener(
+            "abort",
+            () => resolve({ kind: "aborted" }),
+            { once: true },
+          );
+        });
+      }
+      try {
+        await process.ready;
+      } catch {
+        return { kind: "aborted" };
+      }
+      while (!credAbort.signal.aborted) {
+        await wait(300, undefined, { signal: credAbort.signal }).catch(() => {});
+        if (credAbort.signal.aborted) break;
+        try {
+          const check = await input.checkCredentialReady();
+          if (check.status === "ready" || check.status === "mismatch") {
+            return { kind: "cred", status: check.status, error: check.error };
+          }
+        } catch {
+          // Ignore transient read error while login window is active.
+        }
+      }
+      return { kind: "aborted" };
+    };
+
     try {
-      const result = await completion;
+      if (!input.checkCredentialReady) {
+        const result = await completion;
+        return {
+          exit_code:
+            input.signal.aborted || result.termination_reason ? -1 : result.code,
+          fully_stopped: true,
+        };
+      }
+
+      const raceResult = await Promise.race([
+        completion.then((value) => ({ kind: "exit" as const, value })),
+        pollCredential(),
+      ]);
+
+      if (raceResult.kind === "cred") {
+        if (raceResult.status === "mismatch") {
+          await process.stop("manual").catch(() => {});
+          const stopped =
+            (await this.processes.observe(process.id)).state === "confirmed_exited";
+          return {
+            exit_code: -1,
+            fully_stopped: stopped,
+            error: raceResult.error ?? "account_identity_mismatch",
+          };
+        }
+        if (input.keepSessionOnSuccess && input.saveBeforeDetach && process.detach) {
+          try {
+            input.signal.throwIfAborted();
+            await input.saveBeforeDetach();
+            if (!(await process.detach())) {
+              await completion;
+              return { exit_code: 0, fully_stopped: true };
+            }
+          } catch (error) {
+            await process.stop("manual").catch(() => {});
+            return {
+              exit_code: -1,
+              fully_stopped: (await this.processes.observe(process.id)).state === "confirmed_exited",
+              error: error instanceof Error ? error.message : "enrollment_failed",
+            };
+          }
+          detachAbort();
+          return {
+            exit_code: 0,
+            fully_stopped: false,
+            session_kept: true,
+          };
+        }
+        await process.stop("manual").catch(() => {});
+        const stopped =
+          (await this.processes.observe(process.id)).state === "confirmed_exited";
+        if (!stopped) {
+          return {
+            exit_code: -1,
+            fully_stopped: false,
+            error: "login_stop_unconfirmed",
+          };
+        }
+        return { exit_code: 0, fully_stopped: true };
+      }
+
+      if (raceResult.kind === "exit") {
+        credAbort.abort();
+        const result = raceResult.value;
+        if (!input.signal.aborted && !result.termination_reason) {
+          try {
+            const finalCheck = await input.checkCredentialReady();
+            if (finalCheck.status === "ready") {
+              return { exit_code: 0, fully_stopped: true };
+            }
+            if (finalCheck.status === "mismatch") {
+              return {
+                exit_code: -1,
+                fully_stopped: true,
+                error: finalCheck.error ?? "account_identity_mismatch",
+              };
+            }
+          } catch {}
+        }
+        return {
+          exit_code:
+            input.signal.aborted || result.termination_reason ? -1 : result.code,
+          fully_stopped: true,
+        };
+      }
+
+      await process.stop("manual").catch(() => {});
       return {
-        exit_code:
-          input.signal.aborted || result.termination_reason ? -1 : result.code,
-        fully_stopped: true,
+        exit_code: -1,
+        fully_stopped:
+          (await this.processes.observe(process.id)).state === "confirmed_exited",
       };
     } catch {
       return {
@@ -191,6 +330,9 @@ export class AgyAccountJobRunner
           (await this.processes.observe(process.id)).state ===
           "confirmed_exited",
       };
+    } finally {
+      credAbort.abort();
+      input.signal.removeEventListener("abort", onInputAbort);
     }
   }
   close() {

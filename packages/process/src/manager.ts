@@ -25,6 +25,7 @@ export interface ProcessSpec {
   stdin?: string;
   interactive?: boolean;
   keep_stdin_open?: boolean;
+  keep_alive_on_detach?: boolean;
   agy_account?: {
     realm_id: string;
     account_id: string;
@@ -63,6 +64,7 @@ export interface ManagedProcess extends EventEmitter {
   ready: Promise<void>;
   completion: Promise<Completion>;
   stop: (reason?: ProcessStopReason) => Promise<void>;
+  detach?: () => Promise<boolean>;
   pauseOutput?: (stream?: "stdout" | "stderr") => void;
   resumeOutput?: (stream?: "stdout" | "stderr") => void;
   termination_reason?: ProcessStopReason;
@@ -397,6 +399,27 @@ export class ProcessManager {
         return;
       }
       await finish(-1);
+    };
+    events.detach = async () => {
+      await events.ready;
+      if (finished || finishing) return false;
+      if (!spec.interactive || !spec.keep_alive_on_detach || !native || !("allowJobSurvival" in native) || !job) {
+        await events.stop("manual");
+        return false;
+      }
+      if (!native.allowJobSurvival(job)) throw new Error("LOGIN_DETACH_FAILED");
+      const win = native;
+      const detachedJob = job;
+      clearTimers();
+      this.active.delete(spec.id);
+      try {
+        notify({ status: "detached", confirmed: false });
+      } catch {}
+      poll = setInterval(() => {
+        if (win.queryJobActiveCount(detachedJob) === 0) void finish(0);
+      }, 1000);
+      poll.unref();
+      return true;
     };
     events.pauseOutput = (stream = "stdout") => child?.[stream]?.pause();
     events.resumeOutput = (stream = "stdout") => child?.[stream]?.resume();

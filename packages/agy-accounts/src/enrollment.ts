@@ -14,12 +14,14 @@ export interface EnrollmentResult {
   snapshot?: AgyQuotaSnapshot;
   error?: string;
   blocked?: boolean;
+  session_kept?: boolean;
 }
 export interface EnrollmentContext {
   operation_id: string;
   auth_epoch: number;
   signal: AbortSignal;
   model_id?: string;
+  keep_session_on_success?: boolean;
   onCurrentSaved?: (account: AgyAccount, alreadyManaged: boolean) => void;
   onCaptured?: (data: {
     account: Pick<AgyAccount, "id" | "state">;
@@ -84,21 +86,67 @@ export class AgyEnrollmentService {
     this.requireContext(realmId, context);
     const account = this.repository.getAccount(realmId, accountId);
     if (!account) return { success: false, error: "account_not_found" };
-    if (
-      account.identity.email.toLowerCase() !==
-      expectedEmail.trim().toLowerCase()
-    )
+    const normalizedExpected = expectedEmail.trim().toLowerCase();
+    if (account.identity.email.toLowerCase() !== normalizedExpected)
       return { success: false, error: "expected_identity_conflict" };
+    let nextIdentityProbe = 0;
+    const checkCredentialReady = async (): Promise<{
+      status: "waiting" | "ready" | "mismatch";
+      error?: string;
+    }> => {
+      if (context.signal.aborted) return { status: "waiting" };
+      const first = await this.authHost.inspectActive(realmId);
+      if (!first.exists || first.auth?.metadata_status === "unrecognized") {
+        return { status: "waiting" };
+      }
+      // 200ms stability debounce to ensure CLI finished writing the credential.
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      if (context.signal.aborted) return { status: "waiting" };
+      const second = await this.authHost.inspectActive(realmId);
+      if (!second.exists || second.auth?.metadata_status === "unrecognized") {
+        return { status: "waiting" };
+      }
+      let email = second.auth?.email?.trim().toLowerCase();
+      let subject = second.auth?.subject;
+      if (!email && Date.now() >= nextIdentityProbe) {
+        nextIdentityProbe = Date.now() + 5_000;
+        try {
+          const probed = await this.probe.probeIdentity({ signal: context.signal });
+          email = probed.email?.trim().toLowerCase();
+          subject = probed.subject ?? subject;
+        } catch {
+          return { status: "waiting" };
+        }
+      }
+      if (!email) return { status: "waiting" };
+      if (
+        email !== normalizedExpected ||
+        (account.identity.subject && subject && account.identity.subject !== subject)
+      ) {
+        return { status: "mismatch", error: "account_identity_mismatch" };
+      }
+      return { status: "ready" };
+    };
+    let captured: EnrollmentResult | undefined;
     const login = await this.loginLauncher.startInteractiveLogin({
       signal: context.signal,
+      keepSessionOnSuccess: context.keep_session_on_success,
+      checkCredentialReady,
+      saveBeforeDetach: async () => {
+        captured = await this.capture(realmId, account.alias, context, account);
+        if (!captured.success) throw new Error(captured.error ?? "enrollment_failed");
+      },
     });
     if (!login.completed)
       return {
         success: false,
-        blocked: !login.fully_stopped,
+        blocked: !login.fully_stopped && !login.session_kept,
         error: login.error ?? "login_incomplete",
       };
-    return this.capture(realmId, account.alias, context, account);
+    return {
+      ...(captured ?? await this.capture(realmId, account.alias, context, account)),
+      ...(login.session_kept ? { session_kept: true } : {}),
+    };
   }
   private async capture(
     realmId: string,
@@ -113,7 +161,7 @@ export class AgyEnrollmentService {
     const identityOnly = currentOnly || Boolean(expected);
 
     // 先独立保存候选凭据；本地 claim 不会覆盖任何现有账号。
-    const candidateId = "acc_" + randomUUID();
+    const candidateId = expected ? expected.id : "acc_" + randomUUID();
     const captured = await this.authHost.captureActive(realmId, candidateId);
     const pending = {
       operation_id: context.operation_id,
@@ -187,7 +235,7 @@ export class AgyEnrollmentService {
 
     const accountId = existing?.id ?? candidateId;
     // 只在身份核验后将保存包绑定到最终账号 ID，旧 secret_ref 尚未改变。
-    const accepted = currentOnly && !existing ? captured : await this.authHost.captureActive(realmId, accountId);
+    const accepted = (currentOnly && !existing) || expected ? captured : await this.authHost.captureActive(realmId, accountId);
     if (identityOnly) {
       const latest = await this.authHost.inspectActive(realmId);
       if (!latest.exists) return { success: false, error: "active_credential_missing" };

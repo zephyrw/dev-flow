@@ -19,9 +19,9 @@ it("preserves a confirmed auxiliary timeout instead of reducing it to model deni
   expect(manager.observe).toHaveBeenCalled();
   expect(managed.stop).not.toHaveBeenCalled();
 
-  await runner.start({ executable: "unused", args: ["-i", "/login"], signal: new AbortController().signal });
+  await runner.start({ executable: "unused", args: ["acp", "--login"], signal: new AbortController().signal });
   expect(manager.start).toHaveBeenLastCalledWith(expect.objectContaining({
-    interactive: true, env: {},
+    args: ["acp", "--login"], interactive: true, env: {},
   }));
 });
 

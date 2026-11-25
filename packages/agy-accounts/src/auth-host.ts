@@ -62,6 +62,7 @@ const results: Record<string, z.ZodType> = {
       auth: AuthSchema.optional(),
       secret_ref: ref.optional(),
       account_id: z.string().max(150).optional(),
+      matches_expected_ref: z.boolean().optional(),
     })
     .strict(),
   "compare-active": z.object({ matches: z.boolean() }).strict(),
@@ -106,9 +107,23 @@ export class DevFlowAuthHost implements AuthHostPort {
   private pending = new Map<string, Pending>();
   private counter = 0;
   private acquiring = false;
+  private releasing?: Promise<void>;
+  private idleTimer?: NodeJS.Timeout;
+  private cachedCapabilities?: AuthHostCapabilities;
   private realm?: string;
   private lockId?: string;
   private lostListeners = new Set<() => void>();
+  private scheduleIdleStop() {
+    clearTimeout(this.idleTimer);
+    if (this.lockId || this.pending.size > 0 || !this.child) return;
+    const owner = this.child;
+    this.idleTimer = setTimeout(() => {
+      if (this.child === owner && !this.lockId && this.pending.size === 0) {
+        this.disconnected(new Error("auth_host_idle"), owner);
+      }
+    }, 5 * 60_000);
+    this.idleTimer.unref?.();
+  }
   onLockLost(listener: () => void): () => void {
     this.lostListeners.add(listener);
     return () => this.lostListeners.delete(listener);
@@ -118,6 +133,9 @@ export class DevFlowAuthHost implements AuthHostPort {
   }
   private disconnected(error: Error, child: ManagedProcess) {
     if (this.child !== child) return;
+    clearTimeout(this.idleTimer);
+    this.idleTimer = undefined;
+    this.cachedCapabilities = undefined;
     const held = !!this.lockId;
     this.child = undefined;
     this.lockId = undefined;
@@ -156,6 +174,8 @@ export class DevFlowAuthHost implements AuthHostPort {
     });
   }
   private async ensureDaemon(): Promise<void> {
+    clearTimeout(this.idleTimer);
+    this.idleTimer = undefined;
     if (this.starting) return this.starting;
     if (this.child) return;
     this.starting = (async () => {
@@ -248,6 +268,7 @@ export class DevFlowAuthHost implements AuthHostPort {
     return this.starting;
   }
   async capabilities(): Promise<AuthHostCapabilities> {
+    if (this.cachedCapabilities && this.child) return this.cachedCapabilities;
     const unavailable: AuthHostCapabilities = {
       supported: false,
       platform: process.platform,
@@ -258,10 +279,12 @@ export class DevFlowAuthHost implements AuthHostPort {
     };
     try {
       const result = await this.call<AuthHostCapabilities>("capabilities", {});
-      return {
+      const caps = {
         ...result,
         supported: result.supported && credentialCapabilitiesReady(result),
       };
+      if (this.child) this.cachedCapabilities = caps;
+      return caps;
     } catch {
       return unavailable;
     }
@@ -292,9 +315,17 @@ export class DevFlowAuthHost implements AuthHostPort {
     } catch {
       this.disconnected(new Error("auth_host_disconnected"), child);
     }
-    return result as Promise<T>;
+    try {
+      const response = (await result) as T;
+      this.scheduleIdleStop();
+      return response;
+    } catch (error) {
+      this.scheduleIdleStop();
+      throw error;
+    }
   }
   async acquireDomainLock(realmId: string) {
+    if (this.releasing) await this.releasing.catch(() => {});
     if (this.lockId || this.acquiring)
       return { acquired: false, release: async () => {} };
     this.acquiring = true;
@@ -305,6 +336,8 @@ export class DevFlowAuthHost implements AuthHostPort {
       );
       if (!result.acquired || !/^[a-f0-9-]{36}$/.test(result.lock_id))
         return { acquired: false, release: async () => {} };
+      clearTimeout(this.idleTimer);
+      this.idleTimer = undefined;
       this.realm = realmId;
       this.lockId = result.lock_id;
       const owner = this.child;
@@ -317,21 +350,38 @@ export class DevFlowAuthHost implements AuthHostPort {
             !this.isDomainLockHeld(realmId)
           )
             return;
-          await this.call("release-domain-lock", { realm_id: realmId });
-          this.lockId = undefined;
-          this.realm = undefined;
-          // A racing reacquisition must wait until the previous process has exited.
-          this.disconnected(new Error("auth_host_released"), owner!);
-          await this.stopping;
+          const releaseOp = (async () => {
+            try {
+              await this.call("release-domain-lock", { realm_id: realmId });
+              if (this.child === owner && this.lockId === result.lock_id) {
+                this.lockId = undefined;
+                this.realm = undefined;
+              }
+              this.scheduleIdleStop();
+            } catch (err) {
+              if (this.child === owner) {
+                this.disconnected(new Error("auth_host_release_failed"), owner!);
+                await this.stopping;
+              }
+              throw err;
+            }
+          })();
+          this.releasing = releaseOp;
+          try {
+            await releaseOp;
+          } finally {
+            if (this.releasing === releaseOp) this.releasing = undefined;
+          }
         },
       };
     } finally {
       this.acquiring = false;
     }
   }
-  inspectActive(realmId: string) {
+  inspectActive(realmId: string, expectedSecretRef?: string) {
     return this.call<ActiveCredentialInspection>("inspect-active", {
       realm_id: realmId,
+      ...(expectedSecretRef ? { expected_secret_ref: expectedSecretRef } : {}),
     });
   }
   async compareActive(realmId: string, secretRef: string) {
@@ -378,6 +428,8 @@ export class DevFlowAuthHost implements AuthHostPort {
     });
   }
   async close() {
+    clearTimeout(this.idleTimer);
+    this.idleTimer = undefined;
     if (this.child)
       this.disconnected(new Error("auth_host_closed"), this.child);
     await this.stopping;

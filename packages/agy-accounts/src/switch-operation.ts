@@ -311,15 +311,27 @@ export class SwitchOperationExecutor {
         throw new Error("external_change:step5_email_mismatch");
       }
     }
-    const captured = await this.authHost.captureActive(
-      options.realmId,
-      beforeAccountId ?? `backup_${operation.operation_id}`,
-    );
+    const beforeAcc = beforeAccountId
+      ? this.repository.getAccount(options.realmId, beforeAccountId)
+      : undefined;
+    const reuseBeforeCapture =
+      Boolean(beforeAcc && realm.active_secret_ref && beforeAcc.secret_ref === realm.active_secret_ref) &&
+      (await this.authHost.compareActive(options.realmId, beforeAcc!.secret_ref));
+    const captured = reuseBeforeCapture
+      ? {
+          secret_ref: beforeAcc!.secret_ref,
+          credential_revision: beforeAcc!.credential_revision,
+          auth: beforeAcc!.auth,
+        }
+      : await this.authHost.captureActive(
+          options.realmId,
+          beforeAccountId ?? `backup_${operation.operation_id}`,
+        );
     operation.before_secret_ref = captured.secret_ref;
     operation.phase = "selecting";
     operation.revision++;
     this.repository.saveOperation(operation);
-    if (beforeAccountId) {
+    if (beforeAccountId && !reuseBeforeCapture) {
       const before = this.repository.getAccount(
         options.realmId,
         beforeAccountId,
@@ -670,20 +682,24 @@ export class SwitchOperationExecutor {
       }
 
       guard();
-      const refreshed = await this.authHost.captureActive(
-        options.realmId,
-        targetAcc.id,
-      );
-      if (refreshed.auth?.email && refreshed.auth.email.trim().toLowerCase() !== expectedEmail ||
-          targetAcc.identity.subject && refreshed.auth?.subject && refreshed.auth.subject !== targetAcc.identity.subject ||
-          !(await this.authHost.compareActive(options.realmId, refreshed.secret_ref)))
-        throw new Error("identity_mismatch");
-      targetAcc.secret_ref = refreshed.secret_ref;
-      targetAcc.credential_revision = refreshed.credential_revision;
-      targetAcc.auth = { ...targetAcc.auth, ...refreshed.auth };
-      operation.installed_secret_ref = refreshed.secret_ref;
-      operation.revision++;
-      this.repository.saveOperation(operation);
+      if (!localDefault) {
+        const refreshed = await this.authHost.captureActive(
+          options.realmId,
+          targetAcc.id,
+        );
+        if (refreshed.auth?.email && refreshed.auth.email.trim().toLowerCase() !== expectedEmail ||
+            targetAcc.identity.subject && refreshed.auth?.subject && refreshed.auth.subject !== targetAcc.identity.subject ||
+            !(await this.authHost.compareActive(options.realmId, refreshed.secret_ref)))
+          throw new Error("identity_mismatch");
+        targetAcc.secret_ref = refreshed.secret_ref;
+        targetAcc.credential_revision = refreshed.credential_revision;
+        targetAcc.auth = { ...targetAcc.auth, ...refreshed.auth };
+        operation.installed_secret_ref = refreshed.secret_ref;
+        operation.revision++;
+        this.repository.saveOperation(operation);
+      } else {
+        targetAcc.auth = { ...targetAcc.auth, ...localIdentity!.auth };
+      }
       let modelCatalogFailed = false;
       if (!identityOnly && this.probe.probeModels) {
         try {

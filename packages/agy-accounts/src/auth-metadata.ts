@@ -67,6 +67,8 @@ export function extractSafeAuthMetadata(
   };
   if (typeof parsed.refresh_token === "string")
     result.has_refresh_credential = parsed.refresh_token.length > 0;
+  else if (typeof parsed.refreshToken === "string")
+    result.has_refresh_credential = parsed.refreshToken.length > 0;
   const access =
     (typeof parsed.expiry === "string" ? date(parsed.expiry) : undefined) ??
     date(parsed.expires_at);

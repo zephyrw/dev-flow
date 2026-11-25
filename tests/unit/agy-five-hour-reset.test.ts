@@ -25,13 +25,20 @@ const account = AgyAccountSchema.parse({
 });
 
 describe("five-hour quota reset", () => {
-  it.each([reset, reset + 1, reset + 9 * 86400_000])("keeps the displayed observation at %s separate from scheduling estimates", now => {
+  it.each([reset, reset + 1, reset + 9 * 86400_000])("shows a verified reset at %s without updating the stored observation", now => {
     const snap = snapshot();
     const original = structuredClone(snap);
     expect(resolveEffectiveQuotaWindows(snap.windows, now)[1]).toMatchObject({ remaining_fraction: 1, reset_at: null });
-    expect(formatSnapshotQuotaWindow(snap, "five_hour", now)).toMatchObject({ percentageText: "0%", fraction: 0, isZero: true });
-    expect(resolveEffectiveAccountState(account, [snap], now)).toBe("pending_quota");
+    expect(formatSnapshotQuotaWindow(snap, "five_hour", now)).toMatchObject({ percentageText: "100%", fraction: 1, shortResetText: "" });
+    expect(resolveEffectiveAccountState(account, [snap], now)).toBe("ready");
     expect(snap).toEqual(original);
+  });
+
+  it("keeps a newer official observation when its reported reset is already in the past", () => {
+    const snap = snapshot();
+    snap.windows = snap.windows.map(window => ({ ...window, observed_at: new Date(reset + 1).toISOString() }));
+    snap.windows[1]!.remaining_fraction = 0.35;
+    expect(formatSnapshotQuotaWindow(snap, "five_hour", reset + 2).fraction).toBe(0.35);
   });
 
   it("retains zero and a countdown before reset, and unknown resets require verification", () => {

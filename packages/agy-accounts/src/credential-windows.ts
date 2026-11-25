@@ -137,14 +137,7 @@ export function createCredentialWindows() {
   };
   const stringAt = (pointer: bigint | null): string => {
     if (!pointer) return "";
-    const values: number[] = [];
-    for (let offset = 0; offset < 131072; offset += 2) {
-      const value = koffi.decode(pointer, offset, "uint16") as number;
-      if (value === 0)
-        return Buffer.from(new Uint16Array(values).buffer).toString("utf16le");
-      values.push(value);
-    }
-    throw new Error("credential_string_unterminated");
+    return koffi.decode.string16(pointer);
   };
   const bytesAt = (pointer: bigint | null, length: number): Buffer => {
     if (
@@ -195,7 +188,9 @@ export function createCredentialWindows() {
       }
     }
   }
+  let cachedSid: string | undefined;
   function getCurrentUserSid(): string {
+    if (cachedSid) return cachedSid;
     const slot = pointerSlot();
     if (!openToken(getProcess(), 8, slot)) fail("token_open_failed");
     const token = ptr(slot);
@@ -213,6 +208,7 @@ export function createCredentialWindows() {
       sidString = ptr(result);
       const sid = stringAt(sidString);
       if (!/^S-1-(?:\d+-)*\d+$/.test(sid)) throw new Error("sid_invalid");
+      cachedSid = sid;
       return sid;
     } finally {
       if (sidString) localFree(sidString);

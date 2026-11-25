@@ -121,11 +121,30 @@ async function handle(
       active?.realm === realm ? vault.load(realm, active.ref) : undefined;
     const matches = saved && equalCredential(saved.Credential, credential);
     if (!matches) active = undefined;
+    let matchesExpectedRef: boolean | undefined;
+    if (typeof args.expected_secret_ref === "string") {
+      const expectedRef = stringArg(args, "expected_secret_ref");
+      if (active?.realm === realm && active.ref === expectedRef && matches) {
+        matchesExpectedRef = true;
+      } else {
+        try {
+          matchesExpectedRef = equalCredential(
+            vault.load(realm, expectedRef).Credential,
+            credential,
+          );
+        } catch {
+          matchesExpectedRef = false;
+        }
+      }
+    }
     return {
       exists: credential.Exists,
       auth: metadata(credential),
       ...(matches && active
         ? { secret_ref: active.ref, account_id: active.account }
+        : {}),
+      ...(matchesExpectedRef !== undefined
+        ? { matches_expected_ref: matchesExpectedRef }
         : {}),
     };
   }
@@ -174,14 +193,32 @@ async function handle(
   if (action === "delete-saved") {
     if (active?.realm === realm && active.ref === ref)
       throw new Error("cannot_delete_active");
+    let saved;
+    try {
+      saved = vault.load(realm, ref);
+    } catch (error) {
+      if (error instanceof Error && error.message === "vault_item_missing") return {};
+      throw error;
+    }
+    const current = win.readCredential(TARGET);
+    if (current.Exists && equalCredential(current, saved.Credential))
+      throw new Error("cannot_delete_active");
     vault.delete(realm, ref);
     return {};
   }
-  const saved = vault.load(realm, ref);
-  if (action === "compare-active")
+  if (action === "compare-active") {
+    let saved;
+    try {
+      saved = vault.load(realm, ref);
+    } catch (error) {
+      if (error instanceof Error && error.message === "vault_item_missing") return { matches: false };
+      throw error;
+    }
     return {
       matches: equalCredential(win.readCredential(TARGET), saved.Credential),
     };
+  }
+  const saved = vault.load(realm, ref);
   if (action === "activate-saved" || restore) {
     if (!restore && saved.AccountID !== stringArg(args, "account_id"))
       throw new Error("account_reference_mismatch");

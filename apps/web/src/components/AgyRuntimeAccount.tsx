@@ -5,6 +5,7 @@ import type {
 } from "../../../../packages/contracts/src/agy-account.js";
 import { agyApi } from "./agy-api.js";
 import { formatSnapshotQuotaWindow } from "../../../../packages/presentation/src/agy-accounts.js";
+import { isArgonModel, isArgonQuotaPool } from "../../../../packages/agy-accounts/src/quota.js";
 interface View {
   realm: { active_account_id?: string | null; service_state?: string };
   accounts: AgyAccountDto[];
@@ -32,8 +33,10 @@ export function AgyRuntimeAccount({ modelId }: { modelId?: string }) {
   const account = view?.accounts.find(
     (a) => a.id === view.realm?.active_account_id,
   );
+  const showQuota = !isArgonModel(modelId ?? "");
   const snapshot = view?.snapshots.find(
     (s) =>
+      showQuota && !isArgonQuotaPool(s.pool_id) &&
       s.account_id === account?.id &&
       !!modelId &&
       s.model_ids.includes(modelId),
@@ -51,7 +54,7 @@ export function AgyRuntimeAccount({ modelId }: { modelId?: string }) {
     >
       账号管理
       {account
-        ? `：${account.identity.email} · 周额度 ${weekly.percentageText} / 五小时 ${short.percentageText}`
+        ? `：${account.identity.email}${showQuota ? ` · 周额度 ${weekly.percentageText} / 五小时 ${short.percentageText}` : ""}`
         : "：未纳入管理"}
     </a>
   );

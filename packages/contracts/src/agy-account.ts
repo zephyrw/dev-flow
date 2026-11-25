@@ -413,6 +413,28 @@ export const AgyAccountDtoSchema = AgyAccountSchema.omit({
 });
 export type AgyAccountDto = z.infer<typeof AgyAccountDtoSchema>;
 
+export const AgyAccountSortModeSchema = z.enum(["recent", "quota", "custom"]);
+export type AgyAccountSortMode = z.infer<typeof AgyAccountSortModeSchema>;
+
+export const AgyAccountSortDirectionSchema = z.enum(["asc", "desc"]);
+export type AgyAccountSortDirection = z.infer<typeof AgyAccountSortDirectionSchema>;
+
+export const AgyAccountUiPreferencesSchema = z.object({
+  realm_id: z.string().min(1),
+  mode: AgyAccountSortModeSchema.default("recent"),
+  direction: AgyAccountSortDirectionSchema.default("asc"),
+  custom_order: z.array(Id).default([]),
+  updated_at: z.string().min(1),
+});
+export type AgyAccountUiPreferences = z.infer<typeof AgyAccountUiPreferencesSchema>;
+
+export const AgyAccountUiPreferencesPatchSchema = z.object({
+  mode: AgyAccountSortModeSchema.optional(),
+  direction: AgyAccountSortDirectionSchema.optional(),
+  custom_order: z.array(Id).max(500).optional(),
+}).strict();
+export type AgyAccountUiPreferencesPatch = z.infer<typeof AgyAccountUiPreferencesPatchSchema>;
+
 // 能力状态与投影 (AGF-D01)
 export const CapabilityStatusSchema = z.enum(["verified", "unverified", "unsupported"]);
 export type CapabilityStatus = z.infer<typeof CapabilityStatusSchema>;

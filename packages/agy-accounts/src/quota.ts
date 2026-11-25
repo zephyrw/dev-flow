@@ -13,6 +13,9 @@ export function modelCovered(patterns: string[], model: string): boolean {
 }
 
 export const ARGON_QUOTA_POOL = "Gemini 4 Argon";
+export function isArgonQuotaPool(poolId: string | undefined): boolean {
+  return poolId?.toLowerCase() === ARGON_QUOTA_POOL.toLowerCase();
+}
 export function isArgonModel(model: string): boolean {
   return /^gemini-4-argon(?:-|$)/i.test(model);
 }
@@ -24,7 +27,7 @@ export function quotaPoolCoversModel(pool: { pool_id: string; model_ids: string[
 }
 
 export function hasRequiredQuotaWindows(poolId: string | undefined, windows: QuotaWindow[]): boolean {
-  if (poolId?.toLowerCase() !== ARGON_QUOTA_POOL.toLowerCase()) return hasDualQuotaWindows(windows);
+  if (!isArgonQuotaPool(poolId)) return hasDualQuotaWindows(windows);
   const w = windows[0];
   return windows.length === 1 && w?.kind === "weekly" && w.status === "observed" &&
     typeof w.remaining_fraction === "number" && Number.isFinite(w.remaining_fraction) &&
@@ -220,6 +223,17 @@ export function computeEffectiveFiveHourQuota(
   };
 }
 
+/** The reset must have been in the future when AGY returned this complete observation. */
+export function getObservedFiveHourResetAt(
+  snapshot: Pick<AgyQuotaSnapshot, "windows" | "capability_verified"> & { pool_id?: string },
+): number | undefined {
+  if (!snapshot.capability_verified || !hasRequiredQuotaWindows(snapshot.pool_id, snapshot.windows)) return;
+  const window = snapshot.windows.find(window => window.kind === "five_hour");
+  if (!window?.reset_at || window.remaining_fraction === null || window.remaining_fraction >= 1) return;
+  const resetAt = Date.parse(window.reset_at);
+  if (resetAt > Date.parse(window.observed_at)) return resetAt;
+}
+
 /** Derive quota badges without rewriting provider observations or granting execution permits. */
 export function resolveEffectiveAccountState(
   account: Pick<AgyAccount, "id" | "state">,
@@ -236,8 +250,10 @@ export function resolveEffectiveAccountState(
       needsVerification = true;
       continue;
     }
+    const fiveHourResetAt = getObservedFiveHourResetAt(pool);
     for (const window of pool.windows) {
       if (window.remaining_fraction !== null && window.remaining_fraction <= 0) {
+        if (window.kind === "five_hour" && fiveHourResetAt !== undefined && nowMs >= fiveHourResetAt) continue;
         const resetMs = window.reset_at ? Date.parse(window.reset_at) : NaN;
         if (Number.isFinite(resetMs) && resetMs > nowMs) waiting = true;
         else needsVerification = true;
