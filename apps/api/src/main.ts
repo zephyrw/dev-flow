@@ -8,7 +8,7 @@ import { Store } from "../../../packages/store/src/store.js";
 import { Engine } from "../../../packages/core/src/engine.js";
 import { WorkspaceObserver } from "../../../packages/runtime/src/workspace-observer.js";
 import { LocalRuntime } from "../../../packages/runtime/src/runtime.js";
-import { resumeModelWaits, reconcileInactiveRuns } from "../../../packages/runtime/src/recovery.js";
+import { resumeModelWaits, reconcileInactiveRuns, reconcileStalePermissionHooks } from "../../../packages/runtime/src/recovery.js";
 import { buildServer } from "./server.js";
 import { archiveLogs } from "../../../packages/runtime/src/maintenance.js";
 import { acquireControllerLock } from "../../../packages/process/src/controller-lock.js";
@@ -88,6 +88,7 @@ function close(reason = "startup_failure"): Promise<void> {
     clearInterval(maintenance);
       clearTimeout(dispatchWake); store.off("change", wakeDispatch);
     await engine.runtime!.close();
+    reconcileStalePermissionHooks(engine);
     bridge.dispose();
     for (const socket of app.websocketServer.clients) socket.terminate();
     // Cancel model probes before waiting for the account coordinator to drain.

@@ -1,6 +1,6 @@
 import { afterEach, expect, it } from "vitest";
 import Fastify from "fastify";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { execFile } from "node:child_process";
 import { setup, project, plan, repository } from "../helpers.js";
@@ -13,8 +13,9 @@ import { NATIVE_PERMISSION_ENTITY, NATIVE_TOOL_PERMISSION_ENTITY, NATIVE_MCP_PER
 import { Store } from "../../packages/store/src/store.js";
 import { nativePermissionPlugin } from "../../apps/api/src/routes/native-permissions.js";
 import { userInteractionPlugin } from "../../apps/api/src/routes/user-interactions.js";
-import { installAgyPermissionHook } from "../../packages/adapters/agy/src/permission-hook.js";
+import { installAgyPermissionHook, cleanupAgyPermissionHooks, agyPermissionHookKey } from "../../packages/adapters/agy/src/permission-hook.js";
 import { recoverNativePermission } from "../../packages/runtime/src/native-permission-recovery.js";
+import { reconcileStalePermissionHooks } from "../../packages/runtime/src/recovery.js";
 
 const call = { name: "run_command", parameters: { CommandLine: "echo permission-fixture" } };
 const mcp = { name: "call_mcp_tool", parameters: { ServerName: "opentabs", ToolName: "browser_emulate_device", Arguments: { tabId: 123, width: 390, height: 844, mobile: true } } };
@@ -552,4 +553,44 @@ it("keeps sensitive or incompletely displayed calls out of automated permission 
   expect(sensitive.request.kind).toBe("action_required");
   expect(sensitive.request.message).not.toContain("private-value");
   expect(s.store.get(NATIVE_PERMISSION_ENTITY, sensitive.id)).toBeUndefined();
+});
+
+it("denies hooks without authenticated context and cleans only tracked stale entries", async () => {
+  const s = await fixture(mcp as any);
+  await answer(s, "allow_method");
+  const run = resume(s);
+  const grant = bindNativePermission(s.store, run)!;
+  const path = join(s.root, ".agents", "hooks.json");
+  mkdirSync(join(s.root, ".agents"), { recursive: true });
+  writeFileSync(path, JSON.stringify({ "user-custom": { enabled: true } }));
+
+  const restore = installAgyPermissionHook(s.root, s.root, grant);
+  disposals.push(restore);
+  const command = Object.values(JSON.parse(readFileSync(path, "utf8"))).find((item: any) => item.PreToolUse) as any;
+  const executable = process.platform === "win32" ? "cmd.exe" : process.execPath;
+  const args = process.platform === "win32" ? ["/d", "/s", "/c", command.PreToolUse[0].hooks[0].command] : [join(s.root, "permission-hook.mjs")];
+
+  const env = { ...process.env };
+  delete env.DEVFLOW_BASE_URL;
+  delete env.DEVFLOW_RUN_TOKEN;
+  const stdout = await new Promise<string>((resolve, reject) => {
+    const child = execFile(executable, args, {
+      env,
+      windowsHide: true,
+      ...(process.platform === "win32" ? { windowsVerbatimArguments: true } : {}),
+    }, (error, out) => error ? reject(error) : resolve(out));
+    child.stdin!.write(JSON.stringify({ conversationId: session, toolCall: { name: mcp.name, args: mcp.parameters } }));
+  });
+  expect(JSON.parse(stdout)).toMatchObject({ decision: "deny" });
+
+  s.store.put("agy_permission_hook_ref", "stopped-run", s.workflow.id, {
+    run_id: "stopped-run",
+    workflow_id: s.workflow.id,
+    cwd: s.root,
+    key: agyPermissionHookKey(s.root),
+  });
+  expect(cleanupAgyPermissionHooks(s.root, new Set())).toBe(false);
+  expect(reconcileStalePermissionHooks(s.engine)).toBeGreaterThanOrEqual(1);
+  expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({ "user-custom": { enabled: true } });
+  expect(s.store.get("agy_permission_hook_ref", "stopped-run")).toBeUndefined();
 });

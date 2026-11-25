@@ -16,9 +16,45 @@ function windowsCommandPath(path: string) {
   return value.replace(/\.mjs$/i, ".mjs");
 }
 
+export function agyPermissionHookKey(cwd: string): string {
+  return "devflow-permission-" + objectHash(cwd).slice(0, 16);
+}
+
+export function cleanupAgyPermissionHooks(
+  directory: string,
+  keys: ReadonlySet<string>,
+): boolean {
+  const path = join(directory, ".agents", "hooks.json");
+  if (!existsSync(path)) return false;
+  const config: unknown = JSON.parse(readFileSync(path, "utf8"));
+  if (!config || typeof config !== "object" || Array.isArray(config)) {
+    throw new Error("Invalid AGY hooks configuration");
+  }
+  const next = { ...(config as Record<string, unknown>) };
+  let removed = false;
+  for (const entryKey of Object.keys(next)) {
+    if (!entryKey.startsWith("devflow-permission-")) continue;
+    if (!keys.has(entryKey)) continue;
+    delete next[entryKey];
+    removed = true;
+  }
+  if (!removed) return false;
+  if (Object.keys(next).length === 0) {
+    rmSync(path, { force: true });
+  } else {
+    atomicWrite(path, JSON.stringify(next, null, 2));
+  }
+  return true;
+}
+
 /** A temporary hook for the tools the human approved, without changing native grants. */
 export function installAgyPermissionHook(cwd: string, runRoot: string, grant: { calls: Array<{ name: string }> }) {
   const scriptPath = join(runRoot, "permission-hook.mjs");
+  const path = join(cwd, ".agents", "hooks.json");
+  const key = agyPermissionHookKey(cwd);
+  const command = process.platform === "win32"
+    ? `${windowsCommandPath(process.execPath)} ${windowsCommandPath(scriptPath)}`
+    : `'${process.execPath.replaceAll("'", "'\\''")}' '${scriptPath.replaceAll("'", "'\\''")}'`;
   atomicWrite(scriptPath, `let raw = "";
 try {
   let event;
@@ -43,16 +79,11 @@ try {
   process.stdout.write(JSON.stringify({ decision: "deny", reason: "DEVFLOW_PERMISSION_CHECK_FAILED" }));
 }
 `);
-  const command = process.platform === "win32"
-    ? `${windowsCommandPath(process.execPath)} ${windowsCommandPath(scriptPath)}`
-    : `'${process.execPath.replaceAll("'", "'\\''")}' '${scriptPath.replaceAll("'", "'\\''")}'`;
-  const path = join(cwd, ".agents", "hooks.json");
   const original = existsSync(path) ? readFileSync(path, "utf8") : undefined;
   const config = original === undefined ? {} : JSON.parse(original);
   if (!config || typeof config !== "object" || Array.isArray(config)) throw new Error("Invalid AGY hooks configuration");
   // Reuse one bridge entry per workspace so a prior interrupted Run cannot
   // install a second consumer for the same one-use decision.
-  const key = "devflow-permission-" + objectHash(cwd).slice(0, 16);
   const matcher = "^(?:" + [...new Set(grant.calls.map(call => call.name))]
     .map(name => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|") + ")$";
   const entry = { enabled: true, PreToolUse: [{ matcher, hooks: [{ type: "command", command, timeout: 20 }] }] };

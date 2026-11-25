@@ -38,6 +38,7 @@ import {
   currentContinuation,
   continuationFromWaiting,
 } from "../../core/src/waiting-context.js";
+import { agyPermissionHookKey, cleanupAgyPermissionHooks } from "../../adapters/agy/src/permission-hook.js";
 import type { WaitingContext } from "../../core/src/waiting-context.js";
 import type { Run, Workflow } from "../../contracts/src/index.js";
 import type { DispatchContext } from "../../contracts/src/model-routing.js";
@@ -276,6 +277,47 @@ export async function resumeModelWaits(engine: Engine, at = Date.now()) {
     }
   }
 }
+/** 清理已停止/异常中止工作流遗留的 AGY 工作区临时权限钩子，保留仍在运行的 run 所需条目 */
+export function reconcileStalePermissionHooks(engine: Engine): number {
+  const protectedByDirectory = new Map<string, Set<string>>();
+  const hookRefs = engine.store.list<{
+    run_id: string;
+    workflow_id?: string;
+    cwd: string;
+    key?: string;
+  }>("agy_permission_hook_ref");
+  const runsById = new Map(engine.store.list<Run>("run").map((r) => [r.id, r]));
+  const staleRefs: typeof hookRefs = [];
+
+  for (const ref of hookRefs) {
+    const run = runsById.get(ref.run_id);
+    const procRecord = run
+      ? engine.store.get<Record<string, unknown>>("process_record", run.id)
+      : undefined;
+    if (run?.status === "running" ||
+        (procRecord && observeProcessRecordSync(procRecord).state !== "confirmed_exited")) {
+      const protectedKeys = protectedByDirectory.get(ref.cwd) ?? new Set<string>();
+      protectedKeys.add(ref.key ?? agyPermissionHookKey(ref.cwd));
+      protectedByDirectory.set(ref.cwd, protectedKeys);
+    } else {
+      staleRefs.push(ref);
+    }
+  }
+
+  let cleaned = 0;
+  for (const ref of staleRefs) {
+    const key = ref.key ?? agyPermissionHookKey(ref.cwd);
+    if (protectedByDirectory.get(ref.cwd)?.has(key)) continue;
+    try {
+      if (cleanupAgyPermissionHooks(ref.cwd, new Set([key]))) cleaned++;
+      engine.store.remove("agy_permission_hook_ref", ref.run_id);
+    } catch {
+      /* 忽略不可访问目录的清理失败 */
+    }
+  }
+  return cleaned;
+}
+
 /** Correct orphaned Run labels only when the whole registered process tree has exited. */
 export function reconcileInactiveRuns(engine: Engine) {
   const reconciled: string[] = [];
@@ -295,6 +337,7 @@ export function reconcileInactiveRuns(engine: Engine) {
     });
     reconciled.push(run.id);
   }
+  reconcileStalePermissionHooks(engine);
   return reconciled;
 }
 
@@ -382,6 +425,7 @@ export function reconcileProcesses(engine: Engine, key: string) {
     dispatchMgr.reconcileDispatch(key);
     reconcileMaterialOutbox(engine.store, key);
   });
+  reconcileStalePermissionHooks(engine);
   return results;
 }
 /** Rebuild the pause receipt lost with the controller, using whole-tree exit facts. */

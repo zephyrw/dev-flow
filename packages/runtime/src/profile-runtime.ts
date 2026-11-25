@@ -9,7 +9,7 @@ import { z } from "zod";
 import { extractPlanningOutput, extractRoundOutput } from "./round-output.js";
 import type { Engine } from "../../core/src/engine.js";
 import { pauseForNativePermission, bindNativePermission } from "../../core/src/native-permission.js";
-import { installAgyPermissionHook } from "../../adapters/agy/src/permission-hook.js";
+import { installAgyPermissionHook, agyPermissionHookKey } from "../../adapters/agy/src/permission-hook.js";
 import { prepareClaudePermissionBridge } from "../../adapters/claude/src/permission-hook.js";
 import { prepareOpenCodePermissionBridge } from "../../adapters/opencode/src/permission-driver.js";
 import { NativeDeniedCalls } from "./native-permission-events.js";
@@ -1227,7 +1227,17 @@ export class ProfileRuntime {
       if (permissionGrant) {
         const nativeSession = previous?.id ?? run.conversation_id;
         if (profile.adapterId === "agy") {
-          restorePermissionHook = installAgyPermissionHook(invocation.cwd, root, permissionGrant);
+          const hookRestore = installAgyPermissionHook(invocation.cwd, root, permissionGrant);
+          this.engine.store.put("agy_permission_hook_ref", run.id, w.id, {
+            run_id: run.id,
+            workflow_id: w.id,
+            cwd: invocation.cwd,
+            key: agyPermissionHookKey(invocation.cwd),
+          });
+          restorePermissionHook = () => {
+            hookRestore();
+            this.engine.store.remove("agy_permission_hook_ref", run.id);
+          };
         } else if (nativeSession && (profile.adapterId === "claude-code" || profile.adapterId === "opencode")) {
           const bridge = profile.adapterId === "claude-code"
             ? prepareClaudePermissionBridge(invocation, root, permissionGrant, readOnlyPurpose(purpose), nativeSession)

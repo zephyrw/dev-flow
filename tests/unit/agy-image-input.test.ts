@@ -42,6 +42,7 @@ describe("AGY image file input", () => {
     expect(manifest[0]).toMatchObject({ absolute_path: file.absolute_path, sha256: file.sha256, display_name: file.display_name });
     expect(inv.args[inv.args.indexOf("--conversation") + 1]).toBe("old-session");
     expect(inv.args[inv.args.indexOf("--mode") + 1]).toBe(purpose === "planning" ? "plan" : "accept-edits");
+    expect(inv.args).not.toContain("--dangerously-skip-permissions");
     expect(inv.args.filter((arg) => arg === "--add-dir")).toHaveLength(2); // workspace + one attachment root
   });
   it("leaves text-only invocations unchanged", () => {

@@ -213,6 +213,7 @@ describe("SA-I04 readonly purposes and write refusal", () => {
       if (item.id === "codex") {
         expect(readonlyText).toContain("read-only");
         expect(writeText).toContain("workspace-write");
+        expect(writeText).not.toContain("--dangerously-bypass-approvals-and-sandbox");
       } else if (item.id === "cursor-agent") {
         expect(readonlyInv.args).toContain("ask");
         expect(writeInv.args).not.toContain("ask");
