@@ -80,11 +80,8 @@ export class GroupChat {
     check(new Set(names).size === names.length && names.every(name => !["全部", "全部模型"].includes(name)), "昵称须唯一，且不能使用系统提及词", 422);
     check(roster.members.some(member => member.id === roster.admin), "请指定群内模型担任管理员", 422);
   }
-  private modelWorkspace(members: Omit<Model, "id">[], workspace?: string) {
-    if (!workspace?.trim()) {
-      check(!members.some(member => member.tool === "codebuddy-code"), "CodeBuddy 需要配置模型工作区，请编辑群配置后同步会话成员", 422);
-      return undefined;
-    }
+  private modelWorkspace(workspace?: string) {
+    if (!workspace?.trim()) return undefined;
     check(isAbsolute(workspace), "模型工作区必须是绝对路径", 422);
     check(existsSync(workspace) && lstatSync(workspace).isDirectory(), "模型工作区不存在或不是目录", 422);
     return resolveProjectLayout(this.store, workspace).root;
@@ -94,7 +91,7 @@ export class GroupChat {
     const assigned = members.map(member => ({ ...member, id: randomUUID() }));
     check(new Set(assigned.map(member => JSON.stringify([member.tool, member.model]))).size === assigned.length, "同一工具中的同一模型只能加入一次", 422);
     const row: Group = { id: randomUUID(), title, human, members: assigned, admin: assigned[admin]?.id ?? "", version: 1,
-      model_workspace: this.modelWorkspace(members, workspace) };
+      model_workspace: this.modelWorkspace(workspace) };
     this.validateRoster(row);
     this.store.put(kinds.group, row.id, row.id, row);
     return row;
@@ -108,7 +105,7 @@ export class GroupChat {
     }));
     check(new Set(assigned.map(member => JSON.stringify([member.tool, member.model]))).size === assigned.length, "同一工具中的同一模型只能加入一次", 422);
     const next: Group = { ...row, title, human, members: assigned, admin: assigned[admin]?.id ?? "", version: version + 1,
-      model_workspace: this.modelWorkspace(members, workspace) };
+      model_workspace: workspace === undefined ? row.model_workspace : this.modelWorkspace(workspace) };
     this.validateRoster(next);
     this.store.put(kinds.group, id, id, next);
     return next;

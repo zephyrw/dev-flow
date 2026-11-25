@@ -1,13 +1,20 @@
 import { test, expect, type Page } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { parseAgyModelCatalog } from "../../packages/adapters/agy/src/model-configuration.js";
+import { fixturePost } from "./native-helper.js";
 
-const currentAgyCatalog = () => parseAgyModelCatalog({
-  stdout: readFileSync(new URL("../fixtures/model-catalog/agy/models-20261023.txt", import.meta.url), "utf8"),
-});
+const currentAgyStdout = () => readFileSync(new URL("../fixtures/model-catalog/agy/models-20261023.txt", import.meta.url), "utf8");
+const currentAgyCatalog = () => parseAgyModelCatalog({ stdout: currentAgyStdout() });
 
 const memberList = (page: Page) => page.getByRole("list", { name: "模型成员", exact: true });
 const memberDialog = (page: Page, name = "编辑成员") => page.getByRole("dialog", { name, exact: true });
+const groupNav = (page: Page) => page.getByRole("complementary", { name: "群聊导航" });
+const groupButton = (page: Page, name: string) => groupNav(page).getByRole("button", { name, exact: true });
+
+async function editGroup(page: Page, name: string) {
+  await groupButton(page, name).hover();
+  await groupButton(page, `编辑群聊 ${name}`).click();
+}
 
 async function editMember(page: Page, name: string) {
   const row = memberList(page).getByRole("listitem").filter({ hasText: name });
@@ -25,6 +32,7 @@ async function keepFirstMember(page: Page) {
 }
 
 test("群聊加载四个预置成员，刷新失效目录后保存实际 CLI ID", async ({ page }) => {
+  await fixturePost(page, "/__fixture/agy-hydrogen-catalog", { mode: "supported" });
   const old = parseAgyModelCatalog({ stdout: "gemini-3.7-flash-high\ngemini-3.6-flash-low\nclaude-sonnet-4-6" });
   let refreshed = false;
   let refreshes = 0;
@@ -38,13 +46,13 @@ test("群聊加载四个预置成员，刷新失效目录后保存实际 CLI ID"
     json: { id: "group-catalog-refresh", status: refreshed ? "committed" : "processing" },
   }));
   await page.goto("/group-chat");
-  await page.getByRole("button", { name: "新建群聊" }).click();
+  await groupButton(page, "新建群聊").click();
   await page.getByLabel("群名称").fill("AGY 模型目录验收");
   await expect(memberList(page).getByRole("listitem")).toHaveCount(4);
   await expect(memberList(page).getByRole("listitem").first()).toContainText("GPT-6 Astra max");
   await expect(page.getByRole("combobox")).toHaveCount(0);
   const editor = await editMember(page, "Gemini 4 Argon high");
-  const model = editor.getByRole("combobox", { name: "模型", exact: true });
+  const model = editor.getByRole("combobox", { name: "模型选择", exact: true });
   const effort = editor.getByRole("combobox", { name: "推理强度", exact: true });
   await expect.poll(() => refreshes).toBe(1);
   await expect(model).toBeDisabled();
@@ -54,7 +62,7 @@ test("群聊加载四个预置成员，刷新失效目录后保存实际 CLI ID"
   refreshed = true;
   await expect(model).toBeEnabled();
   await expect(model.locator("option")).toHaveText([
-    "选择具体模型", "Gemini 4 Argon", "Gemini 3.8 Flash（已有成员）", "Claude Opus 5.5", "Claude Sonnet 5.5", "GPT OSS 120B",
+    "请选择具体模型", "Gemini 4 Argon", "Gemini 3.8 Flash（已有成员）", "Claude Opus 5.5", "Claude Sonnet 5.5", "GPT OSS 120B",
   ]);
   const presets = [
     { nickname: "GPT-6 Astra max", tool: "codex", model: "gpt-6-astra", effort: "max" },
@@ -68,24 +76,27 @@ test("群聊加载四个预置成员，刷新失效目录后保存实际 CLI ID"
   await expect(editor.getByLabel("昵称")).toHaveAttribute("placeholder", "Gemini 4 Argon medium");
   await editor.getByRole("button", { name: "保存成员" }).click();
   await expect(memberList(page)).toContainText("Gemini 4 Argon medium");
-  const created = page.waitForRequest(request => request.url().endsWith("/api/groups") && request.method() === "POST");
+  const created = page.waitForResponse(response => response.url().endsWith("/api/groups") && response.request().method() === "POST");
   await page.getByRole("button", { name: "创建群聊" }).click();
-  expect((await created).postDataJSON().members).toEqual([
+  const createdResponse = await created;
+  expect(createdResponse.ok(), await createdResponse.text()).toBe(true);
+  expect(createdResponse.request().postDataJSON().members).toEqual([
     presets[0], presets[1], presets[2],
     { nickname: "Gemini 4 Argon medium", tool: "agy", model: "gemini-4-argon-medium", effort: "medium" },
   ]);
   await page.getByRole("button", { name: "关闭", exact: true }).click();
-  await page.getByLabel("群设置").click();
-  await page.getByRole("button", { name: "编辑群配置" }).click();
+  await editGroup(page, "AGY 模型目录验收");
   await editMember(page, "Gemini 4 Argon medium");
   await expect(model).toHaveValue("gemini-4-argon-high");
   await expect(effort).toHaveValue("medium");
   await model.selectOption({ label: "Claude Sonnet 5.5" });
   await effort.selectOption("low");
   await editor.getByRole("button", { name: "保存成员" }).click();
-  const updated = page.waitForRequest(request => /\/api\/groups\/[^/]+$/.test(request.url()) && request.method() === "PUT");
+  const updated = page.waitForResponse(response => /\/api\/groups\/[^/]+$/.test(response.url()) && response.request().method() === "PUT");
   await page.getByRole("button", { name: "保存群配置" }).click();
-  expect((await updated).postDataJSON().members[3]).toMatchObject({ model: "claude-sonnet-5-5-low", effort: "low" });
+  const updatedResponse = await updated;
+  expect(updatedResponse.ok(), await updatedResponse.text()).toBe(true);
+  expect(updatedResponse.request().postDataJSON().members[3]).toMatchObject({ model: "claude-sonnet-5-5-low", effort: "low" });
   expect(refreshes).toBe(1);
 });
 
@@ -96,19 +107,19 @@ test("群聊目录刷新失败时显示错误并阻止提交，重试后恢复",
   await page.route("**/api/model-tools/agy/models/refresh", route => route.fulfill({ json: recovered
     ? { status: "committed" } : { status: "retryable", error_message: "无法读取当前账号模型，请重试" } }));
   await page.goto("/group-chat");
-  await page.getByRole("button", { name: "新建群聊" }).click();
+  await groupButton(page, "新建群聊").click();
   await keepFirstMember(page);
   await page.getByRole("button", { name: "新增成员", exact: true }).click();
   const editor = memberDialog(page, "新增成员");
   await expect(editor.locator('option[value="gpt-6-astra"]')).toHaveJSProperty("disabled", true);
-  await editor.getByRole("combobox", { name: "工具", exact: true }).selectOption("agy");
+  await editor.getByRole("combobox", { name: "接入工具", exact: true }).selectOption("agy");
   await expect(editor.getByRole("alert")).toContainText("无法读取当前账号模型，请重试");
-  await expect(editor.getByRole("combobox", { name: "模型", exact: true })).toBeDisabled();
+  await expect(editor.getByRole("combobox", { name: "模型选择", exact: true })).toBeDisabled();
   await expect(editor.getByRole("button", { name: "添加成员", exact: true })).toBeDisabled();
   recovered = true;
-  await page.getByRole("button", { name: "刷新模型目录" }).click();
+  await page.getByRole("button", { name: "重试加载", exact: true }).click();
   await expect(page.getByRole("alert")).toHaveCount(0);
-  const model = page.getByRole("combobox", { name: "模型", exact: true });
+  const model = page.getByRole("combobox", { name: "模型选择", exact: true });
   await expect(model).toBeEnabled();
   await model.selectOption({ label: "GPT OSS 120B" });
   await expect(page.getByRole("combobox", { name: "推理强度", exact: true }).locator("option")).toHaveText(["模型默认", "medium"]);
@@ -117,21 +128,21 @@ test("群聊目录刷新失败时显示错误并阻止提交，重试后恢复",
   await expect(page.getByRole("button", { name: "创建群聊" })).toBeEnabled();
 });
 
-test("编辑旧群时保留已下线模型提示，重选前不能保存", async ({ page, request, baseURL }) => {
+test("编辑旧群时保留已下线模型提示，重选前不能保存", async ({ page }) => {
   await page.route("**/api/model-tools/agy/models", route => route.fulfill({ json: currentAgyCatalog() }));
-  const response = await request.post("/api/groups", { headers: { Origin: baseURL! }, data: {
-    title: "旧模型群配置", human: "我", admin: 0,
-    members: [{ nickname: "旧成员", tool: "agy", model: "gemini-3.7-flash-low" }],
-  } });
-  expect(response.ok()).toBeTruthy();
+  const groupId = "11001100-1100-4100-8100-110011001100";
+  const memberId = "22002200-2200-4200-8200-220022002200";
+  await page.route("**/api/groups", route => route.fulfill({ json: [{
+    id: groupId, title: "旧模型群配置", human: "我", admin: memberId, version: 1,
+    members: [{ id: memberId, nickname: "旧成员", tool: "agy", model: "gemini-3.7-flash-low" }],
+  }] }));
+  await page.route(`**/api/groups/${groupId}/sessions*`, route => route.fulfill({ json: { items: [] } }));
   await page.goto("/group-chat");
-  await page.getByRole("button", { name: /旧模型群配置/ }).click();
-  await page.getByLabel("群设置").click();
-  await page.getByRole("button", { name: "编辑群配置" }).click();
-  await expect(page.getByRole("alert")).toContainText("当前目录不可用，请修改或移除");
+  await editGroup(page, "旧模型群配置");
+  await expect(page.getByRole("alert")).toContainText("当前账号或目录不可用");
   await expect(page.getByRole("button", { name: "保存群配置" })).toBeDisabled();
   const editor = await editMember(page, "Gemini 3.7 Flash low");
-  const model = page.getByRole("combobox", { name: "模型", exact: true });
+  const model = page.getByRole("combobox", { name: "模型选择", exact: true });
   await expect(model.locator('option[value="gemini-3.7-flash-low"]')).toHaveJSProperty("disabled", true);
   await model.selectOption({ label: "Gemini 3.8 Flash" });
   await editor.getByRole("button", { name: "保存成员" }).click();
@@ -139,24 +150,24 @@ test("编辑旧群时保留已下线模型提示，重选前不能保存", async
 });
 
 test("群聊界面修改各昵称、比较方案并指定成员成稿", async ({ page }) => {
-  await page.goto("/");
-  await page.getByRole("link", { name: "模型群聊" }).click();
-  await page.getByRole("button", { name: "新建群聊" }).click();
+  await page.goto("/group-chat");
+  await groupButton(page, "新建群聊").click();
   await keepFirstMember(page);
   await page.getByLabel("群名称").fill("群聊浏览器验收");
   const first = await editMember(page, "GPT-6 Astra max");
-  await first.getByRole("combobox", { name: "模型", exact: true }).selectOption({ label: "GPT-6.1 Sol" });
+  await first.getByRole("combobox", { name: "模型选择", exact: true }).selectOption({ label: "GPT-6.1 Sol" });
   await expect(first.getByLabel("昵称")).toHaveAttribute("placeholder", "GPT-6.1 Sol");
   await first.getByRole("button", { name: "保存成员" }).click();
   await page.getByRole("button", { name: "新增成员", exact: true }).click();
   const second = memberDialog(page, "新增成员");
   await second.getByLabel("昵称").fill("远山");
-  await second.getByRole("combobox", { name: "模型", exact: true }).selectOption({ label: "GPT-6 Astra" });
+  await second.getByRole("combobox", { name: "模型选择", exact: true }).selectOption({ label: "GPT-6 Astra" });
   await second.getByRole("button", { name: "添加成员", exact: true }).click();
   await page.getByRole("button", { name: "创建群聊" }).click();
   await page.getByLabel("会话名称").fill("方案互评");
-  await page.getByRole("combobox", { name: "场景", exact: true }).selectOption("design");
+  await page.getByRole("combobox", { name: "场景类型", exact: true }).selectOption("design");
   await page.getByRole("button", { name: "创建会话" }).click();
+  await page.getByLabel("会话选项").click();
   await page.getByRole("button", { name: "会话成员", exact: true }).click();
   const model = page.getByRole("dialog").locator("form").filter({ has: page.getByLabel("GPT-6.1 Sol的昵称") });
   await model.getByLabel("GPT-6.1 Sol的昵称").fill("墨舟新名");
@@ -200,9 +211,9 @@ test("群聊界面修改各昵称、比较方案并指定成员成稿", async ({
   await page.getByRole("button", { name: "采用此稿" }).click();
   await expect(page.getByRole("button", { name: "已采用" })).toBeDisabled();
   await page.getByLabel("会话选项").click();
-  await page.getByRole("button", { name: "删除", exact: true }).click();
+  await page.getByRole("button", { name: "删除会话", exact: true }).click();
   await page.getByLabel("同时删除此会话的全部受管文件").check();
-  await page.getByRole("button", { name: "确认删除" }).click();
+  await page.getByRole("button", { name: "确认删除会话", exact: true }).click();
   await expect(page.getByRole("status")).toContainText("会话与受管文件已删除");
 });
 
@@ -216,10 +227,10 @@ test("小说场景重想、选择低票点子、回答问题与大纲交付", as
   });
   expect(group.ok()).toBeTruthy();
   await page.goto("/group-chat");
-  await page.getByRole("button", { name: /小说验收群/ }).click();
-  await page.getByRole("button", { name: "新建会话" }).click();
+  await groupButton(page, "小说验收群").click();
+  await groupButton(page, "新建会话").click();
   await page.getByLabel("会话名称").fill("故事构思");
-  await page.getByRole("combobox", { name: "场景", exact: true }).selectOption("fiction");
+  await page.getByRole("combobox", { name: "场景类型", exact: true }).selectOption("fiction");
   await page.getByRole("button", { name: "创建会话" }).click();
   await page.getByLabel("群消息").fill("以时间错位为起点，探索完整故事。");
   await page.getByRole("button", { name: "发送", exact: true }).click();
@@ -259,21 +270,23 @@ test("开放场景按提及单人或全员回应，普通群消息可仅记录",
   let disconnected = true;
   await page.route(`**/api/group-sessions/${sessionId}`, route => disconnected ? route.abort() : route.continue());
   await page.goto("/group-chat");
-  await page.getByRole("button", { name: /开放验收群/ }).click();
-  await page.getByRole("button", { name: /提及测试/ }).click();
+  await groupButton(page, "开放验收群").click();
+  await groupButton(page, "提及测试").click();
   await expect(page.getByRole("alert")).toContainText("正在自动重连");
   disconnected = false;
   await expect(page.getByRole("alert")).toHaveCount(0);
   await page.getByLabel("群消息").fill("@远山 只请你回应");
   await page.getByRole("button", { name: "发送", exact: true }).click();
-  await expect(page.getByText("远山 · 完成")).toBeVisible();
-  await expect(page.getByText("墨舟 · 完成")).toHaveCount(0);
+  await expect(page.getByText("远山完成本轮任务。", { exact: true })).toHaveCount(1);
+  await expect(page.getByText("墨舟完成本轮任务。", { exact: true })).toHaveCount(0);
   await page.getByLabel("群消息").fill("@全部模型 请各回应一次");
   await page.getByRole("button", { name: "发送", exact: true }).click();
-  await expect(page.getByText("墨舟 · 完成")).toBeVisible();
-  await expect(page.getByText("远山 · 完成")).toBeVisible();
+  await expect(page.getByText("墨舟完成本轮任务。", { exact: true })).toHaveCount(1);
+  await expect(page.getByText("远山完成本轮任务。", { exact: true })).toHaveCount(2);
   await page.getByRole("combobox", { name: "发送方式" }).selectOption("record");
   await page.getByLabel("群消息").fill("仅保存这条材料");
   await page.getByRole("button", { name: "发送", exact: true }).click();
   await expect(page.getByText("仅保存这条材料", { exact: true })).toBeVisible();
+  await expect(page.getByText("墨舟完成本轮任务。", { exact: true })).toHaveCount(1);
+  await expect(page.getByText("远山完成本轮任务。", { exact: true })).toHaveCount(2);
 });

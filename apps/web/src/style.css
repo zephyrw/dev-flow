@@ -340,7 +340,8 @@ pre {
    Left Navigation Sidebar
    ========================================================================== */
 
-aside {
+.layout > aside,
+.workbench > aside {
   width: var(--sidebar-width);
   flex-shrink: 0;
   background: var(--sidebar-bg);
@@ -355,7 +356,8 @@ aside {
   z-index: 20;
 }
 
-aside .brand {
+.layout > aside .brand,
+.workbench > aside .brand {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -369,7 +371,8 @@ aside .brand {
   margin-bottom: 18px;
 }
 
-aside .brand-main {
+.layout > aside .brand-main,
+.workbench > aside .brand-main {
   display: flex;
   align-items: center;
   gap: 12px;
@@ -433,7 +436,8 @@ aside .brand-main {
   gap: 12px;
 }
 
-aside .mark {
+.layout > aside .mark,
+.workbench > aside .mark {
   display: block;
   width: 28px;
   height: 28px;

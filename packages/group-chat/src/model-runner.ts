@@ -50,7 +50,7 @@ export async function acquireGroupAgyPermit(
 export function createGroupModelRunner(
   getCatalog: (tool: string, cwd?: string) => ModelCatalog | Promise<ModelCatalog>,
   customCodex?: string, customAgy?: string, accountService?: AgyAccountService,
-  verifyModel?: (member: Model, cwd: string, catalog: ModelCatalog, signal: AbortSignal) => Promise<void>,
+  verifyModel?: (member: Model, workspace: string | undefined, catalog: ModelCatalog, signal: AbortSignal) => Promise<void>,
 ) {
   const records = new Map<string, { path: string; permit?: UsagePermit }>();
   const accounts = accountService ? new GroupAccountConsumer(accountService) : undefined;
@@ -65,8 +65,8 @@ export function createGroupModelRunner(
   const adapters = createDefaultAdapterRegistry();
   const runAttempt = async ({ session, member, cwd, scratch, prompt, execute, structured, signal, modelWorkspace }: Parameters<RunModel>[0], accountCall?: GroupAccountCall) => {
     const tool = (member.tool as string) === "codebuddy" ? "codebuddy-code" : member.tool;
-    if (tool === "codebuddy-code" && !modelWorkspace) throw new Error("CodeBuddy 需要配置模型工作区，请编辑群配置后同步会话成员");
-    const nativeCwd = tool === "codebuddy-code" ? modelWorkspace! : cwd;
+    const workspace = tool === "codebuddy-code" ? modelWorkspace : undefined;
+    const nativeCwd = workspace ?? cwd;
     const managedAgy = tool === "agy" && Boolean(accountService?.isManaged());
     const findUsableEntry = (cat: ModelCatalog, targetId: string) =>
       cat.entries.find(item =>
@@ -76,7 +76,7 @@ export function createGroupModelRunner(
         item.availability !== "unavailable" &&
         (tool !== "agy" || item.availability === "listed"));
 
-    let catalog = await getCatalog(tool, nativeCwd);
+    let catalog = await getCatalog(tool, workspace);
     let entry = findUsableEntry(catalog, member.model);
     if (!managedAgy) {
       if (!entry) {
@@ -99,7 +99,7 @@ export function createGroupModelRunner(
     let confirmed = true;
     let successful = false;
     try {
-      if (tool === "codebuddy-code") await verifyModel?.(member, nativeCwd, catalog, signal);
+      if (tool === "codebuddy-code") await verifyModel?.(member, workspace, catalog, signal);
       signal.throwIfAborted();
       if (managedAgy) {
         const targetModel = (member.effort ? entry?.effort.variants?.[member.effort] : undefined) ?? member.model;
@@ -107,7 +107,7 @@ export function createGroupModelRunner(
         permit = await accounts!.acquire(accountCall!, (request, abort) => acquireGroupAgyPermit(accountService!, request, abort));
         signal.throwIfAborted();
         // 基于最终落定账号的实际目录重新核验模型与思考强度（禁止静默降档）
-        catalog = await getCatalog(tool, nativeCwd);
+        catalog = await getCatalog(tool, workspace);
         if (catalog.status !== "fresh" || catalog.discoveryStatus === "missing") {
           throw new Error("当前 AGY 账号模型目录尚未确认，请刷新后重试");
         }

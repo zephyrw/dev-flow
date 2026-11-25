@@ -22,11 +22,6 @@ const defaultMembers: Omit<Model, "id">[] = [
   { nickname: "", tool: "agy", model: "gemini-4-argon-high", effort: "high" },
 ];
 const sceneNames = { open: "开放讨论", fiction: "小说选题与大纲", design: "方案设计" };
-const stageNames = {
-  reply: "成员回复", summary: "管理员整理", ideas: "独立选题", idea_vote: "点子投票",
-  questions: "提出关键问题", question_vote: "问题投票", outline: "整理大纲",
-  plans: "独立出方案", reviews: "方案互评", final: "整理成稿",
-};
 const label = (artifact: Artifact) => artifact.author + " · " + artifact.title;
 
 export function getModelAbbr(name: string): string {
@@ -56,6 +51,20 @@ function hashString(str: string) {
   let hash = 0;
   for (let i = 0; i < str.length; i++) hash = (hash * 31 + str.charCodeAt(i)) >>> 0;
   return hash;
+}
+
+const MEMBER_AVATAR_PALETTES = [
+  { bg: "#e0f2fe", color: "#0369a1" },
+  { bg: "#ede9fe", color: "#6d28d9" },
+  { bg: "#d1fae5", color: "#047857" },
+  { bg: "#fef3c7", color: "#b45309" },
+  { bg: "#fce7f3", color: "#be185d" },
+  { bg: "#e0e7ff", color: "#4338ca" },
+];
+
+function memberAvatarStyle(author: string) {
+  const palette = MEMBER_AVATAR_PALETTES[hashString(author) % MEMBER_AVATAR_PALETTES.length]!;
+  return { background: palette.bg, color: palette.color };
 }
 
 export function GroupAvatar({ members = [], title = "" }: { members?: Pick<Model, "nickname" | "model" | "tool">[]; title?: string }) {
@@ -180,21 +189,17 @@ function GroupForm({ save, close, group, existingGroups = [] }: { save: (data: u
   const [members, setMembers] = useState<Omit<Model, "id">[]>(() =>
     group ? group.members.map(({ id: _id, ...member }) => member) : defaultMembers,
   );
-  const [modelWorkspace, setModelWorkspace] = useState(group?.model_workspace ?? "");
   const [catalogs, setCatalogs] = useState<Partial<Record<Model["tool"], ModelChoice[]>>>({});
-  const [catalogKeys, setCatalogKeys] = useState<Partial<Record<Model["tool"], string>>>({});
-  const [confirmedKeys, setConfirmedKeys] = useState<Partial<Record<Model["tool"], string>>>({});
+  const [confirmedTools, setConfirmedTools] = useState<Partial<Record<Model["tool"], boolean>>>({});
   const [catalogContexts, setCatalogContexts] = useState<Partial<Record<Model["tool"], string | undefined>>>({});
   const confirmedContexts = useRef<Partial<Record<Model["tool"], string | undefined>>>({});
-  const catalogRequests = useRef<Partial<Record<Model["tool"], { key: string; controller: AbortController }>>>({});
-  const workspaceRef = useRef(modelWorkspace.trim());
-  workspaceRef.current = modelWorkspace.trim();
+  const catalogRequests = useRef<Partial<Record<Model["tool"], AbortController>>>({});
   const mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
     return () => {
       mounted.current = false;
-      for (const request of Object.values(catalogRequests.current)) request?.controller.abort();
+      for (const controller of Object.values(catalogRequests.current)) controller?.abort();
     };
   }, []);
   const [loading, setLoading] = useState<Partial<Record<Model["tool"], boolean>>>({});
@@ -204,54 +209,42 @@ function GroupForm({ save, close, group, existingGroups = [] }: { save: (data: u
   const [pending, setPending] = useState(false);
   const [editor, setEditor] = useState<{ index: number; member: Omit<Model, "id">; admin: boolean }>();
 
-  const isWorkspaceTool = (tool: Model["tool"]) => tool === "codebuddy-code";
-  const keyFor = (tool: Model["tool"]) => JSON.stringify([tool, isWorkspaceTool(tool) ? modelWorkspace.trim() : "default"]);
-  const catalogReady = (tool: Model["tool"]) => confirmedKeys[tool] === keyFor(tool) &&
+  const catalogReady = (tool: Model["tool"]) => Boolean(confirmedTools[tool]) &&
     (tool !== "agy" || confirmedContexts.current[tool] === catalogContexts[tool]) &&
     !loading[tool] && !catalogErrors[tool];
 
   function invalidateAgyCatalog() {
-    catalogRequests.current.agy?.controller.abort();
+    catalogRequests.current.agy?.abort();
     catalogRequests.current.agy = undefined;
     confirmedContexts.current.agy = undefined;
-    setConfirmedKeys(value => ({ ...value, agy: undefined }));
+    setConfirmedTools(value => ({ ...value, agy: false }));
     setCatalogContexts(value => ({ ...value, agy: undefined }));
     setCatalogs(value => ({ ...value, agy: [] }));
   }
 
   function load(tool: Model["tool"], force = false) {
-    catalogRequests.current[tool]?.controller.abort();
-    const workspace = workspaceRef.current;
-    const key = JSON.stringify([tool, isWorkspaceTool(tool) ? workspace : "default"]);
+    catalogRequests.current[tool]?.abort();
     const controller = new AbortController();
-    const request = { key, controller };
-    catalogRequests.current[tool] = request;
-    const current = () => mounted.current && catalogRequests.current[tool] === request &&
-      !controller.signal.aborted && (!isWorkspaceTool(tool) || workspaceRef.current === workspace);
-    setCatalogKeys(value => ({ ...value, [tool]: key }));
-    setConfirmedKeys(value => ({ ...value, [tool]: undefined }));
+    catalogRequests.current[tool] = controller;
+    const current = () => mounted.current && catalogRequests.current[tool] === controller && !controller.signal.aborted;
+    setConfirmedTools(value => ({ ...value, [tool]: false }));
     setCatalogErrors(value => ({ ...value, [tool]: "" }));
     // AGY 账号可能已切换或尚待重核：加载开始立刻清除旧目录，避免短暂透出上一账号的 Hydrogen 能力
-    if (tool === "agy" || catalogKeys[tool] !== key) {
+    if (tool === "agy") {
       confirmedContexts.current[tool] = undefined;
       setCatalogContexts(value => ({ ...value, [tool]: undefined }));
       setCatalogs(value => ({ ...value, [tool]: [] }));
     }
-    if (isWorkspaceTool(tool) && !workspace) {
-      setLoading(value => ({ ...value, [tool]: false }));
-      setCatalogErrors(value => ({ ...value, [tool]: "请先填写 CodeBuddy 工作区。" }));
-      return;
-    }
     setLoading(value => ({ ...value, [tool]: true }));
     void fetchToolModelsWithContext(tool, choices => {
       if (current() && tool !== "agy") setCatalogs(value => ({ ...value, [tool]: choices }));
-    }, isWorkspaceTool(tool) ? "workspace:" + workspace : undefined, force, controller.signal)
+    }, tool === "codebuddy-code" && group?.model_workspace ? `workspace:${group.model_workspace}` : undefined, force, controller.signal)
       .then(result => {
         if (!current()) return;
         confirmedContexts.current[tool] = result.accountContextKey;
         setCatalogContexts(value => ({ ...value, [tool]: result.accountContextKey }));
         setCatalogs(value => ({ ...value, [tool]: result.choices }));
-        setConfirmedKeys(value => ({ ...value, [tool]: key }));
+        setConfirmedTools(value => ({ ...value, [tool]: true }));
       })
       .catch(err => {
         if (!current()) return;
@@ -271,12 +264,11 @@ function GroupForm({ save, close, group, existingGroups = [] }: { save: (data: u
   useEffect(() => {
     const timer = setTimeout(() => {
       for (const tool of memberTools.split(",").filter(Boolean) as Model["tool"][]) {
-        const key = JSON.stringify([tool, isWorkspaceTool(tool) ? workspaceRef.current : "default"]);
-        if (catalogRequests.current[tool]?.key !== key) load(tool);
+        if (!catalogRequests.current[tool]) load(tool);
       }
     }, 200);
     return () => clearTimeout(timer);
-  }, [memberTools, modelWorkspace]);
+  }, [memberTools]);
 
   useEffect(() => {
     const refresh = () => {
@@ -284,7 +276,7 @@ function GroupForm({ save, close, group, existingGroups = [] }: { save: (data: u
     };
     window.addEventListener("focus", refresh);
     return () => window.removeEventListener("focus", refresh);
-  }, [memberTools, modelWorkspace]);
+  }, [memberTools]);
 
   // 订阅 AGY 账号变更通知，切号/刷新后同步刷新群聊内的 AGY 可用模型列表
   useEffect(() => {
@@ -350,13 +342,6 @@ function GroupForm({ save, close, group, existingGroups = [] }: { save: (data: u
 
   const canSave = members.length > 0 && members.every(isAvailable);
 
-  const workspaceField = (labelText: string) => <label className="gc-col-span-2">
-    <span className="gc-form-label">{labelText}</span>
-    <input value={modelWorkspace} onChange={event => setModelWorkspace(event.currentTarget.value)}
-      placeholder="填写 CodeBuddy 使用的本机 Git 工作区绝对路径" required />
-    <small>目录读取、模型核验和回复均使用此工作区；已有会话需同步群配置。</small>
-  </label>;
-
   function patch(value: Partial<Omit<Model, "id">>) {
     setEditor(current => current && { ...current, member: { ...current.member, ...value } });
   }
@@ -393,7 +378,7 @@ function GroupForm({ save, close, group, existingGroups = [] }: { save: (data: u
       takenNames.add(normalize(nickname));
       return { ...member, nickname };
     });
-    try { await save({ title, human: humanName, members: namedMembers, admin, model_workspace: modelWorkspace.trim() || undefined, version: group?.version }); }
+    try { await save({ title, human: humanName, members: namedMembers, admin, version: group?.version }); }
     catch (error) { setError(error instanceof Error ? error.message : String(error)); }
     finally { setPending(false); }
   }
@@ -404,7 +389,6 @@ function GroupForm({ save, close, group, existingGroups = [] }: { save: (data: u
         <span className="gc-form-label">群名称</span>
         <input name="title" required maxLength={100} defaultValue={group?.title} placeholder="输入群聊名称（不可重名）" autoFocus />
       </label>
-      {members.some(member => isWorkspaceTool(member.tool)) && workspaceField("模型工作区")}
       <div className="gc-member-section-header">
         <span className="gc-form-label">群内模型成员（{members.length}）</span>
         <small className="gc-text-muted">（当前用户为默认参与者，无需单独添加）</small>
@@ -464,7 +448,7 @@ function GroupForm({ save, close, group, existingGroups = [] }: { save: (data: u
   {editor && (() => {
         const { member, index } = editor;
         const ready = catalogReady(member.tool);
-        const models = catalogKeys[member.tool] === keyFor(member.tool) ? catalogs[member.tool] ?? [] : [];
+        const models = catalogs[member.tool] ?? [];
         const model = memberChoice(member, models);
         const efforts = model?.effortStatus === "supported" ? model.effortValues : [];
         const effort = member.effort ?? Object.entries(model?.variantByEffort ?? {}).find(([, id]) => id === member.model)?.[0] ?? "";
@@ -494,7 +478,6 @@ function GroupForm({ save, close, group, existingGroups = [] }: { save: (data: u
               {tools.map(tool => <option value={tool} key={tool}>{toolLabel(tool)}</option>)}
             </select>
           </label>
-          {isWorkspaceTool(member.tool) && workspaceField("CodeBuddy 工作区")}
           {/* 模型选择与推理强度同一行，比例合适紧凑 */}
           <div className="gc-col-span-2 gc-model-effort-row">
             <label className={`gc-model-col ${models.length > 0 ? "gc-model-col-adaptive" : "gc-model-col-empty"}`}>
@@ -715,8 +698,10 @@ function Results({ view, preview, act }: { view: View; preview: (id: string) => 
 export function GroupChatPage() {
   const [refreshError, setRefreshError] = useState("");
   const [groups, setGroups] = useState<Group[]>([]);
+  const [groupsLoading, setGroupsLoading] = useState(true);
   const [groupId, setGroupId] = useState("");
   const [sessions, setSessions] = useState<Page>({ items: [] });
+  const [sessionsLoading, setSessionsLoading] = useState(false);
   const [query, setQuery] = useState("");
   const [sessionId, updateSessionId] = useState("");
   const [view, setView] = useState<View>();
@@ -773,24 +758,47 @@ export function GroupChatPage() {
   const session = activeView?.session ?? activeSessionSummary;
   const round = activeView?.round;
   const canChange = !session?.archived && !session?.deleting;
-  const busy = round?.status === "running" || round?.status === "paused";
+  const running = round?.status === "running";
+  const busy = running || round?.status === "paused";
   const report = (err: unknown) => setError(err instanceof Error ? err.message : String(err));
 
   useEffect(() => {
     let live = true;
+    setGroupsLoading(true);
     void api<Group[]>("/api/groups").then(rows => {
       if (!live) return;
+      const firstGroupId = rows[0]?.id ?? "";
       setGroups(rows);
-      setGroupId(rows[0]?.id ?? "");
-    }).catch(report);
+      setGroupId(firstGroupId);
+      if (firstGroupId) setSessionsLoading(true);
+    }).catch(report).finally(() => {
+      if (live) setGroupsLoading(false);
+    });
     return () => { live = false; };
   }, []);
 
   useEffect(() => {
-    if (!groupId) return;
+    if (!groupId) {
+      setSessionsLoading(false);
+      return;
+    }
     let live = true;
-    const timer = setTimeout(() => void api<Page>(`/api/groups/${groupId}/sessions?query=${encodeURIComponent(query)}`)
-      .then(page => { if (live) setSessions(page); }).catch(error => { if (live) report(error); }), 150);
+    setSessionsLoading(true);
+    const loadSessions = () => void api<Page>(`/api/groups/${groupId}/sessions?query=${encodeURIComponent(query)}`)
+      .then(page => {
+        if (!live) return;
+        setSessions(page);
+        if (!query && !selectionRef.current.id && page.items[0]) {
+          setSessionId(page.items[0].id);
+        }
+      })
+      .catch(error => { if (live) report(error); })
+      .finally(() => { if (live) setSessionsLoading(false); });
+    if (!query) {
+      loadSessions();
+      return () => { live = false; };
+    }
+    const timer = setTimeout(loadSessions, 150);
     return () => { live = false; clearTimeout(timer); };
   }, [groupId, query]);
 
@@ -879,11 +887,48 @@ export function GroupChatPage() {
     if (!session || pending) return;
     const selection = selectionRef.current;
     await perform(async () => {
-      const next = await api<View>(sessionUrl(session.id) + "/actions", "POST", { version: session.version, request: crypto.randomUUID(), input });
+      let currentSession = session;
+      if (input.action === "send" && round?.status === "paused") {
+        const settled = await api<View>(sessionUrl(currentSession.id) + "/actions", "POST", {
+          version: currentSession.version,
+          request: crypto.randomUUID(),
+          input: { action: "cancel" },
+        });
+        if (!isCurrentSelection(selection)) return;
+        currentSession = settled.session;
+        setView(prior => isCurrentSelection(selection) && prior?.session.id === currentSession.id && prior.session.version <= settled.session.version ? settled : prior);
+      }
+      const next = await api<View>(sessionUrl(currentSession.id) + "/actions", "POST", {
+        version: currentSession.version,
+        request: crypto.randomUUID(),
+        input,
+      });
       if (!isCurrentSelection(selection)) return;
-      setView(prior => isCurrentSelection(selection) && prior?.session.id === session.id && prior.session.version <= next.session.version ? next : prior);
+      setView(prior => isCurrentSelection(selection) && prior?.session.id === currentSession.id && prior.session.version <= next.session.version ? next : prior);
       if (input.action === "send") { setMessage(""); setTargets([]); setMentions(false); }
       setModal(undefined);
+    });
+  }
+
+  async function stopRound() {
+    if (!session || pending || !running) return;
+    const selection = selectionRef.current;
+    await perform(async () => {
+      const paused = await api<View>(sessionUrl(session.id) + "/actions", "POST", {
+        version: session.version,
+        request: crypto.randomUUID(),
+        input: { action: "pause" },
+      });
+      if (!isCurrentSelection(selection)) return;
+      setView(prior => isCurrentSelection(selection) && prior?.session.id === paused.session.id && prior.session.version <= paused.session.version ? paused : prior);
+      if (paused.round?.status !== "paused") return;
+      const stopped = await api<View>(sessionUrl(paused.session.id) + "/actions", "POST", {
+        version: paused.session.version,
+        request: crypto.randomUUID(),
+        input: { action: "cancel" },
+      });
+      if (!isCurrentSelection(selection)) return;
+      setView(prior => isCurrentSelection(selection) && prior?.session.id === stopped.session.id && prior.session.version <= stopped.session.version ? stopped : prior);
     });
   }
 
@@ -938,6 +983,7 @@ export function GroupChatPage() {
           const nextGroup = rest[0];
           setGroupId(nextGroup?.id ?? "");
           setSessions({ items: [] });
+          setSessionsLoading(Boolean(nextGroup));
           setSessionId("");
         }
         return rest;
@@ -975,13 +1021,15 @@ export function GroupChatPage() {
         version: deletingSessionItem.version,
         files: true,
       });
+      const remaining = sessions.items.filter(s => s.id !== deletingSessionItem.id);
       setSessions(prior => ({
         ...prior,
         items: prior.items.filter(s => s.id !== deletingSessionItem.id),
       }));
       if (sessionId === deletingSessionItem.id) {
-        setSessionId("");
-        setView(undefined);
+        const fallbackId = remaining[0]?.id ?? "";
+        setSessionId(fallbackId);
+        if (!fallbackId) setView(undefined);
       }
       const title = deletingSessionItem.title;
       setDeletingSessionItem(undefined);
@@ -1014,12 +1062,8 @@ export function GroupChatPage() {
       return re.test(message);
     });
 
-    let targeted = [...new Set([...targets, ...mentionedMembers.map(m => m.id)])];
-    // 用户规则：没有 @ 模型默认是发给所有人的，所以不需要 @ 所有人功能
-    const isBroadcast = targeted.length === 0;
-    if (isBroadcast) {
-      targeted = session.members.map(m => m.id);
-    }
+    const targeted = [...new Set([...targets, ...mentionedMembers.map(m => m.id)])];
+    const isBroadcast = /(?:^|\s)@(?:全部模型|全部)(?=\s|$)/u.test(message);
 
     if (mode !== "record" && session.scene === "design" && round?.stage === "reviews" && round.status === "waiting" && targeted.length === 1 && !isBroadcast && /成稿|定稿/u.test(message)) {
       void act({ action: "final", member: targeted[0], text: message });
@@ -1044,7 +1088,7 @@ export function GroupChatPage() {
   const artifactsById = new Map(artifacts.map(item => [item.id, item]));
   const nextAction = session?.scene === "fiction" ? "整理大纲" : "指定成员成稿";
   const canDraft = !!session?.brief && (session.scene === "fiction" || session.scene === "design") && !busy;
-  const canRestart = !!session?.brief && session.scene !== "open" && round?.status !== "running";
+  const canRestart = !!session?.brief && session.scene !== "open" && !running;
   const beginDraft = (artifact = "") => {
     if (!session) return;
     setAuthor(session.admin); setBase(artifact); setModal(session.scene === "fiction" ? "outline" : "final");
@@ -1104,16 +1148,16 @@ export function GroupChatPage() {
                 onMouseLeave={() => setPopoverGroup(null)}
                 onClick={() => {
                   if (groupId === item.id) return;
-                  setGroupId(item.id); setSessions({ items: [] }); setSessionId(""); setQuery("");
+                  setGroupId(item.id); setSessions({ items: [] }); setSessionsLoading(true); setSessionId(""); setQuery("");
                 }}
               >
                 <div className="gc-group-avatar-wrapper">
                   <GroupAvatar members={item.members} title={item.title} />
                 </div>
-                <div className="gc-group-card-body">
-                  <div className="gc-group-card-title">{item.title}</div>
+                <button type="button" className="gc-group-card-body gc-nav-select" aria-label={item.title} aria-current={item.id === groupId || undefined}>
+                  <span className="gc-group-card-title">{item.title}</span>
                   <small className="gc-group-card-meta">{item.members.length} 个模型</small>
-                </div>
+                </button>
                 <div className="gc-group-hover-actions">
                   <button
                     type="button"
@@ -1166,20 +1210,24 @@ export function GroupChatPage() {
             <input aria-label="搜索会话" placeholder="搜索会话…" value={query} onInput={event => setQuery(event.currentTarget.value)} />
           </div>
           <div className="gc-session-list">
-            {sessions.items.map(item => (
+            {sessions.items.map(item => {
+              const currentScene = item.id === session?.id ? session.scene : item.scene;
+              const currentArchived = item.id === session?.id ? session.archived : item.archived;
+              return (
               <div
                 key={item.id}
                 className={`gc-session-item ${item.id === sessionId ? "gc-selected" : ""}`}
                 aria-current={item.id === sessionId ? "page" : undefined}
                 onClick={() => { setSessionId(item.id); setShowNavigation(false); }}
               >
-                <div className="gc-session-item-body">
+                <span className={`gc-session-scene-dot gc-scene-${currentScene}`} aria-hidden="true" />
+                <button type="button" className="gc-session-item-body gc-nav-select" aria-label={item.title} aria-current={item.id === sessionId ? "page" : undefined}>
                   <span className="gc-session-item-title">{item.title}</span>
                   <small className="gc-session-item-meta">
-                    {sceneNames[item.id === session?.id ? session.scene : item.scene]}
-                    {(item.id === session?.id ? session.archived : item.archived) && " · 已归档"}
+                    {sceneNames[currentScene]}
+                    {currentArchived && " · 已归档"}
                   </small>
-                </div>
+                </button>
                 <div className="gc-session-hover-actions">
                   <button
                     type="button"
@@ -1213,8 +1261,9 @@ export function GroupChatPage() {
                   </button>
                 </div>
               </div>
-            ))}
-            {!sessions.items.length && <div className="gc-empty-tip">{query ? "没有匹配的会话" : "暂无会话，点击右上 ＋ 新建"}</div>}
+              );
+            })}
+            {!sessions.items.length && !sessionsLoading && <div className="gc-empty-tip">{query ? "没有匹配的会话" : "暂无会话，点击右上 ＋ 新建"}</div>}
           </div>
           {sessions.next && <button className="gc-btn-more" onClick={() => void perform(async () => {
             const page = await api<Page>(`/api/groups/${groupId}/sessions?before=${sessions.next}&query=${encodeURIComponent(query)}`);
@@ -1225,15 +1274,41 @@ export function GroupChatPage() {
 
       {/* 主聊天区 */}
       <main className="gc-chat">
-        {!session ? <div className="gc-empty">
-          <div className="gc-empty-chat-icon">
-            <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/>
+        {!session ? (groupsLoading || (groupId && sessionsLoading)) ? (
+          <div className="gc-empty gc-empty-loading" role="status">
+            <div className="gc-empty-hero-graphic" aria-hidden="true">
+              <svg width="56" height="56" viewBox="0 0 72 72" fill="none">
+                <rect x="8" y="14" width="38" height="26" rx="10" fill="#EFF6FF" stroke="#93C5FD" strokeWidth="1.6" />
+                <circle cx="20" cy="27" r="2.5" fill="#2563EB" />
+                <circle cx="27" cy="27" r="2.5" fill="#2563EB" />
+                <circle cx="34" cy="27" r="2.5" fill="#2563EB" />
+                <rect x="26" y="34" width="38" height="24" rx="10" fill="#F1F5F9" stroke="#CBD5E1" strokeWidth="1.6" />
+                <path d="M35 44h20M35 50h12" stroke="#64748B" strokeWidth="2.2" strokeLinecap="round" />
+              </svg>
+            </div>
+            <p className="gc-empty-hero-title">正在加载会话…</p>
+          </div>
+        ) : <div className="gc-empty">
+          <div className="gc-empty-hero-graphic" aria-hidden="true">
+            <svg width="72" height="72" viewBox="0 0 72 72" fill="none">
+              <rect x="6" y="10" width="42" height="30" rx="12" fill="#EFF6FF" stroke="#93C5FD" strokeWidth="1.6" />
+              <circle cx="19" cy="25" r="2.6" fill="#2563EB" />
+              <circle cx="27" cy="25" r="2.6" fill="#2563EB" />
+              <circle cx="35" cy="25" r="2.6" fill="#2563EB" />
+              <rect x="24" y="32" width="42" height="28" rx="12" fill="#F8FAFC" stroke="#CBD5E1" strokeWidth="1.6" />
+              <path d="M34 43h22M34 50h14" stroke="#64748B" strokeWidth="2.4" strokeLinecap="round" />
             </svg>
           </div>
-          <h2>{groupId ? "选择或新建会话" : "开始一次模型群聊"}</h2>
-          <p>与多个 AI 模型在同一群聊中分工协作，体验微信般的流畅互动。</p>
-          {!sessionId && <button className="gc-primary" onClick={() => setModal(group ? "session" : "group")}>{group ? "创建第一个会话" : "创建第一个群聊"}</button>}
+          <h2>{groupId ? (sessions.items.length ? "请选择左侧会话" : "当前群聊暂无会话") : "开始模型群聊"}</h2>
+          <p>{groupId ? (sessions.items.length ? "点击左侧任意会话继续协作，或新建一个会话" : "创建一个新会话，即可与群内模型成员开启协作") : "创建一个群聊并配置模型成员，开启多模型协同讨论"}</p>
+          {!sessionId && !sessions.items.length && (
+            <button className="gc-primary gc-empty-cta-btn" onClick={() => setModal(group ? "session" : "group")}>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M12 5v14M5 12h14"/>
+              </svg>
+              <span>{group ? "新建会话" : "新建群聊"}</span>
+            </button>
+          )}
         </div> : <>
           {/* 会话顶栏 */}
           <div className="gc-chat-header">
@@ -1272,6 +1347,7 @@ export function GroupChatPage() {
               </button>
 
               <Menu label="会话选项">
+                <button disabled={busy || pending || !canChange} onClick={() => setModal("roster")}>会话成员</button>
                 <button disabled={busy || pending || !canChange} onClick={() => void act({ action: "summary" })}>请管理员整理</button>
                 <button disabled={busy || pending || !canChange} onClick={() => void act({ action: "sync" })}>同步群成员</button>
                 <button onClick={() => void perform(async () => {
@@ -1327,98 +1403,110 @@ export function GroupChatPage() {
             const box = event.currentTarget;
             follow.current = box.scrollHeight - box.scrollTop - box.clientHeight < 72;
           }}>
-            {(activeOlder ? activeOlder.next : activeView?.next) && <button className="gc-btn-load-more" disabled={pending} onClick={() => void loadOlder()}>加载更早消息</button>}
-            {!messages.length && <div className="gc-thread-start gc-thread-start-wechat">
-              <div className="gc-welcome-chat-icon">
-                <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
-                </svg>
-              </div>
-              <h3>{session.title}</h3>
-              <p>{session.scene === "fiction" ? "写下故事素材或构思方向，群内模型将协作分工并提出方案。" : session.scene === "design" ? "写下目标和约束，成员会独立出稿并相互评审。" : "向群内模型发送消息开启协作，未 @ 时默认全员协同响应。"}</p>
-              <div className="gc-empty-start-hint">在下方输入框键入消息或 @ 成员即可开始</div>
-            </div>}
+            <div className="gc-thread-inner">
+              {(activeOlder ? activeOlder.next : activeView?.next) && <button className="gc-btn-load-more" disabled={pending} onClick={() => void loadOlder()}>加载更早消息</button>}
+              {!messages.length && <div className="gc-thread-empty-hero">
+                <div className="gc-empty-hero-graphic" aria-hidden="true">
+                  <svg width="72" height="72" viewBox="0 0 72 72" fill="none">
+                    <rect x="6" y="10" width="42" height="30" rx="12" fill="#E0F2FE" stroke="#7DD3FC" strokeWidth="1.6" />
+                    <circle cx="19" cy="25" r="2.6" fill="#0284C7" />
+                    <circle cx="27" cy="25" r="2.6" fill="#0284C7" />
+                    <circle cx="35" cy="25" r="2.6" fill="#0284C7" />
+                    <rect x="24" y="32" width="42" height="28" rx="12" fill="#DCFCE7" stroke="#4ADE80" strokeWidth="1.6" />
+                    <path d="M34 43h22M34 50h14" stroke="#15803D" strokeWidth="2.4" strokeLinecap="round" />
+                  </svg>
+                </div>
+                <p className="gc-empty-hero-title">发送消息开启对话</p>
+                <div className="gc-empty-hero-pills">
+                  <span className="gc-empty-hero-pill">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.1" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/>
+                      <circle cx="9" cy="7" r="4"/>
+                      <path d="M22 21v-2a4 4 0 0 0-3-3.87"/>
+                      <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+                    </svg>
+                    <span>直接发送 · 全员协作</span>
+                  </span>
+                  <span className="gc-empty-hero-pill">
+                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.1" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      <circle cx="12" cy="12" r="4"/>
+                      <path d="M16 8v5a3 3 0 0 0 6 0v-1a10 10 0 1 0-4 8"/>
+                    </svg>
+                    <span>指定成员</span>
+                  </span>
+                </div>
+              </div>}
 
-            {messages.map((item, idx) => {
-              const isOwn = item.author === session.human;
-              const artifact = item.artifact ? artifactsById.get(item.artifact) : undefined;
-              const reply = artifact?.stage === "reply";
-              const member = artifact?.author === item.author ? session.members.find(model => model.id === artifact.member) : undefined;
-              const identity = member ? modelName(member) : "";
-              const showTime = idx === 0 || (new Date(item.created).getTime() - new Date(messages[idx - 1]!.created).getTime() > 5 * 60 * 1000);
+              {messages.map((item, idx) => {
+                const isOwn = item.author === session.human;
+                const artifact = item.artifact ? artifactsById.get(item.artifact) : undefined;
+                const reply = artifact?.stage === "reply";
+                const truncatedReply = reply && item.text.length >= 1200 && item.text.endsWith("…");
+                const member = artifact?.author === item.author ? session.members.find(model => model.id === artifact.member) : undefined;
+                const identity = member ? modelName(member) : "";
+                const showTime = idx === 0 || (new Date(item.created).getTime() - new Date(messages[idx - 1]!.created).getTime() > 5 * 60 * 1000);
 
-              return (
-                <div key={item.id} className="gc-message-wrapper">
-                  {showTime && (
-                    <div className="gc-message-timestamp">
-                      <span>{messageTime.format(new Date(item.created))}</span>
-                    </div>
-                  )}
-                  <article className={`gc-message-row ${isOwn ? "gc-message-own" : "gc-message-ai"}`}>
-                    <div className="gc-msg-avatar" aria-hidden="true">
-                      {isOwn ? "我" : getModelAbbr(item.author)}
-                    </div>
-                    <div className="gc-msg-body">
-                      {!isOwn && (
-                        <header className="gc-msg-author-header">
-                          <span className="gc-msg-author-name">{item.author}</span>
-                          {identity && identity !== item.author && <small className="gc-msg-identity">{identity}</small>}
-                        </header>
-                      )}
-                      {!item.artifact && <div className="gc-msg-bubble"><p>{item.text}</p></div>}
-                      {reply && (
-                        <div className="gc-msg-bubble gc-msg-bubble-markdown">
-                          <Markdown remarkPlugins={[remarkGfm]} skipHtml components={{ img: ({ alt }) => <span>{alt}</span> }}>
-                            {item.text}
-                          </Markdown>
-                        </div>
-                      )}
-                      {item.artifact && (
-                        <button className={reply ? "gc-reply-source" : "gc-doc-card-wechat"} onClick={() => void preview(item.artifact!)}>
-                          {reply ? "查看原文" : <>
+                return (
+                  <div key={item.id} className="gc-message-wrapper">
+                    {showTime && (
+                      <div className="gc-message-timestamp">
+                        <span>{messageTime.format(new Date(item.created))}</span>
+                      </div>
+                    )}
+                    <article className={`gc-message-row ${isOwn ? "gc-message-own" : "gc-message-ai"}`}>
+                      <div className="gc-msg-avatar" aria-hidden="true" style={isOwn ? undefined : memberAvatarStyle(item.author)}>
+                        {isOwn ? "我" : getModelAbbr(item.author)}
+                      </div>
+                      <div className="gc-msg-body">
+                        {!isOwn && (
+                          <header className="gc-msg-author-header">
+                            <span className="gc-msg-author-name">{item.author}</span>
+                            {identity && identity !== item.author && <small className="gc-msg-identity">{identity}</small>}
+                          </header>
+                        )}
+                        {!item.artifact && <div className="gc-msg-bubble"><p>{item.text}</p></div>}
+                        {reply && (
+                          <div className="gc-msg-bubble gc-msg-bubble-markdown">
+                            <div className="gc-markdown">
+                              <Markdown remarkPlugins={[remarkGfm]} skipHtml components={{ img: ({ alt }) => <span>{alt}</span> }}>
+                                {item.text}
+                              </Markdown>
+                            </div>
+                          </div>
+                        )}
+                        {truncatedReply && item.artifact && (
+                          <button type="button" className="gc-reply-expand-btn" onClick={() => void preview(item.artifact!)}>
+                            展开完整回复 →
+                          </button>
+                        )}
+                        {item.artifact && !reply && (
+                          <button className="gc-doc-card-wechat" onClick={() => void preview(item.artifact!)}>
                             <span className="gc-doc-icon">📄</span>
                             <div className="gc-doc-info">
                               <span className="gc-doc-title">{item.text.slice(0, 80)}</span>
                               <small className="gc-doc-sub">Markdown 文档 · 点击预览</small>
                             </div>
-                          </>}
-                        </button>
-                      )}
-                    </div>
-                  </article>
+                          </button>
+                        )}
+                      </div>
+                    </article>
+                  </div>
+                );
+              })}
+
+              {activeView && <Results key={round?.id} view={activeView} preview={id => void preview(id)} act={input => { if (canChange) void act(input); }} />}
+
+              {canChange && (canDraft || canRestart) && <div className="gc-next">
+                <span>{round?.status === "waiting" ? "本轮已结束，您可以决定下一步" : "当前会话"}</span>
+                <div className="gc-actions">
+                  {canRestart && <button disabled={pending} onClick={() => setModal("restart")}>{session.scene === "fiction" ? (session.premise ? "换一批问题" : "全部重想") : "全部重做"}</button>}
+                  {canDraft && <button className="gc-primary" disabled={pending} onClick={() => beginDraft()}>{nextAction}</button>}
                 </div>
-              );
-            })}
-
-            {round && <section className="gc-status">
-              <h3>{stageNames[round.stage]} <small>{round.status === "paused" ? "已暂停" : round.status === "running" ? "进行中" : round.status === "waiting" ? "待您决定" : "已完成"}</small></h3>
-              <div className="gc-jobs">{round.jobs.map(job => <div key={job.member}>
-                <span>{session.members.find(item => item.id === job.member)?.nickname} · {{ queued: "排队", running: "运行中", done: "完成", failed: "需处理", skipped: "已跳过" }[job.state]}</span>
-                {job.error && <small>{job.error}</small>}
-                {canChange && job.state === "failed" && <div className="gc-actions">
-                  <button disabled={pending} onClick={() => void act({ action: "retry", member: job.member })}>重试</button>
-                  <button disabled={pending} onClick={() => void act({ action: "skip", member: job.member })}>跳过</button>
-                </div>}
-              </div>)}</div>
-              {canChange && round.status === "running" && <button disabled={pending} onClick={() => void act({ action: "pause" })}>暂停本轮</button>}
-              {canChange && round.status === "paused" && <div className="gc-actions">
-                <button disabled={pending} onClick={() => void act({ action: "resume" })}>继续排队任务</button>
-                <button disabled={pending} onClick={() => void act({ action: "cancel" })}>结束本轮</button>
               </div>}
-            </section>}
-
-            {activeView && <Results key={round?.id} view={activeView} preview={id => void preview(id)} act={input => { if (canChange) void act(input); }} />}
-
-            {canChange && (canDraft || canRestart) && <div className="gc-next">
-              <span>{round?.status === "waiting" ? "本轮已结束，您可以决定下一步" : "当前会话"}</span>
-              <div className="gc-actions">
-                {canRestart && <button disabled={pending} onClick={() => setModal("restart")}>{session.scene === "fiction" ? (session.premise ? "换一批问题" : "全部重想") : "全部重做"}</button>}
-                {canDraft && <button className="gc-primary" disabled={pending} onClick={() => beginDraft()}>{nextAction}</button>}
-              </div>
-            </div>}
-            {round?.status === "waiting" && ["outline", "final"].includes(round.stage) && round.jobs.map(job => job.artifact && <button key={job.artifact}
-              disabled={session.adopted === job.artifact || !canChange} onClick={() => void act({ action: "adopt", artifact: job.artifact! })}>
-              {session.adopted === job.artifact ? "已采用" : "采用此稿"}</button>)}
+              {round?.status === "waiting" && ["outline", "final"].includes(round.stage) && round.jobs.map(job => job.artifact && <button key={job.artifact}
+                disabled={session.adopted === job.artifact || !canChange} onClick={() => void act({ action: "adopt", artifact: job.artifact! })}>
+                {session.adopted === job.artifact ? "已采用" : "采用此稿"}</button>)}
+            </div>
           </div>
 
           {/* 微信风格输入框区 */}
@@ -1529,7 +1617,7 @@ export function GroupChatPage() {
                       }
                     }
                     if (!event.nativeEvent.isComposing && event.key === "Enter" && !event.shiftKey &&
-                      message.trim() && !pending && (!busy || mode === "record")) {
+                      message.trim() && !pending && (!running || mode === "record")) {
                       event.preventDefault();
                       event.currentTarget.form?.requestSubmit();
                     }
@@ -1542,6 +1630,10 @@ export function GroupChatPage() {
               {/* 微信底栏工具与发送按钮 */}
               <div className="gc-composer-toolbar">
                 <div className="gc-toolbar-left">
+                  <select aria-label="发送方式" value={mode} onChange={event => setMode(event.target.value === "record" ? "record" : "scene")}>
+                    <option value="scene">自动</option>
+                    <option value="record">仅记录</option>
+                  </select>
                   <button
                     type="button"
                     className="gc-toolbar-btn"
@@ -1563,7 +1655,12 @@ export function GroupChatPage() {
 
                 <div className="gc-toolbar-right">
                   <small className="gc-send-hotkey-hint">Enter 发送 / Shift+Enter 换行</small>
-                  <button className="gc-wechat-send-btn" disabled={!message.trim() || pending || busy}>
+                  {running && (
+                    <button type="button" className="gc-stop-btn" disabled={pending} onClick={() => void stopRound()}>
+                      停止
+                    </button>
+                  )}
+                  <button className="gc-wechat-send-btn" disabled={!message.trim() || pending || running}>
                     <span>{pending ? "发送中…" : "发送"}</span>
                     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
                       <path d="m22 2-7 20-4-9-9-4Z"/>
@@ -1580,13 +1677,25 @@ export function GroupChatPage() {
       {/* 文档预览区 */}
       {session && documents.length > 0 && <aside className="gc-preview" aria-label="文档阅读区">
         <div className="gc-preview-header">
-          <h2>文档预览</h2>
+          <div className="gc-preview-title">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/>
+              <polyline points="14 2 14 8 20 8"/>
+              <line x1="16" x2="8" y1="13" y2="13"/>
+              <line x1="16" x2="8" y1="17" y2="17"/>
+            </svg>
+            <h2>文档预览</h2>
+          </div>
           <div className="gc-actions">
-            <button aria-pressed={compare} onClick={() => {
+            <button type="button" className={`gc-preview-action-btn ${compare ? "gc-active" : ""}`} aria-pressed={compare} onClick={() => {
               setCompare(value => !value); setReading(0);
               if (compare) setDocuments(items => items.slice(0, 1));
             }}>{compare ? "退出比较" : "并排比较"}</button>
-            <button className="gc-close" aria-label="关闭预览" onClick={() => { setDocuments([]); setCompare(false); }}>×</button>
+            <button type="button" className="gc-close" aria-label="关闭预览" onClick={() => { setDocuments([]); setCompare(false); }}>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M18 6 6 18M6 6l12 12"/>
+              </svg>
+            </button>
           </div>
         </div>
         {compare && <div className="gc-compare-controls">
@@ -1599,10 +1708,15 @@ export function GroupChatPage() {
           </div>}
         </div>}
         <div className={documents.length > 1 ? "gc-documents gc-compare" : "gc-documents"}>
-          {documents.map((doc, index) => <article className={reading === index ? "gc-document-current" : ""} key={doc.id}>
-            <header className="gc-document-heading"><small>{doc.author}</small><h3>{doc.title}</h3>
-              <div className="gc-actions"><a href={sessionUrl(session.id) + "/artifacts/" + doc.id + "?download=1"}>下载 .md</a>
-                {canChange && !busy && ["plans", "outline", "final"].includes(doc.stage) && <button onClick={() => beginDraft(doc.id)}>交给成员修订</button>}
+          {documents.map((doc, index) => <article className={`gc-document-card ${reading === index ? "gc-document-current" : ""}`} key={doc.id}>
+            <header className="gc-document-heading">
+              <div className="gc-document-meta">
+                <span className="gc-document-author-badge">{doc.author}</span>
+                <h3>{doc.title}</h3>
+              </div>
+              <div className="gc-actions">
+                <a className="gc-download-link" href={sessionUrl(session.id) + "/artifacts/" + doc.id + "?download=1"}>下载 .md</a>
+                {canChange && !busy && ["plans", "outline", "final"].includes(doc.stage) && <button type="button" className="gc-preview-revise-btn" onClick={() => beginDraft(doc.id)}>交给成员修订</button>}
               </div>
             </header>
             <div className="gc-markdown"><Markdown remarkPlugins={[remarkGfm]} skipHtml components={{ img: ({ alt }) => <span>{alt}</span> }}>{doc.body}</Markdown></div>
@@ -1700,8 +1814,10 @@ export function GroupChatPage() {
         <button type="button" onClick={() => setModal(undefined)}>取消</button>
         <button className="gc-danger" disabled={pending} onClick={() => void perform(async () => {
           const deleted = await api<{ retainedPath?: string }>(sessionUrl(session.id), "DELETE", { version: session.version, files: removal });
+          const remaining = sessions.items.filter(item => item.id !== session.id);
           setSessions(prior => ({ ...prior, items: prior.items.filter(item => item.id !== session.id) }));
-          setSessionId(""); setModal(undefined); setNotice(deleted.retainedPath ? "文件已保留在 " + deleted.retainedPath : "会话与受管文件已删除");
+          setSessionId(remaining[0]?.id ?? "");
+          setModal(undefined); setNotice(deleted.retainedPath ? "文件已保留在 " + deleted.retainedPath : "会话与受管文件已删除");
         })}>确认删除会话</button>
       </div>
     </Modal>}
