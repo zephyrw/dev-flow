@@ -43,3 +43,13 @@ it("reports a headless authentication failure without returning the sign-in URL"
     code: "authentication_required", message: "authentication_required",
   });
 });
+
+it.each([
+  { code: -1, stdout: "", stderr: "You are not logged into Antigravity.", termination_reason: "timeout", reason: "probe_timeout" },
+  { code: 0, stdout: "", stderr: "[agy] print timeout after 29s with turn in progress; returning partial output", reason: "probe_timeout" },
+  { code: 1, stdout: "", stderr: "UNAVAILABLE (code 503): The service is currently unavailable.", reason: "network_error" },
+])("reports a $reason from the quota CLI without exposing its output", async ({ reason, ...result }) => {
+  const runAuxiliaryProbe = vi.fn(async () => result);
+  const probe = new AgyAccountProbe("C:/fixture/agy.exe", createVerifiedUsageAdapter("fixture"), { runAuxiliaryProbe });
+  await expect(probe.probeUsage()).rejects.toMatchObject({ code: reason, message: reason });
+});

@@ -27,8 +27,13 @@ const initialNowIso = new Date(initialNow).toISOString();
 
 let scenario = false;
 let failedQuotaAccount: string | null = null;
+let failNextQuotaProbe = false;
 const originalProbe = fixture.probe.probeUsage;
 fixture.probe.probeUsage = async (...args) => {
+  if (failNextQuotaProbe) {
+    failNextQuotaProbe = false;
+    throw new Error("probe_timeout");
+  }
   if (fixture.active() === failedQuotaAccount) throw new Error("official_usage_probe_failed");
   if (scenario) {
     const observed = await originalProbe(...args);
@@ -151,12 +156,17 @@ app.get("/api/account-fixture/facts", async () => ({
   active: fixture.active(),
   probe_calls: fixture.probeCalls(),
 }));
+app.post("/api/account-fixture/fail-next-quota-probe", async () => {
+  failNextQuotaProbe = true;
+  return { ok: true };
+});
 app.route({
   method: ["GET", "POST"],
   url: "/api/account-fixture/setup-quota-scenarios",
   handler: async () => {
     scenario = true;
     failedQuotaAccount = null;
+    failNextQuotaProbe = false;
     const realmId = "default-agy-realm";
     const now = Date.now();
     const pastReset = new Date(now - 3600_000).toISOString();

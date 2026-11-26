@@ -89,6 +89,56 @@ describe("persisted five-hour reset and failed refresh", () => {
     expect(fixture.active()).toBe("a");
   });
 
+  it.each(["probe_timeout", "network_error"])("recovers from %s within one active refresh", async reason => {
+    const realmId = "default-agy-realm";
+    const before = fixture.repository.getQuotaSnapshot(realmId, "a", "fixture-pool");
+    const probe = fixture.probe.probeUsage;
+    let attempts = 0;
+    fixture.probe.probeUsage = async options => {
+      expect(fixture.service.getQuotaRefresh()?.status).toBe("running");
+      if (++attempts === 1) throw new Error(reason);
+      return probe(options);
+    };
+    const refresh = fixture.service.requestQuotaRefresh(realmId, true);
+    expect(refresh?.status).toBe("running");
+    const view = await fixture.service.syncAndRefreshQuotas(realmId);
+    expect(attempts).toBe(2);
+    expect(view.refresh_errors).toEqual([]);
+    expect(fixture.service.getQuotaRefresh()).toMatchObject({ id: refresh && "id" in refresh ? refresh.id : undefined, status: "succeeded" });
+    expect(fixture.repository.getQuotaSnapshot(realmId, "a", "fixture-pool")?.id).not.toBe(before?.id);
+    expect(fixture.repository.listAudits(realmId, 1)[0]).toMatchObject({
+      action: "quota_refresh_attempt_failed", account_id: "a", details: { attempt: 1, reason },
+    });
+  });
+
+  it("stops after the second transient failure and retains the last observation", async () => {
+    const realmId = "default-agy-realm";
+    const before = fixture.repository.listQuotaSnapshots(realmId, "a");
+    let attempts = 0;
+    fixture.probe.probeUsage = async () => { attempts++; throw new Error("network_error"); };
+    const view = await fixture.service.syncAndRefreshQuotas(realmId);
+    expect(attempts).toBe(2);
+    expect(view.refresh_errors).toEqual([{ account_id: "a", error: "network_error" }]);
+    expect(fixture.service.getQuotaRefresh()?.status).toBe("failed");
+    expect(fixture.repository.listQuotaSnapshots(realmId, "a")).toEqual(before);
+  });
+
+  it("does not retry under another desktop login or replace the previous quota", async () => {
+    const realmId = "default-agy-realm";
+    const before = fixture.repository.listQuotaSnapshots(realmId, "a");
+    let attempts = 0;
+    fixture.probe.probeUsage = async () => {
+      attempts++;
+      await fixture.authHost.activateSaved(realmId, "b", "saved-b");
+      throw new Error("probe_timeout");
+    };
+    await fixture.service.syncAndRefreshQuotas(realmId);
+    expect(attempts).toBe(1);
+    expect(fixture.service.getQuotaRefresh()?.status).toBe("failed");
+    expect(fixture.repository.listQuotaSnapshots(realmId, "a")).toEqual(before);
+    expect(fixture.active()).toBe("b");
+  });
+
   it("omits historical Argon quota from account presentation", () => {
     const realmId = "default-agy-realm";
     const current = fixture.repository.getQuotaSnapshot(realmId, "a", "fixture-pool")!;

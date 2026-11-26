@@ -90,6 +90,31 @@ test("非当前账号用图标刷新额度，移除图标继续弹出确认", as
   expect((await (await page.request.get("/api/account-fixture/facts")).json()).active).toBe(active);
 });
 
+test("当前账号额度查询首次超时后单击即可完成刷新", async ({ page }) => {
+  await fullPage(page);
+  const { active } = await (await page.request.get("/api/account-fixture/facts")).json();
+  const current = row(page, active);
+  await expect(current.locator(".agy-badge.active")).toBeVisible();
+  const refresh = current.getByRole("button", { name: "刷新", exact: true });
+  await expect(refresh).toBeEnabled();
+  const injected = await page.request.post("/api/account-fixture/fail-next-quota-probe", {
+    headers: { origin: new URL(page.url()).origin, "sec-fetch-site": "same-origin" }, data: {},
+  });
+  expect(injected.ok()).toBe(true);
+  const submitted = page.waitForResponse(response => response.url().endsWith("/api/agy-accounts/refresh") &&
+    response.request().postDataJSON()?.force === true);
+  await refresh.click();
+  const { id } = await (await submitted).json();
+  await expect.poll(async () => {
+    const response = await page.request.get("/api/agy-accounts/snapshot");
+    const body = await response.json();
+    return body.refresh;
+  }).toMatchObject({ id, account_id: active, status: "succeeded", refresh_errors: [] });
+  await expect(current.locator(".agy-quota-loading-line")).toHaveCount(0);
+  await expect(current.locator(".agy-no-quota")).toHaveCount(0);
+  await expect(refresh).toBeEnabled();
+});
+
 test("混用任务显示首个归零额度及可操作的等待原因", async ({ page }) => {
   await page.route(snapshot, async route => {
     const response = await route.fetch(), body = await response.json();
@@ -342,17 +367,10 @@ test("账号操作按钮顺序紧凑，支持手动排序和额度刷新动画",
     await route.fulfill({ response, json: body });
   });
   let sortBody: any = null;
-  await page.route("**/api/agy-accounts/sort", async route => {
-    sortBody = route.request().postDataJSON();
-    await route.fulfill({
-      json: {
-        realm_id: "default-agy-realm",
-        mode: sortBody.mode ?? "custom",
-        direction: sortBody.direction ?? "asc",
-        custom_order: sortBody.custom_order ?? [],
-        updated_at: new Date().toISOString(),
-      },
-    });
+  page.on("request", request => {
+    if (request.method() === "PUT" && request.url().endsWith("/api/agy-accounts/sort")) {
+      sortBody = request.postDataJSON();
+    }
   });
 
   await page.goto("/");

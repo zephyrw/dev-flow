@@ -4,6 +4,7 @@ import type {
   AccountProbePort,
   AccountProbeResult,
 } from "../../../agy-accounts/src/ports.js";
+import { isRetryableModelTransportFailure } from "../../../contracts/src/runtime-failure.js";
 import { parseAgyUsageOutput, type ParsedQuotaResult } from "./quota-parser.js";
 import { resolveFingerprintedAgyExecutable, assertAgyExecutableUnchanged, type AgyExecutableResolution } from "./executable-resolver.js";
 import { parseAgyModelCatalog } from "./model-configuration.js";
@@ -256,7 +257,15 @@ export class AgyAccountProbe implements AccountProbePort {
     )
       .then((result) => {
         const received = Date.now();
-        if (result.code !== 0) throw new Error("official_usage_probe_failed");
+        if (result.termination_reason === "timeout" || hasAgyPrintTimeout(result.stderr))
+          throw Object.assign(new Error("probe_timeout"), { code: "probe_timeout" });
+        if (result.code !== 0) {
+          const transientTransport = isRetryableModelTransportFailure(result.stderr) ||
+            /\b(?:ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN)\b|\b(?:code|HTTP(?:\/[\d.]+)?)\s*[:=]?\s*(?:502|503|504)\b/i.test(result.stderr);
+          if (!result.termination_reason && transientTransport)
+            throw Object.assign(new Error("network_error"), { code: "network_error" });
+          throw new Error("official_usage_probe_failed");
+        }
         const parsed = adapter.parse(result.stdout);
         const pools = parsed.pools.length > 0
           ? parsed.pools.map((pool) => {
@@ -475,7 +484,7 @@ export class AgyAccountProbe implements AccountProbePort {
       signal: options.signal,
     });
     options.signal?.throwIfAborted();
-    if (res.code !== 0 &&
+    if (!res.termination_reason && res.code !== 0 &&
         /\bauthentication required\b|\binvalid_grant\b|you are not logged into antigravity/i.test(res.stderr)) {
       throw Object.assign(new Error("authentication_required"), { code: "authentication_required" });
     }

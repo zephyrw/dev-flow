@@ -1,5 +1,6 @@
 import { hasAccountIdentityMismatch, isQuotaPoolVerified, quotaPoolCoversModel, isArgonModel, isArgonQuotaPool, ARGON_QUOTA_POOL, getObservedFiveHourResetAt, resolveEffectiveAccountState } from "./quota.js";
 import { randomUUID, createHash } from "node:crypto";
+import { setTimeout as wait } from "node:timers/promises";
 import { z } from "zod";
 import {
   AgyAccountSettingsSchema,
@@ -99,6 +100,10 @@ export interface OperationReceipt {
 }
 
 type QuotaRefreshFailure = { account_id: string; error?: string };
+const QUOTA_REFRESH_ATTEMPTS = 2;
+const RETRYABLE_QUOTA_REFRESH_ERRORS = new Set([
+  "probe_timeout", "network_error", "agy_usage_prepare_timeout", "probe_identity_busy", "quota_response_unverified",
+]);
 
 export interface AgyUsageRequest {
   force_model_probe?: boolean;
@@ -1240,7 +1245,7 @@ export class AgyAccountService {
       const started = Date.now();
       this.cleanStalePendingOperationLocked(realmId);
       const timeoutMs = this.initializeSettings(realmId).probe_timeout_seconds * 1000;
-      const { abort, finish } = this.beginBackgroundProbe(realmId, timeoutMs + 15000);
+      const { abort, finish } = this.beginBackgroundProbe(realmId, QUOTA_REFRESH_ATTEMPTS * timeoutMs + 15000);
 
       // 确保持有 domainLock 以便切换凭据与执行 probe
       let temporaryLockRelease: (() => Promise<void>) | undefined;
@@ -1255,108 +1260,81 @@ export class AgyAccountService {
         }
       }
 
-      let realm = this.repository.getRealm(realmId);
-      let origActiveId = realm?.active_account_id;
-      let origActiveAcc = origActiveId
-        ? this.repository.getAccount(realmId, origActiveId)
-        : null;
+      let activeAccountId = this.repository.getRealm(realmId)?.active_account_id;
       const refreshErrors: QuotaRefreshFailure[] = [];
 
       try {
         if (!this.authHost.isDomainLockHeld(realmId))
           throw new AccountServiceError("domain_lock_not_held");
-        if (realm?.pending_operation_id)
+        if (this.repository.getRealm(realmId)?.pending_operation_id)
           throw new AccountServiceError("operation_in_progress");
         // 1. 同步对齐外部真实活动账号 (直接调用私有 Locked 方法，避免 coordinator 队列死锁)
         await this.syncActiveAccountFromHostLocked(realmId);
-        realm = this.repository.getRealm(realmId);
-        origActiveId = realm?.active_account_id;
-        origActiveAcc = origActiveId
-          ? this.repository.getAccount(realmId, origActiveId)
-          : null;
-        if (!origActiveAcc) throw new AccountServiceError("active_account_unavailable");
+        const realm = this.repository.getRealm(realmId);
+        activeAccountId = realm?.active_account_id;
+        let acc = activeAccountId ? this.repository.getAccount(realmId, activeAccountId) : undefined;
+        if (!acc || !realm) throw new AccountServiceError("active_account_unavailable");
+        const authEpoch = realm.auth_epoch;
 
-
-        const probeSingleAccount = async (acc: AgyAccount) => {
-          if (acc.state === "reauth_required" &&
-              acc.auth.last_local_auth_failure_revision === acc.credential_revision) {
-            refreshErrors.push({ account_id: acc.id, error: "authentication_required" });
-            return false;
-          }
+        if (acc.state === "reauth_required" &&
+            acc.auth.last_local_auth_failure_revision === acc.credential_revision) {
+          refreshErrors.push({ account_id: acc.id, error: "authentication_required" });
+        } else {
           try {
-            const probeResult = await this.probeAccountUsage(realmId, acc, timeoutMs, abort.signal);
+            const { observation, pools } = await this.probeActiveQuotaWithRetry(realmId, acc, authEpoch, timeoutMs, abort.signal);
+            const captured = await this.captureUsageCredential(realmId, acc);
             abort.signal.throwIfAborted();
-            if (probeResult.capability_verified && probeResult.pools.length > 0) {
-              const captured = await this.captureUsageCredential(realmId, acc);
-              abort.signal.throwIfAborted();
-              const current = this.repository.getRealm(realmId);
-              if (current?.active_account_id !== acc.id || current.auth_epoch !== realm?.auth_epoch || current.pending_operation_id)
-                throw new AccountServiceError("account_identity_changed");
-              this.saveCapture(realmId, acc.id, captured);
-              acc = this.repository.getAccount(realmId, acc.id) ?? acc;
-              const validPools = probeResult.pools.filter(pool => isQuotaPoolVerified(probeResult, pool));
-              const complete = validPools.length > 0;
-              for (const pool of validPools) {
-                this.repository.saveQuotaSnapshot({
-                  id: randomUUID(),
-                  realm_id: realmId,
-                  account_id: acc.id,
-                  auth_epoch: realm?.auth_epoch ?? 1,
-                  pool_id: pool.pool_id,
-                  model_ids: pool.model_ids,
-                  plan_tier: probeResult.plan_tier,
-                  source: "official_cli_usage",
-                  cli_version: probeResult.cli_version,
-                  parser_revision: 1,
-                  executable_fingerprint: probeResult.executable_fingerprint,
-                  capability_verified: isQuotaPoolVerified(probeResult, pool),
-                  observed_at: this.clock.toISOString(),
-                  windows: pool.windows,
-                });
-              }
-              const observedState = !complete
-                ? "pending_quota"
-                : validPools.every((p) =>
-                      p.windows.some((w) => w.remaining_fraction === 0),
-                    )
-                  ? "waiting_quota"
-                  : "ready";
-              if (acc.state === "disabled") acc.state_before_disabled = observedState;
-              else acc.state = observedState;
-              if (complete) {
-                acc.enrollment_completed_at ??= this.clock.toISOString();
-                acc.auth.last_authenticated_request_at = this.clock.toISOString();
-                acc.auth.quota_verification_pending = undefined;
-                acc.auth.last_auth_error = undefined;
-                acc.auth.last_local_auth_failure_revision = undefined;
-              }
-              this.repository.saveAccount(acc);
-              // Admission remains immediate while this serialized refresh runs.
-              // Merge only our credential observation into the latest realm.
-              realm = this.repository.getRealm(realmId);
-              if (acc.id === origActiveId && realm) {
-                realm.active_secret_ref = captured.secret_ref;
-                // Recover the historical missing-/usage-email false alarm only
-                // after a fresh, identity-checked query and credential capture.
-                if (["idle", "blocked"].includes(realm.phase) && realm.last_error === "external_change") {
-                  realm.phase = "idle";
-                  realm.last_error = undefined;
-                } else if (complete && realm.phase === "idle" && realm.last_error === "auth_host_capability_unavailable") {
-                  realm.last_error = undefined;
-                }
-                realm.revision++;
-                this.repository.saveRealm(realm);
-              }
-              return true;
+            const current = this.repository.getRealm(realmId);
+            if (current?.active_account_id !== acc.id || current.auth_epoch !== authEpoch || current.pending_operation_id)
+              throw new AccountServiceError("account_identity_changed");
+            if (!this.authHost.isDomainLockHeld(realmId)) throw new AccountServiceError("domain_lock_lost");
+            this.saveCapture(realmId, acc.id, captured);
+            acc = this.repository.getAccount(realmId, acc.id) ?? acc;
+            for (const pool of pools) {
+              this.repository.saveQuotaSnapshot({
+                id: randomUUID(),
+                realm_id: realmId,
+                account_id: acc.id,
+                auth_epoch: authEpoch,
+                pool_id: pool.pool_id,
+                model_ids: pool.model_ids,
+                plan_tier: observation.plan_tier,
+                source: "official_cli_usage",
+                cli_version: observation.cli_version,
+                parser_revision: 1,
+                executable_fingerprint: observation.executable_fingerprint,
+                capability_verified: true,
+                observed_at: this.clock.toISOString(),
+                windows: pool.windows,
+              });
             }
+            const observedState = pools.every(pool => pool.windows.some(window => window.remaining_fraction === 0))
+              ? "waiting_quota" : "ready";
+            if (acc.state === "disabled") acc.state_before_disabled = observedState;
+            else acc.state = observedState;
+            acc.enrollment_completed_at ??= this.clock.toISOString();
+            acc.auth.last_authenticated_request_at = this.clock.toISOString();
+            acc.auth.quota_verification_pending = undefined;
+            acc.auth.last_auth_error = undefined;
+            acc.auth.last_local_auth_failure_revision = undefined;
+            this.repository.saveAccount(acc);
+            current.active_secret_ref = captured.secret_ref;
+            if (["idle", "blocked"].includes(current.phase) && current.last_error === "external_change") {
+              current.phase = "idle";
+              current.last_error = undefined;
+            } else if (current.phase === "idle" && current.last_error === "auth_host_capability_unavailable") {
+              current.last_error = undefined;
+            }
+            current.revision++;
+            this.repository.saveRealm(current);
           } catch (err: any) {
             if (this.retainUnconfirmedProbe(realmId, err, temporaryLockRelease)) { temporaryLockRelease = undefined; throw err; }
             abort.signal.throwIfAborted();
-            const msg = String(err?.message || err);
-            if (/^(?:authentication_required|invalid_grant|unauthenticated|auth_invalid|login_required|HTTP_401)$/i.test(err?.code ?? msg)) {
+            const code = String(err?.code ?? err?.message ?? err);
+            if (/^(?:authentication_required|invalid_grant|unauthenticated|auth_invalid|login_required|HTTP_401)$/i.test(code)) {
               const current = this.repository.getRealm(realmId);
               const latest = this.repository.getAccount(realmId, acc.id);
-              if (current?.active_account_id === acc.id && current.auth_epoch === realm?.auth_epoch &&
+              if (current?.active_account_id === acc.id && current.auth_epoch === authEpoch &&
                   !current.pending_operation_id && latest?.revision === acc.revision && latest.state !== "disabled") {
                 acc = { ...latest, revision: latest.revision + 1, state: "reauth_required",
                   auth: { ...latest.auth, last_auth_error: "authentication_required",
@@ -1364,21 +1342,14 @@ export class AgyAccountService {
                 this.repository.saveAccount(acc);
               }
             }
+            const error = acc.state === "reauth_required" ? "authentication_required"
+              : RETRYABLE_QUOTA_REFRESH_ERRORS.has(code) ? code : "quota_probe_failed";
+            refreshErrors.push({ account_id: acc.id, error });
           }
-          refreshErrors.push({ account_id: acc.id,
-            error: acc.state === "reauth_required" ? "authentication_required" : "quota_probe_failed" });
-          return false;
-        };
-
-        // 2. 先刷新当前活动账号（凭据已经在宿主机中，严格串行第1个）
-        if (origActiveAcc) {
-          await probeSingleAccount(origActiveAcc);
-          origActiveAcc = this.repository.getAccount(realmId, origActiveAcc.id) ?? origActiveAcc;
         }
-
       } finally {
         finish();
-        this.audit?.record({ realm_id: realmId, account_id: origActiveId ?? undefined,
+        this.audit?.record({ realm_id: realmId, account_id: activeAccountId ?? undefined,
           action: "quota_refresh_timing", details: { queue_ms: started - queued, total_ms: Date.now() - started } });
         if (temporaryLockRelease) {
           try {
@@ -1391,6 +1362,37 @@ export class AgyAccountService {
 
       return { ...this.getPresentation(realmId), refresh_scope: "active_only" as const, refresh_errors: refreshErrors };
     }, "background");
+  }
+
+  private async probeActiveQuotaWithRetry(realmId: string, account: AgyAccount, authEpoch: number, timeoutMs: number, signal: AbortSignal) {
+    for (let attempt = 1; ; attempt++) {
+      signal.throwIfAborted();
+      if (attempt > 1 && !(await this.activeAccountMatches(realmId, account, account.secret_ref)))
+        throw new AccountServiceError("external_change");
+      signal.throwIfAborted();
+      const current = this.repository.getRealm(realmId);
+      if (current?.active_account_id !== account.id || current.auth_epoch !== authEpoch || current.pending_operation_id)
+        throw new AccountServiceError("account_identity_changed");
+      if (!this.authHost.isDomainLockHeld(realmId)) throw new AccountServiceError("domain_lock_lost");
+
+      try {
+        const observation = await this.probeAccountUsage(realmId, account, timeoutMs, signal);
+        signal.throwIfAborted();
+        const pools = observation.pools.filter(pool => isQuotaPoolVerified(observation, pool));
+        if (!pools.length) throw new AccountServiceError("quota_response_unverified");
+        return { observation, pools };
+      } catch (error) {
+        const failure = error as { code?: string; message?: string };
+        const reason = failure?.code ?? failure?.message ?? "";
+        if (!RETRYABLE_QUOTA_REFRESH_ERRORS.has(reason)) throw error;
+        signal.throwIfAborted();
+        this.repository.saveAudit({ audit_id: randomUUID(), realm_id: realmId, account_id: account.id,
+          event_seq: (this.repository.listAudits(realmId, 1)[0]?.event_seq ?? 0) + 1,
+          action: "quota_refresh_attempt_failed", details: { attempt, reason }, timestamp: this.clock.toISOString() });
+        if (attempt === QUOTA_REFRESH_ATTEMPTS) throw error;
+        await wait(500, undefined, { signal });
+      }
+    }
   }
 
   getCapabilitySnapshot(): any {
